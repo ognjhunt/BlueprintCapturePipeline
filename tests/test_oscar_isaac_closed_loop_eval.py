@@ -788,10 +788,7 @@ def test_task_completion_command_evaluator_binds_typed_measurement(
     result = dict(result)
     command_result = json.loads(
         (
-            tmp_path
-            / "task_evaluator"
-            / "step_0002"
-            / "task_completion_command_result.json"
+            tmp_path / "task_evaluator" / "step_0002" / "task_completion_command_result.json"
         ).read_text()
     )
     assert command_result["status"] == "completed"
@@ -1766,9 +1763,7 @@ def test_post_action_reanchor_selects_latest_live_egocentric_frame(tmp_path: Pat
                     "robot_mounted": True,
                     "policy_observation_eligible": True,
                     "mount_motion_model": "rigid_head_local_transform",
-                    "gaze_motion_model": (
-                        "inherits_head_orientation_no_task_reaim"
-                    ),
+                    "gaze_motion_model": ("inherits_head_orientation_no_task_reaim"),
                 },
             }
         )
@@ -1783,29 +1778,21 @@ def test_post_action_reanchor_selects_latest_live_egocentric_frame(tmp_path: Pat
     assert selected["viewpoint_mode"] == "robot_head_mounted_egocentric"
     assert selected["mount_motion_model"] == "rigid_head_local_transform"
 
-    frames[-1]["camera_contract"]["viewpoint_mode"] = (
-        "task_framed_third_person_review"
-    )
+    frames[-1]["camera_contract"]["viewpoint_mode"] = "task_framed_third_person_review"
     with pytest.raises(RuntimeError, match="post_action_robot_pov_not_egocentric"):
         L._validated_post_action_egocentric_frame(
             {"review_frames": frames},
             source_step_index=2,
         )
 
-    frames[-1]["camera_contract"]["viewpoint_mode"] = (
-        "robot_head_mounted_egocentric"
-    )
-    frames[-1]["camera_contract"]["gaze_motion_model"] = (
-        "inherits_head_orientation_no_task_reaim"
-    )
+    frames[-1]["camera_contract"]["viewpoint_mode"] = "robot_head_mounted_egocentric"
+    frames[-1]["camera_contract"]["gaze_motion_model"] = "inherits_head_orientation_no_task_reaim"
     frames[-1]["visual_signal"] = {"status": "blocked", "non_uniform": False}
     assert not L._validated_post_action_egocentric_frame(
         {"review_frames": frames}, source_step_index=2
     )
 
-    frames[-1]["camera_contract"]["viewpoint_mode"] = (
-        "robot_head_mounted_egocentric"
-    )
+    frames[-1]["camera_contract"]["viewpoint_mode"] = "robot_head_mounted_egocentric"
     frames[-1]["camera_contract"]["gaze_motion_model"] = "task_target_reaimed"
     with pytest.raises(RuntimeError, match="post_action_robot_pov_not_egocentric"):
         L._validated_post_action_egocentric_frame(
@@ -1930,9 +1917,7 @@ def test_closed_loop_generated_video_success_label_is_sim_only_and_required(
         chunk = action["action_chunk"]
         projection = L._with_action_conditioning_digests(
             {
-                "landmarks": [
-                    _projected_landmark("wrist", float(chunk[0]), float(chunk[1]))
-                ],
+                "landmarks": [_projected_landmark("wrist", float(chunk[0]), float(chunk[1]))],
                 "derived_via_controller_fk": True,
                 "source_action_sha256": action_sha256,
                 "controller_id": "test-controller",
@@ -2049,9 +2034,7 @@ def test_closed_loop_required_forward_inverse_consistency_blocks_without_scorer(
     assert "forward_inverse_consistency_not_proven" in manifest["blockers"]
     assert len(manifest["wam_episode_consistency_request_paths"]) == 1
     request = json.loads(
-        Path(manifest["wam_episode_consistency_request_paths"][0]).read_text(
-            encoding="utf-8"
-        )
+        Path(manifest["wam_episode_consistency_request_paths"][0]).read_text(encoding="utf-8")
     )
     assert request["status"] == "blocked_strict_action_contract"
     assert request["strict_action_aware_consistency"]["request_validation_blockers"] == [
@@ -2156,9 +2139,7 @@ def test_episode_consistency_classifies_model_abstention_separately_from_infrast
     )
     assert checks["scorer_outcome"] == expected_outcome
     assert checks["model_abstained"] is (expected_outcome == "model_abstention")
-    assert checks["infrastructure_failure"] is (
-        expected_outcome == "infrastructure_failure"
-    )
+    assert checks["infrastructure_failure"] is (expected_outcome == "infrastructure_failure")
 
 
 def test_isaac_manipulation_success_evaluator_requires_registered_transition(
@@ -2274,6 +2255,10 @@ def test_build_oscar_per_step_request_shapes_conditioning(tmp_path: Path) -> Non
     landmarks = [
         {"landmark_id": "pelvis", "image_projection": {"available": True, "u_px": 1, "v_px": 2}}
     ]
+    trace_rows = [
+        {"frame_index": 0, "projected_landmarks": landmarks},
+        {"frame_index": 1, "projected_landmarks": landmarks},
+    ]
     req = L.build_oscar_per_step_request(
         current_frame_path="/frames/cur.png",
         action=action,
@@ -2282,6 +2267,7 @@ def test_build_oscar_per_step_request_shapes_conditioning(tmp_path: Path) -> Non
         num_frames=8,
         output_dir=tmp_path,
         skeleton_landmarks=landmarks,
+        skeleton_trace_rows=trace_rows,
         seed=42,
     )
     assert req["reference_frame_path"] == "/frames/cur.png"
@@ -2290,6 +2276,8 @@ def test_build_oscar_per_step_request_shapes_conditioning(tmp_path: Path) -> Non
     assert req["seed"] == 45  # base seed + step_index
     assert req["projected_landmark_count"] == 1
     assert req["skeleton_landmarks"] == landmarks
+    assert req["skeleton_trace_row_count"] == 2
+    assert req["skeleton_trace_rows"] == trace_rows
     assert req["output_dir"].endswith("oscar_step_0003")
 
 
@@ -2384,6 +2372,11 @@ def test_manipulation_effector_progress_gate_precedes_oscar_generation(
                         {
                             "name": "right_wrist_yaw_link",
                             "world_xyz": [0.5, 0.0, 0.0],
+                            "image_projection": {
+                                "available": True,
+                                "u_px": 100.0,
+                                "v_px": 200.0,
+                            },
                         }
                     ]
                 },
@@ -2392,6 +2385,11 @@ def test_manipulation_effector_progress_gate_precedes_oscar_generation(
                         {
                             "name": "right_wrist_yaw_link",
                             "world_xyz": [0.5 - effector_progress_m, 0.0, 0.0],
+                            "image_projection": {
+                                "available": True,
+                                "u_px": 112.0,
+                                "v_px": 200.0,
+                            },
                         }
                     ]
                 },
@@ -2423,17 +2421,12 @@ def test_manipulation_effector_progress_gate_precedes_oscar_generation(
     assert generate_calls == expected_generate_calls
     report = json.loads(
         (
-            tmp_path
-            / "wam"
-            / "oscar_step_0001"
-            / "manipulation_effector_progress_report.json"
+            tmp_path / "wam" / "oscar_step_0001" / "manipulation_effector_progress_report.json"
         ).read_text()
     )
     assert report["capability_gate_passed"] is (expected_status == "completed")
     if expected_status == "blocked":
-        assert result["blockers"] == [
-            "manipulation_controller_fk_no_meaningful_effector_motion"
-        ]
+        assert result["blockers"] == ["manipulation_controller_fk_no_meaningful_effector_motion"]
 
 
 def test_manipulation_motion_can_condition_wam_without_overclaiming_directional_progress(
@@ -2458,6 +2451,11 @@ def test_manipulation_motion_can_condition_wam_without_overclaiming_directional_
                         {
                             "name": "right_wrist_yaw_link",
                             "world_xyz": [0.5, 0.0, 0.0],
+                            "image_projection": {
+                                "available": True,
+                                "u_px": 100.0,
+                                "v_px": 200.0,
+                            },
                         }
                     ]
                 },
@@ -2466,6 +2464,11 @@ def test_manipulation_motion_can_condition_wam_without_overclaiming_directional_
                         {
                             "name": "right_wrist_yaw_link",
                             "world_xyz": [0.8, 0.0, 0.0],
+                            "image_projection": {
+                                "available": True,
+                                "u_px": 120.0,
+                                "v_px": 200.0,
+                            },
                         }
                     ]
                 },
@@ -2491,9 +2494,7 @@ def test_manipulation_motion_can_condition_wam_without_overclaiming_directional_
         require_manipulation_effector_progress=True,
     )
 
-    result = backend(
-        str(_write_frame(tmp_path / "source.png", seed=72)), action, 1, []
-    )
+    result = backend(str(_write_frame(tmp_path / "source.png", seed=72)), action, 1, [])
 
     assert result["status"] == "completed"
     assert generate_calls == 1
@@ -2501,9 +2502,48 @@ def test_manipulation_motion_can_condition_wam_without_overclaiming_directional_
     assert report["capability_gate_passed"] is True
     assert report["motion_capability_passed"] is True
     assert report["directional_progress_passed"] is False
-    assert report["warnings"] == [
-        "manipulation_controller_fk_motion_not_toward_task_target"
-    ]
+    assert report["warnings"] == ["manipulation_controller_fk_motion_not_toward_task_target"]
+
+
+def test_manipulation_effector_gate_rejects_world_motion_without_visible_image_motion() -> None:
+    report = L._manipulation_effector_progress_report(
+        {
+            "task_target_world_xyz_m": [0.0, 0.0, 0.0],
+            "controller_fk_sequence": [
+                {
+                    "landmarks": [
+                        {
+                            "name": "right_wrist_yaw_link",
+                            "world_xyz": [0.5, 0.0, 0.0],
+                            "image_projection": {
+                                "available": True,
+                                "u_px": 100.0,
+                                "v_px": 200.0,
+                            },
+                        }
+                    ]
+                },
+                {
+                    "landmarks": [
+                        {
+                            "name": "right_wrist_yaw_link",
+                            "world_xyz": [0.4, 0.0, 0.0],
+                            "image_projection": {
+                                "available": True,
+                                "u_px": 100.0,
+                                "v_px": 200.0,
+                            },
+                        }
+                    ]
+                },
+            ],
+        }
+    )
+
+    assert report["motion_capability_passed"] is True
+    assert report["projected_motion_capability_passed"] is False
+    assert report["capability_gate_passed"] is False
+    assert report["blockers"] == ["manipulation_controller_fk_no_visible_projected_effector_motion"]
 
 
 def test_provider_command_backend_writes_step_input_and_extracts_next_frame(tmp_path: Path) -> None:
@@ -3091,6 +3131,87 @@ def test_local_oscar_gpu_residency_proves_simultaneous_four_role_ancestry(
     ]
 
 
+def test_linux_nvidia_host_to_local_pid_map_parses_nspid_namespace_chain(
+    tmp_path: Path,
+) -> None:
+    for local_pid, status in (
+        (101, "Name:\tgroot\nNSpid:\t1904046\t101\n"),
+        (201, "Name:\tgear\nNSpid:\t1904061\t201\n"),
+        (301, "Name:\tisaac\nNSpid:\t301\n"),
+    ):
+        process_dir = tmp_path / str(local_pid)
+        process_dir.mkdir()
+        (process_dir / "status").write_text(status, encoding="utf-8")
+    non_process = tmp_path / "self"
+    non_process.mkdir()
+    (non_process / "status").write_text("Name:\tignored\nNSpid:\t999\t1\n", encoding="utf-8")
+
+    assert L._linux_nvidia_host_to_local_pid_map(tmp_path) == {
+        1904046: 101,
+        1904061: 201,
+        301: 301,
+    }
+
+
+def test_gpu_residency_maps_nvidia_host_namespace_pids_before_ancestry() -> None:
+    roots = {"groot": 100, "gear_sonic": 200, "isaac_task": 300, "oscar": 400}
+    parent_by_local_pid = {101: 100, 201: 200, 301: 300, 401: 400}
+    host_to_local = {
+        1904046: 101,
+        1904061: 201,
+        1904125: 301,
+        1908921: 401,
+    }
+
+    class Done:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    def fake_nvidia_smi(argv, **_kwargs):
+        if any(str(arg).startswith("--query-gpu=") for arg in argv):
+            return Done("0, GPU-a, 46068, 43797, 1661\n")
+        return Done(
+            "\n".join(
+                (
+                    "GPU-a, 1904046, [Not Found], 6678",
+                    "GPU-a, 1904061, [Not Found], 6085",
+                    "GPU-a, 1904125, [Not Found], 1238",
+                    "GPU-a, 1908921, [Not Found], 29736",
+                )
+            )
+            + "\n"
+        )
+
+    sample = L.collect_oscar_gpu_residency_sample(
+        query_run=fake_nvidia_smi,
+        role_root_pids=roots,
+        parent_pid=lambda pid: parent_by_local_pid.get(pid),
+        host_to_local_pid_map=lambda: host_to_local,
+    )
+    report = L.summarize_oscar_gpu_residency_samples([sample], role_root_pids=roots)
+
+    assert sample["roles_by_gpu_uuid"]["GPU-a"] == [
+        "gear_sonic",
+        "groot",
+        "isaac_task",
+        "oscar",
+    ]
+    assert all(
+        app["pid_namespace_translation"] == "nspid_host_to_local" for app in sample["compute_apps"]
+    )
+    assert [app["local_pid"] for app in sample["compute_apps"]] == [
+        101,
+        201,
+        301,
+        401,
+    ]
+    assert report["proof_passed"] is True
+    assert report["same_gpu_uuids"] == ["GPU-a"]
+
+
 def test_local_oscar_subprocess_communicate_uses_provider_timeout_and_completes(
     tmp_path: Path,
 ) -> None:
@@ -3128,9 +3249,7 @@ def test_local_oscar_subprocess_communicate_uses_provider_timeout_and_completes(
         run=lambda *_args, **_kwargs: pytest.fail("blocking run path must not be used"),
         popen=FakePopen,
         gpu_query_run=lambda *_args, **_kwargs: Done(),
-        extract_next_frame=lambda _video, out_dir: _write_frame(
-            out_dir / "next.png", seed=31
-        ),
+        extract_next_frame=lambda _video, out_dir: _write_frame(out_dir / "next.png", seed=31),
     )
 
     result = generate(
@@ -4772,9 +4891,7 @@ def _write_clip(path, frames):
     import numpy as np
 
     height, width = frames[0].shape[:2]
-    writer = cv2.VideoWriter(
-        str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (width, height)
-    )
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (width, height))
     for frame in frames:
         writer.write(np.ascontiguousarray(frame))
     writer.release()
@@ -4843,8 +4960,7 @@ def test_generated_clip_coherence_rejects_correlated_artifact_soup(tmp_path):
     assert result["coherent_horizon_frames"] == 1
     assert result["early_frame_artifact_detected"] is True
     assert (
-        result["first_frame_patch_correlation_median"]
-        < result["patch_correlation_floor"]
+        result["first_frame_patch_correlation_median"] < result["patch_correlation_floor"]
         or result["first_frame_laplacian_variance_ratio"]
         > result["maximum_laplacian_variance_ratio"]
     )
@@ -5141,9 +5257,7 @@ def test_manipulation_terminates_only_on_registered_observable_transition(tmp_pa
     assert trace[1]["terminal_observation_policy_action_execution_status"] == (
         "not_executed_semantic_terminal"
     )
-    assert trace[1]["source_observation_frame"] == str(
-        tmp_path / "live-post-action-1.png"
-    )
+    assert trace[1]["source_observation_frame"] == str(tmp_path / "live-post-action-1.png")
     assert manifest["proof"]["feed_forward_verified"] is True
 
 
@@ -5807,13 +5921,16 @@ def test_action_conditioning_rejects_proxy_and_binds_fresh_action_identity():
             ],
         }
     )
-    assert L._action_conditioning_blockers(
-        action=action,
-        wam_output={
-            "skeleton_conditioning": offscreen_projection,
-            "generated_robot_state": offscreen_projection["generated_robot_state"],
-        },
-    ) == []
+    assert (
+        L._action_conditioning_blockers(
+            action=action,
+            wam_output={
+                "skeleton_conditioning": offscreen_projection,
+                "generated_robot_state": offscreen_projection["generated_robot_state"],
+            },
+        )
+        == []
+    )
 
 
 def test_policy_endpoint_action_record_preserves_selected_sonic_control_metadata():
@@ -6222,9 +6339,7 @@ def test_generated_episode_completion_cannot_override_blocked_authoritative_mani
     assert results["media_assembly_status"] == "completed"
     assert results["authoritative_closed_loop_manifest_status"] == "blocked"
     assert (
-        results["claim_boundary"][
-            "generated_episode_status_cannot_override_authoritative_manifest"
-        ]
+        results["claim_boundary"]["generated_episode_status_cannot_override_authoritative_manifest"]
         is True
     )
 

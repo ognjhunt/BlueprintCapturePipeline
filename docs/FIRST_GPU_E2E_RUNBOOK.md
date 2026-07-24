@@ -554,12 +554,30 @@ to process a new command. Continue to require the exact token and hand-action
 echo, drain queued states before each send, and require a unique action within
 the streamed horizon.
 
+Inside a container, `nvidia-smi` can report compute-application PIDs from the
+host PID namespace while the launch supervisor exports container-local root
+PIDs. GPU residency proof must translate the first and last values of Linux
+`/proc/<pid>/status` `NSpid` chains before applying process ancestry. Four
+unattributed CUDA allocations on one GPU are not a residency failure, but they
+also are not acceptable proof until this namespace translation binds each
+allocation to GR00T, GEAR-SONIC, Isaac, or OSCAR.
+
 WAM and policy requery inputs must be exclusively the rigid robot-head
 `robot_pov` view with
 `viewpoint_mode=robot_head_mounted_egocentric`. The task-framed third-person
 camera is review-only and must never be relabeled or supplied to the policy.
 The WAM adapter and GR00T endpoint fail closed when this metadata is absent or
 when an overview is included.
+
+OSCAR manipulation conditioning must render the complete signed
+`controller_fk_sequence`, resampled across the generated-video horizon. Never
+repeat only the final FK landmarks for every conditioning frame. Before
+generation, require meaningful world-space effector motion, at least two
+in-frame effector projections, and at least eight pixels of visible projected
+hand/wrist displacement. The conditioning renderer must reject a static trace,
+an empty or clipped tail, or a horizon with no in-frame effector. Prompt-driven
+object motion without corresponding embodied arm motion is not an acceptable
+learned transition.
 
 Review capture must use `RayTracedLighting`, DLSS Quality
 (`/rtx/post/dlss/execMode=2`), and eight zero-delta RT subframes after a camera

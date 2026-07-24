@@ -124,6 +124,7 @@ UNITREE_G1_SONIC_STATE_DIMS = {
 }
 POST_ACTION_POLICY_STATE_SOURCE = "post_action_live_isaac_articulation"
 MANIPULATION_EFFECTOR_PROGRESS_MINIMUM_M = 0.015
+MANIPULATION_EFFECTOR_PROJECTED_MOTION_MINIMUM_PX = 8.0
 UNSAFE_STANCE_MAX_HORIZONTAL_PROJECTED_GRAVITY = 0.5
 UNSAFE_STANCE_MIN_UPRIGHT_PROJECTED_GRAVITY_Z = -0.7
 # A SONIC action chunk is 40 frames (about 0.8 seconds at 50 Hz). Three stale
@@ -304,8 +305,7 @@ def _load_live_controller_fk_camera_projection_context(path: str | Path) -> dict
         or list(camera.get("resolution") or []) != [640, 480]
         or camera.get("viewpoint_mode") != "robot_head_mounted_egocentric"
         or camera.get("mount_motion_model") != "rigid_head_local_transform"
-        or camera.get("gaze_motion_model")
-        != "inherits_head_orientation_no_task_reaim"
+        or camera.get("gaze_motion_model") != "inherits_head_orientation_no_task_reaim"
         or intrinsics.get("available") is not True
         or int(intrinsics.get("image_width") or 0) != 640
         or int(intrinsics.get("image_height") or 0) != 480
@@ -318,9 +318,7 @@ def _load_live_controller_fk_camera_projection_context(path: str | Path) -> dict
         or not all(math.isfinite(value) for value in (near_m, far_m))
         or not 0.0 < near_m < far_m
     ):
-        raise ValueError(
-            "controller_fk_camera_projection_context_camera_clipping_range_invalid"
-        )
+        raise ValueError("controller_fk_camera_projection_context_camera_clipping_range_invalid")
     registration = _mapping(context.get("standing_cross_simulator_registration"))
     if (
         registration.get("status") != "pending_official_mujoco_named_link_residual_verification"
@@ -541,6 +539,7 @@ def _manipulation_effector_progress_report(
     projection: Mapping[str, Any],
     *,
     minimum_progress_m: float = MANIPULATION_EFFECTOR_PROGRESS_MINIMUM_M,
+    minimum_projected_motion_px: float = (MANIPULATION_EFFECTOR_PROJECTED_MOTION_MINIMUM_PX),
 ) -> dict[str, Any]:
     """Measure whether a controller FK horizon moves a hand/wrist toward the task.
 
@@ -560,19 +559,17 @@ def _manipulation_effector_progress_report(
     target_xyz = tuple(float(value) for value in target)
     sequence = projection.get("controller_fk_sequence")
     if not isinstance(sequence, Sequence) or isinstance(sequence, (str, bytes, bytearray)):
-        sequence = _mapping(projection.get("generated_robot_state")).get(
-            "controller_fk_sequence"
-        )
+        sequence = _mapping(projection.get("generated_robot_state")).get("controller_fk_sequence")
     if not isinstance(sequence, Sequence) or isinstance(sequence, (str, bytes, bytearray)):
         sequence = []
 
     distance_by_effector: dict[str, list[float]] = {}
     position_by_effector: dict[str, list[tuple[float, float, float]]] = {}
+    projected_position_by_effector: dict[str, list[tuple[float, float]]] = {}
+    in_frame_count_by_effector: dict[str, int] = {}
     for frame in sequence:
         landmarks = _mapping(frame).get("landmarks")
-        if not isinstance(landmarks, Sequence) or isinstance(
-            landmarks, (str, bytes, bytearray)
-        ):
+        if not isinstance(landmarks, Sequence) or isinstance(landmarks, (str, bytes, bytearray)):
             continue
         observed_this_frame: set[str] = set()
         for landmark in landmarks:
@@ -590,6 +587,13 @@ def _manipulation_effector_progress_report(
             distance = math.sqrt(sum((a - b) ** 2 for a, b in zip(xyz, target_xyz, strict=True)))
             distance_by_effector.setdefault(name, []).append(distance)
             position_by_effector.setdefault(name, []).append(xyz)
+            image_projection = _mapping(row.get("image_projection"))
+            u_px = _finite_float(image_projection.get("u_px"))
+            v_px = _finite_float(image_projection.get("v_px"))
+            if u_px is not None and v_px is not None:
+                projected_position_by_effector.setdefault(name, []).append((u_px, v_px))
+                if image_projection.get("available") is True:
+                    in_frame_count_by_effector[name] = in_frame_count_by_effector.get(name, 0) + 1
 
     effector_rows: list[dict[str, Any]] = []
     for name, distances in sorted(distance_by_effector.items()):
@@ -599,8 +603,12 @@ def _manipulation_effector_progress_report(
         minimum_distance = min(distances)
         positions = position_by_effector[name]
         first_position = positions[0]
-        maximum_displacement = max(
-            math.dist(first_position, position) for position in positions
+        maximum_displacement = max(math.dist(first_position, position) for position in positions)
+        projected_positions = projected_position_by_effector.get(name, [])
+        maximum_projected_displacement = (
+            max(math.dist(projected_positions[0], position) for position in projected_positions)
+            if len(projected_positions) >= 2
+            else 0.0
         )
         effector_rows.append(
             {
@@ -612,8 +620,11 @@ def _manipulation_effector_progress_report(
                 "maximum_progress_toward_target_m": round(
                     max(0.0, first_distance - minimum_distance), 9
                 ),
-                "maximum_displacement_from_first_frame_m": round(
-                    maximum_displacement, 9
+                "maximum_displacement_from_first_frame_m": round(maximum_displacement, 9),
+                "projected_frame_count": len(projected_positions),
+                "in_frame_projection_count": in_frame_count_by_effector.get(name, 0),
+                "maximum_projected_displacement_from_first_frame_px": round(
+                    maximum_projected_displacement, 6
                 ),
             }
         )
@@ -622,27 +633,35 @@ def _manipulation_effector_progress_report(
         default=0.0,
     )
     best_displacement = max(
+        (float(row["maximum_displacement_from_first_frame_m"]) for row in effector_rows),
+        default=0.0,
+    )
+    directional_progress_passed = bool(effector_rows and best_progress >= float(minimum_progress_m))
+    motion_capability_passed = bool(
+        effector_rows and best_displacement >= float(minimum_progress_m)
+    )
+    best_projected_displacement = max(
         (
-            float(row["maximum_displacement_from_first_frame_m"])
+            float(row["maximum_projected_displacement_from_first_frame_px"])
             for row in effector_rows
+            if int(row["in_frame_projection_count"]) >= 2
         ),
         default=0.0,
     )
-    directional_progress_passed = bool(
-        effector_rows and best_progress >= float(minimum_progress_m)
-    )
-    motion_capability_passed = bool(
-        effector_rows and best_displacement >= float(minimum_progress_m)
+    projected_motion_capability_passed = bool(
+        effector_rows and best_projected_displacement >= float(minimum_projected_motion_px)
     )
     # This is a WAM action-conditioning capability gate. A controller horizon
     # that moves substantially still provides a real differentiated action for
     # OSCAR even when its first maneuver is not target-directed. Directional
     # task progress remains recorded here and is judged after live Isaac
     # apply/readback by the separate semantic and no-progress gates.
-    passed = motion_capability_passed
-    blockers = [] if passed else [
-        "manipulation_controller_fk_no_meaningful_effector_motion"
-    ]
+    passed = motion_capability_passed and projected_motion_capability_passed
+    blockers: list[str] = []
+    if not motion_capability_passed:
+        blockers.append("manipulation_controller_fk_no_meaningful_effector_motion")
+    if not projected_motion_capability_passed:
+        blockers.append("manipulation_controller_fk_no_visible_projected_effector_motion")
     warnings = (
         []
         if directional_progress_passed
@@ -654,10 +673,13 @@ def _manipulation_effector_progress_report(
         "capability_gate_passed": passed,
         "task_target_world_xyz_m": list(target_xyz),
         "minimum_required_progress_m": float(minimum_progress_m),
+        "minimum_required_projected_motion_px": float(minimum_projected_motion_px),
         "best_progress_toward_target_m": round(best_progress, 9),
         "best_effector_displacement_m": round(best_displacement, 9),
+        "best_visible_projected_effector_displacement_px": round(best_projected_displacement, 6),
         "directional_progress_passed": directional_progress_passed,
         "motion_capability_passed": motion_capability_passed,
+        "projected_motion_capability_passed": (projected_motion_capability_passed),
         "effectors": effector_rows,
         "blockers": blockers,
         "warnings": warnings,
@@ -680,9 +702,9 @@ def _validated_post_action_egocentric_frame(
     candidates: list[dict[str, Any]] = []
     for value in raw_rows:
         row = _mapping(value)
-        if row.get("camera_role") != "robot_pov" or row.get(
-            "outer_source_step_index"
-        ) != int(source_step_index):
+        if row.get("camera_role") != "robot_pov" or row.get("outer_source_step_index") != int(
+            source_step_index
+        ):
             continue
         camera = _mapping(row.get("camera_contract"))
         if (
@@ -690,8 +712,7 @@ def _validated_post_action_egocentric_frame(
             or camera.get("robot_mounted") is not True
             or camera.get("policy_observation_eligible") is not True
             or camera.get("mount_motion_model") != "rigid_head_local_transform"
-            or camera.get("gaze_motion_model")
-            != "inherits_head_orientation_no_task_reaim"
+            or camera.get("gaze_motion_model") != "inherits_head_orientation_no_task_reaim"
         ):
             raise RuntimeError("post_action_robot_pov_not_egocentric")
         path = Path(_string(row.get("path"))).expanduser().resolve()
@@ -1111,9 +1132,7 @@ def _task_completion_attested_payload(
         if key != "evaluator_attestation" and key not in validator_derived_fields
     }
     ambiguous_fields = tuple(
-        field
-        for field in ("comparison", "articulation_prim_path")
-        if field in payload
+        field for field in ("comparison", "articulation_prim_path") if field in payload
     )
     committed_sha256 = _string(
         _mapping(result.get("evaluator_attestation")).get("signed_payload_sha256")
@@ -1701,6 +1720,7 @@ def build_oscar_per_step_request(
     num_frames: int,
     output_dir: str | Path,
     skeleton_landmarks: Sequence[Mapping[str, Any]] | None = None,
+    skeleton_trace_rows: Sequence[Mapping[str, Any]] | None = None,
     seed: int = 42,
 ) -> dict[str, Any]:
     """Shape one per-step OSCAR-2B next-observation generation request.
@@ -1724,6 +1744,8 @@ def build_oscar_per_step_request(
         "root_yaw_radians": action.get("root_yaw_radians"),
         "projected_landmark_count": len(skeleton_landmarks or []),
         "skeleton_landmarks": [dict(landmark) for landmark in (skeleton_landmarks or [])],
+        "skeleton_trace_row_count": len(skeleton_trace_rows or []),
+        "skeleton_trace_rows": [dict(row) for row in (skeleton_trace_rows or [])],
     }
 
 
@@ -2782,9 +2804,7 @@ def make_oscar_per_step_wam_backend(
     skeleton_for_action: Callable[[Mapping[str, Any], int], Any] | None = None,
     seed: int = 42,
     require_manipulation_effector_progress: bool = False,
-    minimum_manipulation_effector_progress_m: float = (
-        MANIPULATION_EFFECTOR_PROGRESS_MINIMUM_M
-    ),
+    minimum_manipulation_effector_progress_m: float = (MANIPULATION_EFFECTOR_PROGRESS_MINIMUM_M),
 ) -> WamGenerateNext:
     """A ``wam_generate_next`` backend that drives real per-step OSCAR-2B generation.
 
@@ -2809,11 +2829,32 @@ def make_oscar_per_step_wam_backend(
                 for row in projection.get("landmarks", []) or []
                 if isinstance(row, Mapping)
             ]
+            skeleton_trace_rows = []
+            for frame_index, raw_frame in enumerate(
+                projection.get("controller_fk_sequence", []) or []
+            ):
+                frame = _mapping(raw_frame)
+                frame_landmarks = [
+                    dict(row)
+                    for row in frame.get("landmarks", []) or []
+                    if isinstance(row, Mapping)
+                ]
+                if frame_landmarks:
+                    skeleton_trace_rows.append(
+                        {
+                            "frame_index": frame_index,
+                            "source_controller_horizon_frame_index": (
+                                frame.get("horizon_frame_index", frame_index)
+                            ),
+                            "projected_landmarks": frame_landmarks,
+                        }
+                    )
             projection_metadata = _with_action_conditioning_digests(
                 {**dict(projection), "landmarks": skeleton}
             )
         else:
             skeleton = list(projection or [])
+            skeleton_trace_rows = []
             projection_metadata = {}
         projection_blockers = (
             _action_conditioning_blockers(
@@ -2855,24 +2896,20 @@ def make_oscar_per_step_wam_backend(
             report_path = report_dir / "manipulation_effector_progress_report.json"
             write_json(report_path, manipulation_progress_report)
             if manipulation_progress_report.get("capability_gate_passed") is not True:
-                progress_blockers = _string_list(
-                    manipulation_progress_report.get("blockers")
-                ) or ["manipulation_controller_fk_effector_progress_not_proven"]
+                progress_blockers = _string_list(manipulation_progress_report.get("blockers")) or [
+                    "manipulation_controller_fk_effector_progress_not_proven"
+                ]
                 return {
                     "status": "blocked",
                     "blockers": progress_blockers,
                     "generated_frame_path": "",
                     "generated_video_path": None,
                     "skeleton_conditioning": projection_metadata or None,
-                    "generated_robot_state": projection_metadata.get(
-                        "generated_robot_state"
-                    ),
+                    "generated_robot_state": projection_metadata.get("generated_robot_state"),
                     "wam_backend": "oscar_2b_per_step",
                     "wam_generation_status": "blocked",
                     "wam_generation_blockers": progress_blockers,
-                    "manipulation_effector_progress_report": (
-                        manipulation_progress_report
-                    ),
+                    "manipulation_effector_progress_report": (manipulation_progress_report),
                     "manipulation_effector_progress_report_path": str(report_path),
                 }
         request = build_oscar_per_step_request(
@@ -2883,6 +2920,7 @@ def make_oscar_per_step_wam_backend(
             num_frames=num_frames,
             output_dir=resolved_work,
             skeleton_landmarks=skeleton,
+            skeleton_trace_rows=skeleton_trace_rows,
             seed=seed,
         )
         result = dict(oscar_generate(request) or {})
@@ -3272,13 +3310,9 @@ def make_controller_fk_skeleton_projector(
                     )
                 ).get("required_world_points")
             )
-            task_target = _mapping(required_points.get("task_target")).get(
-                "world_xyz_m"
-            )
+            task_target = _mapping(required_points.get("task_target")).get("world_xyz_m")
             if _finite_numeric_sequence(task_target, minimum_length=3) and len(task_target) == 3:
-                projection["task_target_world_xyz_m"] = [
-                    float(value) for value in task_target
-                ]
+                projection["task_target_world_xyz_m"] = [float(value) for value in task_target]
                 projection["task_target_binding"] = {
                     "source": "live_isaac_robot_pov_camera_framing_validation",
                     "camera_projection_context_sha256": projection_context_sha256,
@@ -3850,6 +3884,47 @@ def _linux_process_parent_pid(pid: int) -> int | None:
         return None
 
 
+def _linux_nvidia_host_to_local_pid_map(
+    proc_root: Path = Path("/proc"),
+) -> dict[int, int]:
+    """Map root-namespace NVIDIA PIDs to PIDs visible in this container.
+
+    NVIDIA's driver reports compute-application PIDs from the host PID
+    namespace even when ``nvidia-smi`` runs inside a container. Linux exposes
+    the namespace chain in ``/proc/<local-pid>/status`` as ``NSpid``. The
+    first value is the root-namespace PID and the last is the PID visible in
+    the current namespace.
+    """
+
+    mapped: dict[int, int] = {}
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return mapped
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        local_pid = _positive_pid(entry.name)
+        if local_pid is None:
+            continue
+        try:
+            status = (entry / "status").read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        for line in status.splitlines():
+            if not line.startswith("NSpid:"):
+                continue
+            namespace_pids = [
+                pid
+                for value in line.split(":", 1)[1].split()
+                if (pid := _positive_pid(value)) is not None
+            ]
+            if namespace_pids and namespace_pids[-1] == local_pid:
+                mapped[namespace_pids[0]] = local_pid
+            break
+    return mapped
+
+
 def _pid_ancestor_chain(
     pid: int,
     *,
@@ -3930,6 +4005,7 @@ def collect_oscar_gpu_residency_sample(
     query_run: Callable[..., Any],
     role_root_pids: Mapping[str, int | None],
     parent_pid: Callable[[int], int | None] = _linux_process_parent_pid,
+    host_to_local_pid_map: Callable[[], Mapping[int, int]] = _linux_nvidia_host_to_local_pid_map,
     sample_index: int = 0,
     elapsed_seconds: float = 0.0,
 ) -> dict[str, Any]:
@@ -3993,6 +4069,16 @@ def collect_oscar_gpu_residency_sample(
         if root_pid is None:
             blockers.append(f"gpu_residency_{role}_root_pid_missing")
 
+    try:
+        namespace_pid_map = {
+            host_pid: local_pid
+            for raw_host_pid, raw_local_pid in host_to_local_pid_map().items()
+            if (host_pid := _positive_pid(raw_host_pid)) is not None
+            and (local_pid := _positive_pid(raw_local_pid)) is not None
+        }
+    except Exception:
+        namespace_pid_map = {}
+
     compute_apps: list[dict[str, Any]] = []
     if compute_query["status"] == "completed":
         for row in _csv_rows(_string(compute_query.get("stdout"))):
@@ -4008,8 +4094,10 @@ def collect_oscar_gpu_residency_sample(
             if pid is None:
                 blockers.append("nvidia_smi_compute_app_pid_invalid")
                 ancestor_chain: list[int] = []
+                local_pid = None
             else:
-                ancestor_chain = _pid_ancestor_chain(pid, parent_pid=parent_pid)
+                local_pid = namespace_pid_map.get(pid, pid)
+                ancestor_chain = _pid_ancestor_chain(local_pid, parent_pid=parent_pid)
             roles = [
                 role
                 for role, root_pid in normalized_roots.items()
@@ -4019,6 +4107,12 @@ def collect_oscar_gpu_residency_sample(
                 {
                     "gpu_uuid": uuid,
                     "pid": pid,
+                    "local_pid": local_pid,
+                    "pid_namespace_translation": (
+                        "nspid_host_to_local"
+                        if pid is not None and local_pid != pid
+                        else "identity"
+                    ),
                     "process_name": row[2],
                     "used_gpu_memory_mib": _nvidia_memory_mib(row[3]),
                     "ancestor_chain": ancestor_chain,
@@ -4184,6 +4278,9 @@ class _OscarGpuResidencySampler:
         oscar_pid: int | None,
         query_run: Callable[..., Any],
         parent_pid: Callable[[int], int | None] = _linux_process_parent_pid,
+        host_to_local_pid_map: Callable[
+            [], Mapping[int, int]
+        ] = _linux_nvidia_host_to_local_pid_map,
         interval_seconds: float = OSCAR_GPU_RESIDENCY_SAMPLE_INTERVAL_SECONDS,
         max_samples: int = OSCAR_GPU_RESIDENCY_MAX_SAMPLES,
     ) -> None:
@@ -4191,6 +4288,7 @@ class _OscarGpuResidencySampler:
         self.report_path = output_dir / "oscar_gpu_residency_report.json"
         self.query_run = query_run
         self.parent_pid = parent_pid
+        self.host_to_local_pid_map = host_to_local_pid_map
         self.interval_seconds = min(1.0, max(0.5, float(interval_seconds)))
         self.max_samples = max(1, int(max_samples))
         self.role_root_pids = {
@@ -4219,6 +4317,7 @@ class _OscarGpuResidencySampler:
                 query_run=self.query_run,
                 role_root_pids=self.role_root_pids,
                 parent_pid=self.parent_pid,
+                host_to_local_pid_map=self.host_to_local_pid_map,
                 sample_index=len(self._samples),
                 elapsed_seconds=time.monotonic() - self._started_monotonic,
             )
@@ -4331,6 +4430,9 @@ def make_local_oscar_subprocess_generate(
     termination_grace_seconds: float = OSCAR_SUBPROCESS_TERMINATION_GRACE_SECONDS,
     gpu_query_run: Callable[..., Any] | None = None,
     gpu_parent_pid: Callable[[int], int | None] = _linux_process_parent_pid,
+    gpu_host_to_local_pid_map: Callable[
+        [], Mapping[int, int]
+    ] = _linux_nvidia_host_to_local_pid_map,
     build_skeleton_video: Callable[[Sequence[Mapping[str, Any]], Path], Path | None] | None = None,
     extract_next_frame: Callable[[Path, Path], Path | None],
 ) -> Callable[[Mapping[str, Any]], dict[str, Any]]:
@@ -4353,7 +4455,11 @@ def make_local_oscar_subprocess_generate(
         out_dir.mkdir(parents=True, exist_ok=True)
         output_video = out_dir / "oscar_next_observation.mp4"
         landmarks = request.get("skeleton_landmarks") or []
-        skeleton_video = build_skeleton_video(landmarks, out_dir) if build_skeleton_video else None
+        skeleton_trace_rows = request.get("skeleton_trace_rows") or []
+        skeleton_input = skeleton_trace_rows or landmarks
+        skeleton_video = (
+            build_skeleton_video(skeleton_input, out_dir) if build_skeleton_video else None
+        )
         stdout_log = out_dir / "oscar_subprocess_stdout.log"
         stderr_log = out_dir / "oscar_subprocess_stderr.log"
         if build_skeleton_video is not None and skeleton_video is None:
@@ -4375,9 +4481,7 @@ def make_local_oscar_subprocess_generate(
             oscar_repo=repo,
             checkpoint=checkpoint,
             first_frame_path=_string(request.get("reference_frame_path")),
-            prompt=_normalize_oscar_robot_action_prompt(
-                _string(request.get("task_prompt"))
-            )[0],
+            prompt=_normalize_oscar_robot_action_prompt(_string(request.get("task_prompt")))[0],
             num_frames=int(request.get("num_frames") or 8),
             num_steps=num_steps,
             guidance=guidance,
@@ -4451,6 +4555,7 @@ def make_local_oscar_subprocess_generate(
                 oscar_pid=process_group_id,
                 query_run=gpu_query_run or subprocess.run,
                 parent_pid=gpu_parent_pid,
+                host_to_local_pid_map=gpu_host_to_local_pid_map,
             )
             sampler.start()
             stdout = ""
@@ -4501,9 +4606,8 @@ def make_local_oscar_subprocess_generate(
                     except Exception:
                         timeout_cleanup_failed = True
 
-                process_group_needs_kill = (
-                    process_group_id is not None
-                    and (terminate_communicate_timed_out or not process_group_absent_verified)
+                process_group_needs_kill = process_group_id is not None and (
+                    terminate_communicate_timed_out or not process_group_absent_verified
                 )
                 if process_group_needs_kill:
                     try:
@@ -4534,11 +4638,12 @@ def make_local_oscar_subprocess_generate(
                 if process_group_id is not None and not process_group_absent_verified:
                     timeout_cleanup_failed = True
                 timeout_diagnostic = (
-                    "OSCAR inference timed out after "
-                    f"{subprocess_timeout_seconds:.3f} seconds."
+                    f"OSCAR inference timed out after {subprocess_timeout_seconds:.3f} seconds."
                 )
-                stderr = f"{stderr.rstrip()}\n{timeout_diagnostic}\n" if stderr else (
-                    f"{timeout_diagnostic}\n"
+                stderr = (
+                    f"{stderr.rstrip()}\n{timeout_diagnostic}\n"
+                    if stderr
+                    else (f"{timeout_diagnostic}\n")
                 )
             finally:
                 stdout = str(stdout or "")
@@ -4587,9 +4692,7 @@ def make_local_oscar_subprocess_generate(
                 "oscar_subprocess_process_group_id": process_group_id,
                 "oscar_subprocess_process_group_term_sent": process_group_term_sent,
                 "oscar_subprocess_process_group_kill_sent": process_group_kill_sent,
-                "oscar_subprocess_process_group_absent_verified": (
-                    process_group_absent_verified
-                ),
+                "oscar_subprocess_process_group_absent_verified": (process_group_absent_verified),
                 **residency_fields,
             }
         if returncode != 0 or not output_video.is_file():
@@ -5157,9 +5260,7 @@ def generated_clip_coherence(
                     )
                 )
                 if denominator > 1e-6:
-                    values.append(
-                        float((left_centered * right_centered).sum() / denominator)
-                    )
+                    values.append(float((left_centered * right_centered).sum() / denominator))
         return float(np.median(values)) if values else 0.0
 
     try:
@@ -5172,9 +5273,7 @@ def generated_clip_coherence(
             if seed is None:
                 seed = gray - gray.mean()
                 seed_full = gray_full
-                seed_laplacian_variance = float(
-                    cv2.Laplacian(gray_full, cv2.CV_32F).var()
-                )
+                seed_laplacian_variance = float(cv2.Laplacian(gray_full, cv2.CV_32F).var())
                 continue
             centered = gray - gray.mean()
             denominator = float(np.sqrt((centered * centered).sum() * (seed * seed).sum()))
@@ -5182,16 +5281,11 @@ def generated_clip_coherence(
                 float((centered * seed).sum() / denominator) if denominator else 0.0
             )
             patch_correlation_medians.append(
-                _patch_correlation_median(seed_full, gray_full)
-                if seed_full is not None
-                else 0.0
+                _patch_correlation_median(seed_full, gray_full) if seed_full is not None else 0.0
             )
-            current_laplacian_variance = float(
-                cv2.Laplacian(gray_full, cv2.CV_32F).var()
-            )
+            current_laplacian_variance = float(cv2.Laplacian(gray_full, cv2.CV_32F).var())
             laplacian_variance_ratios.append(
-                current_laplacian_variance
-                / max(float(seed_laplacian_variance or 0.0), 1e-6)
+                current_laplacian_variance / max(float(seed_laplacian_variance or 0.0), 1e-6)
             )
     finally:
         capture.release()
@@ -5219,25 +5313,15 @@ def generated_clip_coherence(
         "frame_count": len(correlations) + 1,
         "seed_correlation_floor": float(correlation_floor),
         "patch_correlation_floor": GENERATED_CLIP_PATCH_CORRELATION_FLOOR,
-        "maximum_laplacian_variance_ratio": (
-            GENERATED_CLIP_MAX_LAPLACIAN_VARIANCE_RATIO
-        ),
+        "maximum_laplacian_variance_ratio": (GENERATED_CLIP_MAX_LAPLACIAN_VARIANCE_RATIO),
         "coherent_horizon_frames": horizon,
         "first_frame_correlation": round(correlations[0], 6),
-        "first_frame_patch_correlation_median": round(
-            patch_correlation_medians[0], 6
-        ),
-        "first_frame_laplacian_variance_ratio": round(
-            laplacian_variance_ratios[0], 6
-        ),
+        "first_frame_patch_correlation_median": round(patch_correlation_medians[0], 6),
+        "first_frame_laplacian_variance_ratio": round(laplacian_variance_ratios[0], 6),
         "final_frame_correlation": round(correlations[-1], 6),
         "min_correlation": round(min(correlations), 6),
-        "min_patch_correlation_median": round(
-            min(patch_correlation_medians), 6
-        ),
-        "max_laplacian_variance_ratio": round(
-            max(laplacian_variance_ratios), 6
-        ),
+        "min_patch_correlation_median": round(min(patch_correlation_medians), 6),
+        "max_laplacian_variance_ratio": round(max(laplacian_variance_ratios), 6),
         "early_frame_artifact_detected": horizon == 1,
         "blockers": [],
         "claim_boundary": (
@@ -5737,41 +5821,29 @@ def run_oscar_isaac_closed_loop(
         unsafe_stance_detected = bool(
             post_action_stance_report.get("unsafe_stance_detected") is True
         )
-        unsafe_stance_terminal_now = bool(
-            stop_on_unsafe_stance and unsafe_stance_detected
-        )
+        unsafe_stance_terminal_now = bool(stop_on_unsafe_stance and unsafe_stance_detected)
 
         if clean_frame_reanchor_applied:
             post_action_egocentric_frame = _mapping(
                 raw_completion_result.get("post_action_egocentric_frame")
             )
-            post_action_frame_path = _string(
-                post_action_egocentric_frame.get("path")
-            ).strip()
+            post_action_frame_path = _string(post_action_egocentric_frame.get("path")).strip()
             if post_action_frame_path:
                 next_policy_frame = post_action_frame_path
                 clean_frame_reanchor_source_kind = (
                     "post_action_live_isaac_robot_head_mounted_egocentric"
                 )
-            elif task_completion_evaluator is not None and not (
-                task_completion_evaluation_failed
-            ):
-                blockers.append(
-                    f"post_action_egocentric_reanchor_missing_at_step_{step_index}"
-                )
+            elif task_completion_evaluator is not None and not (task_completion_evaluation_failed):
+                blockers.append(f"post_action_egocentric_reanchor_missing_at_step_{step_index}")
                 task_completion_evaluation_failed = True
-                task_completion_evaluation_status = (
-                    "failed_missing_post_action_egocentric_reanchor"
-                )
+                task_completion_evaluation_status = "failed_missing_post_action_egocentric_reanchor"
                 next_policy_frame = initial_clean_frame
                 clean_frame_reanchor_source_kind = (
                     "initial_policy_observation_clean_frame_fail_closed_fallback"
                 )
             else:
                 next_policy_frame = initial_clean_frame
-                clean_frame_reanchor_source_kind = (
-                    "initial_policy_observation_clean_frame"
-                )
+                clean_frame_reanchor_source_kind = "initial_policy_observation_clean_frame"
             clean_frame_reanchor_events.append(
                 {
                     "step_index": step_index,
@@ -5779,9 +5851,7 @@ def run_oscar_isaac_closed_loop(
                     "next_policy_observation_frame_path": next_policy_frame,
                     "source_frame_kind": clean_frame_reanchor_source_kind,
                     "post_action_egocentric_frame": (
-                        dict(post_action_egocentric_frame)
-                        if post_action_egocentric_frame
-                        else None
+                        dict(post_action_egocentric_frame) if post_action_egocentric_frame else None
                     ),
                     "interval_steps": effective_reanchor_interval,
                 }
@@ -5807,9 +5877,7 @@ def run_oscar_isaac_closed_loop(
             completion_result,
             minimum_progress_fraction=minimum_task_progress_fraction,
         )
-        task_progress_value = _finite_float(
-            task_progress_report.get("progress_toward_criterion")
-        )
+        task_progress_value = _finite_float(task_progress_report.get("progress_toward_criterion"))
         minimum_progress_delta = _finite_float(
             task_progress_report.get("minimum_meaningful_progress_delta")
         )
@@ -7084,9 +7152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "manipulation_completion_requested": manipulation_completion_requested,
                 "online_no_progress_termination_enabled": manipulation_completion_requested,
                 "no_progress_patience_steps": int(args.no_progress_patience_steps),
-                "minimum_task_progress_fraction": float(
-                    args.minimum_task_progress_fraction
-                ),
+                "minimum_task_progress_fraction": float(args.minimum_task_progress_fraction),
                 "clean_frame_reanchor_interval": int(args.clean_frame_reanchor_interval),
                 "wam_episode_consistency_scoring_configured": bool(
                     args.allow_wam_consistency_scoring or args.wam_consistency_command
@@ -7156,7 +7222,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         import subprocess
 
         def _step_skeleton_video_builder(
-            landmarks: Sequence[Mapping[str, Any]], step_out_dir: Path
+            trace_or_landmarks: Sequence[Mapping[str, Any]],
+            step_out_dir: Path,
         ) -> Path | None:
             """Render this step's projected-skeleton conditioning clip.
 
@@ -7168,7 +7235,55 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _render_projected_skeleton_conditioning_video,
             )
 
-            if landmarks:
+            trace_rows = [
+                dict(row)
+                for row in trace_or_landmarks
+                if isinstance(row, Mapping)
+                and (
+                    isinstance(row.get("projected_landmarks"), Sequence)
+                    or isinstance(row.get("landmarks"), Sequence)
+                )
+            ]
+            if trace_rows:
+                trace_path = Path(step_out_dir) / "step_skeleton_trace.jsonl"
+                output_frame_count = max(1, int(args.num_frames))
+                with trace_path.open("w", encoding="utf-8") as handle:
+                    for frame_index in range(output_frame_count):
+                        source_index = (
+                            0
+                            if output_frame_count == 1
+                            else round(
+                                frame_index * (len(trace_rows) - 1) / (output_frame_count - 1)
+                            )
+                        )
+                        source_row = trace_rows[source_index]
+                        handle.write(
+                            json.dumps(
+                                {
+                                    "frame_index": frame_index,
+                                    "source_controller_horizon_frame_index": (
+                                        source_row.get(
+                                            "source_controller_horizon_frame_index",
+                                            source_index,
+                                        )
+                                    ),
+                                    "projected_landmarks": [
+                                        dict(landmark)
+                                        for landmark in (
+                                            source_row.get("projected_landmarks")
+                                            or source_row.get("landmarks")
+                                            or []
+                                        )
+                                        if isinstance(landmark, Mapping)
+                                    ],
+                                }
+                            )
+                            + "\n"
+                        )
+            elif trace_or_landmarks:
+                # Compatibility path for non-horizon fixtures. The live
+                # manipulation lane supplies the full controller FK sequence
+                # above and cannot take this branch.
                 trace_path = Path(step_out_dir) / "step_skeleton_trace.jsonl"
                 with trace_path.open("w", encoding="utf-8") as handle:
                     for frame_index in range(max(1, int(args.num_frames))):
@@ -7177,7 +7292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 {
                                     "frame_index": frame_index,
                                     "projected_landmarks": [
-                                        dict(landmark) for landmark in landmarks
+                                        dict(landmark) for landmark in trace_or_landmarks
                                     ],
                                 }
                             )
@@ -7199,6 +7314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     height=int(args.oscar_height),
                     fps=float(args.oscar_fps),
                     num_frames=max(1, int(args.num_frames)),
+                    conditioning_mode="controller_fk_action_horizon",
                 )
             except Exception:
                 return None

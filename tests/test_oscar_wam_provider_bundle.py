@@ -68,9 +68,7 @@ def test_transformer_engine_shim_rope_matches_te_split_half_semantics(
         from transformer_engine.pytorch.attention import apply_rotary_pos_emb
 
         tensor = torch.arange(36, dtype=torch.float32).reshape(1, 3, 2, 6) / 10.0
-        freqs = torch.linspace(0.01, 0.24, steps=12, dtype=torch.float32).reshape(
-            3, 1, 1, 4
-        )
+        freqs = torch.linspace(0.01, 0.24, steps=12, dtype=torch.float32).reshape(3, 1, 1, 4)
 
         assert torch.allclose(
             apply_rotary_pos_emb(tensor, freqs, tensor_format="bshd", fused=True),
@@ -396,15 +394,8 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
     assert runtime_manifest["official_case_smoke"] == ""
     assert runtime_manifest["oscar_source_ref"] == OFFICIAL_OSCAR_SOURCE_COMMIT
     assert runtime_manifest["oscar_hf_revision"] == OFFICIAL_OSCAR_HF_REVISION
-    assert (
-        runtime_manifest["official_oscar_release"]["official_release_match"] is True
-    )
-    assert (
-        runtime_manifest["truth_boundary"][
-            "official_oscar_source_and_checkpoint_pinned"
-        ]
-        is True
-    )
+    assert runtime_manifest["official_oscar_release"]["official_release_match"] is True
+    assert runtime_manifest["truth_boundary"]["official_oscar_source_and_checkpoint_pinned"] is True
     assert runtime_input_package["first_frame"]["path"] == (
         "provider_runtime/oscar_input/first_frame.png"
     )
@@ -443,18 +434,22 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
         ]
         is True
     )
-    assert runtime_input_package["oscar_dual_stream_input_contract"][
-        "first_rgb_frame_path"
-    ] == "provider_runtime/oscar_input/first_frame.png"
-    assert runtime_input_package["oscar_dual_stream_input_contract"][
-        "skeleton_video_path"
-    ] == "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4"
-    assert runtime_input_package["oscar_dual_stream_input_contract"][
-        "separate_2d_skeleton_stream"
-    ] is True
-    assert runtime_input_package["oscar_dual_stream_input_contract"][
-        "skeleton_stream_texture_free"
-    ] is True
+    assert (
+        runtime_input_package["oscar_dual_stream_input_contract"]["first_rgb_frame_path"]
+        == "provider_runtime/oscar_input/first_frame.png"
+    )
+    assert (
+        runtime_input_package["oscar_dual_stream_input_contract"]["skeleton_video_path"]
+        == "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4"
+    )
+    assert (
+        runtime_input_package["oscar_dual_stream_input_contract"]["separate_2d_skeleton_stream"]
+        is True
+    )
+    assert (
+        runtime_input_package["oscar_dual_stream_input_contract"]["skeleton_stream_texture_free"]
+        is True
+    )
     assert (
         runtime_manifest["oscar_runtime_argv_contract"]["projected_skeleton_trace_packaged"] is True
     )
@@ -539,9 +534,7 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
         is True
     )
     assert (
-        runtime_input_package["claim_boundary"][
-            "separate_2d_skeleton_stream_aligned_to_rgb"
-        ]
+        runtime_input_package["claim_boundary"]["separate_2d_skeleton_stream_aligned_to_rgb"]
         is True
     )
     assert runtime_input_package["claim_boundary"]["skeleton_stream_is_texture_free"] is True
@@ -688,16 +681,11 @@ def test_build_oscar_wam_provider_bundle_blocks_unpinned_official_source(
     assert manifest["status"] == "blocked"
     assert "official_oscar_source_commit_not_pinned" in manifest["blockers"]
     assert manifest["official_oscar_release"]["source_ref"] == "main"
-    assert (
-        manifest["truth_boundary"]["official_oscar_source_and_checkpoint_pinned"]
-        is False
-    )
+    assert manifest["truth_boundary"]["official_oscar_source_and_checkpoint_pinned"] is False
 
 
 def test_official_oscar_release_contract_accepts_github_ssh_origin() -> None:
-    contract = official_release_contract(
-        source_url="git@github.com:wuzy2115/oscar-public.git"
-    )
+    contract = official_release_contract(source_url="git@github.com:wuzy2115/oscar-public.git")
 
     assert contract["source_url_official"] is True
     assert contract["official_release_match"] is True
@@ -1168,6 +1156,8 @@ def test_projected_skeleton_renderer_accepts_official_g1_link_ids_without_segmen
         "projectable_row_count": 2,
         "max_interframe_landmark_motion_px": 1.0,
         "max_visible_landmark_draw_count": 18,
+        "minimum_true_in_frame_landmark_count": 18,
+        "minimum_true_in_frame_effector_count": 10,
         "max_visible_segment_count": 16,
         "max_clipped_landmark_count": 0,
         "max_offscreen_edge_indicator_count": 0,
@@ -1177,6 +1167,77 @@ def test_projected_skeleton_renderer_accepts_official_g1_link_ids_without_segmen
     ok, frame = capture.read()
     capture.release()
     assert ok and frame is not None
+
+
+@pytest.mark.parametrize(
+    ("motion_px", "expected_status"),
+    ((0, "warning_low_signal_projected_skeleton"), (12, "completed")),
+)
+def test_controller_fk_action_horizon_requires_visible_effector_motion(
+    tmp_path: Path,
+    motion_px: int,
+    expected_status: str,
+) -> None:
+    pytest.importorskip("cv2")
+    trace = tmp_path / f"controller_fk_trace_{motion_px}.jsonl"
+    rows = []
+    for frame_index in range(2):
+        offset = frame_index * motion_px
+        landmarks = []
+        for side, x in (("left", 220), ("right", 420)):
+            landmarks.extend(
+                [
+                    {
+                        "landmark_id": f"{side}_wrist",
+                        "image_projection": {
+                            "available": True,
+                            "u_px": x + offset,
+                            "v_px": 300,
+                            "image_width_px": 640,
+                            "image_height_px": 480,
+                        },
+                    },
+                    {
+                        "landmark_id": f"{side}_hand",
+                        "image_projection": {
+                            "available": True,
+                            "u_px": x + offset,
+                            "v_px": 250,
+                            "image_width_px": 640,
+                            "image_height_px": 480,
+                        },
+                    },
+                ]
+            )
+        rows.append(
+            {
+                "frame_index": frame_index,
+                "projected_landmarks": landmarks,
+                "segments": [
+                    {"from": "left_wrist", "to": "left_hand"},
+                    {"from": "right_wrist", "to": "right_hand"},
+                ],
+            }
+        )
+    trace.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    report, _ = bundle_module._render_projected_skeleton_conditioning_video(
+        trace_path=trace,
+        output_path=tmp_path / f"controller_fk_{motion_px}.mp4",
+        width=640,
+        height=480,
+        fps=5.0,
+        num_frames=2,
+        conditioning_mode="controller_fk_action_horizon",
+    )
+
+    assert report["visual_signal"]["status"] == expected_status
+    if motion_px == 0:
+        assert (
+            "controller_fk_skeleton_trace_motion_too_low" in (report["visual_signal"]["blockers"])
+        )
+    else:
+        assert report["visual_signal"]["blockers"] == []
 
 
 def test_projected_skeleton_renderer_encodes_finite_offscreen_fk_at_image_edge(
@@ -1267,9 +1328,7 @@ def test_short_conditioning_video_can_stage_when_signal_is_useful_for_model_inpu
 
     assert manifest["status"] == "completed"
     assert manifest["local_bundle_ready_for_remote_staging"] is True
-    assert "oscar_input_skeleton_conditioning_video_not_visually_useful" not in manifest[
-        "blockers"
-    ]
+    assert "oscar_input_skeleton_conditioning_video_not_visually_useful" not in manifest["blockers"]
 
 
 def test_oscar_wam_provider_bundle_blocks_missing_projected_skeleton_trace_when_claimed(
@@ -1511,10 +1570,7 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
     assert input_package["rgb_video"]["path"] == "provider_runtime/oscar_input/rgb_context.mp4"
     assert input_package["rgb_video"]["used_for_oscar_rgb_latent_context"] is True
     assert input_package["rgb_video"]["rgb_context_mode"] == "single_frame_repeat"
-    assert (
-        input_package["oscar_rgb_context_runtime_contract"]["rgb_context_packaged"]
-        is True
-    )
+    assert input_package["oscar_rgb_context_runtime_contract"]["rgb_context_packaged"] is True
     contract = runtime_manifest["oscar_input_contract_diagnostic"]
     assert contract["status"] == "warning_high_risk"
     assert contract["rgb_context"]["rgb_context_mode"] == "single_frame_repeat"
@@ -1525,28 +1581,22 @@ def test_oscar_wam_provider_bundle_materializes_wam_generation_step_input(
         "oscar_contract_policy_action_proxy_conditioning_without_projected_skeleton"
         in contract["warnings"]
     )
-    assert "oscar_contract_policy_action_to_skeleton_not_ranking_safe" in contract[
-        "warnings"
-    ]
-    assert "oscar_contract_single_frame_repeat_without_projected_skeleton" in contract[
-        "warnings"
-    ]
-    assert "rgb_context_single_frame_repeat_autoregressive_risk" in contract[
-        "autoregressive_risk_flags"
-    ]
+    assert "oscar_contract_policy_action_to_skeleton_not_ranking_safe" in contract["warnings"]
+    assert "oscar_contract_single_frame_repeat_without_projected_skeleton" in contract["warnings"]
+    assert (
+        "rgb_context_single_frame_repeat_autoregressive_risk"
+        in contract["autoregressive_risk_flags"]
+    )
     assert (
         "policy_action_proxy_without_projected_skeleton_autoregressive_risk"
         in contract["autoregressive_risk_flags"]
     )
-    assert "single_frame_repeat_without_projected_skeleton_high_risk" in contract[
-        "high_risk_flags"
-    ]
-    assert "policy_action_proxy_without_decoded_skeleton_ranking_risk" in contract[
-        "ranking_risk_flags"
-    ]
-    assert "policy_action_to_skeleton_contract_not_ranking_safe" in contract[
-        "ranking_risk_flags"
-    ]
+    assert "single_frame_repeat_without_projected_skeleton_high_risk" in contract["high_risk_flags"]
+    assert (
+        "policy_action_proxy_without_decoded_skeleton_ranking_risk"
+        in contract["ranking_risk_flags"]
+    )
+    assert "policy_action_to_skeleton_contract_not_ranking_safe" in contract["ranking_risk_flags"]
     assert contract["policy_ranking_claim_safe"] is False
     assert contract["policy_action_to_skeleton_contract"]["status"] == (
         "no_policy_derived_projected_skeleton_trace_available"
@@ -1638,19 +1688,17 @@ def test_wam_generation_step_input_prefers_projected_skeleton_trace(
         contract["rgb_context"]["rgb_context_mode"]
         == "omitted_first_frame_plus_skeleton_public_contract"
     )
-    assert "oscar_contract_rgb_context_omitted_with_projected_skeleton" in contract[
-        "warnings"
-    ]
-    assert "oscar_contract_projected_skeleton_not_scene_faithful_policy_action_bridge" in contract[
-        "warnings"
-    ]
+    assert "oscar_contract_rgb_context_omitted_with_projected_skeleton" in contract["warnings"]
+    assert (
+        "oscar_contract_projected_skeleton_not_scene_faithful_policy_action_bridge"
+        in contract["warnings"]
+    )
     assert "oscar_contract_guidance_high_for_contract_debug" not in contract["warnings"]
-    assert "guidance_high_autoregressive_debug_risk" not in contract[
-        "autoregressive_risk_flags"
-    ]
-    assert "projected_skeleton_missing_scene_faithful_policy_action_bridge" in contract[
-        "ranking_risk_flags"
-    ]
+    assert "guidance_high_autoregressive_debug_risk" not in contract["autoregressive_risk_flags"]
+    assert (
+        "projected_skeleton_missing_scene_faithful_policy_action_bridge"
+        in contract["ranking_risk_flags"]
+    )
     assert contract["autoregressive_risk_level"] == "high"
     assert (
         input_package["oscar_rgb_context_runtime_contract"]["projected_g1_rgb_context_enabled"]
@@ -1806,9 +1854,7 @@ def test_wam_generation_step_input_can_render_oscar_projected_gripper_axes(
     assert input_package["projected_skeleton_trace"]["used_for_conditioning"] is True
     assert input_package["rgb_video"]["used_for_oscar_rgb_latent_context"] is False
     assert (
-        skeleton_video["claim_boundary"][
-            "oscar_style_gripper_axes_proxy_from_projected_g1_trace"
-        ]
+        skeleton_video["claim_boundary"]["oscar_style_gripper_axes_proxy_from_projected_g1_trace"]
         is True
     )
     video_path = (
@@ -1987,12 +2033,8 @@ def test_wam_generation_step_blocks_sparse_projected_skeleton_conditioning(
     assert "oscar_input_projected_skeleton_end_effector_axes_missing" in blockers
     contract = manifest["input_package_contract_diagnostic"]
     assert contract["status"] == "blocked"
-    assert "oscar_contract_projected_skeleton_visible_landmarks_too_sparse" in contract[
-        "blockers"
-    ]
-    assert "oscar_contract_projected_skeleton_missing_end_effector_axes" in contract[
-        "blockers"
-    ]
+    assert "oscar_contract_projected_skeleton_visible_landmarks_too_sparse" in contract["blockers"]
+    assert "oscar_contract_projected_skeleton_missing_end_effector_axes" in contract["blockers"]
 
 
 def test_wam_generation_step_input_packages_real_temporal_rgb_context(
@@ -2064,9 +2106,10 @@ def test_wam_generation_step_input_packages_real_temporal_rgb_context(
     assert input_package["rgb_video"]["used_for_oscar_rgb_latent_context"] is True
     assert input_package["rgb_video"]["rgb_context_mode"] == "temporal_frame_sequence"
     assert input_package["rgb_video"]["source_frame_count"] == 2
-    assert input_package["rgb_video"][
-        "single_frame_policy_observation_repeated_for_oscar_rgb_context"
-    ] is False
+    assert (
+        input_package["rgb_video"]["single_frame_policy_observation_repeated_for_oscar_rgb_context"]
+        is False
+    )
     assert runtime_manifest["oscar_runtime_argv_contract"]["rgb_context_packaged"] is True
 
 
@@ -2181,12 +2224,8 @@ def test_wam_generation_step_input_flags_nominal_policy_action_projection_risk(
     diagnostic = runtime_manifest["oscar_input_contract_diagnostic"]
     assert manifest["status"] == "completed"
     assert diagnostic["status"] == "warning_high_risk"
-    assert "oscar_contract_projected_skeleton_nominal_action_projection" in diagnostic[
-        "warnings"
-    ]
-    assert "projected_skeleton_nominal_action_projection_high_risk" in diagnostic[
-        "high_risk_flags"
-    ]
+    assert "oscar_contract_projected_skeleton_nominal_action_projection" in diagnostic["warnings"]
+    assert "projected_skeleton_nominal_action_projection_high_risk" in diagnostic["high_risk_flags"]
     assert (
         "projected_skeleton_nominal_action_projection_without_scene_or_wbc_bridge"
         in diagnostic["ranking_risk_flags"]
@@ -2319,16 +2358,16 @@ def test_seed_derived_projected_skeleton_trace_is_ranking_risk_not_policy_action
     )
     contract = runtime_manifest["oscar_input_contract_diagnostic"]
     assert contract["status"] == "warning_high_risk"
-    assert "oscar_contract_projected_skeleton_not_policy_derived_action" in contract[
-        "warnings"
-    ]
+    assert "oscar_contract_projected_skeleton_not_policy_derived_action" in contract["warnings"]
     assert "oscar_contract_projected_skeleton_target_conditioned" in contract["warnings"]
-    assert "projected_skeleton_not_policy_derived_action_ranking_risk" in contract[
-        "ranking_risk_flags"
-    ]
-    assert "projected_skeleton_missing_scene_faithful_policy_action_bridge" in contract[
-        "ranking_risk_flags"
-    ]
+    assert (
+        "projected_skeleton_not_policy_derived_action_ranking_risk"
+        in contract["ranking_risk_flags"]
+    )
+    assert (
+        "projected_skeleton_missing_scene_faithful_policy_action_bridge"
+        in contract["ranking_risk_flags"]
+    )
     assert contract["policy_ranking_risk_level"] == "high"
     assert contract["policy_ranking_claim_safe"] is False
 
