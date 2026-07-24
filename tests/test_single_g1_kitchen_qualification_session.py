@@ -96,6 +96,7 @@ def _minimal_inputs() -> dict:
             "task_id": "microwave_door",
             "registered_criteria": [],
         },
+        "task_prompt": "Open the microwave door using the right hand.",
         "source_task_contract_sha256": "6" * 64,
         "start_frame": b"exact-frame",
         "bootstrap_script": (
@@ -536,6 +537,8 @@ def test_trained_checkpoint_override_is_exact_and_does_not_claim_qualification()
         "/opt/gr00t-venv/bin/python "
         "/opt/gr00t/gr00t/eval/run_gr00t_server.py "
         "--model-path /opt/blueprint/ckpts/sonic --port 5550\n"
+        "python -m blueprint_pipeline.oscar_isaac_closed_loop_eval "
+        "--task-prompt 'Open the microwave door using the right hand.'\n"
     )
 
     updated = qualification._apply_trained_checkpoint_override(
@@ -549,6 +552,10 @@ def test_trained_checkpoint_override_is_exact_and_does_not_claim_qualification()
     )
     binding = updated["plan"]["qualification_checkpoint_override"]
     assert binding["episode_bootstrap_checkpoint_bindings_rebound"] == 2
+    assert binding["runtime_task_prompt_matches_live_aligned_finetune"] is True
+    assert binding["runtime_task_prompt"] == (
+        qualification.LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION
+    )
     assert binding["same_session_training_required"] is True
     assert binding["open_loop_qualification_required"] is True
     assert binding["isaac_registered_transition_required"] is True
@@ -557,6 +564,21 @@ def test_trained_checkpoint_override_is_exact_and_does_not_claim_qualification()
     assert (
         updated["bootstrap_script"].count(qualification.REMOTE_FINAL_CHECKPOINT)
         == 2
+    )
+    assert updated["task_prompt"] == (
+        qualification.LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION
+    )
+    assert (
+        "export BLUEPRINT_TASK_PROMPT="
+        "'Stand at the microwave and open the microwave door.'"
+        in updated["bootstrap_script"]
+    )
+    assert (
+        "--task-prompt 'Stand at the microwave and open the microwave door.'"
+        in updated["bootstrap_script"]
+    )
+    assert "Open the microwave door using the right hand." not in (
+        updated["bootstrap_script"]
     )
 
     with pytest.raises(ValueError, match="checkpoint_path_not_fixed"):

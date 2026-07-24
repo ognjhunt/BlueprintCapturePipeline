@@ -55,6 +55,9 @@ from .g1_microwave_groot_finetune_component import (
     REMOTE_FINAL_CHECKPOINT,
     build_finetune_component,
 )
+from .g1_microwave_live_aligned_finetune import (
+    TASK_DESCRIPTION as LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION,
+)
 from .g1_kitchen_leaf_evidence import load_attempt_identity
 from .g1_kitchen_proof_row_validation import (
     WORKER_PROOF_ROW_SPECS,
@@ -414,12 +417,35 @@ def _apply_trained_checkpoint_override(
         or rebound_bootstrap_script.count(trained_checkpoint_token) != 2
     ):
         raise ValueError("qualification_episode_bootstrap_checkpoint_rebind_failed")
+    source_task_prompt = str(inputs.get("task_prompt") or "").strip()
+    if not source_task_prompt:
+        raise ValueError("qualification_source_task_prompt_missing")
+    source_task_argument = f"--task-prompt {shlex.quote(source_task_prompt)}"
+    trained_task_argument = (
+        f"--task-prompt {shlex.quote(LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION)}"
+    )
+    if rebound_bootstrap_script.count(source_task_argument) != 1:
+        raise ValueError("qualification_episode_bootstrap_task_prompt_binding_invalid")
+    rebound_bootstrap_script = rebound_bootstrap_script.replace(
+        source_task_argument,
+        trained_task_argument,
+        1,
+    )
+    # The bootstrap also writes task_prompt.txt from this inherited variable.
+    # Override it locally so evidence and the actual policy query remain exact.
+    rebound_bootstrap_script = (
+        "export BLUEPRINT_TASK_PROMPT="
+        f"{shlex.quote(LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION)}\n"
+        + rebound_bootstrap_script
+    )
     command[positions[0] + 1] = resolved
     plan["groot_server_command"] = command
     plan["qualification_checkpoint_override"] = {
         "schema_version": "single_g1_kitchen_qualification_checkpoint_override.v1",
         "checkpoint_path": resolved,
         "episode_bootstrap_checkpoint_bindings_rebound": 2,
+        "runtime_task_prompt": LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION,
+        "runtime_task_prompt_matches_live_aligned_finetune": True,
         "same_session_training_required": True,
         "open_loop_qualification_required": True,
         "isaac_registered_transition_required": True,
@@ -427,6 +453,7 @@ def _apply_trained_checkpoint_override(
     }
     updated = dict(inputs)
     updated["plan"] = plan
+    updated["task_prompt"] = LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION
     updated["bootstrap_script"] = rebound_bootstrap_script
     return updated
 
