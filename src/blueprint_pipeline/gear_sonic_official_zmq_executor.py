@@ -20,6 +20,7 @@ import os
 import subprocess
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -569,23 +570,65 @@ def _controller_frame_matches(value: Any, expected: int) -> bool:
     return numeric.is_finite() and numeric == expected
 
 
+def _controller_frame_match_mode(
+    state: Mapping[str, Any],
+    *,
+    expected_frame_index: int,
+    current_timestamp: Decimal | None,
+    last_controller_timestamp: Decimal | None,
+    allow_local_frame_fallback: bool = True,
+) -> str | None:
+    """Return the proven frame-freshness mode for one controller reply.
+
+    The pinned controller treats each streamed protocol-v4 pose as a new
+    one-frame temporary motion and therefore reports controller-local
+    ``frame_index == 0`` even when the pose carries a monotonic Blueprint
+    sequence number.  Exact token and hand echoes bind the reply to the sent
+    pose. A requested sequence-frame echo is sufficient with a strictly newer
+    controller timestamp. A controller-local-zero or absent-frame reply is
+    accepted only when the caller has separately proven the exact token/hand
+    action is unique in the horizon and drained pre-send controller states.
+    """
+
+    if (
+        current_timestamp is None
+        or last_controller_timestamp is None
+        or current_timestamp <= last_controller_timestamp
+    ):
+        return None
+    if "frame_index" not in state:
+        return (
+            "strict_timestamp_unique_action_without_reported_frame"
+            if allow_local_frame_fallback
+            else None
+        )
+    value = state.get("frame_index")
+    if _controller_frame_matches(value, expected_frame_index):
+        return "strict_timestamp_and_requested_sequence_frame"
+    if allow_local_frame_fallback and _controller_frame_matches(value, 0):
+        return "strict_timestamp_unique_action_and_controller_local_frame_zero"
+    return None
+
+
 def _controller_state_matches_expected_frame(
     state: Mapping[str, Any],
     *,
     expected_frame_index: int,
     current_timestamp: Decimal | None,
     last_controller_timestamp: Decimal | None,
+    allow_local_frame_fallback: bool = True,
 ) -> bool:
-    """Match an explicit frame exactly, falling back to freshness only if absent."""
+    """Require a fresh reply with a supported controller frame convention."""
 
-    if "frame_index" in state:
-        return _controller_frame_matches(
-            state.get("frame_index"), expected_frame_index
-        )
     return (
-        current_timestamp is not None
-        and last_controller_timestamp is not None
-        and current_timestamp > last_controller_timestamp
+        _controller_frame_match_mode(
+            state,
+            expected_frame_index=expected_frame_index,
+            current_timestamp=current_timestamp,
+            last_controller_timestamp=last_controller_timestamp,
+            allow_local_frame_fallback=allow_local_frame_fallback,
+        )
+        is not None
     )
 
 
@@ -773,6 +816,17 @@ def _zmq_pubsub_horizon_roundtrip(
         raise ValueError("official_gear_sonic_horizon_transport_shape_invalid")
     if not math.isfinite(control_hz) or control_hz <= 0.0:
         raise ValueError("official_gear_sonic_horizon_transport_control_hz_invalid")
+    action_echo_sha256s = [
+        _canonical(
+            {
+                "motion_token": motion_tokens[index],
+                "left_hand": left_hands[index],
+                "right_hand": right_hands[index],
+            }
+        )
+        for index in range(frame_count)
+    ]
+    action_echo_counts = Counter(action_echo_sha256s)
     action = action_endpoint or (
         f"tcp://{os.getenv(ACTION_HOST_ENV, '127.0.0.1')}:"
         f"{int(os.getenv(ACTION_PORT_ENV, '5556'))}"
@@ -829,6 +883,33 @@ def _zmq_pubsub_horizon_roundtrip(
             remaining_until_slot = target_send_time - time.monotonic()
             if remaining_until_slot > 0.0:
                 time.sleep(remaining_until_slot)
+            drained_controller_state_count = 0
+            # The controller can publish more than one g1_debug row for a
+            # streamed pose. Clear every row already available immediately
+            # before this send so a queued response from the prior frame cannot
+            # satisfy the current frame. Advance the timestamp watermark while
+            # draining to retain the fail-closed freshness boundary.
+            while True:
+                try:
+                    raw = subscriber.recv(zmq.NOBLOCK)
+                except zmq.Again:
+                    break
+                drained_controller_state_count += 1
+                if not raw.startswith(state_topic):
+                    continue
+                drained_state = msgpack.unpackb(
+                    raw[len(state_topic) :], raw=False
+                )
+                if not isinstance(drained_state, Mapping):
+                    continue
+                drained_timestamp = _controller_timestamp(
+                    drained_state.get("ros_timestamp")
+                )
+                if drained_timestamp is not None and (
+                    last_controller_timestamp is None
+                    or drained_timestamp > last_controller_timestamp
+                ):
+                    last_controller_timestamp = drained_timestamp
             send_time = time.monotonic()
             previous_send_time = send_time
             publisher.send(pose_message)
@@ -844,12 +925,16 @@ def _zmq_pubsub_horizon_roundtrip(
                 if not isinstance(state, Mapping):
                     continue
                 current_timestamp = _controller_timestamp(state.get("ros_timestamp"))
-                if not _controller_state_matches_expected_frame(
+                frame_match_mode = _controller_frame_match_mode(
                     state,
                     expected_frame_index=frame_indices[index],
                     current_timestamp=current_timestamp,
                     last_controller_timestamp=last_controller_timestamp,
-                ):
+                    allow_local_frame_fallback=(
+                        action_echo_counts[action_echo_sha256s[index]] == 1
+                    ),
+                )
+                if frame_match_mode is None:
                     continue
                 if not _token_matches(state.get("token_state"), motion_tokens[index]):
                     continue
@@ -862,6 +947,10 @@ def _zmq_pubsub_horizon_roundtrip(
                 row = dict(state)
                 row["_blueprint_command_send_offset_seconds"] = (
                     send_time - sequence_start
+                )
+                row["_blueprint_controller_frame_match_mode"] = frame_match_mode
+                row["_blueprint_controller_state_queue_drain_count"] = (
+                    drained_controller_state_count
                 )
                 results.append(row)
                 if current_timestamp is not None and (
@@ -1214,12 +1303,25 @@ def execute(
             "right_hand_action": controller_right,
             "base_quat_measured": proprioceptive_state["base_quat_measured"],
             "state_timestamp": state_timestamp,
+            "controller_frame_match_mode": state.get(
+                "_blueprint_controller_frame_match_mode"
+            ),
+            "controller_state_queue_drain_count": state.get(
+                "_blueprint_controller_state_queue_drain_count"
+            ),
         }
         send_offset = state.get("_blueprint_command_send_offset_seconds")
         controller_fk_sequence.append(
             {
                 "horizon_frame_index": horizon_index,
                 "controller_frame_index": controller_frame_start + horizon_index,
+                "controller_reported_frame_index": state.get("frame_index"),
+                "controller_frame_match_mode": state.get(
+                    "_blueprint_controller_frame_match_mode"
+                ),
+                "controller_state_queue_drain_count": state.get(
+                    "_blueprint_controller_state_queue_drain_count"
+                ),
                 "source_action_frame_sha256": _canonical(frame),
                 "controller_state_sha256": _canonical(controller_state_evidence),
                 "command_send_offset_seconds": (

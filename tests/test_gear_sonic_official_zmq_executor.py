@@ -708,8 +708,72 @@ def test_horizon_rejects_mismatched_explicit_frame_despite_fresh_timestamp() -> 
     assert executor._controller_state_matches_expected_frame(
         {"frame_index": [82]},
         expected_frame_index=82,
+        current_timestamp=current,
+        last_controller_timestamp=prior,
+    )
+    assert not executor._controller_state_matches_expected_frame(
+        {"frame_index": [82]},
+        expected_frame_index=82,
         current_timestamp=prior,
         last_controller_timestamp=prior,
+    )
+
+
+def test_horizon_accepts_fresh_controller_local_one_frame_motion_index() -> None:
+    prior = executor._controller_timestamp(123)
+    current = executor._controller_timestamp(124)
+
+    assert prior is not None
+    assert current is not None
+    assert (
+        executor._controller_frame_match_mode(
+            {"frame_index": [0]},
+            expected_frame_index=82,
+            current_timestamp=current,
+            last_controller_timestamp=prior,
+        )
+        == "strict_timestamp_unique_action_and_controller_local_frame_zero"
+    )
+    assert not executor._controller_state_matches_expected_frame(
+        {"frame_index": [0]},
+        expected_frame_index=82,
+        current_timestamp=prior,
+        last_controller_timestamp=prior,
+    )
+
+
+def test_horizon_rejects_local_frame_fallback_for_duplicate_action() -> None:
+    prior = executor._controller_timestamp(123)
+    current = executor._controller_timestamp(124)
+
+    assert prior is not None
+    assert current is not None
+    assert (
+        executor._controller_frame_match_mode(
+            {"frame_index": [0]},
+            expected_frame_index=82,
+            current_timestamp=current,
+            last_controller_timestamp=prior,
+            allow_local_frame_fallback=False,
+        )
+        is None
+    )
+    assert (
+        executor._controller_frame_match_mode(
+            {"frame_index": [82]},
+            expected_frame_index=82,
+            current_timestamp=current,
+            last_controller_timestamp=prior,
+            allow_local_frame_fallback=False,
+        )
+        == "strict_timestamp_and_requested_sequence_frame"
+    )
+    assert not executor._controller_state_matches_expected_frame(
+        {},
+        expected_frame_index=82,
+        current_timestamp=current,
+        last_controller_timestamp=prior,
+        allow_local_frame_fallback=False,
     )
 
 
