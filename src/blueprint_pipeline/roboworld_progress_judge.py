@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from .common import read_json_any, utc_now_iso, write_json
+from .judge_spend_governor import governor_from_env
 from .roboworld_evaluator import (
     PROGRESS_SCORE_SCHEMA_VERSION,
     PROGRESS_STAGES,
@@ -451,14 +452,20 @@ def run_progress_judge_command(
     request: Mapping[str, Any],
     *,
     output_dir: str | Path,
+    governor: Any = None,
 ) -> dict[str, Any]:
     """Invoke the configured external judge command for a prepared request.
 
     The provider call is delegated to an operator-configured command rather than
     embedded here, matching how the other judge lanes reach a model.  The
     command is only run when the gate env is set, the request is marked ready by
-    its sampling contract, and a command is configured; otherwise this returns a
-    blocked result without spending anything.
+    its sampling contract, a command is configured, and a spend governor
+    authorises it; otherwise this returns a blocked result without spending
+    anything.
+
+    Graded progress scoring reads an order of magnitude more frames per rollout
+    than a binary success label, so this lane refuses to run ungoverned: an
+    absent spend policy is a refusal, not a default-allow.
     """
 
     blockers: list[str] = []
@@ -469,11 +476,28 @@ def run_progress_judge_command(
     command = _string(os.getenv(JUDGE_COMMAND_ENV))
     if not command:
         blockers.append("progress_judge_command_not_configured")
+
+    frame_count = len(request.get("frame_uris", []) or [])
+    if governor is None:
+        governor = governor_from_env(
+            campaign_id=_string(request.get("rollout_id")) or "progress-judge"
+        )
+    if governor is None:
+        blockers.append("progress_judge_spend_policy_not_configured")
+        decision: dict[str, Any] = {}
+    else:
+        decision = dict(governor.authorize(frame_count=frame_count))
+        if not decision.get("authorized"):
+            blockers.extend(
+                _string(item) for item in decision.get("blockers", []) or [] if _string(item)
+            )
+
     if blockers:
         return {
             "schema_version": JUDGE_RESULT_SCHEMA_VERSION,
             "status": "blocked",
             "blockers": sorted(set(blockers)),
+            "spend_decision": decision or None,
         }
 
     root = Path(output_dir).expanduser().resolve()
@@ -492,6 +516,13 @@ def run_progress_judge_command(
         text=True,
         check=False,
     )
+    # Settled whether or not the command succeeded: a failed provider call is
+    # still a billable one, and a governor that only counts successes
+    # systematically under-reports spend.
+    governor.settle(
+        frame_count=frame_count,
+        estimated_cost_usd=decision.get("estimated_cost_usd"),
+    )
     if completed.returncode != 0 or not output_path.is_file():
         return {
             "schema_version": JUDGE_RESULT_SCHEMA_VERSION,
@@ -499,8 +530,10 @@ def run_progress_judge_command(
             "blockers": ["progress_judge_command_failed"],
             "returncode": completed.returncode,
             "stderr_tail": completed.stderr[-2000:] if completed.stderr else "",
+            "spend_ledger": governor.ledger(),
         }
     result = _mapping(read_json_any(output_path))
+    result.setdefault("spend_ledger", governor.ledger())
     result.setdefault("schema_version", JUDGE_RESULT_SCHEMA_VERSION)
     result.setdefault("frame_sampling_contract", request.get("frame_sampling_contract"))
     result.setdefault("rollout_id", request.get("rollout_id"))

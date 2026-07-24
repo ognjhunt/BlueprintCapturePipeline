@@ -241,7 +241,116 @@ UNITREE_G1_PROFILE = RobotProfile(
     },
 )
 
-_REGISTRY: Dict[str, RobotProfile] = {UNITREE_G1_PROFILE.robot_id: UNITREE_G1_PROFILE}
+# A second registered embodiment that differs from the G1 on the axes that
+# actually matter for evaluation -- action interface (7-D delta end-effector,
+# not 78-D whole-body), observation interface (fixed external + wrist, no head
+# camera), and kinematics (fixed base, no pelvis or legs). It deliberately
+# matches the DROID single-arm family that public real-world leaderboards
+# evaluate, so the harness can be exercised end to end against an embodiment
+# whose reference outcomes already exist.
+#
+# Registering it is a conformance fixture, not a product claim: it proves the
+# registry, export and placement paths are not silently hardcoded to one robot.
+FIXED_BASE_SINGLE_ARM_PROFILE = RobotProfile(
+    robot_id="fixed_base_single_arm_reference",
+    embodiment_type="fixed_base_single_arm_manipulator",
+    # A table-mounted arm has no pelvis; the root sits at the mount plate.
+    pelvis_height_m=0.0,
+    footprint_half_extent_xyz=(0.18, 0.18, 0.36),
+    standing_distance_m=0.0,
+    probe_step_m=0.05,
+    probe_max_out_m=0.9,
+    probe_clearance_m=0.05,
+    openable_standoff_extra_m=0.10,
+    max_facing_error_deg=45.0,
+    standoff_range_m=(0.15, 0.85),
+    floor_tol_m=0.02,
+    foot_clearance_m=0.0,
+    min_obstacle_clearance_m=0.05,
+    arm_span_m=0.855,
+    shoulder_forward_offset_m=0.0,
+    shoulder_lateral_offset_m=0.0,
+    shoulder_above_root_m=0.333,
+    max_effector_to_affordance_m=0.30,
+    usd_prim_path="/World/SingleArm",
+    articulation_name="single_arm",
+    head_link_candidates=("camera_link",),
+    kinematics={
+        "base": "fixed",
+        "arm_count": 1,
+        "degrees_of_freedom": 7,
+        "gripper": "parallel_jaw",
+        "has_legs": False,
+        "has_torso": False,
+        "claim_boundary": (
+            "Kinematics describe a reference fixed-base arm; they do not "
+            "identify a specific vendor unit or prove calibration."
+        ),
+    },
+    action_interface={
+        "action_schema_id": "sc3_7d_delta_end_effector.v1",
+        "dim": 7,
+        "representation": "7d_delta_end_effector_pose",
+        "claim_boundary": (
+            "Action interface declares the profile-compatible command layout; "
+            "it does not prove policy execution or physical readiness."
+        ),
+    },
+    camera_rigs=(
+        {
+            "camera_id": "fixed_external_left",
+            "mount": "external_static",
+            "modalities": ["rgb"],
+            "calibration_status": "owner_or_profile_calibration_required_for_launch",
+        },
+        {
+            "camera_id": "fixed_external_right",
+            "mount": "external_static",
+            "modalities": ["rgb"],
+            "calibration_status": "owner_or_profile_calibration_required_for_launch",
+        },
+        {
+            "camera_id": "wrist_rgb",
+            "mount": "wrist",
+            "modalities": ["rgb"],
+            "calibration_status": "owner_or_profile_calibration_required_for_launch",
+        },
+    ),
+    observation_schema={
+        "schema_ref": "blueprint://schemas/robot_eval_observation.v1",
+        "required_fields": [
+            "observation_id",
+            "scenario_eval_run_id",
+            "camera",
+            "visual_observation",
+        ],
+    },
+    simulator_asset_refs={
+        "usd_prim_path": "/World/SingleArm",
+        "isaac_asset_family": "Isaac/Robots/Franka",
+    },
+    controller_constraints={
+        "requires_registered_action_space_for_policy_claims": True,
+        "wam_or_openvla_may_only_supply_evaluator_support": True,
+    },
+    calibration_requirements={
+        "owner_camera_intrinsics_required_for_launch_ready_profile": True,
+        "owner_camera_extrinsics_required_for_launch_ready_profile": True,
+        "default_profile_launch_mode": "smoke_only_until_owner_calibration",
+    },
+    claim_boundaries={
+        "robot_profile_is_configuration_not_execution_proof": True,
+        "profile_is_a_conformance_fixture_not_a_supported_product_embodiment": True,
+        "profile_does_not_prove_policy_execution": True,
+        "profile_does_not_prove_physical_readiness": True,
+        "profile_does_not_prove_safety_validation": True,
+    },
+)
+
+_REGISTRY: Dict[str, RobotProfile] = {
+    UNITREE_G1_PROFILE.robot_id: UNITREE_G1_PROFILE,
+    FIXED_BASE_SINGLE_ARM_PROFILE.robot_id: FIXED_BASE_SINGLE_ARM_PROFILE,
+}
 
 DEFAULT_ROBOT_ID = UNITREE_G1_PROFILE.robot_id
 ROBOT_EMBODIMENT_PACK_SCHEMA_VERSION = "robot_embodiment_pack.v1"
@@ -258,11 +367,20 @@ def known_robot_ids() -> List[str]:
     return sorted(_REGISTRY)
 
 
+class UnknownRobotProfileError(KeyError):
+    """Raised when a caller names an unregistered robot profile.
+
+    Subclasses ``KeyError`` so existing handlers keep working, while giving
+    call sites that accept a job-request-supplied ``robot_id`` something
+    specific to catch instead of a bare lookup failure.
+    """
+
+
 def get_robot_profile(robot_id: str) -> RobotProfile:
     try:
         return _REGISTRY[robot_id]
     except KeyError:
-        raise KeyError(
+        raise UnknownRobotProfileError(
             f"unknown robot_id {robot_id!r}; known: {', '.join(known_robot_ids())}. "
             "Register one via register_robot_profile() or load a JSON profile via "
             "robot_profile_from_json_file()."

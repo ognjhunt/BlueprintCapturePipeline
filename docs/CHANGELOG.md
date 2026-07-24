@@ -1,5 +1,61 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-24 (second entry)
+
+### User-Facing
+
+- GPU selection is now an explicit per-workload policy rather than one global
+  rule. The Isaac RT-core exclusion (A100/H100, extended to H200/B200/GB200) was
+  being applied to every Vast offer selection, barring generation and training
+  campaigns from the hardware they need. `generation`, `training` and `open`
+  policies carry no denylist and travel with their own rate/VRAM envelopes;
+  Blackwell RTX PRO 6000 96GB, H200, B200 and RTX 5090 are recognised. An
+  unknown policy name fails closed to the Isaac policy
+  (`src/blueprint_pipeline/vast_provider_adapter.py`,
+  `docs/EXECUTION_COST_AND_ARCHITECTURE_GATES.md`).
+- Separated adopting a published world-model architecture from admitting an
+  upstream release. Building on already-pinned permissively licensed components
+  is no longer blocked by a third party's unreleased code; the resulting model
+  is Blueprint-authored, may not use the upstream name or metrics, and must pass
+  ordinary evaluator qualification. Authorisation is to build, not to claim
+  (`src/blueprint_pipeline/world_model_architecture_adoption.py`).
+
+### Employee-Facing
+
+- Added a resident OSCAR worker so a closed-loop rollout loads the checkpoint
+  once instead of once per step. A dead or desynchronised worker fails the step
+  closed rather than falling back to per-step spawning, restarts must be
+  explicitly budgeted and are counted, and cold-start versus warm-step latency
+  is reported separately. This is a throughput change, not evidence of
+  generation quality or task success
+  (`src/blueprint_pipeline/oscar_resident_worker.py`,
+  `src/blueprint_pipeline/oscar_resident_worker_main.py`).
+- Added judge spend governance mirroring the GPU envelope: target spend, hard
+  cap, request and frame ceilings, TTL, a ledger, and a cohort hard stop. Prices
+  are operator-supplied and an unpriceable request is denied rather than waved
+  through; failed requests are still settled. The graded-progress lane treats an
+  absent policy as a refusal (`src/blueprint_pipeline/judge_spend_governor.py`).
+- Retired the platform-wide 7-dimensional action invariant in favour of a
+  registered action-space registry covering the SC3 7-D delta end-effector
+  layout, the 78-D Unitree G1 whole-body command, and a 43-D arm/hand layout.
+  The default remains SC3, so existing callers and blocker strings are
+  unchanged; unregistered spaces fail closed
+  (`src/blueprint_pipeline/action_space_registry.py`,
+  `src/blueprint_pipeline/action_normalization.py`,
+  `src/blueprint_pipeline/oscar_cosmos_wam_command_adapter.py`).
+- Registered a second embodiment as a zero-GPU conformance fixture, differing on
+  base, arm count, action interface and camera rig, and made unknown profile
+  lookups raise a typed `UnknownRobotProfileError`
+  (`src/blueprint_pipeline/scene_placement/robot_profile.py`).
+- Added a gate-reachability audit that probes real validators and source rather
+  than asserting. It records that `validate_external_study` never returns
+  `validated` — making `sc3_eval_protocol`'s `public_rank_fidelity_claim_eligible`,
+  `claim_ready` and `eligible_preregistered_external_rank_fidelity` unreachable
+  by construction — that two claim fields are emitted as literal `False`, and
+  that the two OOD axis vocabularies diverge. Blocker lists can now be split
+  into what waiting could clear and what it never will
+  (`src/blueprint_pipeline/gate_reachability_audit.py`).
+
 ## 2026-07-24
 
 ### User-Facing

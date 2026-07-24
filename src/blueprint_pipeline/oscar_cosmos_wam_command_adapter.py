@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .action_space_registry import SC3_7D_DELTA_EE, get_action_space
 from .wam_generated_video_review import validate_generated_mp4_for_review
 
 
@@ -216,8 +217,12 @@ def _action_vector(row: Mapping[str, Any]) -> list[float]:
             break
     if vector is None:
         raise RuntimeError("cosmos_action_trace_missing_explicit_sc3_7d_action")
-    if len(vector) != 7:
-        raise RuntimeError("cosmos_action_trace_action_dim_must_equal_7")
+    # The Cosmos WAM lane is bound to one registered action space rather than a
+    # bare literal, so widening it to another embodiment is a registry change
+    # with its own contract rather than an edit to a magic number here.
+    space = get_action_space(SC3_7D_DELTA_EE)
+    if len(vector) != space.dim:
+        raise RuntimeError(f"cosmos_action_trace_{space.dim_blocker}")
     values: list[float] = []
     for value in vector:
         if isinstance(value, bool):
