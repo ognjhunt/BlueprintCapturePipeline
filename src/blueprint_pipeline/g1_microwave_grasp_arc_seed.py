@@ -260,6 +260,9 @@ def solve_grasp_arc_seed(
     maximum_handle_penetration_m: float = 0.003,
     maximum_panel_penetration_m: float = 0.001,
     maximum_contact_gap_m: float = 0.002,
+    handle_in_wrist_xyz_m: Sequence[float] = DEFAULT_HANDLE_IN_WRIST_XYZ_M,
+    hand_axis_polarity: float = DEFAULT_HAND_AXIS_POLARITY,
+    grasp_yaw_rad: float = DEFAULT_GRASP_YAW_RAD,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Return a 43D oriented reach, hand closure, and prescribed pull arc."""
 
@@ -368,8 +371,14 @@ def solve_grasp_arc_seed(
         pelvis_model_xyz_m=geometry["pelvis_model_xyz_m"],
         handle_model_xyz_m=geometry["handle_model_xyz_m"],
         hinge_axis_model_xyz=geometry["hinge_axis_model_xyz"],
+        hand_axis_polarity=hand_axis_polarity,
+        grasp_yaw_rad=grasp_yaw_rad,
     )
-    handle_in_wrist = np.asarray(DEFAULT_HANDLE_IN_WRIST_XYZ_M)
+    handle_in_wrist = _finite_vector(
+        handle_in_wrist_xyz_m,
+        size=3,
+        name="handle_in_wrist",
+    )
     wrist_position = np.asarray(geometry["handle_model_xyz_m"]) - basis @ handle_in_wrist
     initial_solver_positions = np.asarray(
         [data.qpos[address] for address in qpos_addresses]
@@ -470,9 +479,17 @@ def solve_grasp_arc_seed(
             max_iterations=800 if index == 0 else 350,
         )
         if position_error > float(maximum_position_error_m):
-            raise RuntimeError("g1_microwave_grasp_arc_position_gate_failed")
+            raise RuntimeError(
+                "g1_microwave_grasp_arc_position_gate_failed:"
+                f"frame={index}:error_m={position_error:.9f}:"
+                f"maximum_m={float(maximum_position_error_m):.9f}"
+            )
         if orientation_error > float(maximum_orientation_error_rad):
-            raise RuntimeError("g1_microwave_grasp_arc_orientation_gate_failed")
+            raise RuntimeError(
+                "g1_microwave_grasp_arc_orientation_gate_failed:"
+                f"frame={index}:error_rad={orientation_error:.9f}:"
+                f"maximum_rad={float(maximum_orientation_error_rad):.9f}"
+            )
         upper_body_rows.append(upper_body)
         pose_rows.append(
             {
@@ -782,9 +799,9 @@ def solve_grasp_arc_seed(
         },
         "grasp_contract": {
             "wrist_body": WRIST_BODY_NAME,
-            "handle_in_wrist_xyz_m": list(DEFAULT_HANDLE_IN_WRIST_XYZ_M),
-            "hand_axis_polarity": DEFAULT_HAND_AXIS_POLARITY,
-            "grasp_yaw_rad": DEFAULT_GRASP_YAW_RAD,
+            "handle_in_wrist_xyz_m": handle_in_wrist.tolist(),
+            "hand_axis_polarity": float(hand_axis_polarity),
+            "grasp_yaw_rad": float(grasp_yaw_rad),
             "right_hand_joint_names": list(RIGHT_HAND_JOINT_NAMES),
             "right_hand_joint_targets": list(DEFAULT_RIGHT_HAND_GRASP),
             "right_hand_initial_solved_targets": hand_rows[0].tolist(),

@@ -52,3 +52,8 @@ def test_numeric_stats_records_directional_distribution() -> None:
     assert result["std"] == pytest.approx(
         [np.std(values[:, 0]), np.std(values[:, 1])]
     )
+
+
+def test_live_aligned_grasp_uses_qualified_palm_down_convention() -> None:
+    assert aligned.LIVE_ALIGNED_HAND_AXIS_POLARITY == -1.0
+    assert aligned.LIVE_ALIGNED_GRASP_YAW_RAD == 0.0

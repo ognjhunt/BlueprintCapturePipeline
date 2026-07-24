@@ -38,6 +38,13 @@ TASK_DESCRIPTION = "Stand at the microwave and open the microwave door."
 FRAME_COUNT = 176
 FPS = 50
 TARGET_PRIM_PATH = "/root/Microwave017/Microwave017_Door"
+# The same-session manipulation-ready pose uses the palm-down grasp convention
+# seen by the rigid head camera.  The older proxy demonstration used the
+# opposite wrist axis plus a 45-degree yaw; carrying that transform into this
+# pose leaves the first handle target 49 mm out of reach.  These values were
+# qualified against the exact live G1 model and all 51 pull/contact frames.
+LIVE_ALIGNED_HAND_AXIS_POLARITY = -1.0
+LIVE_ALIGNED_GRASP_YAW_RAD = 0.0
 
 
 def _sha256(path: Path) -> str:
@@ -152,6 +159,8 @@ def prepare_actions(
         closure_frame_count=26,
         pull_frame_count=51,
         door_open_angle_rad=0.35,
+        hand_axis_polarity=LIVE_ALIGNED_HAND_AXIS_POLARITY,
+        grasp_yaw_rad=LIVE_ALIGNED_GRASP_YAW_RAD,
     )
     if trajectory.shape != (FRAME_COUNT, len(SOURCE_ACTION_JOINT_NAMES)):
         raise RuntimeError("live_aligned_trajectory_shape_invalid")
