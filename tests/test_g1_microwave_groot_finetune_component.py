@@ -97,10 +97,7 @@ def test_generated_component_accepts_exact_dataset_archive_members(tmp_path: Pat
     built = component.build_finetune_component(_dataset(tmp_path / "dataset"))
     script = built["script"]
     marker = 'python3 - "$DATASET" "$ARCHIVE_SHA" <<\'PY\'\n'
-    extraction_source = script.split(marker, 1)[1].split(
-        "\nPY\nif [ ! -x /opt/gr00t-venv/bin/python ]",
-        1,
-    )[0]
+    extraction_source = script.split(marker, 1)[1].split("\nPY\n", 1)[0]
     extraction_root = tmp_path / "extracted"
     extraction_root.mkdir()
 
@@ -123,6 +120,21 @@ def test_generated_component_accepts_exact_dataset_archive_members(tmp_path: Pat
         for path in extraction_root.rglob("*")
         if path.is_file()
     } == component.REQUIRED_DATASET_MEMBERS
+
+
+def test_component_requires_live_aligned_isaac_training_episode(tmp_path: Path) -> None:
+    built = component.build_finetune_component(_dataset(tmp_path / "dataset"))
+    contract = built["live_aligned_training"]
+    assert contract["required"] is True
+    assert contract["same_session_live_start_required"] is True
+    assert contract["exact_isaac_rigid_head_render_required"] is True
+    assert len(contract["module_sha256"]) == 64
+    script = built["script"]
+    assert "prepare-actions" in script
+    assert "render-isaac" in script
+    assert "patch-dataset" in script
+    assert "/workspace/initial_g1_sonic_state.json" in script
+    assert "--stage /workspace/kitchen/KitchenRoom.usd" in script
 
 
 def test_component_overlay_patches_only_writable_copy(tmp_path: Path) -> None:

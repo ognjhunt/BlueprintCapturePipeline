@@ -595,6 +595,17 @@ visible robot hand reaches and remains in contact while the object moves; a
 task instruction must never be treated as permission to animate the desired
 outcome.
 
+Microwave fine-tuning must not reuse a proxy-rendered demonstration whose
+initial joints differ from the qualification runtime. Before training on a
+retained worker, rebuild the owned expert trajectory from the exact same-session
+live Isaac proprioception and current handle geometry, re-encode it with the
+pinned official GEAR-SONIC encoder, render all policy observations in the exact
+textured kitchen from the rigid head camera, and recompute the LeRobot action,
+state, and timestamp statistics. Open-loop loss on the same proxy episode is
+not a domain-transfer gate. The subsequent controller-FK directional-progress
+gate remains mandatory and must reject the checkpoint before OSCAR if the
+decoded hand moves away from the registered target.
+
 Review capture must use `RayTracedLighting`, DLSS Quality
 (`/rtx/post/dlss/execMode=2`), and eight zero-delta RT subframes after a camera
 move before reading RGB. This reduces low-resolution temporal smearing; it does
