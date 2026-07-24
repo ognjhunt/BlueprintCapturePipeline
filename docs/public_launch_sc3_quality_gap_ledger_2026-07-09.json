@@ -2609,7 +2609,7 @@
             {
               "artifact_id": "SC3-01-AC-01-EV-01",
               "path": "src/blueprint_pipeline/wam_episode_consistency_label_local.py",
-              "sha256": "sha256:68209fd5db7e7dfebaf3e275e899c941bed5cec25af1bb32784132d69043b373",
+              "sha256": "sha256:80d3db4a564bccdf9a0abc5179a9a2479db3dd9a9290af108baad6cafb81964d",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10319,7 +10319,7 @@
             {
               "artifact_id": "SC3-18-AC-01-EV-01",
               "path": "src/blueprint_pipeline/policy_ranking_ladder.py",
-              "sha256": "sha256:6c0b5c2b4650fb2e22acb27e27d4bfdee3eb263ec5679213a1363baf2809f430",
+              "sha256": "sha256:21171cae3fd3e59df13d3046f1788a46ab453c37f5e5f6e401683af1ad250c59",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -10351,7 +10351,7 @@
             {
               "artifact_id": "SC3-18-AC-01-EV-03",
               "path": "tests/test_policy_ranking_ladder.py",
-              "sha256": "sha256:8aca2453230f044599c87a08603c03224657771d1d46d89e8298252bceb10f41",
+              "sha256": "sha256:66d80c0868829f4be56e7e937d8138e3e9021e1f7b0000a3657a6186fc1ccd72",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13345,7 +13345,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:d8495f325935d529022afdce4dda5b02100d7e62c5c7ea8ec824b20e2f9853b7",
+              "sha256": "sha256:61398e1802d96e63b0397ce4ff1f99be83dc4e937530d2e02052e5d69e8864a2",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",

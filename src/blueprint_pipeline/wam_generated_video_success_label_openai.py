@@ -34,7 +34,9 @@ SHARED_GATE_ENV = "BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING"
 MODEL_ENV = "BLUEPRINT_OPENAI_WAM_SUCCESS_LABEL_MODEL"
 DEFAULT_MODEL = "gpt-4.1-mini"
 DEFAULT_OUTPUT_FILENAME = "wam_success_labels.command.json"
-DEFAULT_MAX_FRAMES = 5
+# Matches the Gemini success judge: five frames characterise an end state but
+# cannot localise when a rollout diverged.
+DEFAULT_MAX_FRAMES = 16
 DEFAULT_MAX_FRAME_DIMENSION = 768
 DEFAULT_JPEG_QUALITY = 86
 PROMPT_INSTRUCTION = (

@@ -1,5 +1,61 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-24
+
+### User-Facing
+
+- Added a public real-world benchmark anchor path so the evaluation harness can
+  be validated against independently published robot outcomes before any
+  customer anchor exists. This produces the previously unproduced
+  `roboarena_snapshot_sha256` digest and the previously unproduced
+  `external_reference_results.v1` artifact. Results carry the distinct
+  `harness_validation_public_anchor` scope and are structurally barred from
+  upgrading site-specific rank fidelity, other embodiments, or deployment
+  readiness (`src/blueprint_pipeline/public_benchmark_anchor.py`,
+  `docs/EVALUATOR_ATTRIBUTION_AND_PUBLIC_ANCHOR.md`).
+- Demoted Pearson to supporting evidence in the external rank-fidelity report
+  and promoted pairwise-ordering accuracy to the headline, alongside a
+  resolving-power (minimum-detectable-difference) curve. Correlation degrees of
+  freedom come from the policy cohort, not the rollout count
+  (`src/blueprint_pipeline/benchmark_protocol.py`).
+- Shipped the producer for `roboworld_progress_score.v1` graded task-progress
+  scores, whose consumers (rubric validation, segment aggregation, aggregation
+  ablation, judge calibration) already existed with nothing to feed them.
+  Scores remain generated-media review evidence; a score of 5 does not prove
+  physical task success (`src/blueprint_pipeline/roboworld_progress_judge.py`).
+
+### Employee-Facing
+
+- Added `rank_fidelity_statistics`: Fisher-z correlation intervals, Wilson
+  proportion intervals, two-proportion minimum-detectable-difference, exact
+  one-sided Fisher tests, and bootstrap-reliability judgement. These make the
+  small-sample behaviour of every published evaluator number computable rather
+  than implicit (`src/blueprint_pipeline/rank_fidelity_statistics.py`).
+- Repaired the policy-ranking-ladder acceptance statistic. The ladder accepted
+  `recovered` on a strict ordering of per-rung Bernoulli means at three
+  replicate seeds, where the exact one-sided p-value for an adjacent-rung
+  difference is 0.5. Adjacent-pair separation is now tested exactly and computed
+  before the pass/fail decision, unresolvable separation blocks acceptance with
+  the new `inconclusive_underpowered_separation` status, and the replicate seed
+  count is a builder parameter defaulting to a value derived from the separation
+  it must resolve (`src/blueprint_pipeline/policy_ranking_ladder.py`).
+- Stopped the external rank-fidelity bootstrap from silently discarding
+  undefined replicates, which narrowed rather than widened the published
+  interval. Attempted/defined replicate counts, the undefined fraction, and an
+  explicit reliability verdict are now reported per metric
+  (`src/blueprint_pipeline/benchmark_protocol.py`).
+- Added a world-model-free control ranker (action-chunk jerk, gripper toggle
+  rate, timeout rate, first-frame prior, plus null controls) that attributes an
+  evaluator's rank agreement against the best baseline using a paired bootstrap
+  over policies. A winning baseline is not an evaluator; the arm exists to price
+  the evaluator's marginal contribution
+  (`src/blueprint_pipeline/control_ranker.py`).
+- Raised VLM judge frame budgets from 5-6 to 16 frames and added a rubric-aware
+  sampling contract that fails closed below 2.0 samples/second. Six frames
+  across a 25-second rollout is 0.24 fps, which cannot localise where a rollout
+  diverged (`src/blueprint_pipeline/wam_generated_video_success_label_gemini.py`,
+  `src/blueprint_pipeline/wam_episode_consistency_label_openai.py`).
+
 ## 2026-07-23
 
 ### User-Facing

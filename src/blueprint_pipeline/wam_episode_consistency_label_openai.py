@@ -23,7 +23,10 @@ GATE_ENV = "BLUEPRINT_ALLOW_OPENAI_WAM_EPISODE_CONSISTENCY"
 MODEL_ENV = "BLUEPRINT_OPENAI_WAM_EPISODE_CONSISTENCY_MODEL"
 DEFAULT_MODEL = "gpt-4.1-mini"
 DEFAULT_OUTPUT_FILENAME = "wam_episode_consistency.command.json"
-DEFAULT_MAX_FRAMES = 5
+# Five frames per episode cannot localise when a rollout diverged; it can
+# only characterise its end state.  Raised so consistency labels carry
+# enough temporal resolution to be comparable with graded progress scores.
+DEFAULT_MAX_FRAMES = 16
 DEFAULT_MAX_FRAME_DIMENSION = 768
 DEFAULT_JPEG_QUALITY = 85
 

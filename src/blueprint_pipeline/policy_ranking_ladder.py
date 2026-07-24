@@ -34,6 +34,10 @@ from .noise_degraded_policy_command_adapter import (
     noise_degraded_policy_id,
     validate_registered_action_bounds_contract,
 )
+from .rank_fidelity_statistics import (
+    fisher_exact_greater,
+    minimum_detectable_difference,
+)
 from .sc3_fidelity_contracts import (
     SC3_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256_ENV,
     validate_trusted_ed25519_attestation,
@@ -44,7 +48,45 @@ LADDER_SCHEMA_VERSION = "policy_ranking_ladder.v1"
 VALIDATION_SCHEMA_VERSION = "policy_ranking_ladder_validation.v1"
 DEFAULT_AMPLITUDES = (0.1, 0.3, 0.6)
 DEFAULT_SEED = 1337
+# Structural floor only: it bounds the shape of the evidence artifact and says
+# nothing about whether the observed ordering is distinguishable from chance.
+# Statistical acceptance is decided by _ladder_separation_analysis.
 MIN_LADDER_SEED_COUNT = 3
+LADDER_SEPARATION_ALPHA = 0.05
+MAX_LADDER_SEED_SEARCH = 100_000
+# Success-rate gap between adjacent rungs the default ladder is built to
+# resolve.  Rungs closer than this are not distinguishable by the ladder and
+# should be registered as a single rung instead.
+DEFAULT_TARGET_ADJACENT_SEPARATION = 0.25
+# Replicate seeds per rung needed for the default separation to clear the
+# two-proportion resolving-power threshold.  Derived rather than guessed; a
+# ladder run at MIN_LADDER_SEED_COUNT cannot distinguish any ordering from
+# chance, because at three Bernoulli trials the adjacent-rung exact one-sided
+# p-value is 0.5.
+DEFAULT_LADDER_SEED_COUNT = 63
+_SEED_STRIDE = 104729
+
+
+def replicate_seed_ids(seed: int, count: int = DEFAULT_LADDER_SEED_COUNT) -> List[int]:
+    """Deterministic replicate seed ids for a ladder rung."""
+
+    if count < 1:
+        raise ValueError("replicate_seed_count must be positive")
+    return [int(seed) + index * _SEED_STRIDE for index in range(int(count))]
+
+
+def recommended_replicate_seed_count(
+    target_separation: float = DEFAULT_TARGET_ADJACENT_SEPARATION,
+) -> int | None:
+    """Smallest per-rung replicate count that can resolve ``target_separation``."""
+
+    if not 0.0 < target_separation <= 1.0:
+        return None
+    for candidate in range(2, MAX_LADDER_SEED_SEARCH + 1):
+        detectable = minimum_detectable_difference(candidate)
+        if detectable is not None and detectable <= target_separation:
+            return candidate
+    return None
 REFERENCE_FLOOR_POLICY_ID = "blueprint_default_walk_to_target_smoke_policy"
 POLICY_LADDER_VALIDATION_METHOD = "trusted_policy_ladder_validation_authority.v1"
 POLICY_LADDER_VALIDATION_SIGNING_PRIVATE_KEY_FILE_ENV = (
@@ -121,6 +163,7 @@ def build_known_ordering_policy_ladder(
     inner_checkpoint_sha256: str | None = None,
     amplitudes: Sequence[float] = DEFAULT_AMPLITUDES,
     seed: int = DEFAULT_SEED,
+    replicate_seed_count: int = DEFAULT_LADDER_SEED_COUNT,
     include_reference_floor: bool = True,
     registered_task_id: str = "ladder-task",
     registered_condition_id: str = "ladder-condition",
@@ -150,7 +193,11 @@ def build_known_ordering_policy_ladder(
                 "registered_action_bounds invalid: " + ",".join(action_bounds_blockers)
             )
         action_bounds_digest = registered_action_bounds_sha256(action_bounds_contract)
-    noise_seeds = [int(seed), int(seed) + 104729, int(seed) + 209759]
+    if int(replicate_seed_count) < MIN_LADDER_SEED_COUNT:
+        raise ValueError(
+            f"replicate_seed_count must be at least {MIN_LADDER_SEED_COUNT}"
+        )
+    noise_seeds = replicate_seed_ids(int(seed), int(replicate_seed_count))
     registered_condition_descriptor = {
         "schema_version": "policy_ladder_registered_condition.v1",
         "task_id": _string(registered_task_id),
@@ -289,6 +336,9 @@ def build_known_ordering_policy_ladder(
         "noise_seed": int(seed),
         "required_replicate_seeds": noise_seeds,
         "minimum_seed_count": MIN_LADDER_SEED_COUNT,
+        "replicate_seed_count": len(noise_seeds),
+        "recommended_seed_count_for_default_separation": recommended_replicate_seed_count(),
+        "target_adjacent_separation": DEFAULT_TARGET_ADJACENT_SEPARATION,
         "registered_condition_descriptor": registered_condition_descriptor,
         "registered_condition_manifest_sha256": (registered_condition_manifest_sha256),
         "registered_action_bounds_contract": action_bounds_contract,
@@ -340,6 +390,84 @@ def _spearman(
     if expected_var <= 0.0 or observed_var <= 0.0:
         return None
     return round(covariance / (expected_var**0.5 * observed_var**0.5), 6)
+
+
+def _ladder_separation_analysis(
+    expected_ranking: Sequence[str],
+    empirical_success_counts: Mapping[str, tuple[int, int]],
+    *,
+    alpha: float = LADDER_SEPARATION_ALPHA,
+) -> Dict[str, Any]:
+    """Test whether the registered rung ordering is statistically resolvable.
+
+    The ladder's acceptance decision used to rest entirely on a strict ordering
+    of per-rung Bernoulli means.  At the structural floor of three replicate
+    seeds the attainable rates are 0, 1/3, 2/3 and 1, so adjacent rungs differ
+    by a single success and an exact one-sided test on that difference returns
+    p = 0.5 -- the ordering is as likely to have arisen by chance as not.
+
+    This computes the exact one-sided Fisher p-value for every adjacent pair
+    *before* any pass/fail decision is made, and reports how many seeds per rung
+    the registered separation would actually need.
+    """
+
+    pairs: list[Dict[str, Any]] = []
+    separations: list[float] = []
+    for index in range(len(expected_ranking) - 1):
+        better_id = expected_ranking[index]
+        worse_id = expected_ranking[index + 1]
+        better = empirical_success_counts.get(better_id)
+        worse = empirical_success_counts.get(worse_id)
+        row: Dict[str, Any] = {
+            "expected_better_policy_id": better_id,
+            "expected_worse_policy_id": worse_id,
+            "better_successes": better[0] if better else None,
+            "better_trials": better[1] if better else None,
+            "worse_successes": worse[0] if worse else None,
+            "worse_trials": worse[1] if worse else None,
+            "observed_separation": None,
+            "one_sided_p_value": None,
+            "resolvable_at_alpha": False,
+        }
+        if better and worse and better[1] and worse[1]:
+            separation = better[0] / better[1] - worse[0] / worse[1]
+            row["observed_separation"] = round(separation, 6)
+            separations.append(separation)
+            p_value = fisher_exact_greater(better[0], better[1], worse[0], worse[1])
+            row["one_sided_p_value"] = p_value
+            row["resolvable_at_alpha"] = p_value is not None and p_value <= alpha
+        pairs.append(row)
+
+    smallest_separation = min(separations) if separations else None
+    required_seeds = None
+    if smallest_separation is not None and smallest_separation > 0.0:
+        # Smallest per-rung replicate count whose two-proportion resolving power
+        # covers the tightest adjacent gap the ladder actually registered.
+        for candidate in range(2, MAX_LADDER_SEED_SEARCH + 1):
+            detectable = minimum_detectable_difference(candidate)
+            if detectable is not None and detectable <= smallest_separation:
+                required_seeds = candidate
+                break
+    return {
+        "method": "exact_one_sided_adjacent_rung_separation.v1",
+        "alpha": alpha,
+        "adjacent_pairs": pairs,
+        "adjacent_pair_count": len(pairs),
+        "resolvable_adjacent_pair_count": sum(
+            1 for row in pairs if row["resolvable_at_alpha"]
+        ),
+        "all_adjacent_pairs_resolvable": bool(pairs)
+        and all(row["resolvable_at_alpha"] for row in pairs),
+        "smallest_observed_separation": (
+            round(smallest_separation, 6) if smallest_separation is not None else None
+        ),
+        "minimum_replicate_seed_count_for_statistical_separation": required_seeds,
+        "structural_minimum_replicate_seed_count": MIN_LADDER_SEED_COUNT,
+        "note": (
+            "the structural minimum bounds artifact shape only; a strict ordering "
+            "of Bernoulli means at that count is not evidence of ordering"
+        ),
+    }
 
 
 def _single_command_option(parts: Sequence[str], option: str) -> str | None:
@@ -407,6 +535,7 @@ def validate_policy_ranking_scorecard(
     seed_counts: Dict[str, int] = {}
     empirical_ground_truth: Dict[str, bool] = {}
     empirical_success_rates: Dict[str, float] = {}
+    empirical_success_counts: Dict[str, tuple[int, int]] = {}
     row_contract_blockers: list[str] = []
     required_seed_values = ladder.get("required_replicate_seeds")
     required_seeds = (
@@ -807,9 +936,12 @@ def validate_policy_ranking_scorecard(
                     and evidence_valid
                 )
                 if evidence_valid and empirical_successes:
-                    empirical_success_rates[policy_id] = sum(
-                        1 for success in empirical_successes if success
-                    ) / len(empirical_successes)
+                    success_total = sum(1 for success in empirical_successes if success)
+                    empirical_success_rates[policy_id] = success_total / len(empirical_successes)
+                    empirical_success_counts[policy_id] = (
+                        success_total,
+                        len(empirical_successes),
+                    )
             except (TypeError, ValueError):
                 continue
     scorecard_status = _string(scorecard.get("status"))
@@ -839,6 +971,15 @@ def validate_policy_ranking_scorecard(
         if empirical_rates[index] is not None and empirical_rates[index + 1] is not None
     ):
         blockers.append("ladder_empirical_outcome_order_not_strict")
+
+    # Computed unconditionally and before the acceptance decision, so the report
+    # carries the strength of the ordering evidence even when the run is
+    # otherwise blocked.
+    separation_analysis = _ladder_separation_analysis(
+        expected_ranking, empirical_success_counts
+    )
+    if not separation_analysis["all_adjacent_pairs_resolvable"]:
+        blockers.append("ladder_empirical_separation_not_statistically_resolvable")
 
     pairwise_violations: List[Dict[str, Any]] = []
     tied_pairs: List[Dict[str, Any]] = []
@@ -888,11 +1029,15 @@ def validate_policy_ranking_scorecard(
     )
 
     if blockers:
-        status = (
-            "inconclusive_missing_ladder_policies"
-            if missing_policy_ids
-            else "inconclusive_scorecard_blocked"
-        )
+        if missing_policy_ids:
+            status = "inconclusive_missing_ladder_policies"
+        elif blockers == ["ladder_empirical_separation_not_statistically_resolvable"]:
+            # The ladder ran and the ordering came out as registered, but the
+            # replicate count cannot distinguish it from chance.  That is a
+            # distinct outcome from a blocked scorecard and reports as one.
+            status = "inconclusive_underpowered_separation"
+        else:
+            status = "inconclusive_scorecard_blocked"
     elif pairwise_violations:
         status = "not_recovered"
     elif tied_pairs:
@@ -925,6 +1070,10 @@ def validate_policy_ranking_scorecard(
         },
         "observed_ladder_ranks": observed_ranks,
         "spearman_rank_correlation_vs_expected": spearman,
+        "empirical_success_rates_by_policy": {
+            policy_id: round(rate, 6) for policy_id, rate in empirical_success_rates.items()
+        },
+        "empirical_separation_analysis": separation_analysis,
         "pairwise_violations": pairwise_violations,
         "pairwise_violation_count": len(pairwise_violations),
         "maximum_score_violation": round(max_violation, 6),
@@ -1093,6 +1242,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Noise amplitude rung (repeatable); defaults to 0.1 0.3 0.6",
     )
     build.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    build.add_argument(
+        "--replicate-seed-count",
+        type=int,
+        default=DEFAULT_LADDER_SEED_COUNT,
+        help=(
+            "replicate seeds per rung; the default is derived from the "
+            "separation the ladder must resolve, and lowering it toward the "
+            "structural minimum makes the ordering statistically meaningless"
+        ),
+    )
     build.add_argument("--no-reference-floor", action="store_true")
     build.add_argument("--out", type=Path, required=True)
 
@@ -1120,6 +1279,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             amplitudes=tuple(args.amplitudes) if args.amplitudes else DEFAULT_AMPLITUDES,
             seed=args.seed,
+            replicate_seed_count=args.replicate_seed_count,
             include_reference_floor=not args.no_reference_floor,
         )
         write_json(args.out, ladder)
