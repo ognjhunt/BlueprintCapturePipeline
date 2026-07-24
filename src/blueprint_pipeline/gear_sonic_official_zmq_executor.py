@@ -152,6 +152,22 @@ def _protocol_v4_action_frame(value: Any) -> list[float]:
     ]
 
 
+def _protocol_v4_hand_to_sonic(value: Any) -> list[float]:
+    """Invert the pinned SONIC-to-protocol-v4 hand permutation."""
+
+    protocol = _finite_vector(
+        value,
+        size=HAND_DIM,
+        name="unitree_g1_protocol_v4_hand_target",
+    )
+    sonic = [0.0] * HAND_DIM
+    for protocol_index, sonic_index in enumerate(
+        SONIC_TO_PROTOCOL_V4_HAND_INDICES
+    ):
+        sonic[sonic_index] = protocol[protocol_index]
+    return sonic
+
+
 def _validated_action_frames(
     action: Mapping[str, Any],
 ) -> tuple[list[list[float]], dict[str, Any]]:

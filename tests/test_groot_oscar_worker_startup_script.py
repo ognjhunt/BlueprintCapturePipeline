@@ -124,6 +124,9 @@ def test_gear_sonic_readiness_reuses_canary_for_full_fk_boundary_without_wire_ac
 
     compile(source, "<gear-sonic-ready-controller-fk>", "exec")
     assert "execute as execute_controller_fk" in source
+    assert "_protocol_v4_hand_to_sonic" in source
+    assert "motion\n                    + _protocol_v4_hand_to_sonic(left)" in source
+    assert "+ _protocol_v4_hand_to_sonic(right)" in source
     assert "def retained_canary_transport(**kwargs):" in source
     assert "return dict(accepted)" in source
     assert "transport=retained_canary_transport" in source

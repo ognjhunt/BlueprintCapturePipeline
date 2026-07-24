@@ -480,6 +480,7 @@ import hashlib, json, math, os, time
 from pathlib import Path
 
 from blueprint_pipeline.gear_sonic_official_zmq_executor import (
+    _protocol_v4_hand_to_sonic,
     _zmq_roundtrip,
     execute as execute_controller_fk,
 )
@@ -956,7 +957,15 @@ else:
         if controller_fk_readiness_required and not base_failed_checks:
             projection_context = load_attempt_bound_projection_context()
             canary_action = {
-                'sonic_action_chunk': motion + left + right,
+                # The wire canary and retained ``g1_debug`` row are already in
+                # protocol-v4 hand order. ``execute_controller_fk`` accepts
+                # SONIC-order model actions and performs the pinned hand
+                # permutation itself, so invert that permutation here.
+                'sonic_action_chunk': (
+                    motion
+                    + _protocol_v4_hand_to_sonic(left)
+                    + _protocol_v4_hand_to_sonic(right)
+                ),
             }
             source_action_sha256 = canonical_sha256(canary_action)
             transport_call_count = [0]

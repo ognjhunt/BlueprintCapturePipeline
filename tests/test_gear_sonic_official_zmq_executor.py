@@ -54,6 +54,19 @@ def _echoing_transport(calls=None):
     return transport
 
 
+def test_protocol_v4_hand_to_sonic_is_exact_inverse() -> None:
+    protocol = [float(index + 1) for index in range(executor.HAND_DIM)]
+    sonic = executor._protocol_v4_hand_to_sonic(protocol)
+    frame = [0.0] * executor.MOTION_TOKEN_DIM + sonic + sonic
+
+    converted = executor._protocol_v4_action_frame(frame)
+
+    assert converted[
+        executor.MOTION_TOKEN_DIM : executor.MOTION_TOKEN_DIM + executor.HAND_DIM
+    ] == protocol
+    assert converted[executor.MOTION_TOKEN_DIM + executor.HAND_DIM :] == protocol
+
+
 def _fake_fk(**kwargs):
     names = list(contract.PROTOCOL_V4_FULL_JOINT_ORDER)
     positions = list(kwargs["body_positions"]) + list(kwargs["left_hand"]) + list(
