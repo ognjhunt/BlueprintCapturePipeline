@@ -263,7 +263,7 @@ if ! PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
 fi
 PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
   "$ACTION_PYTHON" -c \
-  'import mujoco, onnxruntime; assert onnxruntime.__version__ == {PINNED_ONNXRUNTIME_VERSION!r}' \
+  "import mujoco, onnxruntime; assert onnxruntime.__version__ == {PINNED_ONNXRUNTIME_VERSION!r}" \
   >>"$LOG" 2>&1
 PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
   "$ACTION_PYTHON" "$LIVE_ALIGNED_MODULE" prepare-actions \
