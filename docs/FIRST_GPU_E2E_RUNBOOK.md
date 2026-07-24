@@ -537,6 +537,35 @@ pre-runtime RunPod machine IDs are quarantined within the bounded launch so the
 same failed host is terminated after the first poll instead of consuming another
 full watchdog window.
 
+### Retained-GPU iteration invariants
+
+After the exact release image has passed its startup and dependency gates,
+repository-only fixes must use the canonical `gpu-canary` refresh-bootstrap
+action against the retained, watchdog-bound GPU. Do not repeat the CPU image
+build or model-volume preparation unless the image, native dependencies, model
+weights, or cache contract changed. Every refresh must still bind the protected
+source commit and produce its own refresh evidence before another episode.
+
+The official GEAR-SONIC simulator controller publishes a monotonic
+`g1_debug.index`. Use that index as the primary per-command freshness watermark.
+Its `ros_timestamp` may remain `0.0` when ROS 2 wall-clock is unavailable, so a
+non-advancing timestamp is not, by itself, evidence that the controller failed
+to process a new command. Continue to require the exact token and hand-action
+echo, drain queued states before each send, and require a unique action within
+the streamed horizon.
+
+WAM and policy requery inputs must be exclusively the rigid robot-head
+`robot_pov` view with
+`viewpoint_mode=robot_head_mounted_egocentric`. The task-framed third-person
+camera is review-only and must never be relabeled or supplied to the policy.
+The WAM adapter and GR00T endpoint fail closed when this metadata is absent or
+when an overview is included.
+
+Review capture must use `RayTracedLighting`, DLSS Quality
+(`/rtx/post/dlss/execMode=2`), and eight zero-delta RT subframes after a camera
+move before reading RGB. This reduces low-resolution temporal smearing; it does
+not repair missing source textures or prove scene, policy, or task quality.
+
 Lambda Cloud is retained only as a read-only compatibility inventory lane. Use
 the Lambda adapter only after the job has a `gpu_provider_launch_request.json` with
 `status=request_manifest_ready`, local sim-only prerequisite evidence has passed,

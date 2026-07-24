@@ -1468,8 +1468,16 @@ def run_probe(
             current_policy_observation={
                 "schema_version": "blueprint_policy_observation.v1",
                 "camera_frame_path": str(selected_frame),
+                "camera_role": "robot_pov",
+                "viewpoint_mode": "robot_head_mounted_egocentric",
+                "policy_observation_eligible": True,
+                "third_person_overview_included": False,
                 "visual_observation": {
                     "camera_frame_path": str(selected_frame),
+                    "camera_role": "robot_pov",
+                    "viewpoint_mode": "robot_head_mounted_egocentric",
+                    "policy_observation_eligible": True,
+                    "third_person_overview_included": False,
                     "wam_generated_observation": True,
                 },
             },

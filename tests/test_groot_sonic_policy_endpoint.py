@@ -13,6 +13,23 @@ from blueprint_pipeline.groot_sonic_policy_endpoint import (
 from blueprint_pipeline.gear_sonic_official_zmq_executor import _validated_action_frames
 
 
+def _head_pov(path: str) -> dict:
+    return {
+        "camera_frame_path": path,
+        "camera_role": "robot_pov",
+        "viewpoint_mode": "robot_head_mounted_egocentric",
+        "policy_observation_eligible": True,
+        "third_person_overview_included": False,
+        "visual_observation": {
+            "camera_frame_path": path,
+            "camera_role": "robot_pov",
+            "viewpoint_mode": "robot_head_mounted_egocentric",
+            "policy_observation_eligible": True,
+            "third_person_overview_included": False,
+        },
+    }
+
+
 def _fake_run_command_factory(chunks):
     calls = []
 
@@ -43,8 +60,8 @@ def test_endpoint_projects_real_chunk_and_varies_with_observation() -> None:
         sonic_state={"measured": [1.0]},
         run_command=fake,
     )
-    first = endpoint({"camera_frame_path": "/a.jpg"}, [], 1)
-    second = endpoint({"camera_frame_path": "/b.jpg"}, [first], 2)
+    first = endpoint(_head_pov("/a.jpg"), [], 1)
+    second = endpoint(_head_pov("/b.jpg"), [first], 2)
     assert first["status"] == "completed"
     assert first["policy_action"] == "UNITREE_G1_SONIC"
     assert first["endpoint"] == ENDPOINT_LABEL
@@ -55,6 +72,33 @@ def test_endpoint_projects_real_chunk_and_varies_with_observation() -> None:
     assert calls[0]["observation"]["camera_frame_path"] == "/a.jpg"
     assert calls[1]["observation"]["camera_frame_path"] == "/b.jpg"
     assert second["sonic_action_chunk_dim"] == 78
+
+
+def test_endpoint_rejects_third_person_review_frame_as_policy_input() -> None:
+    fake, calls = _fake_run_command_factory([[0.5] * 78])
+    endpoint = make_groot_sonic_zmq_policy_endpoint(
+        policy_server_url="tcp://127.0.0.1:5550",
+        sonic_state={"measured": [1.0]},
+        run_command=fake,
+    )
+    observation = _head_pov("/overview.jpg")
+    observation["camera_role"] = "overview"
+    observation["visual_observation"]["camera_role"] = "overview"
+    observation["viewpoint_mode"] = "task_framed_third_person_review"
+    observation["visual_observation"]["viewpoint_mode"] = (
+        "task_framed_third_person_review"
+    )
+    observation["policy_observation_eligible"] = False
+    observation["visual_observation"]["policy_observation_eligible"] = False
+    observation["third_person_overview_included"] = True
+    observation["visual_observation"]["third_person_overview_included"] = True
+
+    with pytest.raises(
+        RuntimeError,
+        match="policy_observation_not_exclusive_robot_head_pov",
+    ):
+        endpoint(observation, [], 0)
+    assert calls == []
 
 
 def test_endpoint_preserves_selected_frame_and_hashed_horizon_metadata() -> None:
@@ -98,7 +142,7 @@ def test_endpoint_preserves_selected_frame_and_hashed_horizon_metadata() -> None
         run_command=fake,
     )
 
-    action = endpoint({"camera_frame_path": "/horizon.jpg"}, [], 0)
+    action = endpoint(_head_pov("/horizon.jpg"), [], 0)
 
     assert action["sonic_action_chunk"] == selected
     assert action["sonic_action_chunk_dim"] == 78
@@ -152,7 +196,7 @@ def test_endpoint_explicitly_executes_full_hash_bound_model_horizon() -> None:
         run_command=fake,
     )
 
-    action = endpoint({"camera_frame_path": "/horizon.jpg"}, [], 0)
+    action = endpoint(_head_pov("/horizon.jpg"), [], 0)
 
     controller = action["controller_action"]
     assert controller["schema_version"] == "gear_sonic_controller_action_sequence.v1"
@@ -205,7 +249,7 @@ def test_endpoint_preserves_non_round_float32_frame_zero_for_official_executor()
         run_command=fake,
     )
 
-    action = endpoint({"camera_frame_path": "/horizon.jpg"}, [], 0)
+    action = endpoint(_head_pov("/horizon.jpg"), [], 0)
     validated_frames, contract = _validated_action_frames(action)
 
     assert action["sonic_action_chunk"][0] == -0.13916015625
@@ -243,7 +287,7 @@ def test_endpoint_full_horizon_fails_closed_on_sequence_hash_mismatch() -> None:
         run_command=fake,
     )
     with pytest.raises(RuntimeError, match="sonic_action_sequence_sha256_mismatch"):
-        endpoint({"camera_frame_path": "/horizon.jpg"}, [], 0)
+        endpoint(_head_pov("/horizon.jpg"), [], 0)
 
 
 def test_endpoint_fails_closed_on_blocked_server() -> None:
@@ -269,7 +313,7 @@ def test_endpoint_fails_closed_on_empty_completed_action_chunk() -> None:
         run_command=fake,
     )
     with pytest.raises(RuntimeError, match="blocked_empty_sonic_action_chunk"):
-        endpoint({"camera_frame_path": "/a.jpg"}, [], 1)
+        endpoint(_head_pov("/a.jpg"), [], 1)
 
 
 def test_endpoint_requires_attempt_bound_initial_state_and_carries_it() -> None:
@@ -291,7 +335,7 @@ def test_endpoint_requires_attempt_bound_initial_state_and_carries_it() -> None:
         sonic_state={"left_arm": [0.0] * 7, "projected_gravity": [0.0, 0.0, -1.0]},
         run_command=fake,
     )
-    endpoint({"camera_frame_path": "/f.jpg"}, [], 0)
+    endpoint(_head_pov("/f.jpg"), [], 0)
     state = captured["unitree_g1_sonic_state"]
     assert len(state["left_arm"]) == 7 and len(state["projected_gravity"]) == 3
     assert captured["unitree_g1_sonic_state_source"] == (
@@ -303,7 +347,7 @@ def test_endpoint_requires_attempt_bound_initial_state_and_carries_it() -> None:
         policy_server_url="tcp://127.0.0.1:5550", run_command=fake
     )
     with pytest.raises(RuntimeError, match="proprio_missing"):
-        missing({"camera_frame_path": "/f.jpg"}, [], 0)
+        missing(_head_pov("/f.jpg"), [], 0)
 
 
 def test_projection_is_deterministic_and_bounded() -> None:

@@ -13,6 +13,8 @@ REVIEW_HEIGHT = 480
 REVIEW_RENDERER_PREWARM_SCHEMA_VERSION = "isaac_review_renderer_prewarm.v1"
 ARTICULATED_HANDLE_FOCUS_SCHEMA_VERSION = "articulated_handle_focus.v1"
 REVIEW_RENDERER_PREWARM_UPDATE_COUNT = 16
+REVIEW_DLSS_EXEC_MODE = 2
+REVIEW_CAPTURE_RT_SUBFRAMES = 8
 # A deliberately wide, square-pixel robot POV keeps both arms and the nearby
 # kitchen affordance visible.  These are authored onto the live USD cameras;
 # they are not inherited from a prior rendered frame.
@@ -46,6 +48,39 @@ OVERVIEW_SIDE_FROM_ROBOT_M = 0.60
 OVERVIEW_HEIGHT_ABOVE_ROOT_M = 1.10
 MIN_TASK_HORIZONTAL_STANDOFF_M = 0.15
 MAX_TASK_HORIZONTAL_STANDOFF_M = 2.0
+
+
+def configure_review_render_quality(settings: Any | None = None) -> dict[str, Any]:
+    """Pin the persistent camera renderer to NVIDIA's SDG quality settings."""
+
+    if settings is None:
+        import carb.settings  # type: ignore
+
+        settings = carb.settings.get_settings()
+    requested = {
+        "/rtx/post/aa/op": 3,
+        "/rtx/post/dlss/execMode": REVIEW_DLSS_EXEC_MODE,
+    }
+    for path, value in requested.items():
+        settings.set(path, value)
+    effective = {path: settings.get(path) for path in requested}
+    if effective != requested:
+        raise RuntimeError("review_renderer_quality_setting_readback_mismatch")
+    return {
+        "schema_version": "isaac_review_render_quality.v1",
+        "status": "passed",
+        "renderer_mode": "RayTracedLighting",
+        "anti_aliasing": "DLSS",
+        "dlss_exec_mode": "quality",
+        "dlss_exec_mode_value": REVIEW_DLSS_EXEC_MODE,
+        "capture_rt_subframes": REVIEW_CAPTURE_RT_SUBFRAMES,
+        "settings": effective,
+        "claim_boundary": (
+            "These settings reduce low-resolution DLSS smearing and settle moved "
+            "camera/material history; they do not prove scene-asset fidelity, policy "
+            "quality, or task success."
+        ),
+    }
 
 
 def _norm(value: Sequence[float]) -> tuple[float, float, float]:
@@ -663,6 +698,7 @@ class IsaacTaskReviewRenderer:
         import omni.replicator.core as rep  # type: ignore
         from pxr import UsdGeom  # type: ignore
 
+        self.render_quality_contract = configure_review_render_quality()
         self.stage = stage
         self.app = app
         self.robot_prim_path = robot_prim_path
@@ -780,6 +816,7 @@ class IsaacTaskReviewRenderer:
             "render_product_count": len(self.render_products),
             "rgb_shapes": rgb_shapes,
             "render_products_realized": True,
+            "render_quality": deepcopy(self.render_quality_contract),
             "heartbeat_callback_attached_during_prewarm": False,
             "heartbeat_callback_attached_after_prewarm": False,
             "blockers": [],
@@ -1396,6 +1433,14 @@ class IsaacTaskReviewRenderer:
             self._heartbeat()
             self.app.update()
             self._heartbeat()
+        # NVIDIA recommends multiple RT subframes after moving cameras or
+        # materials so DLSS history cannot smear a prior view into this frame.
+        self.rep.orchestrator.step(
+            delta_time=0.0,
+            pause_timeline=True,
+            wait_for_render=True,
+            rt_subframes=REVIEW_CAPTURE_RT_SUBFRAMES,
+        )
         return self.capture_current(step_index=step_index)
 
     def capture_current(self, *, step_index: int) -> list[dict[str, Any]]:

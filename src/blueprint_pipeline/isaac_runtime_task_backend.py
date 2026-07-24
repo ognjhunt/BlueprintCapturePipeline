@@ -1148,7 +1148,13 @@ class IsaacPersistentTaskBackend:
     ) -> None:
         from isaacsim import SimulationApp  # type: ignore
 
-        self.app = SimulationApp({"headless": bool(headless)})
+        self.app = SimulationApp(
+            {
+                "headless": bool(headless),
+                "renderer": "RayTracedLighting",
+                "anti_aliasing": 3,
+            }
+        )
         import omni.timeline  # type: ignore
         import omni.usd  # type: ignore
 

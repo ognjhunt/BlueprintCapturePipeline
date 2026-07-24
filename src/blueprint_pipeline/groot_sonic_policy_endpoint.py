@@ -204,6 +204,37 @@ def nominal_unitree_g1_sonic_state() -> dict[str, list[float]]:
     }
 
 
+def _require_robot_head_pov(observation: Mapping[str, Any]) -> None:
+    visual = (
+        dict(observation.get("visual_observation"))
+        if isinstance(observation.get("visual_observation"), Mapping)
+        else {}
+    )
+    camera_role = str(
+        visual.get("camera_role") or observation.get("camera_role") or ""
+    ).strip()
+    viewpoint_mode = str(
+        visual.get("viewpoint_mode") or observation.get("viewpoint_mode") or ""
+    ).strip()
+    eligible = visual.get(
+        "policy_observation_eligible",
+        observation.get("policy_observation_eligible"),
+    )
+    overview_included = visual.get(
+        "third_person_overview_included",
+        observation.get("third_person_overview_included"),
+    )
+    if (
+        camera_role != "robot_pov"
+        or viewpoint_mode != "robot_head_mounted_egocentric"
+        or eligible is not True
+        or overview_included is not False
+    ):
+        raise RuntimeError(
+            "groot_sonic_requery_blocked:policy_observation_not_exclusive_robot_head_pov"
+        )
+
+
 def make_groot_sonic_zmq_policy_endpoint(
     *,
     policy_server_url: str,
@@ -225,6 +256,7 @@ def make_groot_sonic_zmq_policy_endpoint(
         step_index: int,
     ) -> dict[str, Any]:
         observation = dict(adapted_observation)
+        _require_robot_head_pov(observation)
         if "unitree_g1_sonic_state" not in observation:
             carried = adapted_observation.get("generated_robot_state")
             carried_state = (
