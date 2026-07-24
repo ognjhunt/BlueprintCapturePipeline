@@ -1232,9 +1232,20 @@ def _normalize_oscar_robot_action_prompt(source_prompt: str) -> tuple[str, bool]
         "show the robot's head or torso; only its hands or forearms may enter "
         "from the bottom of the frame."
     )
-    if "rigidly head-mounted camera" in lowered and "never switch" in lowered:
+    action_causality_contract = (
+        "The supplied robot skeleton trajectory is authoritative: show exactly "
+        "that arm and hand motion. Keep articulated objects stationary unless a "
+        "visible robot hand reaches and remains in contact with the object while "
+        "it moves; never make a door, drawer, handle, or appliance move by itself."
+    )
+    if (
+        "rigidly head-mounted camera" in lowered
+        and "never switch" in lowered
+        and "skeleton trajectory is authoritative" in lowered
+        and "never make a door" in lowered
+    ):
         return cleaned, False
-    return f"{task_context}. {viewpoint_contract}", True
+    return f"{task_context}. {viewpoint_contract} {action_causality_contract}", True
 
 
 def _task_prompt_from_wam_generation_step(step_input: Mapping[str, Any]) -> str:

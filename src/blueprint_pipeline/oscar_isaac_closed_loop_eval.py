@@ -651,22 +651,25 @@ def _manipulation_effector_progress_report(
     projected_motion_capability_passed = bool(
         effector_rows and best_projected_displacement >= float(minimum_projected_motion_px)
     )
-    # This is a WAM action-conditioning capability gate. A controller horizon
-    # that moves substantially still provides a real differentiated action for
-    # OSCAR even when its first maneuver is not target-directed. Directional
-    # task progress remains recorded here and is judged after live Isaac
-    # apply/readback by the separate semantic and no-progress gates.
-    passed = motion_capability_passed and projected_motion_capability_passed
+    # For a registered manipulation target, arbitrary arm motion is not a
+    # sufficient basis for a goal-conditioned WAM transition. Otherwise the
+    # language goal can overpower an action that visibly moves away and cause
+    # the object to animate without contact. Require measurable target-directed
+    # progress before the expensive learned transition; later Isaac
+    # apply/readback still remains the authority for contact and task success.
+    passed = (
+        directional_progress_passed
+        and motion_capability_passed
+        and projected_motion_capability_passed
+    )
     blockers: list[str] = []
+    if not directional_progress_passed:
+        blockers.append("manipulation_controller_fk_no_directional_effector_progress")
     if not motion_capability_passed:
         blockers.append("manipulation_controller_fk_no_meaningful_effector_motion")
     if not projected_motion_capability_passed:
         blockers.append("manipulation_controller_fk_no_visible_projected_effector_motion")
-    warnings = (
-        []
-        if directional_progress_passed
-        else ["manipulation_controller_fk_motion_not_toward_task_target"]
-    )
+    warnings: list[str] = []
     return {
         "schema_version": "manipulation_effector_progress_report.v1",
         "status": "passed" if passed else "blocked",
@@ -3919,7 +3922,16 @@ def _linux_nvidia_host_to_local_pid_map(
                 for value in line.split(":", 1)[1].split()
                 if (pid := _positive_pid(value)) is not None
             ]
-            if namespace_pids and namespace_pids[-1] == local_pid:
+            if namespace_pids:
+                # ``/proc`` directory names are already expressed in the PID
+                # namespace visible to this process.  Some container runtimes
+                # expose the complete NSpid chain (host ... local), while
+                # others expose only the outermost/host value even though the
+                # directory name remains the local PID.  The prior
+                # ``namespace_pids[-1] == local_pid`` check therefore dropped
+                # every mapping on the retained Vast runtime.  Bind the
+                # outermost PID to the authoritative local ``/proc`` entry in
+                # both layouts.
                 mapped[namespace_pids[0]] = local_pid
             break
     return mapped

@@ -107,7 +107,11 @@ def test_task_label_prompt_is_normalized_for_robot_action_context() -> None:
         "Continue the egocentric first-person manipulation video from the robot's "
         "rigidly head-mounted camera. Keep that same camera viewpoint; never switch "
         "to an external, overhead, or third-person shot. Do not show the robot's "
-        "head or torso; only its hands or forearms may enter from the bottom of the frame."
+        "head or torso; only its hands or forearms may enter from the bottom of the frame. "
+        "The supplied robot skeleton trajectory is authoritative: show exactly that "
+        "arm and hand motion. Keep articulated objects stationary unless a visible "
+        "robot hand reaches and remains in contact with the object while it moves; "
+        "never make a door, drawer, handle, or appliance move by itself."
     )
 
 
@@ -120,6 +124,8 @@ def test_robot_context_prompt_still_receives_egocentric_viewpoint_contract() -> 
     assert normalized.startswith(prompt)
     assert "rigidly head-mounted camera" in normalized
     assert "never switch to an external, overhead, or third-person shot" in normalized
+    assert "skeleton trajectory is authoritative" in normalized
+    assert "never make a door, drawer, handle, or appliance move by itself" in normalized
 
 
 def _read_json(path: Path) -> dict[str, object]:

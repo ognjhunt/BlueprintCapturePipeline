@@ -2426,10 +2426,13 @@ def test_manipulation_effector_progress_gate_precedes_oscar_generation(
     )
     assert report["capability_gate_passed"] is (expected_status == "completed")
     if expected_status == "blocked":
-        assert result["blockers"] == ["manipulation_controller_fk_no_meaningful_effector_motion"]
+        assert result["blockers"] == [
+            "manipulation_controller_fk_no_directional_effector_progress",
+            "manipulation_controller_fk_no_meaningful_effector_motion",
+        ]
 
 
-def test_manipulation_motion_can_condition_wam_without_overclaiming_directional_progress(
+def test_manipulation_motion_away_from_target_cannot_condition_goal_outcome(
     tmp_path: Path,
 ) -> None:
     action = {"policy_action": "learned", "action_chunk": [0.1, -0.1]}
@@ -2496,13 +2499,15 @@ def test_manipulation_motion_can_condition_wam_without_overclaiming_directional_
 
     result = backend(str(_write_frame(tmp_path / "source.png", seed=72)), action, 1, [])
 
-    assert result["status"] == "completed"
-    assert generate_calls == 1
+    assert result["status"] == "blocked"
+    assert generate_calls == 0
     report = result["manipulation_effector_progress_report"]
-    assert report["capability_gate_passed"] is True
+    assert report["capability_gate_passed"] is False
     assert report["motion_capability_passed"] is True
     assert report["directional_progress_passed"] is False
-    assert report["warnings"] == ["manipulation_controller_fk_motion_not_toward_task_target"]
+    assert report["blockers"] == [
+        "manipulation_controller_fk_no_directional_effector_progress"
+    ]
 
 
 def test_manipulation_effector_gate_rejects_world_motion_without_visible_image_motion() -> None:
@@ -3038,7 +3043,11 @@ def test_local_oscar_subprocess_generate_runs_and_extracts(tmp_path: Path) -> No
         "Continue the egocentric first-person manipulation video from the robot's "
         "rigidly head-mounted camera. Keep that same camera viewpoint; never switch "
         "to an external, overhead, or third-person shot. Do not show the robot's head "
-        "or torso; only its hands or forearms may enter from the bottom of the frame."
+        "or torso; only its hands or forearms may enter from the bottom of the frame. "
+        "The supplied robot skeleton trajectory is authoritative: show exactly that "
+        "arm and hand motion. Keep articulated objects stationary unless a visible "
+        "robot hand reaches and remains in contact with the object while it moves; "
+        "never make a door, drawer, handle, or appliance move by itself."
     )
     assert seen_env.get("BLUEPRINT_OSCAR_CUDNN_LIB_DIR") is None
 
@@ -3138,6 +3147,7 @@ def test_linux_nvidia_host_to_local_pid_map_parses_nspid_namespace_chain(
         (101, "Name:\tgroot\nNSpid:\t1904046\t101\n"),
         (201, "Name:\tgear\nNSpid:\t1904061\t201\n"),
         (301, "Name:\tisaac\nNSpid:\t301\n"),
+        (401, "Name:\toscar\nNSpid:\t1908921\n"),
     ):
         process_dir = tmp_path / str(local_pid)
         process_dir.mkdir()
@@ -3150,6 +3160,7 @@ def test_linux_nvidia_host_to_local_pid_map_parses_nspid_namespace_chain(
         1904046: 101,
         1904061: 201,
         301: 301,
+        1908921: 401,
     }
 
 

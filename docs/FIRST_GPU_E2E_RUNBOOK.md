@@ -556,8 +556,11 @@ the streamed horizon.
 
 Inside a container, `nvidia-smi` can report compute-application PIDs from the
 host PID namespace while the launch supervisor exports container-local root
-PIDs. GPU residency proof must translate the first and last values of Linux
-`/proc/<pid>/status` `NSpid` chains before applying process ancestry. Four
+PIDs. GPU residency proof must bind the outermost value of Linux
+`/proc/<local-pid>/status` `NSpid` chains to the local numeric `/proc` entry
+before applying process ancestry. Do not require the last `NSpid` value to
+repeat the local directory name: some container runtimes expose only the
+outermost value. Four
 unattributed CUDA allocations on one GPU are not a residency failure, but they
 also are not acceptable proof until this namespace translation binds each
 allocation to GR00T, GEAR-SONIC, Isaac, or OSCAR.
@@ -574,10 +577,16 @@ OSCAR manipulation conditioning must render the complete signed
 repeat only the final FK landmarks for every conditioning frame. Before
 generation, require meaningful world-space effector motion, at least two
 in-frame effector projections, and at least eight pixels of visible projected
-hand/wrist displacement. The conditioning renderer must reject a static trace,
-an empty or clipped tail, or a horizon with no in-frame effector. Prompt-driven
-object motion without corresponding embodied arm motion is not an acceptable
-learned transition.
+hand/wrist displacement. For a registered manipulation target, also require
+measurable effector progress toward that target; motion away from the target
+must fail before WAM generation. The conditioning renderer must reject a static
+trace, an empty or clipped tail, or a horizon with no in-frame effector.
+Prompt-driven object motion without corresponding embodied arm motion is not
+an acceptable learned transition. The OSCAR prompt must declare the controller
+skeleton authoritative and keep articulated objects stationary unless a
+visible robot hand reaches and remains in contact while the object moves; a
+task instruction must never be treated as permission to animate the desired
+outcome.
 
 Review capture must use `RayTracedLighting`, DLSS Quality
 (`/rtx/post/dlss/execMode=2`), and eight zero-delta RT subframes after a camera
