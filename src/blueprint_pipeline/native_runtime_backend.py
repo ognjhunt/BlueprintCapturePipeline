@@ -45,6 +45,7 @@ from .native_runtime_strategy import (
     resolve_native_runtime_strategy,
 )
 from .core.security_controls import contained_path, strict_identifier
+from .generated_media_privacy import release_decision as _privacy_release_decision
 from blueprint_contracts.runtime_service_contract import RuntimeMetadata
 from blueprint_contracts.site_world_contract import merge_site_world_definition
 
@@ -74,6 +75,26 @@ def _json_write(path: Path, payload: Mapping[str, Any]) -> None:
 def _json_read(path: Path) -> Dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _generated_media_release_decision(
+    chunk: Mapping[str, Any], rollout: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """Whether one generated chunk may be served to a customer-visible session.
+
+    A world model conditioned on a site frame can re-synthesise a face, a badge,
+    or a whiteboard that capture-side redaction removed, so the source clip's
+    clean status says nothing about these pixels. The chunk must carry its own
+    release contract; anything else is withheld.
+    """
+
+    contract = chunk.get("generated_media_privacy_contract")
+    if not isinstance(contract, Mapping):
+        contract = rollout.get("generated_media_privacy_contract")
+    return _privacy_release_decision(
+        contract if isinstance(contract, Mapping) else {},
+        required_scope="customer_visible",
+    )
 
 
 def _read_bytes_if_available(path: Path) -> Optional[bytes]:
@@ -2600,6 +2621,14 @@ class NativeWorldModelRuntimeStore:
             chunk = self._chunk_record(rollout, selected_chunk_id) if selected_chunk_id else None
         media_path = Path(str(chunk.get("media_path") or "").strip()) if chunk else None
         if media_path and media_path.is_file():
+            # Generated pixels do not inherit the source capture's redaction
+            # status, so a chunk reaches a customer-visible session only with
+            # its own release contract. Absent evidence is a denial.
+            release = _generated_media_release_decision(chunk, rollout)
+            if not release["allowed"]:
+                return self._privacy_withheld_response(
+                    session_id, camera_id, rollout, reason=release["reason"]
+                )
             media_bytes = _read_bytes_if_available(media_path)
             if media_bytes is not None:
                 return {
@@ -2624,6 +2653,33 @@ class NativeWorldModelRuntimeStore:
                 "X-Blueprint-Media-Status": str(rollout.get("status") or "buffering"),
                 "X-Blueprint-Presentation-Mode": str(rollout.get("presentation_mode") or ""),
                 "X-Blueprint-Refinement-Status": str(rollout.get("refinement_status") or ""),
+                # Stated explicitly so no client can present a status card as a
+                # rendered observation of the site.
+                "X-Blueprint-Content-Kind": "placeholder",
+                "X-Blueprint-Is-Site-Observation": "false",
+            },
+        }
+
+    def _privacy_withheld_response(
+        self,
+        session_id: str,
+        camera_id: str,
+        rollout: Mapping[str, Any],
+        *,
+        reason: str,
+    ) -> Dict[str, Any]:
+        """Serve a labelled placeholder instead of uncleared generated media."""
+
+        return {
+            "content": self._render_png(session_id, camera_id),
+            "media_type": "image/png",
+            "headers": {
+                "Cache-Control": "no-store",
+                "X-Blueprint-Render-Source": "withheld_privacy_contract",
+                "X-Blueprint-Media-Status": str(rollout.get("status") or "withheld"),
+                "X-Blueprint-Content-Kind": "placeholder",
+                "X-Blueprint-Is-Site-Observation": "false",
+                "X-Blueprint-Withheld-Reason": reason,
             },
         }
 

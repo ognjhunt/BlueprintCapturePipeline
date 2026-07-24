@@ -10,6 +10,7 @@ from .consent_normalization import (
     restrictive_scope_list,
     strict_allow_bool,
 )
+from .signed_delivery_bundle import attach_delivery_integrity
 
 
 def _string_list(value: object) -> list[str]:
@@ -167,6 +168,7 @@ def build_rights_provenance_review(
     site_identity: Mapping[str, Any] | None,
     adjacent_systems: Sequence[str] | None,
     artifact_uris: Mapping[str, Any] | None = None,
+    artifact_digests: Mapping[str, Any] | None = None,
     required_use_classes: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
     rights = dict(rights_summary or {})
@@ -413,6 +415,12 @@ def build_rights_provenance_review(
         },
         "blockers": blockers,
         "artifacts": dict(artifact_uris or {}),
+        "delivery_integrity": attach_delivery_integrity(
+            root_id="rights_provenance_review",
+            root_kind="rights_review",
+            artifact_uris=artifact_uris,
+            artifact_digests=artifact_digests,
+        ),
     }
 
 
@@ -431,6 +439,7 @@ def build_site_package_manifest(
     adjacent_systems: Sequence[str] | None,
     rights_review: Mapping[str, Any] | None,
     artifact_uris: Mapping[str, Any] | None = None,
+    artifact_digests: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     canonical_package_status = str(
         evaluation_prep_manifest.get("canonical_package_status")
@@ -490,6 +499,14 @@ def build_site_package_manifest(
         },
         "blockers": blockers,
         "artifacts": dict(artifact_uris or {}),
+        "delivery_integrity": attach_delivery_integrity(
+            root_id=f"site_package:{scene_id}:{capture_id}",
+            root_kind="site_package",
+            scene_id=scene_id,
+            capture_id=capture_id,
+            artifact_uris=artifact_uris,
+            artifact_digests=artifact_digests,
+        ),
     }
 
 
@@ -510,6 +527,7 @@ def build_hosted_review_readiness(
     launchable_export_bundle: Mapping[str, Any],
     rights_review: Mapping[str, Any] | None = None,
     artifact_uris: Mapping[str, Any] | None = None,
+    artifact_digests: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     blockers = list(dict.fromkeys([str(item).strip() for item in (demo_blockers or []) if str(item).strip()]))
     # Fail closed on rights/privacy. Hosted-review readiness is synced to the WebApp
@@ -578,6 +596,7 @@ def build_proof_pack_manifest(
     rights_review: Mapping[str, Any] | None,
     hosted_review_readiness: Mapping[str, Any],
     artifact_uris: Mapping[str, Any] | None = None,
+    artifact_digests: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     # Fail closed on a missing or malformed rights review: no review means the
     # rights packet is unavailable, never cleared.
@@ -610,6 +629,14 @@ def build_proof_pack_manifest(
         "site_labeling": site_package_manifest.get("site_labeling") or {},
         "blockers": blockers,
         "artifacts": dict(artifact_uris or {}),
+        "delivery_integrity": attach_delivery_integrity(
+            root_id=f"proof_pack:{scene_id}:{capture_id}",
+            root_kind="proof_pack",
+            scene_id=scene_id,
+            capture_id=capture_id,
+            artifact_uris=artifact_uris,
+            artifact_digests=artifact_digests,
+        ),
     }
 
 

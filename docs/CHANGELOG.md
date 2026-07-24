@@ -1,5 +1,48 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-24 (third entry)
+
+### User-Facing
+
+- Generated media no longer inherits its source capture's redaction status.
+  Capture-side redaction protects captured pixels; it cannot cover pixels a
+  world model invents, which can re-synthesise a face, a badge, or a whiteboard
+  that redaction removed. Generated artifacts now start unverified, must be
+  conditioned on redaction-verified assets, require their own redaction pass
+  over the generated pixels before customer-visible release, and carry takedown
+  keys so a later consent revocation reaches the derivative. The hosted runtime
+  withholds any chunk lacking a release contract
+  (`src/blueprint_pipeline/generated_media_privacy.py`,
+  `src/blueprint_pipeline/native_runtime_backend.py`,
+  `docs/CUSTOMER_OUTPUT_CONTRACTS.md`).
+- Every Post-Training Data Package now ships a frozen held-out cut carved from
+  the same capture, plus a check that fails closed when the training payload
+  contains held-out clips. Nothing previously stopped a buyer's evaluation set
+  from overlapping the clips they were sold
+  (`src/blueprint_pipeline/post_training_holdout_split.py`).
+- Site package, proof pack, and rights review manifests now carry a
+  `delivery_integrity` block with per-member digests and a root digest over the
+  member set. A URI without a digest is a blocker: it records where bytes were,
+  not which bytes they were
+  (`src/blueprint_pipeline/signed_delivery_bundle.py`,
+  `src/blueprint_pipeline/proof_contracts.py`).
+- Added anchor return kits so a physical trial's outcomes can actually join to
+  the prediction they answer. Join keys are pre-populated per prediction, and a
+  returned file is validated before ingest rather than after the robot time is
+  spent (`src/blueprint_pipeline/anchor_return_kit.py`).
+- Added per-site difficulty profiles so cross-site policy numbers are
+  interpretable. Difficulty is reported beside a success rate as a covariate,
+  never divided into it (`src/blueprint_pipeline/site_difficulty_profile.py`).
+
+### Employee-Facing
+
+- The OEM handoff summary now reports its own completeness against the required
+  inputs its skill declares, instead of degrading to a one-line prose string
+  when evidence is missing. The hosted runtime's placeholder card is explicitly
+  labelled so it cannot be presented as a rendered site observation
+  (`src/blueprint_pipeline/agent_runtime/orchestrator.py`,
+  `src/blueprint_pipeline/native_runtime_backend.py`).
+
 ## 2026-07-24 (second entry)
 
 ### User-Facing

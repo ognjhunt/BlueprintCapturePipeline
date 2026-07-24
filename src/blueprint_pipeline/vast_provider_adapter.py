@@ -34,10 +34,9 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
-from .gpu_selection_policy import (  # noqa: F401 - re-exported for callers
-    DISALLOWED_ISAAC_GPU_KEYWORDS, GPU_SELECTION_POLICIES, gpu_allowed_by_policy,
-    policy_manifest, resolve_gpu_selection_policy, ISAAC_RT_GPU_KEYWORDS,
-    _is_disallowed_for_isaac, _is_isaac_rt_candidate)
+from .gpu_selection_policy import (
+    GPU_SELECTION_POLICIES, _is_disallowed_for_isaac, _is_isaac_rt_candidate,
+    gpu_allowed_by_policy, policy_manifest, resolve_gpu_selection_policy)
 from .logging_utils import log_event
 from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,

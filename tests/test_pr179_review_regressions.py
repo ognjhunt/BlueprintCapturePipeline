@@ -6,6 +6,7 @@ that reintroduces it fails here rather than in production.
 
 from __future__ import annotations
 
+import argparse
 import inspect
 import subprocess
 import sys
@@ -22,10 +23,7 @@ from blueprint_pipeline.action_space_registry import (
     UNITREE_G1_ARM_HAND_43D,
     get_action_space,
 )
-from blueprint_pipeline.oscar_resident_worker import (
-    ResidentWorkerError,
-    start_resident_oscar_generate_from_args,
-)
+from blueprint_pipeline import oscar_resident_worker as resident
 
 
 # -- P1: the CLI option must be accepted by the function main() forwards to ---
@@ -42,18 +40,43 @@ def test_adapter_accepts_the_gpu_selection_policy_keyword() -> None:
     assert "gpu_selection_policy" in parameters
 
 
-def test_every_adapter_cli_option_maps_to_a_run_parameter() -> None:
-    """Generalises the above so the next added flag cannot reintroduce it."""
+def test_every_adapter_cli_option_maps_to_a_run_parameter(monkeypatch) -> None:
+    """Generalises the above so the next added flag cannot reintroduce it.
 
-    parser = vast._build_arg_parser() if hasattr(vast, "_build_arg_parser") else None
-    if parser is None:
-        pytest.skip("adapter parser is constructed inline in main()")
+    The parser is built inline in ``main()``, so it is captured by intercepting
+    ``parse_args`` rather than skipped -- the full test lane treats any skip as
+    missing evidence.
+    """
+
+    captured: list[argparse.ArgumentParser] = []
+    real_parse_args = argparse.ArgumentParser.parse_args
+
+    def _capture(self, *parse_args, **parse_kwargs):
+        captured.append(self)
+        return real_parse_args(self, *parse_args, **parse_kwargs)
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", _capture)
+    with pytest.raises(SystemExit):
+        vast.main(["--help"])
+
+    assert captured, "adapter parser was never constructed"
+    parser = captured[0]
     parameters = set(inspect.signature(vast.run_vast_provider_adapter).parameters)
-    missing = [
-        action.dest
-        for action in parser._actions
-        if action.dest not in {"help"} and action.dest not in parameters
-    ]
+    # main() renames a few dests before forwarding; mirror that mapping.
+    renames = {
+        "allow_vast_instance_launch": "allow_instance_launch",
+        "machine_avoidlist": "machine_avoidlist_path",
+        "allowed_machine_id": "allowed_machine_ids",
+        "session_budget_ledger": "session_budget_ledger_path",
+    }
+    missing = sorted(
+        {
+            renames.get(action.dest, action.dest)
+            for action in parser._actions
+            if action.dest != "help"
+        }
+        - parameters
+    )
     assert not missing, f"CLI options with no run parameter: {missing}"
 
 
@@ -112,20 +135,18 @@ def test_worker_is_closed_when_startup_validation_fails(tmp_path: Path) -> None:
         provider_timeout_seconds = 30.0
         oscar_resident_worker_max_restarts = 0
 
-    import blueprint_pipeline.oscar_resident_worker as module
-
-    real_argv = module.build_resident_worker_argv
-    module.build_resident_worker_argv = lambda **_kwargs: [sys.executable, str(script)]
+    real_argv = resident.build_resident_worker_argv
+    resident.build_resident_worker_argv = lambda **_kwargs: [sys.executable, str(script)]
     try:
-        with pytest.raises(ResidentWorkerError, match="gpu_residency_unproven"):
-            start_resident_oscar_generate_from_args(
+        with pytest.raises(resident.ResidentWorkerError, match="gpu_residency_unproven"):
+            resident.start_resident_oscar_generate_from_args(
                 _Args(),
                 python=sys.executable,
                 extract_next_frame=lambda video, out_dir: None,
                 require_gpu_residency=True,
             )
     finally:
-        module.build_resident_worker_argv = real_argv
+        resident.build_resident_worker_argv = real_argv
 
     # The spawned process must not survive the rejected handshake: a leaked
     # worker would hold the GPU for the rest of the job.

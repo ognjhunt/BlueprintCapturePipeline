@@ -755,19 +755,69 @@ def _humanoid_route_access_review(artifacts: PipelineReviewArtifacts) -> Dict[st
     }
 
 
+# The oem_handoff_writer skill names these as required inputs. A handoff that
+# silently omits them is not a partial handoff -- it is an OEM being asked to
+# assess platform fit without the evidence the assessment depends on.
+_OEM_HANDOFF_REQUIRED_INPUTS: tuple[tuple[str, str], ...] = (
+    ("opportunity_handoff", "opportunity_handoff"),
+    ("readiness_decision", "readiness_decision"),
+    ("capability_envelope", "capability_checks"),
+    ("blocker_register", "blocker_register"),
+    ("human_actions_required", "human_actions_required"),
+    ("normalized_intake", "site_intake"),
+    ("geometry_evidence", "geometry_evidence"),
+    ("task_scope_record", "task_scope_record"),
+)
+
+
 def _oem_handoff_summary(artifacts: PipelineReviewArtifacts) -> Dict[str, Any]:
+    """Report the handoff's completeness rather than narrating around gaps.
+
+    The previous summary degraded to a one-line string when the skill returned
+    nothing, so a handoff missing most of its required evidence was
+    indistinguishable from a complete one.
+    """
+
     target_robot_team = artifacts.opportunity_handoff.get("target_robot_team", {})
+    present: list[str] = []
+    missing: list[str] = []
+    for input_name, attribute in _OEM_HANDOFF_REQUIRED_INPUTS:
+        value = getattr(artifacts, attribute, None)
+        (present if value else missing).append(input_name)
+
+    blockers = [f"oem_handoff_required_input_missing:{name}" for name in missing]
+    if not target_robot_team:
+        blockers.append("oem_handoff_target_robot_team_unselected")
+
     return {
-        "schema_version": "v1",
+        "schema_version": "v2",
         "scene_id": artifacts.descriptor.scene_id,
         "capture_id": artifacts.descriptor.capture_id,
         "recommended_lane": artifacts.opportunity_handoff.get("recommended_lane"),
         "target_robot_team": target_robot_team,
-        "summary": (
-            "Human still needs to choose the downstream robot platform or integrator."
-            if not target_robot_team
-            else f"Prepared OEM-facing handoff summary for {target_robot_team.get('robot_platform')}."
+        "status": "complete" if not blockers else "incomplete",
+        "required_inputs": [name for name, _ in _OEM_HANDOFF_REQUIRED_INPUTS],
+        "present_inputs": present,
+        "missing_inputs": missing,
+        "required_input_coverage": (
+            round(len(present) / len(_OEM_HANDOFF_REQUIRED_INPUTS), 4)
+            if _OEM_HANDOFF_REQUIRED_INPUTS
+            else None
         ),
+        "blockers": sorted(set(blockers)),
+        "summary": (
+            f"Prepared OEM-facing handoff for {target_robot_team.get('robot_platform')}."
+            if not blockers
+            else (
+                f"Handoff incomplete: {len(missing)} of "
+                f"{len(_OEM_HANDOFF_REQUIRED_INPUTS)} required inputs missing"
+                + ("; downstream robot platform not yet selected." if not target_robot_team else ".")
+            )
+        ),
+        "claim_boundary": {
+            "handoff_completeness_is_not_site_readiness": True,
+            "complete_means_inputs_present_not_platform_fit_established": True,
+        },
     }
 
 

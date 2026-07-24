@@ -19,6 +19,10 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 from .artifact_compatibility import VISUAL_AUGMENTATION_BACKEND_REGISTRY_ARTIFACTS
 from .artifact_contracts import validate_sellable_artifact
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .post_training_holdout_split import (
+    build_holdout_split,
+    check_package_against_split,
+)
 from .consent_normalization import (
     CONSENT_ACTIVE_STATUSES,
     CONSENT_REVOKED_STATUSES,
@@ -4893,6 +4897,29 @@ def _write_package_files(
             key = f"export_file_{index:04d}_{_safe_path_component(export_file.stem, 'artifact')}"
             package_file_index[key] = relative
             existing_export_paths.add(relative)
+    # A buyer's evaluation set must not overlap the clips they were just sold,
+    # so every package ships a frozen held-out cut carved from this capture and
+    # a check that the training payload does not contain it.
+    holdout_rows = _clip_rows(clips)
+    holdout_split = build_holdout_split(
+        split_id=f"{scene_id}:{capture_id}",
+        clips=holdout_rows,
+        scene_id=scene_id,
+        capture_id=capture_id,
+    )
+    _holdout_ids = set(holdout_split.get("holdout_clip_ids") or [])
+    holdout_check = check_package_against_split(
+        split=holdout_split,
+        training_clip_ids=[
+            _clip_id(row, index)
+            for index, row in enumerate(holdout_rows)
+            if _clip_id(row, index) not in _holdout_ids
+        ],
+    )
+    write_json(output_dir / "holdout_split.json", holdout_split)
+    write_json(output_dir / "holdout_package_check.json", holdout_check)
+    package_file_index["holdout_split"] = "holdout_split.json"
+    package_file_index["holdout_package_check"] = "holdout_package_check.json"
     package_index = {
         "schema_version": "post_training_data_package_index.v1",
         "generated_at": generated_at,
@@ -4909,6 +4936,14 @@ def _write_package_files(
             "consent_revoked": False,
         },
         "files": package_file_index,
+        "holdout_split": {
+            "split_id": holdout_split.get("split_id"),
+            "split_sha256": holdout_split.get("split_sha256"),
+            "status": holdout_split.get("status"),
+            "train_clip_count": holdout_split.get("train_clip_count"),
+            "holdout_clip_count": holdout_split.get("holdout_clip_count"),
+            "package_check_status": holdout_check.get("status"),
+        },
         "source_artifacts": dict(included_artifacts),
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
