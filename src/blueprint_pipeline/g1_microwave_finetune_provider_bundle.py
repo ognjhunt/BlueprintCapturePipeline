@@ -65,6 +65,16 @@ def _dataset_preflight(dataset_archive: Path) -> dict[str, Any]:
         "groot_n17_finetune_preflight.json"
     )
     with tarfile.open(dataset_archive, "r:gz") as archive:
+        apple_double_members = [
+            member.name
+            for member in archive.getmembers()
+            if "__MACOSX" in Path(member.name).parts
+            or Path(member.name).name.startswith("._")
+        ]
+        if apple_double_members:
+            raise ValueError(
+                "g1_microwave_provider_bundle_appledouble_members_forbidden"
+            )
         try:
             member = archive.getmember(member_name)
         except KeyError as exc:

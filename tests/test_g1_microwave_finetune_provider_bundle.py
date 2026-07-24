@@ -7,10 +7,12 @@ import tarfile
 import urllib.request
 import zipfile
 
+import pytest
+
 from blueprint_pipeline import g1_microwave_finetune_provider_bundle as bundle
 
 
-def _dataset_archive(tmp_path: Path) -> Path:
+def _dataset_archive(tmp_path: Path, *, include_appledouble: bool = False) -> Path:
     root = tmp_path / "microwave_owned_lerobot_v21_20260717"
     root.mkdir()
     (root / "groot_n17_finetune_preflight.json").write_text(
@@ -25,6 +27,10 @@ def _dataset_archive(tmp_path: Path) -> Path:
         ),
         encoding="utf-8",
     )
+    if include_appledouble:
+        data = root / "data/chunk-000"
+        data.mkdir(parents=True)
+        (data / "._episode_000000.parquet").write_bytes(b"not parquet")
     archive = tmp_path / "dataset.tar.gz"
     with tarfile.open(archive, "w:gz") as handle:
         handle.add(root, arcname=root.name)
@@ -102,3 +108,14 @@ def test_provider_bundle_is_deterministic(tmp_path: Path) -> None:
     )
 
     assert first["bundle"]["sha256"] == second["bundle"]["sha256"]
+
+
+def test_provider_bundle_rejects_macos_appledouble_members(tmp_path: Path) -> None:
+    with pytest.raises(
+        ValueError,
+        match="g1_microwave_provider_bundle_appledouble_members_forbidden",
+    ):
+        bundle.build_provider_bundle(
+            dataset_archive=_dataset_archive(tmp_path, include_appledouble=True),
+            output_path=tmp_path / "provider_bundle.zip",
+        )
