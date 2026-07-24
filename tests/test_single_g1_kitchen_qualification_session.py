@@ -530,6 +530,13 @@ def test_trained_checkpoint_override_is_exact_and_does_not_claim_qualification()
         "--port",
         "5550",
     ]
+    inputs["bootstrap_script"] = (
+        "python -m blueprint_pipeline.groot_sonic_checkpoint_preflight "
+        "--checkpoint-path /opt/blueprint/ckpts/sonic\n"
+        "/opt/gr00t-venv/bin/python "
+        "/opt/gr00t/gr00t/eval/run_gr00t_server.py "
+        "--model-path /opt/blueprint/ckpts/sonic --port 5550\n"
+    )
 
     updated = qualification._apply_trained_checkpoint_override(
         inputs,
@@ -541,10 +548,16 @@ def test_trained_checkpoint_override_is_exact_and_does_not_claim_qualification()
         qualification.REMOTE_FINAL_CHECKPOINT
     )
     binding = updated["plan"]["qualification_checkpoint_override"]
+    assert binding["episode_bootstrap_checkpoint_bindings_rebound"] == 2
     assert binding["same_session_training_required"] is True
     assert binding["open_loop_qualification_required"] is True
     assert binding["isaac_registered_transition_required"] is True
     assert binding["task_compatibility_claimed"] is False
+    assert "/opt/blueprint/ckpts/sonic" not in updated["bootstrap_script"]
+    assert (
+        updated["bootstrap_script"].count(qualification.REMOTE_FINAL_CHECKPOINT)
+        == 2
+    )
 
     with pytest.raises(ValueError, match="checkpoint_path_not_fixed"):
         qualification._apply_trained_checkpoint_override(inputs, "/tmp/checkpoint-500")

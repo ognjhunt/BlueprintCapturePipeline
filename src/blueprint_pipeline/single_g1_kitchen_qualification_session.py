@@ -395,11 +395,31 @@ def _apply_trained_checkpoint_override(
     positions = [index for index, item in enumerate(command) if item == "--model-path"]
     if len(positions) != 1 or positions[0] + 1 >= len(command):
         raise ValueError("qualification_groot_model_path_option_invalid")
+    source_checkpoint = command[positions[0] + 1]
+    bootstrap_script = str(inputs.get("bootstrap_script") or "")
+    source_checkpoint_token = shlex.quote(source_checkpoint)
+    trained_checkpoint_token = shlex.quote(resolved)
+    # The sealed episode bootstrap contains two executable bindings: the
+    # checkpoint preflight and the GR00T server launch. Updating only the
+    # standalone component wrapper leaves normal episode execution serving the
+    # warm-start checkpoint, so require and replace both exact shell tokens.
+    if bootstrap_script.count(source_checkpoint_token) != 2:
+        raise ValueError("qualification_episode_bootstrap_checkpoint_binding_invalid")
+    rebound_bootstrap_script = bootstrap_script.replace(
+        source_checkpoint_token,
+        trained_checkpoint_token,
+    )
+    if (
+        source_checkpoint_token in rebound_bootstrap_script
+        or rebound_bootstrap_script.count(trained_checkpoint_token) != 2
+    ):
+        raise ValueError("qualification_episode_bootstrap_checkpoint_rebind_failed")
     command[positions[0] + 1] = resolved
     plan["groot_server_command"] = command
     plan["qualification_checkpoint_override"] = {
         "schema_version": "single_g1_kitchen_qualification_checkpoint_override.v1",
         "checkpoint_path": resolved,
+        "episode_bootstrap_checkpoint_bindings_rebound": 2,
         "same_session_training_required": True,
         "open_loop_qualification_required": True,
         "isaac_registered_transition_required": True,
@@ -407,6 +427,7 @@ def _apply_trained_checkpoint_override(
     }
     updated = dict(inputs)
     updated["plan"] = plan
+    updated["bootstrap_script"] = rebound_bootstrap_script
     return updated
 
 
