@@ -186,8 +186,16 @@ def _base_observation(frame: Path, target_prompt: str) -> dict[str, Any]:
     return {
         "schema_version": "blueprint_policy_observation.v1",
         "camera_frame_path": str(frame),
+        "camera_role": "robot_pov",
+        "viewpoint_mode": "robot_head_mounted_egocentric",
+        "policy_observation_eligible": True,
+        "third_person_overview_included": False,
         "visual_observation": {
             "camera_frame_path": str(frame),
+            "camera_role": "robot_pov",
+            "viewpoint_mode": "robot_head_mounted_egocentric",
+            "policy_observation_eligible": True,
+            "third_person_overview_included": False,
             "wam_generated_observation": True,
             "sim_only_generated_observation": True,
             "physical_robot_sensor_proof": False,

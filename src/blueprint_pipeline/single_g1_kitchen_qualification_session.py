@@ -55,6 +55,9 @@ from .g1_microwave_groot_finetune_component import (
     REMOTE_FINAL_CHECKPOINT,
     build_finetune_component,
 )
+from .g1_microwave_live_aligned_finetune import (
+    TASK_DESCRIPTION as LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION,
+)
 from .g1_kitchen_leaf_evidence import load_attempt_identity
 from .g1_kitchen_proof_row_validation import (
     WORKER_PROOF_ROW_SPECS,
@@ -395,11 +398,54 @@ def _apply_trained_checkpoint_override(
     positions = [index for index, item in enumerate(command) if item == "--model-path"]
     if len(positions) != 1 or positions[0] + 1 >= len(command):
         raise ValueError("qualification_groot_model_path_option_invalid")
+    source_checkpoint = command[positions[0] + 1]
+    bootstrap_script = str(inputs.get("bootstrap_script") or "")
+    source_checkpoint_token = shlex.quote(source_checkpoint)
+    trained_checkpoint_token = shlex.quote(resolved)
+    # The sealed episode bootstrap contains two executable bindings: the
+    # checkpoint preflight and the GR00T server launch. Updating only the
+    # standalone component wrapper leaves normal episode execution serving the
+    # warm-start checkpoint, so require and replace both exact shell tokens.
+    if bootstrap_script.count(source_checkpoint_token) != 2:
+        raise ValueError("qualification_episode_bootstrap_checkpoint_binding_invalid")
+    rebound_bootstrap_script = bootstrap_script.replace(
+        source_checkpoint_token,
+        trained_checkpoint_token,
+    )
+    if (
+        source_checkpoint_token in rebound_bootstrap_script
+        or rebound_bootstrap_script.count(trained_checkpoint_token) != 2
+    ):
+        raise ValueError("qualification_episode_bootstrap_checkpoint_rebind_failed")
+    source_task_prompt = str(inputs.get("task_prompt") or "").strip()
+    if not source_task_prompt:
+        raise ValueError("qualification_source_task_prompt_missing")
+    source_task_argument = f"--task-prompt {shlex.quote(source_task_prompt)}"
+    trained_task_argument = (
+        f"--task-prompt {shlex.quote(LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION)}"
+    )
+    if rebound_bootstrap_script.count(source_task_argument) != 1:
+        raise ValueError("qualification_episode_bootstrap_task_prompt_binding_invalid")
+    rebound_bootstrap_script = rebound_bootstrap_script.replace(
+        source_task_argument,
+        trained_task_argument,
+        1,
+    )
+    # The bootstrap also writes task_prompt.txt from this inherited variable.
+    # Override it locally so evidence and the actual policy query remain exact.
+    rebound_bootstrap_script = (
+        "export BLUEPRINT_TASK_PROMPT="
+        f"{shlex.quote(LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION)}\n"
+        + rebound_bootstrap_script
+    )
     command[positions[0] + 1] = resolved
     plan["groot_server_command"] = command
     plan["qualification_checkpoint_override"] = {
         "schema_version": "single_g1_kitchen_qualification_checkpoint_override.v1",
         "checkpoint_path": resolved,
+        "episode_bootstrap_checkpoint_bindings_rebound": 2,
+        "runtime_task_prompt": LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION,
+        "runtime_task_prompt_matches_live_aligned_finetune": True,
         "same_session_training_required": True,
         "open_loop_qualification_required": True,
         "isaac_registered_transition_required": True,
@@ -407,6 +453,8 @@ def _apply_trained_checkpoint_override(
     }
     updated = dict(inputs)
     updated["plan"] = plan
+    updated["task_prompt"] = LIVE_ALIGNED_FINETUNE_TASK_DESCRIPTION
+    updated["bootstrap_script"] = rebound_bootstrap_script
     return updated
 
 
@@ -1727,8 +1775,19 @@ def _materialize_qualification_refresh_payload(
         "immutable_binding": immutable,
         "files": encoded_files,
     }
-    path = root / QUALIFICATION_REFRESH_PAYLOAD_NAME
-    _private_write_json(path, payload)
+    canonical_path = root / QUALIFICATION_REFRESH_PAYLOAD_NAME
+    _private_write_json(canonical_path, payload)
+    payload_bytes = canonical_path.read_bytes()
+    payload_sha256 = _sha256_bytes(payload_bytes)
+    # Some paid-worker HTTP proxies cache object-store downloads by basename
+    # even when the object key changes.  A stable ``qualification_refresh_payload.json``
+    # name can therefore return the previous revision to the worker.  Preserve
+    # the canonical local artifact for operators/tests, but stage a
+    # content-addressed filename so both the path and bytes change together.
+    path = root / f"qualification_refresh_payload_{payload_sha256[:16]}.json"
+    with path.open("wb") as handle:
+        handle.write(payload_bytes)
+    path.chmod(0o600)
     episode_sha = encoded_files["qualification_episode_bootstrap.sh"]["sha256"]
     component_sha256s = {
         "groot_server": encoded_files["qualification_groot_server.sh"]["sha256"],
@@ -1745,7 +1804,8 @@ def _materialize_qualification_refresh_payload(
     }
     return {
         "path": str(path),
-        "refresh_payload_sha256": _sha256_bytes(path.read_bytes()),
+        "canonical_path": str(canonical_path),
+        "refresh_payload_sha256": payload_sha256,
         "size_bytes": path.stat().st_size,
         "mode_is_0600": stat.S_IMODE(path.stat().st_mode) == 0o600,
         "from_revision": current_revision,

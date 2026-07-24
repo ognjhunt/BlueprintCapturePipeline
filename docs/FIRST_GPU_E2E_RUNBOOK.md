@@ -537,6 +537,80 @@ pre-runtime RunPod machine IDs are quarantined within the bounded launch so the
 same failed host is terminated after the first poll instead of consuming another
 full watchdog window.
 
+### Retained-GPU iteration invariants
+
+After the exact release image has passed its startup and dependency gates,
+repository-only fixes must use the canonical `gpu-canary` refresh-bootstrap
+action against the retained, watchdog-bound GPU. Do not repeat the CPU image
+build or model-volume preparation unless the image, native dependencies, model
+weights, or cache contract changed. Every refresh must still bind the protected
+source commit and produce its own refresh evidence before another episode.
+Stage each refresh payload under the content-addressed filename emitted by the
+qualification session, not the stable canonical basename. Some paid-worker
+HTTP proxies cache object-store responses by basename even when the object key
+changes; reusing `qualification_refresh_payload.json` can therefore deliver the
+previous revision and fail the SHA gate. Preserve the canonical local artifact
+for review, but transmit the digest-suffixed path returned by
+`refresh_payload.path`.
+
+The official GEAR-SONIC simulator controller publishes a monotonic
+`g1_debug.index`. Use that index as the primary per-command freshness watermark.
+Its `ros_timestamp` may remain `0.0` when ROS 2 wall-clock is unavailable, so a
+non-advancing timestamp is not, by itself, evidence that the controller failed
+to process a new command. Continue to require the exact token and hand-action
+echo, drain queued states before each send, and require a unique action within
+the streamed horizon.
+
+Inside a container, `nvidia-smi` can report compute-application PIDs from the
+host PID namespace while the launch supervisor exports container-local root
+PIDs. GPU residency proof must bind the outermost value of Linux
+`/proc/<local-pid>/status` `NSpid` chains to the local numeric `/proc` entry
+before applying process ancestry. Do not require the last `NSpid` value to
+repeat the local directory name: some container runtimes expose only the
+outermost value. Four
+unattributed CUDA allocations on one GPU are not a residency failure, but they
+also are not acceptable proof until this namespace translation binds each
+allocation to GR00T, GEAR-SONIC, Isaac, or OSCAR.
+
+WAM and policy requery inputs must be exclusively the rigid robot-head
+`robot_pov` view with
+`viewpoint_mode=robot_head_mounted_egocentric`. The task-framed third-person
+camera is review-only and must never be relabeled or supplied to the policy.
+The WAM adapter and GR00T endpoint fail closed when this metadata is absent or
+when an overview is included.
+
+OSCAR manipulation conditioning must render the complete signed
+`controller_fk_sequence`, resampled across the generated-video horizon. Never
+repeat only the final FK landmarks for every conditioning frame. Before
+generation, require meaningful world-space effector motion, at least two
+in-frame effector projections, and at least eight pixels of visible projected
+hand/wrist displacement. For a registered manipulation target, also require
+measurable effector progress toward that target; motion away from the target
+must fail before WAM generation. The conditioning renderer must reject a static
+trace, an empty or clipped tail, or a horizon with no in-frame effector.
+Prompt-driven object motion without corresponding embodied arm motion is not
+an acceptable learned transition. The OSCAR prompt must declare the controller
+skeleton authoritative and keep articulated objects stationary unless a
+visible robot hand reaches and remains in contact while the object moves; a
+task instruction must never be treated as permission to animate the desired
+outcome.
+
+Microwave fine-tuning must not reuse a proxy-rendered demonstration whose
+initial joints differ from the qualification runtime. Before training on a
+retained worker, rebuild the owned expert trajectory from the exact same-session
+live Isaac proprioception and current handle geometry, re-encode it with the
+pinned official GEAR-SONIC encoder, render all policy observations in the exact
+textured kitchen from the rigid head camera, and recompute the LeRobot action,
+state, and timestamp statistics. Open-loop loss on the same proxy episode is
+not a domain-transfer gate. The subsequent controller-FK directional-progress
+gate remains mandatory and must reject the checkpoint before OSCAR if the
+decoded hand moves away from the registered target.
+
+Review capture must use `RayTracedLighting`, DLSS Quality
+(`/rtx/post/dlss/execMode=2`), and eight zero-delta RT subframes after a camera
+move before reading RGB. This reduces low-resolution temporal smearing; it does
+not repair missing source textures or prove scene, policy, or task quality.
+
 Lambda Cloud is retained only as a read-only compatibility inventory lane. Use
 the Lambda adapter only after the job has a `gpu_provider_launch_request.json` with
 `status=request_manifest_ready`, local sim-only prerequisite evidence has passed,

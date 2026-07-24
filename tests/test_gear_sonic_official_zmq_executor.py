@@ -691,6 +691,9 @@ def test_horizon_freshness_rejects_a_buffered_prior_echo() -> None:
     assert executor._controller_timestamp(124) > prior
     assert executor._controller_frame_matches([82], 82)
     assert not executor._controller_frame_matches([81], 82)
+    assert executor._controller_index(123) == 123
+    assert executor._controller_index(123.5) is None
+    assert executor._controller_index(-1) is None
 
 
 def test_horizon_rejects_mismatched_explicit_frame_despite_fresh_timestamp() -> None:
@@ -719,6 +722,35 @@ def test_horizon_rejects_mismatched_explicit_frame_despite_fresh_timestamp() -> 
     )
 
 
+def test_horizon_prefers_official_monotonic_index_when_sim_ros_timestamp_is_zero() -> None:
+    prior_index = executor._controller_index(41)
+    current_index = executor._controller_index(42)
+    fixed_sim_timestamp = executor._controller_timestamp(0.0)
+
+    assert prior_index is not None
+    assert current_index is not None
+    assert fixed_sim_timestamp is not None
+    assert (
+        executor._controller_frame_match_mode(
+            {"index": 42},
+            expected_frame_index=82,
+            current_index=current_index,
+            last_controller_index=prior_index,
+            current_timestamp=fixed_sim_timestamp,
+            last_controller_timestamp=fixed_sim_timestamp,
+        )
+        == "strict_monotonic_state_index_unique_action_without_reported_frame"
+    )
+    assert not executor._controller_state_matches_expected_frame(
+        {"index": 41},
+        expected_frame_index=82,
+        current_index=prior_index,
+        last_controller_index=prior_index,
+        current_timestamp=fixed_sim_timestamp,
+        last_controller_timestamp=fixed_sim_timestamp,
+    )
+
+
 def test_horizon_accepts_fresh_controller_local_one_frame_motion_index() -> None:
     prior = executor._controller_timestamp(123)
     current = executor._controller_timestamp(124)
@@ -732,7 +764,7 @@ def test_horizon_accepts_fresh_controller_local_one_frame_motion_index() -> None
             current_timestamp=current,
             last_controller_timestamp=prior,
         )
-        == "strict_timestamp_unique_action_and_controller_local_frame_zero"
+        == "strict_ros_timestamp_unique_action_and_controller_local_frame_zero"
     )
     assert not executor._controller_state_matches_expected_frame(
         {"frame_index": [0]},
@@ -766,7 +798,7 @@ def test_horizon_rejects_local_frame_fallback_for_duplicate_action() -> None:
             last_controller_timestamp=prior,
             allow_local_frame_fallback=False,
         )
-        == "strict_timestamp_and_requested_sequence_frame"
+        == "strict_ros_timestamp_and_requested_sequence_frame"
     )
     assert not executor._controller_state_matches_expected_frame(
         {},

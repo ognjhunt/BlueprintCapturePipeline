@@ -4,6 +4,7 @@
 #   pip install -e . mujoco pillow pyzmq msgpack msgpack-numpy imageio uv huggingface_hub
 # Intentionally NO torch/torchvision here so the base's cu128 build is untouched.
 mujoco
+onnxruntime==1.20.1
 pillow
 pyzmq
 msgpack

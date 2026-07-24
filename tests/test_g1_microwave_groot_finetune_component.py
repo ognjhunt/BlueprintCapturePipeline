@@ -86,6 +86,7 @@ def test_component_is_deterministic_hash_bound_and_fixed(tmp_path: Path) -> None
     assert 'checkpoint_processor_root / \\"processor\\"' in script
     assert '"cosmos-reason2" in str(config.model_name).lower()' in script
     assert 'config.model.model_name = "nvidia/Cosmos-Reason2-2B"' in script
+    assert "accelerate_other.is_deepspeed_available = lambda: False" in script
     assert "/opt/blueprint/models/cosmos-reason2-2b" in script
     assert "g1_microwave_finetune_local_cosmos_asset_invalid" in script
     assert 'PYTHONPATH="$GROOT_OVERLAY${PYTHONPATH:+:$PYTHONPATH}"' in script
@@ -96,10 +97,7 @@ def test_generated_component_accepts_exact_dataset_archive_members(tmp_path: Pat
     built = component.build_finetune_component(_dataset(tmp_path / "dataset"))
     script = built["script"]
     marker = 'python3 - "$DATASET" "$ARCHIVE_SHA" <<\'PY\'\n'
-    extraction_source = script.split(marker, 1)[1].split(
-        "\nPY\nif [ ! -x /opt/gr00t-venv/bin/python ]",
-        1,
-    )[0]
+    extraction_source = script.split(marker, 1)[1].split("\nPY\n", 1)[0]
     extraction_root = tmp_path / "extracted"
     extraction_root.mkdir()
 
@@ -122,6 +120,77 @@ def test_generated_component_accepts_exact_dataset_archive_members(tmp_path: Pat
         for path in extraction_root.rglob("*")
         if path.is_file()
     } == component.REQUIRED_DATASET_MEMBERS
+
+
+@pytest.mark.parametrize(
+    ("shell_variable", "source_module"),
+    [
+        ("ISAAC_BACKEND_MODULE", component.ISAAC_BACKEND_MODULE),
+        ("ISAAC_RENDERER_MODULE", component.ISAAC_RENDERER_MODULE),
+    ],
+)
+def test_generated_component_materializes_exact_isaac_runtime_source(
+    tmp_path: Path,
+    shell_variable: str,
+    source_module: str,
+) -> None:
+    built = component.build_finetune_component(_dataset(tmp_path / "dataset"))
+    marker = f'python3 - "${shell_variable}" <<\'PY\'\n'
+    materializer = built["script"].split(marker, 1)[1].split("\nPY\n", 1)[0]
+    destination = tmp_path / source_module
+    completed = subprocess.run(
+        [sys.executable, "-", str(destination)],
+        check=False,
+        capture_output=True,
+        input=materializer,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert destination.read_bytes() == (
+        Path(component.__file__).with_name(source_module).read_bytes()
+    )
+
+
+def test_component_requires_live_aligned_isaac_training_episode(tmp_path: Path) -> None:
+    built = component.build_finetune_component(_dataset(tmp_path / "dataset"))
+    contract = built["live_aligned_training"]
+    assert contract["required"] is True
+    assert contract["same_session_live_start_required"] is True
+    assert contract["exact_isaac_rigid_head_render_required"] is True
+    assert contract["per_frame_measured_joint_readback_required"] is True
+    assert contract["active_arm_robot_pov_motion_required"] is True
+    assert contract["one_physics_step_per_controller_target_required"] is True
+    assert contract["render_capture_must_not_add_physics_step"] is True
+    assert contract["physx_contact_report_monitor_required"] is True
+    assert contract["unexpected_robot_collisions_fail_closed"] is True
+    assert contract["door_motion_requires_prior_manipulator_contact"] is True
+    assert len(contract["module_sha256"]) == 64
+    assert contract["grasp_arc_module"] == component.GRASP_ARC_MODULE
+    assert len(contract["grasp_arc_module_sha256"]) == 64
+    assert contract["isaac_backend_module"] == component.ISAAC_BACKEND_MODULE
+    assert len(contract["isaac_backend_module_sha256"]) == 64
+    assert contract["isaac_renderer_module"] == component.ISAAC_RENDERER_MODULE
+    assert len(contract["isaac_renderer_module_sha256"]) == 64
+    script = built["script"]
+    assert "prepare-actions" in script
+    assert "render-isaac" in script
+    assert "patch-dataset" in script
+    assert "/workspace/initial_g1_sonic_state.json" in script
+    assert component.REMOTE_GRASP_ARC_MODULE in script
+    assert component.REMOTE_ISAAC_BACKEND_MODULE in script
+    assert component.REMOTE_ISAAC_RENDERER_MODULE in script
+    assert "g1_microwave_isaac_backend_materialized_sha256_mismatch" in script
+    assert "g1_microwave_isaac_renderer_materialized_sha256_mismatch" in script
+    assert "--stage /workspace/kitchen/KitchenRoom.usd" in script
+    assert (
+        f"onnxruntime=={component.PINNED_ONNXRUNTIME_VERSION}"
+        in script
+    )
+    assert (
+        f"onnxruntime.__version__ == "
+        f"{component.PINNED_ONNXRUNTIME_VERSION!r}"
+        in script
+    )
 
 
 def test_component_overlay_patches_only_writable_copy(tmp_path: Path) -> None:
@@ -161,7 +230,8 @@ def test_component_overlay_patches_only_writable_copy(tmp_path: Path) -> None:
     )
     launch_source.write_text(
         "def configure(config):\n"
-        '    config.model.model_name = "nvidia/Cosmos-Reason2-2B"\n',
+        '    config.model.model_name = "nvidia/Cosmos-Reason2-2B"\n'
+        "    run(config)\n",
         encoding="utf-8",
     )
     model_before = model_source.read_bytes()
@@ -217,6 +287,10 @@ def test_component_overlay_patches_only_writable_copy(tmp_path: Path) -> None:
     compile(copied_setup.read_text(), str(copied_setup), "exec")
     assert str(local_model_root) in copied_launch.read_text()
     assert "nvidia/Cosmos-Reason2-2B" not in copied_launch.read_text()
+    assert (
+        "accelerate_other.is_deepspeed_available = lambda: False"
+        in copied_launch.read_text()
+    )
     compile(copied_launch.read_text(), str(copied_launch), "exec")
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["status"] == "passed"

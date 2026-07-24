@@ -10,6 +10,7 @@ from blueprint_pipeline import isaac_task_review_renderer as renderer_module
 from blueprint_pipeline.isaac_task_review_renderer import (
     IsaacTaskReviewRenderer,
     articulated_handle_focus_from_mesh,
+    configure_review_render_quality,
     look_at_quaternion,
     project_world_point,
     rigid_head_camera_mount,
@@ -17,6 +18,31 @@ from blueprint_pipeline.isaac_task_review_renderer import (
     select_robot_pov_calibration_target,
     task_camera_plan,
 )
+
+
+def test_review_render_quality_pins_dlss_quality_and_settled_subframes() -> None:
+    class Settings:
+        def __init__(self) -> None:
+            self.values = {}
+
+        def set(self, path, value) -> None:
+            self.values[path] = value
+
+        def get(self, path):
+            return self.values.get(path)
+
+    settings = Settings()
+    result = configure_review_render_quality(settings)
+
+    assert result["status"] == "passed"
+    assert result["renderer_mode"] == "RayTracedLighting"
+    assert result["dlss_exec_mode"] == "quality"
+    assert result["dlss_exec_mode_value"] == 2
+    assert result["capture_rt_subframes"] == 8
+    assert settings.values == {
+        "/rtx/post/aa/op": 3,
+        "/rtx/post/dlss/execMode": 2,
+    }
 
 
 def test_articulated_handle_focus_prefers_far_disconnected_components() -> None:
@@ -415,6 +441,13 @@ def test_render_refreshes_live_state_around_updates_and_frame_io(
         def update(self) -> None:
             events.append("update")
 
+    class Orchestrator:
+        def step(self, **kwargs) -> None:
+            events.append(f"step:{kwargs}")
+
+    class Rep:
+        orchestrator = Orchestrator()
+
     class Annotator:
         def get_data(self):
             events.append("get_data")
@@ -428,6 +461,7 @@ def test_render_refreshes_live_state_around_updates_and_frame_io(
 
     renderer = IsaacTaskReviewRenderer.__new__(IsaacTaskReviewRenderer)
     renderer.app = App()
+    renderer.rep = Rep()
     renderer.heartbeat_callback = lambda: events.append("heartbeat")
     renderer.frames_dir = tmp_path
     renderer.robot_prim_path = "/World/G1"
@@ -629,6 +663,11 @@ def test_prewarm_realizes_both_products_before_heartbeat_attachment() -> None:
 
     renderer = IsaacTaskReviewRenderer.__new__(IsaacTaskReviewRenderer)
     renderer.rep = Rep()
+    renderer.render_quality_contract = {
+        "status": "passed",
+        "dlss_exec_mode": "quality",
+        "capture_rt_subframes": 8,
+    }
     renderer.heartbeat_callback = None
     renderer._prewarm_completed = False
     renderer._prewarm_evidence = None
@@ -694,6 +733,11 @@ def test_prewarm_retries_explicit_zero_delta_capture_until_both_frames_exist() -
 
     renderer = IsaacTaskReviewRenderer.__new__(IsaacTaskReviewRenderer)
     renderer.rep = Rep()
+    renderer.render_quality_contract = {
+        "status": "passed",
+        "dlss_exec_mode": "quality",
+        "capture_rt_subframes": 8,
+    }
     renderer.heartbeat_callback = None
     renderer._prewarm_completed = False
     renderer._prewarm_evidence = None
@@ -714,3 +758,41 @@ def test_prewarm_retries_explicit_zero_delta_capture_until_both_frames_exist() -
         "overview": [480, 640, 4],
         "robot_pov": [480, 640, 4],
     }
+
+
+def test_render_measured_pose_uses_zero_delta_without_pausing_timeline() -> None:
+    events: list[object] = []
+
+    class Orchestrator:
+        def step(self, **kwargs) -> None:
+            events.append(("step", kwargs))
+
+    class Rep:
+        orchestrator = Orchestrator()
+
+    renderer = IsaacTaskReviewRenderer.__new__(IsaacTaskReviewRenderer)
+    renderer.rep = Rep()
+    renderer.follow_live_robot = lambda **kwargs: events.append(("follow", kwargs))
+    renderer.capture_current = lambda **kwargs: [
+        {"camera_role": "robot_pov", **kwargs}
+    ]
+
+    frames = renderer.render_measured_pose(
+        step_index=12,
+        target_prim_path="/root/Microwave017/Microwave017_Door",
+    )
+
+    assert events[0] == (
+        "follow",
+        {"target_prim_path": "/root/Microwave017/Microwave017_Door"},
+    )
+    assert events[1] == (
+        "step",
+        {
+            "delta_time": 0.0,
+            "pause_timeline": False,
+            "wait_for_render": True,
+            "rt_subframes": renderer_module.REVIEW_CAPTURE_RT_SUBFRAMES,
+        },
+    )
+    assert frames == [{"camera_role": "robot_pov", "step_index": 12}]

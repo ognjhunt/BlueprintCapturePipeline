@@ -1559,7 +1559,19 @@ upload_phase() {{
 
 upload_phase container_bash_started
 
-curl -fsSL "$BLUEPRINT_EVAL_MANIFEST_URI" -o /workspace/input_bundle.zip
+curl \\
+  --http1.1 \\
+  --fail \\
+  --show-error \\
+  --location \\
+  --retry 8 \\
+  --retry-delay 2 \\
+  --retry-max-time 900 \\
+  --retry-all-errors \\
+  --connect-timeout 30 \\
+  --max-time 1200 \\
+  "$BLUEPRINT_EVAL_MANIFEST_URI" \\
+  -o /workspace/input_bundle.zip
 python - <<'PY'
 import os, pathlib, shutil, stat, zipfile
 root = pathlib.Path('/workspace').resolve()

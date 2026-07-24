@@ -55,13 +55,24 @@ def _stream_message() -> bytes:
     return b"command" + msgpack.packb({"start": False, "stop": False, "planner": False})
 
 
-def _state_payload(token: list[float]) -> dict:
+def _state_payload(
+    token: list[float],
+    *,
+    state_index: int = 0,
+    left_hand: list[float] | None = None,
+    right_hand: list[float] | None = None,
+) -> dict:
     return {
         "token_state": token,
         "body_q_target": [0.1] * 29,
         "body_q_measured": [0.0] * 29,
         "base_quat_measured": [1.0, 0.0, 0.0, 0.0],
-        "ros_timestamp": 123,
+        "index": state_index,
+        # Mirror the pinned controller's simulator behavior when ROS 2
+        # wall-clock is unavailable.
+        "ros_timestamp": 0.0,
+        "last_left_hand_action": list(left_hand or [0.0] * 7),
+        "last_right_hand_action": list(right_hand or [0.0] * 7),
         "joint_order_schema_version": contract.JOINT_ORDER_SCHEMA_VERSION,
         "body_joint_names": list(contract.PROTOCOL_V4_BODY_JOINT_NAMES),
         "left_hand_joint_names": list(contract.PROTOCOL_V4_LEFT_HAND_JOINT_NAMES),
@@ -99,6 +110,22 @@ class _FakeController(threading.Thread):
         self.received_poses: list[dict] = []
         self.received_commands: list[dict] = []
         self.stop_event = threading.Event()
+        self.state_index = 0
+
+    def _state(
+        self,
+        token: list[float],
+        *,
+        left_hand: list[float] | None = None,
+        right_hand: list[float] | None = None,
+    ) -> dict:
+        self.state_index += 1
+        return _state_payload(
+            token,
+            state_index=self.state_index,
+            left_hand=left_hand,
+            right_hand=right_hand,
+        )
 
     def run(self) -> None:  # pragma: no cover - thread body exercised via tests
         time.sleep(self.join_delay_seconds)
@@ -126,7 +153,7 @@ class _FakeController(threading.Thread):
                         # after the PLANNER start command enters CONTROL.
                         pub.send(
                             b"g1_debug"
-                            + msgpack.packb(_state_payload([0.0] * 64))
+                            + msgpack.packb(self._state([0.0] * 64))
                         )
                     continue
                 if not raw.startswith(b"pose"):
@@ -144,8 +171,12 @@ class _FakeController(threading.Thread):
                 pose = msgpack.unpackb(raw[len(b"pose") :], raw=False)
                 self.received_poses.append(pose)
                 for stale in self.stale_tokens:
-                    pub.send(b"g1_debug" + msgpack.packb(_state_payload(stale)))
-                state = _state_payload(list(pose["token_state"]))
+                    pub.send(b"g1_debug" + msgpack.packb(self._state(stale)))
+                state = self._state(
+                    list(pose["token_state"]),
+                    left_hand=pose.get("left_hand_joints"),
+                    right_hand=pose.get("right_hand_joints"),
+                )
                 if self.mutate_state is not None:
                     state = self.mutate_state(state)
                 pub.send(b"g1_debug" + msgpack.packb(state))
@@ -179,6 +210,47 @@ def _sequenced_roundtrip(
         planner_start_command_message=_planner_start_message(),
         stream_command_message=_stream_message(),
         motion_token=token,
+        timeout_seconds=timeout,
+        action_endpoint=f"tcp://127.0.0.1:{action_port}",
+        state_endpoint=f"tcp://127.0.0.1:{state_port}",
+        slow_joiner_grace_seconds=0.05,
+    )
+
+
+def _horizon_pose_message(
+    token: list[float], left_hand: list[float], right_hand: list[float]
+) -> bytes:
+    return b"pose" + msgpack.packb(
+        {
+            "token_state": token,
+            "left_hand_joints": left_hand,
+            "right_hand_joints": right_hand,
+        },
+        use_single_float=False,
+    )
+
+
+def _horizon_roundtrip(
+    tokens: list[list[float]],
+    *,
+    action_port: int,
+    state_port: int,
+    timeout: float = 10.0,
+):
+    left_hands = [[index / 10.0] * 7 for index in range(len(tokens))]
+    right_hands = [[-index / 10.0] * 7 for index in range(len(tokens))]
+    return executor._zmq_pubsub_horizon_roundtrip(
+        pose_messages=[
+            _horizon_pose_message(token, left_hands[index], right_hands[index])
+            for index, token in enumerate(tokens)
+        ],
+        motion_tokens=tokens,
+        left_hands=left_hands,
+        right_hands=right_hands,
+        frame_indices=[81 + index for index in range(len(tokens))],
+        planner_start_command_message=_planner_start_message(),
+        stream_command_message=_stream_message(),
+        control_hz=50.0,
         timeout_seconds=timeout,
         action_endpoint=f"tcp://127.0.0.1:{action_port}",
         state_endpoint=f"tcp://127.0.0.1:{state_port}",
@@ -324,3 +396,35 @@ def test_concurrent_attempts_each_match_their_own_token() -> None:
     finally:
         for controller in controllers:
             controller.stop()
+
+
+def test_horizon_uses_monotonic_index_with_fixed_sim_timestamp() -> None:
+    action_port, state_port = _free_port(), _free_port()
+    controller = _FakeController(
+        action_endpoint=f"tcp://127.0.0.1:{action_port}",
+        state_port=state_port,
+        require_planner_start=True,
+    )
+    controller.start()
+    tokens = [[0.1] * 64, [0.2] * 64, [0.3] * 64]
+    try:
+        states = _horizon_roundtrip(
+            tokens,
+            action_port=action_port,
+            state_port=state_port,
+        )
+        assert all(
+            state["token_state"] == pytest.approx(tokens[index])
+            for index, state in enumerate(states)
+        )
+        assert [state["ros_timestamp"] for state in states] == [0.0, 0.0, 0.0]
+        assert [state["index"] for state in states] == sorted(
+            state["index"] for state in states
+        )
+        assert all(
+            state["_blueprint_controller_frame_match_mode"]
+            == "strict_monotonic_state_index_unique_action_without_reported_frame"
+            for state in states
+        )
+    finally:
+        controller.stop()

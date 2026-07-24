@@ -6,6 +6,7 @@ import io
 import math
 import urllib.error
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -44,6 +45,44 @@ def test_live_collision_probe_uses_validated_g1_footprint() -> None:
     assert backend_module.G1_LIVE_COLLISION_HALF_EXTENT_M == pytest.approx(
         (0.12, 0.23, 0.62)
     )
+
+
+def test_physx_contact_reports_are_normalized_to_json_safe_evidence() -> None:
+    headers = [
+        SimpleNamespace(
+            type="CONTACT_FOUND",
+            actor0="/World/G1",
+            actor1="/World/Kitchen",
+            collider0="/World/G1/right_wrist_yaw_link",
+            collider1="/World/Kitchen/MicrowaveDoor",
+            contact_data_offset=0,
+            num_contact_data=1,
+        )
+    ]
+    data = [
+        SimpleNamespace(
+            impulse=(3.0, 4.0, 0.0),
+            separation=-0.001,
+        )
+    ]
+    result = backend_module.normalize_physx_contact_reports(
+        headers,
+        data,
+        path_decoder=lambda value: value,
+    )
+    assert result == [
+        {
+            "event_type": "CONTACT_FOUND",
+            "actor0_prim_path": "/World/G1",
+            "actor1_prim_path": "/World/Kitchen",
+            "collider0_prim_path": "/World/G1/right_wrist_yaw_link",
+            "collider1_prim_path": "/World/Kitchen/MicrowaveDoor",
+            "contact_point_count": 1,
+            "maximum_impulse": 5.0,
+            "total_impulse": 5.0,
+            "minimum_separation_m": -0.001,
+        }
+    ]
 
 
 def _signing_key_file(tmp_path: Path) -> Path:

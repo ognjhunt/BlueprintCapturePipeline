@@ -2239,6 +2239,26 @@ def adapt_policy_observation_for_declared_schema(
     withheld: list[str] = []
     base = _mapping(base_policy_observation)
     visual = _mapping(base.get("visual_observation"))
+    camera_role = _string(
+        visual.get("camera_role") or base.get("camera_role")
+    ).strip()
+    viewpoint_mode = _string(
+        visual.get("viewpoint_mode") or base.get("viewpoint_mode")
+    ).strip()
+    policy_observation_eligible = visual.get(
+        "policy_observation_eligible",
+        base.get("policy_observation_eligible"),
+    )
+    third_person_overview_included = visual.get(
+        "third_person_overview_included",
+        base.get("third_person_overview_included"),
+    )
+    exclusive_robot_head_pov = bool(
+        camera_role == "robot_pov"
+        and viewpoint_mode == "robot_head_mounted_egocentric"
+        and policy_observation_eligible is True
+        and third_person_overview_included is False
+    )
     camera_frame = (
         derived_step.get("source_generated_frame_path")
         or base.get("camera_frame_path")
@@ -2255,6 +2275,11 @@ def adapt_policy_observation_for_declared_schema(
             **visual,
             "available": bool(camera_frame),
             "camera_frame_path": camera_frame,
+            "camera_role": camera_role or None,
+            "viewpoint_mode": viewpoint_mode or None,
+            "policy_observation_eligible": policy_observation_eligible,
+            "third_person_overview_included": third_person_overview_included,
+            "wam_viewpoint_inherits_source_robot_head_pov": exclusive_robot_head_pov,
             "wam_generated_observation": True,
             "physical_robot_sensor_proof": False,
             **(
@@ -2273,6 +2298,10 @@ def adapt_policy_observation_for_declared_schema(
                 else {}
             ),
         }
+        adapted["camera_role"] = camera_role or None
+        adapted["viewpoint_mode"] = viewpoint_mode or None
+        adapted["policy_observation_eligible"] = policy_observation_eligible
+        adapted["third_person_overview_included"] = third_person_overview_included
         supplied.extend(["camera_frame_path", "visual_observation"])
     for key in ("schema_version", "task_id", "task_prompt", "target_object_id"):
         if key in base:
@@ -2315,6 +2344,11 @@ def adapt_policy_observation_for_declared_schema(
     missing_required = []
     if _supports(fields, "rgb", "camera_frame_path", "visual_observation") and not camera_frame:
         missing_required.append("camera_frame_path")
+    if (
+        _supports(fields, "rgb", "camera_frame_path", "visual_observation")
+        and not exclusive_robot_head_pov
+    ):
+        missing_required.append("exclusive_robot_head_pov")
     early = bool(_mapping(derived_step.get("uncertainty")).get("early_termination_recommended"))
     adapter_status = "completed" if not missing_required else "blocked"
     safe_for_policy_requery = bool(adapter_status == "completed" and not early)

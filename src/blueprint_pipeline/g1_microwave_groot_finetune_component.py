@@ -43,6 +43,21 @@ TRAINING_TIMEOUT_SECONDS = 12_600
 OPEN_LOOP_TIMEOUT_SECONDS = 1_800
 OPEN_LOOP_STEPS = 120
 OPEN_LOOP_MAX_ERROR_RATIO = 0.8
+PINNED_ONNXRUNTIME_VERSION = "1.20.1"
+LIVE_ALIGNED_MODULE = "g1_microwave_live_aligned_finetune.py"
+REMOTE_LIVE_ALIGNED_MODULE = f"/workspace/{LIVE_ALIGNED_MODULE}"
+GRASP_ARC_MODULE = "g1_microwave_grasp_arc_seed.py"
+REMOTE_GRASP_ARC_MODULE = (
+    f"/workspace/runtime_overlay/package/blueprint_pipeline/{GRASP_ARC_MODULE}"
+)
+ISAAC_BACKEND_MODULE = "isaac_runtime_task_backend.py"
+REMOTE_ISAAC_BACKEND_MODULE = f"/workspace/runtime_overlay/{ISAAC_BACKEND_MODULE}"
+ISAAC_RENDERER_MODULE = "isaac_task_review_renderer.py"
+REMOTE_ISAAC_RENDERER_MODULE = (
+    f"/workspace/runtime_overlay/package/blueprint_pipeline/{ISAAC_RENDERER_MODULE}"
+)
+REMOTE_LIVE_ALIGNED_SEED = "/workspace/microwave_live_aligned_seed"
+REMOTE_LIVE_ALIGNED_EVIDENCE = "/workspace/microwave_live_aligned_isaac"
 
 REQUIRED_DATASET_MEMBERS = frozenset(
     {
@@ -177,6 +192,22 @@ def build_finetune_component(dataset_path: str | Path) -> dict[str, Any]:
 
     archive, binding = build_dataset_archive(dataset_path)
     encoded = base64.b64encode(archive).decode("ascii")
+    live_aligned_source = Path(__file__).with_name(LIVE_ALIGNED_MODULE).read_bytes()
+    live_aligned_source_sha256 = _sha256_bytes(live_aligned_source)
+    live_aligned_source_base64 = base64.b64encode(live_aligned_source).decode("ascii")
+    grasp_arc_source = Path(__file__).with_name(GRASP_ARC_MODULE).read_bytes()
+    grasp_arc_source_sha256 = _sha256_bytes(grasp_arc_source)
+    grasp_arc_source_base64 = base64.b64encode(grasp_arc_source).decode("ascii")
+    isaac_backend_source = Path(__file__).with_name(ISAAC_BACKEND_MODULE).read_bytes()
+    isaac_backend_source_sha256 = _sha256_bytes(isaac_backend_source)
+    isaac_backend_source_base64 = base64.b64encode(isaac_backend_source).decode(
+        "ascii"
+    )
+    isaac_renderer_source = Path(__file__).with_name(ISAAC_RENDERER_MODULE).read_bytes()
+    isaac_renderer_source_sha256 = _sha256_bytes(isaac_renderer_source)
+    isaac_renderer_source_base64 = base64.b64encode(isaac_renderer_source).decode(
+        "ascii"
+    )
     command = bounded_finetune_argv(
         dataset_path=REMOTE_DATASET_PATH,
         output_dir=REMOTE_OUTPUT_DIR,
@@ -194,6 +225,12 @@ ARCHIVE_SHA={shlex.quote(binding['sha256'])}
 EXPECTED_GROOT_REVISION={shlex.quote(PINNED_GROOT_N17_REVISION)}
 EXPECTED_CHECKPOINT={shlex.quote(REMOTE_FINAL_CHECKPOINT)}
 GROOT_OVERLAY={shlex.quote(REMOTE_GROOT_OVERLAY_ROOT)}
+LIVE_ALIGNED_MODULE={shlex.quote(REMOTE_LIVE_ALIGNED_MODULE)}
+GRASP_ARC_MODULE={shlex.quote(REMOTE_GRASP_ARC_MODULE)}
+ISAAC_BACKEND_MODULE={shlex.quote(REMOTE_ISAAC_BACKEND_MODULE)}
+ISAAC_RENDERER_MODULE={shlex.quote(REMOTE_ISAAC_RENDERER_MODULE)}
+LIVE_ALIGNED_SEED={shlex.quote(REMOTE_LIVE_ALIGNED_SEED)}
+LIVE_ALIGNED_EVIDENCE={shlex.quote(REMOTE_LIVE_ALIGNED_EVIDENCE)}
 mkdir -p /workspace/closed_loop_out
 if pgrep -f -- '/opt/gr00t/gr00t/eval/run_gr00t_server.py' >/dev/null 2>&1; then
   echo g1_microwave_finetune_requires_groot_server_stopped >&2
@@ -221,6 +258,94 @@ with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             handle.write(data)
         os.chmod(destination, 0o600)
 PY
+python3 - "$LIVE_ALIGNED_MODULE" <<'PY'
+import base64, hashlib, pathlib, sys
+destination = pathlib.Path(sys.argv[1]).resolve()
+payload = base64.b64decode({live_aligned_source_base64!r}, validate=True)
+expected = {live_aligned_source_sha256!r}
+if hashlib.sha256(payload).hexdigest() != expected:
+    raise SystemExit("g1_microwave_live_aligned_module_embedded_sha256_mismatch")
+destination.write_bytes(payload)
+if hashlib.sha256(destination.read_bytes()).hexdigest() != expected:
+    raise SystemExit("g1_microwave_live_aligned_module_materialized_sha256_mismatch")
+PY
+python3 - "$GRASP_ARC_MODULE" <<'PY'
+import base64, hashlib, pathlib, sys
+destination = pathlib.Path(sys.argv[1]).resolve()
+payload = base64.b64decode({grasp_arc_source_base64!r}, validate=True)
+expected = {grasp_arc_source_sha256!r}
+if hashlib.sha256(payload).hexdigest() != expected:
+    raise SystemExit("g1_microwave_grasp_arc_module_embedded_sha256_mismatch")
+destination.parent.mkdir(parents=True, exist_ok=True)
+destination.write_bytes(payload)
+if hashlib.sha256(destination.read_bytes()).hexdigest() != expected:
+    raise SystemExit("g1_microwave_grasp_arc_module_materialized_sha256_mismatch")
+PY
+python3 - "$ISAAC_BACKEND_MODULE" <<'PY'
+import base64, hashlib, pathlib, sys
+destination = pathlib.Path(sys.argv[1]).resolve()
+payload = base64.b64decode({isaac_backend_source_base64!r}, validate=True)
+expected = {isaac_backend_source_sha256!r}
+if hashlib.sha256(payload).hexdigest() != expected:
+    raise SystemExit("g1_microwave_isaac_backend_embedded_sha256_mismatch")
+destination.parent.mkdir(parents=True, exist_ok=True)
+destination.write_bytes(payload)
+if hashlib.sha256(destination.read_bytes()).hexdigest() != expected:
+    raise SystemExit("g1_microwave_isaac_backend_materialized_sha256_mismatch")
+PY
+python3 - "$ISAAC_RENDERER_MODULE" <<'PY'
+import base64, hashlib, pathlib, sys
+destination = pathlib.Path(sys.argv[1]).resolve()
+payload = base64.b64decode({isaac_renderer_source_base64!r}, validate=True)
+expected = {isaac_renderer_source_sha256!r}
+if hashlib.sha256(payload).hexdigest() != expected:
+    raise SystemExit("g1_microwave_isaac_renderer_embedded_sha256_mismatch")
+destination.parent.mkdir(parents=True, exist_ok=True)
+destination.write_bytes(payload)
+if hashlib.sha256(destination.read_bytes()).hexdigest() != expected:
+    raise SystemExit("g1_microwave_isaac_renderer_materialized_sha256_mismatch")
+PY
+rm -rf "$LIVE_ALIGNED_SEED" "$LIVE_ALIGNED_EVIDENCE"
+mkdir -p "$LIVE_ALIGNED_SEED" "$LIVE_ALIGNED_EVIDENCE"
+ACTION_PYTHON=/opt/oscar-venv/bin/python
+if [ ! -x "$ACTION_PYTHON" ] || \
+  ! PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
+    "$ACTION_PYTHON" -c 'import mujoco' >/dev/null 2>&1; then
+  echo g1_microwave_live_aligned_mujoco_runtime_missing >&2
+  exit 75
+fi
+if ! PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
+  "$ACTION_PYTHON" -c 'import onnxruntime' >/dev/null 2>&1; then
+  if ! command -v uv >/dev/null 2>&1; then
+    echo g1_microwave_live_aligned_uv_runtime_missing >&2
+    exit 75
+  fi
+  VIRTUAL_ENV=/opt/oscar-venv uv pip install \
+    {shlex.quote(f"onnxruntime=={PINNED_ONNXRUNTIME_VERSION}")} >>"$LOG" 2>&1
+fi
+PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
+  "$ACTION_PYTHON" -c \
+  "import mujoco, onnxruntime; assert onnxruntime.__version__ == {PINNED_ONNXRUNTIME_VERSION!r}" \
+  >>"$LOG" 2>&1
+PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
+  "$ACTION_PYTHON" "$LIVE_ALIGNED_MODULE" prepare-actions \
+  --initial-state /workspace/initial_g1_sonic_state.json \
+  --standing-report /workspace/closed_loop_out/isaac_task_state/gear_sonic_standing_initialization.json \
+  --initial-observation /workspace/closed_loop_out/isaac_task_state/initial_policy_observation.json \
+  --robot-model /opt/wbc/gear_sonic_deploy/g1/g1_29dof_with_hand.xml \
+  --encoder /opt/wbc/gear_sonic_deploy/policy/release/model_encoder.onnx \
+  --output-dir "$LIVE_ALIGNED_SEED"
+PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
+  /isaac-sim/python.sh "$LIVE_ALIGNED_MODULE" render-isaac \
+  --seed-dir "$LIVE_ALIGNED_SEED" \
+  --stage /workspace/kitchen/KitchenRoom.usd \
+  --g1-usd /isaac-sim/Isaac/Robots/Unitree/G1/g1.usd \
+  --route-file /workspace/route.json \
+  --evidence-dir "$LIVE_ALIGNED_EVIDENCE"
+PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
+  /opt/gr00t-venv/bin/python "$LIVE_ALIGNED_MODULE" patch-dataset \
+  --seed-dir "$LIVE_ALIGNED_SEED" \
+  --dataset-dir "$DATASET"
 if [ ! -x /opt/gr00t-venv/bin/python ] || [ ! -f /opt/gr00t/gr00t/experiment/launch_finetune.py ]; then
   echo g1_microwave_finetune_sealed_runtime_missing >&2
   exit 73
@@ -343,6 +468,19 @@ offline_model = patch_once(
     f"    config.model.model_name = {{str(local_model_root)!r}}",
     "g1_microwave_finetune_local_model",
 )
+deepspeed_probe_guard = patch_once(
+    launch_source,
+    "    run(config)",
+    "    # This bounded single-GPU path does not use DeepSpeed. Accelerate's\\n"
+    "    # generic unwrap helper imports an installed DeepSpeed package anyway,\\n"
+    "    # which probes nvcc even in inference-only release images that correctly\\n"
+    "    # omit the compiler. Keep the package and sealed environment untouched;\\n"
+    "    # disable only that irrelevant availability branch for this process.\\n"
+    "    import accelerate.utils.other as accelerate_other\\n"
+    "    accelerate_other.is_deepspeed_available = lambda: False\\n"
+    "    run(config)",
+    "g1_microwave_finetune_unused_deepspeed_probe",
+)
 report = {{
     "schema_version": "g1_microwave_groot_runtime_overlay.v1",
     "status": "passed",
@@ -352,6 +490,7 @@ report = {{
     "classifier_patch": classifier,
     "processor_patch": processor,
     "offline_model_patch": offline_model,
+    "deepspeed_probe_guard_patch": deepspeed_probe_guard,
     "local_model_root": str(local_model_root),
     "resolved_local_model_root": str(resolved_local_model_root),
     "local_model_files": local_model_files,
@@ -576,6 +715,16 @@ include = [
     workspace / "microwave_open_loop_finetuned.log",
     workspace / "closed_loop_out" / "microwave_open_loop_warm_start.json",
     workspace / "closed_loop_out" / "microwave_open_loop_finetuned.json",
+    workspace / "microwave_live_aligned_seed" / "live_aligned_action_preparation.json",
+    workspace / "microwave_live_aligned_seed" / "live_aligned_grasp_report.json",
+    workspace / "microwave_live_aligned_seed" / "live_aligned_sonic_conversion_report.json",
+    workspace / "microwave_live_aligned_seed" / "live_aligned_isaac_render_report.json",
+    workspace / "microwave_live_aligned_seed" / "live_aligned_isaac_motion_evidence.json",
+    workspace / "microwave_live_aligned_seed" / "live_aligned_dataset_patch_report.json",
+    workspace / "microwave_live_aligned_seed" / "ego_view.mp4",
+    workspace / "microwave_live_aligned_seed" / "isaac_head_frames" / "frame_000000.png",
+    workspace / "microwave_live_aligned_seed" / "isaac_head_frames" / "frame_000088.png",
+    workspace / "microwave_live_aligned_seed" / "isaac_head_frames" / "frame_000175.png",
 ]
 checkpoint = pathlib.Path({REMOTE_FINAL_CHECKPOINT!r})
 for relative in ("trainer_state.json", "config.json", "model.safetensors.index.json"):
@@ -609,6 +758,26 @@ if [ "$PHASE" != finetune_completed ]; then exit 1; fi
         "script_sha256": _sha256_bytes(payload),
         "script_size_bytes": len(payload),
         "dataset_archive": binding,
+        "live_aligned_training": {
+            "required": True,
+            "module": LIVE_ALIGNED_MODULE,
+            "module_sha256": live_aligned_source_sha256,
+            "grasp_arc_module": GRASP_ARC_MODULE,
+            "grasp_arc_module_sha256": grasp_arc_source_sha256,
+            "isaac_backend_module": ISAAC_BACKEND_MODULE,
+            "isaac_backend_module_sha256": isaac_backend_source_sha256,
+            "isaac_renderer_module": ISAAC_RENDERER_MODULE,
+            "isaac_renderer_module_sha256": isaac_renderer_source_sha256,
+            "same_session_live_start_required": True,
+            "exact_isaac_rigid_head_render_required": True,
+            "per_frame_measured_joint_readback_required": True,
+            "active_arm_robot_pov_motion_required": True,
+            "one_physics_step_per_controller_target_required": True,
+            "render_capture_must_not_add_physics_step": True,
+            "physx_contact_report_monitor_required": True,
+            "unexpected_robot_collisions_fail_closed": True,
+            "door_motion_requires_prior_manipulator_contact": True,
+        },
         "remote_dataset_path": REMOTE_DATASET_PATH,
         "remote_output_dir": REMOTE_OUTPUT_DIR,
         "remote_final_checkpoint": REMOTE_FINAL_CHECKPOINT,

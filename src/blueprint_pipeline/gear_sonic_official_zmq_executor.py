@@ -560,6 +560,45 @@ def _controller_timestamp(value: Any) -> Decimal | None:
     return timestamp if timestamp.is_finite() else None
 
 
+def _controller_index(value: Any) -> Decimal | None:
+    """Parse the pinned controller's monotonic state-logger entry index."""
+
+    index = _controller_timestamp(value)
+    if index is None or index < 0 or index != index.to_integral_value():
+        return None
+    return index
+
+
+def _controller_freshness_mode(
+    *,
+    current_index: Decimal | None,
+    last_controller_index: Decimal | None,
+    current_timestamp: Decimal | None,
+    last_controller_timestamp: Decimal | None,
+) -> str | None:
+    """Return the official signal proving a controller row is newer.
+
+    ``g1_debug.index`` is the pinned controller's always-present monotonic
+    StateLogger entry index. In simulator mode ``ros_timestamp`` is documented
+    to remain ``0.0`` when ROS 2 wall-clock is unavailable, so it is only a
+    secondary freshness source.
+    """
+
+    if (
+        current_index is not None
+        and last_controller_index is not None
+        and current_index > last_controller_index
+    ):
+        return "strict_monotonic_state_index"
+    if (
+        current_timestamp is not None
+        and last_controller_timestamp is not None
+        and current_timestamp > last_controller_timestamp
+    ):
+        return "strict_ros_timestamp"
+    return None
+
+
 def _controller_frame_matches(value: Any, expected: int) -> bool:
     if not isinstance(value, (str, bytes)) and isinstance(value, Sequence):
         value = value[0] if len(value) == 1 else None
@@ -574,6 +613,8 @@ def _controller_frame_match_mode(
     state: Mapping[str, Any],
     *,
     expected_frame_index: int,
+    current_index: Decimal | None = None,
+    last_controller_index: Decimal | None = None,
     current_timestamp: Decimal | None,
     last_controller_timestamp: Decimal | None,
     allow_local_frame_fallback: bool = True,
@@ -585,28 +626,31 @@ def _controller_frame_match_mode(
     ``frame_index == 0`` even when the pose carries a monotonic Blueprint
     sequence number.  Exact token and hand echoes bind the reply to the sent
     pose. A requested sequence-frame echo is sufficient with a strictly newer
-    controller timestamp. A controller-local-zero or absent-frame reply is
+    official state index (or advancing ROS timestamp when available). A
+    controller-local-zero or absent-frame reply is
     accepted only when the caller has separately proven the exact token/hand
     action is unique in the horizon and drained pre-send controller states.
     """
 
-    if (
-        current_timestamp is None
-        or last_controller_timestamp is None
-        or current_timestamp <= last_controller_timestamp
-    ):
+    freshness_mode = _controller_freshness_mode(
+        current_index=current_index,
+        last_controller_index=last_controller_index,
+        current_timestamp=current_timestamp,
+        last_controller_timestamp=last_controller_timestamp,
+    )
+    if freshness_mode is None:
         return None
     if "frame_index" not in state:
         return (
-            "strict_timestamp_unique_action_without_reported_frame"
+            f"{freshness_mode}_unique_action_without_reported_frame"
             if allow_local_frame_fallback
             else None
         )
     value = state.get("frame_index")
     if _controller_frame_matches(value, expected_frame_index):
-        return "strict_timestamp_and_requested_sequence_frame"
+        return f"{freshness_mode}_and_requested_sequence_frame"
     if allow_local_frame_fallback and _controller_frame_matches(value, 0):
-        return "strict_timestamp_unique_action_and_controller_local_frame_zero"
+        return f"{freshness_mode}_unique_action_and_controller_local_frame_zero"
     return None
 
 
@@ -614,6 +658,8 @@ def _controller_state_matches_expected_frame(
     state: Mapping[str, Any],
     *,
     expected_frame_index: int,
+    current_index: Decimal | None = None,
+    last_controller_index: Decimal | None = None,
     current_timestamp: Decimal | None,
     last_controller_timestamp: Decimal | None,
     allow_local_frame_fallback: bool = True,
@@ -624,6 +670,8 @@ def _controller_state_matches_expected_frame(
         _controller_frame_match_mode(
             state,
             expected_frame_index=expected_frame_index,
+            current_index=current_index,
+            last_controller_index=last_controller_index,
             current_timestamp=current_timestamp,
             last_controller_timestamp=last_controller_timestamp,
             allow_local_frame_fallback=allow_local_frame_fallback,
@@ -862,6 +910,7 @@ def _zmq_pubsub_horizon_roundtrip(
                 continue
             state = msgpack.unpackb(raw[len(state_topic) :], raw=False)
             if isinstance(state, Mapping) and _well_formed_controller_state(state):
+                last_controller_index = _controller_index(state.get("index"))
                 last_controller_timestamp = _controller_timestamp(
                     state.get("ros_timestamp")
                 )
@@ -887,8 +936,8 @@ def _zmq_pubsub_horizon_roundtrip(
             # The controller can publish more than one g1_debug row for a
             # streamed pose. Clear every row already available immediately
             # before this send so a queued response from the prior frame cannot
-            # satisfy the current frame. Advance the timestamp watermark while
-            # draining to retain the fail-closed freshness boundary.
+            # satisfy the current frame. Advance both official freshness
+            # watermarks while draining to retain the fail-closed boundary.
             while True:
                 try:
                     raw = subscriber.recv(zmq.NOBLOCK)
@@ -902,9 +951,15 @@ def _zmq_pubsub_horizon_roundtrip(
                 )
                 if not isinstance(drained_state, Mapping):
                     continue
+                drained_index = _controller_index(drained_state.get("index"))
                 drained_timestamp = _controller_timestamp(
                     drained_state.get("ros_timestamp")
                 )
+                if drained_index is not None and (
+                    last_controller_index is None
+                    or drained_index > last_controller_index
+                ):
+                    last_controller_index = drained_index
                 if drained_timestamp is not None and (
                     last_controller_timestamp is None
                     or drained_timestamp > last_controller_timestamp
@@ -924,10 +979,13 @@ def _zmq_pubsub_horizon_roundtrip(
                 state = msgpack.unpackb(raw[len(state_topic) :], raw=False)
                 if not isinstance(state, Mapping):
                     continue
+                current_index = _controller_index(state.get("index"))
                 current_timestamp = _controller_timestamp(state.get("ros_timestamp"))
                 frame_match_mode = _controller_frame_match_mode(
                     state,
                     expected_frame_index=frame_indices[index],
+                    current_index=current_index,
+                    last_controller_index=last_controller_index,
                     current_timestamp=current_timestamp,
                     last_controller_timestamp=last_controller_timestamp,
                     allow_local_frame_fallback=(
@@ -953,6 +1011,11 @@ def _zmq_pubsub_horizon_roundtrip(
                     drained_controller_state_count
                 )
                 results.append(row)
+                if current_index is not None and (
+                    last_controller_index is None
+                    or current_index > last_controller_index
+                ):
+                    last_controller_index = current_index
                 if current_timestamp is not None and (
                     last_controller_timestamp is None
                     or current_timestamp > last_controller_timestamp

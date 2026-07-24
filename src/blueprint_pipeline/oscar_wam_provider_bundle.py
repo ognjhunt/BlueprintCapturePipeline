@@ -220,9 +220,20 @@ def _projected_trace_source_size(
     width_keys = ("image_width_px", "source_image_width_px", "viewport_width_px", "width")
     height_keys = ("image_height_px", "source_image_height_px", "viewport_height_px", "height")
     for candidate in candidates:
-        width = next((_positive_int(candidate.get(key)) for key in width_keys if candidate.get(key) is not None), None)
+        width = next(
+            (
+                _positive_int(candidate.get(key))
+                for key in width_keys
+                if candidate.get(key) is not None
+            ),
+            None,
+        )
         height = next(
-            (_positive_int(candidate.get(key)) for key in height_keys if candidate.get(key) is not None),
+            (
+                _positive_int(candidate.get(key))
+                for key in height_keys
+                if candidate.get(key) is not None
+            ),
             None,
         )
         if width is not None and height is not None:
@@ -404,6 +415,8 @@ def _render_projected_skeleton_conditioning_video(
         raise RuntimeError("cv2_video_writer_failed_for_projected_skeleton_conditioning")
     landmark_draw_counts: list[int] = []
     visible_landmark_counts: list[int] = []
+    true_in_frame_landmark_counts: list[int] = []
+    true_in_frame_effector_counts: list[int] = []
     visible_segment_counts: list[int] = []
     clipped_landmark_counts: list[int] = []
     offscreen_edge_indicator_counts: list[int] = []
@@ -436,6 +449,16 @@ def _render_projected_skeleton_conditioning_video(
             for landmark_id, point in raw_by_id.items()
             if landmark_id and point is not None and not _inside_canvas(point)
         }
+        true_in_frame_landmark_counts.append(
+            sum(1 for point in raw_by_id.values() if _inside_canvas(point))
+        )
+        true_in_frame_effector_counts.append(
+            sum(
+                1
+                for landmark_id, point in raw_by_id.items()
+                if ("wrist" in landmark_id or "hand" in landmark_id) and _inside_canvas(point)
+            )
+        )
         # Preserve the direction of a finite, out-of-viewport controller/FK
         # projection by clamping it to the corresponding image edge.  This is
         # an explicit conditioning-only indicator: it does not alter the RGB
@@ -589,6 +612,8 @@ def _render_projected_skeleton_conditioning_video(
     max_motion_px = _projected_skeleton_trace_motion_px_max(rows)
     max_landmark_count = max(landmark_draw_counts or [0])
     max_visible_landmark_count = max(visible_landmark_counts or [0])
+    minimum_true_in_frame_landmark_count = min(true_in_frame_landmark_counts or [0])
+    minimum_true_in_frame_effector_count = min(true_in_frame_effector_counts or [0])
     max_visible_segment_count = max(visible_segment_counts or [0])
     max_clipped_landmark_count = max(clipped_landmark_counts or [0])
     max_offscreen_edge_indicator_count = max(offscreen_edge_indicator_counts or [0])
@@ -602,6 +627,15 @@ def _render_projected_skeleton_conditioning_video(
         visual_blockers.append("projected_skeleton_visible_segment_count_too_low")
     if max_end_effector_axis_count < 2:
         visual_blockers.append("projected_skeleton_end_effector_axes_missing")
+    if conditioning_mode == "controller_fk_action_horizon":
+        if len(rows) != max(1, int(num_frames)):
+            visual_blockers.append("controller_fk_skeleton_trace_frame_count_mismatch")
+        if max_motion_px < 2.0:
+            visual_blockers.append("controller_fk_skeleton_trace_motion_too_low")
+        if minimum_true_in_frame_landmark_count < 2:
+            visual_blockers.append("controller_fk_skeleton_trace_in_frame_landmarks_too_low")
+        if minimum_true_in_frame_effector_count < 1:
+            visual_blockers.append("controller_fk_skeleton_trace_in_frame_effector_missing")
     return (
         {
             "path": str(output_path),
@@ -614,6 +648,12 @@ def _render_projected_skeleton_conditioning_video(
             "projected_g1_skeleton_rendered": True,
             "projected_g1_skeleton_landmark_draw_count": max_landmark_count,
             "projected_g1_skeleton_visible_landmark_draw_count": max_visible_landmark_count,
+            "projected_g1_skeleton_minimum_true_in_frame_landmark_count": (
+                minimum_true_in_frame_landmark_count
+            ),
+            "projected_g1_skeleton_minimum_true_in_frame_effector_count": (
+                minimum_true_in_frame_effector_count
+            ),
             "projected_g1_skeleton_visible_segment_count": max_visible_segment_count,
             "projected_g1_skeleton_clipped_landmark_count": max_clipped_landmark_count,
             "projected_g1_skeleton_offscreen_edge_indicator_count": (
@@ -640,11 +680,11 @@ def _render_projected_skeleton_conditioning_video(
                 "projectable_row_count": projectable_rows,
                 "max_interframe_landmark_motion_px": max_motion_px,
                 "max_visible_landmark_draw_count": max_visible_landmark_count,
+                "minimum_true_in_frame_landmark_count": (minimum_true_in_frame_landmark_count),
+                "minimum_true_in_frame_effector_count": (minimum_true_in_frame_effector_count),
                 "max_visible_segment_count": max_visible_segment_count,
                 "max_clipped_landmark_count": max_clipped_landmark_count,
-                "max_offscreen_edge_indicator_count": (
-                    max_offscreen_edge_indicator_count
-                ),
+                "max_offscreen_edge_indicator_count": (max_offscreen_edge_indicator_count),
                 "max_end_effector_axis_draw_count": max_end_effector_axis_count,
             },
         },
@@ -821,7 +861,9 @@ def _render_projected_gripper_axes_conditioning_video(
             "skeleton_stream_image_aligned_to_rgb": True,
             "first_rgb_frame_anchors_scene_and_robot_appearance": True,
             "visual_signal": {
-                "status": "completed" if not blockers else "warning_low_signal_projected_gripper_axes",
+                "status": "completed"
+                if not blockers
+                else "warning_low_signal_projected_gripper_axes",
                 "blockers": blockers,
                 "trace_row_count": len(rows),
                 "projectable_row_count": projectable_rows,
@@ -1190,9 +1232,20 @@ def _normalize_oscar_robot_action_prompt(source_prompt: str) -> tuple[str, bool]
         "show the robot's head or torso; only its hands or forearms may enter "
         "from the bottom of the frame."
     )
-    if "rigidly head-mounted camera" in lowered and "never switch" in lowered:
+    action_causality_contract = (
+        "The supplied robot skeleton trajectory is authoritative: show exactly "
+        "that arm and hand motion. Keep articulated objects stationary unless a "
+        "visible robot hand reaches and remains in contact with the object while "
+        "it moves; never make a door, drawer, handle, or appliance move by itself."
+    )
+    if (
+        "rigidly head-mounted camera" in lowered
+        and "never switch" in lowered
+        and "skeleton trajectory is authoritative" in lowered
+        and "never make a door" in lowered
+    ):
         return cleaned, False
-    return f"{task_context}. {viewpoint_contract}", True
+    return f"{task_context}. {viewpoint_contract} {action_causality_contract}", True
 
 
 def _task_prompt_from_wam_generation_step(step_input: Mapping[str, Any]) -> str:
@@ -1370,16 +1423,21 @@ def _render_temporal_rgb_context_video(
         raise RuntimeError("cv2_video_writer_failed_for_temporal_oscar_rgb_context")
     total_frames = max(1, int(num_frames))
     for index in range(total_frames):
-        source_index = min(len(decoded) - 1, round(index * (len(decoded) - 1) / max(total_frames - 1, 1)))
+        source_index = min(
+            len(decoded) - 1, round(index * (len(decoded) - 1) / max(total_frames - 1, 1))
+        )
         writer.write(decoded[source_index])
     writer.release()
     gray_frames = [cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) for frame in decoded]
-    edge_densities = [
-        float((cv2.Canny(gray, 50, 150) > 0).mean())
-        for gray in gray_frames
-    ]
+    edge_densities = [float((cv2.Canny(gray, 50, 150) > 0).mean()) for gray in gray_frames]
     frame_deltas = [
-        float(np.mean(np.abs(gray_frames[index].astype("float32") - gray_frames[index - 1].astype("float32"))))
+        float(
+            np.mean(
+                np.abs(
+                    gray_frames[index].astype("float32") - gray_frames[index - 1].astype("float32")
+                )
+            )
+        )
         for index in range(1, len(gray_frames))
     ]
     return {
@@ -1399,9 +1457,18 @@ def _render_temporal_rgb_context_video(
         "visual_signal": {
             "status": "completed",
             "luma_mean": round(float(np.mean([gray.mean() for gray in gray_frames])), 6),
-            "luma_range": int(max(gray.max() for gray in gray_frames) - min(gray.min() for gray in gray_frames)),
+            "luma_range": int(
+                max(gray.max() for gray in gray_frames) - min(gray.min() for gray in gray_frames)
+            ),
             "non_dark_fraction": round(
-                float(np.mean([np.count_nonzero(gray > 12) / float(width * height) for gray in gray_frames])),
+                float(
+                    np.mean(
+                        [
+                            np.count_nonzero(gray > 12) / float(width * height)
+                            for gray in gray_frames
+                        ]
+                    )
+                ),
                 6,
             ),
             "minimum_edge_density": round(min(edge_densities), 6),
@@ -1750,9 +1817,7 @@ def _materialize_oscar_input_package_from_wam_generation_step(
     _, oscar_prompt_normalized_from_task_prompt = _normalize_oscar_robot_action_prompt(
         source_task_prompt
     )
-    projected_trace_claim_boundary = _projected_skeleton_trace_claim_boundary(
-        projected_trace_rows
-    )
+    projected_trace_claim_boundary = _projected_skeleton_trace_claim_boundary(projected_trace_rows)
     manifest = {
         "schema_version": "blueprint_oscar_wam_input_package.v1",
         "status": "completed",
@@ -1770,9 +1835,7 @@ def _materialize_oscar_input_package_from_wam_generation_step(
         ),
         "prompt": normalized_prompt,
         "source_task_prompt": source_task_prompt or None,
-        "oscar_prompt_normalized_from_task_prompt": bool(
-            oscar_prompt_normalized_from_task_prompt
-        ),
+        "oscar_prompt_normalized_from_task_prompt": bool(oscar_prompt_normalized_from_task_prompt),
         "num_frames": num_frames,
         "fps": fps,
         "height": height,
@@ -1914,9 +1977,7 @@ def _materialize_oscar_input_package_from_wam_generation_step(
                 not rgb_context_video and use_projected_trace_conditioning
             ),
             "true_robot_proprioceptive_skeleton_available": False,
-            "policy_action_to_skeleton_contract_packaged": bool(
-                policy_action_to_skeleton_contract
-            ),
+            "policy_action_to_skeleton_contract_packaged": bool(policy_action_to_skeleton_contract),
             "policy_action_to_skeleton_policy_ranking_claim_safe": bool(
                 policy_action_to_skeleton_contract.get("policy_ranking_claim_safe")
             )
@@ -2016,8 +2077,7 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
                 max_motion_px = float(
                     projected_trace.get("max_interframe_landmark_motion_px")
                     if projected_trace.get("max_interframe_landmark_motion_px") is not None
-                    else skeleton_video.get("projected_g1_skeleton_max_interframe_motion_px")
-                    or 0.0
+                    else skeleton_video.get("projected_g1_skeleton_max_interframe_motion_px") or 0.0
                 )
             except (TypeError, ValueError):
                 max_motion_px = 0.0
@@ -2027,7 +2087,8 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
                 blockers.append("oscar_input_projected_g1_skeleton_trace_static_action")
         if (
             pure_projected_skeleton_stream
-            and int(skeleton_video.get("projected_g1_skeleton_visible_landmark_draw_count") or 0) < 4
+            and int(skeleton_video.get("projected_g1_skeleton_visible_landmark_draw_count") or 0)
+            < 4
         ):
             blockers.append("oscar_input_projected_g1_skeleton_video_visible_landmarks_too_sparse")
         if (
@@ -2037,7 +2098,8 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
             blockers.append("oscar_input_projected_g1_skeleton_video_visible_segments_too_sparse")
         if (
             pure_projected_skeleton_stream
-            and int(skeleton_video.get("projected_g1_skeleton_end_effector_axis_draw_count") or 0) < 2
+            and int(skeleton_video.get("projected_g1_skeleton_end_effector_axis_draw_count") or 0)
+            < 2
         ):
             blockers.append("oscar_input_projected_g1_skeleton_video_missing_end_effector_axes")
         if (
@@ -2132,8 +2194,12 @@ def _oscar_input_contract_diagnostic(
     projected_used = bool(projected_trace.get("used_for_conditioning"))
     projected_trace_claim_boundary = _mapping(projected_trace.get("claim_boundary"))
     projected_trace_scene_bridge_used = bool(
-        projected_trace_claim_boundary.get("scene_faithful_isaac_policy_action_projection_bridge_used")
-        or projected_trace_claim_boundary.get("blueprint_simulator_only_isaac_action_projection_bridge_used")
+        projected_trace_claim_boundary.get(
+            "scene_faithful_isaac_policy_action_projection_bridge_used"
+        )
+        or projected_trace_claim_boundary.get(
+            "blueprint_simulator_only_isaac_action_projection_bridge_used"
+        )
         or projected_trace_claim_boundary.get("simulator_only_mujoco_action_trace_bridge_used")
         or projected_trace_claim_boundary.get("official_wbc_or_sim_bridge_used")
     )
@@ -2177,28 +2243,21 @@ def _oscar_input_contract_diagnostic(
             < 2
         ):
             blockers.append("oscar_contract_projected_skeleton_missing_end_effector_axes")
-        if _float_value(
-            skeleton_video.get("projected_g1_skeleton_max_interframe_motion_px")
-        ) <= 0.5:
+        if (
+            _float_value(skeleton_video.get("projected_g1_skeleton_max_interframe_motion_px"))
+            <= 0.5
+        ):
             warnings.append("oscar_contract_projected_skeleton_nearly_static")
-            autoregressive_risk_flags.append(
-                "projected_skeleton_nearly_static_autoregressive_risk"
-            )
+            autoregressive_risk_flags.append("projected_skeleton_nearly_static_autoregressive_risk")
         if projected_trace_claim_boundary.get("not_a_learned_robot_policy_action"):
             warnings.append("oscar_contract_projected_skeleton_not_policy_derived_action")
-            high_risk_flags.append(
-                "projected_skeleton_not_scene_faithful_policy_action_high_risk"
-            )
-            ranking_risk_flags.append(
-                "projected_skeleton_not_policy_derived_action_ranking_risk"
-            )
+            high_risk_flags.append("projected_skeleton_not_scene_faithful_policy_action_high_risk")
+            ranking_risk_flags.append("projected_skeleton_not_policy_derived_action_ranking_risk")
         if projected_trace_claim_boundary.get(
             "temporal_rows_are_target_conditioning_from_resolved_affordance_projection"
         ):
             warnings.append("oscar_contract_projected_skeleton_target_conditioned")
-            high_risk_flags.append(
-                "projected_skeleton_not_scene_faithful_policy_action_high_risk"
-            )
+            high_risk_flags.append("projected_skeleton_not_scene_faithful_policy_action_high_risk")
             ranking_risk_flags.append("projected_skeleton_target_conditioning_ranking_risk")
         if projected_trace_claim_boundary.get(
             "nominal_kinematic_projection_without_scene_or_wbc_bridge"
@@ -2209,10 +2268,10 @@ def _oscar_input_contract_diagnostic(
                 "projected_skeleton_nominal_action_projection_without_scene_or_wbc_bridge"
             )
         if not projected_trace_policy_action_bridge_safe:
-            warnings.append("oscar_contract_projected_skeleton_not_scene_faithful_policy_action_bridge")
-            high_risk_flags.append(
-                "projected_skeleton_not_scene_faithful_policy_action_high_risk"
+            warnings.append(
+                "oscar_contract_projected_skeleton_not_scene_faithful_policy_action_bridge"
             )
+            high_risk_flags.append("projected_skeleton_not_scene_faithful_policy_action_high_risk")
             ranking_risk_flags.append(
                 "projected_skeleton_missing_scene_faithful_policy_action_bridge"
             )
@@ -2224,15 +2283,16 @@ def _oscar_input_contract_diagnostic(
         )
     )
     if policy_action_proxy_used and not projected_used:
-        warnings.append("oscar_contract_policy_action_proxy_conditioning_without_projected_skeleton")
+        warnings.append(
+            "oscar_contract_policy_action_proxy_conditioning_without_projected_skeleton"
+        )
         autoregressive_risk_flags.append(
             "policy_action_proxy_without_projected_skeleton_autoregressive_risk"
         )
         high_risk_flags.append("policy_action_proxy_without_projected_skeleton_high_risk")
         ranking_risk_flags.append("policy_action_proxy_without_decoded_skeleton_ranking_risk")
-    if (
-        policy_action_to_skeleton_contract
-        and not policy_action_to_skeleton_contract.get("policy_ranking_claim_safe")
+    if policy_action_to_skeleton_contract and not policy_action_to_skeleton_contract.get(
+        "policy_ranking_claim_safe"
     ):
         warnings.append("oscar_contract_policy_action_to_skeleton_not_ranking_safe")
         ranking_risk_flags.append("policy_action_to_skeleton_contract_not_ranking_safe")
@@ -2252,16 +2312,10 @@ def _oscar_input_contract_diagnostic(
             blockers.append("oscar_contract_rgb_context_too_dark")
         if rgb_context_mode == "single_frame_repeat":
             warnings.append("oscar_contract_rgb_context_single_frame_repeat")
-            autoregressive_risk_flags.append(
-                "rgb_context_single_frame_repeat_autoregressive_risk"
-            )
+            autoregressive_risk_flags.append("rgb_context_single_frame_repeat_autoregressive_risk")
             if not projected_used:
-                warnings.append(
-                    "oscar_contract_single_frame_repeat_without_projected_skeleton"
-                )
-                high_risk_flags.append(
-                    "single_frame_repeat_without_projected_skeleton_high_risk"
-                )
+                warnings.append("oscar_contract_single_frame_repeat_without_projected_skeleton")
+                high_risk_flags.append("single_frame_repeat_without_projected_skeleton_high_risk")
     elif projected_used:
         warnings.append("oscar_contract_rgb_context_omitted_with_projected_skeleton")
     if float(guidance) > 6.0:
@@ -2361,9 +2415,7 @@ def _oscar_input_contract_diagnostic(
                 )
             ),
             "simulator_only_mujoco_action_trace_bridge_used": bool(
-                projected_trace_claim_boundary.get(
-                    "simulator_only_mujoco_action_trace_bridge_used"
-                )
+                projected_trace_claim_boundary.get("simulator_only_mujoco_action_trace_bridge_used")
             ),
             "full_g1_urdf_fk_solver_used": bool(
                 projected_trace_claim_boundary.get("full_g1_urdf_fk_solver_used")
@@ -2521,13 +2573,15 @@ def _runtime_input_package_manifest(
         runtime_package["projected_skeleton_trace"] = projected_trace
     dual_stream_contract = _mapping(runtime_package.get("oscar_dual_stream_input_contract"))
     if dual_stream_contract or _package_uses_projected_g1_skeleton(input_package):
-        dual_stream_contract.update({
-            "first_rgb_frame_path": first_frame_runtime_path,
-            "skeleton_video_path": skeleton_runtime_path,
-            "first_rgb_frame_anchors_scene_and_robot_appearance": True,
-            "runtime_paths_rewritten_for_provider_bundle": True,
-            "raw_secret_values_recorded": False,
-        })
+        dual_stream_contract.update(
+            {
+                "first_rgb_frame_path": first_frame_runtime_path,
+                "skeleton_video_path": skeleton_runtime_path,
+                "first_rgb_frame_anchors_scene_and_robot_appearance": True,
+                "runtime_paths_rewritten_for_provider_bundle": True,
+                "raw_secret_values_recorded": False,
+            }
+        )
         runtime_package["oscar_dual_stream_input_contract"] = dual_stream_contract
     validation = _mapping(runtime_package.get("conditioning_video_review_validation"))
     if validation:
@@ -5410,9 +5464,7 @@ def _write_runtime_files(
             "remote_runner_records_actual_argv_redacted_in_wam_runtime_result": True,
             "raw_secret_values_recorded": False,
         },
-        "oscar_input_contract_diagnostic": input_package.get(
-            "oscar_input_contract_diagnostic"
-        ),
+        "oscar_input_contract_diagnostic": input_package.get("oscar_input_contract_diagnostic"),
         "truth_boundary": {
             "model_backend_replaceable": True,
             "official_oscar_source_and_checkpoint_pinned": True,

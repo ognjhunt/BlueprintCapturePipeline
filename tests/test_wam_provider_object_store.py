@@ -160,6 +160,7 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
             self.uploads: list[tuple[str, str, str]] = []
             self.deletes: list[tuple[str, str]] = []
             self.objects: dict[tuple[str, str], bytes] = {}
+            self.presign_params: list[tuple[str, dict[str, str]]] = []
 
         def delete_object(self, *, Bucket: str, Key: str):
             self.deletes.append((Bucket, Key))
@@ -180,6 +181,7 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
             self.uploads.append((source, bucket, key))
 
         def generate_presigned_url(self, operation: str, *, Params, ExpiresIn, HttpMethod):
+            self.presign_params.append((operation, dict(Params)))
             key = Params["Key"]
             return (
                 f"https://nyc3.digitaloceanspaces.com/{Params['Bucket']}/{key}"
@@ -234,6 +236,23 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
     assert manifest["object_store"]["expires_at"]
     assert manifest["provider_bundle_url_file"]["mode_is_0600"] is True
     assert manifest["provider_output_put_url_file"]["mode_is_0600"] is True
+    bundle_get_params = [
+        params
+        for operation, params in fake_client.presign_params
+        if operation == "get_object"
+        and params.get("Key", "").endswith("/provider_bundle.zip")
+    ]
+    assert bundle_get_params == [
+        {
+            "Bucket": "blueprint-wam",
+            "Key": (
+                f"blueprint/wam-test/"
+                f"{object_store._job_key_component((tmp_path / 'job').resolve())}/"
+                "provider_bundle.zip"
+            ),
+            "ResponseCacheControl": "no-store, max-age=0",
+        }
+    ]
     uploaded_keys = [row[2] for row in fake_client.uploads]
     assert uploaded_keys == [
         f"blueprint/wam-test/{object_store._job_key_component((tmp_path / 'job').resolve())}/provider_bundle.zip"

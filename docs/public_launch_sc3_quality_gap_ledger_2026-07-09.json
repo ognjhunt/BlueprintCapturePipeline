@@ -2775,7 +2775,7 @@
             {
               "artifact_id": "SC3-02-AC-01-EV-03",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:dca614c29d0ecf50e6b4662ad1aed4cda0b0dc0598c2991d200dc71d7d4670e5",
+              "sha256": "sha256:2fa6b64d90ca79d3bea895838578b03bc59e8a31ee0405fb59945a8b7e5c5dfe",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2791,7 +2791,7 @@
             {
               "artifact_id": "SC3-02-AC-01-EV-04",
               "path": "tests/test_oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:933b447b8a099b6bb5f3367e742dae07835ddea3bcf3f13e10a0f51607edf9a8",
+              "sha256": "sha256:826bd81218ecfcb0fb41695365535b6f9cfddc0dd7df340f70a3869282bc2879",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3918,7 +3918,7 @@
             {
               "artifact_id": "SC3-10-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:dca614c29d0ecf50e6b4662ad1aed4cda0b0dc0598c2991d200dc71d7d4670e5",
+              "sha256": "sha256:2fa6b64d90ca79d3bea895838578b03bc59e8a31ee0405fb59945a8b7e5c5dfe",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3934,7 +3934,7 @@
             {
               "artifact_id": "SC3-10-AC-01-EV-02",
               "path": "tests/test_oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:933b447b8a099b6bb5f3367e742dae07835ddea3bcf3f13e10a0f51607edf9a8",
+              "sha256": "sha256:826bd81218ecfcb0fb41695365535b6f9cfddc0dd7df340f70a3869282bc2879",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4052,7 +4052,7 @@
             {
               "artifact_id": "SC3-11-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:dca614c29d0ecf50e6b4662ad1aed4cda0b0dc0598c2991d200dc71d7d4670e5",
+              "sha256": "sha256:2fa6b64d90ca79d3bea895838578b03bc59e8a31ee0405fb59945a8b7e5c5dfe",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4068,7 +4068,7 @@
             {
               "artifact_id": "SC3-11-AC-01-EV-02",
               "path": "tests/test_oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:933b447b8a099b6bb5f3367e742dae07835ddea3bcf3f13e10a0f51607edf9a8",
+              "sha256": "sha256:826bd81218ecfcb0fb41695365535b6f9cfddc0dd7df340f70a3869282bc2879",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7196,7 +7196,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-01",
               "path": "docs/source_governance_policy.json",
-              "sha256": "sha256:f7b5a43da6835dceb867ff4753a7636162cf8d3dc77f244c22540c820bcb3dde",
+              "sha256": "sha256:073fc185011914b5424f04f268669c9f2f6848874388547fd3f2741060549548",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9312,7 +9312,7 @@
             {
               "artifact_id": "DATA-23-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_wam_provider_bundle.py",
-              "sha256": "sha256:841816bc0ab832976b646d67dbdc3291b164a2d8c90cfe08165f2aa1f2cca822",
+              "sha256": "sha256:73f049d6f3d95a8c74c0f3fcffefa5ffeab26411e1e689bae04f03beba30632e",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9328,7 +9328,7 @@
             {
               "artifact_id": "DATA-23-AC-01-EV-02",
               "path": "tests/test_oscar_wam_provider_bundle.py",
-              "sha256": "sha256:321bba9aae43f9bca854e023de5ab3379fc361169ea7f7411c29a182991f1e41",
+              "sha256": "sha256:6c360ab3671291833fa226dab3fceb72d1fdf65dc3c0c3f206ee14ef602d2ba2",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

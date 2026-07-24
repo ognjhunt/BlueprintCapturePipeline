@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw
 from blueprint_pipeline import wam_real_provider_validation_probe as real_probe
 from blueprint_pipeline.wam_derived_observation_harness import (
     GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND,
+    adapt_policy_observation_for_declared_schema,
     build_wam_derived_observation_step,
     run_wam_derived_observation_harness_step,
 )
@@ -92,11 +93,53 @@ def _observation(frame: Path) -> dict[str, Any]:
         "task_prompt": "turn on the right sink handle",
         "target_object_id": "Sink054_handle",
         "camera_frame_path": str(frame),
-        "visual_observation": {"camera_frame_path": str(frame), "camera_id": "head_pov"},
+        "camera_role": "robot_pov",
+        "viewpoint_mode": "robot_head_mounted_egocentric",
+        "policy_observation_eligible": True,
+        "third_person_overview_included": False,
+        "visual_observation": {
+            "camera_frame_path": str(frame),
+            "camera_id": "head_pov",
+            "camera_role": "robot_pov",
+            "viewpoint_mode": "robot_head_mounted_egocentric",
+            "policy_observation_eligible": True,
+            "third_person_overview_included": False,
+        },
         "state": {"target_object_id": "Sink054_handle"},
         "unitree_g1_sonic_state": {"left_hand": [0.0, 0.1]},
         "safety_limits": {"max_joint_delta": 0.2},
     }
+
+
+def test_policy_adapter_does_not_relabel_third_person_as_head_pov() -> None:
+    base = {
+        "camera_frame_path": "/tmp/overview.png",
+        "camera_role": "overview",
+        "viewpoint_mode": "task_framed_third_person_review",
+        "policy_observation_eligible": False,
+        "third_person_overview_included": True,
+        "visual_observation": {
+            "camera_frame_path": "/tmp/overview.png",
+            "camera_role": "overview",
+            "viewpoint_mode": "task_framed_third_person_review",
+            "policy_observation_eligible": False,
+            "third_person_overview_included": True,
+        },
+    }
+
+    report = adapt_policy_observation_for_declared_schema(
+        policy_id="groot_sonic_rgb_only",
+        declared_policy_observation_schema={"rgb_only": True},
+        base_policy_observation=base,
+        derived_step={},
+    )
+
+    adapted = report["adapted_policy_observation"]
+    assert adapted["camera_role"] == "overview"
+    assert adapted["visual_observation"]["camera_role"] == "overview"
+    assert report["adapter_status"] == "blocked"
+    assert report["safe_for_policy_requery"] is False
+    assert report["missing_required_fields"] == ["exclusive_robot_head_pov"]
 
 
 def test_generated_rgb_policy_observation_validates_exact_frame_without_perception(
