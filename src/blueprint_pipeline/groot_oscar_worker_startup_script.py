@@ -716,6 +716,17 @@ def finite_vector(value, size):
         raise ValueError('controller_readiness_vector_invalid')
     return result
 
+SONIC_TO_PROTOCOL_V4_HAND_INDICES = (4, 5, 6, 0, 1, 2, 3)
+
+def protocol_v4_hand_to_sonic(value):
+    protocol = finite_vector(value, 7)
+    sonic = [0.0] * 7
+    for protocol_index, sonic_index in enumerate(
+        SONIC_TO_PROTOCOL_V4_HAND_INDICES
+    ):
+        sonic[sonic_index] = protocol[protocol_index]
+    return sonic
+
 def load_attempt_bound_projection_context():
     path = Path(projection_context_path_text)
     while time.time() < probe_deadline:
@@ -956,7 +967,15 @@ else:
         if controller_fk_readiness_required and not base_failed_checks:
             projection_context = load_attempt_bound_projection_context()
             canary_action = {
-                'sonic_action_chunk': motion + left + right,
+                # The wire canary and retained ``g1_debug`` row are already in
+                # protocol-v4 hand order. ``execute_controller_fk`` accepts
+                # SONIC-order model actions and performs the pinned hand
+                # permutation itself, so invert that permutation here.
+                'sonic_action_chunk': (
+                    motion
+                    + protocol_v4_hand_to_sonic(left)
+                    + protocol_v4_hand_to_sonic(right)
+                ),
             }
             source_action_sha256 = canonical_sha256(canary_action)
             transport_call_count = [0]

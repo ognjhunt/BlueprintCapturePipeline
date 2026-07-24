@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -124,6 +126,10 @@ def test_gear_sonic_readiness_reuses_canary_for_full_fk_boundary_without_wire_ac
 
     compile(source, "<gear-sonic-ready-controller-fk>", "exec")
     assert "execute as execute_controller_fk" in source
+    assert "SONIC_TO_PROTOCOL_V4_HAND_INDICES = (4, 5, 6, 0, 1, 2, 3)" in source
+    assert "def protocol_v4_hand_to_sonic(value):" in source
+    assert "motion\n                    + protocol_v4_hand_to_sonic(left)" in source
+    assert "+ protocol_v4_hand_to_sonic(right)" in source
     assert "def retained_canary_transport(**kwargs):" in source
     assert "return dict(accepted)" in source
     assert "transport=retained_canary_transport" in source
@@ -159,6 +165,36 @@ def test_gear_sonic_readiness_reuses_canary_for_full_fk_boundary_without_wire_ac
     assert "controller_fk_readiness['failure_exception_type']" in source
     assert "controller_fk_readiness['failure_detail_sha256']" in source
     assert "'controller_fk_readiness_subprobe_failed:' + failure_code" in source
+
+
+def test_gear_sonic_readiness_protocol_hand_inverse_round_trips() -> None:
+    tree = ast.parse(_gear_sonic_ready_python())
+    selected = [
+        node
+        for node in tree.body
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name in {"finite_vector", "protocol_v4_hand_to_sonic"}
+        )
+        or (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "SONIC_TO_PROTOCOL_V4_HAND_INDICES"
+                for target in node.targets
+            )
+        )
+    ]
+    namespace = {"math": math}
+    exec(
+        compile(ast.Module(body=selected, type_ignores=[]), "<hand-inverse>", "exec"),
+        namespace,
+    )
+    protocol = [float(index + 1) for index in range(7)]
+    sonic = namespace["protocol_v4_hand_to_sonic"](protocol)
+    reorder = namespace["SONIC_TO_PROTOCOL_V4_HAND_INDICES"]
+
+    assert [sonic[index] for index in reorder] == protocol
 
 
 def _install_preflight_module_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
