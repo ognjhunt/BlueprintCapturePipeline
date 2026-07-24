@@ -43,6 +43,7 @@ TRAINING_TIMEOUT_SECONDS = 12_600
 OPEN_LOOP_TIMEOUT_SECONDS = 1_800
 OPEN_LOOP_STEPS = 120
 OPEN_LOOP_MAX_ERROR_RATIO = 0.8
+PINNED_ONNXRUNTIME_VERSION = "1.20.1"
 LIVE_ALIGNED_MODULE = "g1_microwave_live_aligned_finetune.py"
 REMOTE_LIVE_ALIGNED_MODULE = f"/workspace/{LIVE_ALIGNED_MODULE}"
 REMOTE_LIVE_ALIGNED_SEED = "/workspace/microwave_live_aligned_seed"
@@ -244,18 +245,26 @@ if hashlib.sha256(destination.read_bytes()).hexdigest() != expected:
 PY
 rm -rf "$LIVE_ALIGNED_SEED" "$LIVE_ALIGNED_EVIDENCE"
 mkdir -p "$LIVE_ALIGNED_SEED" "$LIVE_ALIGNED_EVIDENCE"
-ACTION_PYTHON=
-for candidate in /opt/gr00t-venv/bin/python /opt/oscar-venv/bin/python /isaac-sim/python.sh; do
-  if PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
-    "$candidate" -c 'import mujoco, onnxruntime' >/dev/null 2>&1; then
-    ACTION_PYTHON="$candidate"
-    break
-  fi
-done
-if [ -z "$ACTION_PYTHON" ]; then
-  echo g1_microwave_live_aligned_action_runtime_missing >&2
+ACTION_PYTHON=/opt/oscar-venv/bin/python
+if [ ! -x "$ACTION_PYTHON" ] || \
+  ! PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
+    "$ACTION_PYTHON" -c 'import mujoco' >/dev/null 2>&1; then
+  echo g1_microwave_live_aligned_mujoco_runtime_missing >&2
   exit 75
 fi
+if ! PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
+  "$ACTION_PYTHON" -c 'import onnxruntime' >/dev/null 2>&1; then
+  if ! command -v uv >/dev/null 2>&1; then
+    echo g1_microwave_live_aligned_uv_runtime_missing >&2
+    exit 75
+  fi
+  VIRTUAL_ENV=/opt/oscar-venv uv pip install \
+    {shlex.quote(f"onnxruntime=={PINNED_ONNXRUNTIME_VERSION}")} >>"$LOG" 2>&1
+fi
+PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
+  "$ACTION_PYTHON" -c \
+  'import mujoco, onnxruntime; assert onnxruntime.__version__ == {PINNED_ONNXRUNTIME_VERSION!r}' \
+  >>"$LOG" 2>&1
 PYTHONPATH=/workspace/runtime_overlay/package:/opt/wbc:/opt/OSCAR \
   "$ACTION_PYTHON" "$LIVE_ALIGNED_MODULE" prepare-actions \
   --initial-state /workspace/initial_g1_sonic_state.json \

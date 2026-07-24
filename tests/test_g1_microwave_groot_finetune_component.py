@@ -135,6 +135,15 @@ def test_component_requires_live_aligned_isaac_training_episode(tmp_path: Path) 
     assert "patch-dataset" in script
     assert "/workspace/initial_g1_sonic_state.json" in script
     assert "--stage /workspace/kitchen/KitchenRoom.usd" in script
+    assert (
+        f"onnxruntime=={component.PINNED_ONNXRUNTIME_VERSION}"
+        in script
+    )
+    assert (
+        f"onnxruntime.__version__ == "
+        f"{component.PINNED_ONNXRUNTIME_VERSION!r}"
+        in script
+    )
 
 
 def test_component_overlay_patches_only_writable_copy(tmp_path: Path) -> None:
