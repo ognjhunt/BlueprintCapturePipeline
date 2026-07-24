@@ -366,6 +366,31 @@ def test_single_site_comparison_is_blocked() -> None:
     assert compare_sites([_profile("s1", hard=False)])["status"] == "blocked"
 
 
+def test_non_finite_measurements_are_treated_as_unmeasured() -> None:
+    """A NaN clearance is missing evidence, not a difficulty of zero."""
+
+    profile = build_site_difficulty_profile(
+        scene_id="s1",
+        capture_id="c1",
+        scene_placement={
+            "min_obstacle_clearance_m": float("nan"),
+            "standoff_margin_m": float("inf"),
+        },
+        task_scope={"step_count": 10, "route_length_m": 20},
+    )
+    spatial = next(row for row in profile["axes"] if row["axis"] == "spatial_constraint")
+
+    assert spatial["measured"] is False
+    assert spatial["score"] is None
+    assert sorted(spatial["inputs_missing"]) == ["min_clearance_m", "standoff_margin_m"]
+    # A booleans-are-not-numbers guard, so True cannot read as 1.0.
+    assert (
+        build_site_difficulty_profile(
+            scene_id="s1", capture_id="c1", task_scope={"step_count": True}
+        )["axes"][5]["inputs_missing"]
+    )
+
+
 # -- 21: generated media privacy -----------------------------------------
 
 
