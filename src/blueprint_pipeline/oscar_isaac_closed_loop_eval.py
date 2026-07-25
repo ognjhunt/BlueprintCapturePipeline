@@ -29,6 +29,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .initial_policy_observation_contract import (
+    resolve_start_frame_evidence_path,
     validated_initial_policy_observation as _validated_initial_policy_observation,
 )
 from .closed_loop_consistency_scoring import (
@@ -3308,6 +3309,19 @@ def make_controller_fk_skeleton_projector(
         projection["derived_via_controller_fk"] = (
             projection.get("derived_via_controller_fk") is True
         )
+        action_target = action.get("target")
+        if _finite_numeric_sequence(action_target, minimum_length=3) and len(list(action_target)) == 3:
+            # Progress is judged toward the manipulation target the action was
+            # conditioned on. The camera framing-validation point below exists to
+            # prove the appliance is IN FRAME and sits 0.76 m from the handle on
+            # the live bundle -- measuring hand progress toward it falsely
+            # rejected a +134 mm reach (attempt 067, runner_done-9631481e).
+            projection["task_target_world_xyz_m"] = [float(value) for value in action_target]
+            projection["task_target_binding"] = {
+                "source": "action_manipulation_target",
+                "camera_projection_context_sha256": projection_context_sha256,
+                "source_frame_sha256": source_frame_sha256,
+            }
         if camera_projection_context is not None:
             required_points = _mapping(
                 _mapping(
@@ -3318,12 +3332,18 @@ def make_controller_fk_skeleton_projector(
             )
             task_target = _mapping(required_points.get("task_target")).get("world_xyz_m")
             if _finite_numeric_sequence(task_target, minimum_length=3) and len(task_target) == 3:
-                projection["task_target_world_xyz_m"] = [float(value) for value in task_target]
-                projection["task_target_binding"] = {
-                    "source": "live_isaac_robot_pov_camera_framing_validation",
-                    "camera_projection_context_sha256": projection_context_sha256,
-                    "source_frame_sha256": source_frame_sha256,
-                }
+                projection["camera_framing_task_target_world_xyz_m"] = [
+                    float(value) for value in task_target
+                ]
+                if "task_target_world_xyz_m" not in projection:
+                    projection["task_target_world_xyz_m"] = [
+                        float(value) for value in task_target
+                    ]
+                    projection["task_target_binding"] = {
+                        "source": "live_isaac_robot_pov_camera_framing_validation",
+                        "camera_projection_context_sha256": projection_context_sha256,
+                        "source_frame_sha256": source_frame_sha256,
+                    }
         normalized_projection = _with_action_conditioning_digests(projection)
         evidence_blockers = _action_conditioning_blockers(
             action=action,
@@ -5526,6 +5546,13 @@ def run_oscar_isaac_closed_loop(
             else:
                 blockers.append(f"initial_learned_policy_query_failed:{type(exc).__name__}")
 
+    if policy_endpoint is not None and pending_policy_endpoint_action is None:
+        # Fail closed: substituting DeterministicWalkToTargetPolicy for the sealed
+        # manipulation policy poisons identity bindings and, in production,
+        # crashes FK conditioning (unitree_g1_sonic_action_missing). No step runs.
+        blockers.append("initial_learned_policy_action_unavailable_fail_closed")
+        bounded_steps = 0
+
     for step_index in range(1, bounded_steps + 1):
         # 1. policy acts
         decision = policy.step(
@@ -6732,12 +6759,8 @@ DEFAULT_SAM3_HARNESS_BACKEND_COMMAND = [
 ]
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run the per-step OSCAR-2B <-> SAM3 closed loop. Intended to run ON a GPU pod that has the
-    OSCAR repo + checkpoint and the SAM3/DA3 perception backend. ``--dry-run`` validates the full
-    assembly (paths, backends, route) and writes the plan without any inference, so the wiring is
-    verifiable with zero GPU.
-    """
+def build_arg_parser() -> argparse.ArgumentParser:
+    """CLI parser, exposed so the sealed bundle argv contract is hermetically testable."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start-frame", required=True, help="initial robot-POV observation frame")
     parser.add_argument(
@@ -6927,6 +6950,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the per-step OSCAR-2B <-> SAM3 closed loop. Intended to run ON a GPU pod that has the
+    OSCAR repo + checkpoint and the SAM3/DA3 perception backend. ``--dry-run`` validates the full
+    assembly (paths, backends, route) and writes the plan without any inference, so the wiring is
+    verifiable with zero GPU.
+    """
+    parser = build_arg_parser()
     args = parser.parse_args(argv)
 
     out_dir = Path(args.output_dir).expanduser().resolve()
@@ -6936,11 +6969,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     task_success_contract: dict[str, Any] = {}
     initial_groot_policy_state: dict[str, Any] = {}
     initial_observation_evidence: dict[str, Any] = {}
-    if args.start_frame_evidence:
+    start_frame_evidence_path = resolve_start_frame_evidence_path(args.start_frame_evidence)
+    if start_frame_evidence_path:
         try:
             initial_observation_evidence = _mapping(
                 json.loads(
-                    Path(args.start_frame_evidence).expanduser().read_text(encoding="utf-8")
+                    Path(start_frame_evidence_path).expanduser().read_text(encoding="utf-8")
                 )
             )
         except (OSError, json.JSONDecodeError):
