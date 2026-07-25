@@ -2110,3 +2110,25 @@ def test_direct_episode_owner_keeps_ambiguous_no_id_obligation_open(
     assert settled["owner"]["status"] == (
         "allocation_outcome_ambiguous_pending_record_retained_open"
     )
+
+
+def test_completion_frame_replay_ensures_live_physics_before_first_frame() -> None:
+    """Attempt 067 run 5, instrumented: delta=0 dt=0.0 playing=False frame=0.
+
+    The persistent executor idles stopped after its startup calibration probe,
+    so the completion controller-frame replay must start the timeline (and
+    absorb the initialization update) before the first delta==1 measurement.
+    Source-level pin; the live delta check remains the runtime gate.
+    """
+
+    import inspect
+
+    import blueprint_pipeline.isaac_runtime_task_backend as backend
+
+    source = inspect.getsource(backend)
+    loop = source.split("for frame_index, controller_frame in enumerate(controller_sequence)")[1]
+    guard = loop.split("physics_step_count_before")[0]
+    assert "replay_timeline.play()" in guard and "self.app.update()" in guard, (
+        "controller-frame replay must ensure the timeline is playing before "
+        "sampling the physics step counter"
+    )
