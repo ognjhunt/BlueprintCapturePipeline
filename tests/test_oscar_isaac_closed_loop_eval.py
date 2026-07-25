@@ -6428,21 +6428,29 @@ def test_initial_policy_query_failure_fails_closed_without_walk_steps(tmp_path: 
     """
 
     start = _write_frame(tmp_path / "fail_closed.png", 25)
+    inner_wam = _route_walking_wam(tmp_path)
+    wam_calls: list[int] = []
+
+    def _counting_wam(current_frame, action, step_index, history):
+        wam_calls.append(step_index)
+        return inner_wam(current_frame, action, step_index, history)
+
     manifest = L.run_oscar_isaac_closed_loop(
         output_dir=tmp_path / "fail-closed-out",
         start_frame_path=start,
         route_points=[[0.0, 0.0, 0.79], [0.1, 0.0, 0.79]],
-        wam_generate_next=_route_walking_wam(tmp_path),
+        wam_generate_next=_counting_wam,
         steps=3,
         policy_endpoint=lambda observation, history, step: {"policy_action": "x"},
         initial_observation_evidence=None,
     )
     assert manifest["status"] == "blocked"
     assert "initial_policy_observation_evidence_required" in manifest["blockers"]
-    assert len(manifest.get("trace") or []) == 0, (
-        "no step may execute after a failed initial policy query: a substituted "
-        "DeterministicWalkToTargetPolicy action crashes FK conditioning in production"
-    )
+    assert "initial_learned_policy_action_unavailable_fail_closed" in manifest["blockers"]
+    # Assert on the execution side effect, not a manifest field: attempts 066/067
+    # crashed INSIDE wam/FK before any manifest existed, while the old
+    # zero-trace-rows assertion stayed green. The WAM must never be invoked.
+    assert wam_calls == [], f"steps executed after failed initial query: {wam_calls}"
 
 
 def test_sc3_closed_loop_blocks_egocentric_only_wam_output(tmp_path):

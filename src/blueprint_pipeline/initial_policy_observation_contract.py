@@ -95,3 +95,30 @@ def validated_initial_policy_observation(
         "third_person_overview_included": False,
         "camera_contract": dict(camera),
     }
+
+
+#: Where the closed-loop image and qualification bootstrap stage the
+#: hash-binding evidence for the initial robot-POV frame on the pod.  The
+#: digest-pinned episode bundle's sealed argv predates --start-frame-evidence,
+#: so the eval must fall back to this canonical location or every bundle-driven
+#: episode silently loses its learned-policy query.
+CANONICAL_START_FRAME_EVIDENCE_PATH = "/workspace/controller_fk_camera_projection_context.json"
+
+
+def resolve_start_frame_evidence_path(
+    explicit: str | None,
+    *,
+    canonical_path: str = CANONICAL_START_FRAME_EVIDENCE_PATH,
+) -> str | None:
+    """Resolve the evidence path: explicit argv wins, else the canonical file.
+
+    Returns ``None`` when neither exists; with a policy endpoint configured the
+    loop must then fail closed rather than substitute the deterministic walk
+    policy (observed live: attempts 066/067 crashed FK conditioning that way).
+    """
+
+    if explicit:
+        return explicit
+    if Path(canonical_path).is_file():
+        return canonical_path
+    return None
