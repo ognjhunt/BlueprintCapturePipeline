@@ -3309,6 +3309,19 @@ def make_controller_fk_skeleton_projector(
         projection["derived_via_controller_fk"] = (
             projection.get("derived_via_controller_fk") is True
         )
+        action_target = action.get("target")
+        if _finite_numeric_sequence(action_target, minimum_length=3) and len(list(action_target)) == 3:
+            # Progress is judged toward the manipulation target the action was
+            # conditioned on. The camera framing-validation point below exists to
+            # prove the appliance is IN FRAME and sits 0.76 m from the handle on
+            # the live bundle -- measuring hand progress toward it falsely
+            # rejected a +134 mm reach (attempt 067, runner_done-9631481e).
+            projection["task_target_world_xyz_m"] = [float(value) for value in action_target]
+            projection["task_target_binding"] = {
+                "source": "action_manipulation_target",
+                "camera_projection_context_sha256": projection_context_sha256,
+                "source_frame_sha256": source_frame_sha256,
+            }
         if camera_projection_context is not None:
             required_points = _mapping(
                 _mapping(
@@ -3319,12 +3332,18 @@ def make_controller_fk_skeleton_projector(
             )
             task_target = _mapping(required_points.get("task_target")).get("world_xyz_m")
             if _finite_numeric_sequence(task_target, minimum_length=3) and len(task_target) == 3:
-                projection["task_target_world_xyz_m"] = [float(value) for value in task_target]
-                projection["task_target_binding"] = {
-                    "source": "live_isaac_robot_pov_camera_framing_validation",
-                    "camera_projection_context_sha256": projection_context_sha256,
-                    "source_frame_sha256": source_frame_sha256,
-                }
+                projection["camera_framing_task_target_world_xyz_m"] = [
+                    float(value) for value in task_target
+                ]
+                if "task_target_world_xyz_m" not in projection:
+                    projection["task_target_world_xyz_m"] = [
+                        float(value) for value in task_target
+                    ]
+                    projection["task_target_binding"] = {
+                        "source": "live_isaac_robot_pov_camera_framing_validation",
+                        "camera_projection_context_sha256": projection_context_sha256,
+                        "source_frame_sha256": source_frame_sha256,
+                    }
         normalized_projection = _with_action_conditioning_digests(projection)
         evidence_blockers = _action_conditioning_blockers(
             action=action,

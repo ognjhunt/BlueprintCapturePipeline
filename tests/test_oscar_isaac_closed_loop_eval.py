@@ -6670,3 +6670,69 @@ def test_transition_verdict_uses_episode_baseline_not_step_pair(tmp_path):
     )
     assert step_pair_only["registered_transition_passed"] is False
     assert any("episode_initial_value" in item for item in step_pair_only["validation_blockers"])
+
+
+def test_manipulation_progress_measures_toward_the_manipulation_target(tmp_path: Path) -> None:
+    """Attempt 067's real geometry: handle vs camera-framing point, 0.761 m apart.
+
+    The right hand made +134 mm toward the HANDLE (9x the 15 mm threshold) yet the
+    gate blocked, because #178 bound task_target_world_xyz_m from the camera
+    framing-validation point instead of the manipulation target. Frozen real
+    numbers from runner_done-9631481e76a32c2e.
+    """
+
+    handle = [-0.961312, 1.471274, 0.84]
+    framing_point = [-1.587323776908116, 1.6373113768783192, 1.2390912066509716]
+    # Right-wrist trajectory endpoints from the live FK chunk (40 frames,
+    # interpolated linearly here; the gate takes the max over frames so the
+    # endpoints alone reproduce the verdicts).
+    wrist_start = [-0.999, 1.267, 0.789]
+    wrist_reach = [-0.905, 1.402, 0.826]  # closes ~0.134 m toward the handle
+
+    def projection_with(target: list[float]) -> dict:
+        frames = []
+        for i in range(5):
+            t = i / 4.0
+            pos = [a + (b - a) * t for a, b in zip(wrist_start, wrist_reach)]
+            frames.append(
+                {
+                    "landmarks": [
+                        {
+                            "name": "right_wrist_yaw_link",
+                            "world_xyz": pos,
+                            "image_projection": {
+                                "available": True,
+                                "u_px": 320.0 + 40.0 * t,
+                                "v_px": 240.0,
+                            },
+                        }
+                    ]
+                }
+            )
+        return {
+            "task_target_world_xyz_m": list(target),
+            "controller_fk_sequence": frames,
+            "landmarks": frames[-1]["landmarks"],
+        }
+
+    blocked = L._manipulation_effector_progress_report(projection_with(framing_point))
+    assert "manipulation_controller_fk_no_directional_effector_progress" in (
+        blocked.get("blockers") or []
+    ), "framing point must reproduce the live false rejection"
+
+    passed = L._manipulation_effector_progress_report(projection_with(handle))
+    assert passed.get("blockers") == [], passed.get("blockers")
+    assert passed["directional_progress_passed"] is True
+
+
+def test_projector_binds_progress_target_from_the_action_not_camera_framing() -> None:
+    """The framing-validation point may inform camera checks, never progress."""
+
+    import inspect
+
+    source = inspect.getsource(L)
+    binding = source.split('"task_target_binding"')[1][:400]
+    assert "action_manipulation_target" in binding, (
+        "progress target must be bound from the action's manipulation target; "
+        "the camera framing point sits 0.76 m from the handle on the live bundle"
+    )
