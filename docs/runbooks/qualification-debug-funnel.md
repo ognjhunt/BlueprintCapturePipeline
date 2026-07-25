@@ -56,6 +56,30 @@ Read the failing traceback path.
 6. `collect` the prior attempt (the session refuses a re-run before collection:
    `qualification_collect_required_before_episode_rerun`), then `run`.
 
+## Tier-2 precondition: allocate the box BEFORE merging the fix
+
+Tier 2 refreshes a **live** box; it cannot create one. Allocation requires all
+of `checkout == release.source_commit`, `checkout == origin/main`,
+`checkout == remote main`, and a clean tree
+(`_source_checkout_blockers`, `paid_resource_allocator.py`). The moment `main`
+advances past the commit the release image was built from, **no new box can be
+allocated at all** until a thin rebuild republishes the release at the new
+HEAD. Tearing down the last box and then merging therefore forfeits Tier 2 and
+forces a ~77-minute rebuild — the exact toll the funnel exists to avoid.
+
+Order of operations when a fix is headed for a live check:
+
+1. Allocate (or keep) the box while `HEAD == origin/main == release commit`.
+2. Fix, merge, whatever — the box is already bound and stays refreshable.
+3. `refresh-bootstrap` the overlay onto it.
+
+Corollary: do not tear down a healthy box just because its episode failed. A
+box whose failure was diagnosed as overlay-plane is the cheapest asset in the
+loop; the teardown reflex is what converts a $0.13 fix into a $0.70 one. Tear
+down only after the fix is verified, or when the defect is image-plane and a
+rebuild is unavoidable anyway. (First paid: attempt 069, 2026-07-25 — box torn
+down, fix merged, then Tier 2 found unreachable.)
+
 ## Known Tier-2 trap: overlay import closure (split-brain)
 
 `blueprint_pipeline` resolves as a namespace package across TWO roots on the
