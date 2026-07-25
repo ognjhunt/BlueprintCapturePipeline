@@ -34,10 +34,21 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
+from . import isaac_driver_support as ids
+from .isaac_driver_support import (
+    driver_newer_branch_sort_rank as _driver_newer_branch_sort_rank,
+    driver_sort_rank as _driver_sort_rank,
+    isaac_driver_support_status as _isaac_driver_support_status,
+)
 from . import vast_compute_capability as vcc
 from .gpu_selection_policy import (
-    GPU_SELECTION_POLICIES, _is_disallowed_for_isaac, _is_isaac_rt_candidate,
-    gpu_allowed_by_policy, policy_manifest, resolve_gpu_selection_policy)
+    GPU_SELECTION_POLICIES,
+    _is_disallowed_for_isaac,
+    _is_isaac_rt_candidate,
+    gpu_allowed_by_policy,
+    policy_manifest,
+    resolve_gpu_selection_policy,
+)
 from .logging_utils import log_event
 from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
@@ -326,44 +337,6 @@ def _driver_version(offer: Mapping[str, Any]) -> str:
         if value:
             return value
     return ""
-
-
-def _isaac_driver_support_status(driver_version: Any) -> str:
-    version = _version_tuple(driver_version)
-    if version is None:
-        return "unknown_driver_version"
-    if (
-        ISAAC_KNOWN_UNSUPPORTED_DRIVER_FLOOR
-        <= version
-        < ISAAC_KNOWN_UNSUPPORTED_DRIVER_CEILING_EXCLUSIVE
-    ):
-        return "known_unsupported_omniverse_rtx_driver_range"
-    return "outside_known_unsupported_omniverse_rtx_driver_range"
-
-
-def _driver_sort_rank(summary: Mapping[str, Any]) -> int:
-    status = _string(summary.get("isaac_driver_support_status"))
-    if status == "outside_known_unsupported_omniverse_rtx_driver_range":
-        return 0
-    if status == "unknown_driver_version":
-        return 1
-    if status == "known_unsupported_omniverse_rtx_driver_range":
-        return 2
-    return 3
-
-
-def _driver_newer_branch_sort_rank(summary: Mapping[str, Any]) -> int:
-    version = _version_tuple(summary.get("driver_version"))
-    if version is None:
-        return 4
-    major = version[0]
-    if major >= 580:
-        return 0
-    if major == 570 and version >= ISAAC_KNOWN_UNSUPPORTED_DRIVER_CEILING_EXCLUSIVE:
-        return 1
-    if major >= 575:
-        return 2
-    return 3
 
 
 def _string_list(value: Any) -> list[str]:
@@ -669,13 +642,7 @@ def _provider_url_public_blocker(url: str | None, role: str) -> str | None:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return None
-    if (
-        ip.is_loopback
-        or ip.is_private
-        or ip.is_link_local
-        or ip.is_unspecified
-        or ip.is_multicast
-    ):
+    if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified or ip.is_multicast:
         return f"{role}_url_not_publicly_reachable"
     return None
 
@@ -725,9 +692,7 @@ def _read_http_headers_from_socket(sock: socket.socket) -> tuple[int | None, dic
         chunks.append(data)
         if b"\r\n\r\n" in b"".join(chunks):
             break
-    header_text = b"".join(chunks).split(b"\r\n\r\n", 1)[0].decode(
-        "iso-8859-1", errors="replace"
-    )
+    header_text = b"".join(chunks).split(b"\r\n\r\n", 1)[0].decode("iso-8859-1", errors="replace")
     lines = header_text.splitlines()
     status_code: int | None = None
     if lines:
@@ -806,9 +771,7 @@ def _head_with_public_dns_fallback(
                 "method": "HEAD_WITH_PUBLIC_DNS_FALLBACK",
                 "http_status_code": status_code,
                 "content_type": headers.get("Content-Type"),
-                "content_length": int(content_length)
-                if content_length is not None
-                else None,
+                "content_length": int(content_length) if content_length is not None else None,
                 "public_dns_resolver": "dig @1.1.1.1",
                 "public_dns_attempt_count": dns_attempt_count,
                 "resolved_ip_count": len(ips),
@@ -835,7 +798,11 @@ def _api_json(
     payload: Mapping[str, Any] | None = None,
     timeout_seconds: int = 30,
 ) -> tuple[int, dict[str, Any]]:
-    url = path if path.startswith("http://") or path.startswith("https://") else f"{VAST_API_BASE}{path}"
+    url = (
+        path
+        if path.startswith("http://") or path.startswith("https://")
+        else f"{VAST_API_BASE}{path}"
+    )
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = urllib.request.Request(
         url,
@@ -940,7 +907,7 @@ def _discover_vast_templates(
         key=lambda item: _number(item.get("count_created")) or 0.0,
         reverse=True,
     )
-    inspected = templates[:max(0, max_templates_inspected)]
+    inspected = templates[: max(0, max_templates_inspected)]
     summaries = [_vast_template_summary(template) for template in inspected]
     isaac_candidates = [item for item in summaries if item.get("isaac_template_candidate")]
     rendering_candidates = [
@@ -1098,8 +1065,12 @@ def _provider_plan(
             "min_cold_isaac_pull_live_minutes": min_cold_isaac_pull_live_minutes,
             "isaac_required_env": {
                 "ACCEPT_EULA": "present" if enable_isaac_smoke else "not_required_for_public_probe",
-                "PRIVACY_CONSENT": "present" if enable_isaac_smoke else "not_required_for_public_probe",
-                "NVIDIA_DRIVER_CAPABILITIES": "present" if enable_isaac_smoke else "not_required_for_public_probe",
+                "PRIVACY_CONSENT": "present"
+                if enable_isaac_smoke
+                else "not_required_for_public_probe",
+                "NVIDIA_DRIVER_CAPABILITIES": "present"
+                if enable_isaac_smoke
+                else "not_required_for_public_probe",
             },
             "blueprint_bundle_enabled": enable_blueprint_bundle,
             "blueprint_bundle_kind": provider_bundle_kind,
@@ -1252,15 +1223,12 @@ def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
     driver_status = _isaac_driver_support_status(driver)
     compute_cap = offer.get("compute_cap")
     provider_reported_gpu_ram_mb = _number(
-        offer.get("gpu_ram")
-        or offer.get("gpu_totalram")
-        or offer.get("gpu_ram_mb")
+        offer.get("gpu_ram") or offer.get("gpu_totalram") or offer.get("gpu_ram_mb")
     )
     known_model_vram_cap_mb = _known_gpu_vram_cap_mb(gpu)
     effective_gpu_ram_mb = (
         min(int(provider_reported_gpu_ram_mb), known_model_vram_cap_mb)
-        if provider_reported_gpu_ram_mb is not None
-        and known_model_vram_cap_mb is not None
+        if provider_reported_gpu_ram_mb is not None and known_model_vram_cap_mb is not None
         else (
             int(provider_reported_gpu_ram_mb)
             if provider_reported_gpu_ram_mb is not None
@@ -1280,9 +1248,7 @@ def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
         "compute_cap_normalized": vcc.normalized_compute_cap(compute_cap),
         "gpu_ram_mb": effective_gpu_ram_mb,
         "provider_reported_gpu_ram_mb": (
-            int(provider_reported_gpu_ram_mb)
-            if provider_reported_gpu_ram_mb is not None
-            else None
+            int(provider_reported_gpu_ram_mb) if provider_reported_gpu_ram_mb is not None else None
         ),
         "known_model_vram_cap_mb": known_model_vram_cap_mb,
         "gpu_ram_normalization": (
@@ -1329,17 +1295,12 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "gpu_model_slug": _safe_slug(gpu),
         "hourly_rate_usd": hourly,
         "driver_version": _string(offer.get("driver_version")) or None,
-        "isaac_driver_support_status": _string(
-            offer.get("isaac_driver_support_status")
-        )
-        or None,
+        "isaac_driver_support_status": _string(offer.get("isaac_driver_support_status")) or None,
         "cuda_max_good": offer.get("cuda_max_good"),
         "compute_cap": offer.get("compute_cap"),
         "compute_cap_normalized": offer.get("compute_cap_normalized"),
         "gpu_ram_mb": offer.get("gpu_ram_mb"),
-        "provider_reported_gpu_ram_mb": offer.get(
-            "provider_reported_gpu_ram_mb"
-        ),
+        "provider_reported_gpu_ram_mb": offer.get("provider_reported_gpu_ram_mb"),
         "known_model_vram_cap_mb": offer.get("known_model_vram_cap_mb"),
         "gpu_ram_normalization": offer.get("gpu_ram_normalization"),
         "num_gpus": offer.get("num_gpus"),
@@ -1351,9 +1312,7 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "machine_id": int(machine_id) if machine_id is not None else None,
         "has_avx": _normalized_binary_capability(offer.get("has_avx")),
         "isaac_rt_candidate": bool(offer.get("isaac_rt_candidate")),
-        "disallowed_for_isaac_rendering": bool(
-            offer.get("disallowed_for_isaac_rendering")
-        ),
+        "disallowed_for_isaac_rendering": bool(offer.get("disallowed_for_isaac_rendering")),
         "raw_secret_values_recorded": False,
     }
 
@@ -1405,13 +1364,17 @@ def _load_machine_avoidlist(path: Path) -> dict[str, Any]:
             "parse_error": f"{type(exc).__name__}:{str(exc)[:200]}",
             "raw_secret_values_recorded": False,
         }
-    return dict(data) if isinstance(data, Mapping) else {
-        "schema_version": "vast_machine_avoidlist.v1",
-        "status": "blocked_invalid_shape",
-        "machine_ids": [],
-        "entries": [],
-        "raw_secret_values_recorded": False,
-    }
+    return (
+        dict(data)
+        if isinstance(data, Mapping)
+        else {
+            "schema_version": "vast_machine_avoidlist.v1",
+            "status": "blocked_invalid_shape",
+            "machine_ids": [],
+            "entries": [],
+            "raw_secret_values_recorded": False,
+        }
+    )
 
 
 def _avoidlist_machine_ids(path: Path) -> set[int]:
@@ -1473,18 +1436,16 @@ def _preserve_existing_live_attempt_artifacts(
     reason: str,
     artifact_names: Sequence[str] = VAST_LIVE_ATTEMPT_ARTIFACT_NAMES,
 ) -> dict[str, Any] | None:
-    present_paths = [
-        job_dir / name
-        for name in artifact_names
-        if (job_dir / name).is_file()
-    ]
+    present_paths = [job_dir / name for name in artifact_names if (job_dir / name).is_file()]
     if not present_paths:
         return None
     preserve_dir = job_dir / f"attempt_preserved_{_attempt_preservation_slug(generated_at)}"
     suffix = 1
     while preserve_dir.exists():
         suffix += 1
-        preserve_dir = job_dir / f"attempt_preserved_{_attempt_preservation_slug(generated_at)}_{suffix}"
+        preserve_dir = (
+            job_dir / f"attempt_preserved_{_attempt_preservation_slug(generated_at)}_{suffix}"
+        )
     ensure_dir(preserve_dir)
     copied: list[str] = []
     copy_errors: list[dict[str, Any]] = []
@@ -1525,6 +1486,7 @@ def _select_offer(
     min_gpu_ram_mb: int = 0,
     min_compute_cap: int = 0,
     max_compute_cap: int = vcc.TENSORRT_MAX_SUPPORTED_COMPUTE_CAP,
+    max_isaac_driver: tuple[int, ...] | None = ids.ISAAC_MAX_SUPPORTED_DRIVER_EXCLUSIVE,
     excluded_machine_ids: Iterable[Any] = (),
     allowed_machine_ids: Iterable[Any] = (),
     require_avx: bool = False,
@@ -1549,6 +1511,7 @@ def _select_offer(
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
         and vcc.meets_min_compute_cap(item, min_compute_cap)
         and vcc.meets_max_compute_cap(item, max_compute_cap)
+        and ids.meets_max_isaac_driver(item, max_isaac_driver)
         and (
             not min_reliability
             or (
@@ -1556,16 +1519,10 @@ def _select_offer(
                 and float(_number(item.get("reliability")) or 0.0) >= min_reliability
             )
         )
-        and (
-            not require_direct_port
-            or int(_number(item.get("direct_port_count")) or 0) > 0
-        )
+        and (not require_direct_port or int(_number(item.get("direct_port_count")) or 0) > 0)
         and gpu_allowed_by_policy(_string(item.get("gpu_name")), policy)
         and int(_number(item.get("machine_id")) or -1) not in excluded
-        and (
-            not allowed
-            or int(_number(item.get("machine_id")) or -1) in allowed
-        )
+        and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and (not require_avx or item.get("has_avx") is True)
     ]
     if require_known_supported_isaac_driver:
@@ -1619,6 +1576,7 @@ def _offer_selection_manifest(
     min_gpu_ram_mb: int,
     min_compute_cap: int = 0,
     max_compute_cap: int = vcc.TENSORRT_MAX_SUPPORTED_COMPUTE_CAP,
+    max_isaac_driver: tuple[int, ...] | None = ids.ISAAC_MAX_SUPPORTED_DRIVER_EXCLUSIVE,
     require_known_supported_isaac_driver: bool,
     excluded_machine_ids: Iterable[Any],
     allowed_machine_ids: Iterable[Any],
@@ -1644,8 +1602,7 @@ def _offer_selection_manifest(
     known_unsupported_driver_offer_count = sum(
         1
         for item in summaries
-        if item.get("isaac_driver_support_status")
-        == "known_unsupported_omniverse_rtx_driver_range"
+        if item.get("isaac_driver_support_status") == "known_unsupported_omniverse_rtx_driver_range"
     )
     excluded = _machine_id_set(excluded_machine_ids)
     allowed = _machine_id_set(allowed_machine_ids)
@@ -1664,6 +1621,7 @@ def _offer_selection_manifest(
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
         and vcc.meets_min_compute_cap(item, min_compute_cap)
         and vcc.meets_max_compute_cap(item, max_compute_cap)
+        and ids.meets_max_isaac_driver(item, max_isaac_driver)
         and (
             not min_reliability
             or (
@@ -1671,16 +1629,10 @@ def _offer_selection_manifest(
                 and float(_number(item.get("reliability")) or 0.0) >= min_reliability
             )
         )
-        and (
-            not require_direct_port
-            or int(_number(item.get("direct_port_count")) or 0) > 0
-        )
+        and (not require_direct_port or int(_number(item.get("direct_port_count")) or 0) > 0)
         and gpu_allowed_by_policy(_string(item.get("gpu_name")), policy)
         and int(_number(item.get("machine_id")) or -1) not in excluded
-        and (
-            not allowed
-            or int(_number(item.get("machine_id")) or -1) in allowed
-        )
+        and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
     )
     return {
         "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -1793,9 +1745,7 @@ def _append_session_budget_attempt(
     if budget_path.is_file():
         try:
             payload = json.loads(budget_path.read_text(encoding="utf-8"))
-            attempts = [
-                item for item in payload.get("attempts") or [] if isinstance(item, Mapping)
-            ]
+            attempts = [item for item in payload.get("attempts") or [] if isinstance(item, Mapping)]
         except Exception as exc:
             parse_error = f"{type(exc).__name__}:{str(exc)[:200]}"
     attempt = {
@@ -1886,9 +1836,7 @@ def _session_budget_guard(
     if budget_path.is_file():
         try:
             payload = json.loads(budget_path.read_text(encoding="utf-8"))
-            attempts = [
-                item for item in payload.get("attempts") or [] if isinstance(item, Mapping)
-            ]
+            attempts = [item for item in payload.get("attempts") or [] if isinstance(item, Mapping)]
         except Exception as exc:
             budget_parse_error = f"{type(exc).__name__}:{str(exc)[:200]}"
             blockers.append("session_budget_ledger_parse_failed")
@@ -1897,9 +1845,7 @@ def _session_budget_guard(
     requested_max_seconds = max(0, requested_max_live_minutes) * 60.0
     projected_max_cost = max(0.0, max_hourly_rate) * max(0, requested_max_live_minutes) / 60.0
     session_max_seconds = (
-        max(0, session_max_live_minutes) * 60.0
-        if session_max_live_minutes is not None
-        else None
+        max(0, session_max_live_minutes) * 60.0 if session_max_live_minutes is not None else None
     )
     if session_max_seconds is not None:
         if prior_live_seconds >= session_max_seconds:
@@ -2024,8 +1970,13 @@ def _blueprint_bundle_preflight(
     runner_text = ""
     eval_manifest: dict[str, Any] = {}
     eval_manifest_parse_error: str | None = None
-    readiness_path = bundle_path.parent / readiness_name if bundle_path else job_dir / readiness_name
-    if provider_bundle_kind in {"unitree_unifolm", "unitree_groot_n17_sonic"} and not readiness_path.is_file():
+    readiness_path = (
+        bundle_path.parent / readiness_name if bundle_path else job_dir / readiness_name
+    )
+    if (
+        provider_bundle_kind in {"unitree_unifolm", "unitree_groot_n17_sonic"}
+        and not readiness_path.is_file()
+    ):
         readiness_path = (
             bundle_path.parent / "provider_runtime" / readiness_name
             if bundle_path
@@ -2061,23 +2012,15 @@ def _blueprint_bundle_preflight(
                     for member in zip_entries:
                         if member.endswith(".json"):
                             try:
-                                json.loads(
-                                    archive.read(member).decode(
-                                        "utf-8", errors="replace"
-                                    )
-                                )
+                                json.loads(archive.read(member).decode("utf-8", errors="replace"))
                             except Exception as exc:
-                                json_member_parse_errors.append(
-                                    f"{member}:{type(exc).__name__}"
-                                )
+                                json_member_parse_errors.append(f"{member}:{type(exc).__name__}")
                     if entrypoint_member in zip_entries:
                         entrypoint_text = archive.read(entrypoint_member).decode(
                             "utf-8", errors="replace"
                         )
                     if runner_member in zip_entries:
-                        runner_text = archive.read(runner_member).decode(
-                            "utf-8", errors="replace"
-                        )
+                        runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
                     if (
                         provider_bundle_kind == "isaac"
                         and "provider_runtime/isaac_provider_eval_manifest.json" in zip_entries
@@ -2092,13 +2035,13 @@ def _blueprint_bundle_preflight(
                                 dict(eval_payload) if isinstance(eval_payload, Mapping) else {}
                             )
                         except Exception as exc:
-                            eval_manifest_parse_error = (
-                                f"{type(exc).__name__}:{str(exc)[:300]}"
-                            )
+                            eval_manifest_parse_error = f"{type(exc).__name__}:{str(exc)[:300]}"
                             blockers.append("provider_eval_manifest_parse_failed")
             except Exception as exc:
                 zip_parse_error = f"{type(exc).__name__}:{str(exc)[:300]}"
-                blockers.append(f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}")
+                blockers.append(
+                    f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}"
+                )
             missing_entries = sorted(required_entries - set(zip_entries))
             if missing_entries:
                 blockers.append("provider_runtime_bundle_required_entries_missing")
@@ -2110,8 +2053,7 @@ def _blueprint_bundle_preflight(
                 if provider_bundle_kind == "isaac":
                     entrypoint_has_crash_fallback = (
                         "write_missing_result" in entrypoint_text
-                        and "isaac_runner_process_exited_without_runtime_result"
-                        in entrypoint_text
+                        and "isaac_runner_process_exited_without_runtime_result" in entrypoint_text
                         and "blocked_isaac_process_exited_without_result" in entrypoint_text
                     )
                     runner_has_required_runtime = "SimulationApp" in runner_text
@@ -2211,9 +2153,7 @@ def _blueprint_bundle_preflight(
                     "method": "HEAD",
                     "http_status_code": status_code,
                     "content_type": headers.get("Content-Type"),
-                    "content_length": int(content_length)
-                    if content_length is not None
-                    else None,
+                    "content_length": int(content_length) if content_length is not None else None,
                 }
                 if not (200 <= status_code < 300):
                     blockers.append("provider_bundle_fetch_url_unreachable")
@@ -2427,9 +2367,7 @@ def _blueprint_bundle_preflight(
         "missing_zip_entries": missing_entries,
         "zip_parse_error": zip_parse_error,
         "provider_eval_manifest_parse_error": eval_manifest_parse_error,
-        "provider_eval_manifest_relative_paths": _mapping(
-            eval_manifest.get("relative_paths")
-        ),
+        "provider_eval_manifest_relative_paths": _mapping(eval_manifest.get("relative_paths")),
         "provider_bundle_readiness_path": str(readiness_path),
         "provider_bundle_readiness_present": readiness_path.is_file(),
         "provider_bundle_readiness_parse_error": readiness_parse_error,
@@ -2462,8 +2400,8 @@ def _isaac_image_startup_preflight(
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     blockers: list[str] = []
     warnings: list[str] = []
-    isaac_path_requested = (
-        enable_isaac_smoke or (enable_blueprint_bundle and provider_bundle_kind == "isaac")
+    isaac_path_requested = enable_isaac_smoke or (
+        enable_blueprint_bundle and provider_bundle_kind == "isaac"
     )
     template_hash = _string(vast_template_hash_id)
     direct_official_isaac_image = (
@@ -2473,9 +2411,7 @@ def _isaac_image_startup_preflight(
     )
     template_image_cache_proven = False
     template_image_cache_evidence = (
-        "not_requested"
-        if not use_vast_template_image
-        else "not_proven_by_vast_template_hash"
+        "not_requested" if not use_vast_template_image else "not_proven_by_vast_template_hash"
     )
     custom_or_template_image = bool(
         isaac_path_requested
@@ -2505,9 +2441,7 @@ def _isaac_image_startup_preflight(
             "previous_live_attempts_showed_nvcr_isaac_image_cold_pull_can_exceed_short_startup_windows"
         )
     if isaac_path_requested and use_vast_template_image:
-        warnings.append(
-            "vast_template_hash_is_launch_configuration_not_image_cache_proof"
-        )
+        warnings.append("vast_template_hash_is_launch_configuration_not_image_cache_proof")
     if isaac_path_requested and custom_or_template_image:
         warnings.append(
             "custom_or_template_isaac_image_path_must_still_prove_onstart_heartbeat_before_bundle_execution"
@@ -2662,8 +2596,7 @@ def _probe_env(
         if value:
             env[env_name] = value
     for env_name in (
-        item.strip()
-        for item in _string(os.getenv(VAST_FORWARD_SECRET_ENV_VARS_ENV)).split(",")
+        item.strip() for item in _string(os.getenv(VAST_FORWARD_SECRET_ENV_VARS_ENV)).split(",")
     ):
         if not any(marker in env_name.upper() for marker in SENSITIVE_KEY_MARKERS):
             continue
@@ -2676,8 +2609,7 @@ def _probe_env(
 def _forwarded_secret_values() -> list[str]:
     values: list[str] = _hf_token_secret_values()
     for env_name in (
-        item.strip()
-        for item in _string(os.getenv(VAST_FORWARD_SECRET_ENV_VARS_ENV)).split(",")
+        item.strip() for item in _string(os.getenv(VAST_FORWARD_SECRET_ENV_VARS_ENV)).split(",")
     ):
         if not any(marker in env_name.upper() for marker in SENSITIVE_KEY_MARKERS):
             continue
@@ -2841,21 +2773,21 @@ def _probe_shell_script(
     quoted_url = shlex.quote(heartbeat_url)
     script = (
         "set +e; WORK_DIR=/workspace; "
-        "mkdir -p \"$WORK_DIR/blueprint_vast_probe\" 2>/dev/null || "
-        "{ WORK_DIR=/tmp/blueprint_vast_work; mkdir -p \"$WORK_DIR/blueprint_vast_probe\"; }; "
-        "export BLUEPRINT_VAST_WORK_DIR=\"$WORK_DIR\"; "
+        'mkdir -p "$WORK_DIR/blueprint_vast_probe" 2>/dev/null || '
+        '{ WORK_DIR=/tmp/blueprint_vast_work; mkdir -p "$WORK_DIR/blueprint_vast_probe"; }; '
+        'export BLUEPRINT_VAST_WORK_DIR="$WORK_DIR"; '
         "echo BLUEPRINT_VAST_WORK_DIR:$WORK_DIR; "
         "PY_NET=''; "
         "if command -v python3 >/dev/null 2>&1; then PY_NET=$(command -v python3); "
         "elif command -v python >/dev/null 2>&1; then PY_NET=$(command -v python); fi; "
         "echo BLUEPRINT_VAST_ONSTART_STARTED; date -u; "
         "blueprint_http_get() { "
-        "blueprint_get_url=\"$1\"; "
-        "if command -v curl >/dev/null 2>&1; then curl -fsSL \"$blueprint_get_url\"; return $?; fi; "
-        "if command -v wget >/dev/null 2>&1; then wget -qO- \"$blueprint_get_url\"; return $?; fi; "
-        "blueprint_get_py=\"${PY_NET:-${RUNTIME_PY:-}}\"; "
-        "if [ -n \"$blueprint_get_py\" ]; then "
-        "BLUEPRINT_HTTP_GET_URL=\"$blueprint_get_url\" \"$blueprint_get_py\" - <<'PY'\n"
+        'blueprint_get_url="$1"; '
+        'if command -v curl >/dev/null 2>&1; then curl -fsSL "$blueprint_get_url"; return $?; fi; '
+        'if command -v wget >/dev/null 2>&1; then wget -qO- "$blueprint_get_url"; return $?; fi; '
+        'blueprint_get_py="${PY_NET:-${RUNTIME_PY:-}}"; '
+        'if [ -n "$blueprint_get_py" ]; then '
+        'BLUEPRINT_HTTP_GET_URL="$blueprint_get_url" "$blueprint_get_py" - <<\'PY\'\n'
         "import os\n"
         "import sys\n"
         "import urllib.request\n"
@@ -2873,11 +2805,11 @@ def _probe_shell_script(
         "return 127; "
         "}; "
         "blueprint_download_url() { "
-        "blueprint_download_src=\"$1\"; blueprint_download_dst=\"$2\"; "
-        "if [ -n \"${BLUEPRINT_VAST_PROVIDER_BUNDLE_BASE64:-}\" ]; then "
-        "blueprint_download_py=\"${PY_NET:-${RUNTIME_PY:-}}\"; "
-        "if [ -z \"$blueprint_download_py\" ]; then echo BLUEPRINT_VAST_INLINE_BUNDLE_DECODE_ERROR:python_missing; return 127; fi; "
-        "BLUEPRINT_DOWNLOAD_PATH=\"$blueprint_download_dst\" \"$blueprint_download_py\" - <<'PY'\n"
+        'blueprint_download_src="$1"; blueprint_download_dst="$2"; '
+        'if [ -n "${BLUEPRINT_VAST_PROVIDER_BUNDLE_BASE64:-}" ]; then '
+        'blueprint_download_py="${PY_NET:-${RUNTIME_PY:-}}"; '
+        'if [ -z "$blueprint_download_py" ]; then echo BLUEPRINT_VAST_INLINE_BUNDLE_DECODE_ERROR:python_missing; return 127; fi; '
+        'BLUEPRINT_DOWNLOAD_PATH="$blueprint_download_dst" "$blueprint_download_py" - <<\'PY\'\n'
         "import base64\n"
         "import hashlib\n"
         "import os\n"
@@ -2901,11 +2833,11 @@ def _probe_shell_script(
         "PY\n"
         "return $?; "
         "fi; "
-        "if command -v curl >/dev/null 2>&1; then curl -fL \"$blueprint_download_src\" -o \"$blueprint_download_dst\"; return $?; fi; "
-        "if command -v wget >/dev/null 2>&1; then wget -O \"$blueprint_download_dst\" \"$blueprint_download_src\"; return $?; fi; "
-        "blueprint_download_py=\"${PY_NET:-${RUNTIME_PY:-}}\"; "
-        "if [ -n \"$blueprint_download_py\" ]; then "
-        "BLUEPRINT_DOWNLOAD_URL=\"$blueprint_download_src\" BLUEPRINT_DOWNLOAD_PATH=\"$blueprint_download_dst\" \"$blueprint_download_py\" - <<'PY'\n"
+        'if command -v curl >/dev/null 2>&1; then curl -fL "$blueprint_download_src" -o "$blueprint_download_dst"; return $?; fi; '
+        'if command -v wget >/dev/null 2>&1; then wget -O "$blueprint_download_dst" "$blueprint_download_src"; return $?; fi; '
+        'blueprint_download_py="${PY_NET:-${RUNTIME_PY:-}}"; '
+        'if [ -n "$blueprint_download_py" ]; then '
+        'BLUEPRINT_DOWNLOAD_URL="$blueprint_download_src" BLUEPRINT_DOWNLOAD_PATH="$blueprint_download_dst" "$blueprint_download_py" - <<\'PY\'\n'
         "import os\n"
         "import shutil\n"
         "import urllib.request\n"
@@ -2924,11 +2856,11 @@ def _probe_shell_script(
         "return 127; "
         "}; "
         "blueprint_upload_put() { "
-        "blueprint_upload_url=\"$1\"; blueprint_upload_path=\"$2\"; "
-        "if command -v curl >/dev/null 2>&1; then curl -fsS -X PUT -H 'Content-Type: application/zip' --data-binary @\"$blueprint_upload_path\" \"$blueprint_upload_url\" >/tmp/blueprint_provider_upload_response.json; return $?; fi; "
-        "blueprint_upload_py=\"${PY_NET:-${RUNTIME_PY:-}}\"; "
-        "if [ -n \"$blueprint_upload_py\" ]; then "
-        "BLUEPRINT_UPLOAD_URL=\"$blueprint_upload_url\" BLUEPRINT_UPLOAD_PATH=\"$blueprint_upload_path\" \"$blueprint_upload_py\" - <<'PY' >/tmp/blueprint_provider_upload_response.json\n"
+        'blueprint_upload_url="$1"; blueprint_upload_path="$2"; '
+        'if command -v curl >/dev/null 2>&1; then curl -fsS -X PUT -H \'Content-Type: application/zip\' --data-binary @"$blueprint_upload_path" "$blueprint_upload_url" >/tmp/blueprint_provider_upload_response.json; return $?; fi; '
+        'blueprint_upload_py="${PY_NET:-${RUNTIME_PY:-}}"; '
+        'if [ -n "$blueprint_upload_py" ]; then '
+        'BLUEPRINT_UPLOAD_URL="$blueprint_upload_url" BLUEPRINT_UPLOAD_PATH="$blueprint_upload_path" "$blueprint_upload_py" - <<\'PY\' >/tmp/blueprint_provider_upload_response.json\n'
         "import os\n"
         "import sys\n"
         "import urllib.request\n"
@@ -2954,7 +2886,7 @@ def _probe_shell_script(
         "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader; smi=$?; "
         "if [ $smi -eq 0 ]; then echo BLUEPRINT_VAST_GPU_SANITY_OK; "
         "else echo BLUEPRINT_VAST_GPU_SANITY_BLOCKED:$smi; fi; "
-        "echo BLUEPRINT_VAST_DF_START; df -h \"$WORK_DIR\"; "
+        'echo BLUEPRINT_VAST_DF_START; df -h "$WORK_DIR"; '
     )
     if enable_isaac_smoke:
         script += (
@@ -2962,8 +2894,8 @@ def _probe_shell_script(
             "if [ -x /isaac-sim/python.sh ]; then ISAAC_PY=/isaac-sim/python.sh; "
             "elif [ -x /isaac-sim/python ]; then ISAAC_PY=/isaac-sim/python; "
             "elif command -v python3 >/dev/null 2>&1; then ISAAC_PY=$(command -v python3); fi; "
-            "if [ -n \"$ISAAC_PY\" ]; then "
-            "$ISAAC_PY -c 'from isaacsim import SimulationApp; app=SimulationApp({\"headless\": True}); print(\"BLUEPRINT_VAST_ISAAC_SMOKE_OK\", flush=True); import os; os._exit(0)'; irc=$?; "
+            'if [ -n "$ISAAC_PY" ]; then '
+            '$ISAAC_PY -c \'from isaacsim import SimulationApp; app=SimulationApp({"headless": True}); print("BLUEPRINT_VAST_ISAAC_SMOKE_OK", flush=True); import os; os._exit(0)\'; irc=$?; '
             "if [ $irc -eq 0 ]; then echo BLUEPRINT_VAST_ISAAC_SMOKE_COMPLETED; "
             "else echo BLUEPRINT_VAST_ISAAC_SMOKE_BLOCKED:$irc; fi; "
             "else echo BLUEPRINT_VAST_ISAAC_SMOKE_BLOCKED:python_missing; fi; "
@@ -2973,30 +2905,30 @@ def _probe_shell_script(
     if enable_blueprint_bundle:
         common_start = (
             "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED; "
-            "BUNDLE_URL=\"${BLUEPRINT_EVAL_MANIFEST_URI:-}\"; "
-            "OUTPUT_PUT_URL=\"${BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL:-}\"; "
-            "if [ -z \"$BUNDLE_URL\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:bundle_url_missing; "
-            "elif [ -z \"$OUTPUT_PUT_URL\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_put_url_missing; "
+            'BUNDLE_URL="${BLUEPRINT_EVAL_MANIFEST_URI:-}"; '
+            'OUTPUT_PUT_URL="${BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL:-}"; '
+            'if [ -z "$BUNDLE_URL" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:bundle_url_missing; '
+            'elif [ -z "$OUTPUT_PUT_URL" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_put_url_missing; '
             "else "
         )
         if provider_bundle_kind == "isaac":
             script += (
                 common_start
-                + "rm -rf \"$WORK_DIR/isaac_provider_bundle\" \"$WORK_DIR/isaac_provider_runtime_bundle.zip\" \"$WORK_DIR/isaac_provider_runtime_output.zip\"; "
-                "blueprint_download_url \"$BUNDLE_URL\" \"$WORK_DIR/isaac_provider_runtime_bundle.zip\"; dl=$?; "
+                + 'rm -rf "$WORK_DIR/isaac_provider_bundle" "$WORK_DIR/isaac_provider_runtime_bundle.zip" "$WORK_DIR/isaac_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/isaac_provider_runtime_bundle.zip"; dl=$?; '
                 "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
-                "elif [ -z \"$ISAAC_PY\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing; "
+                'elif [ -z "$ISAAC_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing; '
                 "else "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
-                "$ISAAC_PY -m zipfile -e \"$WORK_DIR/isaac_provider_runtime_bundle.zip\" \"$WORK_DIR/isaac_provider_bundle\"; unzip_rc=$?; "
+                '$ISAAC_PY -m zipfile -e "$WORK_DIR/isaac_provider_runtime_bundle.zip" "$WORK_DIR/isaac_provider_bundle"; unzip_rc=$?; '
                 "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
-                "elif [ ! -f \"$WORK_DIR/isaac_provider_bundle/provider_runtime/run_isaac_realistic_runtime.sh\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; "
+                'elif [ ! -f "$WORK_DIR/isaac_provider_bundle/provider_runtime/run_isaac_realistic_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
                 "else "
-                "export BLUEPRINT_ISAAC_PYTHON=\"$ISAAC_PY\"; "
-                "export BLUEPRINT_ISAAC_OUTPUT_DIR=\"$WORK_DIR/isaac_provider_bundle/runtime_output\"; "
-                "export BLUEPRINT_ISAAC_EVAL_MANIFEST=\"$WORK_DIR/isaac_provider_bundle/provider_runtime/isaac_provider_eval_manifest.json\"; "
+                'export BLUEPRINT_ISAAC_PYTHON="$ISAAC_PY"; '
+                'export BLUEPRINT_ISAAC_OUTPUT_DIR="$WORK_DIR/isaac_provider_bundle/runtime_output"; '
+                'export BLUEPRINT_ISAAC_EVAL_MANIFEST="$WORK_DIR/isaac_provider_bundle/provider_runtime/isaac_provider_eval_manifest.json"; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
-                "bash \"$WORK_DIR/isaac_provider_bundle/provider_runtime/run_isaac_realistic_runtime.sh\"; provider_rc=$?; "
+                'bash "$WORK_DIR/isaac_provider_bundle/provider_runtime/run_isaac_realistic_runtime.sh"; provider_rc=$?; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
                 "$ISAAC_PY - <<'PY'\n"
                 "import json\n"
@@ -3028,7 +2960,7 @@ def _probe_shell_script(
                 "PY\n"
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
-                "elif blueprint_upload_put \"$OUTPUT_PUT_URL\" \"$WORK_DIR/isaac_provider_runtime_output.zip\"; then "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/isaac_provider_runtime_output.zip"; then '
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
@@ -3036,8 +2968,7 @@ def _probe_shell_script(
             )
         elif provider_bundle_kind == "unitree_unifolm":
             script += (
-                common_start
-                + "RUNTIME_PY=''; "
+                common_start + "RUNTIME_PY=''; "
                 "if command -v apt-get >/dev/null 2>&1 && "
                 "{ ! command -v python3 >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || "
                 "! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; }; then "
@@ -3048,24 +2979,24 @@ def _probe_shell_script(
                 "elif [ -x /usr/local/bin/python ]; then RUNTIME_PY=/usr/local/bin/python; "
                 "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); "
                 "elif command -v python >/dev/null 2>&1; then RUNTIME_PY=$(command -v python); fi; "
-                "if [ -z \"$RUNTIME_PY\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; "
+                'if [ -z "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; '
                 "else "
-                "rm -rf \"$WORK_DIR/unitree_unifolm_provider_bundle\" \"$WORK_DIR/unitree_unifolm_policy_provider_runtime_bundle.zip\" \"$WORK_DIR/unitree_unifolm_policy_provider_runtime_output.zip\"; "
-                "blueprint_download_url \"$BUNDLE_URL\" \"$WORK_DIR/unitree_unifolm_policy_provider_runtime_bundle.zip\"; dl=$?; "
+                'rm -rf "$WORK_DIR/unitree_unifolm_provider_bundle" "$WORK_DIR/unitree_unifolm_policy_provider_runtime_bundle.zip" "$WORK_DIR/unitree_unifolm_policy_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/unitree_unifolm_policy_provider_runtime_bundle.zip"; dl=$?; '
                 "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
                 "else "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
-                "$RUNTIME_PY -m zipfile -e \"$WORK_DIR/unitree_unifolm_policy_provider_runtime_bundle.zip\" \"$WORK_DIR/unitree_unifolm_provider_bundle\"; unzip_rc=$?; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/unitree_unifolm_policy_provider_runtime_bundle.zip" "$WORK_DIR/unitree_unifolm_provider_bundle"; unzip_rc=$?; '
                 "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
-                "elif [ ! -f \"$WORK_DIR/unitree_unifolm_provider_bundle/provider_runtime/run_unitree_unifolm_provider_runtime.sh\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; "
+                'elif [ ! -f "$WORK_DIR/unitree_unifolm_provider_bundle/provider_runtime/run_unitree_unifolm_provider_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
                 "else "
-                "export PYTHONPATH=\"$WORK_DIR/unitree_unifolm_provider_bundle/provider_runtime:${PYTHONPATH:-}\"; "
-                "export BLUEPRINT_UNITREE_UNIFOLM_PROVIDER_OUTPUT_DIR=\"$WORK_DIR/unitree_unifolm_provider_bundle/runtime_output\"; "
-                "export BLUEPRINT_UNITREE_UNIFOLM_PROVIDER_OUTPUT=\"$WORK_DIR/unitree_unifolm_provider_bundle/runtime_output/unitree_unifolm_policy_provider_output.json\"; "
-                "export BLUEPRINT_UNITREE_UNIFOLM_POLICY_INPUT=\"$WORK_DIR/unitree_unifolm_provider_bundle/provider_runtime/policy_input.json\"; "
-                "mkdir -p \"$BLUEPRINT_UNITREE_UNIFOLM_PROVIDER_OUTPUT_DIR\"; "
+                'export PYTHONPATH="$WORK_DIR/unitree_unifolm_provider_bundle/provider_runtime:${PYTHONPATH:-}"; '
+                'export BLUEPRINT_UNITREE_UNIFOLM_PROVIDER_OUTPUT_DIR="$WORK_DIR/unitree_unifolm_provider_bundle/runtime_output"; '
+                'export BLUEPRINT_UNITREE_UNIFOLM_PROVIDER_OUTPUT="$WORK_DIR/unitree_unifolm_provider_bundle/runtime_output/unitree_unifolm_policy_provider_output.json"; '
+                'export BLUEPRINT_UNITREE_UNIFOLM_POLICY_INPUT="$WORK_DIR/unitree_unifolm_provider_bundle/provider_runtime/policy_input.json"; '
+                'mkdir -p "$BLUEPRINT_UNITREE_UNIFOLM_PROVIDER_OUTPUT_DIR"; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
-                "bash \"$WORK_DIR/unitree_unifolm_provider_bundle/provider_runtime/run_unitree_unifolm_provider_runtime.sh\"; provider_rc=$?; "
+                'bash "$WORK_DIR/unitree_unifolm_provider_bundle/provider_runtime/run_unitree_unifolm_provider_runtime.sh"; provider_rc=$?; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
                 "$RUNTIME_PY - <<'PY'\n"
                 "import json\n"
@@ -3086,7 +3017,7 @@ def _probe_shell_script(
                 "PY\n"
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
-                "elif blueprint_upload_put \"$OUTPUT_PUT_URL\" \"$WORK_DIR/unitree_unifolm_policy_provider_runtime_output.zip\"; then "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/unitree_unifolm_policy_provider_runtime_output.zip"; then '
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
@@ -3094,8 +3025,7 @@ def _probe_shell_script(
             )
         elif provider_bundle_kind == "unitree_groot_n17_sonic":
             script += (
-                common_start
-                + "RUNTIME_PY=''; "
+                common_start + "RUNTIME_PY=''; "
                 "if command -v apt-get >/dev/null 2>&1 && "
                 "{ ! command -v python3 >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || "
                 "! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; }; then "
@@ -3106,16 +3036,16 @@ def _probe_shell_script(
                 "elif [ -x /usr/local/bin/python ]; then RUNTIME_PY=/usr/local/bin/python; "
                 "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); "
                 "elif command -v python >/dev/null 2>&1; then RUNTIME_PY=$(command -v python); fi; "
-                "if [ -z \"$RUNTIME_PY\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; "
+                'if [ -z "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; '
                 "else "
-                "rm -rf \"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle\" \"$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_bundle.zip\" \"$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_output.zip\"; "
-                "blueprint_download_url \"$BUNDLE_URL\" \"$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_bundle.zip\"; dl=$?; "
+                'rm -rf "$WORK_DIR/unitree_groot_n17_sonic_provider_bundle" "$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_bundle.zip" "$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_bundle.zip"; dl=$?; '
                 "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
                 "else "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
-                "$RUNTIME_PY -m zipfile -e \"$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_bundle.zip\" \"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle\"; unzip_rc=$?; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_bundle.zip" "$WORK_DIR/unitree_groot_n17_sonic_provider_bundle"; unzip_rc=$?; '
                 "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
-                "elif [ ! -f \"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; "
+                'elif [ ! -f "$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
                 "else "
                 "echo BLUEPRINT_VAST_PROVIDER_PYTHON_DEPS_CHECK_STARTED; "
                 "$RUNTIME_PY - <<'PY'\n"
@@ -3130,7 +3060,7 @@ def _probe_shell_script(
                 "PY\n"
                 "deps_rc=$?; "
                 "if [ $deps_rc -ne 0 ]; then "
-                "if [ \"${BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER:-}\" = \"true\" ] || [ \"${BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER:-}\" = \"1\" ]; then "
+                'if [ "${BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER:-}" = "true" ] || [ "${BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER:-}" = "1" ]; then '
                 "echo BLUEPRINT_VAST_PROVIDER_PYTHON_DEPS_DELEGATED_TO_GROOT_UV; "
                 "else "
                 "echo BLUEPRINT_VAST_PROVIDER_PIP_INSTALL_STARTED; "
@@ -3139,13 +3069,13 @@ def _probe_shell_script(
                 "else echo BLUEPRINT_VAST_PROVIDER_PIP_INSTALL_COMPLETED; fi; "
                 "fi; "
                 "fi; "
-                "export PYTHONPATH=\"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime:${PYTHONPATH:-}\"; "
-                "export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR=\"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/runtime_output\"; "
-                "export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT=\"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/runtime_output/unitree_groot_n17_sonic_policy_provider_output.json\"; "
-                "export BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_INPUT=\"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime/policy_input.json\"; "
-                "mkdir -p \"$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR\"; "
+                'export PYTHONPATH="$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime:${PYTHONPATH:-}"; '
+                'export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR="$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/runtime_output"; '
+                'export BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT="$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/runtime_output/unitree_groot_n17_sonic_policy_provider_output.json"; '
+                'export BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_INPUT="$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime/policy_input.json"; '
+                'mkdir -p "$BLUEPRINT_UNITREE_GROOT_N17_SONIC_PROVIDER_OUTPUT_DIR"; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
-                "bash \"$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh\"; provider_rc=$?; "
+                'bash "$WORK_DIR/unitree_groot_n17_sonic_provider_bundle/provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh"; provider_rc=$?; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
                 "$RUNTIME_PY - <<'PY'\n"
                 "import json\n"
@@ -3177,7 +3107,7 @@ def _probe_shell_script(
                 "PY\n"
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
-                "elif blueprint_upload_put \"$OUTPUT_PUT_URL\" \"$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_output.zip\"; then "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/unitree_groot_n17_sonic_policy_provider_runtime_output.zip"; then '
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
@@ -3185,8 +3115,7 @@ def _probe_shell_script(
             )
         else:
             script += (
-                common_start
-                + "RUNTIME_PY=''; "
+                common_start + "RUNTIME_PY=''; "
                 "if command -v apt-get >/dev/null 2>&1 && "
                 "{ ! command -v python3 >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || "
                 "! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || "
@@ -3198,23 +3127,23 @@ def _probe_shell_script(
                 "elif [ -x /usr/local/bin/python ]; then RUNTIME_PY=/usr/local/bin/python; "
                 "elif command -v python3 >/dev/null 2>&1; then RUNTIME_PY=$(command -v python3); "
                 "elif command -v python >/dev/null 2>&1; then RUNTIME_PY=$(command -v python); fi; "
-                "if [ -z \"$RUNTIME_PY\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; "
+                'if [ -z "$RUNTIME_PY" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:python_missing; '
                 "else "
-                "rm -rf \"$WORK_DIR/wam_provider_bundle\" \"$WORK_DIR/wam_provider_runtime_bundle.zip\" \"$WORK_DIR/wam_provider_runtime_output.zip\"; "
-                "blueprint_download_url \"$BUNDLE_URL\" \"$WORK_DIR/wam_provider_runtime_bundle.zip\"; dl=$?; "
+                'rm -rf "$WORK_DIR/wam_provider_bundle" "$WORK_DIR/wam_provider_runtime_bundle.zip" "$WORK_DIR/wam_provider_runtime_output.zip"; '
+                'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/wam_provider_runtime_bundle.zip"; dl=$?; '
                 "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
                 "else "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
-                "$RUNTIME_PY -m zipfile -e \"$WORK_DIR/wam_provider_runtime_bundle.zip\" \"$WORK_DIR/wam_provider_bundle\"; unzip_rc=$?; "
+                '$RUNTIME_PY -m zipfile -e "$WORK_DIR/wam_provider_runtime_bundle.zip" "$WORK_DIR/wam_provider_bundle"; unzip_rc=$?; '
                 "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
-                "elif [ ! -f \"$WORK_DIR/wam_provider_bundle/provider_runtime/run_wam_provider_runtime.sh\" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; "
+                'elif [ ! -f "$WORK_DIR/wam_provider_bundle/provider_runtime/run_wam_provider_runtime.sh" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:entrypoint_missing; '
                 "else "
-                "export BLUEPRINT_WAM_PROVIDER_PYTHON=\"$RUNTIME_PY\"; "
-                "export BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR=\"$WORK_DIR/wam_provider_bundle/runtime_output\"; "
-                "export BLUEPRINT_WAM_PROVIDER_BUNDLE_DIR=\"$WORK_DIR/wam_provider_bundle\"; "
-                "export BLUEPRINT_WAM_ROLLOUT_INPUT=\"$WORK_DIR/wam_provider_bundle/provider_runtime/wam_rollout_input_manifest.json\"; "
+                'export BLUEPRINT_WAM_PROVIDER_PYTHON="$RUNTIME_PY"; '
+                'export BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR="$WORK_DIR/wam_provider_bundle/runtime_output"; '
+                'export BLUEPRINT_WAM_PROVIDER_BUNDLE_DIR="$WORK_DIR/wam_provider_bundle"; '
+                'export BLUEPRINT_WAM_ROLLOUT_INPUT="$WORK_DIR/wam_provider_bundle/provider_runtime/wam_rollout_input_manifest.json"; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
-                "bash \"$WORK_DIR/wam_provider_bundle/provider_runtime/run_wam_provider_runtime.sh\"; provider_rc=$?; "
+                'bash "$WORK_DIR/wam_provider_bundle/provider_runtime/run_wam_provider_runtime.sh"; provider_rc=$?; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
                 "$RUNTIME_PY - <<'PY'\n"
                 "import json\n"
@@ -3235,7 +3164,7 @@ def _probe_shell_script(
                 "PY\n"
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
-                "elif blueprint_upload_put \"$OUTPUT_PUT_URL\" \"$WORK_DIR/wam_provider_runtime_output.zip\"; then "
+                'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/wam_provider_runtime_output.zip"; then '
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
@@ -3265,7 +3194,9 @@ def _create_request_summary(
         "image_override_present": bool(_string(payload.get("image"))),
         "entrypoint": payload.get("entrypoint"),
         "args_present": "args" in payload,
-        "args_count": len(payload.get("args", [])) if isinstance(payload.get("args"), list) else None,
+        "args_count": len(payload.get("args", []))
+        if isinstance(payload.get("args"), list)
+        else None,
         "args_str_present": "args_str" in payload,
         "args_str_length": len(str(payload.get("args_str", ""))) if "args_str" in payload else 0,
         "onstart_present": "onstart" in payload,
@@ -3573,8 +3504,7 @@ def _request_logs_and_fetch(
             "Error response from daemon" in attempt_text
         )
         progress_observed = bool(attempt_text.strip()) and (
-            runtime_phase_progress
-            or (output_changed and not container_or_daemon_error_only)
+            runtime_phase_progress or (output_changed and not container_or_daemon_error_only)
         )
         if progress_observed:
             last_progress_monotonic = time.monotonic()
@@ -3582,8 +3512,7 @@ def _request_logs_and_fetch(
         previous_runtime_phase_count = max(previous_runtime_phase_count, runtime_phase_count)
         no_progress_elapsed_seconds = max(0.0, time.monotonic() - last_progress_monotonic)
         no_progress_timeout_reached = bool(
-            no_progress_limit_seconds
-            and no_progress_elapsed_seconds >= no_progress_limit_seconds
+            no_progress_limit_seconds and no_progress_elapsed_seconds >= no_progress_limit_seconds
         )
         if container_missing:
             container_missing_count += 1
@@ -3608,9 +3537,8 @@ def _request_logs_and_fetch(
                 "container_missing_observed_count": container_missing_count,
             }
         )
-        terminal_container_missing = (
-            container_missing
-            and container_missing_count >= max(1, int(container_missing_retry_attempts))
+        terminal_container_missing = container_missing and container_missing_count >= max(
+            1, int(container_missing_retry_attempts)
         )
         deadline_reached = time.monotonic() >= deadline
         if marker_found:
@@ -3930,7 +3858,9 @@ def _final_validation(
     return validation
 
 
-def _api_gate_blockers(*, allow_vast_api_call: bool, allow_instance_launch: bool, api_key: str) -> list[str]:
+def _api_gate_blockers(
+    *, allow_vast_api_call: bool, allow_instance_launch: bool, api_key: str
+) -> list[str]:
     blockers: list[str] = []
     if not _env_truthy(VAST_API_GATE_ENV):
         blockers.append(f"missing_env_{VAST_API_GATE_ENV}")
@@ -4146,8 +4076,7 @@ def run_vast_provider_adapter(
         _string(item) for item in preferred_gpu_keywords if _string(item)
     ] or _env_csv(VAST_PREFERRED_GPU_KEYWORDS_ENV)
     resolved_preferred_geolocation_regex = _string(
-        preferred_geolocation_regex
-        or os.getenv(VAST_PREFERRED_GEOLOCATION_REGEX_ENV)
+        preferred_geolocation_regex or os.getenv(VAST_PREFERRED_GEOLOCATION_REGEX_ENV)
     )
     resolved_prefer_isaac_rt = (
         provider_bundle_kind == "isaac" if prefer_isaac_rt is None else bool(prefer_isaac_rt)
@@ -4206,7 +4135,9 @@ def run_vast_provider_adapter(
     instance_ids: list[int] = []
     selected_offer: dict[str, Any] | None = None
     started_at_monotonic: float | None = None
-    api_key, vast_secret_status = _read_secret_file(VAST_API_KEY_FILE_ENV, DEFAULT_VAST_API_KEY_FILE)
+    api_key, vast_secret_status = _read_secret_file(
+        VAST_API_KEY_FILE_ENV, DEFAULT_VAST_API_KEY_FILE
+    )
     ngc_key, ngc_secret_status = _read_secret_file("NGC_API_KEY_FILE", DEFAULT_NGC_API_KEY_FILE)
     docker_username, docker_username_status = _read_secret_file(
         DOCKER_USERNAME_FILE_ENV, DEFAULT_DOCKER_USERNAME_FILE
@@ -4258,8 +4189,12 @@ def run_vast_provider_adapter(
     _append_phase(
         resolved_job_dir,
         "vast_secret_file_verified",
-        "completed" if vast_secret_status["present"] and vast_secret_status.get("mode_is_0600") else "blocked",
-        blockers=[] if vast_secret_status["present"] else [f"missing_file_based_secret_{VAST_API_KEY_FILE_ENV}"],
+        "completed"
+        if vast_secret_status["present"] and vast_secret_status.get("mode_is_0600")
+        else "blocked",
+        blockers=[]
+        if vast_secret_status["present"]
+        else [f"missing_file_based_secret_{VAST_API_KEY_FILE_ENV}"],
         proof_effect="secret_file_metadata_only",
     )
     _provider_plan(
@@ -4343,9 +4278,7 @@ def run_vast_provider_adapter(
         "max_compute_cap": resolved_max_compute_cap,
         "session_budget_ledger_path": str(resolved_session_budget_ledger_path),
         "vast_launch_lock_path": str(resolved_vast_launch_lock_path),
-        "vast_launch_lock_manifest_path": str(
-            resolved_job_dir / "vast_launch_lock_manifest.json"
-        ),
+        "vast_launch_lock_manifest_path": str(resolved_job_dir / "vast_launch_lock_manifest.json"),
         "secret_values_in_artifact": False,
         "raw_api_key_stored": False,
         "vast_secret_file_status": vast_secret_status,
@@ -4420,12 +4353,34 @@ def run_vast_provider_adapter(
             "zero_continuing_spend_scope": "dry run made no Vast API calls",
         }
         write_json(resolved_job_dir / "vast_teardown_manifest.json", teardown)
-        _append_phase(resolved_job_dir, "vast_offer_search_started", "blocked", blockers=["dry_run_no_offer_search"])
-        _append_phase(resolved_job_dir, "vast_offer_selected", "blocked", blockers=["dry_run_no_offer_selected"])
-        _append_phase(resolved_job_dir, "vast_instance_create_requested", "blocked", blockers=["dry_run_no_instance_create"])
-        _append_phase(resolved_job_dir, "vast_instance_started_or_blocked", "blocked", blockers=["dry_run_no_instance_started"])
+        _append_phase(
+            resolved_job_dir,
+            "vast_offer_search_started",
+            "blocked",
+            blockers=["dry_run_no_offer_search"],
+        )
+        _append_phase(
+            resolved_job_dir,
+            "vast_offer_selected",
+            "blocked",
+            blockers=["dry_run_no_offer_selected"],
+        )
+        _append_phase(
+            resolved_job_dir,
+            "vast_instance_create_requested",
+            "blocked",
+            blockers=["dry_run_no_instance_create"],
+        )
+        _append_phase(
+            resolved_job_dir,
+            "vast_instance_started_or_blocked",
+            "blocked",
+            blockers=["dry_run_no_instance_started"],
+        )
         for phase in VAST_REQUIRED_PHASES[6:]:
-            _append_phase(resolved_job_dir, phase, "blocked", blockers=["dry_run_no_instance_started"])
+            _append_phase(
+                resolved_job_dir, phase, "blocked", blockers=["dry_run_no_instance_started"]
+            )
         validation = _final_validation(
             job_dir=resolved_job_dir,
             generated_at=generated_at,
@@ -4686,19 +4641,19 @@ def run_vast_provider_adapter(
             "offer_search_performed": False,
             "selected_offer": None,
             "machine_avoidlist_path": str(resolved_machine_avoidlist_path),
-                "excluded_machine_ids": sorted(excluded_machine_ids),
-                "session_budget_guard_path": str(resolved_job_dir / "vast_session_budget_guard.json"),
-                "blueprint_bundle_preflight_path": str(
-                    resolved_job_dir / "vast_blueprint_bundle_preflight.json"
-                ),
-                "blueprint_bundle_preflight_blockers": bundle_preflight_blockers,
-                "isaac_image_startup_preflight_path": str(
-                    resolved_job_dir / "vast_isaac_image_startup_preflight.json"
-                ),
-                "isaac_image_startup_preflight_blockers": image_startup_blockers,
-                "blockers": session_blockers,
-                "raw_secret_values_recorded": False,
-            }
+            "excluded_machine_ids": sorted(excluded_machine_ids),
+            "session_budget_guard_path": str(resolved_job_dir / "vast_session_budget_guard.json"),
+            "blueprint_bundle_preflight_path": str(
+                resolved_job_dir / "vast_blueprint_bundle_preflight.json"
+            ),
+            "blueprint_bundle_preflight_blockers": bundle_preflight_blockers,
+            "isaac_image_startup_preflight_path": str(
+                resolved_job_dir / "vast_isaac_image_startup_preflight.json"
+            ),
+            "isaac_image_startup_preflight_blockers": image_startup_blockers,
+            "blockers": session_blockers,
+            "raw_secret_values_recorded": False,
+        }
         write_json(resolved_job_dir / "vast_offer_selection_manifest.json", offer_manifest)
         _write_blocked_phase_artifacts(job_dir=resolved_job_dir, generated_at=generated_at)
         write_json(
@@ -4902,9 +4857,7 @@ def run_vast_provider_adapter(
             "selected_offer": None,
             "machine_avoidlist_path": str(resolved_machine_avoidlist_path),
             "excluded_machine_ids": sorted(excluded_machine_ids),
-            "launch_lock_manifest_path": str(
-                resolved_job_dir / "vast_launch_lock_manifest.json"
-            ),
+            "launch_lock_manifest_path": str(resolved_job_dir / "vast_launch_lock_manifest.json"),
             "blockers": lock_blockers,
             "raw_secret_values_recorded": False,
         }
@@ -5040,8 +4993,7 @@ def run_vast_provider_adapter(
                 "vast_launch_lock_status": (
                     launch_lock_release_manifest or launch_lock_manifest
                 ).get("status"),
-                "vast_launch_lock_manifest": launch_lock_release_manifest
-                or launch_lock_manifest,
+                "vast_launch_lock_manifest": launch_lock_release_manifest or launch_lock_manifest,
                 "final_validation_status": validation["status"],
             }
         )
@@ -5210,9 +5162,7 @@ def run_vast_provider_adapter(
             if not selected_offer:
                 raise RuntimeError("no_vast_offer_selected")
 
-            projected_full_cost = (
-                float(selected_offer["hourly_rate_usd"]) * max_live_minutes / 60.0
-            )
+            projected_full_cost = float(selected_offer["hourly_rate_usd"]) * max_live_minutes / 60.0
             if projected_full_cost > hard_cap_usd:
                 raise RuntimeError("selected_offer_projected_max_runtime_exceeds_hard_cap")
 
@@ -5401,7 +5351,9 @@ def run_vast_provider_adapter(
             )
             raise RuntimeError(f"vast_instance_not_running:{status}")
 
-        _append_phase(resolved_job_dir, "vast_heartbeat_started", "running", instance_id=instance_id)
+        _append_phase(
+            resolved_job_dir, "vast_heartbeat_started", "running", instance_id=instance_id
+        )
         log_success_markers = (
             [
                 "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED",
@@ -5410,8 +5362,7 @@ def run_vast_provider_adapter(
                 "BLUEPRINT_VAST_ONSTART_DONE",
             ]
             if enable_blueprint_bundle
-            else
-            [
+            else [
                 "BLUEPRINT_VAST_ISAAC_SMOKE_OK",
                 "BLUEPRINT_VAST_ISAAC_SMOKE_BLOCKED",
                 "BLUEPRINT_VAST_ONSTART_DONE",
@@ -5446,10 +5397,9 @@ def run_vast_provider_adapter(
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
         )
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
-        if (
-            not _log_text_has_success_marker(heartbeat_text, log_success_markers)
-            and _log_result_has_container_missing(onstart_logs)
-        ):
+        if not _log_text_has_success_marker(
+            heartbeat_text, log_success_markers
+        ) and _log_result_has_container_missing(onstart_logs):
             if _env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV):
                 execute_logs = _execute_and_fetch(
                     instance_id=instance_id,
@@ -5555,7 +5505,9 @@ def run_vast_provider_adapter(
                 heartbeat_blockers[0] if heartbeat_blockers else "vast_heartbeat_blocked"
             )
 
-        _append_phase(resolved_job_dir, "vast_gpu_sanity_started", "running", instance_id=instance_id)
+        _append_phase(
+            resolved_job_dir, "vast_gpu_sanity_started", "running", instance_id=instance_id
+        )
         gpu_text = heartbeat_text
         nvidia_visible = "BLUEPRINT_VAST_GPU_SANITY_OK" in gpu_text and "NVIDIA-SMI" not in gpu_text
         gpu_ok = "BLUEPRINT_VAST_GPU_SANITY_OK" in gpu_text and not re.search(
@@ -5630,9 +5582,16 @@ def run_vast_provider_adapter(
             )
         elif not enable_isaac_smoke:
             isaac_blockers.append("isaac_smoke_disabled_for_this_bounded_probe")
-        if provider_bundle_kind == "isaac" and selected_offer and not selected_offer.get("isaac_rt_candidate"):
+        if (
+            provider_bundle_kind == "isaac"
+            and selected_offer
+            and not selected_offer.get("isaac_rt_candidate")
+        ):
             isaac_blockers.append("selected_gpu_not_in_isaac_rt_candidate_allowlist")
-        if provider_bundle_kind == "isaac" and image_login_summary.get("reason") == "ngc_key_missing":
+        if (
+            provider_bundle_kind == "isaac"
+            and image_login_summary.get("reason") == "ngc_key_missing"
+        ):
             isaac_blockers.append("ngc_api_key_file_missing_or_empty_for_required_ngc_login")
         if provider_bundle_kind == "isaac" and (isaac_blockers or not gpu_ok):
             if not gpu_ok:
@@ -5686,7 +5645,9 @@ def run_vast_provider_adapter(
                     "isaac_python_import_probe_completed": "BLUEPRINT_VAST_ISAAC_SMOKE_OK"
                     in isaac_text,
                     "container_log_result": onstart_logs,
-                    "blockers": [] if isaac_ok else ["isaac_simulation_app_marker_missing_or_blocked"],
+                    "blockers": []
+                    if isaac_ok
+                    else ["isaac_simulation_app_marker_missing_or_blocked"],
                     **_truth_boundaries(),
                 },
             )
@@ -5701,11 +5662,7 @@ def run_vast_provider_adapter(
         provider_blockers: list[str] = []
         if not enable_blueprint_bundle:
             provider_blockers.append("blueprint_bundle_execution_disabled_for_this_probe")
-        if (
-            enable_blueprint_bundle
-            and provider_bundle_kind == "isaac"
-            and not enable_isaac_smoke
-        ):
+        if enable_blueprint_bundle and provider_bundle_kind == "isaac" and not enable_isaac_smoke:
             provider_blockers.append("blueprint_bundle_execution_requires_isaac_smoke_path")
         if not bundle_path or not bundle_path.is_file():
             provider_blockers.append(
@@ -5718,7 +5675,12 @@ def run_vast_provider_adapter(
         if enable_blueprint_bundle and not _string(provider_output_put_url):
             provider_blockers.append("provider_output_put_url_missing")
         if provider_blockers:
-            _append_phase(resolved_job_dir, "vast_blueprint_bundle_started", "blocked", blockers=provider_blockers)
+            _append_phase(
+                resolved_job_dir,
+                "vast_blueprint_bundle_started",
+                "blocked",
+                blockers=provider_blockers,
+            )
             _append_phase(
                 resolved_job_dir,
                 "vast_blueprint_bundle_completed_or_blocked",
@@ -5745,7 +5707,9 @@ def run_vast_provider_adapter(
         else:
             provider_started = "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED" in heartbeat_text
             provider_downloaded = "BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED" in heartbeat_text
-            provider_entrypoint_started = "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED" in heartbeat_text
+            provider_entrypoint_started = (
+                "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED" in heartbeat_text
+            )
             provider_upload_ok = "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK" in heartbeat_text
             provider_completed_or_blocked = (
                 "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED" in heartbeat_text
@@ -5780,7 +5744,11 @@ def run_vast_provider_adapter(
                 "output_zip_path": str(output_zip_path),
                 "raw_secret_values_recorded": False,
             }
-            if provider_upload_ok and _string(provider_output_get_url) and not output_zip_path.is_file():
+            if (
+                provider_upload_ok
+                and _string(provider_output_get_url)
+                and not output_zip_path.is_file()
+            ):
                 try:
                     with urllib.request.urlopen(
                         _string(provider_output_get_url),
@@ -5821,7 +5789,10 @@ def run_vast_provider_adapter(
                         "blockers": ["provider_output_get_url_missing"],
                     }
                 )
-            write_json(resolved_job_dir / "vast_provider_output_download_manifest.json", output_download_manifest)
+            write_json(
+                resolved_job_dir / "vast_provider_output_download_manifest.json",
+                output_download_manifest,
+            )
             provider_blocked_markers = re.findall(
                 r"BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:([^\s]+)",
                 heartbeat_text,
@@ -5965,7 +5936,9 @@ def run_vast_provider_adapter(
                 "blockers": ["vast_api_http_error"],
                 "api_call_performed": True,
                 "http_status_code": exc.code,
-                "vast_error": _redact_text(error_text, secret_values if "secret_values" in locals() else []),
+                "vast_error": _redact_text(
+                    error_text, secret_values if "secret_values" in locals() else []
+                ),
             }
         )
         _write_blocked_phase_artifacts(
@@ -6033,16 +6006,27 @@ def run_vast_provider_adapter(
         )
     finally:
         if instance_ids:
-            _append_phase(resolved_job_dir, "vast_instance_teardown_started", "running", instance_ids=instance_ids)
+            _append_phase(
+                resolved_job_dir,
+                "vast_instance_teardown_started",
+                "running",
+                instance_ids=instance_ids,
+            )
         else:
-            _append_phase(resolved_job_dir, "vast_instance_teardown_started", "completed", instance_ids=[])
+            _append_phase(
+                resolved_job_dir, "vast_instance_teardown_started", "completed", instance_ids=[]
+            )
         _write_blocked_phase_artifacts(
             job_dir=resolved_job_dir,
             generated_at=generated_at,
-            heartbeat_reason=_string(base_result.get("reason")) or "vast_probe_ended_before_phase_artifacts",
-            gpu_reason=_string(base_result.get("reason")) or "vast_probe_ended_before_phase_artifacts",
-            isaac_reason=_string(base_result.get("reason")) or "vast_probe_ended_before_phase_artifacts",
-            provider_reason=_string(base_result.get("reason")) or "vast_probe_ended_before_phase_artifacts",
+            heartbeat_reason=_string(base_result.get("reason"))
+            or "vast_probe_ended_before_phase_artifacts",
+            gpu_reason=_string(base_result.get("reason"))
+            or "vast_probe_ended_before_phase_artifacts",
+            isaac_reason=_string(base_result.get("reason"))
+            or "vast_probe_ended_before_phase_artifacts",
+            provider_reason=_string(base_result.get("reason"))
+            or "vast_probe_ended_before_phase_artifacts",
         )
         for instance_id in list(instance_ids):
             try:
@@ -6160,7 +6144,8 @@ def run_vast_provider_adapter(
         launch_lock_handle = None
         current_blockers = _string_list(base_result.get("blockers"))
         startup_control_plane_blocked = any(
-            blocker in {
+            blocker
+            in {
                 "vast_heartbeat_blocked",
                 "vast_heartbeat_no_log_progress_timeout",
                 "vast_heartbeat_container_missing",
@@ -6189,7 +6174,8 @@ def run_vast_provider_adapter(
         _ensure_offer_manifest(
             resolved_job_dir,
             generated_at=utc_now_iso(),
-            blockers=_string_list(base_result.get("blockers")) or ["vast_probe_ended_before_offer_manifest"],
+            blockers=_string_list(base_result.get("blockers"))
+            or ["vast_probe_ended_before_offer_manifest"],
         )
         _fill_missing_phase_rows(
             resolved_job_dir,
@@ -6205,16 +6191,28 @@ def run_vast_provider_adapter(
         )
         if "status" not in base_result or base_result.get("status") not in {"failed", "blocked"}:
             heartbeat = _mapping(
-                json.loads((resolved_job_dir / "vast_startup_probe_manifest.json").read_text(encoding="utf-8"))
+                json.loads(
+                    (resolved_job_dir / "vast_startup_probe_manifest.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
             )
             gpu = _mapping(
-                json.loads((resolved_job_dir / "vast_gpu_sanity_report.json").read_text(encoding="utf-8"))
+                json.loads(
+                    (resolved_job_dir / "vast_gpu_sanity_report.json").read_text(encoding="utf-8")
+                )
             )
             provider = _mapping(
-                json.loads((resolved_job_dir / "vast_provider_command_result.json").read_text(encoding="utf-8"))
+                json.loads(
+                    (resolved_job_dir / "vast_provider_command_result.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
             )
             video_smoke = _mapping(
-                json.loads((resolved_job_dir / "vast_video_smoke_result.json").read_text(encoding="utf-8"))
+                json.loads(
+                    (resolved_job_dir / "vast_video_smoke_result.json").read_text(encoding="utf-8")
+                )
             )
             provider_blockers = _string_list(provider.get("blockers"))
             video_smoke_blockers = _string_list(video_smoke.get("blockers"))
@@ -6261,8 +6259,7 @@ def run_vast_provider_adapter(
                     launch_lock_release_manifest or launch_lock_manifest
                 ).get("status"),
                 "vast_launch_lock_acquired": True,
-                "vast_launch_lock_manifest": launch_lock_release_manifest
-                or launch_lock_manifest,
+                "vast_launch_lock_manifest": launch_lock_release_manifest or launch_lock_manifest,
                 "artifacts": {
                     "vast_runtime_discovery": str(resolved_job_dir / "vast_runtime_discovery.json"),
                     "vast_provider_plan": str(resolved_job_dir / "vast_provider_plan.json"),
@@ -6270,12 +6267,16 @@ def run_vast_provider_adapter(
                         resolved_job_dir / "vast_offer_selection_manifest.json"
                     ),
                     "vast_budget_ledger": str(resolved_job_dir / "vast_budget_ledger.json"),
-                    "vast_runtime_phase_log": str(resolved_job_dir / "vast_runtime_phase_log.jsonl"),
+                    "vast_runtime_phase_log": str(
+                        resolved_job_dir / "vast_runtime_phase_log.jsonl"
+                    ),
                     "vast_startup_probe_manifest": str(
                         resolved_job_dir / "vast_startup_probe_manifest.json"
                     ),
                     "vast_gpu_sanity_report": str(resolved_job_dir / "vast_gpu_sanity_report.json"),
-                    "vast_isaac_smoke_result": str(resolved_job_dir / "vast_isaac_smoke_result.json"),
+                    "vast_isaac_smoke_result": str(
+                        resolved_job_dir / "vast_isaac_smoke_result.json"
+                    ),
                     "vast_provider_command_result": str(
                         resolved_job_dir / "vast_provider_command_result.json"
                     ),
@@ -6499,9 +6500,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         adapter_kwargs[adapter_name] = adapter_kwargs.pop(cli_name)
     result = run_vast_provider_adapter(**adapter_kwargs)
-    print(f"[vast-provider-adapter] result={Path(args.job_dir).resolve() / 'vast_provider_adapter_result.json'}")
+    print(
+        f"[vast-provider-adapter] result={Path(args.job_dir).resolve() / 'vast_provider_adapter_result.json'}"
+    )
     print(f"[vast-provider-adapter] status={result.get('status')}")
-    print(f"[vast-provider-adapter] instance_ids={','.join(str(item) for item in result.get('vast_instance_ids', []))}")
+    print(
+        f"[vast-provider-adapter] instance_ids={','.join(str(item) for item in result.get('vast_instance_ids', []))}"
+    )
     blockers = _string_list(result.get("blockers"))
     if blockers:
         print("[vast-provider-adapter] blockers=" + ",".join(blockers))
