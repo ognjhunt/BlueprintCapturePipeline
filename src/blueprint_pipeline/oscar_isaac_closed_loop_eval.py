@@ -28,6 +28,14 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .gpu_residency_attribution import (
+    ATTRIBUTION_MODE_DEVICE_HANDLE_FALLBACK,
+    ATTRIBUTION_MODE_HOST_PID_NAMESPACE,
+    compute_app_attribution_unavailable,
+    device_handle_residency_fallback,
+    linux_nvidia_host_to_local_pid_map as _linux_nvidia_host_to_local_pid_map,
+    pid_ancestor_chain as _pid_ancestor_chain,
+)
 from .initial_policy_observation_contract import (
     resolve_start_frame_evidence_path,
     validated_initial_policy_observation as _validated_initial_policy_observation,
@@ -3911,75 +3919,6 @@ def _linux_process_parent_pid(pid: int) -> int | None:
         return None
 
 
-def _linux_nvidia_host_to_local_pid_map(
-    proc_root: Path = Path("/proc"),
-) -> dict[int, int]:
-    """Map root-namespace NVIDIA PIDs to PIDs visible in this container.
-
-    NVIDIA's driver reports compute-application PIDs from the host PID
-    namespace even when ``nvidia-smi`` runs inside a container. Linux exposes
-    the namespace chain in ``/proc/<local-pid>/status`` as ``NSpid``. The
-    first value is the root-namespace PID and the last is the PID visible in
-    the current namespace.
-    """
-
-    mapped: dict[int, int] = {}
-    try:
-        entries = list(proc_root.iterdir())
-    except OSError:
-        return mapped
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
-        local_pid = _positive_pid(entry.name)
-        if local_pid is None:
-            continue
-        try:
-            status = (entry / "status").read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            continue
-        for line in status.splitlines():
-            if not line.startswith("NSpid:"):
-                continue
-            namespace_pids = [
-                pid
-                for value in line.split(":", 1)[1].split()
-                if (pid := _positive_pid(value)) is not None
-            ]
-            if namespace_pids:
-                # ``/proc`` directory names are already expressed in the PID
-                # namespace visible to this process.  Some container runtimes
-                # expose the complete NSpid chain (host ... local), while
-                # others expose only the outermost/host value even though the
-                # directory name remains the local PID.  The prior
-                # ``namespace_pids[-1] == local_pid`` check therefore dropped
-                # every mapping on the retained Vast runtime.  Bind the
-                # outermost PID to the authoritative local ``/proc`` entry in
-                # both layouts.
-                mapped[namespace_pids[0]] = local_pid
-            break
-    return mapped
-
-
-def _pid_ancestor_chain(
-    pid: int,
-    *,
-    parent_pid: Callable[[int], int | None],
-    max_depth: int = 128,
-) -> list[int]:
-    chain: list[int] = []
-    current = _positive_pid(pid)
-    visited: set[int] = set()
-    while current is not None and current not in visited and len(chain) < max_depth:
-        chain.append(current)
-        visited.add(current)
-        try:
-            current = _positive_pid(parent_pid(current))
-        except Exception:
-            current = None
-    return chain
-
-
 def _nvidia_smi_query(
     *,
     run: Callable[..., Any],
@@ -4042,6 +3981,7 @@ def collect_oscar_gpu_residency_sample(
     role_root_pids: Mapping[str, int | None],
     parent_pid: Callable[[int], int | None] = _linux_process_parent_pid,
     host_to_local_pid_map: Callable[[], Mapping[int, int]] = _linux_nvidia_host_to_local_pid_map,
+    proc_root: Path = Path("/proc"),
     sample_index: int = 0,
     elapsed_seconds: float = 0.0,
 ) -> dict[str, Any]:
@@ -4161,11 +4101,36 @@ def collect_oscar_gpu_residency_sample(
         uuid = app.get("gpu_uuid")
         if uuid in roles_by_gpu_uuid:
             roles_by_gpu_uuid[uuid].update(app.get("roles") or [])
-    same_gpu_role_sets = {uuid: sorted(roles) for uuid, roles in sorted(roles_by_gpu_uuid.items())}
     required = set(OSCAR_GPU_RESIDENCY_REQUIRED_ROLES)
     simultaneous_uuids = sorted(
         uuid for uuid, roles in roles_by_gpu_uuid.items() if required.issubset(roles)
     )
+    attribution_mode = ATTRIBUTION_MODE_HOST_PID_NAMESPACE
+    fallback: dict[str, Any] = {}
+    # Hosts whose container runtime never exposes the outer NSpid chain cannot
+    # attribute host PIDs at all, which the host-PID path reports identically to
+    # "the roles are not resident" (attempt 068 failed a sealed run this way).
+    # Re-derive residency from our own processes' device handles before ruling.
+    if not simultaneous_uuids and any(
+        compute_app_attribution_unavailable(app) for app in compute_apps
+    ):
+        fallback = device_handle_residency_fallback(
+            role_root_pids=normalized_roots,
+            required_roles=sorted(required),
+            inventory_uuids=inventory_uuids,
+            parent_pid=parent_pid,
+            proc_root=proc_root,
+        )
+        # Fallback failures are diagnostic, never per-sample blockers: early
+        # samples legitimately precede the roles' first CUDA context, and a
+        # union-of-sample-blockers summary would make that transient permanent.
+        if fallback.get("applied"):
+            attribution_mode = ATTRIBUTION_MODE_DEVICE_HANDLE_FALLBACK
+            roles_by_gpu_uuid[str(fallback["gpu_uuid"])].update(fallback["roles"])
+            simultaneous_uuids = sorted(
+                uuid for uuid, roles in roles_by_gpu_uuid.items() if required.issubset(roles)
+            )
+    same_gpu_role_sets = {uuid: sorted(roles) for uuid, roles in sorted(roles_by_gpu_uuid.items())}
     diagnostic_text = "\n".join(
         [
             _string(gpu_query.get("stdout")),
@@ -4203,6 +4168,8 @@ def collect_oscar_gpu_residency_sample(
         "gpus": gpus,
         "compute_apps": compute_apps,
         "roles_by_gpu_uuid": same_gpu_role_sets,
+        "role_attribution_mode": attribution_mode,
+        "device_handle_attribution": fallback,
         "simultaneous_required_roles_gpu_uuids": simultaneous_uuids,
         "all_required_roles_simultaneously_resident_on_same_gpu": bool(simultaneous_uuids),
         "cuda_oom_detected": cuda_oom_detected,
@@ -4253,6 +4220,14 @@ def summarize_oscar_gpu_residency_samples(
         blockers.add("oscar_gpu_residency_samples_absent")
     if not simultaneous_sample_indices:
         blockers.add("required_roles_not_simultaneously_resident_on_same_gpu")
+        # Name the cause when the host, not the workload, defeated attribution:
+        # "no roles resident" and "no roles attributable" are opposite defects
+        # with opposite remedies, and attempt 068 could not tell them apart.
+        for sample in reversed(list(samples)):
+            attribution = sample.get("device_handle_attribution")
+            if isinstance(attribution, Mapping) and attribution.get("blockers"):
+                blockers.update(str(item) for item in attribution["blockers"])
+                break
 
     cuda_oom_detected = any(sample.get("cuda_oom_detected") is True for sample in samples) or bool(
         re.search(
