@@ -21,6 +21,7 @@ from blueprint_pipeline.gpu_residency_attribution import (
     device_handle_residency_fallback,
     device_handle_role_pids,
     linux_nvidia_host_to_local_pid_map,
+    process_gpu_device_minors,
     process_holds_nvidia_device,
 )
 
@@ -150,6 +151,54 @@ def test_fallback_refuses_multi_gpu_inventory(opaque_host_proc: Path) -> None:
     )
     assert result["applied"] is False
     assert any("multi_gpu_inventory" in blocker for blocker in result["blockers"])
+
+
+CONTROL_ONLY_NODES = (
+    "/dev/nvidiactl",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-caps/nvidia-cap1",
+)
+
+
+def test_generic_driver_nodes_alone_never_prove_residency(tmp_path: Path) -> None:
+    """Four roles that only probed the driver must not attest a compute context.
+
+    Every process that initializes CUDA opens the control nodes, so accepting
+    them would turn the fallback from a residency proof into a liveness check
+    and let a sealed report pass with no role doing GPU work at all.
+    """
+
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_process(proc_root, 1, ppid=0, nspid="1")
+    for pid in ROLE_ROOT_PIDS.values():
+        _write_process(proc_root, pid, ppid=1, nspid=str(pid))
+        _write_process(
+            proc_root,
+            pid + 10000,
+            ppid=pid,
+            nspid=str(pid + 10000),
+            device_fds=CONTROL_ONLY_NODES,
+        )
+    for pid in ROLE_ROOT_PIDS.values():
+        assert process_gpu_device_minors(pid + 10000, proc_root=proc_root) == set()
+    result = device_handle_residency_fallback(
+        role_root_pids=ROLE_ROOT_PIDS,
+        required_roles=REQUIRED_ROLES,
+        inventory_uuids=[GPU_UUID],
+        parent_pid=_parent_pid(proc_root),
+        proc_root=proc_root,
+    )
+    assert result["applied"] is False
+    assert any("without_gpu_device_handle" in blocker for blocker in result["blockers"])
+
+
+def test_numbered_gpu_node_is_what_counts(opaque_host_proc: Path) -> None:
+    """The concrete per-GPU node is the descriptor that carries the proof."""
+
+    for pid in ROLE_ROOT_PIDS.values():
+        assert process_gpu_device_minors(pid + 10000, proc_root=opaque_host_proc) == {0}
 
 
 class _Done:

@@ -30,11 +30,18 @@ more than one GPU is visible, because an open device handle then cannot identify
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-NVIDIA_DEVICE_PATH_PREFIX = "/dev/nvidia"
+# Only a NUMBERED per-GPU node proves a compute context on that GPU. The driver's
+# generic nodes -- /dev/nvidiactl, /dev/nvidia-uvm, /dev/nvidia-modeset,
+# /dev/nvidia-caps/* -- are opened by any process that merely initializes CUDA or
+# probes the driver, so accepting them would let four idle roles attest residency
+# they never had. Requiring /dev/nvidia<N> keeps the fallback a proof rather than
+# a liveness check.
+NVIDIA_GPU_DEVICE_NODE_PATTERN = re.compile(r"^/dev/nvidia(\d+)$")
 ATTRIBUTION_MODE_HOST_PID_NAMESPACE = "host_pid_namespace"
 ATTRIBUTION_MODE_DEVICE_HANDLE_FALLBACK = "device_handle_fallback"
 ATTRIBUTION_MODE_UNAVAILABLE = "unavailable"
@@ -136,24 +143,36 @@ def local_pid_visible(pid: Any, *, proc_root: Path = Path("/proc")) -> bool:
         return False
 
 
-def process_holds_nvidia_device(pid: Any, *, proc_root: Path = Path("/proc")) -> bool:
-    """True when the process has an open descriptor on an NVIDIA device node."""
+def process_gpu_device_minors(pid: Any, *, proc_root: Path = Path("/proc")) -> set[int]:
+    """Minor numbers of the per-GPU device nodes this process holds open.
 
+    Generic driver nodes are deliberately excluded; see
+    ``NVIDIA_GPU_DEVICE_NODE_PATTERN``.
+    """
+
+    minors: set[int] = set()
     resolved = positive_pid(pid)
     if resolved is None:
-        return False
+        return minors
     try:
         entries = list((proc_root / str(resolved) / "fd").iterdir())
     except OSError:
-        return False
+        return minors
     for entry in entries:
         try:
             target = os.readlink(str(entry))
         except OSError:
             continue
-        if target.startswith(NVIDIA_DEVICE_PATH_PREFIX):
-            return True
-    return False
+        match = NVIDIA_GPU_DEVICE_NODE_PATTERN.match(target)
+        if match is not None:
+            minors.add(int(match.group(1)))
+    return minors
+
+
+def process_holds_nvidia_device(pid: Any, *, proc_root: Path = Path("/proc")) -> bool:
+    """True when the process holds a concrete per-GPU device node open."""
+
+    return bool(process_gpu_device_minors(pid, proc_root=proc_root))
 
 
 def device_handle_role_pids(
