@@ -25,6 +25,7 @@ from blueprint_pipeline.vast_provider_adapter import (
     VAST_API_KEY_FILE_ENV,
     VAST_INSTANCE_LAUNCH_GATE_ENV,
     _redact_text,
+    _offer_selection_manifest,
     _select_offer,
     _url_secret_values,
     run_vast_provider_adapter,
@@ -2295,6 +2296,63 @@ def test_vast_adapter_compute_cap_ceiling_can_be_lifted_explicitly() -> None:
 
     assert selected is not None
     assert selected["compute_cap_normalized"] == 1200
+
+
+def test_vast_public_adapter_exposes_the_compute_ceiling_opt_out() -> None:
+    """PR #181 review P1: the documented opt-out must be reachable.
+
+    The ceiling defaults on so a future TensorRT lane inherits it, but callers
+    running a workload that never builds the pinned engine (generic CUDA probes,
+    WAM) must be able to lift it.  Without a public parameter those callers see
+    Blackwell-only capacity reported as unavailable with no recourse.
+    """
+
+    import inspect
+
+    from blueprint_pipeline.vast_provider_adapter import run_vast_provider_adapter
+
+    params = inspect.signature(run_vast_provider_adapter).parameters
+    assert "max_compute_cap" in params, "opt-out unreachable from the public entry point"
+    assert params["max_compute_cap"].default is None, "must default to the safe ceiling"
+
+
+def test_vast_offer_manifest_records_architecture_exclusions() -> None:
+    """PR #181 review P2: evidence must name architecture as the reason.
+
+    Otherwise an operator debugging "no capacity" sees only a rate-shaped
+    blocker and cannot tell that an affordable, high-VRAM offer was rejected for
+    compatibility -- the exact diagnostic gap that let this lane rent an sm_120
+    GPU in the first place.
+    """
+
+    manifest = _offer_selection_manifest(
+        generated_at="2026-07-25T00:00:00Z",
+        status_code=200,
+        offers=[
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "RTX PRO 6000 WS",
+                "gpu_ram_mb": 49140,
+                "compute_cap": 1200,
+                "dph_total": 0.30,
+                "driver_version": "580.95.05",
+            }
+        ],
+        selected_offer=None,
+        max_hourly_rate=1.00,
+        min_gpu_ram_mb=40_000,
+        require_known_supported_isaac_driver=False,
+        excluded_machine_ids=(),
+        allowed_machine_ids=(),
+        machine_avoidlist_path=Path("/tmp/avoidlist.json"),
+        avoidlist_status=None,
+        blockers=[],
+        prefer_isaac_rt=False,
+    )
+
+    assert manifest["max_compute_cap"] == 900
+    assert manifest["architecture_excluded_offer_count"] == 1
 
 
 def test_vast_adapter_excludes_avoidlisted_machine_ids() -> None:

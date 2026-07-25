@@ -21,6 +21,7 @@ ceiling is the only filter that works.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Mapping
 
 #: Highest compute capability the pinned TensorRT build can target.
@@ -28,6 +29,9 @@ from typing import Any, Mapping
 #: future Vast path inherits it; lanes that never build a TensorRT engine may
 #: pass ``max_compute_cap=0`` to opt out.
 TENSORRT_MAX_SUPPORTED_COMPUTE_CAP = 900
+
+#: Lifts or lowers the ceiling without a code change.
+MAX_COMPUTE_CAP_ENV = "BLUEPRINT_VAST_MAX_COMPUTE_CAP"
 
 
 def _number(value: Any) -> float | None:
@@ -91,3 +95,37 @@ def meets_max_compute_cap(offer: Mapping[str, Any], max_compute_cap: int) -> boo
     if compute_cap is None:
         return True
     return compute_cap <= int(max_compute_cap)
+
+
+def resolve_max_compute_cap(explicit: Any = None) -> int:
+    """Resolve the effective ceiling for a run.
+
+    Defaults to the TensorRT-buildable ceiling so a lane that builds the pinned
+    engine inherits protection without opting in.  A workload that never builds
+    it passes ``0`` (or sets the env var) to lift the ceiling.
+    """
+
+    env_value = os.getenv(MAX_COMPUTE_CAP_ENV)
+    if explicit is not None:
+        resolved = _number(explicit)
+    elif env_value:
+        resolved = _number(env_value)
+    else:
+        resolved = float(TENSORRT_MAX_SUPPORTED_COMPUTE_CAP)
+    return max(0, int(resolved if resolved is not None else 0))
+
+
+def any_offer_exceeds_ceiling(summaries: "list[Mapping[str, Any]]", max_compute_cap: int) -> bool:
+    """Whether any offer was removed specifically for its architecture."""
+
+    if not max_compute_cap:
+        return False
+    return any(not meets_max_compute_cap(item, max_compute_cap) for item in summaries)
+
+
+def architecture_excluded_count(summaries: "list[Mapping[str, Any]]", max_compute_cap: int) -> int:
+    """How many offers the architecture ceiling removed."""
+
+    if not max_compute_cap:
+        return 0
+    return sum(1 for item in summaries if not meets_max_compute_cap(item, max_compute_cap))
