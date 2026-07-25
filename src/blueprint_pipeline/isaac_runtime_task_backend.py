@@ -3151,6 +3151,12 @@ class IsaacPersistentTaskBackend:
         review_frames: list[dict[str, Any]] = []
         controller_execution_started_at_ns = time.time_ns()
         for frame_index, controller_frame in enumerate(controller_sequence):
+            replay_timeline = getattr(self, "timeline", None)
+            if frame_index == 0 and explicit_controller_sequence and replay_timeline is not None and not bool(replay_timeline.is_playing()):
+                # The executor idles stopped after its startup calibration probe;
+                # replaying frames needs live physics or delta==1 reads 0/False.
+                replay_timeline.play()
+                self.app.update()
             frame_state = {
                 **state,
                 **controller_frame,
@@ -3165,11 +3171,7 @@ class IsaacPersistentTaskBackend:
             simulation_manager = getattr(self, "_simulation_manager", None)
             if explicit_controller_sequence and simulation_manager is None:
                 raise RuntimeError("persistent_isaac_physics_step_counter_missing")
-            physics_step_count_before = (
-                int(simulation_manager.get_num_physics_steps())
-                if simulation_manager is not None
-                else None
-            )
+            physics_step_count_before = int(simulation_manager.get_num_physics_steps()) if simulation_manager is not None else None
             simulation_time_before = (
                 float(simulation_manager.get_simulation_time())
                 if simulation_manager is not None
@@ -3216,9 +3218,7 @@ class IsaacPersistentTaskBackend:
                     abs_tol=1e-9,
                 )
             ):
-                raise RuntimeError(
-                    "persistent_isaac_controller_frame_physics_step_delta_invalid"
-                )
+                raise RuntimeError(f"persistent_isaac_controller_frame_physics_step_delta_invalid:delta={physics_step_delta}:dt={simulation_time_delta_seconds}:playing={bool(self.timeline.is_playing())}:frame={frame_index}")
             self._refresh_live_state_if_configured()
             executed_control_frame_count += 1
             frame_sample = self._task_joint_sample(task_joint, criterion)

@@ -84,3 +84,23 @@ ceiling is the template — an un-refreshable defect class made unrentable).
 Empirically the plane has earned this: the foundation is unchanged since
 `@ab8fbccb`, and every failure since #171 has been builder, selector, or
 overlay — not image content.
+
+## Reading episode verdicts: failure is the product
+
+A stance abort, stall, or criterion miss with a truthful measurement chain is a
+product-grade negative, not a defect. Run 7 (first door contact) is the
+template: dead-upright gravity through the approach, ~30 degrees at contact,
+~35 and growing while pulling, abort. The gate measured a real balance failure.
+Fix gates only when the MEASUREMENT lies (the directional gate aimed at the
+camera-framing point; the joint-only stall guillotining approach phases) —
+never to make verdicts friendlier.
+
+## Known measurement limitation: frozen-seed conditioning FK
+
+The official-executor FK replays every chunk from the canonical initial state
+(run 7: identical wrist start across all six steps, even after live contact).
+Per-step approach gains are therefore command-intent, not live progress;
+termination evidence carries `approach_measurement_source` saying so, and a
+limitation pin in the closed-loop tests flips red when live seeding lands.
+The live protocol-v4 joint state needed for seeding is already available in
+every completion result (`post_action_policy_state`).

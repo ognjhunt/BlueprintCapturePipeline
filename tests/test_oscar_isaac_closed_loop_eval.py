@@ -6736,3 +6736,158 @@ def test_projector_binds_progress_target_from_the_action_not_camera_framing() ->
         "progress target must be bound from the action's manipulation target; "
         "the camera framing point sits 0.76 m from the handle on the live bundle"
     )
+
+
+def test_stall_watchdog_requires_both_joint_and_approach_streams_stalled(tmp_path):
+    """Attempt 067 run 6: patience=3 guillotined a monotone 13cm/chunk approach.
+
+    The robot starts ~40cm from the handle; the first chunks CANNOT move the
+    door because contact has not happened yet. Phase-scoped progress: while the
+    effector demonstrably closes on the target, approach IS progress; the door
+    joint becomes the criterion once approach gains stop. Stall terminates only
+    when BOTH streams have been meaningless for `patience` steps. A wam that
+    reports no effector data preserves the old joint-only behavior (pinned by
+    test_manipulation_stall_watchdog_terminates_without_claiming_success).
+    """
+
+    inner = _controller_fk_wam(tmp_path)
+    approach_by_step = {1: 0.131, 2: 0.128, 3: 0.117, 4: 0.093, 5: 0.041, 6: 0.019}
+
+    def wam(frame, action, step, history):
+        output = dict(inner(frame, action, step, history))
+        gain = approach_by_step.get(int(step), 0.0)
+        output["manipulation_effector_progress_report"] = {
+            "schema_version": "manipulation_effector_progress_report.v1",
+            "status": "passed",
+            "capability_gate_passed": True,
+            "best_progress_toward_target_m": gain,
+            "minimum_required_progress_m": 0.015,
+        }
+        return output
+
+    def policy_endpoint(observation, history, step_index):
+        return {
+            "policy_action": "learned_policy_action",
+            "root_position": [0.0, 0.0, 0.79],
+            "action_chunk": [float(step_index + 1), -float(step_index + 1)],
+        }
+
+    def evaluator(context):
+        step_index = int(context["step_index"])
+        evidence = tmp_path / f"both-stall-door-{step_index}.json"
+        measurement = {
+            "schema_version": "task_transition_measurement.v1",
+            "criterion_id": "door_articulation_angle",
+            "observable_transition": "door_angle_rad_increased",
+            "before_value": 0.0,
+            "after_value": 0.0,
+            "unit": "radian",
+            "source_step_index": step_index,
+        }
+        evidence.write_text(json.dumps(measurement) + "\n", encoding="utf-8")
+        result = {
+            "status": "completed",
+            **{key: value for key, value in measurement.items() if key != "schema_version"},
+            "episode_initial_value": 0.0,
+            "tolerance": 0.2,
+            "passed": False,
+            "evidence_artifacts": [
+                {
+                    "path": str(evidence),
+                    "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+                }
+            ],
+        }
+        result = _with_post_action_policy_state(result, context)
+        result["evaluator_attestation"] = _attest_task_completion(
+            result, tmp_path, f"both-stall-step-{step_index}"
+        )
+        return result
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "both_stall_out",
+        start_frame_path=_write_frame(tmp_path / "both_stall_seed.png", 11),
+        route_points=[[0.0, 0.0, 0.79], [0.1, 0.0, 0.79]],
+        wam_generate_next=wam,
+        steps=16,
+        policy_endpoint=policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(
+            tmp_path / "both_stall_seed.png"
+        ),
+        stop_on_task_completion=True,
+        stop_on_no_progress=True,
+        no_progress_patience_steps=3,
+        perception_target_prompts=["open the microwave"],
+        task_success_contract={
+            "task_kind": "manipulation",
+            "criteria": [
+                {
+                    "criterion_id": "door_articulation_angle",
+                    "observable_transition": "door_angle_rad_increased",
+                    "comparison": "increase_at_least",
+                    "tolerance": 0.2,
+                    "unit": "radian",
+                }
+            ],
+        },
+        task_completion_evaluator=evaluator,
+    )
+
+    termination = manifest["episode_termination"]
+    # Approach gains stay meaningful (>=0.015m) through step 6, so the old
+    # step-4 guillotine must NOT fire; both streams are stalled from step 7,
+    # so patience=3 terminates at step 9.
+    assert termination["steps_executed"] > 4, termination["reason"]
+    assert termination["reason"] == "no_task_progress_at_step_9"
+    assert termination["task_completed_early"] is False
+    history = termination["task_progress_history"]
+    assert history[-1]["terminal_now"] is True
+    assert any(
+        row.get("approach_progress_m") is not None for row in history
+    ), "per-step approach gains must be recorded as termination evidence"
+
+
+def test_stance_classifier_pins_the_first_contact_episode_verdicts() -> None:
+    """Run 7 (runner_done-c1b67f8cf17908dd): the gate told the truth.
+
+    Live projected gravity was dead-upright through the whole 4-step approach,
+    lurched to ~30 degrees at the moment of door contact, and grew to ~35 while
+    pulling -- a monotone tipping trajectory, not gait lean (0.03 horizontal).
+    A stance abort on these numbers is a product-grade honest negative. Frozen
+    here so threshold churn can never silently reclassify this episode class.
+    """
+
+    upright_samples = [
+        [-0.024663063605956746, -0.0001938046043588762, -0.9996958015983382],
+        [0.034369443031032273, -0.0011863480047019544, -0.9994084920412416],
+    ]
+    contact_onset = [0.4986352282596823, 0.09229898494473361, -0.8618838706673808]
+    tipping = [0.5635470818389865, 0.05535377687091026, -0.8242273023486228]
+
+    for gravity in upright_samples:
+        report = L._post_action_stance_report({"projected_gravity": gravity})
+        assert report["status"] == "upright", gravity
+    onset = L._post_action_stance_report({"projected_gravity": contact_onset})
+    assert onset["status"] == "upright", (
+        "contact onset at |g_h|=0.507 sits just under the deliberately loose "
+        "0.5-per-axis threshold and must not abort the first touch"
+    )
+    unsafe = L._post_action_stance_report({"projected_gravity": tipping})
+    assert unsafe["status"] == "unsafe"
+    assert unsafe["unsafe_stance_detected"] is True
+
+
+def test_approach_stream_declares_its_frozen_seed_measurement_source(tmp_path):
+    """LIMITATION PIN: conditioning FK replays from the canonical initial state.
+
+    Run 7 proved the official-executor FK starts every chunk from the same
+    frozen pose (wrist at [-1.2747, 1.672, 0.97] in all six steps, even after
+    live door contact), so per-step approach gains are command-intent, not live
+    progress. Until the executor seeds from the live protocol-v4 state, the
+    termination evidence must say so. When live seeding lands, delete the
+    source constant and update this pin together with the watchdog semantics.
+    """
+
+    assert (
+        L.APPROACH_MEASUREMENT_SOURCE == "chunk_fk_from_canonical_initial_state"
+    )
