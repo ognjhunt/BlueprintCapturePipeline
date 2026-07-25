@@ -2128,7 +2128,7 @@ def test_completion_frame_replay_ensures_live_physics_before_first_frame() -> No
     source = inspect.getsource(backend)
     loop = source.split("for frame_index, controller_frame in enumerate(controller_sequence)")[1]
     guard = loop.split("physics_step_count_before")[0]
-    assert "self.timeline.play()" in guard and "self.app.update()" in guard, (
+    assert "replay_timeline.play()" in guard and "self.app.update()" in guard, (
         "controller-frame replay must ensure the timeline is playing before "
         "sampling the physics step counter"
     )

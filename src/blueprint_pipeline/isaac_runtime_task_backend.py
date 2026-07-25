@@ -3151,11 +3151,11 @@ class IsaacPersistentTaskBackend:
         review_frames: list[dict[str, Any]] = []
         controller_execution_started_at_ns = time.time_ns()
         for frame_index, controller_frame in enumerate(controller_sequence):
-            if frame_index == 0 and explicit_controller_sequence and not bool(self.timeline.is_playing()):
-                # The executor idles stopped after its startup calibration probe
-                # (which ends with timeline.stop()); replaying controller frames
-                # needs live physics or every delta==1 check reads 0/False.
-                self.timeline.play()
+            replay_timeline = getattr(self, "timeline", None)
+            if frame_index == 0 and explicit_controller_sequence and replay_timeline is not None and not bool(replay_timeline.is_playing()):
+                # The executor idles stopped after its startup calibration probe;
+                # replaying frames needs live physics or delta==1 reads 0/False.
+                replay_timeline.play()
                 self.app.update()
             frame_state = {
                 **state,
