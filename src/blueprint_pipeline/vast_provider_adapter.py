@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
+from . import vast_compute_capability as vcc
 from .gpu_selection_policy import (
     GPU_SELECTION_POLICIES, _is_disallowed_for_isaac, _is_isaac_rt_candidate,
     gpu_allowed_by_policy, policy_manifest, resolve_gpu_selection_policy)
@@ -1245,26 +1246,6 @@ def _known_gpu_vram_cap_mb(gpu_name: str) -> int | None:
     return None
 
 
-def _normalized_compute_cap(value: Any) -> int | None:
-    number = _number(value)
-    if number is None:
-        return None
-    if 0 < number < 100:
-        return int(round(float(number) * 100))
-    return int(number)
-
-
-def _meets_min_compute_cap(offer: Mapping[str, Any], min_compute_cap: int) -> bool:
-    if not min_compute_cap:
-        return True
-    compute_cap = _normalized_compute_cap(
-        offer.get("compute_cap_normalized")
-        if offer.get("compute_cap_normalized") is not None
-        else offer.get("compute_cap")
-    )
-    return compute_cap is not None and compute_cap >= int(min_compute_cap)
-
-
 def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
     gpu = _gpu_name(offer)
     driver = _driver_version(offer)
@@ -1296,7 +1277,7 @@ def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
         == "outside_known_unsupported_omniverse_rtx_driver_range",
         "cuda_max_good": offer.get("cuda_max_good"),
         "compute_cap": compute_cap,
-        "compute_cap_normalized": _normalized_compute_cap(compute_cap),
+        "compute_cap_normalized": vcc.normalized_compute_cap(compute_cap),
         "gpu_ram_mb": effective_gpu_ram_mb,
         "provider_reported_gpu_ram_mb": (
             int(provider_reported_gpu_ram_mb)
@@ -1543,6 +1524,7 @@ def _select_offer(
     max_hourly_rate: float,
     min_gpu_ram_mb: int = 0,
     min_compute_cap: int = 0,
+    max_compute_cap: int = vcc.TENSORRT_MAX_SUPPORTED_COMPUTE_CAP,
     excluded_machine_ids: Iterable[Any] = (),
     allowed_machine_ids: Iterable[Any] = (),
     require_avx: bool = False,
@@ -1565,7 +1547,8 @@ def _select_offer(
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
-        and _meets_min_compute_cap(item, min_compute_cap)
+        and vcc.meets_min_compute_cap(item, min_compute_cap)
+        and vcc.meets_max_compute_cap(item, max_compute_cap)
         and (
             not min_reliability
             or (
@@ -1635,6 +1618,7 @@ def _offer_selection_manifest(
     max_hourly_rate: float,
     min_gpu_ram_mb: int,
     min_compute_cap: int = 0,
+    max_compute_cap: int = vcc.TENSORRT_MAX_SUPPORTED_COMPUTE_CAP,
     require_known_supported_isaac_driver: bool,
     excluded_machine_ids: Iterable[Any],
     allowed_machine_ids: Iterable[Any],
@@ -1678,7 +1662,8 @@ def _offer_selection_manifest(
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
-        and _meets_min_compute_cap(item, min_compute_cap)
+        and vcc.meets_min_compute_cap(item, min_compute_cap)
+        and vcc.meets_max_compute_cap(item, max_compute_cap)
         and (
             not min_reliability
             or (
@@ -1707,6 +1692,10 @@ def _offer_selection_manifest(
         "max_hourly_rate_usd": max_hourly_rate,
         "min_gpu_ram_mb": min_gpu_ram_mb,
         "min_compute_cap": min_compute_cap,
+        "max_compute_cap": max_compute_cap,
+        "architecture_excluded_offer_count": vcc.architecture_excluded_count(
+            summaries, max_compute_cap
+        ),
         "require_known_supported_isaac_driver": require_known_supported_isaac_driver,
         "min_reliability": min_reliability,
         "require_direct_port": require_direct_port,
@@ -4076,6 +4065,7 @@ def run_vast_provider_adapter(
     disk_gb: int | None = None,
     min_gpu_ram_mb: int | None = None,
     min_compute_cap: int | None = None,
+    max_compute_cap: int | None = None,
     poll_interval_seconds: int = 10,
     startup_timeout_seconds: int = 420,
     heartbeat_no_progress_seconds: int | None = None,
@@ -4138,6 +4128,7 @@ def run_vast_provider_adapter(
             else (_number(os.getenv(VAST_MIN_COMPUTE_CAP_ENV)) or 0)
         ),
     )
+    resolved_max_compute_cap = vcc.resolve_max_compute_cap(max_compute_cap)
     resolved_min_reliability = max(
         0.0,
         float(
@@ -4349,6 +4340,7 @@ def run_vast_provider_adapter(
         "machine_allowlist_active": bool(resolved_allowed_machine_ids),
         "min_gpu_ram_mb": resolved_min_gpu_ram_mb,
         "min_compute_cap": resolved_min_compute_cap,
+        "max_compute_cap": resolved_max_compute_cap,
         "session_budget_ledger_path": str(resolved_session_budget_ledger_path),
         "vast_launch_lock_path": str(resolved_vast_launch_lock_path),
         "vast_launch_lock_manifest_path": str(
@@ -5159,6 +5151,7 @@ def run_vast_provider_adapter(
                 max_hourly_rate=max_hourly_rate,
                 min_gpu_ram_mb=resolved_min_gpu_ram_mb,
                 min_compute_cap=resolved_min_compute_cap,
+                max_compute_cap=resolved_max_compute_cap,
                 excluded_machine_ids=excluded_machine_ids,
                 allowed_machine_ids=resolved_allowed_machine_ids,
                 require_known_supported_isaac_driver=require_known_supported_isaac_driver,
@@ -5175,6 +5168,8 @@ def run_vast_provider_adapter(
                     offer_blockers.append("no_vast_offer_matching_allowed_machine_ids")
                 if resolved_min_compute_cap:
                     offer_blockers.append("no_vast_offer_meeting_min_compute_cap")
+                if vcc.any_offer_exceeds_ceiling(offers, resolved_max_compute_cap):
+                    offer_blockers.append("no_vast_offer_at_or_below_max_compute_cap")
                 offer_blockers.append(
                     "no_vast_offer_with_known_supported_isaac_driver_at_or_below_max_hourly_rate"
                     if require_known_supported_isaac_driver
@@ -5188,6 +5183,7 @@ def run_vast_provider_adapter(
                 max_hourly_rate=max_hourly_rate,
                 min_gpu_ram_mb=resolved_min_gpu_ram_mb,
                 min_compute_cap=resolved_min_compute_cap,
+                max_compute_cap=resolved_max_compute_cap,
                 require_known_supported_isaac_driver=require_known_supported_isaac_driver,
                 excluded_machine_ids=excluded_machine_ids,
                 allowed_machine_ids=resolved_allowed_machine_ids,
