@@ -3216,9 +3216,7 @@ class IsaacPersistentTaskBackend:
                     abs_tol=1e-9,
                 )
             ):
-                raise RuntimeError(
-                    "persistent_isaac_controller_frame_physics_step_delta_invalid"
-                )
+                raise RuntimeError(f"persistent_isaac_controller_frame_physics_step_delta_invalid:delta={physics_step_delta}:dt={simulation_time_delta_seconds}:playing={bool(self.timeline.is_playing())}:frame={frame_index}")
             self._refresh_live_state_if_configured()
             executed_control_frame_count += 1
             frame_sample = self._task_joint_sample(task_joint, criterion)
