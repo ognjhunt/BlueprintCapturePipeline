@@ -6845,3 +6845,49 @@ def test_stall_watchdog_requires_both_joint_and_approach_streams_stalled(tmp_pat
     assert any(
         row.get("approach_progress_m") is not None for row in history
     ), "per-step approach gains must be recorded as termination evidence"
+
+
+def test_stance_classifier_pins_the_first_contact_episode_verdicts() -> None:
+    """Run 7 (runner_done-c1b67f8cf17908dd): the gate told the truth.
+
+    Live projected gravity was dead-upright through the whole 4-step approach,
+    lurched to ~30 degrees at the moment of door contact, and grew to ~35 while
+    pulling -- a monotone tipping trajectory, not gait lean (0.03 horizontal).
+    A stance abort on these numbers is a product-grade honest negative. Frozen
+    here so threshold churn can never silently reclassify this episode class.
+    """
+
+    upright_samples = [
+        [-0.024663063605956746, -0.0001938046043588762, -0.9996958015983382],
+        [0.034369443031032273, -0.0011863480047019544, -0.9994084920412416],
+    ]
+    contact_onset = [0.4986352282596823, 0.09229898494473361, -0.8618838706673808]
+    tipping = [0.5635470818389865, 0.05535377687091026, -0.8242273023486228]
+
+    for gravity in upright_samples:
+        report = L._post_action_stance_report({"projected_gravity": gravity})
+        assert report["status"] == "upright", gravity
+    onset = L._post_action_stance_report({"projected_gravity": contact_onset})
+    assert onset["status"] == "upright", (
+        "contact onset at |g_h|=0.507 sits just under the deliberately loose "
+        "0.5-per-axis threshold and must not abort the first touch"
+    )
+    unsafe = L._post_action_stance_report({"projected_gravity": tipping})
+    assert unsafe["status"] == "unsafe"
+    assert unsafe["unsafe_stance_detected"] is True
+
+
+def test_approach_stream_declares_its_frozen_seed_measurement_source(tmp_path):
+    """LIMITATION PIN: conditioning FK replays from the canonical initial state.
+
+    Run 7 proved the official-executor FK starts every chunk from the same
+    frozen pose (wrist at [-1.2747, 1.672, 0.97] in all six steps, even after
+    live door contact), so per-step approach gains are command-intent, not live
+    progress. Until the executor seeds from the live protocol-v4 state, the
+    termination evidence must say so. When live seeding lands, delete the
+    source constant and update this pin together with the watchdog semantics.
+    """
+
+    assert (
+        L.APPROACH_MEASUREMENT_SOURCE == "chunk_fk_from_canonical_initial_state"
+    )

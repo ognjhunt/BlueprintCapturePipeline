@@ -128,6 +128,7 @@ UNITREE_G1_SONIC_STATE_DIMS = {
 }
 POST_ACTION_POLICY_STATE_SOURCE = "post_action_live_isaac_articulation"
 MANIPULATION_EFFECTOR_PROGRESS_MINIMUM_M = 0.015
+APPROACH_MEASUREMENT_SOURCE = "chunk_fk_from_canonical_initial_state"
 MANIPULATION_EFFECTOR_PROJECTED_MOTION_MINIMUM_PX = 8.0
 UNSAFE_STANCE_MAX_HORIZONTAL_PROJECTED_GRAVITY = 0.5
 UNSAFE_STANCE_MIN_UPRIGHT_PROJECTED_GRAVITY_Z = -0.7
@@ -5975,6 +5976,7 @@ def run_oscar_isaac_closed_loop(
             and approach_stream_stalled
         )
         task_progress_report["approach_progress_m"] = approach_progress_m
+        task_progress_report["approach_measurement_source"] = APPROACH_MEASUREMENT_SOURCE
         task_progress_report["last_meaningful_approach_step"] = last_meaningful_approach_step
         task_progress_report.update(
             {
