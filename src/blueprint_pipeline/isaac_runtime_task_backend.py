@@ -3151,6 +3151,12 @@ class IsaacPersistentTaskBackend:
         review_frames: list[dict[str, Any]] = []
         controller_execution_started_at_ns = time.time_ns()
         for frame_index, controller_frame in enumerate(controller_sequence):
+            if frame_index == 0 and explicit_controller_sequence and not bool(self.timeline.is_playing()):
+                # The executor idles stopped after its startup calibration probe
+                # (which ends with timeline.stop()); replaying controller frames
+                # needs live physics or every delta==1 check reads 0/False.
+                self.timeline.play()
+                self.app.update()
             frame_state = {
                 **state,
                 **controller_frame,
@@ -3165,11 +3171,7 @@ class IsaacPersistentTaskBackend:
             simulation_manager = getattr(self, "_simulation_manager", None)
             if explicit_controller_sequence and simulation_manager is None:
                 raise RuntimeError("persistent_isaac_physics_step_counter_missing")
-            physics_step_count_before = (
-                int(simulation_manager.get_num_physics_steps())
-                if simulation_manager is not None
-                else None
-            )
+            physics_step_count_before = int(simulation_manager.get_num_physics_steps()) if simulation_manager is not None else None
             simulation_time_before = (
                 float(simulation_manager.get_simulation_time())
                 if simulation_manager is not None
