@@ -6332,6 +6332,119 @@ def test_initial_policy_query_requires_hash_bound_robot_head_pov(
     assert expected_blocker in manifest["blockers"]
 
 
+def _sealed_producer_initial_observation_evidence(path: Path) -> dict:
+    """Evidence in the isaac_runtime_task_backend producer's REAL shape.
+
+    The sealed runtime artifact nests ``camera_contract`` and ``visual_signal``
+    inside ``camera_projection_context``; the top level carries only
+    ``source_frame_artifact`` plus session identity. The hermetic fixture above
+    uses a flat shape no producer has ever emitted, which is exactly how the
+    #178 validator shipped requiring fields it could never see: attempt 066 on
+    Vast (instance 45785933) validated None for every contract field, silently
+    fell back to DeterministicWalkToTargetPolicy, and died in FK conditioning.
+    This fixture is copied from that run's
+    closed_loop_out/isaac_task_state/initial_policy_observation.json.
+    """
+
+    resolved = path.resolve()
+    frame = {
+        "path": str(resolved),
+        "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+        "width": 64,
+        "height": 48,
+        "camera_role": "robot_pov",
+    }
+    return {
+        "schema_version": "isaac_initial_policy_observation.v1",
+        "status": "completed",
+        "stage_id": "stage-1",
+        "simulator_session_id": "sess-1",
+        "target_prim_path": "/root/Microwave017",
+        "blockers": [],
+        "source_frame_artifact": dict(frame),
+        "camera_projection_context": {
+            "schema_version": "controller_fk_camera_projection_context.v1",
+            "status": "completed",
+            "source_frame_artifact": dict(frame),
+            "camera_contract": {
+                "available": True,
+                "projection_token": "perspective",
+                "resolution": [64, 48],
+                "viewpoint_mode": "robot_head_mounted_egocentric",
+                "robot_mounted": True,
+                "policy_observation_eligible": True,
+                "mount_motion_model": "rigid_head_local_transform",
+                "gaze_motion_model": "inherits_head_orientation_no_task_reaim",
+            },
+            "visual_signal": {"status": "completed", "non_uniform": True},
+        },
+    }
+
+
+def test_initial_policy_validator_accepts_sealed_producer_shape(tmp_path: Path) -> None:
+    """The validator must consume the shape the runtime producer actually emits."""
+
+    start = _write_frame(tmp_path / "sealed_shape.png", 23)
+    validated = L._validated_initial_policy_observation(
+        _sealed_producer_initial_observation_evidence(start),
+        start_frame_path=start,
+    )
+    assert validated["camera_role"] == "robot_pov"
+    assert validated["viewpoint_mode"] == "robot_head_mounted_egocentric"
+    assert validated["mount_motion_model"] == "rigid_head_local_transform"
+
+
+def test_initial_policy_query_success_via_sealed_shape_reaches_endpoint(tmp_path: Path) -> None:
+    """End to end: sealed-shape evidence must produce a real endpoint query."""
+
+    start = _write_frame(tmp_path / "sealed_e2e.png", 24)
+    policy_queries: list[dict] = []
+    L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "sealed-e2e-out",
+        start_frame_path=start,
+        route_points=[[0.0, 0.0, 0.79], [0.1, 0.0, 0.79]],
+        wam_generate_next=_route_walking_wam(tmp_path),
+        steps=1,
+        policy_endpoint=lambda observation, history, step: (
+            policy_queries.append(observation)
+            or {"policy_action": "UNITREE_G1_SONIC", "sonic_action_chunk": [0.1] * 4}
+        ),
+        initial_observation_evidence=(
+            _sealed_producer_initial_observation_evidence(start)
+        ),
+    )
+    assert len(policy_queries) == 1, "endpoint must be queried on the initial real frame"
+    assert policy_queries[0]["observation_kind"] == "initial_real_observation"
+
+
+def test_initial_policy_query_failure_fails_closed_without_walk_steps(tmp_path: Path) -> None:
+    """A configured endpoint whose initial query fails must not silently walk.
+
+    Continuing substitutes DeterministicWalkToTargetPolicy for the sealed
+    manipulation policy on every step (the poison the in-code comment names),
+    and in production the substituted token action then crashes FK skeleton
+    conditioning with unitree_g1_sonic_action_missing. Fail closed instead:
+    blocked manifest, zero executed steps, zero silent-fallback action rows.
+    """
+
+    start = _write_frame(tmp_path / "fail_closed.png", 25)
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "fail-closed-out",
+        start_frame_path=start,
+        route_points=[[0.0, 0.0, 0.79], [0.1, 0.0, 0.79]],
+        wam_generate_next=_route_walking_wam(tmp_path),
+        steps=3,
+        policy_endpoint=lambda observation, history, step: {"policy_action": "x"},
+        initial_observation_evidence=None,
+    )
+    assert manifest["status"] == "blocked"
+    assert "initial_policy_observation_evidence_required" in manifest["blockers"]
+    assert len(manifest.get("trace") or []) == 0, (
+        "no step may execute after a failed initial policy query: a substituted "
+        "DeterministicWalkToTargetPolicy action crashes FK conditioning in production"
+    )
+
+
 def test_sc3_closed_loop_blocks_egocentric_only_wam_output(tmp_path):
     manifest = L.run_oscar_isaac_closed_loop(
         output_dir=tmp_path / "egocentric_only",

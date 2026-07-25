@@ -12,6 +12,12 @@ Key rules:
 - Protect provenance, rights, privacy, and raw capture truth.
 - Optimize for strong site-specific packages and hosted runtime outputs.
 - Keep readiness and review logic secondary to the product core.
+- Never resolve a failure by hand or by one-off workaround. Every fix must land
+  as code on main with a hermetic fast-lane test pinning the contract and,
+  where a paid path exists, a fail-closed gate in front of it. A manual action
+  taken to save a live run is a stopgap; the same session must land the
+  encoded equivalent (precedents: PR #180 builder swap, PR #181 compute-cap
+  ceiling — each replaced a repeatedly hand-applied workaround).
 - Before claiming Paperclip/autonomous-loop `done`, `blocked`, or
   `awaiting_human_decision`, apply the Blueprint-WebApp
   `docs/autonomous-loop-evidence-checklist-2026-05-03.md`. That cross-repo path
