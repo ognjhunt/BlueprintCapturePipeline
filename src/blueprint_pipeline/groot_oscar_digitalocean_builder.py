@@ -863,6 +863,15 @@ def _host_key_material(private_path: Path) -> tuple[str, str, str]:
     )
 
 
+BUILDER_SWAPFILE_PATH = "/swapfile"
+# Sized against the reproduced late-stage syft registry-scan peak on the 16 GiB
+# builder profile, not chosen as a round number.
+BUILDER_SWAP_GIB = 16
+_SWAP_ACTIVE_CHECK = (
+    f"swapon --show=NAME --noheadings | grep -qx {BUILDER_SWAPFILE_PATH}"
+)
+
+
 def build_cloud_init(
     *,
     host_private_b64: str,
@@ -887,11 +896,22 @@ def build_cloud_init(
             "  - docker.io\n  - docker-buildx"
         )
         runtime_commands = (
-            "  - systemctl enable --now docker\n  - docker info\n  - docker buildx version"
+            "  - systemctl enable --now docker\n  - docker info\n  - docker buildx version\n"
+            f"  - bash -c 'test -e {BUILDER_SWAPFILE_PATH}"
+            f" || fallocate -l {BUILDER_SWAP_GIB}G {BUILDER_SWAPFILE_PATH}"
+            f" || dd if=/dev/zero of={BUILDER_SWAPFILE_PATH} bs=1M"
+            f" count={BUILDER_SWAP_GIB * 1024}'\n"
+            f"  - chmod 0600 {BUILDER_SWAPFILE_PATH}\n"
+            f"  - bash -c '{_SWAP_ACTIVE_CHECK}"
+            f" || (mkswap {BUILDER_SWAPFILE_PATH} && swapon {BUILDER_SWAPFILE_PATH})'"
         )
+        # The ready marker gates the live capability probe, so it must not appear
+        # until swap is actually on: without it the late-stage syft registry scan
+        # OOM-kills this 16 GiB builder after the release image has already pushed.
         ready_command = (
             "  - bash -c 'docker info >/dev/null && docker buildx version "
-            ">/dev/null && touch /root/blueprint-builder-ready'"
+            f">/dev/null && {_SWAP_ACTIVE_CHECK}"
+            " && touch /root/blueprint-builder-ready'"
         )
     else:
         package_lines = "  - ca-certificates\n  - python3\n  - python3-venv"
