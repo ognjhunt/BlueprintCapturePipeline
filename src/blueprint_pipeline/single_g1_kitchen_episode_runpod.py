@@ -231,6 +231,7 @@ CONTROLLER_FK_CAMERA_PROJECTION_CONTEXT_PATH = (
     "/workspace/controller_fk_camera_projection_context.json"
 )
 RUNTIME_PACKAGE_OVERLAY_MODULES = (
+    "gpu_residency_attribution.py",
     "initial_policy_observation_contract.py",
     "isaac_runtime_task_backend.py",
     "groot_oscar_episode_review.py",

@@ -95,6 +95,45 @@ Fix gates only when the MEASUREMENT lies (the directional gate aimed at the
 camera-framing point; the joint-only stall guillotining approach phases) —
 never to make verdicts friendlier.
 
+## Host-capability defects: the third plane
+
+Attempts 066–067 taught overlay-vs-image. Attempt 068 added a plane neither
+tier covers: the **host**. Its residency proof reported all four roles absent
+while they held ~45 GiB on the one visible GPU. Cause: `nvidia-smi` reports
+root-namespace PIDs, and this Vast host's container runtime never exposed the
+outer `NSpid` chain, so the host→local translation was not merely unparsed but
+*absent in principle*. Run 7 passed the identical gate on a host whose runtime
+did leak the chain.
+
+Diagnosing this class:
+
+- The tell is a measurement that is *uniformly* empty rather than wrong —
+  `role_observed_sample_counts` all zero across 212 samples, while
+  `peak_gpu_memory_used_mib` proves the work was happening.
+- Corroborate against the last passing run's report before touching code. Run 7
+  (243 observations) vs 068 (0) localized this to the host in one comparison.
+- `process_name: "[Not Found]"` and a one-element `ancestor_chain` are the
+  host saying "I cannot attribute this PID." Never let a fallback silently
+  reinterpret that as "this PID is someone else's."
+
+The durable fix is never "retry on another host" — that is a coin flip that
+re-bills the same discovery. Prefer, in order: (1) an alternative measurement
+that does not depend on the missing capability, (2) a distinct blocker naming
+the capability, (3) an admission gate making the host class unrentable. The
+device-handle fallback in `gpu_residency_attribution.py` is (1): it asks our
+own processes whether they hold `/dev/nvidia*` instead of asking the GPU which
+PIDs it holds, so it is namespace-local and works on both runtimes. It refuses
+to conclude anything when more than one GPU is visible, because an open handle
+cannot then identify which GPU — bounded soundness beats a friendlier verdict.
+
+## Branch hygiene: squash-merge orphans its own follow-ups
+
+A squash merge rewrites history, so any branch cut from the pre-merge head goes
+`mergeState: DIRTY` and cannot be rebased cleanly. Cut follow-up branches from
+the post-merge `main`, and when a PR does strand, rebuild it as fresh files on
+current `main` rather than fighting the conflict — that is what turned #183's
+orphan into the clean #186.
+
 ## Known measurement limitation: frozen-seed conditioning FK
 
 The official-executor FK replays every chunk from the canonical initial state
