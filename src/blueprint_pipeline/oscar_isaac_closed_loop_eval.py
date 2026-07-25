@@ -5469,6 +5469,7 @@ def run_oscar_isaac_closed_loop(
     task_completed_early = False
     task_progress_history: list[dict[str, Any]] = []
     best_task_progress: float | None = None
+    last_meaningful_approach_step: int | None = None
     last_meaningful_task_progress_step: int | None = None
     step_records: list[dict[str, Any]] = []
     adapter_reports: list[dict[str, Any]] = []
@@ -5953,7 +5954,17 @@ def run_oscar_isaac_closed_loop(
             if last_meaningful_task_progress_step is not None
             else 0
         )
+        # Phase-scoped progress (attempt 067 run 6): while the effector still
+        # closes on the target, approach IS progress -- the task joint cannot
+        # move before contact. Stall requires BOTH streams dead for patience.
         patience_steps = max(1, int(no_progress_patience_steps))
+        effector_report = _mapping(wam_output.get("manipulation_effector_progress_report"))
+        approach_progress_m = _finite_float(effector_report.get("best_progress_toward_target_m"))
+        approach_minimum_m = _finite_float(effector_report.get("minimum_required_progress_m"))
+        if approach_progress_m is not None and approach_minimum_m is not None and approach_progress_m >= approach_minimum_m:
+            last_meaningful_approach_step = step_index
+        approach_stream_stalled = last_meaningful_approach_step is None or (
+            step_index - last_meaningful_approach_step) >= patience_steps
         no_progress_terminal_now = bool(
             stop_on_no_progress
             and manipulation_task
@@ -5961,7 +5972,10 @@ def run_oscar_isaac_closed_loop(
             and task_progress_value is not None
             and step_index >= max(max(1, int(min_steps)), patience_steps + 1)
             and steps_since_meaningful_progress >= patience_steps
+            and approach_stream_stalled
         )
+        task_progress_report["approach_progress_m"] = approach_progress_m
+        task_progress_report["last_meaningful_approach_step"] = last_meaningful_approach_step
         task_progress_report.update(
             {
                 "step_index": step_index,
