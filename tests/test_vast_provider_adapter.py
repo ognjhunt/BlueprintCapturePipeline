@@ -3026,7 +3026,10 @@ def test_vast_adapter_accepts_downstream_markers_when_heartbeat_url_fails(
                         "gpu_ram_mb": 49140,
                         "compute_cap": 860,
                         "dph_total": 0.42,
-                        "driver_version": "595.71.05",
+                        # A driver below the Isaac ceiling: this test covers
+                        # heartbeat-URL failure, not offer admission, and 595.x
+                        # is now rejected before selection (attempt 069).
+                        "driver_version": "580.159.03",
                         "machine_id": 7070,
                     }
                 ]
