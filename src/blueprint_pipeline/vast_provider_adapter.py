@@ -34,7 +34,6 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
-from . import isaac_driver_support as ids
 from .isaac_driver_support import (
     driver_newer_branch_sort_rank as _driver_newer_branch_sort_rank,
     driver_sort_rank as _driver_sort_rank,
@@ -1486,7 +1485,6 @@ def _select_offer(
     min_gpu_ram_mb: int = 0,
     min_compute_cap: int = 0,
     max_compute_cap: int = vcc.TENSORRT_MAX_SUPPORTED_COMPUTE_CAP,
-    max_isaac_driver: tuple[int, ...] | None = ids.ISAAC_MAX_SUPPORTED_DRIVER_EXCLUSIVE,
     excluded_machine_ids: Iterable[Any] = (),
     allowed_machine_ids: Iterable[Any] = (),
     require_avx: bool = False,
@@ -1511,7 +1509,6 @@ def _select_offer(
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
         and vcc.meets_min_compute_cap(item, min_compute_cap)
         and vcc.meets_max_compute_cap(item, max_compute_cap)
-        and ids.meets_max_isaac_driver(item, max_isaac_driver)
         and (
             not min_reliability
             or (
@@ -1576,7 +1573,6 @@ def _offer_selection_manifest(
     min_gpu_ram_mb: int,
     min_compute_cap: int = 0,
     max_compute_cap: int = vcc.TENSORRT_MAX_SUPPORTED_COMPUTE_CAP,
-    max_isaac_driver: tuple[int, ...] | None = ids.ISAAC_MAX_SUPPORTED_DRIVER_EXCLUSIVE,
     require_known_supported_isaac_driver: bool,
     excluded_machine_ids: Iterable[Any],
     allowed_machine_ids: Iterable[Any],
@@ -1621,7 +1617,6 @@ def _offer_selection_manifest(
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
         and vcc.meets_min_compute_cap(item, min_compute_cap)
         and vcc.meets_max_compute_cap(item, max_compute_cap)
-        and ids.meets_max_isaac_driver(item, max_isaac_driver)
         and (
             not min_reliability
             or (

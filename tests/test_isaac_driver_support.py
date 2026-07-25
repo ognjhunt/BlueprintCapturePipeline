@@ -104,6 +104,68 @@ def test_explicit_argument_beats_environment(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_driver_version_parsing_tolerates_vendor_suffixes() -> None:
     assert driver_version_tuple("580.159.03") == (580, 159, 3)
-    assert driver_version_tuple("580.159") == (580, 159)
+    # Padded to a fixed width so abbreviated spellings compare consistently.
+    assert driver_version_tuple("580.159") == (580, 159, 0)
+    assert driver_version_tuple("550.90.07-vendor") == (550, 90, 7)
     assert driver_version_tuple("") is None
     assert driver_version_tuple(None) is None
+
+
+def test_abbreviated_boundary_version_is_rejected_like_its_full_spelling() -> None:
+    """ "581" must not slip under an exclusive (581, 0, 0) ceiling.
+
+    Unpadded, "581" parses to (581,) which Python orders BELOW (581, 0, 0),
+    admitting the exact branch the ceiling exists to reject.
+    """
+
+    ceiling = resolve_max_isaac_driver()
+    for spelling in ("581", "581.0", "581.0.0"):
+        assert driver_version_tuple(spelling) == (581, 0, 0)
+        assert meets_max_isaac_driver(_offer(spelling), ceiling) is False
+        assert isaac_driver_support_status(spelling) == ABOVE_CEILING_STATUS
+
+
+def test_env_override_reaches_the_status_used_by_live_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented override must change the value the Isaac filter keys on.
+
+    Live selection filters on isaac_driver_support_status, not on a passed
+    ceiling, so binding an import-time constant there would make
+    BLUEPRINT_VAST_MAX_ISAAC_DRIVER inert in production.
+    """
+
+    assert isaac_driver_support_status(BROKEN_TOO_NEW) == ABOVE_CEILING_STATUS
+    monkeypatch.setenv(MAX_ISAAC_DRIVER_ENV, "600.0.0")
+    assert isaac_driver_support_status(BROKEN_TOO_NEW) == SUPPORTED_STATUS
+    monkeypatch.setenv(MAX_ISAAC_DRIVER_ENV, "0")
+    assert isaac_driver_support_status(BROKEN_TOO_NEW) == SUPPORTED_STATUS
+
+
+def test_non_isaac_selection_is_untouched_by_the_ceiling() -> None:
+    """WAM and generic Vast paths must keep renting 581+ hosts.
+
+    They do not run the pinned Omniverse runtime, so an Isaac-shaped ceiling
+    applied unconditionally would block unrelated paid workloads whenever the
+    pool skewed new.
+    """
+
+    from blueprint_pipeline.vast_provider_adapter import _select_offer
+
+    offers = [
+        {
+            "id": 1,
+            "ask_contract_id": 1,
+            "gpu_name": "RTX A6000",
+            "gpu_ram_mb": 49140,
+            "compute_cap": 860,
+            "dph_total": 0.42,
+            "driver_version": BROKEN_TOO_NEW,
+            "machine_id": 11,
+        }
+    ]
+    chosen = _select_offer(offers, max_hourly_rate=1.0, require_known_supported_isaac_driver=False)
+    assert chosen is not None, "non-Isaac callers must still get the offer"
+
+    blocked = _select_offer(offers, max_hourly_rate=1.0, require_known_supported_isaac_driver=True)
+    assert blocked is None, "Isaac callers must reject the unrenderable driver"

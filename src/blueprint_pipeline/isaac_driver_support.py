@@ -65,11 +65,24 @@ def driver_version_tuple(value: Any) -> tuple[int, ...] | None:
         return None
     parts: list[int] = []
     for chunk in text.split("."):
-        chunk = chunk.strip()
-        if not chunk.isdigit():
-            return None if not parts else tuple(parts)
-        parts.append(int(chunk))
-    return tuple(parts) if parts else None
+        # Vendor builds append suffixes ("550.90.07-ubuntu"); take the leading
+        # digits so the numeric component still classifies correctly.
+        digits = ""
+        for character in chunk.strip():
+            if not character.isdigit():
+                break
+            digits += character
+        if not digits:
+            break
+        parts.append(int(digits))
+    if not parts:
+        return None
+    # Pad to a fixed width so abbreviated spellings compare identically: without
+    # this, "581" parses to (581,) which sorts BELOW the exclusive ceiling
+    # (581, 0, 0) and would admit the very branch the ceiling rejects.
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
 
 
 def offer_driver_version(offer: Mapping[str, Any]) -> str:
@@ -155,7 +168,18 @@ KNOWN_UNSUPPORTED_STATUS = "known_unsupported_omniverse_rtx_driver_range"
 UNKNOWN_STATUS = "unknown_driver_version"
 
 
-def isaac_driver_support_status(driver_version: Any) -> str:
+_UNSET = object()
+
+
+def isaac_driver_support_status(driver_version: Any, *, max_driver: Any = _UNSET) -> str:
+    """Classify a driver, resolving the ceiling from the environment by default.
+
+    Resolving here rather than binding an import-time constant is what makes
+    ``BLUEPRINT_VAST_MAX_ISAAC_DRIVER`` effective in live selection: the status
+    this returns is the value the Isaac admission filter keys on.
+    """
+
+    ceiling = resolve_max_isaac_driver() if max_driver is _UNSET else max_driver
     version = driver_version_tuple(driver_version)
     if version is None:
         return UNKNOWN_STATUS
@@ -165,7 +189,7 @@ def isaac_driver_support_status(driver_version: Any) -> str:
         < ISAAC_KNOWN_UNSUPPORTED_DRIVER_CEILING_EXCLUSIVE
     ):
         return KNOWN_UNSUPPORTED_STATUS
-    if version >= ISAAC_MAX_SUPPORTED_DRIVER_EXCLUSIVE:
+    if ceiling is not None and version >= ceiling:
         return ABOVE_CEILING_STATUS
     return SUPPORTED_STATUS
 
@@ -195,7 +219,8 @@ def driver_newer_branch_sort_rank(summary: Mapping[str, Any]) -> int:
     version = driver_version_tuple(summary.get("driver_version"))
     if version is None:
         return 4
-    if version >= ISAAC_MAX_SUPPORTED_DRIVER_EXCLUSIVE:
+    ceiling = resolve_max_isaac_driver()
+    if ceiling is not None and version >= ceiling:
         return 5
     major = version[0]
     if major >= 580:
