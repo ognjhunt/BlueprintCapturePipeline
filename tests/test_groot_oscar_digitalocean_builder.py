@@ -250,6 +250,47 @@ def test_cloud_init_binds_host_key_and_known_builder_packages() -> None:
     assert "docker_username" not in text
 
 
+def test_cloud_init_provisions_ephemeral_swap_before_builder_ready() -> None:
+    """The 16 GiB builder OOM-kills the late-stage syft registry scan without swap.
+
+    Observed live on droplet 587379505 at f6bc055f: the release image pushed, then
+    ``syft registry:<release>`` was SIGKILLed (exit 137) while writing
+    ``release_sbom.spdx.json``, so validate-thin-release, the thin-release contract,
+    tag promotion, and the build-result evidence never ran.  Swap must be active
+    *before* the ready marker so the capability probe cannot admit a builder that
+    would die at that stage.
+    """
+
+    for packet_kind in ("thin_release", "carrier_image"):
+        text = build_cloud_init(
+            host_private_b64="private",
+            host_public_b64="public",
+            shutdown_minutes=120,
+            packet_kind=packet_kind,
+        )
+        assert "/swapfile" in text, packet_kind
+        assert "mkswap" in text, packet_kind
+        assert "swapon" in text, packet_kind
+        assert "chmod 0600 /swapfile" in text, packet_kind
+        # Sized to absorb the reproduced syft peak, not merely nonzero.
+        assert "16G" in text or "16384" in text, packet_kind
+        swap_at = text.index("mkswap")
+        ready_at = text.index("touch /root/blueprint-builder-ready")
+        assert swap_at < ready_at, f"{packet_kind}: swap must precede ready marker"
+
+
+def test_model_cache_cloud_init_does_not_provision_build_swap() -> None:
+    """The S3 cache plane runs no Docker build and no syft scan."""
+
+    text = build_cloud_init(
+        host_private_b64="private",
+        host_public_b64="public",
+        shutdown_minutes=30,
+        packet_kind="model_cache_s3",
+    )
+    assert "/swapfile" not in text
+
+
 def test_carrier_cloud_init_uses_the_governed_docker_build_plane() -> None:
     text = build_cloud_init(
         host_private_b64="private",

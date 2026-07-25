@@ -33,6 +33,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from . import groot_oscar_builder_swap as builder_swap
 from .common import ensure_dir, write_json
 from .groot_oscar_infrastructure_admission import (
     BUILD_SCHEMA_VERSION,
@@ -887,11 +888,15 @@ def build_cloud_init(
             "  - docker.io\n  - docker-buildx"
         )
         runtime_commands = (
-            "  - systemctl enable --now docker\n  - docker info\n  - docker buildx version"
+            "  - systemctl enable --now docker\n  - docker info\n  - docker buildx version\n"
+            + builder_swap.provision_runcmd_lines()
         )
+        # The ready marker gates the live capability probe, so it must not appear
+        # until swap is actually on: an unswapped builder dies at the syft scan.
         ready_command = (
             "  - bash -c 'docker info >/dev/null && docker buildx version "
-            ">/dev/null && touch /root/blueprint-builder-ready'"
+            f">/dev/null && {builder_swap.SWAP_ACTIVE_CHECK}"
+            " && touch /root/blueprint-builder-ready'"
         )
     else:
         package_lines = "  - ca-certificates\n  - python3\n  - python3-venv"
