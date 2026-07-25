@@ -2201,6 +2201,102 @@ def test_vast_adapter_can_require_minimum_compute_capability() -> None:
     assert selected["compute_cap_normalized"] == 890
 
 
+def test_vast_adapter_rejects_gpus_above_tensorrt_compute_cap_by_default() -> None:
+    """Blackwell (sm_120) cannot build the pinned TensorRT 10.4 policy engine.
+
+    Observed live on Vast instance 45771989 (RTX PRO 6000 WS, compute_cap 1200):
+    the GEAR-SONIC controller tried to convert policy/release/model_decoder.onnx
+    at startup and TensorRT failed with ``Error Code 10: Could not find any
+    implementation``, so the controller never came ready and the episode exited 1.
+
+    The ceiling must be a DEFAULT, not opt-in: every current and future Vast
+    selection path has to inherit it, otherwise the next lane silently rents an
+    incompatible GPU again.
+    """
+
+    offers = [
+        {
+            "id": 1,
+            "ask_contract_id": 1,
+            "gpu_name": "RTX PRO 6000 WS",
+            "gpu_ram_mb": 49140,
+            "compute_cap": 1200,
+            "dph_total": 0.30,
+            "driver_version": "580.95.05",
+        },
+        {
+            "id": 2,
+            "ask_contract_id": 2,
+            "gpu_name": "RTX 4090",
+            "gpu_ram_mb": 24564,
+            "compute_cap": 890,
+            "dph_total": 0.90,
+            "driver_version": "580.159.03",
+        },
+    ]
+
+    # Blackwell is both cheaper and higher-VRAM here, so only an architecture
+    # ceiling can reject it -- a rate or memory filter cannot.
+    selected = _select_offer(offers, max_hourly_rate=1.00, prefer_isaac_rt=False)
+
+    assert selected is not None
+    assert selected["ask_contract_id"] == 2, "must not select the sm_120 offer"
+    assert selected["compute_cap_normalized"] == 890
+
+
+def test_vast_adapter_compute_cap_ceiling_allows_offers_without_compute_cap() -> None:
+    """An unreported architecture is allowed through, deliberately.
+
+    Live Vast offers always carry ``compute_cap`` (verified against the live
+    catalogue: 1200/890/860/700), so rejecting unknowns would not catch the
+    incompatibility this ceiling exists for.  It would only convert an upstream
+    schema change into a total selection outage.  The ceiling is strict about
+    architectures it can prove unusable and permissive about ones it cannot see.
+    """
+
+    selected = _select_offer(
+        [
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "Mystery GPU",
+                "gpu_ram_mb": 49140,
+                "dph_total": 0.10,
+                "driver_version": "580.95.05",
+            }
+        ],
+        max_hourly_rate=1.00,
+        prefer_isaac_rt=False,
+    )
+
+    assert selected is not None
+    assert selected["compute_cap_normalized"] is None
+
+
+def test_vast_adapter_compute_cap_ceiling_can_be_lifted_explicitly() -> None:
+    """A lane that does not build a TensorRT engine may opt out."""
+
+    selected = _select_offer(
+        [
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "RTX PRO 6000 WS",
+                "gpu_ram_mb": 49140,
+                "compute_cap": 1200,
+                "dph_total": 0.30,
+                "driver_version": "580.95.05",
+            }
+        ],
+        max_hourly_rate=1.00,
+        max_compute_cap=0,
+        prefer_isaac_rt=False,
+    )
+
+    assert selected is not None
+    assert selected["compute_cap_normalized"] == 1200
+
+
 def test_vast_adapter_excludes_avoidlisted_machine_ids() -> None:
     selected = _select_offer(
         [

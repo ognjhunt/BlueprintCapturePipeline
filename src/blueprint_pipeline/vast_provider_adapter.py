@@ -34,6 +34,12 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
+from .vast_compute_capability import (
+    TENSORRT_MAX_SUPPORTED_COMPUTE_CAP,
+    meets_max_compute_cap,
+    meets_min_compute_cap,
+    normalized_compute_cap,
+)
 from .gpu_selection_policy import (
     GPU_SELECTION_POLICIES, _is_disallowed_for_isaac, _is_isaac_rt_candidate,
     gpu_allowed_by_policy, policy_manifest, resolve_gpu_selection_policy)
@@ -1245,26 +1251,6 @@ def _known_gpu_vram_cap_mb(gpu_name: str) -> int | None:
     return None
 
 
-def _normalized_compute_cap(value: Any) -> int | None:
-    number = _number(value)
-    if number is None:
-        return None
-    if 0 < number < 100:
-        return int(round(float(number) * 100))
-    return int(number)
-
-
-def _meets_min_compute_cap(offer: Mapping[str, Any], min_compute_cap: int) -> bool:
-    if not min_compute_cap:
-        return True
-    compute_cap = _normalized_compute_cap(
-        offer.get("compute_cap_normalized")
-        if offer.get("compute_cap_normalized") is not None
-        else offer.get("compute_cap")
-    )
-    return compute_cap is not None and compute_cap >= int(min_compute_cap)
-
-
 def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
     gpu = _gpu_name(offer)
     driver = _driver_version(offer)
@@ -1296,7 +1282,7 @@ def _offer_summary(offer: Mapping[str, Any]) -> dict[str, Any]:
         == "outside_known_unsupported_omniverse_rtx_driver_range",
         "cuda_max_good": offer.get("cuda_max_good"),
         "compute_cap": compute_cap,
-        "compute_cap_normalized": _normalized_compute_cap(compute_cap),
+        "compute_cap_normalized": normalized_compute_cap(compute_cap),
         "gpu_ram_mb": effective_gpu_ram_mb,
         "provider_reported_gpu_ram_mb": (
             int(provider_reported_gpu_ram_mb)
@@ -1543,6 +1529,7 @@ def _select_offer(
     max_hourly_rate: float,
     min_gpu_ram_mb: int = 0,
     min_compute_cap: int = 0,
+    max_compute_cap: int = TENSORRT_MAX_SUPPORTED_COMPUTE_CAP,
     excluded_machine_ids: Iterable[Any] = (),
     allowed_machine_ids: Iterable[Any] = (),
     require_avx: bool = False,
@@ -1565,7 +1552,8 @@ def _select_offer(
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
-        and _meets_min_compute_cap(item, min_compute_cap)
+        and meets_min_compute_cap(item, min_compute_cap)
+        and meets_max_compute_cap(item, max_compute_cap)
         and (
             not min_reliability
             or (
@@ -1635,6 +1623,7 @@ def _offer_selection_manifest(
     max_hourly_rate: float,
     min_gpu_ram_mb: int,
     min_compute_cap: int = 0,
+    max_compute_cap: int = TENSORRT_MAX_SUPPORTED_COMPUTE_CAP,
     require_known_supported_isaac_driver: bool,
     excluded_machine_ids: Iterable[Any],
     allowed_machine_ids: Iterable[Any],
@@ -1678,7 +1667,8 @@ def _offer_selection_manifest(
         and _number(item["hourly_rate_usd"]) is not None
         and float(item["hourly_rate_usd"]) <= max_hourly_rate
         and int(_number(item.get("gpu_ram_mb")) or 0) >= int(min_gpu_ram_mb)
-        and _meets_min_compute_cap(item, min_compute_cap)
+        and meets_min_compute_cap(item, min_compute_cap)
+        and meets_max_compute_cap(item, max_compute_cap)
         and (
             not min_reliability
             or (
