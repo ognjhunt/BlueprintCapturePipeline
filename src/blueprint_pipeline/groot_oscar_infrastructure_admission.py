@@ -27,6 +27,11 @@ from .groot_oscar_carrier_remote_build_packet import (
     PACKET_DIRNAME as CARRIER_PACKET_DIRNAME,
     render_remote_build_script,
 )
+from .openpi_policy_ranking_remote_build_packet import (
+    PACKET_KIND as OPENPI_POLICY_RANKING_PACKET_KIND,
+    SCHEMA_VERSION as OPENPI_POLICY_RANKING_PACKET_SCHEMA,
+    validate_openpi_policy_ranking_archive,
+)
 
 
 # RunPod's create API returned this authoritative network-volume-capable set on
@@ -256,9 +261,18 @@ def build_live_machine_capability_evidence(
     free_bytes = observation.get("free_bytes")
     if type(free_bytes) is not int or free_bytes < minimum_free_bytes:
         blockers.append("live_machine_free_space_below_minimum")
-    if packet_kind not in {"thin_release", "carrier_image", "model_cache_s3"}:
+    if packet_kind not in {
+        "thin_release",
+        "carrier_image",
+        OPENPI_POLICY_RANKING_PACKET_KIND,
+        "model_cache_s3",
+    }:
         blockers.append("live_machine_packet_kind_unsupported")
-    if packet_kind in {"thin_release", "carrier_image"}:
+    if packet_kind in {
+        "thin_release",
+        "carrier_image",
+        OPENPI_POLICY_RANKING_PACKET_KIND,
+    }:
         if observation.get("docker_cli_present") is not True:
             blockers.append("live_machine_docker_cli_missing")
         if observation.get("docker_daemon_responding") is not True:
@@ -538,11 +552,17 @@ def build_build_plane_admission(
     blockers: list[str] = []
     provider = _string(builder.get("provider")).lower()
     packet_kind = _string(packet.get("packet_kind")) or "thin_release"
-    if packet_kind not in {"thin_release", "carrier_image", "model_cache_s3"}:
+    if packet_kind not in {
+        "thin_release",
+        "carrier_image",
+        OPENPI_POLICY_RANKING_PACKET_KIND,
+        "model_cache_s3",
+    }:
         blockers.append("builder_packet_kind_unsupported")
     expected_purpose = {
         "thin_release": "image_build",
         "carrier_image": "image_build",
+        OPENPI_POLICY_RANKING_PACKET_KIND: "image_build",
         "model_cache_s3": "model_cache_s3",
     }.get(packet_kind)
     if packet_kind == "carrier_image":
@@ -557,13 +577,29 @@ def build_build_plane_admission(
         if not _COMMIT.fullmatch(_string(packet.get("source_commit"))):
             blockers.append("builder_carrier_source_commit_invalid")
         blockers.extend(validate_carrier_image_archive(packet))
+    if packet_kind == OPENPI_POLICY_RANKING_PACKET_KIND:
+        if packet.get("schema_version") != OPENPI_POLICY_RANKING_PACKET_SCHEMA:
+            blockers.append("builder_openpi_packet_schema_invalid")
+        if not _versioned_image_ref(packet.get("image_ref")):
+            blockers.append("builder_openpi_image_ref_not_versioned")
+        if not _HEX64.fullmatch(_string(packet.get("dockerfile_sha256"))):
+            blockers.append("builder_openpi_dockerfile_sha256_invalid")
+        if not _HEX64.fullmatch(_string(packet.get("context_manifest_sha256"))):
+            blockers.append("builder_openpi_context_manifest_sha256_invalid")
+        if not _COMMIT.fullmatch(_string(packet.get("source_commit"))):
+            blockers.append("builder_openpi_source_commit_invalid")
+        blockers.extend(validate_openpi_policy_ranking_archive(packet))
     if provider in {"runpod", "runpod_pod", "runpod-pod"}:
         blockers.append("runpod_pods_are_serve_plane_not_image_build_plane")
     if expected_purpose is not None and _string(builder.get("purpose")) != expected_purpose:
         blockers.append("builder_purpose_does_not_match_packet_kind")
     if _string(builder.get("platform")) != "linux/amd64":
         blockers.append("builder_native_linux_amd64_not_verified")
-    if packet_kind in {"thin_release", "carrier_image"}:
+    if packet_kind in {
+        "thin_release",
+        "carrier_image",
+        OPENPI_POLICY_RANKING_PACKET_KIND,
+    }:
         if builder.get("docker_daemon_verified") is not True:
             blockers.append("builder_docker_daemon_not_verified")
         if builder.get("docker_buildx_verified") is not True:
@@ -591,7 +627,7 @@ def build_build_plane_admission(
     if type(free_bytes) is not int or free_bytes < MIN_BUILD_FREE_BYTES:
         blockers.append("builder_free_disk_below_120_gib")
     if (
-        packet_kind in {"thin_release", "carrier_image"}
+        packet_kind in {"thin_release", "carrier_image", OPENPI_POLICY_RANKING_PACKET_KIND}
         and builder.get("registry_push_auth_file_verified") is not True
     ):
         blockers.append("builder_file_based_registry_push_auth_not_verified")
@@ -641,7 +677,7 @@ def build_build_plane_admission(
         "execution_runtime_ready": (
             builder.get("docker_daemon_verified") is True
             and builder.get("docker_buildx_verified") is True
-            if packet_kind in {"thin_release", "carrier_image"}
+            if packet_kind in {"thin_release", "carrier_image", OPENPI_POLICY_RANKING_PACKET_KIND}
             else builder.get("python_runtime_verified") is True
             and builder.get("python_version") == "3.12"
             and builder.get("dependency_lock_verified") is True

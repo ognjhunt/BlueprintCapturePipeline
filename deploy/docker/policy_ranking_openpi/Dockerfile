@@ -3,7 +3,7 @@
 # observations remain external; this image contains code and pinned robot assets.
 
 FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04@sha256:2d913b09e6be8387e1a10976933642c73c840c0b735f0bf3c28d97fc9bc422e0
-COPY --from=ghcr.io/astral-sh/uv:0.5.1 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.5.1@sha256:190cbcca15602bad4531b4310f928fd34a036d50ec3edb6389edc167e21c35b6 /uv /uvx /bin/
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENPI_SOURCE_URL=https://github.com/Physical-Intelligence/openpi.git
