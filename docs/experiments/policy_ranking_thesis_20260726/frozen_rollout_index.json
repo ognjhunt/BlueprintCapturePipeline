@@ -1,7 +1,7 @@
 {
   "schema_version": "frozen_wam_rollout_index.v1",
   "status": "ready",
-  "protocol_sha256": "a361a787a15fb6a212ae0331a7cc0ccd60bf00535768e857ab2078f981feca8e",
+  "protocol_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
   "row_count": 441,
   "session_count": 63,
   "policy_count": 7,
@@ -11926,5 +11926,5 @@
     "evaluator_email_omitted": true,
     "evaluation_location_omitted": true
   },
-  "index_sha256": "1e207d930875d138487dba4aa869f801bb6064f2156a2c263027130b2ca626d4"
+  "index_sha256": "0d5e9bf6a21e9f1bfefe52f09361ecdbbd1db5e71662b2963c0ac385b8579f06"
 }

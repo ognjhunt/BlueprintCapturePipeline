@@ -1,0 +1,61 @@
+{
+  "schema_version": "policy_ranking_protocol_amendment.v1",
+  "amendment_id": "policy_ranking_20260726_001",
+  "recorded_at": "2026-07-26T11:07:50-0500",
+  "timing": {
+    "pilot_labels_opened_for_this_amendment": false,
+    "calibration_labels_opened": false,
+    "heldout_predictions_started": false,
+    "heldout_labels_opened": false,
+    "previous_manual_pilot_unseal": "One pilot session had previously been viewed and remains quarantined from threshold or configuration decisions."
+  },
+  "supersedes_protocol_sha256": "fadd4e3b701d6c51f4df7deb275d17668f501334a17bb948e0c6860f6665ad1d",
+  "amended_protocol_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
+  "changes": [
+    {
+      "kind": "required_sample_size_analysis",
+      "reason": "The v1 protocol omitted the mandated power or defensible sample-size analysis.",
+      "effect": "The 49-session holdout has approximately 80 percent power only near pairwise accuracy 0.678 or higher under a conservative session-cluster analysis; smaller or imprecise effects are inconclusive."
+    },
+    {
+      "kind": "provider_completion_fix",
+      "reason": "A label-blind technical attempt produced four incomplete responses at the 4096-token shared reasoning/output ceiling.",
+      "effect": "The ceiling is 8192 under a new evaluator digest. All prior 4096-token scores are excluded from ranking. The model, prompt, schema, frames, thresholds, and labels remain unchanged."
+    },
+    {
+      "kind": "frozen_sampling_and_retry_contract",
+      "reason": "Provider defaults and retry behavior must not become hidden researcher degrees of freedom.",
+      "effect": "Unset temperature, top-p, and seed are explicit; image detail and storage are pinned; at most two exact attempts are allowed and every attempt is metered."
+    },
+    {
+      "kind": "open_loop_to_closed_loop_claim_boundary",
+      "reason": "OSCAR's released benchmark rollouts do not validate Blueprint-operated closed-loop policy/WAM execution.",
+      "effect": "The NVIDIA warehouse closed-loop deterministic-predicate bridge is required before the captured-site claim, while remaining explicitly non-physical evidence."
+    },
+    {
+      "kind": "released_subset_selection_bias",
+      "reason": "The public release contains 441 rollouts while the paper describes 455, and the release selection process is undocumented.",
+      "effect": "The discrepancy and possible author-subset bias are mandatory calibration limitations."
+    },
+    {
+      "kind": "rights_boundary",
+      "reason": "The OSCAR rollout dataset has no explicit dataset license metadata.",
+      "effect": "Media remain internal-only; externally shareable reporting is limited to Blueprint-authored aggregate analysis and attributable citations pending clearance."
+    }
+  ],
+  "unchanged": [
+    "policy identities",
+    "session partitions",
+    "benchmark answer key",
+    "task inputs",
+    "judge prompt",
+    "judge model snapshot",
+    "judge reasoning effort",
+    "output schema",
+    "ranking thresholds",
+    "abstention thresholds",
+    "decision metrics",
+    "no physical robot activity"
+  ],
+  "outcome_optimization": false
+}
