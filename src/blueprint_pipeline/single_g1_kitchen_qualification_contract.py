@@ -11,7 +11,9 @@ import shlex
 from typing import Any, Mapping
 
 
-RELEASE_BINDING_SCHEMA_VERSION = "single_g1_kitchen_qualification_release_binding.v1"
+LEGACY_RELEASE_BINDING_SCHEMA_VERSION = "single_g1_kitchen_qualification_release_binding.v1"
+RELEASE_BINDING_SCHEMA_VERSION = "single_g1_kitchen_qualification_release_binding.v2"
+RUNTIME_IDENTITY_SCHEMA_VERSION = "single_g1_kitchen_qualification_runtime_identity.v1"
 MODEL_ASSETS_BINDING_SCHEMA_VERSION = "blueprint.qualification_model_assets_binding.v1"
 LAUNCH_REBIND_SCHEMA_VERSION = "single_g1_kitchen_qualification_launch_rebind.v1"
 RUNTIME_ATTEMPT_OVERLAY_BASE_SCHEMA_VERSION = (
@@ -65,6 +67,217 @@ def valid_source_commit(value: object) -> bool:
 def valid_image_binding(image_ref: object, image_digest: object) -> bool:
     match = _DIGEST_REF_RE.fullmatch(str(image_ref or ""))
     return bool(match and image_digest == f"sha256:{match.group(1)}")
+
+
+def _canonical_sha256(value: Mapping[str, Any] | list[Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _valid_sha256(value: object) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{64}", str(value or "")))
+
+
+def build_runtime_identity(
+    *,
+    release_binding: Mapping[str, Any],
+    model_assets_binding: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    launch_rebind: Mapping[str, Any],
+    bootstrap: Mapping[str, Any],
+    signed_runtime_overlays: list[Mapping[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Bind runtime-affecting inputs independently from the allocator checkout.
+
+    The image and runtime identity may outlive the control-plane implementation
+    that launches them.  Only explicit hashes and immutable refs enter this
+    record; changing any runtime-affecting input changes the digest.
+    """
+
+    blockers: list[str] = []
+    image_source_commit = str(
+        release_binding.get("image_source_commit")
+        or release_binding.get("source_commit")
+        or ""
+    )
+    orchestrator_source_commit = str(
+        release_binding.get("orchestrator_source_commit") or ""
+    )
+    if not valid_source_commit(image_source_commit):
+        blockers.append("qualification_runtime_image_source_commit_invalid")
+    if not valid_source_commit(orchestrator_source_commit):
+        blockers.append("qualification_runtime_orchestrator_source_commit_invalid")
+
+    runtime_hashes = {
+        "bundle_sha256": inputs.get("bundle_sha256"),
+        "runtime_package_overlay_sha256": inputs.get("runtime_package_overlay_sha256"),
+        "isaac_runtime_backend_overlay_sha256": inputs.get(
+            "isaac_runtime_backend_overlay_sha256"
+        ),
+        "controller_fk_camera_projection_context_sha256": inputs.get(
+            "controller_fk_camera_projection_context_sha256"
+        ),
+        "source_task_contract_sha256": inputs.get("source_task_contract_sha256"),
+        "derived_launch_plan_sha256": launch_rebind.get("derived_launch_plan_sha256"),
+        "derived_attempt_manifest_sha256": launch_rebind.get(
+            "derived_attempt_manifest_sha256"
+        ),
+        "episode_bootstrap_sha256": bootstrap.get("episode_bootstrap_sha256"),
+        "control_script_sha256": bootstrap.get("control_script_sha256"),
+        "refresh_installer_sha256": bootstrap.get("refresh_installer_sha256"),
+    }
+    for key, value in runtime_hashes.items():
+        if not _valid_sha256(value):
+            blockers.append(f"qualification_runtime_identity_{key}_invalid")
+
+    dependency_lock_sha256s = release_binding.get("dependency_lock_sha256s")
+    dependency_lock_sha256s = (
+        dict(dependency_lock_sha256s)
+        if isinstance(dependency_lock_sha256s, Mapping)
+        else {}
+    )
+    for name, digest in dependency_lock_sha256s.items():
+        if not str(name) or not _valid_sha256(digest):
+            blockers.append("qualification_runtime_dependency_lock_digest_invalid")
+
+    overlay_records: list[dict[str, Any]] = []
+    for row in signed_runtime_overlays or []:
+        record = {
+            "revision": row.get("target_revision") or row.get("revision"),
+            "refresh_payload_sha256": row.get("refresh_payload_sha256"),
+            "episode_bootstrap_sha256": row.get("episode_bootstrap_sha256"),
+            "audit_sha256": row.get("audit_sha256"),
+        }
+        if (
+            not isinstance(record["revision"], int)
+            or int(record["revision"] or 0) < 2
+            or not _valid_sha256(record["refresh_payload_sha256"])
+            or not _valid_sha256(record["episode_bootstrap_sha256"])
+            or not _valid_sha256(record["audit_sha256"])
+        ):
+            blockers.append("qualification_runtime_signed_overlay_binding_invalid")
+        overlay_records.append(record)
+
+    identity_inputs = {
+        "image_source_commit": image_source_commit or None,
+        "release_image_ref": release_binding.get("image_ref"),
+        "release_image_digest": release_binding.get("image_digest"),
+        "foundation_image_ref": release_binding.get("foundation_image_ref"),
+        "source_patch_sha256": release_binding.get("source_patch_sha256"),
+        "runnable_platform": release_binding.get("runnable_platform"),
+        "required_cuda_version": release_binding.get("required_cuda_version"),
+        "required_cuda_version_source": release_binding.get(
+            "required_cuda_version_source"
+        ),
+        "model_assets": {
+            "mode": model_assets_binding.get("mode"),
+            "release_image_ref": model_assets_binding.get("release_image_ref"),
+            "foundation_image_ref": model_assets_binding.get("foundation_image_ref"),
+            "model_manifest_digest": model_assets_binding.get("model_manifest_digest"),
+            "evidence_schema_version": model_assets_binding.get(
+                "evidence_schema_version"
+            ),
+            "evidence_status": model_assets_binding.get("evidence_status"),
+        },
+        "dependency_locks": {
+            "binding_mode": release_binding.get("dependency_lock_binding_mode"),
+            "sha256s": dict(sorted(dependency_lock_sha256s.items())),
+            "thin_release_contract_sha256": release_binding.get(
+                "thin_release_contract_sha256"
+            ),
+            "serverless_worker_contract_sha256": release_binding.get(
+                "serverless_worker_contract_sha256"
+            ),
+        },
+        "runtime_hashes": runtime_hashes,
+        "signed_runtime_overlays": overlay_records,
+    }
+    if not valid_image_binding(
+        identity_inputs["release_image_ref"], identity_inputs["release_image_digest"]
+    ):
+        blockers.append("qualification_runtime_release_image_binding_invalid")
+    if not _valid_sha256(identity_inputs["source_patch_sha256"]):
+        blockers.append("qualification_runtime_source_patch_sha256_invalid")
+    if model_assets_binding.get("status") != "bound":
+        blockers.append("qualification_runtime_model_assets_not_bound")
+
+    identity = {
+        "schema_version": RUNTIME_IDENTITY_SCHEMA_VERSION,
+        "status": "bound" if not blockers else "blocked",
+        "image_source_commit": image_source_commit or None,
+        "orchestrator_source_commit": orchestrator_source_commit or None,
+        "runtime_identity_sha256": _canonical_sha256(identity_inputs),
+        "identity_inputs": identity_inputs,
+        "runtime_and_control_plane_commits_may_differ": True,
+        "raw_secret_values_recorded": False,
+    }
+    return identity, sorted(set(blockers))
+
+
+def runtime_identity_record_blockers(value: object) -> list[str]:
+    identity = dict(value) if isinstance(value, Mapping) else {}
+    if not identity:
+        return ["missing"]
+    blockers: list[str] = []
+    if identity.get("schema_version") != RUNTIME_IDENTITY_SCHEMA_VERSION:
+        blockers.append("schema")
+    if identity.get("status") != "bound":
+        blockers.append("status")
+    if not valid_source_commit(identity.get("image_source_commit")):
+        blockers.append("image_source_commit")
+    if not valid_source_commit(identity.get("orchestrator_source_commit")):
+        blockers.append("orchestrator_source_commit")
+    inputs = identity.get("identity_inputs")
+    inputs = dict(inputs) if isinstance(inputs, Mapping) else {}
+    if not inputs:
+        blockers.append("identity_inputs")
+    elif identity.get("runtime_identity_sha256") != _canonical_sha256(inputs):
+        blockers.append("digest")
+    if identity.get("runtime_and_control_plane_commits_may_differ") is not True:
+        blockers.append("identity_separation")
+    if identity.get("raw_secret_values_recorded") is not False:
+        blockers.append("secrets")
+    return sorted(set(blockers))
+
+
+def bind_signed_runtime_overlay(
+    value: Mapping[str, Any], overlay: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Advance a runtime identity after a verified signed refresh is applied."""
+
+    identity = copy.deepcopy(dict(value))
+    blockers = runtime_identity_record_blockers(identity)
+    inputs = identity.get("identity_inputs")
+    inputs = dict(inputs) if isinstance(inputs, Mapping) else {}
+    overlays = list(inputs.get("signed_runtime_overlays") or [])
+    record = {
+        "revision": overlay.get("target_revision") or overlay.get("revision"),
+        "refresh_payload_sha256": overlay.get("refresh_payload_sha256"),
+        "episode_bootstrap_sha256": overlay.get("episode_bootstrap_sha256"),
+        "audit_sha256": overlay.get("audit_sha256"),
+    }
+    if (
+        not isinstance(record["revision"], int)
+        or int(record["revision"] or 0) < 2
+        or not _valid_sha256(record["refresh_payload_sha256"])
+        or not _valid_sha256(record["episode_bootstrap_sha256"])
+        or not _valid_sha256(record["audit_sha256"])
+    ):
+        blockers.append("qualification_runtime_signed_overlay_binding_invalid")
+    if overlays and int(record["revision"] or 0) <= int(overlays[-1].get("revision") or 0):
+        blockers.append("qualification_runtime_signed_overlay_revision_not_increasing")
+    if not blockers:
+        overlays.append(record)
+        inputs["signed_runtime_overlays"] = overlays
+        runtime_hashes = dict(inputs.get("runtime_hashes") or {})
+        runtime_hashes["episode_bootstrap_sha256"] = record[
+            "episode_bootstrap_sha256"
+        ]
+        inputs["runtime_hashes"] = runtime_hashes
+        identity["identity_inputs"] = inputs
+        identity["runtime_identity_sha256"] = _canonical_sha256(inputs)
+    identity["status"] = "bound" if not blockers else "blocked"
+    return identity, sorted(set(blockers))
 
 
 def build_model_assets_binding(
@@ -130,12 +343,29 @@ def release_binding_record_blockers(value: object) -> list[str]:
     blockers: list[str] = []
     if not binding:
         return ["missing"]
-    if binding.get("schema_version") != RELEASE_BINDING_SCHEMA_VERSION:
+    schema_version = binding.get("schema_version")
+    if schema_version not in {
+        LEGACY_RELEASE_BINDING_SCHEMA_VERSION,
+        RELEASE_BINDING_SCHEMA_VERSION,
+    }:
         blockers.append("schema")
     if not valid_image_binding(binding.get("image_ref"), binding.get("image_digest")):
         blockers.append("image")
     if not valid_source_commit(binding.get("source_commit")):
         blockers.append("source_commit")
+    if schema_version == RELEASE_BINDING_SCHEMA_VERSION:
+        if not valid_source_commit(binding.get("image_source_commit")):
+            blockers.append("image_source_commit")
+        elif binding.get("image_source_commit") != binding.get("source_commit"):
+            blockers.append("image_source_commit_alias")
+        if not valid_source_commit(binding.get("orchestrator_source_commit")):
+            blockers.append("orchestrator_source_commit")
+        if not _valid_sha256(binding.get("release_evidence_sha256")):
+            blockers.append("release_evidence_sha256")
+        if not _valid_sha256(binding.get("thin_release_contract_sha256")):
+            blockers.append("thin_release_contract_sha256")
+        if not _valid_sha256(binding.get("serverless_worker_contract_sha256")):
+            blockers.append("serverless_worker_contract_sha256")
     if binding.get("source_patch_sha256") != EMPTY_PATCH_SHA256:
         blockers.append("source_patch")
     if binding.get("runnable_platform") != "linux/amd64":
@@ -703,14 +933,20 @@ def bind_inputs_to_release(
 
 
 def build_release_binding(
-    release: Mapping[str, Any], *, expected_source_commit: str
+    release: Mapping[str, Any], *, expected_source_commit: str,
+    orchestrator_source_commit: str | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Derive an immutable worker binding from independent release evidence."""
 
     blockers: list[str] = []
     expected_source_commit = str(expected_source_commit or "")
+    orchestrator_source_commit = str(
+        orchestrator_source_commit or expected_source_commit or ""
+    )
     if not valid_source_commit(expected_source_commit):
         blockers.append("qualification_expected_source_commit_invalid")
+    if not valid_source_commit(orchestrator_source_commit):
+        blockers.append("qualification_orchestrator_source_commit_invalid")
     if release.get("schema_version") != "groot_oscar_thin_remote_build_result.v1":
         blockers.append("qualification_release_evidence_schema_invalid")
     if release.get("status") != "completed":
@@ -782,11 +1018,25 @@ def build_release_binding(
     if not required_cuda_source.startswith("image_config_env:"):
         blockers.append("qualification_release_cuda_source_unverified")
 
+    dependency_lock_sha256s = release.get("dependency_lock_sha256s")
+    dependency_lock_sha256s = (
+        dict(dependency_lock_sha256s)
+        if isinstance(dependency_lock_sha256s, Mapping)
+        else {}
+    )
+    for name, digest in dependency_lock_sha256s.items():
+        if not str(name) or not _valid_sha256(digest):
+            blockers.append("qualification_release_dependency_lock_digest_invalid")
+    serverless = release.get("serverless_worker_contract")
+    serverless = dict(serverless) if isinstance(serverless, Mapping) else {}
+
     binding = {
         "schema_version": RELEASE_BINDING_SCHEMA_VERSION,
         "image_ref": image_ref or None,
         "image_digest": image_digest or None,
         "source_commit": source_commit or None,
+        "image_source_commit": source_commit or None,
+        "orchestrator_source_commit": orchestrator_source_commit or None,
         "source_patch_sha256": release.get("source_patch_sha256"),
         "runnable_platform": release.get("runnable_platform"),
         "required_cuda_version": required_cuda_version or None,
@@ -797,6 +1047,15 @@ def build_release_binding(
         "foundation_image_ref": foundation_image_ref or None,
         "release_evidence_status": release.get("status"),
         "thin_release_contract_status": thin.get("status"),
+        "release_evidence_sha256": _canonical_sha256(dict(release)),
+        "thin_release_contract_sha256": _canonical_sha256(thin),
+        "serverless_worker_contract_sha256": _canonical_sha256(serverless),
+        "dependency_lock_binding_mode": (
+            "explicit_sha256s"
+            if dependency_lock_sha256s
+            else "legacy_image_digest_and_source_commit"
+        ),
+        "dependency_lock_sha256s": dict(sorted(dependency_lock_sha256s.items())),
     }
     return binding, sorted(set(blockers))
 

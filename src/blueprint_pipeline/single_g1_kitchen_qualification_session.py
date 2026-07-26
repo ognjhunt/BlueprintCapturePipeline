@@ -108,13 +108,18 @@ from .single_g1_kitchen_qualification_admission import (
     write_standard_artifacts,
 )
 from .single_g1_kitchen_qualification_contract import (
+    LEGACY_RELEASE_BINDING_SCHEMA_VERSION,
+    RELEASE_BINDING_SCHEMA_VERSION,
+    bind_signed_runtime_overlay,
     bind_inputs_to_release,
     build_model_assets_binding,
     build_release_binding as _release_binding,
+    build_runtime_identity,
     collected_attempt_derived_artifact_blockers,
     collected_attempt_release_blocker,
     qualification_gate_matrix,
     release_binding_record_blockers,
+    runtime_identity_record_blockers,
     require_latest_attempt_binding as _require_latest_attempt_binding,
     session_claim_boundary as _session_claim_boundary,
     valid_image_binding,
@@ -131,7 +136,8 @@ from .single_g1_kitchen_qualification_observability import (
 )
 
 
-SCHEMA_VERSION = "single_g1_kitchen_qualification_session.v1"
+LEGACY_SCHEMA_VERSION = "single_g1_kitchen_qualification_session.v1"
+SCHEMA_VERSION = "single_g1_kitchen_qualification_session.v2"
 BOUND_REQUEST_SCHEMA_VERSION = "single_g1_kitchen_qualification_bound_request.v1"
 PREFLIGHT_SCHEMA_VERSION = "single_g1_kitchen_qualification_preflight.v1"
 REFRESH_PAYLOAD_SCHEMA_VERSION = "single_g1_kitchen_qualification_refresh_payload.v1"
@@ -255,7 +261,8 @@ def _valid_sha256(value: Any) -> bool:
 
 def _validate_manifest_binding(path: Path, manifest: Mapping[str, Any]) -> None:
     blockers: list[str] = []
-    if manifest.get("schema_version") != SCHEMA_VERSION:
+    manifest_schema = manifest.get("schema_version")
+    if manifest_schema not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
         blockers.append("schema")
     if manifest.get("provider") != "vast":
         blockers.append("provider")
@@ -286,6 +293,24 @@ def _validate_manifest_binding(path: Path, manifest: Mapping[str, Any]) -> None:
                 for key in ("image_ref", "image_digest", "source_commit")
             ):
                 blockers.append("release_binding")
+        if (
+            isinstance(stored_release, Mapping)
+            and stored_release.get("schema_version") == RELEASE_BINDING_SCHEMA_VERSION
+        ):
+            if manifest.get("image_source_commit") != stored_release.get(
+                "image_source_commit"
+            ):
+                blockers.append("image_source_commit")
+            if manifest.get("orchestrator_source_commit") != stored_release.get(
+                "orchestrator_source_commit"
+            ):
+                blockers.append("orchestrator_source_commit")
+            runtime_blockers = runtime_identity_record_blockers(
+                manifest.get("runtime_identity")
+            )
+            blockers.extend(
+                f"runtime_identity_{item}" for item in runtime_blockers
+            )
     else:
         # Retained pre-contract sessions remain readable for status/teardown.
         if not valid_image_binding(manifest.get("image_ref"), manifest.get("image_digest")):
@@ -342,7 +367,7 @@ def _stored_release_binding(manifest: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(stored, Mapping) and stored:
         return dict(stored)
     return {
-        "schema_version": "single_g1_kitchen_qualification_release_binding.v1",
+        "schema_version": LEGACY_RELEASE_BINDING_SCHEMA_VERSION,
         "image_ref": manifest.get("image_ref"),
         "image_digest": manifest.get("image_digest"),
         "source_commit": manifest.get("source_commit"),
@@ -1954,6 +1979,9 @@ def _manifest_base(
     image_ref: str,
     image_digest: str,
     source_commit: str,
+    image_source_commit: str | None = None,
+    orchestrator_source_commit: str | None = None,
+    runtime_identity: Mapping[str, Any] | None = None,
     release_binding: Mapping[str, Any] | None = None,
     qualification_launch_rebind: Mapping[str, Any] | None = None,
     release_binding_status: str = "bound",
@@ -1969,6 +1997,9 @@ def _manifest_base(
         "image_ref": image_ref,
         "image_digest": image_digest,
         "source_commit": source_commit,
+        "image_source_commit": image_source_commit or source_commit,
+        "orchestrator_source_commit": orchestrator_source_commit or source_commit,
+        "runtime_identity": dict(runtime_identity or {}),
         "release_binding_status": release_binding_status,
         "release_binding": dict(release_binding or {}),
         "qualification_launch_rebind": dict(qualification_launch_rebind or {}),
@@ -2027,6 +2058,7 @@ def _allocate(
     execute: bool,
     identity_file: str,
     expected_source_commit: str,
+    orchestrator_source_commit: str,
     training_dataset: str | Path | None,
     trained_checkpoint_path: str | Path | None,
     model_cache_evidence: str | Path | None = None,
@@ -2086,7 +2118,9 @@ def _allocate(
         release = {}
         blockers.append("qualification_release_evidence_missing_or_unreadable")
     release_binding, release_blockers = _release_binding(
-        release, expected_source_commit=expected_source_commit
+        release,
+        expected_source_commit=expected_source_commit,
+        orchestrator_source_commit=orchestrator_source_commit,
     )
     blockers.extend(release_blockers)
     model_assets_binding: dict[str, Any] = {}
@@ -2113,6 +2147,9 @@ def _allocate(
     image_ref = str(release_binding.get("image_ref") or "")
     image_digest = str(release_binding.get("image_digest") or "")
     source_commit = str(release_binding.get("source_commit") or "")
+    image_source_commit = str(
+        release_binding.get("image_source_commit") or source_commit
+    )
     preserve_existing_bound_release = (
         bool(existing_manifest)
         and existing_manifest.get("release_binding_status") == "bound"
@@ -2160,6 +2197,8 @@ def _allocate(
         launch_session_id = f"single-g1-kitchen-qualification-{suffix}"
     deadline_epoch = time.time() + WALL_SECONDS
     bootstrap: dict[str, Any] = {}
+    runtime_identity: dict[str, Any] = {}
+    runtime_identity_blockers: list[str] = ["qualification_runtime_identity_missing"]
     bootstrap_url = ""
     bootstrap_staging_required = False
     if inputs and image_digest and not existing_release_mismatch:
@@ -2191,6 +2230,14 @@ def _allocate(
                 blockers.append(str(exc))
         else:
             bootstrap_staging_required = True
+        runtime_identity, runtime_identity_blockers = build_runtime_identity(
+            release_binding=effective_release_binding,
+            model_assets_binding=model_assets_binding,
+            inputs=inputs,
+            launch_rebind=qualification_launch_rebind,
+            bootstrap=bootstrap,
+        )
+        blockers.extend(runtime_identity_blockers)
 
     provider = get_render_provider("vast")
     request: dict[str, Any] = {}
@@ -2321,6 +2368,21 @@ def _allocate(
             if preserve_existing_bound_release
             else source_commit
         ),
+        image_source_commit=(
+            str(existing_manifest.get("image_source_commit") or existing_manifest.get("source_commit"))
+            if preserve_existing_bound_release
+            else image_source_commit
+        ),
+        orchestrator_source_commit=(
+            str(existing_manifest.get("orchestrator_source_commit") or orchestrator_source_commit)
+            if preserve_existing_bound_release
+            else orchestrator_source_commit
+        ),
+        runtime_identity=(
+            dict(existing_manifest.get("runtime_identity") or {})
+            if preserve_existing_bound_release
+            else runtime_identity
+        ),
         release_binding=effective_release_binding,
         qualification_launch_rebind=(
             qualification_launch_rebind
@@ -2329,7 +2391,8 @@ def _allocate(
         ),
         release_binding_status=(
             "bound"
-            if preserve_existing_bound_release or not release_blockers
+            if preserve_existing_bound_release
+            or not (release_blockers or runtime_identity_blockers)
             else "blocked"
         ),
     )
@@ -2360,6 +2423,9 @@ def _allocate(
         "image_ref": manifest["image_ref"],
         "image_digest": manifest["image_digest"],
         "source_commit": manifest["source_commit"],
+        "image_source_commit": manifest["image_source_commit"],
+        "orchestrator_source_commit": manifest["orchestrator_source_commit"],
+        "runtime_identity": manifest["runtime_identity"],
         "release_binding": artifact_release_binding,
         "release_binding_source": release_binding_source,
         "model_assets_binding": model_assets_binding,
@@ -2394,6 +2460,9 @@ def _allocate(
         "image_ref": manifest["image_ref"],
         "image_digest": manifest["image_digest"],
         "source_commit": manifest["source_commit"],
+        "image_source_commit": manifest["image_source_commit"],
+        "orchestrator_source_commit": manifest["orchestrator_source_commit"],
+        "runtime_identity": manifest["runtime_identity"],
         "release_binding": artifact_release_binding,
         "release_binding_source": release_binding_source,
         "model_assets_binding": model_assets_binding,
@@ -2823,6 +2892,7 @@ def _refresh_bootstrap(
         and match.group(3) == refresh["episode_bootstrap_sha256"]
     )
     recorded_at = utc_now_iso()
+    runtime_identity_blockers: list[str] = []
     if completed:
         bootstrap = dict(manifest["bootstrap"])
         prior_launch_rebind = dict(manifest.get("qualification_launch_rebind") or {})
@@ -2859,8 +2929,17 @@ def _refresh_bootstrap(
             },
         )
         manifest["qualification_launch_rebind"] = refresh_launch_rebind
+        if manifest.get("runtime_identity"):
+            runtime_identity, runtime_identity_blockers = bind_signed_runtime_overlay(
+                dict(manifest["runtime_identity"]), audit
+            )
+            manifest["runtime_identity"] = runtime_identity
         manifest["pending_refresh"] = None
-        manifest["status"] = "bootstrap_refreshed_continuing_spend"
+        manifest["status"] = (
+            "bootstrap_refreshed_continuing_spend"
+            if not runtime_identity_blockers
+            else "refresh_bootstrap_blocked_continuing_spend"
+        )
     else:
         audit = None
         manifest["status"] = "refresh_bootstrap_blocked_continuing_spend"
@@ -2874,6 +2953,10 @@ def _refresh_bootstrap(
         "episode_bootstrap_sha256": refresh["episode_bootstrap_sha256"],
         "control_status": control.get("status"),
         "audit_sha256": audit.get("audit_sha256") if audit else None,
+        "runtime_identity_sha256": dict(manifest.get("runtime_identity") or {}).get(
+            "runtime_identity_sha256"
+        ),
+        "runtime_identity_blockers": runtime_identity_blockers,
         "requested_qualification_launch_rebind": refresh_launch_rebind,
         "active_qualification_launch_rebind": manifest.get(
             "qualification_launch_rebind"
@@ -2900,6 +2983,7 @@ def _refresh_bootstrap(
         "control": control,
         "audit": audit,
         "qualification_launch_rebind": manifest.get("qualification_launch_rebind"),
+        "runtime_identity": manifest.get("runtime_identity"),
         "control_script_unchanged": True,
         "image_bundle_instance_scope_unchanged": True,
         "signed_get_url_stored": False,
@@ -2907,7 +2991,11 @@ def _refresh_bootstrap(
         "provider_mutations_performed": 1,
         "qualification_gate_matrix": manifest["qualification_gate_matrix"],
         "claim_boundary": manifest["claim_boundary"],
-        "blockers": [] if completed else ["qualification_fixed_refresh_failed"],
+        "blockers": (
+            runtime_identity_blockers
+            if completed
+            else ["qualification_fixed_refresh_failed"]
+        ),
     }
     write_json(result_path, result)
     return result
@@ -4465,6 +4553,7 @@ def run_qualification_session(
     release_evidence: str | Path | None = None,
     model_cache_evidence: str | Path | None = None,
     expected_source_commit: str | None = None,
+    orchestrator_source_commit: str | None = None,
     provider_launch_request: str | Path | None = None,
     preflight_bundle: str | Path | None = None,
     admission_out: str | Path | None = None,
@@ -4515,6 +4604,9 @@ def run_qualification_session(
             execute=execute,
             identity_file=identity_file,
             expected_source_commit=expected_source_commit,
+            orchestrator_source_commit=(
+                orchestrator_source_commit or expected_source_commit
+            ),
             training_dataset=training_dataset,
             trained_checkpoint_path=trained_checkpoint_path,
             model_cache_evidence=model_cache_evidence,

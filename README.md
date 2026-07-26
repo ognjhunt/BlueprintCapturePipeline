@@ -1761,7 +1761,7 @@ python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
   --release-evidence /path/to/protected-release-evidence.json \
   --model-cache-evidence /path/to/verified-model-cache-evidence.json \
   --preflight-bundle /path/to/provider-preflight-bundle.json \
-  --expected-source-commit "$(git rev-parse HEAD)" \
+  --expected-image-source-commit <source-commit-recorded-by-release-evidence> \
   --provider-output-put-url-file /path/to/private-runtime-output-put-url.txt \
   --admission-out /path/to/gpu-canary-admission.json \
   --bound-request-out /path/to/bound-runpod-request.json \
@@ -1776,13 +1776,19 @@ general paid robot evaluation and dynamic episode execution are still disabled
 until their own fixed canonical route exists.
 
 Omit `--execute` for admission/binding validation without a provider mutation.
-The release evidence must carry the same full source commit supplied through
-`--expected-source-commit`. The preflight observation must be no more than five
+The release evidence must carry the same full image source commit supplied through
+`--expected-image-source-commit` (`--expected-source-commit` remains a migration
+alias). The preflight observation must be no more than five
 minutes old, and the signed output URL must be in a regular `0600` file. Its
 value is injected only for the adapter call and is never copied into admission
-evidence. The allocator independently derives the checkout `HEAD`, requires it
-to match that argument, local `origin/main`, and the live remote `main`, and
-blocks a dirty tracked worktree.
+evidence. The allocator independently derives and records a clean
+`orchestrator_source_commit`; it does not require that control-plane commit to
+equal the immutable image's `image_source_commit`. Local and remote `main`
+pointers remain recorded diagnostics rather than runtime identity. Admission
+still fails closed on a dirty checkout, mutable image refs, mismatched runtime
+inputs, model/base-image refs, dependency-lock evidence, or signed runtime
+overlay digests. Existing v1 release/session evidence remains readable for
+status, collection, refresh, and teardown migration.
 The RunPod adapter remains useful for dry-run request-shape inspection, but its
 public paid modes exit with the stable legacy-disabled blocker. Provider
 allocation alone never proves simulator execution, generated-world rank

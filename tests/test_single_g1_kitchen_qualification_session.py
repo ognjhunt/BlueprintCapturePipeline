@@ -23,9 +23,13 @@ from blueprint_pipeline.task_episode_baseline import build_task_episode_baseline
 from blueprint_pipeline.single_g1_kitchen_qualification_contract import (
     MODEL_ASSETS_BINDING_SCHEMA_VERSION,
     OFFICIAL_GEAR_SONIC_RUNTIME_COMMAND,
+    bind_signed_runtime_overlay,
+    build_runtime_identity,
     capture_runtime_attempt_overlay_base,
     embedded_launch_rebind,
+    release_binding_record_blockers,
     require_latest_attempt_binding,
+    runtime_identity_record_blockers,
 )
 
 
@@ -109,6 +113,7 @@ def _minimal_inputs() -> dict:
         ),
         "runtime_package_overlay_xz_base64": "runtime-overlay",
         "isaac_runtime_backend_overlay_gzip_base64": "backend-overlay",
+        "isaac_runtime_backend_overlay_sha256": "7" * 64,
         "runtime_package_overlay_sha256": "1" * 64,
         "runtime_package_overlay_source_sha256s": {},
         "controller_fk_camera_projection_context": {
@@ -185,7 +190,100 @@ def test_release_binding_accepts_exact_digest_pinned_clean_release() -> None:
     assert binding["image_ref"] == TEST_IMAGE_REF
     assert binding["image_digest"] == TEST_IMAGE_DIGEST
     assert binding["source_commit"] == TEST_SOURCE_COMMIT
+    assert binding["image_source_commit"] == TEST_SOURCE_COMMIT
+    assert binding["orchestrator_source_commit"] == TEST_SOURCE_COMMIT
     assert binding["models_externalized"] is True
+
+
+def test_release_binding_allows_distinct_clean_orchestrator_identity() -> None:
+    orchestrator_commit = "c" * 40
+    binding, blockers = qualification._release_binding(
+        _release_evidence(),
+        expected_source_commit=TEST_SOURCE_COMMIT,
+        orchestrator_source_commit=orchestrator_commit,
+    )
+
+    assert blockers == []
+    assert binding["image_source_commit"] == TEST_SOURCE_COMMIT
+    assert binding["orchestrator_source_commit"] == orchestrator_commit
+    assert binding["source_commit"] == TEST_SOURCE_COMMIT
+
+
+def test_legacy_release_binding_remains_readable_for_existing_sessions() -> None:
+    binding, blockers = qualification._release_binding(
+        _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
+    )
+    assert blockers == []
+    binding["schema_version"] = "single_g1_kitchen_qualification_release_binding.v1"
+    for key in (
+        "image_source_commit",
+        "orchestrator_source_commit",
+        "release_evidence_sha256",
+        "thin_release_contract_sha256",
+        "serverless_worker_contract_sha256",
+        "dependency_lock_binding_mode",
+        "dependency_lock_sha256s",
+    ):
+        binding.pop(key, None)
+
+    assert release_binding_record_blockers(binding) == []
+
+
+def test_runtime_identity_changes_with_runtime_inputs_and_signed_overlays() -> None:
+    binding, blockers = qualification._release_binding(
+        _release_evidence(),
+        expected_source_commit=TEST_SOURCE_COMMIT,
+        orchestrator_source_commit="c" * 40,
+    )
+    assert blockers == []
+    inputs, launch_rebind = qualification.bind_inputs_to_release(
+        _minimal_inputs(), binding
+    )
+    model_assets_binding = {
+        "status": "bound",
+        "mode": "external",
+        "release_image_ref": TEST_IMAGE_REF,
+        "foundation_image_ref": None,
+        "model_manifest_digest": "sha256:" + "d" * 64,
+        "evidence_schema_version": "groot_oscar_external_model_cache_verification.v2",
+        "evidence_status": "passed",
+    }
+    identity, runtime_blockers = build_runtime_identity(
+        release_binding=binding,
+        model_assets_binding=model_assets_binding,
+        inputs=inputs,
+        launch_rebind=launch_rebind,
+        bootstrap=_bootstrap_metadata(),
+    )
+    assert runtime_blockers == []
+    assert runtime_identity_record_blockers(identity) == []
+    assert identity["image_source_commit"] == TEST_SOURCE_COMMIT
+    assert identity["orchestrator_source_commit"] == "c" * 40
+
+    changed_inputs = dict(inputs)
+    changed_inputs["runtime_package_overlay_sha256"] = "8" * 64
+    changed, changed_blockers = build_runtime_identity(
+        release_binding=binding,
+        model_assets_binding=model_assets_binding,
+        inputs=changed_inputs,
+        launch_rebind=launch_rebind,
+        bootstrap=_bootstrap_metadata(),
+    )
+    assert changed_blockers == []
+    assert changed["runtime_identity_sha256"] != identity["runtime_identity_sha256"]
+
+    refreshed, refresh_blockers = bind_signed_runtime_overlay(
+        identity,
+        {
+            "target_revision": 2,
+            "refresh_payload_sha256": "9" * 64,
+            "episode_bootstrap_sha256": "a" * 64,
+            "audit_sha256": "b" * 64,
+        },
+    )
+    assert refresh_blockers == []
+    assert runtime_identity_record_blockers(refreshed) == []
+    assert refreshed["runtime_identity_sha256"] != identity["runtime_identity_sha256"]
 
 
 def test_release_binding_accepts_exact_embedded_foundation() -> None:
@@ -603,9 +701,26 @@ def _live_manifest(tmp_path: Path) -> Path:
     release_binding = qualification._release_binding(
         _release_evidence(), expected_source_commit=TEST_SOURCE_COMMIT
     )[0]
-    _, launch_rebind = qualification.bind_inputs_to_release(
+    rebound_inputs, launch_rebind = qualification.bind_inputs_to_release(
         _minimal_inputs(), release_binding
     )
+    model_assets_binding = {
+        "status": "bound",
+        "mode": "external",
+        "release_image_ref": TEST_IMAGE_REF,
+        "foundation_image_ref": None,
+        "model_manifest_digest": "sha256:" + "d" * 64,
+        "evidence_schema_version": "groot_oscar_external_model_cache_verification.v2",
+        "evidence_status": "passed",
+    }
+    runtime_identity, runtime_blockers = build_runtime_identity(
+        release_binding=release_binding,
+        model_assets_binding=model_assets_binding,
+        inputs=rebound_inputs,
+        launch_rebind=launch_rebind,
+        bootstrap=_bootstrap_metadata(),
+    )
+    assert runtime_blockers == []
     manifest = qualification._manifest_base(
         root=tmp_path,
         resource_name=prefix + "-pod",
@@ -616,6 +731,9 @@ def _live_manifest(tmp_path: Path) -> Path:
         image_ref=TEST_IMAGE_REF,
         image_digest=TEST_IMAGE_DIGEST,
         source_commit=TEST_SOURCE_COMMIT,
+        image_source_commit=TEST_SOURCE_COMMIT,
+        orchestrator_source_commit=TEST_SOURCE_COMMIT,
+        runtime_identity=runtime_identity,
         release_binding=release_binding,
         qualification_launch_rebind=launch_rebind,
     )
@@ -3002,7 +3120,8 @@ def test_allocate_bad_bundle_writes_blocked_artifacts_without_provider_mutation(
     retry = qualification.run_qualification_session(**request)
     _, retry_manifest = qualification._load_private_manifest(tmp_path / "session.json")
     assert retry["status"] == "blocked"
-    assert retry_manifest["release_binding_status"] == "bound"
+    assert retry_manifest["release_binding_status"] == "blocked"
+    assert retry_manifest["runtime_identity"] == {}
     assert retry_manifest["image_ref"] == TEST_IMAGE_REF
     assert retry_manifest["source_commit"] == TEST_SOURCE_COMMIT
 
