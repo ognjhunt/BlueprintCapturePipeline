@@ -1,0 +1,49 @@
+{
+  "schema_version": "policy_ranking_protocol_amendment.v1",
+  "amendment_id": "policy_ranking_20260726_002",
+  "recorded_at": "2026-07-26T11:44:04-0500",
+  "timing": {
+    "pilot_labels_opened": true,
+    "calibration_predictions_completed": true,
+    "calibration_labels_opened": false,
+    "heldout_predictions_started": false,
+    "heldout_labels_opened": false,
+    "warehouse_policy_outcomes_observed": false,
+    "captured_site_policy_outcomes_observed": false
+  },
+  "protocol_sha256_unchanged": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
+  "clarifications_and_controls": [
+    {
+      "kind": "heldout_arm_freeze",
+      "effect": "The existing temporal ranker and first-last endpoint baseline are the only admitted heldout evaluator arms. Unsupported skeleton-silhouette and Ctrl-World arms are explicitly excluded."
+    },
+    {
+      "kind": "per_label_basis_power_sensitivity",
+      "effect": "Pilot-observed informative-session fractions are reported separately. Binary-only evidence is expected to be severely underpowered; the registered binary-then-partial primary basis and decision rule remain unchanged."
+    },
+    {
+      "kind": "warehouse_scene_feasibility_oracle",
+      "effect": "A nonlearned scripted pick-and-place must pass all deterministic predicates before learned policy scores are interpreted."
+    },
+    {
+      "kind": "economic_accounting_boundary",
+      "effect": "Judge-only wall time cannot establish end-to-end speed. WAM generation, policy inference, simulator runtime, and preprocessing must be included or separately attributed."
+    },
+    {
+      "kind": "captured_site_authorization",
+      "effect": "The user authorized InteriorGS use. Scene 0787_841244 becomes the primary internal captured-site visual layer under non-commercial and no-redistribution restrictions."
+    }
+  ],
+  "unchanged": [
+    "benchmark policies",
+    "benchmark partitions",
+    "benchmark answer key",
+    "judge prompt and model",
+    "evaluator digest",
+    "ranking and abstention thresholds",
+    "primary binary-then-partial label basis",
+    "decision rule",
+    "no physical robot activity"
+  ],
+  "outcome_optimization": false
+}

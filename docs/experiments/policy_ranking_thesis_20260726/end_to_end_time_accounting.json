@@ -1,0 +1,49 @@
+{
+  "schema_version": "policy_ranking_end_to_end_time_accounting.v1",
+  "recorded_at": "2026-07-26T11:44:04-0500",
+  "scope": "Frozen OSCAR replay benchmark timing only; captured-site closed-loop timing remains unmeasured.",
+  "published_wam_throughput": {
+    "source": "OSCAR arXiv 2606.04463v2 Table 2 and Section 5.1",
+    "fps": 2.214,
+    "hardware": "single NVIDIA GH200",
+    "paper_timing_frame_window": 49,
+    "released_rollout_frame_count": 81,
+    "estimate_assumption": "Apply reported steady FPS linearly to each released 81-frame rollout; excludes model loading, skeleton rendering, I/O, retries, and scheduling.",
+    "measured_by_blueprint": false
+  },
+  "attributed_wam_generation_estimates": {
+    "pilot_49_rollouts_seconds": 1792.6829268292684,
+    "pilot_49_rollouts_minutes": 29.878048780487806,
+    "all_441_rollouts_seconds": 16134.146341463415,
+    "all_441_rollouts_hours": 4.4817073170731705,
+    "parallelism": "single_GH200_serial_rollout_equivalent"
+  },
+  "blueprint_judge_measurements": {
+    "pilot_full_completion_invocation_seconds": 420.179,
+    "pilot_one_request_validation_seconds": 27.5618,
+    "pilot_total_including_validation_seconds": 447.7408,
+    "pilot_max_workers": 8,
+    "calibration_seconds": 474.9811314577237,
+    "calibration_max_workers": 8,
+    "judge_only_pilot_speed_ratio_vs_physical_action_lower_bound": 2.274,
+    "judge_only_ratio_is_end_to_end_claim": false
+  },
+  "pilot_single_gpu_attributed_end_to_end": {
+    "wam_generation_plus_judge_seconds": 2240.423726829268,
+    "wam_generation_plus_judge_minutes": 37.34039544715447,
+    "physical_action_only_lower_bound_seconds": 1018.4,
+    "ratio_blueprint_time_to_physical_action_lower_bound": 2.2,
+    "interpretation": "Under this conservative serial single-GH200 attribution, the offline stack is slower than the physical action-only lower bound. This does not decide real campaign wall time because physical resets, staffing, safety, scheduling, and distributed parallelism are unmeasured, while Blueprint model loading and preprocessing are also omitted."
+  },
+  "required_final_accounting": [
+    "measure Blueprint-operated policy inference",
+    "measure simulator stepping and rendering",
+    "measure Blueprint-operated WAM generation including loading and retries",
+    "measure evaluator and aggregation wall time",
+    "state hardware and concurrency",
+    "compare against an attributable physical campaign estimate with reset, operator, safety, and scheduling assumptions"
+  ],
+  "current_speed_verdict": "unmeasured_end_to_end",
+  "current_cost_verdict": "unmeasured_end_to_end",
+  "claim_boundary": "The 2.27x pilot figure is judge-only and must never be presented as Blueprint end-to-end speed advantage."
+}
