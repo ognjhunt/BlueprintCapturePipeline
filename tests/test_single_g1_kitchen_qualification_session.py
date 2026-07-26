@@ -3511,8 +3511,11 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
                 "viable_gpu_types": [{"on_demand_price_usd_per_hour": 0.5, "gpu_name": "L40S"}],
             }
 
+    current_inputs = _minimal_inputs()
     monkeypatch.setattr(
-        qualification, "_load_single_episode_inputs", lambda _path: _minimal_inputs()
+        qualification,
+        "_load_single_episode_inputs",
+        lambda _path: dict(current_inputs),
     )
     monkeypatch.setattr(qualification, "get_render_provider", lambda _name: Provider())
 
@@ -3641,6 +3644,26 @@ def test_allocate_dry_run_is_ssh_direct_and_writes_one_private_bound_manifest(
     assert legacy_after["release_binding_status"] == "bound"
     assert legacy_after["source_commit"] == TEST_SOURCE_COMMIT
     qualification._load_private_manifest(legacy_path)
+
+    prior_runtime_identity_sha256 = preserved_after_bad_retry["runtime_identity"][
+        "runtime_identity_sha256"
+    ]
+    current_inputs["bootstrap_script"] += "\necho refreshed-runtime-inputs\n"
+    restaged = qualification.run_qualification_session(
+        **common,
+        provider_bootstrap_url_file=secret_url,
+    )
+    restaged_manifest = json.loads(manifest_path.read_text())
+    assert restaged["status"] == "bootstrap_staging_required"
+    assert (
+        restaged_manifest["runtime_identity"]["runtime_identity_sha256"]
+        != prior_runtime_identity_sha256
+    )
+    assert (
+        restaged_manifest["runtime_identity"]["identity_inputs"]["runtime_hashes"]
+        ["episode_bootstrap_sha256"]
+        == restaged_manifest["bootstrap"]["episode_bootstrap_sha256"]
+    )
 
 
 def test_qualification_execute_requires_current_paid_spend_lock_before_launch(

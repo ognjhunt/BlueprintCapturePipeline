@@ -6188,7 +6188,9 @@ def test_persistent_isaac_apply_precedes_requery_and_supplies_live_state(tmp_pat
     assert trace[0]["requery_status"] == "completed"
 
 
-def test_wam_primary_preserves_rollout_and_caps_claim_on_isaac_contradiction(tmp_path):
+def test_wam_primary_preserves_rollout_and_caps_claim_on_isaac_contradiction(
+    tmp_path, monkeypatch
+):
     endpoint_observations: list[dict] = []
 
     def policy_endpoint(observation, _history, step_index):
@@ -6209,6 +6211,15 @@ def test_wam_primary_preserves_rollout_and_caps_claim_on_isaac_contradiction(tmp
             context,
             projected_gravity=[0.8, 0.0, -0.3],
         )
+
+    monkeypatch.setattr(
+        L,
+        "evaluate_isaac_manipulation_success",
+        lambda **_kwargs: {
+            "manipulation_success_proven": True,
+            "did_target_manipulation_succeed": True,
+        },
+    )
 
     manifest = L.run_oscar_isaac_closed_loop(
         output_dir=tmp_path / "wam_primary_isaac_contradiction",
@@ -6239,7 +6250,63 @@ def test_wam_primary_preserves_rollout_and_caps_claim_on_isaac_contradiction(tmp
     assert disagreement["claim_ceiling"] == "uncalibrated_debug_evidence"
     assert disagreement["task_success_claim_allowed"] is False
     assert disagreement["rank_fidelity_claim_allowed"] is False
+    assert manifest["manipulation_success_proven"] is False
+    assert manifest["success_proof"]["manipulation_success_proven"] is False
+    assert manifest["isaac_diagnostic_manipulation_success_proven"] is True
     assert Path(manifest["wam_isaac_disagreement_path"]).is_file()
+
+
+def test_wam_primary_optional_isaac_failure_does_not_block_trace_audit(
+    tmp_path, monkeypatch
+):
+    def policy_endpoint(_observation, _history, step_index):
+        return {
+            "policy_action": "learned_policy_action",
+            "root_position": [0.0, 0.0, 0.79],
+            "action_chunk": [float(step_index + 1), -float(step_index + 1)],
+        }
+
+    def failing_evaluator(_context):
+        raise RuntimeError("optional Isaac diagnostic unavailable")
+
+    wam_generate_next = _controller_fk_wam(tmp_path)
+    monkeypatch.setattr(
+        L,
+        "generated_clip_coherence",
+        lambda _path: {"status": "measured", "coherent_horizon_frames": 10},
+    )
+
+    def aligned_wam_generate_next(*args, **kwargs):
+        result = wam_generate_next(*args, **kwargs)
+        step_index = int(kwargs.get("step_index") or args[2])
+        video = tmp_path / f"controller_fk_gen_{step_index}.mp4"
+        video.write_bytes(b"test-video")
+        result["generated_video_path"] = str(video)
+        result["next_observation_timing"] = {
+            "status": "completed",
+            "target_wam_frame_index": 5,
+        }
+        return result
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "wam_primary_optional_isaac_failure",
+        start_frame_path=_write_frame(tmp_path / "wam_primary_failure_seed.png", 88),
+        route_points=[[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]],
+        wam_generate_next=aligned_wam_generate_next,
+        steps=2,
+        policy_endpoint=policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(
+            tmp_path / "wam_primary_failure_seed.png"
+        ),
+        task_success_contract={"task_kind": "navigation_smoke"},
+        task_completion_evaluator=failing_evaluator,
+        evaluation_authority=H.WAM_PRIMARY_AUTHORITY,
+    )
+
+    assert manifest["status"] == "completed", manifest["blockers"]
+    assert manifest["wam_policy_trace_audit_status"] == "passed"
+    assert manifest["blockers"] == []
+    assert manifest["evaluation_hierarchy"]["isaac_diagnostic_blockers"]
 
 
 def test_unsafe_live_stance_dynamically_terminates_before_policy_requery(tmp_path):

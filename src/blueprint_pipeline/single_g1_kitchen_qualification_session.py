@@ -2379,9 +2379,13 @@ def _allocate(
             else orchestrator_source_commit
         ),
         runtime_identity=(
-            dict(existing_manifest.get("runtime_identity") or {})
-            if preserve_existing_bound_release
-            else runtime_identity
+            runtime_identity
+            if runtime_identity and not runtime_identity_blockers
+            else (
+                dict(existing_manifest.get("runtime_identity") or {})
+                if preserve_existing_bound_release
+                else runtime_identity
+            )
         ),
         release_binding=effective_release_binding,
         qualification_launch_rebind=(
