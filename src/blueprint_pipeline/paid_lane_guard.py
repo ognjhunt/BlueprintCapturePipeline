@@ -290,6 +290,40 @@ def bind_pending_teardown_instance(
     return record
 
 
+def extend_pending_teardown_max_age(
+    record_path: str | Path,
+    *,
+    instance_id: str,
+    extension_seconds: int,
+    evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Extend one still-open, exact-instance teardown obligation."""
+
+    path = Path(record_path)
+    record = _read_record(path)
+    expected_id = str(instance_id or "").strip()
+    if record.get("status") != "open":
+        raise ValueError("pending_teardown_extension_record_not_open")
+    if not expected_id or str(record.get("instance_id") or "").strip() != expected_id:
+        raise ValueError("pending_teardown_extension_instance_mismatch")
+    seconds = int(extension_seconds)
+    if seconds <= 0:
+        raise ValueError("pending_teardown_extension_seconds_invalid")
+    prior = max(1, int(record.get("max_age_seconds") or 0))
+    record["max_age_seconds"] = prior + seconds
+    record.setdefault("extensions", []).append(
+        {
+            "extended_at": utc_now_iso(),
+            "extension_seconds": seconds,
+            "prior_max_age_seconds": prior,
+            "new_max_age_seconds": record["max_age_seconds"],
+            "evidence": _mapping(evidence),
+        }
+    )
+    write_json(path, record)
+    return record
+
+
 def mark_pending_teardown_ambiguous(
     record_path: str | Path,
     *,

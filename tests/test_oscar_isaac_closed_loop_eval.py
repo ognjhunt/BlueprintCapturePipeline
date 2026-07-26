@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from blueprint_pipeline import oscar_isaac_closed_loop_eval as L
+from blueprint_pipeline import wam_isaac_evaluation_hierarchy as H
 from blueprint_pipeline.oscar_wam_command_adapter import DEFAULT_NUM_FRAMES
 
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
@@ -83,6 +84,52 @@ def _trusted_task_completion_evaluator(
             trusted_env,
             hashlib.sha256(runtime_public_key).hexdigest(),
         )
+    initial_state = _live_state_snapshot(
+        source_action_sha256="",
+        source_step_index=None,
+        captured_at_ns=time.time_ns(),
+    )
+    initial_state_path = tmp_path / "gear_sonic_isaac_state_snapshot.json"
+    initial_state_path.write_text(json.dumps(initial_state), encoding="utf-8")
+    monkeypatch.setenv(H.LIVE_ISAAC_STATE_SNAPSHOT_ENV, str(initial_state_path))
+
+
+def _live_state_snapshot(
+    *,
+    source_action_sha256: str,
+    source_step_index: int | None,
+    captured_at_ns: int,
+    projected_gravity: list[float] | None = None,
+) -> dict:
+    payload = {
+        "schema_version": "gear_sonic_isaac_state_snapshot.v1",
+        "status": "live",
+        "ready_for_native_dds_bridge": True,
+        "simulator_session_id": "isaac-session-test",
+        "stage_id": "isaac-stage-test",
+        "source": "live_isaac_articulation",
+        "surrogate": False,
+        "captured_at_ns": captured_at_ns,
+        "fresh_until_ns": captured_at_ns + 60_000_000_000,
+        "joint_order_schema_version": H.JOINT_ORDER_SCHEMA_VERSION,
+        "mapping_digest": H.PROTOCOL_V4_MAPPING_DIGEST,
+        "body_joint_names": list(H.PROTOCOL_V4_BODY_JOINT_NAMES),
+        "body_q": [0.0] * len(H.PROTOCOL_V4_BODY_JOINT_NAMES),
+        "left_hand_joint_names": list(H.PROTOCOL_V4_LEFT_HAND_JOINT_NAMES),
+        "left_hand_q": [0.0] * len(H.PROTOCOL_V4_LEFT_HAND_JOINT_NAMES),
+        "right_hand_joint_names": list(H.PROTOCOL_V4_RIGHT_HAND_JOINT_NAMES),
+        "right_hand_q": [0.0] * len(H.PROTOCOL_V4_RIGHT_HAND_JOINT_NAMES),
+        "base_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "projected_gravity": projected_gravity or [0.0, 0.0, -1.0],
+        "name_order_metadata": {
+            "protocol_v4_full_joint_names": list(H.PROTOCOL_V4_FULL_JOINT_ORDER)
+        },
+    }
+    if source_step_index is not None:
+        payload["source_step_index"] = source_step_index
+        payload["source_action_sha256"] = source_action_sha256
+    payload["payload_sha256"] = L._canonical_sha256(payload)
+    return payload
 
 
 def _attest_task_completion(payload: dict, tmp_path: Path, stem: str) -> dict:
@@ -133,20 +180,31 @@ def _with_post_action_policy_state(
     *,
     simulator_session_id: str = "isaac-session-test",
     stage_id: str = "isaac-stage-test",
+    projected_gravity: list[float] | None = None,
 ) -> dict:
     step_index = int(context["step_index"])
     source_action_sha256 = L._canonical_sha256(context["action"])
     value = float(step_index) / 100.0
+    post_action_state_snapshot = _live_state_snapshot(
+        source_action_sha256=source_action_sha256,
+        source_step_index=step_index,
+        captured_at_ns=1_000_000 + step_index,
+        projected_gravity=projected_gravity,
+    )
+    grouped_state = {
+        field: [value] * dimension
+        for field, dimension in L.UNITREE_G1_SONIC_STATE_DIMS.items()
+    }
+    if projected_gravity is not None:
+        grouped_state["projected_gravity"] = list(projected_gravity)
     return {
         **result,
         "simulator_session_id": simulator_session_id,
         "stage_id": stage_id,
         "source_action_sha256": source_action_sha256,
+        "post_action_state_snapshot": post_action_state_snapshot,
         "post_action_policy_state": {
-            **{
-                field: [value] * dimension
-                for field, dimension in L.UNITREE_G1_SONIC_STATE_DIMS.items()
-            },
+            **grouped_state,
             "measurement": {
                 "simulator_session_id": simulator_session_id,
                 "stage_id": stage_id,
@@ -2307,6 +2365,138 @@ def test_build_oscar_per_step_request_shapes_conditioning(tmp_path: Path) -> Non
     assert req["output_dir"].endswith("oscar_step_0003")
 
 
+def test_controller_prefix_wam_timing_selects_first_frame_after_full_prefix() -> None:
+    timing = L._controller_prefix_wam_timing(
+        action={
+            "controller_action": {
+                "execution_frame_count": 16,
+                "control_hz": 50.0,
+                "execution_duration_seconds": 0.32,
+            }
+        },
+        num_frames=81,
+        fps=15.0,
+    )
+
+    assert timing["status"] == "completed"
+    assert timing["target_wam_frame_index"] == 5
+    assert timing["target_wam_frame_time_seconds"] == pytest.approx(1 / 3)
+
+
+def test_controller_prefix_wam_timing_fails_when_clip_cannot_reach_endpoint() -> None:
+    with pytest.raises(ValueError, match="controller_prefix_timing_exceeds_wam_horizon"):
+        L._controller_prefix_wam_timing(
+            action={
+                "controller_action": {
+                    "execution_frame_count": 40,
+                    "control_hz": 50.0,
+                    "execution_duration_seconds": 0.8,
+                }
+            },
+            num_frames=8,
+            fps=15.0,
+        )
+
+
+def test_wam_policy_trace_audit_passes_complete_aligned_feedback_chain() -> None:
+    rows = []
+    for step_index in range(1, 4):
+        rows.append(
+            {
+                "step_index": step_index,
+                "source_observation_frame": (
+                    "initial.png" if step_index == 1 else f"generated-{step_index - 1}.png"
+                ),
+                "wam_generated_frame": f"generated-{step_index}.png",
+                "next_policy_observation_frame": f"generated-{step_index}.png",
+                "policy_action_from_wam_requery": step_index > 1,
+                "policy_requeried_on_wam_observation": step_index < 3,
+                "policy_action_changed_vs_previous": step_index == 2,
+                "requery_status": "completed" if step_index < 3 else "absent",
+                "next_observation_timing": {
+                    "status": "completed",
+                    "target_wam_frame_index": 5,
+                },
+                "wam_isaac_prefix_prediction_error": {
+                    "status": "measured",
+                    "mean_absolute_error_rad": 0.01,
+                },
+            }
+        )
+
+    audit = L.audit_wam_policy_trace(
+        rows,
+        require_prefix_alignment=True,
+        require_isaac_diagnostics=True,
+    )
+
+    assert audit["status"] == "passed"
+    assert audit["feed_forward_verified"] is True
+    assert audit["blockers"] == []
+
+
+def test_wam_policy_trace_audit_fails_closed_on_feedback_or_timing_gap() -> None:
+    audit = L.audit_wam_policy_trace(
+        [
+            {
+                "step_index": 1,
+                "source_observation_frame": "initial.png",
+                "wam_generated_frame": "generated-1.png",
+                "next_policy_observation_frame": "wrong.png",
+                "policy_requeried_on_wam_observation": False,
+                "requery_status": "absent",
+            },
+            {
+                "step_index": 2,
+                "source_observation_frame": "also-wrong.png",
+                "wam_generated_frame": "generated-2.png",
+                "next_policy_observation_frame": "generated-2.png",
+                "policy_action_from_wam_requery": False,
+            },
+        ],
+        require_prefix_alignment=True,
+        require_isaac_diagnostics=True,
+    )
+
+    assert audit["status"] == "blocked"
+    assert "wam_policy_trace_feed_forward_mismatch_at_step_2" in audit["blockers"]
+    assert "wam_policy_trace_prefix_alignment_missing_at_step_1" in audit["blockers"]
+    assert "wam_policy_trace_prefix_prediction_error_missing_at_step_1" in audit["blockers"]
+
+
+def test_wam_policy_trace_audit_blocks_empty_or_missing_frame_paths() -> None:
+    """Empty frame paths must block, and malformed rows must not raise KeyError."""
+    audit = L.audit_wam_policy_trace(
+        [
+            {
+                "step_index": 1,
+                "source_observation_frame": "initial.png",
+                "wam_generated_frame": None,
+                "next_policy_observation_frame": None,
+                "policy_requeried_on_wam_observation": True,
+                "requery_status": "completed",
+            },
+            {
+                "step_index": 2,
+                "policy_action_from_wam_requery": True,
+                "policy_action_changed_vs_previous": True,
+            },
+        ],
+        require_prefix_alignment=False,
+        require_isaac_diagnostics=False,
+    )
+
+    assert audit["status"] == "blocked"
+    assert audit["feed_forward_verified"] is False
+    assert (
+        "wam_policy_trace_next_observation_not_wam_generated_at_step_1" in audit["blockers"]
+    )
+    assert (
+        "wam_policy_trace_next_observation_not_wam_generated_at_step_2" in audit["blockers"]
+    )
+    assert "wam_policy_trace_feed_forward_mismatch_at_step_2" in audit["blockers"]
+
+
 def test_oscar_per_step_backend_drives_the_loop(tmp_path: Path) -> None:
     """The real GPU path with OSCAR mocked: each step calls per-step OSCAR generation, the
     harness runs on the generated frame. Swapping the mock for a real OSCAR pod + real SAM3
@@ -3078,6 +3268,61 @@ def test_local_oscar_subprocess_generate_runs_and_extracts(tmp_path: Path) -> No
     assert seen_env.get("BLUEPRINT_OSCAR_CUDNN_LIB_DIR") is None
 
 
+def test_local_oscar_uses_prefix_aligned_extractor_for_timed_request(tmp_path: Path) -> None:
+    selected_indices: list[int] = []
+
+    class _Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(argv, **_kwargs):
+        Path(argv[argv.index("--output") + 1]).write_bytes(b"video")
+        return _Done()
+
+    def _aligned(_video: Path, out_dir: Path, target_index: int) -> Path:
+        selected_indices.append(target_index)
+        return _write_frame(out_dir / "next.png", seed=81)
+
+    generate = L.make_local_oscar_subprocess_generate(
+        oscar_repo="/opt/oscar",
+        checkpoint="/models/oscar/ckpt",
+        run=_fake_run,
+        build_skeleton_video=lambda _rows, out_dir: (
+            out_dir / "skeleton.mp4"
+        ),
+        extract_next_frame=lambda _video, _out_dir: pytest.fail(
+            "timed request must not use earliest-future extraction"
+        ),
+        extract_prefix_aligned_frame=_aligned,
+    )
+    request = L.build_oscar_per_step_request(
+        current_frame_path="/frames/current.png",
+        action={
+            "controller_action": {
+                "execution_frame_count": 16,
+                "control_hz": 50.0,
+                "execution_duration_seconds": 0.32,
+            }
+        },
+        step_index=1,
+        task_prompt="open the microwave",
+        num_frames=81,
+        fps=15.0,
+        output_dir=tmp_path,
+        skeleton_landmarks=[{"landmark_id": "pelvis"}],
+    )
+    skeleton_path = Path(request["output_dir"]) / "skeleton.mp4"
+    skeleton_path.parent.mkdir(parents=True, exist_ok=True)
+    skeleton_path.write_bytes(b"skeleton")
+
+    result = generate(request)
+
+    assert result["status"] == "completed"
+    assert selected_indices == [5]
+    assert result["next_observation_timing"]["target_wam_frame_index"] == 5
+
+
 def test_local_oscar_gpu_residency_proves_simultaneous_four_role_ancestry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3844,6 +4089,76 @@ def test_extract_next_observation_selects_earliest_usable_future_frame(tmp_path:
     assert selection["status"] == "completed"
     assert selection["selected_frame_index"] == 1
     assert selection["claim_boundary"]["scene_or_task_specific_pixels_used"] is False
+
+
+def test_prefix_aligned_extractor_selects_exact_controller_endpoint_frame(
+    tmp_path: Path,
+) -> None:
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    video = tmp_path / "aligned.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (32, 24))
+    frames = []
+    for index in range(8):
+        frame = np.zeros((24, 32, 3), dtype=np.uint8)
+        frame[::2, :] = (30 + index * 15, 210, 235)
+        frame[:, ::4] = (220, 40 + index * 10, 25)
+        frames.append(frame)
+        writer.write(frame)
+    writer.release()
+
+    out = L.extract_prefix_aligned_observation_frame_from_video(
+        video,
+        tmp_path / "aligned-extracted",
+        5,
+    )
+
+    assert out is not None and out.is_file()
+    selection = json.loads(
+        (tmp_path / "aligned-extracted" / "next_observation_selection.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert selection["selected_frame_index"] == 5
+    assert selection["temporal_alignment"] == {
+        "later_frame_fallback_allowed": False,
+        "selection_rule": "exact_controller_prefix_endpoint",
+        "target_frame_index": 5,
+    }
+
+
+def test_prefix_aligned_extractor_does_not_skip_bad_endpoint_for_later_frame(
+    tmp_path: Path,
+) -> None:
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    video = tmp_path / "bad-endpoint.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (32, 24))
+    usable = np.zeros((24, 32, 3), dtype=np.uint8)
+    usable[::2, :] = (235, 235, 235)
+    usable[:, ::4] = (24, 180, 240)
+    dark = np.full((24, 32, 3), 8, dtype=np.uint8)
+    for frame in (usable, usable, usable, usable, usable, dark, usable):
+        writer.write(frame)
+    writer.release()
+
+    out = L.extract_prefix_aligned_observation_frame_from_video(
+        video,
+        tmp_path / "bad-endpoint-extracted",
+        5,
+    )
+
+    assert out is None
+    selection = json.loads(
+        (tmp_path / "bad-endpoint-extracted" / "next_observation_selection.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert selection["status"] == "blocked"
+    assert selection["selected_frame_index"] is None
+    assert "next_observation_candidate_too_dark" in selection["blockers"]
 
 
 def test_extract_next_observation_blocks_when_future_frames_are_not_useful(tmp_path: Path) -> None:
@@ -5003,6 +5318,187 @@ def test_generated_clip_coherence_rejects_correlated_artifact_soup(tmp_path):
     )
 
 
+def test_generated_clip_coherence_allows_structurally_coherent_sharpening(tmp_path):
+    pytest.importorskip("cv2")
+    import cv2
+    import numpy as np
+
+    height, width = 240, 320
+    rng = np.random.default_rng(17)
+    base = rng.integers(0, 255, size=(height, width, 3), dtype=np.uint8)
+    seed = cv2.GaussianBlur(base, (9, 9), 0)
+    blurred_seed = cv2.GaussianBlur(seed, (0, 0), 3)
+    sharpened = cv2.addWeighted(seed, 3.0, blurred_seed, -2.0, 0.0)
+    clip = tmp_path / "structurally-coherent-sharpening.mp4"
+    _write_clip(clip, [seed, sharpened, sharpened])
+
+    result = L.generated_clip_coherence(clip)
+
+    assert result["first_frame_laplacian_variance_ratio"] > (
+        result["maximum_laplacian_variance_ratio"]
+    )
+    assert result["first_frame_laplacian_variance_ratio"] < (
+        result["hard_maximum_laplacian_variance_ratio"]
+    )
+    assert result["first_frame_patch_correlation_median"] >= (
+        result["strong_patch_correlation_floor"]
+    )
+    assert result["coherent_horizon_frames"] >= 2
+
+
+def test_generated_clip_coherence_rejects_extreme_high_frequency_growth(tmp_path):
+    pytest.importorskip("cv2")
+    import cv2
+    import numpy as np
+
+    height, width = 240, 320
+    y, x = np.mgrid[:height, :width]
+    seed = np.stack(
+        (
+            (x * 255 // width),
+            (y * 255 // height),
+            ((x + y) * 255 // (width + height)),
+        ),
+        axis=2,
+    ).astype(np.uint8)
+    checker = np.repeat(((((x + y) % 2) * 255).astype(np.uint8))[:, :, None], 3, axis=2)
+    corrupted = cv2.addWeighted(seed, 0.98, checker, 0.02, 0.0)
+    clip = tmp_path / "extreme-high-frequency-growth.mp4"
+    _write_clip(clip, [seed, corrupted, corrupted])
+
+    result = L.generated_clip_coherence(clip)
+
+    assert result["first_frame_patch_correlation_median"] >= (
+        result["strong_patch_correlation_floor"]
+    )
+    assert result["first_frame_laplacian_variance_ratio"] > (
+        result["hard_maximum_laplacian_variance_ratio"]
+    )
+    assert result["coherent_horizon_frames"] == 1
+
+
+def test_generated_clip_coherence_compensates_smooth_camera_translation(tmp_path):
+    pytest.importorskip("cv2")
+    import cv2
+    import numpy as np
+
+    height, width = 240, 320
+    seed = np.zeros((height, width, 3), dtype=np.uint8)
+    for x in range(0, width, 24):
+        cv2.line(seed, (x, 0), (x, height - 1), (80 + x % 150, 180, 220), 2)
+    for y in range(0, height, 20):
+        cv2.line(seed, (0, y), (width - 1, y), (210, 80 + y % 150, 120), 2)
+    cv2.circle(seed, (210, 120), 42, (240, 240, 60), -1)
+    translated = cv2.warpAffine(
+        seed,
+        np.float32([[1.0, 0.0, 7.0], [0.0, 1.0, 2.0]]),
+        (width, height),
+        borderMode=cv2.BORDER_REFLECT,
+    )
+    clip = tmp_path / "translated-camera.mp4"
+    _write_clip(clip, [seed, translated, translated])
+
+    result = L.generated_clip_coherence(clip)
+
+    assert result["status"] == "measured"
+    assert result["coherent_horizon_frames"] >= 2
+    assert result["first_frame_motion_compensation_shift_px"] > 1.0
+    assert result["first_frame_patch_correlation_median"] >= (
+        result["first_frame_unaligned_patch_correlation_median"]
+    )
+
+
+def test_generated_clip_coherence_compensates_smooth_camera_rotation(tmp_path):
+    pytest.importorskip("cv2")
+    import cv2
+    import numpy as np
+
+    height, width = 240, 320
+    rng = np.random.default_rng(7)
+    seed = rng.integers(0, 255, size=(height, width, 3), dtype=np.uint8)
+    seed = cv2.GaussianBlur(seed, (21, 21), 0)
+    for _ in range(40):
+        center = (
+            int(rng.integers(10, width - 10)),
+            int(rng.integers(10, height - 10)),
+        )
+        color = tuple(int(value) for value in rng.integers(30, 240, size=3))
+        cv2.circle(seed, center, int(rng.integers(3, 15)), color, -1)
+    warp = cv2.getRotationMatrix2D((width / 2.0, height / 2.0), 3.5, 1.0)
+    warp[0, 2] += 2.0
+    warp[1, 2] -= 4.0
+    rotated = cv2.warpAffine(
+        seed,
+        warp,
+        (width, height),
+        borderMode=cv2.BORDER_REFLECT,
+    )
+    clip = tmp_path / "rotated-camera.mp4"
+    _write_clip(clip, [seed, rotated, rotated])
+
+    result = L.generated_clip_coherence(clip)
+
+    assert result["status"] == "measured"
+    assert result["coherent_horizon_frames"] >= 2
+    assert result["first_frame_unaligned_patch_correlation_median"] < (
+        result["patch_correlation_floor"]
+    )
+    assert abs(result["first_frame_euclidean_compensation_rotation_degrees"]) > 1.0
+    assert result["first_frame_euclidean_compensation_response"] > 0.5
+    assert result["first_frame_patch_correlation_median"] >= (
+        result["first_frame_unaligned_patch_correlation_median"]
+    )
+
+
+def test_generated_clip_coherence_accepts_continuous_nonrigid_action_motion(tmp_path):
+    """A smooth articulated POV change must not look like seed-relative collapse."""
+
+    pytest.importorskip("cv2")
+    import cv2
+    import numpy as np
+
+    height, width = 240, 320
+    rng = np.random.default_rng(86)
+    seed = cv2.GaussianBlur(
+        rng.integers(0, 255, size=(height, width, 3), dtype=np.uint8),
+        (11, 11),
+        0,
+    )
+    for _ in range(30):
+        center = (
+            int(rng.integers(10, width - 10)),
+            int(rng.integers(10, height - 10)),
+        )
+        color = tuple(int(value) for value in rng.integers(20, 240, size=3))
+        cv2.circle(seed, center, int(rng.integers(4, 18)), color, -1)
+    y_coordinates, x_coordinates = np.mgrid[:height, :width].astype(np.float32)
+    frames = []
+    for index in range(7):
+        amplitude = 2.3 * index
+        frames.append(
+            cv2.remap(
+                seed,
+                x_coordinates + amplitude * np.sin(y_coordinates / 26.0),
+                y_coordinates + 0.3 * amplitude * np.sin(x_coordinates / 45.0),
+                cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_REFLECT,
+            )
+        )
+    clip = tmp_path / "continuous-articulated-pov.mp4"
+    _write_clip(clip, frames)
+
+    result = L.generated_clip_coherence(clip)
+
+    assert result["status"] == "measured"
+    assert result["seed_anchored_horizon_frames"] < 6
+    assert result["temporally_coherent_horizon_frames"] >= 6
+    assert result["coherent_horizon_frames"] >= 6
+    assert result["min_temporal_correlation"] >= result["temporal_correlation_floor"]
+    assert result["min_temporal_patch_correlation_median"] >= (
+        result["temporal_patch_correlation_floor"]
+    )
+
+
 def test_closed_loop_blocks_on_incoherent_generated_clip(tmp_path):
     pytest.importorskip("cv2")
     import numpy as np
@@ -5056,6 +5552,89 @@ def test_closed_loop_blocks_on_incoherent_generated_clip(tmp_path):
         for blocker in relaxed.get("blockers", [])
     )
     assert relaxed["generated_clip_coherence"]["per_step"]
+
+
+def test_closed_loop_coherence_horizon_must_cover_selected_prefix_endpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_frame = _write_frame(tmp_path / "seed.png", 15)
+    generated = _write_frame(tmp_path / "generated.png", 16)
+    clip = tmp_path / "generated.mp4"
+    clip.write_bytes(b"video")
+    monkeypatch.setattr(
+        L,
+        "generated_clip_coherence",
+        lambda _path: {"status": "measured", "coherent_horizon_frames": 5},
+    )
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "aligned-out",
+        start_frame_path=seed_frame,
+        route_points=[[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]],
+        wam_generate_next=lambda *_args: {
+            "status": "completed",
+            "generated_frame_path": str(generated),
+            "generated_video_path": str(clip),
+            "next_observation_timing": {
+                "status": "completed",
+                "target_wam_frame_index": 5,
+            },
+        },
+        steps=1,
+        min_coherent_horizon_frames=2,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert (
+        "blocked_generated_clip_coherence_below_floor_at_step_1:horizon_5_lt_6"
+        in manifest["blockers"]
+    )
+    row = manifest["generated_clip_coherence"]["per_step"][0]
+    assert row["coherent_horizon_frames_required_for_selected_observation"] == 6
+    assert row["next_observation_timing"]["target_wam_frame_index"] == 5
+
+
+def test_closed_loop_blocks_unmeasured_coherence_when_horizon_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A required coherence floor must fail closed when coherence cannot be measured."""
+    seed_frame = _write_frame(tmp_path / "seed.png", 15)
+    generated = _write_frame(tmp_path / "generated.png", 16)
+    clip = tmp_path / "generated.mp4"
+    clip.write_bytes(b"video")
+    monkeypatch.setattr(
+        L,
+        "generated_clip_coherence",
+        lambda _path: {
+            "status": "not_measured",
+            "blockers": ["generated_video_unreadable_or_single_frame"],
+        },
+    )
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "unmeasured-out",
+        start_frame_path=seed_frame,
+        route_points=[[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]],
+        wam_generate_next=lambda *_args: {
+            "status": "completed",
+            "generated_frame_path": str(generated),
+            "generated_video_path": str(clip),
+            "next_observation_timing": {
+                "status": "completed",
+                "target_wam_frame_index": 5,
+            },
+        },
+        steps=1,
+        min_coherent_horizon_frames=2,
+    )
+
+    assert manifest["status"] == "blocked"
+    assert (
+        "blocked_generated_clip_coherence_not_measured_at_step_1:"
+        "generated_video_unreadable_or_single_frame" in manifest["blockers"]
+    )
 
 
 def test_cli_blocks_sub_native_oscar_resolution_without_override(tmp_path):
@@ -5117,6 +5696,37 @@ def _controller_fk_wam(tmp_path, events=None):
         _write_frame(generated, 70 + step)
         action_sha256 = L._canonical_sha256(action)
         action_values = action.get("action_chunk") or [float(step), -float(step)]
+        joint_positions = [0.0] * len(H.PROTOCOL_V4_FULL_JOINT_ORDER)
+        for index, value in enumerate(action_values[: len(joint_positions)]):
+            joint_positions[index] = float(value)
+        predicted_state = {
+            "source_action_sha256": action_sha256,
+            "proxy_or_surrogate": False,
+            "joint_names": list(H.PROTOCOL_V4_FULL_JOINT_ORDER),
+            "joint_positions": joint_positions,
+            "joint_order_schema_version": H.JOINT_ORDER_SCHEMA_VERSION,
+            "mapping_digest": H.PROTOCOL_V4_MAPPING_DIGEST,
+            "proprioceptive_state": {"base_quat_measured": [1.0, 0.0, 0.0, 0.0]},
+            "unitree_g1_sonic_state": {
+                **{
+                    field: [0.0] * dimension
+                    for field, dimension in L.UNITREE_G1_SONIC_STATE_DIMS.items()
+                },
+                "projected_gravity": [0.0, 0.0, -1.0],
+            },
+            "controller_fk_sequence": [
+                {
+                    "joint_positions": joint_positions,
+                    "landmarks": [
+                        _projected_landmark(
+                            "right_wrist",
+                            float(action_values[0]),
+                            float(action_values[1]),
+                        )
+                    ],
+                }
+            ],
+        }
         projection = L._with_action_conditioning_digests(
             {
                 "landmarks": [
@@ -5131,11 +5741,7 @@ def _controller_fk_wam(tmp_path, events=None):
                 "controller_id": "unit-test-controller",
                 "controller_sha256": "a" * 64,
                 "robot_model_sha256": "b" * 64,
-                "generated_robot_state": {
-                    "source_action_sha256": action_sha256,
-                    "proxy_or_surrogate": False,
-                    "joint_positions": [float(value) for value in action_values],
-                },
+                "generated_robot_state": predicted_state,
             }
         )
         return {
@@ -5580,6 +6186,60 @@ def test_persistent_isaac_apply_precedes_requery_and_supplies_live_state(tmp_pat
     ]
     assert trace[0]["post_action_policy_state_validated"] is True
     assert trace[0]["requery_status"] == "completed"
+
+
+def test_wam_primary_preserves_rollout_and_caps_claim_on_isaac_contradiction(tmp_path):
+    endpoint_observations: list[dict] = []
+
+    def policy_endpoint(observation, _history, step_index):
+        endpoint_observations.append(dict(observation))
+        return {
+            "policy_action": "learned_policy_action",
+            "root_position": [0.0, 0.0, 0.79],
+            "action_chunk": [float(step_index + 1), -float(step_index + 1)],
+        }
+
+    def evaluator(context):
+        return _with_post_action_policy_state(
+            {
+                "status": "completed",
+                "source_step_index": context["step_index"],
+                "passed": False,
+            },
+            context,
+            projected_gravity=[0.8, 0.0, -0.3],
+        )
+
+    manifest = L.run_oscar_isaac_closed_loop(
+        output_dir=tmp_path / "wam_primary_isaac_contradiction",
+        start_frame_path=_write_frame(tmp_path / "wam_primary_seed.png", 88),
+        route_points=[[0.0, 0.0, 0.79], [1.0, 0.0, 0.79]],
+        wam_generate_next=_controller_fk_wam(tmp_path),
+        steps=2,
+        policy_endpoint=policy_endpoint,
+        initial_observation_evidence=_initial_robot_pov_evidence(
+            tmp_path / "wam_primary_seed.png"
+        ),
+        stop_on_unsafe_stance=True,
+        task_success_contract={"task_kind": "navigation_smoke"},
+        task_completion_evaluator=evaluator,
+        evaluation_authority=H.WAM_PRIMARY_AUTHORITY,
+    )
+
+    assert manifest["steps_executed"] == 2
+    assert manifest["episode_termination"]["reason"] == "steps_cap_reached"
+    assert len(endpoint_observations) == 2
+    assert endpoint_observations[1]["unitree_g1_sonic_state_source"] == (
+        "wam_controller_fk_prediction"
+    )
+    disagreement = manifest["wam_isaac_disagreement"]
+    assert disagreement["primary_wam_score_preserved"] is True
+    assert disagreement["isaac_can_overwrite_or_terminate_wam_rollout"] is False
+    assert disagreement["disagreement_unresolved"] is True
+    assert disagreement["claim_ceiling"] == "uncalibrated_debug_evidence"
+    assert disagreement["task_success_claim_allowed"] is False
+    assert disagreement["rank_fidelity_claim_allowed"] is False
+    assert Path(manifest["wam_isaac_disagreement_path"]).is_file()
 
 
 def test_unsafe_live_stance_dynamically_terminates_before_policy_requery(tmp_path):
@@ -6048,6 +6708,15 @@ from blueprint_pipeline.oscar_isaac_closed_loop_eval import build_sc3_runtime_at
 request = json.load(open(os.environ['BLUEPRINT_CONTROLLER_FK_INPUT']))
 root = Path.cwd()
 action = request['action']['action_chunk']
+state_seed = request['controller_fk_state_seed']
+initial_fk_frame = {
+    'joint_positions': state_seed['body_q'] + state_seed['left_hand_q'] + state_seed['right_hand_q'],
+    'base_quaternion_wxyz': state_seed['base_quaternion_wxyz'],
+    'seed_authority': 'initial_observation_live_isaac_state',
+}
+initial_fk_frame_sha256 = hashlib.sha256(
+    json.dumps(initial_fk_frame, sort_keys=True, separators=(',', ':')).encode()
+).hexdigest()
 controller_code = root / 'controller-code.bin'
 robot_model = root / 'robot-model.xml'
 controller_code.write_bytes(b'trusted controller FK implementation')
@@ -6067,6 +6736,9 @@ payload = {
     'camera_projection_context_sha256': 'c' * 64,
     'camera_source_frame_sha256': 'd' * 64,
     'cross_simulator_registration': {'status': 'passed', 'surrogate': False},
+    'controller_fk_state_seed_sha256': request['controller_fk_state_seed_sha256'],
+    'initial_fk_frame': initial_fk_frame,
+    'initial_fk_frame_sha256': initial_fk_frame_sha256,
     'landmarks': [{
         'name': 'wrist',
         'landmark_id': 'wrist',
@@ -6101,6 +6773,9 @@ signed_result = {
     'camera_source_frame_sha256': payload['camera_source_frame_sha256'],
     'cross_simulator_registration': payload['cross_simulator_registration'],
     'generated_robot_state': payload['generated_robot_state'],
+    'controller_fk_state_seed_sha256': payload['controller_fk_state_seed_sha256'],
+    'initial_fk_frame': payload['initial_fk_frame'],
+    'initial_fk_frame_sha256': payload['initial_fk_frame_sha256'],
 }
 payload['executor_attestation'] = build_sc3_runtime_attestation(
     signed_result,
@@ -6117,7 +6792,15 @@ json.dump(payload, open(os.environ['BLUEPRINT_CONTROLLER_FK_OUTPUT'], 'w'))
         command=f"{sys.executable} {command}",
         work_dir=tmp_path / "controller_fk",
     )
-    action = {"policy_action": "learned", "action_chunk": [0.2, -0.1]}
+    action = {
+        "policy_action": "learned",
+        "action_chunk": [0.2, -0.1],
+        "controller_fk_state_seed": _live_state_snapshot(
+            source_action_sha256="",
+            source_step_index=None,
+            captured_at_ns=time.time_ns(),
+        ),
+    }
 
     projection = projector(action, 1)
 
@@ -6143,7 +6826,18 @@ def test_controller_fk_skeleton_nonzero_persists_process_diagnostics(tmp_path):
     )
 
     with pytest.raises(RuntimeError, match="controller_fk_skeleton_command_nonzero:7"):
-        projector({"policy_action": "UNITREE_G1_SONIC", "action_chunk": [0.1] * 78}, 1)
+        projector(
+            {
+                "policy_action": "UNITREE_G1_SONIC",
+                "action_chunk": [0.1] * 78,
+                "controller_fk_state_seed": _live_state_snapshot(
+                    source_action_sha256="",
+                    source_step_index=None,
+                    captured_at_ns=time.time_ns(),
+                ),
+            },
+            1,
+        )
 
     step_dir = work_dir / "step_0001"
     result = json.loads((step_dir / "controller_fk_command_result.json").read_text())
@@ -6877,17 +7571,5 @@ def test_stance_classifier_pins_the_first_contact_episode_verdicts() -> None:
     assert unsafe["unsafe_stance_detected"] is True
 
 
-def test_approach_stream_declares_its_frozen_seed_measurement_source(tmp_path):
-    """LIMITATION PIN: conditioning FK replays from the canonical initial state.
-
-    Run 7 proved the official-executor FK starts every chunk from the same
-    frozen pose (wrist at [-1.2747, 1.672, 0.97] in all six steps, even after
-    live door contact), so per-step approach gains are command-intent, not live
-    progress. Until the executor seeds from the live protocol-v4 state, the
-    termination evidence must say so. When live seeding lands, delete the
-    source constant and update this pin together with the watchdog semantics.
-    """
-
-    assert (
-        L.APPROACH_MEASUREMENT_SOURCE == "chunk_fk_from_canonical_initial_state"
-    )
+def test_approach_stream_declares_its_live_seed_measurement_source(tmp_path):
+    assert L.APPROACH_MEASUREMENT_SOURCE == "chunk_fk_seeded_from_live_isaac_state"

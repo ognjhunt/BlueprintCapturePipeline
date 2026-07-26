@@ -417,6 +417,9 @@ def _render_projected_skeleton_conditioning_video(
     visible_landmark_counts: list[int] = []
     true_in_frame_landmark_counts: list[int] = []
     true_in_frame_effector_counts: list[int] = []
+    action_horizon_rows: list[dict[str, Any]] = []
+    action_horizon_true_in_frame_landmark_counts: list[int] = []
+    action_horizon_true_in_frame_effector_counts: list[int] = []
     visible_segment_counts: list[int] = []
     clipped_landmark_counts: list[int] = []
     offscreen_edge_indicator_counts: list[int] = []
@@ -449,16 +452,31 @@ def _render_projected_skeleton_conditioning_video(
             for landmark_id, point in raw_by_id.items()
             if landmark_id and point is not None and not _inside_canvas(point)
         }
-        true_in_frame_landmark_counts.append(
-            sum(1 for point in raw_by_id.values() if _inside_canvas(point))
+        true_in_frame_landmark_count = sum(
+            1 for point in raw_by_id.values() if _inside_canvas(point)
         )
-        true_in_frame_effector_counts.append(
-            sum(
-                1
-                for landmark_id, point in raw_by_id.items()
-                if ("wrist" in landmark_id or "hand" in landmark_id) and _inside_canvas(point)
+        true_in_frame_effector_count = sum(
+            1
+            for landmark_id, point in raw_by_id.items()
+            if ("wrist" in landmark_id or "hand" in landmark_id) and _inside_canvas(point)
+        )
+        true_in_frame_landmark_counts.append(true_in_frame_landmark_count)
+        true_in_frame_effector_counts.append(true_in_frame_effector_count)
+        source_horizon_index = row.get("source_controller_horizon_frame_index")
+        try:
+            is_action_horizon_frame = (
+                source_horizon_index is None or int(source_horizon_index) >= 0
             )
-        )
+        except (TypeError, ValueError):
+            is_action_horizon_frame = False
+        if is_action_horizon_frame:
+            action_horizon_rows.append(dict(row))
+            action_horizon_true_in_frame_landmark_counts.append(
+                true_in_frame_landmark_count
+            )
+            action_horizon_true_in_frame_effector_counts.append(
+                true_in_frame_effector_count
+            )
         # Preserve the direction of a finite, out-of-viewport controller/FK
         # projection by clamping it to the corresponding image edge.  This is
         # an explicit conditioning-only indicator: it does not alter the RGB
@@ -614,6 +632,15 @@ def _render_projected_skeleton_conditioning_video(
     max_visible_landmark_count = max(visible_landmark_counts or [0])
     minimum_true_in_frame_landmark_count = min(true_in_frame_landmark_counts or [0])
     minimum_true_in_frame_effector_count = min(true_in_frame_effector_counts or [0])
+    minimum_action_horizon_true_in_frame_landmark_count = min(
+        action_horizon_true_in_frame_landmark_counts or [0]
+    )
+    minimum_action_horizon_true_in_frame_effector_count = min(
+        action_horizon_true_in_frame_effector_counts or [0]
+    )
+    action_horizon_max_motion_px = _projected_skeleton_trace_motion_px_max(
+        action_horizon_rows
+    )
     max_visible_segment_count = max(visible_segment_counts or [0])
     max_clipped_landmark_count = max(clipped_landmark_counts or [0])
     max_offscreen_edge_indicator_count = max(offscreen_edge_indicator_counts or [0])
@@ -630,11 +657,13 @@ def _render_projected_skeleton_conditioning_video(
     if conditioning_mode == "controller_fk_action_horizon":
         if len(rows) != max(1, int(num_frames)):
             visual_blockers.append("controller_fk_skeleton_trace_frame_count_mismatch")
-        if max_motion_px < 2.0:
+        if not action_horizon_rows:
+            visual_blockers.append("controller_fk_skeleton_trace_action_horizon_missing")
+        if action_horizon_max_motion_px < 2.0:
             visual_blockers.append("controller_fk_skeleton_trace_motion_too_low")
-        if minimum_true_in_frame_landmark_count < 2:
+        if minimum_action_horizon_true_in_frame_landmark_count < 2:
             visual_blockers.append("controller_fk_skeleton_trace_in_frame_landmarks_too_low")
-        if minimum_true_in_frame_effector_count < 1:
+        if minimum_action_horizon_true_in_frame_effector_count < 1:
             visual_blockers.append("controller_fk_skeleton_trace_in_frame_effector_missing")
     return (
         {
@@ -667,6 +696,16 @@ def _render_projected_skeleton_conditioning_video(
             "projected_g1_skeleton_trace_row_count": len(rows),
             "projected_g1_skeleton_projectable_row_count": projectable_rows,
             "projected_g1_skeleton_max_interframe_motion_px": max_motion_px,
+            "projected_g1_skeleton_action_horizon_frame_count": len(action_horizon_rows),
+            "projected_g1_skeleton_action_horizon_max_interframe_motion_px": (
+                action_horizon_max_motion_px
+            ),
+            "projected_g1_skeleton_action_horizon_minimum_true_in_frame_landmark_count": (
+                minimum_action_horizon_true_in_frame_landmark_count
+            ),
+            "projected_g1_skeleton_action_horizon_minimum_true_in_frame_effector_count": (
+                minimum_action_horizon_true_in_frame_effector_count
+            ),
             "skeleton_stream_separate_from_rgb": True,
             "skeleton_stream_texture_free": True,
             "skeleton_stream_image_aligned_to_rgb": True,
@@ -686,6 +725,23 @@ def _render_projected_skeleton_conditioning_video(
                 "max_clipped_landmark_count": max_clipped_landmark_count,
                 "max_offscreen_edge_indicator_count": (max_offscreen_edge_indicator_count),
                 "max_end_effector_axis_draw_count": max_end_effector_axis_count,
+                **(
+                    {
+                        "gate_scope": "controller_fk_action_horizon_frames_only",
+                        "action_horizon_frame_count": len(action_horizon_rows),
+                        "action_horizon_max_interframe_landmark_motion_px": (
+                            action_horizon_max_motion_px
+                        ),
+                        "minimum_action_horizon_true_in_frame_landmark_count": (
+                            minimum_action_horizon_true_in_frame_landmark_count
+                        ),
+                        "minimum_action_horizon_true_in_frame_effector_count": (
+                            minimum_action_horizon_true_in_frame_effector_count
+                        ),
+                    }
+                    if conditioning_mode == "controller_fk_action_horizon"
+                    else {}
+                ),
             },
         },
         rows,

@@ -712,14 +712,7 @@ def build_gear_sonic_isaac_state_snapshot(
         freshness = int(freshness_window_ns)
     except (TypeError, ValueError) as exc:
         raise RuntimeError("persistent_isaac_state_snapshot_freshness_invalid") from exc
-    if (
-        not session
-        or not stage
-        or not state_source
-        or sequence < 1
-        or timestamp < 1
-        or freshness < 1
-    ):
+    if not session or not stage or not state_source or sequence < 1 or timestamp < 1 or freshness < 1:
         raise RuntimeError("persistent_isaac_state_snapshot_identity_invalid")
     if source_step_index is not None and int(source_step_index) < 0:
         raise RuntimeError("persistent_isaac_state_snapshot_source_step_invalid")
@@ -754,6 +747,12 @@ def build_gear_sonic_isaac_state_snapshot(
         "body_dq": canonical_velocities[:body_count],
         "body_joint_positions": canonical_positions[:body_count],
         "body_joint_velocities": canonical_velocities[:body_count],
+        "left_hand_joint_names": list(PROTOCOL_V4_LEFT_HAND_JOINT_NAMES),
+        "left_hand_q": canonical_positions[body_count : body_count + 7],
+        "left_hand_dq": canonical_velocities[body_count : body_count + 7],
+        "right_hand_joint_names": list(PROTOCOL_V4_RIGHT_HAND_JOINT_NAMES),
+        "right_hand_q": canonical_positions[body_count + 7 : body_count + 14],
+        "right_hand_dq": canonical_velocities[body_count + 7 : body_count + 14],
         "base_quaternion_wxyz": quaternion,
         "base_angular_velocity": angular_velocity,
         "base_angular_velocity_xyz": angular_velocity,
@@ -3517,6 +3516,7 @@ class IsaacPersistentTaskBackend:
             "persistent_simulator_state_applied": True,
             "official_controller_action_applied": True,
             "post_action_policy_state": post_action_policy_state,
+            "post_action_state_snapshot": dict(post_action_state_snapshot or {}),
             "simulator_backend": "isaac",
             # The task-transition evaluator parses every evidence_artifact as
             # typed JSON. Review PNGs have their own hash-bound media channel

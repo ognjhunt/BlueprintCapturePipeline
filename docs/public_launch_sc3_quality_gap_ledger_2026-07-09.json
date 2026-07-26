@@ -2775,7 +2775,7 @@
             {
               "artifact_id": "SC3-02-AC-01-EV-03",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:c5e37600e76356581a3f299b66af6f0a6554aa4512f91c16a18a169dfe2a0d2b",
+              "sha256": "sha256:9b96f443f14cc6b03405eb71bc6e7c1787a0d64c1699c920b1fec01942377de1",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2791,7 +2791,7 @@
             {
               "artifact_id": "SC3-02-AC-01-EV-04",
               "path": "tests/test_oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:b4ebbf1038d6011411ac17bc166b22c4d1c5aa67c7200ebb2bdab6adb0f2041e",
+              "sha256": "sha256:7b903820df3844594093f0d3a9cbfe107f15ebd21262ce8f55bac6db99ce884b",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3918,7 +3918,7 @@
             {
               "artifact_id": "SC3-10-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:c5e37600e76356581a3f299b66af6f0a6554aa4512f91c16a18a169dfe2a0d2b",
+              "sha256": "sha256:9b96f443f14cc6b03405eb71bc6e7c1787a0d64c1699c920b1fec01942377de1",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -3934,7 +3934,7 @@
             {
               "artifact_id": "SC3-10-AC-01-EV-02",
               "path": "tests/test_oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:b4ebbf1038d6011411ac17bc166b22c4d1c5aa67c7200ebb2bdab6adb0f2041e",
+              "sha256": "sha256:7b903820df3844594093f0d3a9cbfe107f15ebd21262ce8f55bac6db99ce884b",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4052,7 +4052,7 @@
             {
               "artifact_id": "SC3-11-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:c5e37600e76356581a3f299b66af6f0a6554aa4512f91c16a18a169dfe2a0d2b",
+              "sha256": "sha256:9b96f443f14cc6b03405eb71bc6e7c1787a0d64c1699c920b1fec01942377de1",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4068,7 +4068,7 @@
             {
               "artifact_id": "SC3-11-AC-01-EV-02",
               "path": "tests/test_oscar_isaac_closed_loop_eval.py",
-              "sha256": "sha256:b4ebbf1038d6011411ac17bc166b22c4d1c5aa67c7200ebb2bdab6adb0f2041e",
+              "sha256": "sha256:7b903820df3844594093f0d3a9cbfe107f15ebd21262ce8f55bac6db99ce884b",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9312,7 +9312,7 @@
             {
               "artifact_id": "DATA-23-AC-01-EV-01",
               "path": "src/blueprint_pipeline/oscar_wam_provider_bundle.py",
-              "sha256": "sha256:73f049d6f3d95a8c74c0f3fcffefa5ffeab26411e1e689bae04f03beba30632e",
+              "sha256": "sha256:7bc581e5da1d2f6db12117be2c98d5df42fdf1f6a78ca018cc74e8df68c48d2c",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9328,7 +9328,7 @@
             {
               "artifact_id": "DATA-23-AC-01-EV-02",
               "path": "tests/test_oscar_wam_provider_bundle.py",
-              "sha256": "sha256:6c360ab3671291833fa226dab3fceb72d1fdf65dc3c0c3f206ee14ef602d2ba2",
+              "sha256": "sha256:2f62eea5e93d5a319298e470021b4a8b6fb1f25b393e06422399a97baa5fb7d4",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

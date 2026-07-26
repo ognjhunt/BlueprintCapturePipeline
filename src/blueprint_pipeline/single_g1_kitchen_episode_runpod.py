@@ -10,6 +10,7 @@ import io
 import json
 import lzma
 import math
+import os
 import re
 import shlex
 import subprocess
@@ -76,8 +77,12 @@ from .wam_provider_object_store import (
 
 
 SCHEMA_VERSION = "single_g1_kitchen_episode_runpod.v1"
-MANIPULATION_POLICY_TASK_COMPATIBILITY_SCHEMA_VERSION = "single_g1_kitchen_manipulation_policy_task_compatibility.v2"
-MANIPULATION_POLICY_TASK_COMPATIBILITY_BLOCKER = "single_episode_manipulation_policy_task_compatibility_unproven"
+MANIPULATION_POLICY_TASK_COMPATIBILITY_SCHEMA_VERSION = (
+    "single_g1_kitchen_manipulation_policy_task_compatibility.v2"
+)
+MANIPULATION_POLICY_TASK_COMPATIBILITY_BLOCKER = (
+    "single_episode_manipulation_policy_task_compatibility_unproven"
+)
 DIRECT_OWNER_SCHEMA_VERSION = "single_g1_kitchen_episode_direct_owner.v1"
 DIRECT_OWNER_NAME = "single_episode_direct_owner.json"
 DIRECT_OWNER_LANE = "single_g1_kitchen_episode"
@@ -97,9 +102,7 @@ SOURCE_COMMIT = "fca4712e6bb78bf251512cead5ee7787ed2fb249"
 SEALED_SONIC_CHECKPOINT_REPO = "LucaFrat/groot-bs16"
 SEALED_SONIC_CHECKPOINT_REVISION = "86b17337379926a8d8f1ad5c4580c7c33deeb49f"
 SEALED_SONIC_TRAINING_DATASET_REPO = "LucaFrat/dataset_100"
-SEALED_SONIC_TRAINING_DATASET_REVISION = (
-    "98976e7b62650a3848192ecf285902b296b276a2"
-)
+SEALED_SONIC_TRAINING_DATASET_REVISION = "98976e7b62650a3848192ecf285902b296b276a2"
 # Reviewed public provenance for the exact sealed checkpoint.  The public
 # dataset declares one bag-manipulation task and no Blueprint canonical task
 # ids.  Keep these values code-reviewed rather than trusting a launch-plan
@@ -141,7 +144,7 @@ PROGRESS_TIMEOUT_SECONDS = EPISODE_TIMEOUT_SECONDS + 900
 # this model horizon to 8/9 frames made frame 1 coherent but every decoded
 # frame after it collapse into artifact soup on the paid L40S run.
 DIRECT_OSCAR_NUM_FRAMES = 81
-DIRECT_OSCAR_NUM_STEPS = 35
+DIRECT_OSCAR_NUM_STEPS = 12
 # OSCAR's first live clip remained seed-coherent, but feeding its selected
 # generated frame directly into the next generation caused the second clip to
 # decorrelate immediately. Re-anchor every outer step to the newly captured,
@@ -166,17 +169,22 @@ DIRECT_NO_PROGRESS_PATIENCE_STEPS = 3
 # scenario's already validated 0.63 m candidate for the direct egocentric lane;
 # this changes the standing initialization, never the head-local camera mount.
 DIRECT_EGOCENTRIC_STANCE_MIN_DISTANCE_M = 0.63
-# GR00T N1.7 SONIC returns a 40-frame control horizon. This direct evaluation
-# executes that complete horizon; the generic closed-loop CLI retains its
-# one-frame default so other lanes do not change behavior implicitly.
-DIRECT_GROOT_SONIC_EXECUTION_FRAME_COUNT = 40
+# GR00T N1.7 SONIC returns a 40-frame control horizon.  Execute only the first
+# 16 frames (0.32 seconds at 50 Hz) before re-querying on OSCAR's matching
+# generated observation.  This preserves receding-horizon correction while
+# retaining enough commanded time per decision for meaningful manipulation.
+# The generic closed-loop CLI retains its one-frame default so other lanes do
+# not change behavior implicitly.
+DIRECT_GROOT_SONIC_EXECUTION_FRAME_COUNT = 16
 QUALIFICATION_CHECKPOINT_PART_GET_URLS_ENV = (
     "BLUEPRINT_G1_MICROWAVE_QUALIFICATION_CHECKPOINT_PART_GET_URLS"
 )
 QUALIFICATION_CHECKPOINT_RESTORE_SCHEMA_VERSION = (
     "single_g1_kitchen_qualification_checkpoint_restore.v1"
 )
-QUALIFICATION_CHECKPOINT_RESTORE_REPORT_PATH = "/workspace/closed_loop_out/qualification_checkpoint_restore.json"
+QUALIFICATION_CHECKPOINT_RESTORE_REPORT_PATH = (
+    "/workspace/closed_loop_out/qualification_checkpoint_restore.json"
+)
 MAX_QUALIFICATION_CHECKPOINT_PARTS = 16
 SINGLE_EPISODE_PROGRESS_PHASES = (
     "container_bash_started",
@@ -200,10 +208,31 @@ EXTERNAL_CONSISTENCY_OPTIONS = {
     "--allow-wam-consistency-scoring": False,
     "--require-forward-inverse-consistency": False,
 }
+EXTERNAL_SUCCESS_LABEL_OPTIONS = {
+    "--wam-success-label-command": True,
+    "--wam-success-label-timeout-seconds": True,
+    "--allow-wam-success-labeling": False,
+    "--require-generated-video-success-label": False,
+}
 EXTERNAL_CONSISTENCY_ENV = {
     "BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING",
     "BLUEPRINT_WAM_EPISODE_CONSISTENCY_COMMAND",
 }
+EXTERNAL_SUCCESS_LABEL_ENV = {
+    "BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING",
+}
+DIRECT_WAM_CONSISTENCY_COMMAND_ENV = (
+    "BLUEPRINT_SINGLE_EPISODE_WAM_CONSISTENCY_COMMAND"
+)
+DIRECT_WAM_SUCCESS_LABEL_COMMAND_ENV = (
+    "BLUEPRINT_SINGLE_EPISODE_WAM_SUCCESS_LABEL_COMMAND"
+)
+DIRECT_EXTERNAL_EVALUATOR_GATE_ENV_NAMES = (
+    "BLUEPRINT_ALLOW_OPENAI_WAM_EPISODE_CONSISTENCY",
+    "BLUEPRINT_ALLOW_OPENAI_WAM_SUCCESS_LABELING",
+    "BLUEPRINT_ALLOW_GEMINI_WAM_EPISODE_CONSISTENCY",
+    "BLUEPRINT_ALLOW_GEMINI_WAM_SUCCESS_LABELING",
+)
 DIRECT_RGB_OBSERVATION_REMOVED_REQUIREMENTS = (
     "--require-real-perception-backend",
     "--require-sam3-completed",
@@ -215,9 +244,7 @@ SYSTEM_PYTHON = "python3"
 SEALED_GROOT_HF_HOME = "/opt/blueprint/hf_home"
 SEALED_GROOT_HF_HUB_CACHE = f"{SEALED_GROOT_HF_HOME}/hub"
 SEALED_COSMOS_BACKBONE_REPO = "nvidia/Cosmos-Reason2-2B"
-SEALED_COSMOS_BACKBONE_REVISION = (
-    "9ce19a195e423419c349abfc86fd07178b230561"
-)
+SEALED_COSMOS_BACKBONE_REVISION = "9ce19a195e423419c349abfc86fd07178b230561"
 RUNTIME_PACKAGE_OVERLAY_DIR = "/workspace/runtime_overlay/package"
 RUNTIME_PACKAGE_OVERLAY_PAYLOAD_ENV = "BLUEPRINT_SINGLE_EPISODE_RUNTIME_OVERLAY_XZ_BASE64"
 RUNTIME_PACKAGE_OVERLAY_SHA256_ENV = "BLUEPRINT_SINGLE_EPISODE_RUNTIME_OVERLAY_SHA256"
@@ -240,6 +267,11 @@ RUNTIME_PACKAGE_OVERLAY_MODULES = (
     "oscar_runtime_asset_contract.py",
     "unitree_groot_n17_sonic_policy_server_command.py",
     "oscar_isaac_closed_loop_eval.py",
+    "oscar_resident_worker.py",
+    "wam_isaac_evaluation_hierarchy.py",
+    "wam_episode_consistency_label_openai.py",
+    "wam_generated_video_success_label_gemini.py",
+    "wam_generated_video_success_label_openai.py",
     "oscar_wam_provider_bundle.py",
     "wam_derived_observation_harness.py",
     "groot_sonic_policy_endpoint.py",
@@ -260,9 +292,7 @@ REQUIRED_RUNTIME_PYTHONPATHS = (
     "/opt/OSCAR",
 )
 ISAAC_TASK_EXECUTOR_MODULE = "blueprint_pipeline.isaac_persistent_task_executor_service"
-GEAR_SONIC_PROCESS_SUPERVISOR_MODULE = (
-    "blueprint_pipeline.gear_sonic_process_supervisor"
-)
+GEAR_SONIC_PROCESS_SUPERVISOR_MODULE = "blueprint_pipeline.gear_sonic_process_supervisor"
 ISAAC_RUNTIME_BACKEND_MODULE = "blueprint_pipeline.isaac_runtime_task_backend"
 ISAAC_RUNTIME_OVERLAY_DIR = "/workspace/runtime_overlay"
 ISAAC_RUNTIME_OVERLAY_SOURCE = f"{ISAAC_RUNTIME_OVERLAY_DIR}/isaac_runtime_task_backend.py"
@@ -287,9 +317,7 @@ OSCAR_RUNTIME_DEPENDENCY_TARGET = "/workspace/oscar_runtime_deps"
 GROOT_RUNTIME_PYTHONPATH_ENV = "BLUEPRINT_GROOT_RUNTIME_PYTHONPATH"
 GROOT_VENV_ROOT_ENV = "BLUEPRINT_GROOT_VENV_ROOT"
 GROOT_VENV_ROOT = "/opt/gr00t-venv"
-OSCAR_RUNTIME_DEPENDENCY_TARGET_ENV = (
-    "BLUEPRINT_OSCAR_RUNTIME_DEPENDENCY_TARGET"
-)
+OSCAR_RUNTIME_DEPENDENCY_TARGET_ENV = "BLUEPRINT_OSCAR_RUNTIME_DEPENDENCY_TARGET"
 OSCAR_RUNTIME_DEPENDENCY_ARTIFACT = (
     "/workspace/closed_loop_out/oscar_runtime_dependency_repair.json"
 )
@@ -791,9 +819,7 @@ def _require_signed_output_staging_proof(
     }
 
 
-def _remote_bootstrap_script(
-    inputs: Mapping[str, Any], *, provider_name: str
-) -> str:
+def _remote_bootstrap_script(inputs: Mapping[str, Any], *, provider_name: str) -> str:
     """Embed non-secret runtime overlays in the remotely staged bootstrap."""
 
     bound_script = _bind_provider_allocation_identity(
@@ -927,6 +953,59 @@ def _remove_option(command: list[str], option: str, *, takes_value: bool) -> lis
                 raise ValueError(f"closed_loop_option_value_missing:{option}")
             del result[index]
     return result
+
+
+def _add_flag(command: list[str], option: str) -> list[str]:
+    result = _remove_option(command, option, takes_value=False)
+    result.append(option)
+    return result
+
+
+def _configure_direct_external_evaluators(
+    command: list[str],
+    plan_env: Mapping[str, Any],
+) -> tuple[list[str], dict[str, str]]:
+    """Configure optional external judges without changing the default lane.
+
+    The signed single-episode refresh is generated locally.  Command selection
+    therefore comes from explicit, non-secret local opt-ins and is copied into
+    the hash-bound bootstrap.  Provider-specific API keys remain outside this
+    contract; only an allow-gate name from the fixed whitelist may pass through.
+    """
+
+    result = list(command)
+    resolved_env = {str(name): str(value) for name, value in plan_env.items()}
+    for option, takes_value in {
+        **EXTERNAL_CONSISTENCY_OPTIONS,
+        **EXTERNAL_SUCCESS_LABEL_OPTIONS,
+    }.items():
+        result = _remove_option(result, option, takes_value=takes_value)
+    for name in EXTERNAL_CONSISTENCY_ENV | EXTERNAL_SUCCESS_LABEL_ENV:
+        resolved_env.pop(name, None)
+    for name in DIRECT_EXTERNAL_EVALUATOR_GATE_ENV_NAMES:
+        resolved_env.pop(name, None)
+
+    consistency_command = str(os.getenv(DIRECT_WAM_CONSISTENCY_COMMAND_ENV) or "").strip()
+    if consistency_command:
+        result = _replace_option(result, "--wam-consistency-command", consistency_command)
+        result = _add_flag(result, "--allow-wam-consistency-scoring")
+        result = _add_flag(result, "--require-forward-inverse-consistency")
+        resolved_env["BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING"] = "true"
+
+    success_label_command = str(os.getenv(DIRECT_WAM_SUCCESS_LABEL_COMMAND_ENV) or "").strip()
+    if success_label_command:
+        result = _replace_option(result, "--wam-success-label-command", success_label_command)
+        result = _add_flag(result, "--allow-wam-success-labeling")
+        result = _add_flag(result, "--require-generated-video-success-label")
+        resolved_env["BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING"] = "true"
+
+    if consistency_command or success_label_command:
+        for name in DIRECT_EXTERNAL_EVALUATOR_GATE_ENV_NAMES:
+            value = str(os.getenv(name) or "").strip().lower()
+            if value in {"1", "true", "yes", "y", "on"}:
+                resolved_env[name] = "true"
+
+    return result, resolved_env
 
 
 def _pin_blueprint_command_interpreter(command: list[str]) -> list[str]:
@@ -2399,11 +2478,10 @@ def _manipulation_policy_task_compatibility(
     """
 
     raw_declaration = plan.get("manipulation_policy_task_compatibility")
-    declaration = (
-        dict(raw_declaration) if isinstance(raw_declaration, Mapping) else {}
-    )
+    declaration = dict(raw_declaration) if isinstance(raw_declaration, Mapping) else {}
     raw_evidence = declaration.get("qualification_evidence")
     evidence = dict(raw_evidence) if isinstance(raw_evidence, Mapping) else {}
+
     def _string_set(value: Any) -> set[str]:
         return (
             {str(item).strip() for item in value if str(item).strip()}
@@ -2412,13 +2490,9 @@ def _manipulation_policy_task_compatibility(
         )
 
     training_task_ids = _string_set(declaration.get("training_task_ids"))
-    training_task_descriptions = _string_set(
-        declaration.get("training_task_descriptions")
-    )
+    training_task_descriptions = _string_set(declaration.get("training_task_descriptions"))
     reviewed_training_task_ids = set(SEALED_SONIC_REVIEWED_TRAINING_TASK_IDS)
-    reviewed_training_task_descriptions = set(
-        SEALED_SONIC_REVIEWED_TRAINING_TASK_DESCRIPTIONS
-    )
+    reviewed_training_task_descriptions = set(SEALED_SONIC_REVIEWED_TRAINING_TASK_DESCRIPTIONS)
     artifact_sha256 = str(evidence.get("artifact_sha256") or "").strip().lower()
     checks = {
         "declaration_present": bool(declaration),
@@ -2426,17 +2500,13 @@ def _manipulation_policy_task_compatibility(
         == MANIPULATION_POLICY_TASK_COMPATIBILITY_SCHEMA_VERSION,
         "status_qualified": declaration.get("status") == "qualified",
         "task_id_exact": declaration.get("task_id") == task_id,
-        "embodiment_exact": declaration.get("embodiment")
-        == REQUIRED_SONIC_EMBODIMENT,
-        "checkpoint_repo_exact": declaration.get("checkpoint_repo")
-        == SEALED_SONIC_CHECKPOINT_REPO,
+        "embodiment_exact": declaration.get("embodiment") == REQUIRED_SONIC_EMBODIMENT,
+        "checkpoint_repo_exact": declaration.get("checkpoint_repo") == SEALED_SONIC_CHECKPOINT_REPO,
         "checkpoint_revision_exact": declaration.get("checkpoint_revision")
         == SEALED_SONIC_CHECKPOINT_REVISION,
         "training_dataset_repo_exact": declaration.get("training_dataset_repo")
         == SEALED_SONIC_TRAINING_DATASET_REPO,
-        "training_dataset_revision_exact": declaration.get(
-            "training_dataset_revision"
-        )
+        "training_dataset_revision_exact": declaration.get("training_dataset_revision")
         == SEALED_SONIC_TRAINING_DATASET_REVISION,
         "training_task_ids_match_reviewed_provenance": training_task_ids
         == reviewed_training_task_ids,
@@ -2444,12 +2514,10 @@ def _manipulation_policy_task_compatibility(
             training_task_descriptions == reviewed_training_task_descriptions
         ),
         "requested_task_in_training_tasks": task_id in training_task_ids,
-        "requested_task_in_reviewed_checkpoint_tasks": task_id
-        in reviewed_training_task_ids,
+        "requested_task_in_reviewed_checkpoint_tasks": task_id in reviewed_training_task_ids,
         "qualification_evidence_passed": evidence.get("status") == "passed",
         "qualification_task_exact": evidence.get("task_id") == task_id,
-        "qualification_environment_isaac": evidence.get("environment")
-        == "isaac_sim",
+        "qualification_environment_isaac": evidence.get("environment") == "isaac_sim",
         "registered_transition_exact": evidence.get("registered_transition_id")
         == REQUIRED_MANIPULATION_TRANSITION_ID,
         "qualification_artifact_sha256_valid": len(artifact_sha256) == 64
@@ -2476,9 +2544,7 @@ def _manipulation_policy_task_compatibility(
         "declaration": declaration or None,
         "checks": checks,
         "failed_checks": failed_checks,
-        "blockers": (
-            [] if qualified else [MANIPULATION_POLICY_TASK_COMPATIBILITY_BLOCKER]
-        ),
+        "blockers": ([] if qualified else [MANIPULATION_POLICY_TASK_COMPATIBILITY_BLOCKER]),
         "claim_boundary": {
             "checkpoint_loadability_is_not_task_qualification": True,
             "sonic_action_shape_is_not_task_qualification": True,
@@ -2874,9 +2940,7 @@ def _pin_bootstrap_interpreters(script: str) -> str:
     # verifies GR00T's baked Reason2 backbone.  Scope that one subprocess back
     # to the immutable image cache so an ambient OSCAR cache cannot make the
     # healthcheck inspect the wrong model family or attempt a network fallback.
-    healthcheck_entrypoint = (
-        "python3 /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py"
-    )
+    healthcheck_entrypoint = "python3 /opt/blueprint/groot_oscar_closed_loop_image_healthcheck.py"
     if script.count(healthcheck_entrypoint) != 1:
         raise ValueError("single_episode_bootstrap_healthcheck_marker_ambiguous")
     sealed_healthcheck = (
@@ -3006,9 +3070,7 @@ def _egocentric_camera_safe_route(
             not isinstance(point, list)
             or len(point) != 3
             or any(
-                not math.isclose(
-                    float(point[index]), pose_xyz[index], rel_tol=0.0, abs_tol=1e-6
-                )
+                not math.isclose(float(point[index]), pose_xyz[index], rel_tol=0.0, abs_tol=1e-6)
                 for index in range(3)
             )
         ):
@@ -3016,8 +3078,7 @@ def _egocentric_camera_safe_route(
     finite_candidates = sorted(
         float(value)
         for value in candidates
-        if math.isfinite(float(value))
-        and float(value) >= DIRECT_EGOCENTRIC_STANCE_MIN_DISTANCE_M
+        if math.isfinite(float(value)) and float(value) >= DIRECT_EGOCENTRIC_STANCE_MIN_DISTANCE_M
     )
     if not finite_candidates:
         raise ValueError("single_episode_egocentric_stance_candidate_missing")
@@ -3045,9 +3106,7 @@ def _egocentric_camera_safe_route(
             "stance_focus_xyz": focus_xyz,
             "selected_pose_xyz": adjusted_pose,
             "selected_stance_distance_m": selected_distance,
-            "minimum_stance_distance_m": (
-                DIRECT_EGOCENTRIC_STANCE_MIN_DISTANCE_M
-            ),
+            "minimum_stance_distance_m": (DIRECT_EGOCENTRIC_STANCE_MIN_DISTANCE_M),
             "camera_mount_changed": False,
             "surrogate": False,
         },
@@ -3113,11 +3172,9 @@ def _load_single_episode_inputs(
         raise ValueError("single_episode_attempt_image_mismatch")
     if attempt.get("selected_task_id") != "microwave_door":
         raise ValueError("single_episode_task_identity_mismatch")
-    manipulation_policy_task_compatibility = (
-        _manipulation_policy_task_compatibility(
-            plan=plan,
-            task_id=REQUIRED_MANIPULATION_TASK_ID,
-        )
+    manipulation_policy_task_compatibility = _manipulation_policy_task_compatibility(
+        plan=plan,
+        task_id=REQUIRED_MANIPULATION_TASK_ID,
     )
     if not isinstance(task_contract, Mapping):
         raise ValueError("single_episode_task_contract_not_object")
@@ -3200,21 +3257,15 @@ def _load_single_episode_inputs(
     )
     for option in DIRECT_RGB_OBSERVATION_REMOVED_REQUIREMENTS:
         command = _remove_option(command, option, takes_value=False)
-    # The prepared campaign plan required an additional external strict
-    # forward/inverse judge whose service was never bundled.  This direct run
-    # exercises the real learned OSCAR/WAM checkpoint itself and keeps the
-    # external-judge claim explicitly out of scope.
-    for option, takes_value in EXTERNAL_CONSISTENCY_OPTIONS.items():
-        command = _remove_option(command, option, takes_value=takes_value)
     plan_env = copy.deepcopy(dict(plan.get("env") or {}))
-    for name in EXTERNAL_CONSISTENCY_ENV:
-        plan_env.pop(name, None)
+    # Historical sealed plans named an unbundled strict judge.  Keep the
+    # default direct lane unchanged, while allowing a signed refresh to opt in
+    # to an actually available external scorer and generated-video labeler.
+    command, plan_env = _configure_direct_external_evaluators(command, plan_env)
     plan_env["PYTHONPATH"] = _runtime_pythonpath(plan_env.get("PYTHONPATH"))
     plan_env[GROOT_RUNTIME_PYTHONPATH_ENV] = plan_env["PYTHONPATH"]
     plan_env[GROOT_VENV_ROOT_ENV] = GROOT_VENV_ROOT
-    plan_env[OSCAR_RUNTIME_DEPENDENCY_TARGET_ENV] = (
-        OSCAR_RUNTIME_DEPENDENCY_TARGET
-    )
+    plan_env[OSCAR_RUNTIME_DEPENDENCY_TARGET_ENV] = OSCAR_RUNTIME_DEPENDENCY_TARGET
     # The immutable image was built from this exact reviewed OSCAR checkout.
     # Override inherited prepared-plan values, then independently verify the
     # live checkout in the bootstrap before the closed-loop readiness gate.
@@ -3251,9 +3302,7 @@ def _load_single_episode_inputs(
         ),
         plan_env["PYTHONPATH"],
     )
-    groot_server_command = [
-        str(item) for item in plan.get("groot_server_command") or []
-    ]
+    groot_server_command = [str(item) for item in plan.get("groot_server_command") or []]
     plan["groot_server_command"] = _scope_command_pythonpath(
         groot_server_command,
         plan_env[GROOT_RUNTIME_PYTHONPATH_ENV],
@@ -3351,6 +3400,21 @@ def _load_single_episode_inputs(
     if script.count(old_manifest) != 1:
         raise ValueError("single_episode_result_manifest_marker_ambiguous")
     script = script.replace(old_manifest, new_manifest, 1)
+    closed_loop_redirect_marker = (
+        "> /workspace/closed_loop_stdout.log 2> /workspace/closed_loop_stderr.log"
+    )
+    if script.count(closed_loop_redirect_marker) != 1:
+        raise ValueError("single_episode_closed_loop_log_redirect_marker_ambiguous")
+    script = script.replace(
+        closed_loop_redirect_marker,
+        (
+            "> >(tee /workspace/closed_loop_stdout.log >> "
+            "/workspace/closed_loop_out/qualification_episode.log) "
+            "2> >(tee /workspace/closed_loop_stderr.log >> "
+            "/workspace/closed_loop_out/qualification_episode.log >&2)"
+        ),
+        1,
+    )
     terminal_upload_marker = """upload_phase() {
   if [ \"$1\" = \"runner_done\" ] || [ \"$1\" = \"runner_timeout\" ]; then
     BLUEPRINT_BOOTSTRAP_PHASE=\"$1\" python /workspace/upload_progress.py
@@ -3418,9 +3482,7 @@ def _load_single_episode_inputs(
         "source_task_contract_sha256": hashlib.sha256(task_contract_raw).hexdigest(),
         "task_contract_resolution": task_contract_resolution,
         "task_prompt": TASK_PROMPT,
-        "manipulation_policy_task_compatibility": (
-            manipulation_policy_task_compatibility
-        ),
+        "manipulation_policy_task_compatibility": (manipulation_policy_task_compatibility),
         "qualification_checkpoint_restore": restore_evidence or None,
         "perception_target_prompts": perception_target_prompts,
         "runtime_package_overlay_sha256": runtime_overlay_sha256,
@@ -3478,8 +3540,7 @@ def _validate_collected_final_review(root: Path) -> dict[str, Any]:
         if (
             validation.get("primary_camera_role") != "robot_pov"
             or validation.get("overview_excluded_from_primary_review") is not True
-            or validation.get("concat_mode")
-            != "primary_same_session_isaac_robot_pov_only"
+            or validation.get("concat_mode") != "primary_same_session_isaac_robot_pov_only"
         ):
             blockers.append("single_episode_final_review_primary_not_robot_pov_only")
         if list(validation.get("required_camera_roles") or []) != [
@@ -3617,35 +3678,24 @@ def _validate_collected_final_review(root: Path) -> dict[str, Any]:
                     "executed_prefix_duration_seconds_by_step"
                 )
                 try:
-                    executed_durations = [
-                        float(value) for value in raw_executed_durations
-                    ]
+                    executed_durations = [float(value) for value in raw_executed_durations]
                 except (TypeError, ValueError):
                     executed_durations = []
                 expected_executed_duration = sum(executed_durations)
                 try:
                     declared_expected_duration = float(
-                        standalone_wam.get(
-                            "expected_executed_timeline_duration_seconds"
-                        )
+                        standalone_wam.get("expected_executed_timeline_duration_seconds")
                     )
-                    observed_wam_duration = float(
-                        standalone_wam.get("duration_seconds")
-                    )
+                    observed_wam_duration = float(standalone_wam.get("duration_seconds"))
                 except (TypeError, ValueError):
                     declared_expected_duration = observed_wam_duration = -1.0
                 executed_timeline_valid = bool(
                     len(executed_durations) == trace_count
-                    and all(
-                        math.isfinite(value) and value > 0
-                        for value in executed_durations
-                    )
+                    and all(math.isfinite(value) and value > 0 for value in executed_durations)
                     and math.isfinite(declared_expected_duration)
-                    and abs(declared_expected_duration - expected_executed_duration)
-                    <= 1e-6
+                    and abs(declared_expected_duration - expected_executed_duration) <= 1e-6
                     and math.isfinite(observed_wam_duration)
-                    and abs(observed_wam_duration - expected_executed_duration)
-                    <= (2.0 / 15.0)
+                    and abs(observed_wam_duration - expected_executed_duration) <= (2.0 / 15.0)
                 )
                 if (
                     standalone_wam.get("schema_version")
@@ -3662,13 +3712,9 @@ def _validate_collected_final_review(root: Path) -> dict[str, Any]:
                     != "dynamic_from_executed_controller_duration"
                     or standalone_wam.get("prediction_review_timeline_mode")
                     != "executed_control_prefix_per_decision"
-                    or standalone_wam.get(
-                        "full_prediction_horizons_preserved_in_source_clips"
-                    )
+                    or standalone_wam.get("full_prediction_horizons_preserved_in_source_clips")
                     is not True
-                    or standalone_wam.get(
-                        "overlapping_unexecuted_prediction_tails_excluded"
-                    )
+                    or standalone_wam.get("overlapping_unexecuted_prediction_tails_excluded")
                     is not True
                     or not executed_timeline_valid
                 ):
@@ -3708,12 +3754,7 @@ def _validate_collected_qualification_checkpoint(
 ) -> dict[str, Any]:
     if not expected:
         return {"status": "not_requested", "blockers": []}
-    path = (
-        root
-        / "closed_loop_output"
-        / "closed_loop_out"
-        / "qualification_checkpoint_restore.json"
-    )
+    path = root / "closed_loop_output" / "closed_loop_out" / "qualification_checkpoint_restore.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -3724,12 +3765,10 @@ def _validate_collected_qualification_checkpoint(
         == QUALIFICATION_CHECKPOINT_RESTORE_SCHEMA_VERSION,
         "status_passed": value.get("status") == "passed",
         "checkpoint_path_exact": value.get("checkpoint_path") == REMOTE_FINAL_CHECKPOINT,
-        "archive_sha256_exact": value.get("archive_sha256")
-        == expected.get("archive_sha256"),
+        "archive_sha256_exact": value.get("archive_sha256") == expected.get("archive_sha256"),
         "archive_size_exact": int(value.get("archive_size_bytes") or 0)
         == int(expected.get("archive_size_bytes") or -1),
-        "part_count_exact": int(value.get("part_count") or 0)
-        == len(expected.get("parts") or []),
+        "part_count_exact": int(value.get("part_count") or 0) == len(expected.get("parts") or []),
         "raw_signed_urls_not_recorded": value.get("raw_signed_urls_recorded") is False,
     }
     failed = sorted(name for name, passed in checks.items() if not passed)
@@ -3761,8 +3800,7 @@ def _validate_collected_semantic_success(root: Path) -> dict[str, Any]:
         "manipulation_success_proven": value.get("manipulation_success_proven") is True,
         "task_target_reached": value.get("task_target_reached") is True,
         "success_answer_yes": proof.get("answer") in {"yes", "proven"},
-        "target_manipulation_succeeded": proof.get("did_target_manipulation_succeed")
-        is True,
+        "target_manipulation_succeeded": proof.get("did_target_manipulation_succeed") is True,
     }
     failed = sorted(name for name, passed in checks.items() if not passed)
     return {
@@ -4018,8 +4056,12 @@ def run_single_episode(
         if capacity.get("status") != "available" or not viable:
             blockers.append("single_episode_48gb_rtx_capacity_unavailable")
         pre_spend_preflight, pre_spend_blockers = qualification_pre_spend_preflight(
-            root=root, capacity=capacity, pre_inventory=pre_inventory,
-            image_ref=IMAGE_REF, execute=execute, provider=resolved_provider_name,
+            root=root,
+            capacity=capacity,
+            pre_inventory=pre_inventory,
+            image_ref=IMAGE_REF,
+            execute=execute,
+            provider=resolved_provider_name,
         )
         blockers.extend(pre_spend_blockers)
         request["pre_spend_preflight"] = pre_spend_preflight
@@ -4033,7 +4075,9 @@ def run_single_episode(
         }
 
     reported_blockers = list(blockers)
-    reported_blockers += ["single_episode_bootstrap_staging_required"] if bootstrap_staging_required else []
+    reported_blockers += (
+        ["single_episode_bootstrap_staging_required"] if bootstrap_staging_required else []
+    )
     preflight = {
         "schema_version": "single_g1_kitchen_episode_preflight.v1",
         "status": (
@@ -4050,9 +4094,7 @@ def run_single_episode(
         ),
         "attempt_id": "episode_001",
         "task": "microwave_door",
-        "manipulation_policy_task_compatibility": (
-            manipulation_policy_task_compatibility or None
-        ),
+        "manipulation_policy_task_compatibility": (manipulation_policy_task_compatibility or None),
         "qualification_checkpoint_restore": qualification_checkpoint_restore or None,
         "episode_step_cap": 48,
         "oscar_seed": 1001,
@@ -4069,9 +4111,7 @@ def run_single_episode(
         "status": "admitted" if not reported_blockers else "blocked",
         "resource_class": "gpu_render",
         "scope": "one_g1_kitchen_groot_sonic_oscar_episode",
-        "manipulation_policy_task_compatibility": (
-            manipulation_policy_task_compatibility or None
-        ),
+        "manipulation_policy_task_compatibility": (manipulation_policy_task_compatibility or None),
         "qualification_checkpoint_restore": qualification_checkpoint_restore or None,
         "provider_mutations_performed": 0,
         "blockers": sorted(set(reported_blockers)),
@@ -4089,7 +4129,9 @@ def run_single_episode(
         "gpu_type_ids": (
             list(QUALIFICATION_RUNPOD_GPU_TYPES)
             if resolved_provider_name == "runpod" and qualification_checkpoint_restore
-            else list(GPU_TYPES) if resolved_provider_name == "runpod" else []
+            else list(GPU_TYPES)
+            if resolved_provider_name == "runpod"
+            else []
         ),
         "vast_offer_requirements": (
             capacity.get("selection_policy") if resolved_provider_name == "vast" else None
@@ -4116,9 +4158,7 @@ def run_single_episode(
             else "vast_instance_disk_container_disk_gb"
         ),
         "episode_attempt_id": "episode_001",
-        "manipulation_policy_task_compatibility": (
-            manipulation_policy_task_compatibility or None
-        ),
+        "manipulation_policy_task_compatibility": (manipulation_policy_task_compatibility or None),
         "qualification_checkpoint_restore": qualification_checkpoint_restore or None,
         "episode_seed": 1001,
         "signed_bundle_url_present": bool(bundle_url),
@@ -4232,7 +4272,8 @@ def run_single_episode(
             launch = {
                 **launch,
                 "status": launch.get("status") or "launch_or_watch_interrupted",
-                "allocation_outcome_ambiguous": True, "error_type": type(exc).__name__,
+                "allocation_outcome_ambiguous": True,
+                "error_type": type(exc).__name__,
             }
         watch = {
             "status": "blocked",
@@ -4278,8 +4319,7 @@ def run_single_episode(
             )
         if semantic_success.get("status") != "passed":
             run_blockers.extend(
-                semantic_success.get("blockers")
-                or ["single_episode_semantic_success_not_proven"]
+                semantic_success.get("blockers") or ["single_episode_semantic_success_not_proven"]
             )
     if teardown.get("provider_absence_confirmed") is not True:
         run_blockers.append("single_episode_teardown_not_proven")
@@ -4297,9 +4337,7 @@ def run_single_episode(
         "bundle_sha256": inputs.get("bundle_sha256"),
         "attempt_id": "episode_001",
         "task": "microwave_door",
-        "manipulation_policy_task_compatibility": (
-            manipulation_policy_task_compatibility or None
-        ),
+        "manipulation_policy_task_compatibility": (manipulation_policy_task_compatibility or None),
         "qualification_checkpoint_restore": qualification_checkpoint_restore or None,
         "episode_seed": 1001,
         "episode_step_cap": 48,

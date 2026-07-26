@@ -267,7 +267,10 @@ def run_adapter(*, input_path: str | Path, output_path: str | Path) -> dict[str,
     target = Path(output_path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     request = json.loads(request_path.read_text(encoding="utf-8"))
-    if not isinstance(request, Mapping) or request.get("schema_version") != "controller_fk_skeleton_request.v1":
+    if (
+        not isinstance(request, Mapping)
+        or request.get("schema_version") != "controller_fk_skeleton_request.v3"
+    ):
         raise ValueError("controller_fk_request_schema_mismatch")
     action = dict(request.get("action") or {})
     action_sha = _canonical(action)
@@ -410,6 +413,27 @@ def run_adapter(*, input_path: str | Path, output_path: str | Path) -> dict[str,
     runtime_result_id = str(raw.get("runtime_result_id") or "").strip()
     if not runtime_result_id:
         raise RuntimeError("official_gear_sonic_runtime_result_id_missing")
+    state_seed_sha256 = str(raw.get("controller_fk_state_seed_sha256") or "").lower()
+    expected_state_seed_sha256 = str(
+        request.get("controller_fk_state_seed_sha256") or ""
+    ).lower()
+    initial_fk_frame = dict(raw.get("initial_fk_frame") or {})
+    initial_fk_frame_sha256 = str(raw.get("initial_fk_frame_sha256") or "").lower()
+    if (
+        not _is_sha256(state_seed_sha256)
+        or state_seed_sha256 != expected_state_seed_sha256
+        or not initial_fk_frame
+        or not _is_sha256(initial_fk_frame_sha256)
+        or _canonical(initial_fk_frame) != initial_fk_frame_sha256
+        or str(initial_fk_frame.get("source_state_seed_sha256") or "").lower()
+        != state_seed_sha256
+        or str(initial_fk_frame.get("seed_authority") or "")
+        not in {
+            "initial_observation_live_isaac_state",
+            "wam_controller_fk_prediction",
+        }
+    ):
+        raise RuntimeError("official_gear_sonic_initial_fk_frame_invalid")
 
     raw_sequence = raw.get("controller_fk_sequence")
     if isinstance(raw_sequence, (str, bytes, bytearray, Mapping)):
@@ -578,6 +602,33 @@ def run_adapter(*, input_path: str | Path, output_path: str | Path) -> dict[str,
         root, target.with_name("gear_sonic_controller_tree_manifest.json")
     )
     model_sha = _sha256(model)
+    body_positions = joint_positions[:29]
+    left_hand_positions = joint_positions[29:36]
+    right_hand_positions = joint_positions[36:43]
+    base_quaternion = _numeric_vector(
+        proprioceptive_state.get("base_quat_measured"),
+        name="gear_sonic_base_quat_measured",
+    )
+    if len(base_quaternion) != 4:
+        raise RuntimeError("official_gear_sonic_base_quaternion_dimension_invalid")
+    quaternion_norm = math.sqrt(sum(value * value for value in base_quaternion))
+    if quaternion_norm <= 1e-9:
+        raise RuntimeError("official_gear_sonic_base_quaternion_invalid")
+    w, x, y, z = [value / quaternion_norm for value in base_quaternion]
+    controller_fk_policy_state = {
+        "left_leg": body_positions[0:6],
+        "right_leg": body_positions[6:12],
+        "waist": body_positions[12:15],
+        "left_arm": body_positions[15:22],
+        "right_arm": body_positions[22:29],
+        "left_hand": left_hand_positions,
+        "right_hand": right_hand_positions,
+        "projected_gravity": [
+            -(2.0 * x * z - 2.0 * y * w),
+            -(2.0 * y * z + 2.0 * x * w),
+            -(1.0 - 2.0 * x * x - 2.0 * y * y),
+        ],
+    }
     state = {
         "source_action_sha256": action_sha,
         "proxy_or_surrogate": False,
@@ -593,6 +644,10 @@ def run_adapter(*, input_path: str | Path, output_path: str | Path) -> dict[str,
         "controller_fk_sequence": controller_fk_sequence,
         "controller_fk_sequence_sha256": controller_fk_sequence_sha256,
         "controller_execution_contract": execution_contract,
+        "initial_fk_frame": initial_fk_frame,
+        "initial_fk_frame_sha256": initial_fk_frame_sha256,
+        "controller_fk_state_seed_sha256": state_seed_sha256,
+        "unitree_g1_sonic_state": controller_fk_policy_state,
     }
     action_contract = {
         "command": "UNITREE_G1_SONIC",
@@ -631,6 +686,9 @@ def run_adapter(*, input_path: str | Path, output_path: str | Path) -> dict[str,
         "controller_fk_sequence": controller_fk_sequence,
         "controller_fk_sequence_sha256": controller_fk_sequence_sha256,
         "controller_execution_contract": execution_contract,
+        "initial_fk_frame": initial_fk_frame,
+        "initial_fk_frame_sha256": initial_fk_frame_sha256,
+        "controller_fk_state_seed_sha256": state_seed_sha256,
         "generated_robot_state": state,
         "action_contract": action_contract,
         "executed_at": utc_now_iso(),
@@ -656,6 +714,9 @@ def run_adapter(*, input_path: str | Path, output_path: str | Path) -> dict[str,
             "cross_simulator_registration"
         ],
         "generated_robot_state": state,
+        "initial_fk_frame": initial_fk_frame,
+        "initial_fk_frame_sha256": initial_fk_frame_sha256,
+        "controller_fk_state_seed_sha256": state_seed_sha256,
     }
     key = os.environ.get(SIGNING_KEY_ENV, "")
     if not key:

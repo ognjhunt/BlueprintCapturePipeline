@@ -133,7 +133,10 @@ def test_gear_sonic_readiness_reuses_canary_for_full_fk_boundary_without_wire_ac
     assert "def retained_canary_transport(**kwargs):" in source
     assert "return dict(accepted)" in source
     assert "transport=retained_canary_transport" in source
+    assert "'schema_version': 'controller_fk_skeleton_request.v3'" in source
     assert "'camera_projection_context': projection_context" in source
+    assert "'controller_fk_state_seed': live_snapshot" in source
+    assert "'controller_fk_state_seed_sha256': live_snapshot[" in source
     assert "kwargs.get('motion_token') != motion" in source
     assert "kwargs.get('action_frames') is not None" in source
     assert "'no_additional_wire_action_sent': True" in source

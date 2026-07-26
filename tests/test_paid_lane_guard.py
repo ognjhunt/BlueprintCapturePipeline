@@ -566,3 +566,29 @@ class TestReapOrphansCli:
         _aged_record(tmp_path, run_id="cli-risk", instance_id="")
         rc = guard.main(["reap-orphans", "--registry-dir", str(tmp_path)])
         assert rc == 1
+
+
+def test_extend_pending_teardown_max_age_preserves_exact_open_obligation(
+    tmp_path: Path,
+) -> None:
+    record = open_pending_teardown(
+        provider="vast",
+        lane="qualification",
+        run_id="retained-gpu",
+        instance_id="45880138",
+        max_age_seconds=19_800,
+        registry_dir=tmp_path,
+    )
+
+    extended = guard.extend_pending_teardown_max_age(
+        record["path"],
+        instance_id="45880138",
+        extension_seconds=7_200,
+        evidence={"new_deadline_epoch": 123.0},
+    )
+
+    assert extended["status"] == "open"
+    assert extended["instance_id"] == "45880138"
+    assert extended["max_age_seconds"] == 27_000
+    assert extended["extensions"][-1]["extension_seconds"] == 7_200
+    assert extended["extensions"][-1]["evidence"] == {"new_deadline_epoch": 123.0}

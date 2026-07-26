@@ -3842,3 +3842,105 @@ def test_allocator_routes_refresh_bootstrap_with_fixed_inputs(
     assert observed["provider_bootstrap_url_file"] == str(tmp_path / "refresh_url.txt")
     assert observed["component"] == "episode"
     assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_watchdog_extension_dry_run_binds_rate_deadline_and_spend_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deadline = time.time() + 3_600.0
+    manifest_path = _live_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    prefix = manifest["resource_name_prefix"]
+    manifest["instance_id"] = "45880138"
+    manifest["watchdog_deadline_epoch"] = deadline
+    manifest["watchdog"].update(
+        {
+            "provider": "vast",
+            "pid": 4321,
+            "pod_name_prefix": prefix,
+            "deadline_epoch": deadline,
+        }
+    )
+    qualification._private_write_json(
+        manifest_path,
+        manifest,
+    )
+
+    class Provider:
+        def inspect(self, instance_id: str) -> dict:
+            assert instance_id == "45880138"
+            return {
+                "api_confirmed": True,
+                "instance_id": instance_id,
+                "name": prefix + "-pod",
+                "cost_per_hour": 0.6822222222222223,
+            }
+
+    monkeypatch.setattr(qualification, "get_render_provider", lambda name: Provider())
+    monkeypatch.setattr(qualification, "_watchdog_process_matches", lambda **kwargs: True)
+    result = qualification._extend_watchdog(
+        session_manifest=manifest_path,
+        adapter_output=tmp_path / "extension.json",
+        execute=False,
+        extension_seconds=7_200,
+        extension_spend_cap_usd=1.40,
+    )
+
+    assert result["status"] == "dry_run_ready"
+    assert result["new_deadline_epoch"] == pytest.approx(deadline + 7_200)
+    assert result["projected_additional_spend_usd"] == pytest.approx(
+        1.3644444444444446
+    )
+    assert result["provider_mutations_performed"] == 0
+
+
+def test_allocator_routes_explicit_watchdog_extension_caps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    observed: dict = {}
+
+    def fake_run(**kwargs):
+        observed.update(kwargs)
+        return {"status": "watchdog_extended_continuing_spend"}
+
+    monkeypatch.setattr(allocator, "run_qualification_session", fake_run)
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider-launch-request",
+            str(tmp_path / "request.json"),
+            "--release-evidence",
+            str(tmp_path / "release.json"),
+            "--model-cache-evidence",
+            str(tmp_path / "cache.json"),
+            "--preflight-bundle",
+            str(tmp_path / "preflight.json"),
+            "--admission-out",
+            str(tmp_path / "admission.json"),
+            "--bound-request-out",
+            str(tmp_path / "bound.json"),
+            "--adapter-output",
+            str(tmp_path / "extension.json"),
+            "--pod-name",
+            "unused",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            qualification.PROBE_KIND,
+            "--qualification-action",
+            "extend-watchdog",
+            "--qualification-session-manifest",
+            str(tmp_path / qualification.SESSION_MANIFEST_NAME),
+            "--qualification-watchdog-extension-seconds",
+            "7200",
+            "--qualification-watchdog-extension-spend-cap-usd",
+            "1.40",
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["action"] == "extend-watchdog"
+    assert observed["watchdog_extension_seconds"] == 7_200
+    assert observed["watchdog_extension_spend_cap_usd"] == pytest.approx(1.40)
+    assert json.loads(capsys.readouterr().out) == {"success": True}

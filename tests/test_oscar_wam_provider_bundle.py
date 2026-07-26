@@ -1246,6 +1246,92 @@ def test_controller_fk_action_horizon_requires_visible_effector_motion(
         assert report["visual_signal"]["blockers"] == []
 
 
+def test_controller_fk_action_horizon_ignores_non_action_seed_visibility_for_gate(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("cv2")
+    trace = tmp_path / "controller_fk_trace_with_offscreen_seed.jsonl"
+
+    def _landmarks(*, offset: int, available: bool) -> list[dict[str, object]]:
+        return [
+            {
+                "landmark_id": f"{side}_{part}",
+                "image_projection": {
+                    "available": available,
+                    "u_px": x + offset,
+                    "v_px": y,
+                    "image_width_px": 640,
+                    "image_height_px": 480,
+                    **(
+                        {}
+                        if available
+                        else {"unavailable_reason": "outside_live_camera_viewport"}
+                    ),
+                },
+            }
+            for side, x in (("left", 220), ("right", 420))
+            for part, y in (("wrist", 300), ("hand", 250))
+        ]
+
+    rows = [
+        {
+            "frame_index": 0,
+            "source_controller_horizon_frame_index": -1,
+            "projected_landmarks": _landmarks(offset=700, available=False),
+            "segments": [
+                {"from": "left_wrist", "to": "left_hand"},
+                {"from": "right_wrist", "to": "right_hand"},
+            ],
+        },
+        *[
+            {
+                "frame_index": action_index + 1,
+                "source_controller_horizon_frame_index": action_index,
+                "projected_landmarks": _landmarks(
+                    offset=action_index * 12,
+                    available=True,
+                ),
+                "segments": [
+                    {"from": "left_wrist", "to": "left_hand"},
+                    {"from": "right_wrist", "to": "right_hand"},
+                ],
+            }
+            for action_index in range(2)
+        ],
+    ]
+    trace.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    report, _ = bundle_module._render_projected_skeleton_conditioning_video(
+        trace_path=trace,
+        output_path=tmp_path / "conditioning.mp4",
+        width=640,
+        height=480,
+        fps=5.0,
+        num_frames=3,
+        conditioning_mode="controller_fk_action_horizon",
+    )
+
+    assert report["visual_signal"]["status"] == "completed"
+    assert report["visual_signal"]["blockers"] == []
+    assert report["projected_g1_skeleton_minimum_true_in_frame_landmark_count"] == 0
+    assert report["projected_g1_skeleton_action_horizon_frame_count"] == 2
+    assert (
+        report[
+            "projected_g1_skeleton_action_horizon_minimum_true_in_frame_landmark_count"
+        ]
+        == 4
+    )
+    assert (
+        report[
+            "projected_g1_skeleton_action_horizon_minimum_true_in_frame_effector_count"
+        ]
+        == 4
+    )
+    assert report["visual_signal"]["gate_scope"] == (
+        "controller_fk_action_horizon_frames_only"
+    )
+
+
 def test_projected_skeleton_renderer_encodes_finite_offscreen_fk_at_image_edge(
     tmp_path: Path,
 ) -> None:

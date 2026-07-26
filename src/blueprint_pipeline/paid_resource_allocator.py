@@ -496,6 +496,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="episode",
     )
     gpu.add_argument("--qualification-tail-lines", type=int, default=200)
+    gpu.add_argument("--qualification-watchdog-extension-seconds", type=int)
+    gpu.add_argument("--qualification-watchdog-extension-spend-cap-usd", type=float)
     gpu.add_argument(
         "--qualification-identity-file",
         default="~/.ssh/id_ed25519",
@@ -785,6 +787,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             ):
                 missing.append("stoppable_qualification_component")
+            if args.qualification_action == "extend-watchdog":
+                missing.extend(
+                    name
+                    for name in (
+                        "qualification_watchdog_extension_seconds",
+                        "qualification_watchdog_extension_spend_cap_usd",
+                    )
+                    if getattr(args, name, None) is None
+                )
             if missing:
                 result = {
                     "status": "blocked",
@@ -836,6 +847,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         bound_request_out=args.bound_request_out,
                         adapter_output=args.adapter_output,
                         pod_name=args.pod_name,
+                        watchdog_extension_seconds=(
+                            args.qualification_watchdog_extension_seconds
+                        ),
+                        watchdog_extension_spend_cap_usd=(
+                            args.qualification_watchdog_extension_spend_cap_usd
+                        ),
                         execute=args.execute,
                     )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -862,6 +879,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "gpu_status_collected_continuing_spend",
                 "component_restarted_continuing_spend",
                 "component_stopped_continuing_spend",
+                "watchdog_extended_continuing_spend",
                 "teardown_completed_provider_zero",
             }
             print(json.dumps({"success": success}, sort_keys=True))
