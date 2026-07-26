@@ -2,7 +2,7 @@
   "schema_version": "policy_ranking_judge_request_inventory.v1",
   "status": "ready",
   "partition": "calibration",
-  "protocol_sha256": "a361a787a15fb6a212ae0331a7cc0ccd60bf00535768e857ab2078f981feca8e",
+  "protocol_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
   "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
   "provider": "openai",
   "model": "gpt-5-2025-08-07",
@@ -1310,5 +1310,5 @@
   "blockers": [],
   "provider_called": false,
   "data_uploaded": false,
-  "inventory_sha256": "a079d864baa3ecf8f1e8101c1b6c79f6388a1413edf9babe9302279d5707a4f6"
+  "inventory_sha256": "cf71587997868182275a8d482abe5aecb4315b6fdda3fc7b7436cd0f8a34e9e7"
 }
