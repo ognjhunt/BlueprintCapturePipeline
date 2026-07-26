@@ -131,9 +131,9 @@
       "conservative_cost_accounting_usd": 2.8969399999999994,
       "run_file_sha256": "40125739f72fdb5917470704628796c27be936b23844d15002b1e73f9279363c",
       "raw_response_persisted": false,
-      "used_for_ranking": false,
-      "ranking_disposition": "complete frozen calibration predictions; calibration labels remain sealed",
-      "benchmark_labels_joined": false,
+      "used_for_ranking": true,
+      "ranking_disposition": "frozen calibration evaluation completed; the registered gate set does not pass",
+      "benchmark_labels_joined": true,
       "gate_or_threshold_changed": false
     }
   ],
