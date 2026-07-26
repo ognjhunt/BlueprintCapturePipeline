@@ -8,6 +8,7 @@ import yaml
 from blueprint_pipeline.policy_ranking_thesis import (
     DEFAULT_POLICIES,
     JUDGE_RESULT_SCHEMA,
+    _benchmark_outcomes,
     build_hybrid_scene_bundle,
     build_controlled_scene_bundle,
     build_preregistration,
@@ -138,6 +139,8 @@ def test_calibration_computes_frozen_metrics_and_rejects_leakage(tmp_path: Path)
     assert report["status"] == "completed"
     assert report["methods"][full_method]["episode_accuracy"] == 1.0
     assert report["methods"][full_method]["session_pairwise_accuracy"] == 1.0
+    assert report["methods"][full_method]["selective_session_pairwise_accuracy"] == 1.0
+    assert report["methods"][full_method]["selective_session_pairwise_coverage"] == 1.0
     assert report["methods"][cheap_method]["session_pairwise_accuracy"] == 0.5
     assert report["methods"][full_method]["top_policy_regret"] == 0.0
     assert report["gates"]["beats_cheap_baseline"] is True
@@ -170,6 +173,7 @@ def test_calibration_honors_explicit_abstention_and_digest(tmp_path: Path) -> No
     assert report["status"] == "completed"
     assert report["evaluator_digest"] == "b" * 64
     assert report["methods"][full_method]["selective_coverage"] < 1.0
+    assert report["methods"][full_method]["selective_session_pairwise_coverage"] < 1.0
 
     mismatched = evaluate_frozen_calibration(
         [*full, *cheap],
@@ -179,6 +183,21 @@ def test_calibration_honors_explicit_abstention_and_digest(tmp_path: Path) -> No
     )
     assert mismatched["status"] == "blocked"
     assert "evaluator_digest_mismatch" in mismatched["blockers"]
+
+
+def test_calibration_accepts_roboarena_letter_keyed_policy_mapping(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.yaml"
+    _metadata(path, 3)
+    payload = yaml.safe_load(path.read_text())
+    payload["policies"] = {
+        chr(ord("A") + policy_index): row
+        for policy_index, row in enumerate(payload["policies"])
+    }
+    path.write_text(yaml.safe_dump(payload))
+    outcomes = _benchmark_outcomes(path)
+    assert set(outcomes) == set(DEFAULT_POLICIES)
+    assert outcomes[DEFAULT_POLICIES[0]]["binary_success"] == 0.0
+    assert outcomes[DEFAULT_POLICIES[-1]]["binary_success"] == 1.0
 
 
 def test_hybrid_scene_keeps_visual_spatial_and_interaction_layers_separate() -> None:
