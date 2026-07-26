@@ -6938,7 +6938,9 @@ def run_oscar_isaac_closed_loop(
     trace_audit = audit_wam_policy_trace(
         trace_rows,
         require_prefix_alignment=trace_audit_required,
-        require_isaac_diagnostics=bool(task_completion_evaluator is not None),
+        require_isaac_diagnostics=bool(
+            not isaac_diagnostic_only and task_completion_evaluator is not None
+        ),
     )
     trace_audit_path = resolved_out / "wam_policy_trace_audit.json"
     write_json(trace_audit_path, trace_audit)
@@ -7124,6 +7126,12 @@ def run_oscar_isaac_closed_loop(
     )
     manipulation_success_judge_path = resolved_out / "manipulation_success_evaluator_results.json"
     write_json(manipulation_success_judge_path, manipulation_success_judge)
+    authority_manipulation_success_proven = bool(
+        generated_video_success_label_passed
+        and disagreement["task_success_claim_allowed"]
+        if isaac_diagnostic_only
+        else manipulation_success_judge.get("manipulation_success_proven")
+    )
     manifest = {
         "schema_version": LOOP_SCHEMA_VERSION,
         "generated_at": generated,
@@ -7274,12 +7282,7 @@ def run_oscar_isaac_closed_loop(
         "clean_frame_reanchor_events": clean_frame_reanchor_events,
         "periodic_clean_frame_reanchoring_used": bool(clean_frame_reanchor_events),
         "manipulation_success_evaluator_results_path": str(manipulation_success_judge_path),
-        "manipulation_success_proven": bool(
-            generated_video_success_label_passed
-            and disagreement["task_success_claim_allowed"]
-            if isaac_diagnostic_only
-            else manipulation_success_judge.get("manipulation_success_proven")
-        ),
+        "manipulation_success_proven": authority_manipulation_success_proven,
         "isaac_diagnostic_manipulation_success_proven": bool(
             manipulation_success_judge.get("manipulation_success_proven")
         ),
@@ -7298,9 +7301,7 @@ def run_oscar_isaac_closed_loop(
         "task_success_claim_allowed": disagreement["task_success_claim_allowed"],
         "rank_fidelity_claim_allowed": disagreement["rank_fidelity_claim_allowed"],
         "success_proof": {
-            "manipulation_success_proven": bool(
-                manipulation_success_judge.get("manipulation_success_proven")
-            ),
+            "manipulation_success_proven": authority_manipulation_success_proven,
             "simulated_manipulation_success_shown": simulated_manipulation_success_shown,
             "generated_video_success_label_passed": generated_video_success_label_passed,
             "generated_video_success_label_is_sim_only": True,
