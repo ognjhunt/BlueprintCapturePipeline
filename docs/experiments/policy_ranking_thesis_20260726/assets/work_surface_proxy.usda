@@ -1,0 +1,47 @@
+#usda 1.0
+(
+    defaultPrim = "WorkSurfaceProxy"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "WorkSurfaceProxy" (
+    kind = "component"
+)
+{
+    custom string blueprint:asset_role = "local_collision_proxy"
+    custom bool blueprint:is_full_site_rebuild = false
+
+    def Cube "Top" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        color3f[] primvars:displayColor = [(0.42, 0.26, 0.12)]
+        double3 xformOp:translate = (0, 0.74, 0)
+        double3 xformOp:scale = (1.20, 0.08, 0.70)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    def Cube "LegLeft" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        color3f[] primvars:displayColor = [(0.25, 0.16, 0.08)]
+        double3 xformOp:translate = (-0.50, 0.36, 0)
+        double3 xformOp:scale = (0.08, 0.72, 0.56)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    def Cube "LegRight" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1
+        color3f[] primvars:displayColor = [(0.25, 0.16, 0.08)]
+        double3 xformOp:translate = (0.50, 0.36, 0)
+        double3 xformOp:scale = (0.08, 0.72, 0.56)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+}

@@ -1,0 +1,77 @@
+{
+  "schema_version": "controlled_usd_policy_ranking_scene.v1",
+  "status": "ready",
+  "scene_id": "nvidia_warehouse_franka_can_to_tray_control_v1",
+  "environment": {
+    "representation": "usd",
+    "source": "https://huggingface.co/datasets/nvidia/PhysicalAI-SimReady-Warehouse-01",
+    "source_revision": "c7fe115cb79c7ddbd0532630d7768b5736b0ecc4",
+    "source_path": "physical_ai_simready_warehouse_01.usd",
+    "sha256": "4e01e55f055689ff0cd669f33c6c305f73add8903547eaf3ef070d515cb2ec8a",
+    "size_bytes": 27933,
+    "license": "CC-BY-4.0",
+    "materialization_status": "root_lfs_pointer_indexed_full_dependency_archive_not_downloaded",
+    "full_dataset_size_bytes": 15000000000,
+    "runtime_scope": "one_empty_reachable_workcell_only",
+    "whole_warehouse_runtime_forbidden": true
+  },
+  "interactive_assets": [
+    {
+      "asset_id": "nvidia_simready_spraycan_a01",
+      "role": "task_object",
+      "sha256": "fe34476927334e5cb6cba9b90cfa3b442e46580af8150bda1ae867827b3c40a2",
+      "dependency_tree_sha256": "1b6c75702518b24171b424c189adcb516b14b03ef60986288d9e56d5b4f16ce2"
+    },
+    {
+      "asset_id": "blueprint_marked_tray_v1",
+      "role": "task_target",
+      "sha256": "1404a44e537300fd96baad7fa7e95da888e15f4512553b75c323a78e69013ee0"
+    },
+    {
+      "asset_id": "blueprint_local_work_surface_proxy_v1",
+      "role": "work_surface",
+      "sha256": "99c485f68dcf0ace90f6337640c400b0f6388a09efee6ec48aae10aac649a1ec"
+    }
+  ],
+  "robot_runtime": {
+    "profile_id": "franka_droid_fixed_base_v1",
+    "visual_kinematic_source_revision": "71f066ad0be9cd271f7ed58c030243ef157af9f4",
+    "visual_kinematic_tree_sha256": "3142d8e707b36ad61bd5e242a32f2406321f14eb05be5833cde442123d067d6f",
+    "action_interface": "DROID-compatible Cartesian delta end-effector plus gripper"
+  },
+  "task_semantics": {
+    "instruction": "Pick up the spray can and place it inside the marked tray.",
+    "task_family": "rigid_pick_and_place",
+    "success_predicates": [
+      "spraycan_lifted_at_least_0_05m",
+      "spraycan_center_inside_tray_interior_aabb",
+      "spraycan_stable_for_2s",
+      "spraycan_not_in_robot_contact_at_final_state"
+    ],
+    "policy_specific_scoring_changes": false,
+    "physical_answer_key": false
+  },
+  "candidate_policy_preflight": {
+    "minimum_policy_count": 4,
+    "preferred_same_family_ladder": "Floppy Bagel checkpoints if runnable weights become attributable",
+    "fallback_candidates": [
+      "pi0_droid",
+      "pi0_fast_droid",
+      "paligemma_fast_droid",
+      "paligemma_fast_specialist_droid"
+    ],
+    "weights_and_exact_adapters_verified": false,
+    "live_policy_rollouts_executed": false
+  },
+  "claim_boundary": {
+    "controlled_scene_execution_completed": false,
+    "simulator_is_physical_answer_key": false,
+    "physical_robot_operated": false,
+    "purpose": "diagnose WAM_simulator_evaluator_disagreement_before_captured_site_transfer"
+  },
+  "result_type": "controlled_simulation_diagnostic",
+  "independent_physical_ranking_answer_key": false,
+  "site_specific_physical_accuracy_proven": false,
+  "blockers": [],
+  "bundle_sha256": "274f68e9c219915906c5f01d11b09d0f440419b9a1be3ef964ca8047fd3007aa"
+}

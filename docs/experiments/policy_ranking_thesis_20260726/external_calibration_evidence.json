@@ -1,0 +1,75 @@
+{
+  "schema_version": "policy_ranking_external_evidence.v1",
+  "status": "reference_only",
+  "collected_at": "2026-07-26T10:21:31-0500",
+  "evidence": [
+    {
+      "evidence_id": "roboarena_frozen_snapshot",
+      "source": "https://huggingface.co/datasets/RoboArena/DataDump_07-17-2026",
+      "revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+      "embodiment": "DROID-compatible Franka Panda",
+      "session_count": 3883,
+      "policy_episode_count": 10783,
+      "mp4_count": 27148,
+      "npz_count": 10783,
+      "license": "MIT",
+      "supports": "frozen aggregate and per-session calibration using attributable previously collected real-policy evaluations",
+      "does_not_support": "Blueprint-conducted physical experiments or site-specific captured-scene claims"
+    },
+    {
+      "evidence_id": "oscar_published_ranking",
+      "source": "https://arxiv.org/html/2606.04463v2",
+      "code_source": "https://github.com/wuzy2115/oscar-public",
+      "code_revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+      "model_source": "https://huggingface.co/zywu2115/OSCAR-2B",
+      "model_revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+      "paper_protocol": {
+        "session_count": 65,
+        "policy_count": 7,
+        "claimed_rollout_count": 455,
+        "judge_model": "gpt-5-2025-08-07",
+        "frame_count": 32,
+        "frame_resolution": "512x288",
+        "reasoning_effort": "high"
+      },
+      "published_skeleton_results": {
+        "mean_maximum_rank_violation": 0.571,
+        "spearman": 0.75,
+        "pearson": 0.852,
+        "simulated_intervention_success_rate_delta_percentage_points": 1.73
+      },
+      "published_real_video_judge_calibration": {
+        "balanced_clip_count": 100,
+        "agreement": 0.78,
+        "specificity": 0.9,
+        "recall": 0.66,
+        "pearson": 0.58
+      },
+      "supports": "independent prior evidence that an action-conditioned WAM can recover policy ranking on this embodiment and benchmark family",
+      "does_not_support": "a Blueprint reproduction, the frozen gates in this experiment, or captured-site transfer"
+    },
+    {
+      "evidence_id": "oscar_released_rollout_set",
+      "source": "https://huggingface.co/datasets/zywu2115/OSCAR_policy_rollout",
+      "revision": "db5edfaef285c15d0a41d5115177a983c08b4f5f",
+      "complete_session_count": 63,
+      "policy_count": 7,
+      "released_rollout_count": 441,
+      "explicit_dataset_license_metadata_present": false,
+      "supports": "replay of a fixed public WAM rollout set without rerunning policy inference or a physical robot",
+      "does_not_support": "redistribution rights, commercial customer use, or the paper's 65-session count"
+    }
+  ],
+  "contradictions": [
+    {
+      "id": "oscar_paper_release_count_mismatch",
+      "paper_claimed_rollouts": 455,
+      "released_rollouts": 441,
+      "difference": 14,
+      "missing_complete_sessions_if_seven_policies_each": 2,
+      "resolution": "unresolved; Blueprint protocol uses the exact 63-session released set and never silently substitutes the paper count"
+    }
+  ],
+  "blueprint_result": false,
+  "physical_robot_operated_by_blueprint": false
+}

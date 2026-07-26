@@ -26,6 +26,7 @@ function arg(name, def = null) {
 const splatPath = path.resolve(arg("splat"));
 const outDir = path.resolve(arg("out"));
 const camerasArg = arg("cameras", null);
+const overlayArg = arg("overlay", null);
 const width = parseInt(arg("width", "1280"), 10);
 const height = parseInt(arg("height", "960"), 10);
 const bg = parseInt(arg("bg", "0x0b0b10"));
@@ -140,7 +141,7 @@ async function main() {
     if (m.type() === "error") pageErrors.push("console.error: " + m.text());
   });
 
-  let result = { status: "blocked", bounds: null, cameras: [], blockers, page_errors: pageErrors };
+  let result = { status: "blocked", bounds: null, cameras: [], overlay: null, blockers, page_errors: pageErrors };
   try {
     await page.goto(`${base}/harness.html`, { waitUntil: "load", timeout: 60000 });
     await page.waitForFunction("window.__sparkReady===true", { timeout: 60000 });
@@ -156,6 +157,14 @@ async function main() {
     result.bounds = bounds;
     if (!bounds || !isFinite(bounds.radius) || bounds.radius <= 0) {
       blockers.push("splat_bounds_invalid_after_load");
+    }
+
+    if (overlayArg) {
+      const overlay = JSON.parse(fs.readFileSync(overlayArg, "utf8"));
+      result.overlay = await page.evaluate(
+        (items) => window.BlueprintSplat.setOverlay(items),
+        Array.isArray(overlay) ? overlay : overlay.items,
+      );
     }
 
     // settle the async splat upload before capturing any view
