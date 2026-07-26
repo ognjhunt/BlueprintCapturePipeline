@@ -1,6 +1,6 @@
 {
   "schema_version": "policy_ranking_label_unseal_ledger.v1",
-  "protocol_sha256": "fadd4e3b701d6c51f4df7deb275d17668f501334a17bb948e0c6860f6665ad1d",
+  "protocol_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
   "entries": [
     {
       "partition": "pilot",
@@ -16,6 +16,32 @@
       "gate_or_threshold_changed_after_exposure": false,
       "eligible_for_heldout_evidence": false,
       "notes": "This is a permitted pilot unseal, not a calibration or held-out unseal. The source label values are intentionally omitted from this ledger."
+    },
+    {
+      "partition": "pilot",
+      "scope": "all_seven_frozen_pilot_sessions",
+      "opened_at": "2026-07-26T11:27:03-0500",
+      "opened_by": "Codex experiment operator",
+      "reason": "registered aggregate pilot evaluation after 98 of 98 label-blind predictions passed completeness and leakage checks",
+      "prediction_run_sha256": "65eae42270071573c0616a997f1c7332d0aeaeda8bb3b4b5f89c6d9231857c94",
+      "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
+      "metadata_sources": [
+        {"session_id": "cb3a637a-bea7-45f2-84dc-50fda57dd912", "metadata_sha256": "9aef39b239368b74e471d0a962bdd7816b80a9700a337a659e4a0b1036e5509b"},
+        {"session_id": "ea52540c-3f2d-45ff-80c1-ac44cdd4d054", "metadata_sha256": "c9f03ab5fab9cd5280501607e4007e33d54eb60d65882db238459550675ccba8"},
+        {"session_id": "7ccd5be8-c1d6-4917-871d-905015915744", "metadata_sha256": "163305fab3080c922b1ea502f4e0d007856da2184cf6a554fb27e5989eb0d36f"},
+        {"session_id": "d2ebd2f2-a807-4be5-a72f-e7ed624659d4", "metadata_sha256": "20a834948b2b9c058e2932e1ff3e8c58b70e7774d3cebfa3a95cabb312f7bdfd"},
+        {"session_id": "f80985e2-fda2-40c8-9a1c-e84e26693ceb", "metadata_sha256": "1037b68958806d167f971b8c9965b931f9abaa954c07aa1be6a7fb0db5fb0b12"},
+        {"session_id": "f6e9020f-8abf-43e7-b6fc-9af024909f0d", "metadata_sha256": "0fed96fb2bf7889f9a1b4f5252a28a5c90a3040eb8e7da5d729c302e80707f11"},
+        {"session_id": "dd029360-b954-4bfd-b154-401fb9f4d592", "metadata_sha256": "9170d9697859bde52bce42e1113c5e68c35160e061f54d591122c0d283c58a90"}
+      ],
+      "pii_present_in_sources": true,
+      "pii_copied_to_experiment_artifacts": false,
+      "labels_copied_to_evaluator_requests": false,
+      "calibration_or_heldout_labels_seen": false,
+      "threshold_changed_after_exposure": false,
+      "label_basis_amendment": "All three preregistered label sources are now reported separately; binary success remains visible, partial success is a deterministic tie-break, and preference is a separate contradiction metric.",
+      "report_sha256": "3f4f2faf83cbd3b89cf17638a84c5b175583c2e30fe0d1819eb466c3425031fc",
+      "eligible_for_heldout_evidence": false
     }
   ],
   "calibration_partition_unsealed": false,

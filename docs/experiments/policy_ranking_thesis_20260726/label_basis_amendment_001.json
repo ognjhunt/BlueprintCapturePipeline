@@ -1,0 +1,27 @@
+{
+  "schema_version": "policy_ranking_label_basis_amendment.v1",
+  "recorded_after_pilot_unseal": true,
+  "calibration_labels_opened": false,
+  "heldout_predictions_started": false,
+  "heldout_labels_opened": false,
+  "trigger": "The seven-session pilot showed that binary success alone supplied informative pair differences in only one session, making its session bootstrap degenerate.",
+  "registered_label_sources": [
+    "binary_success",
+    "partial_success",
+    "session_preference"
+  ],
+  "frozen_primary_pairwise_basis_for_calibration_and_heldout": "binary_then_partial",
+  "binary_then_partial_definition": "Compare binary success first. When binary success ties, compare independently published partial_success. No learned or fitted weight is used.",
+  "mandatory_separate_reports": [
+    "binary_success",
+    "binary_then_partial",
+    "preference_winner_vs_rest"
+  ],
+  "cheap_baseline_comparison_basis": "binary_then_partial",
+  "selective_ranking_basis": "binary_then_partial",
+  "threshold_changed": false,
+  "evaluator_prediction_changed": false,
+  "pilot_binary_only_result_preserved": "pilot_calibration_report_binary_only_diagnostic.json",
+  "outcome_optimization": false,
+  "claim_boundary": "A result must not hide contradictions among binary, partial, and preference signals."
+}

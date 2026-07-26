@@ -1,0 +1,151 @@
+{
+  "schema_version": "policy_ranking_frozen_calibration_report.v1",
+  "status": "completed",
+  "partition": "pilot",
+  "protocol_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
+  "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
+  "benchmark_outcomes_unsealed_after_predictions": true,
+  "methods": {
+    "frozen_temporal_32_frame_progress_judge_v1": {
+      "episode_count": 49,
+      "predicted_policy_success": {
+        "paligemma_binning_droid": 0.04428571428571428,
+        "paligemma_diffusion_droid": 0.047142857142857146,
+        "paligemma_fast_droid": 0.058571428571428566,
+        "paligemma_fast_specialist_droid": 0.06857142857142857,
+        "paligemma_vq_droid": 0.16999999999999998,
+        "pi0_droid": 0.16142857142857145,
+        "pi0_fast_droid": 0.06
+      },
+      "selective_predicted_policy_success": {
+        "paligemma_fast_droid": 0.08,
+        "paligemma_fast_specialist_droid": 0.06,
+        "paligemma_vq_droid": 0.95,
+        "pi0_droid": 0.465,
+        "paligemma_binning_droid": 0.03
+      },
+      "selective_policy_episode_count": {
+        "paligemma_binning_droid": 1,
+        "paligemma_diffusion_droid": 0,
+        "paligemma_fast_droid": 2,
+        "paligemma_fast_specialist_droid": 1,
+        "paligemma_vq_droid": 1,
+        "pi0_droid": 2,
+        "pi0_fast_droid": 0
+      },
+      "benchmark_policy_success": {
+        "paligemma_binning_droid": 0.0,
+        "paligemma_diffusion_droid": 0.0,
+        "paligemma_fast_droid": 0.0,
+        "paligemma_fast_specialist_droid": 0.14285714285714285,
+        "paligemma_vq_droid": 0.0,
+        "pi0_droid": 0.0,
+        "pi0_fast_droid": 0.0
+      },
+      "spearman": 0.20412414523193148,
+      "kendall_tau_b": 0.1781741612749496,
+      "episode_accuracy": 0.9387755102040817,
+      "brier_score": 0.05774489795918367,
+      "selective_accuracy": 0.7142857142857143,
+      "selective_coverage": 0.14285714285714285,
+      "selective_accuracy_gain": -0.22448979591836737,
+      "action_following_pass_rate": 0.16326530612244897,
+      "abstention_rate": 0.8571428571428572,
+      "false_success_rate": 0.041666666666666664,
+      "false_failure_rate": 1.0,
+      "session_pairwise_accuracy_bootstrap_ci95": [
+        0.5833333333333334,
+        0.5833333333333334
+      ],
+      "session_pairwise_accuracy": 0.5833333333333334,
+      "informative_session_pair_count": 6,
+      "selective_session_pair_count": 0,
+      "selective_session_pairwise_accuracy": null,
+      "selective_session_pairwise_coverage": 0.0,
+      "selective_session_pairwise_accuracy_gain": null,
+      "selective_session_pairwise_accuracy_bootstrap_ci95": [
+        null,
+        null
+      ],
+      "top_policy": "paligemma_vq_droid",
+      "benchmark_top_policy": "paligemma_fast_specialist_droid",
+      "top_policy_regret": 0.14285714285714285
+    },
+    "frozen_first_last_frame_progress_judge_v1": {
+      "episode_count": 49,
+      "predicted_policy_success": {
+        "paligemma_binning_droid": 0.06,
+        "paligemma_diffusion_droid": 0.10285714285714286,
+        "paligemma_fast_droid": 0.06285714285714286,
+        "paligemma_fast_specialist_droid": 0.10142857142857142,
+        "paligemma_vq_droid": 0.06571428571428571,
+        "pi0_droid": 0.11571428571428573,
+        "pi0_fast_droid": 0.18857142857142858
+      },
+      "selective_predicted_policy_success": {
+        "pi0_fast_droid": 0.92
+      },
+      "selective_policy_episode_count": {
+        "paligemma_binning_droid": 0,
+        "paligemma_diffusion_droid": 0,
+        "paligemma_fast_droid": 0,
+        "paligemma_fast_specialist_droid": 0,
+        "paligemma_vq_droid": 0,
+        "pi0_droid": 0,
+        "pi0_fast_droid": 1
+      },
+      "benchmark_policy_success": {
+        "paligemma_binning_droid": 0.0,
+        "paligemma_diffusion_droid": 0.0,
+        "paligemma_fast_droid": 0.0,
+        "paligemma_fast_specialist_droid": 0.14285714285714285,
+        "paligemma_vq_droid": 0.0,
+        "pi0_droid": 0.0,
+        "pi0_fast_droid": 0.0
+      },
+      "spearman": 0.0,
+      "kendall_tau_b": 0.0,
+      "episode_accuracy": 0.9591836734693877,
+      "brier_score": 0.041951020408163266,
+      "selective_accuracy": 0.0,
+      "selective_coverage": 0.02040816326530612,
+      "selective_accuracy_gain": -0.9591836734693877,
+      "action_following_pass_rate": 0.061224489795918366,
+      "abstention_rate": 0.9795918367346939,
+      "false_success_rate": 0.020833333333333332,
+      "false_failure_rate": 1.0,
+      "session_pairwise_accuracy_bootstrap_ci95": [
+        1.0,
+        1.0
+      ],
+      "session_pairwise_accuracy": 1.0,
+      "informative_session_pair_count": 6,
+      "selective_session_pair_count": 0,
+      "selective_session_pairwise_accuracy": null,
+      "selective_session_pairwise_coverage": 0.0,
+      "selective_session_pairwise_accuracy_gain": null,
+      "selective_session_pairwise_accuracy_bootstrap_ci95": [
+        null,
+        null
+      ],
+      "top_policy": "pi0_fast_droid",
+      "benchmark_top_policy": "paligemma_fast_specialist_droid",
+      "top_policy_regret": 0.14285714285714285
+    }
+  },
+  "gates": {
+    "better_than_chance": true,
+    "positive_kendall": true,
+    "beats_cheap_baseline": false,
+    "abstention_improves": false,
+    "action_following": false
+  },
+  "benchmark_component_passed": false,
+  "blockers": [],
+  "claim_boundary": {
+    "externally_calibrated_against_frozen_real_policy_outcomes": true,
+    "captured_site_accuracy_proven": false,
+    "blueprint_conducted_physical_experiments": false
+  },
+  "report_sha256": "11a46944b783d72c781fb2f02e7881b9b04c953390f935c69cc302622a6cec3b"
+}
