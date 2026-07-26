@@ -1,5 +1,57 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-25
+
+### User-Facing
+
+- Vast qualification now rejects GPU architectures that the pinned TensorRT
+  10.4 engine cannot build for and, for Isaac workloads only, NVIDIA driver
+  branches above the runtime's evidence-backed compatibility ceiling. Both
+  constraints expose explicit diagnostics and operator overrides; admission of
+  a compatible offer still does not prove renderer startup, episode completion,
+  or task success (`src/blueprint_pipeline/vast_compute_capability.py`,
+  `src/blueprint_pipeline/isaac_driver_support.py`,
+  `src/blueprint_pipeline/vast_provider_adapter.py`).
+- The closed-loop evaluator now consumes the sealed producer's nested initial
+  observation, resolves the bundle's canonical evidence path, and fails closed
+  before executing a step when a configured learned-policy endpoint cannot
+  supply an initial action. The action's manipulation target, rather than its
+  camera-framing point, is now authoritative for directional progress
+  (`src/blueprint_pipeline/initial_policy_observation_contract.py`,
+  `src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py`).
+
+### Employee-Facing
+
+- Runtime termination now replays the live simulator timeline before measuring
+  completion and requires both task-joint and FK-approach streams to stall.
+  Run 7 reached first door contact before a supported stance abort, while its FK
+  approach remains command-intent evidence because each chunk replays from the
+  frozen initial state (`src/blueprint_pipeline/isaac_runtime_task_backend.py`,
+  `docs/runbooks/qualification-debug-funnel.md`).
+- GPU-residency attribution can fall back from unavailable host-PID translation
+  to namespace-local, per-GPU device handles. It refuses multi-GPU inference and
+  generic NVIDIA control nodes, and records the attribution mode in the sealed
+  sample (`src/blueprint_pipeline/gpu_residency_attribution.py`).
+- The qualification debug funnel now records that a Tier-2 refresh needs a
+  healthy box allocated while checkout, release, and protected main still
+  match; merging first can force a thin-image rebuild before another allocation
+  (`docs/runbooks/qualification-debug-funnel.md`).
+
+### Future-Agent-Facing
+
+- The America/Chicago window contains seven first-parent `main` commits,
+  `24404ba6` through `9be733e8` (PRs #181--#183 and #186--#189). At review,
+  `HEAD == main == origin/main`, the worktree is clean, and no attributable
+  uncommitted July 25 source work is recorded.
+- Preserve sealed bundle argv/evidence compatibility, action-target semantics,
+  scoped hardware gates, and disclosed residency attribution. Live attempts
+  066--069 diagnose and constrain failure modes; they do not prove a completed
+  simulator task, policy ranking, deployment, public readiness, or physical
+  robot performance.
+- Raw capture, provenance, rights, and privacy evidence remain authoritative.
+  Runtime manifests, diagnostics, generated review media, qualification
+  ledgers, and this changelog are downstream support artifacts.
+
 ## 2026-07-24 (third entry)
 
 ### User-Facing
