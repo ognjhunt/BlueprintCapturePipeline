@@ -1,0 +1,47 @@
+{
+  "schema_version": "captured_site_ranking_aggregator.v1",
+  "status": "frozen_before_learned_policy_outcomes",
+  "task": "Pick up the can and place it inside the marked tray.",
+  "episode_variants": [
+    {
+      "variant_id": "center",
+      "initial_can_offset_m": [0.0, 0.0, 0.0]
+    },
+    {
+      "variant_id": "left_2cm",
+      "initial_can_offset_m": [0.0, 0.02, 0.0]
+    },
+    {
+      "variant_id": "right_2cm",
+      "initial_can_offset_m": [0.0, -0.02, 0.0]
+    }
+  ],
+  "episode_progress_score": {
+    "range": [0.0, 1.0],
+    "formula": "0.4*lift_progress + I(lift_progress=1)*(0.3*transport_progress + 0.2*containment + I(containment=1)*0.1*stability)",
+    "lift_progress": "clip(peak_vertical_displacement_m/0.05,0,1)",
+    "transport_progress": "clip((initial_xy_distance_to_tray-final_xy_distance_to_tray)/initial_xy_distance_to_tray,0,1)",
+    "containment": "deterministic_final_tray_interior_predicate",
+    "stability": "deterministic_final_linear_speed_below_0.02_m_per_s",
+    "contract_blocked_episode_score": 0.0,
+    "rationale": "Phase-gated score prevents an unmoving but stable policy from receiving progress credit and prevents transport credit before the required lift."
+  },
+  "policy_aggregation": {
+    "estimate": "arithmetic_mean_episode_progress_score_across_three_frozen_variants",
+    "uncertainty": "exact_min_and_max_across_three_variants",
+    "pairwise_ordering": "policy_A_above_policy_B_only_if_A_min_score_strictly_exceeds_B_max_score",
+    "otherwise": "abstain_on_pair",
+    "total_order": "emit_only_if_every_adjacent_pair_in_descending_mean_order_clears_pairwise_ordering",
+    "otherwise_total_ranking": "abstain"
+  },
+  "secondary_checks": {
+    "frozen_visual_progress_judge": "run only after simulator artifacts are sealed",
+    "visual_judge_may_override_deterministic_score": false,
+    "sim_wam_or_visual_contradiction": "forces abstention and is reported"
+  },
+  "claim_boundary": {
+    "prospective_externally_calibrated_site_prediction_only": true,
+    "site_specific_physical_success_proven": false,
+    "three_deterministic_sim_variants_are_not_physical_trials": true
+  }
+}

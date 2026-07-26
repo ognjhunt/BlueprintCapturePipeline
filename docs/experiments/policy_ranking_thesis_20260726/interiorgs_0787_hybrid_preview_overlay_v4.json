@@ -1,0 +1,83 @@
+{
+  "schema_version": "hybrid_3dgs_preview_overlay.v4",
+  "claim_boundary": "visual_registration_review_only_not_usd_loading_physics_or_policy_execution",
+  "design_note": "Task layers remain fixed. The table proxy is nearly invisible and the robot proxies are opaque so the captured splat stays legible in square DROID observation views.",
+  "items": [
+    {
+      "id": "table_74_local_surface_proxy",
+      "shape": "box",
+      "position": [1.9086943, 1.2457356, 0.748],
+      "scale": [1.43993, 0.52, 0.02],
+      "color": 7412244,
+      "opacity": 0.02
+    },
+    {
+      "id": "simready_spraycan_proxy",
+      "shape": "cylinder",
+      "position": [1.65, 1.2, 0.848],
+      "scale": [0.065, 0.22, 0.065],
+      "rotation_euler_rad": [1.5707963268, 0.0, 0.0],
+      "color": 15158332,
+      "opacity": 1.0
+    },
+    {
+      "id": "marked_tray_base_proxy",
+      "shape": "box",
+      "position": [2.12, 1.22, 0.763],
+      "scale": [0.4, 0.32, 0.03],
+      "color": 14073,
+      "opacity": 0.62
+    },
+    {
+      "id": "franka_base_proxy",
+      "shape": "cylinder",
+      "position": [1.9086943, 0.45, 0.19],
+      "scale": [0.14, 0.36, 0.14],
+      "rotation_euler_rad": [1.5707963268, 0.0, 0.0],
+      "color": 14540253,
+      "opacity": 1.0
+    },
+    {
+      "id": "franka_link_proxy_1",
+      "shape": "box",
+      "position": [1.9086943, 0.66, 0.55],
+      "scale": [0.06, 0.40, 0.06],
+      "rotation_euler_rad": [0.72, 0.0, 0.0],
+      "color": 13421772,
+      "opacity": 1.0
+    },
+    {
+      "id": "franka_link_proxy_2",
+      "shape": "box",
+      "position": [1.9086943, 0.86, 0.82],
+      "scale": [0.055, 0.31, 0.055],
+      "rotation_euler_rad": [0.82, 0.0, 0.0],
+      "color": 13421772,
+      "opacity": 1.0
+    },
+    {
+      "id": "franka_hand_proxy",
+      "shape": "box",
+      "position": [1.9086943, 1.0, 0.95],
+      "scale": [0.1, 0.055, 0.055],
+      "color": 2236962,
+      "opacity": 1.0
+    },
+    {
+      "id": "franka_left_finger_proxy",
+      "shape": "box",
+      "position": [1.865, 1.055, 0.93],
+      "scale": [0.018, 0.1, 0.018],
+      "color": 2236962,
+      "opacity": 1.0
+    },
+    {
+      "id": "franka_right_finger_proxy",
+      "shape": "box",
+      "position": [1.952, 1.055, 0.93],
+      "scale": [0.018, 0.1, 0.018],
+      "color": 2236962,
+      "opacity": 1.0
+    }
+  ]
+}

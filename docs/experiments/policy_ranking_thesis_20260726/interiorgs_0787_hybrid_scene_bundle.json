@@ -16,16 +16,16 @@
     "benchmark_labels_available": false,
     "reference_spark_render": {
       "status": "completed",
-      "render_gaussian_count": 300000,
+      "render_gaussian_count": 630898,
       "camera_count": 4,
       "resolution": [
-        1600,
-        1200
+        1920,
+        1440
       ],
-      "wall_time_seconds": 23.07,
-      "camera_quality_report_sha256": "a61ffc2b28326949ca4e4253119af5ebebbdc447e880cae6484f3ce8777ca50d",
-      "external_right_preview_sha256": "5e0e596ec3f74c30bec1766465e91dd712de8bc6157bc8ee0a98d8a3a7963a53",
-      "wrist_preview_sha256": "7d5e0cdddba0785fb7eda5e4e8bd2b6d60d00bbd758b4bb91a3ca8bbbdc1be1d",
+      "wall_time_seconds": 41.4,
+      "camera_quality_report_sha256": "78ec817ce26b6f4180e4cbd4ab21c0597906fbe9d4422d9ec556a7e4159517cf",
+      "external_right_preview_sha256": "2abdbe643aabf75c238a4780efbeb4a352b5e87822d877cea8cb1c389ed0da0e",
+      "wrist_preview_sha256": "2059223434f65e005f93fa0d3d4a5cb64339342a594bb21f5703d8ecd9544b41",
       "camera_focus_point_site": [
         1.9,
         1.24,
@@ -59,8 +59,8 @@
       1.0
     ],
     "registration_status": "visually_verified_local_preview",
-    "registration_preview_overlay_sha256": "8ac1b8b5bb5981516ab4d9821ec9b430e2a7578070bcf140645af751bf45fca1",
-    "camera_contract_sha256": "7a3b1c465324c2fd16bbab78ae99703a1b355f3cb11a3d37db17f28f260fb371",
+    "registration_preview_overlay_sha256": "31a154ecffc2fa244f875e29c3f5a7bf872bcf37223afc1f903e43569b084e37",
+    "camera_contract_sha256": "d51eb0b8f4beb355166a590d012405696f3bcfe77aca63089b1dbc9d169d160b",
     "labels_sha256": "b6bc08ec84818111ca736da5a746643c36c3d9ebbfd67ab8e4f8b4359ba49856",
     "structure_sha256": "4cd397f59ce3c876bbf0ca118cb9e849ef5747e8ead6d9cc8f14d352d902b4ed",
     "metric_scale_status": "source_declared_metric_and_semantic_box_dimensions_consistent",
@@ -183,6 +183,13 @@
     ],
     "full_site_physics": false,
     "local_interaction_assets_only": true,
+    "local_mujoco_feasibility": {
+      "status": "completed",
+      "oracle_pass": true,
+      "manifest_sha256": "076769dbf6fb7858d0f6f9cebefa1efb509e0fbc9d3ea13e6225c4b08217a4f3",
+      "site_frame_collision_registered": false,
+      "learned_policy_executed": false
+    },
     "advisory_only_for_site_specific_physical_truth": true
   },
   "rights_constraints": {
@@ -198,17 +205,17 @@
     "physical_robot_operated": false
   },
   "layer_identity": {
-    "site_visual": "3d5b4775a196210dbacc32bae9c6794550d2b7427ea7754d0490b4fb05728c11",
-    "site_spatial": "62a622d4bc2de447cbca8ae73b8b81d84fe1ab04492bdd9e3ec529fb2b206db4",
+    "site_visual": "8e81d96b20d37d54e3d674f8f05f97849c2f040d6436046f9b35984335ee108d",
+    "site_spatial": "b2828cadeab8d3a887c3fc2811e76551238c43aec29177fad15499bfab7feeb9",
     "interactive_assets": "0b8a22a4d2b43c152194cb955bbcdfe931272e43693756244e1bda0b0b0774ff",
     "robot_runtime": "4a9ba174f887bf04f709f0532a287f83aee48985a24ae4753b3c238f2230a4db",
     "task_semantics": "0484a7340b02e6b293767a8ab22e7711320b061bf7f089aa674ec7e70a5ed296",
-    "optional_physics_sidecar": "ebd329f1035fcab65e31c7cf012fc200b2c789f1948bf73f5ebaf1e2e5b15ee1"
+    "optional_physics_sidecar": "698a4de1ae0db2f9581b6c43fa7223e13cffa9ebc78890230fa0974c6a73e563"
   },
   "full_site_usd_rebuild_required": false,
   "policy_specific_evaluator_changes_allowed": false,
   "result_type": "prospective_policy_ranking",
   "site_specific_physical_accuracy_proven": false,
   "blockers": [],
-  "bundle_sha256": "af3b37667a36227a374a10d5af1d646ac5e7e7e1e1cf89e1c523b46a3849a0e8"
+  "bundle_sha256": "c19eac1ccc9a2ed0564d6a0a9e5b3ea2e8dd751bc9534ae59bf11c498f8d4645"
 }

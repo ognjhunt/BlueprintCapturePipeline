@@ -601,6 +601,61 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run_openpi(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(
+        allocator, "run_openpi_policy_ranking_campaign", fake_run_openpi
+    )
+    monkeypatch.setattr(
+        allocator, "_source_checkout_blockers", lambda _expected: ([], "c" * 40)
+    )
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider-launch-request",
+            "request.json",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "unused-models.json",
+            "--preflight-bundle",
+            "preflight.json",
+            "--admission-out",
+            "admission.json",
+            "--bound-request-out",
+            "bound.json",
+            "--adapter-output",
+            "adapter.json",
+            "--pod-name",
+            "blueprint-groot-oscar-canary-openpi-ranking-test",
+            "--expected-source-commit",
+            "c" * 40,
+            "--probe-kind",
+            allocator.OPENPI_POLICY_RANKING_PROBE_KIND,
+            "--openpi-input-bundle-receipt",
+            "input-receipt.json",
+            "--openpi-input-secret-url-file",
+            "input-url.txt",
+            "--openpi-output-secret-put-url-file",
+            "output-url.txt",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["expected_source_commit"] == "c" * 40
+    assert observed["execute"] is False
+    assert observed["input_bundle_receipt"] == "input-receipt.json"
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
 def test_gpu_canary_rejects_missing_source_and_output_sink_before_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

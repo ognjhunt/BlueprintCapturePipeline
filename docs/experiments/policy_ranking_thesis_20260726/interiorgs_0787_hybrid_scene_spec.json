@@ -14,13 +14,13 @@
     "benchmark_labels_available": false,
     "reference_spark_render": {
       "status": "completed",
-      "render_gaussian_count": 300000,
+      "render_gaussian_count": 630898,
       "camera_count": 4,
-      "resolution": [1600, 1200],
-      "wall_time_seconds": 23.07,
-      "camera_quality_report_sha256": "a61ffc2b28326949ca4e4253119af5ebebbdc447e880cae6484f3ce8777ca50d",
-      "external_right_preview_sha256": "5e0e596ec3f74c30bec1766465e91dd712de8bc6157bc8ee0a98d8a3a7963a53",
-      "wrist_preview_sha256": "7d5e0cdddba0785fb7eda5e4e8bd2b6d60d00bbd758b4bb91a3ca8bbbdc1be1d",
+      "resolution": [1920, 1440],
+      "wall_time_seconds": 41.4,
+      "camera_quality_report_sha256": "78ec817ce26b6f4180e4cbd4ab21c0597906fbe9d4422d9ec556a7e4159517cf",
+      "external_right_preview_sha256": "2abdbe643aabf75c238a4780efbeb4a352b5e87822d877cea8cb1c389ed0da0e",
+      "wrist_preview_sha256": "2059223434f65e005f93fa0d3d4a5cb64339342a594bb21f5703d8ecd9544b41",
       "camera_focus_point_site": [1.9, 1.24, 0.8],
       "rendered_by": "reference_spark_renderer_local_apple_metal",
       "cloud_gpu_used": false,
@@ -38,8 +38,8 @@
       0.0, 0.0, 0.0, 1.0
     ],
     "registration_status": "visually_verified_local_preview",
-    "registration_preview_overlay_sha256": "8ac1b8b5bb5981516ab4d9821ec9b430e2a7578070bcf140645af751bf45fca1",
-    "camera_contract_sha256": "7a3b1c465324c2fd16bbab78ae99703a1b355f3cb11a3d37db17f28f260fb371",
+    "registration_preview_overlay_sha256": "31a154ecffc2fa244f875e29c3f5a7bf872bcf37223afc1f903e43569b084e37",
+    "camera_contract_sha256": "d51eb0b8f4beb355166a590d012405696f3bcfe77aca63089b1dbc9d169d160b",
     "labels_sha256": "b6bc08ec84818111ca736da5a746643c36c3d9ebbfd67ab8e4f8b4359ba49856",
     "structure_sha256": "4cd397f59ce3c876bbf0ca118cb9e849ef5747e8ead6d9cc8f14d352d902b4ed",
     "metric_scale_status": "source_declared_metric_and_semantic_box_dimensions_consistent",
@@ -135,6 +135,13 @@
     "backend_candidates": ["MuJoCo", "Isaac Sim"],
     "full_site_physics": false,
     "local_interaction_assets_only": true,
+    "local_mujoco_feasibility": {
+      "status": "completed",
+      "oracle_pass": true,
+      "manifest_sha256": "076769dbf6fb7858d0f6f9cebefa1efb509e0fbc9d3ea13e6225c4b08217a4f3",
+      "site_frame_collision_registered": false,
+      "learned_policy_executed": false
+    },
     "advisory_only_for_site_specific_physical_truth": true
   },
   "rights_constraints": {

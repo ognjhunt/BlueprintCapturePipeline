@@ -1,0 +1,73 @@
+{
+  "schema_version": "policy_ranking_dynamic_hybrid_control.v1",
+  "status": "completed",
+  "scene_id": "interiorgs_0787_841244_franka_can_to_tray_v1",
+  "site_source": {
+    "dataset": "spatialverse/InteriorGS",
+    "revision": "5201ed9fd11fc2b8ac23e069796c386dbbf8f943",
+    "path": "0787_841244/3dgs_compressed.ply",
+    "published_gaussian_count": 630898,
+    "published_source_sha256": "9a0c451e57edf3623a77026937757efb09e6a1fc33de1f67699a6b076354ccf6",
+    "current_access_check": "blocked_401_without_huggingface_authentication",
+    "current_access_check_does_not_invalidate_prior_frozen_source_identity": true
+  },
+  "policy_background": {
+    "role": "captured_site_visual_background_for_dynamic_external_policy_observation",
+    "representation": "cached_standard_3dgs_ply_derivative",
+    "cached_gaussian_count": 300000,
+    "cached_ply_size_bytes": 70801477,
+    "cached_ply_sha256": "ee5b6cc287dffdf2ef03be9f05f65cdeb57d84500e0903c329eaf3e5942e6ad4",
+    "render_resolution": [224, 224],
+    "renderer": "reference_spark_renderer_local_apple_metal",
+    "interaction_overlay_during_background_render": false,
+    "external_background_png_size_bytes": 90509,
+    "external_background_png_sha256": "67992565bb1557e85ca5c9b3b00b9c29192f548c8baf98f4b69c41fa5ecd6377",
+    "source_is_full_630898_gaussian_asset": false,
+    "raw_or_derived_interiorgs_redistribution_authorized": false
+  },
+  "dynamic_composition": {
+    "external_observation": "frozen_3dgs_background_plus_live_mujoco_robot_task_segmentation",
+    "wrist_observation": "live_link_mounted_mujoco_camera",
+    "live_interaction_geometries": ["franka_panda", "spraycan", "tray"],
+    "excluded_geometry": "mujoco_floor",
+    "physics_backend": "MuJoCo 3.9.0 local_interaction_sidecar_only",
+    "full_site_physics": false,
+    "entire_site_rebuilt_as_usd": false
+  },
+  "negative_control": {
+    "policy_id": "stationary_joint_position_negative_control",
+    "status": "completed",
+    "action_steps": 16,
+    "task_success": false,
+    "lift_delta_m": 0.0,
+    "contained_in_tray": false,
+    "dynamic_interaction_pixels_per_query": [6136, 6080],
+    "result_file_sha256": "127af365b608ec3877c66a2e1771b2d56a4d556253e53553ab9f35a914afbd18",
+    "canonical_manifest_sha256": "61c7dd3053e01cc1f0cfc904d7cf754df317c2759e287797abbf750745c4dc41"
+  },
+  "positive_control": {
+    "policy_id": "scripted_ik_joint_position_positive_control",
+    "status": "completed",
+    "action_steps": 168,
+    "task_success": true,
+    "lift_delta_m": 0.10948793592216237,
+    "contained_in_tray": true,
+    "final_linear_speed_m_s": 0.0003769797147975936,
+    "dynamic_interaction_pixel_count_min": 5895,
+    "dynamic_interaction_pixel_count_max": 6731,
+    "result_file_sha256": "b4ab0972ee80ae6fed86dba5937871430f7d2bd92d2bddfc10faa976654ee103",
+    "canonical_manifest_sha256": "23f416f06050cc727296e4586559adaab646389628c340e1afa2e579d1474634"
+  },
+  "admission": {
+    "dynamic_observation_path_passed_controls": true,
+    "learned_policy_execution_admitted": true,
+    "gpu_execution_completed": false,
+    "captured_site_prospective_ranking_completed": false
+  },
+  "claim_boundary": {
+    "proves_dynamic_hybrid_observation_and_local_task_feasibility": true,
+    "proves_site_specific_policy_success": false,
+    "proves_site_specific_physical_success": false,
+    "physical_robot_operated": false
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": "openpi_droid_mujoco_bridge.v1",
+  "status": "adapter_unit_qualified_policy_server_not_executed",
+  "upstream": {
+    "openpi_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "openpi_droid_runtime_sha256": "4bdbdbdde068ebb30ba90d62bf8c51df156b4baae5c5ac5870c08f7b03d4afc2",
+    "openpi_droid_policy_transform_sha256": "99ebf8b252bde5e33dba7af10552137c421589ec88887bb0ee6507366d24da68",
+    "droid_joint_velocity_mapping_sha256": "c32df1ea7e8c56fc32b8560c0a057892c505d1a05fa0a850540b50b6e964c57d",
+    "droid_runtime_action_space": "joint_velocity",
+    "droid_runtime_gripper_action_space": "position",
+    "control_hz": 15,
+    "policy_chunk_shape": [10, 8],
+    "executed_open_loop_horizon": 8,
+    "maximum_joint_delta_rad_per_action": 0.2
+  },
+  "observation_contract": {
+    "external_image": "observation/exterior_image_1_left:uint8[224,224,3]",
+    "wrist_image": "observation/wrist_image_left:uint8[224,224,3]",
+    "joint_position": "float[7]",
+    "gripper_position": "float[1]",
+    "prompt_required": true
+  },
+  "action_contract": {
+    "arm": "seven normalized joint-velocity dimensions clipped to [-1,1] then mapped to at most 0.2 rad joint delta",
+    "gripper": "eighth dimension clipped to [-1,1], binarized at >0.5, mapped to MuJoCo 0.04 m open or 0.0 m closed",
+    "joint_limits": "clamp and record; nonfinite or wrong shape fails closed"
+  },
+  "claim_boundary": {
+    "policy_checkpoint_loaded": false,
+    "policy_server_called": false,
+    "learned_action_executed": false,
+    "captured_site_ranking_proven": false
+  }
+}

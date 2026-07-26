@@ -1,0 +1,59 @@
+{
+  "schema_version": "franka_droid_joint_position_control_report.v1",
+  "status": "positive_and_negative_controls_passed",
+  "frozen_task": "Pick up the can and place it inside the marked tray.",
+  "source_attribution": {
+    "openpi_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "droid_revision": "33ae6a67274f36d2e29525b86f23a56616ef43a7",
+    "bridge_source_sha256": "591ffda68df22066b4db853fe0421ba130c2a36f36b4fdbee55d10f2ab30b83b",
+    "closed_loop_source_sha256": "03c39c4fc1c7766fe423e6deec76a1ee530da047d7267277f8a140c26a023b0a"
+  },
+  "frozen_contract": {
+    "observations": "two live uint8 224x224 RGB views, seven joint positions, one DROID gripper position, and the task prompt",
+    "action_space": "absolute joint position in radians plus DROID gripper position",
+    "accepted_chunk_rows": [10, 15],
+    "executed_rows_per_query": 8,
+    "outer_control_hz": 15,
+    "inner_control_hz": 1000,
+    "deterministic_gates": [
+      "contract valid",
+      "lift at least 0.05 m",
+      "final containment",
+      "final speed below 0.02 m/s"
+    ]
+  },
+  "positive_control": {
+    "artifact": "/Users/nijelhunt_1/.codex/visualizations/2026/07/26/019f9ec4-1698-7450-acbc-9119c3d07b90/franka_droid_joint_position_scripted_frozen_002/franka_droid_closed_loop.json",
+    "file_sha256": "e18201f2204340db5eb1ee02f0dc7a59da2b0cc940ac1f3ac4c68d7fe099202e",
+    "manifest_sha256": "b55de4d0b037aaaef7a5412aa0f424000ab00226cc1ac57ef94b928cbf4ffbed",
+    "action_steps": 168,
+    "policy_queries": 21,
+    "lift_delta_m": 0.10948793592216237,
+    "final_position_m": [0.40877655604233587, 0.3122911522285695, 0.11991190738345874],
+    "final_speed_m_s": 0.0003769797147975936,
+    "contained": true,
+    "task_success": true
+  },
+  "negative_control": {
+    "artifact": "/Users/nijelhunt_1/.codex/visualizations/2026/07/26/019f9ec4-1698-7450-acbc-9119c3d07b90/franka_droid_joint_position_stationary_frozen_001/franka_droid_closed_loop.json",
+    "file_sha256": "1091b234361c3b970a5806305ff5818d3db6b7b999c3f8f9d5f90bcc0900c593",
+    "manifest_sha256": "a98594c6c4a7ac902a40abc6cb8202586f4b819332c332afc0f2929feaa78a69",
+    "lift_delta_m": 0.0011468296884047796,
+    "contained": false,
+    "task_success": false
+  },
+  "preserved_contradiction": "The v1 joint-velocity positive still fails and remains in franka_droid_closed_loop_control_report.json. Passing the separate joint-position cohort does not erase or reinterpret that failure.",
+  "admission": {
+    "joint_position_learned_policy_execution": true,
+    "joint_velocity_learned_policy_execution": false,
+    "paid_gpu_execution": false,
+    "reason_paid_gpu_false": "Checkpoint identity/rights and paid-resource launch packet are not yet complete."
+  },
+  "claim_boundary": {
+    "learned_policy_executed": false,
+    "wam_executed": false,
+    "nvidia_warehouse_executed": false,
+    "captured_3dgs_dynamically_composited": false,
+    "physical_success_proven": false
+  }
+}

@@ -7,57 +7,68 @@
     "graphics_backend": "local_apple_metal",
     "cloud_gpu_used": false,
     "source_splat_count": 630898,
-    "render_splat_count": 300000,
-    "resolution": [1600, 1200],
-    "four_view_wall_time_seconds": 23.07,
-    "standard_ply_sha256": "ee5b6cc287dffdf2ef03be9f05f65cdeb57d84500e0903c329eaf3e5942e6ad4"
+    "render_splat_count": 630898,
+    "resolution": [1920, 1440],
+    "four_view_wall_time_seconds": 41.4,
+    "source_compressed_ply_sha256": "9a0c451e57edf3623a77026937757efb09e6a1fc33de1f67699a6b076354ccf6"
   },
   "frozen_inputs": {
-    "camera_contract_sha256": "7a3b1c465324c2fd16bbab78ae99703a1b355f3cb11a3d37db17f28f260fb371",
-    "preview_overlay_sha256": "8ac1b8b5bb5981516ab4d9821ec9b430e2a7578070bcf140645af751bf45fca1"
+    "camera_contract_sha256": "d51eb0b8f4beb355166a590d012405696f3bcfe77aca63089b1dbc9d169d160b",
+    "preview_overlay_sha256": "31a154ecffc2fa244f875e29c3f5a7bf872bcf37223afc1f903e43569b084e37",
+    "render_camera_set_sha256": "cc7b74dbc87aa910391a369dba3618000a3ae1eb5a6d4d6ffb695956e2fba208"
   },
   "views": [
     {
       "id": "droid_external_left",
-      "sha256": "f91c30aa310a867dc2b4e31835d0de61c47b04e3e47859dc47283c34e4674ff1",
-      "bytes": 2082612,
-      "red_can_pixel_fraction": 0.010331,
-      "blue_tray_pixel_fraction": 0.014828,
+      "sha256": "80441237e86ff7147c941c58558e8cad0ce2ca73fe0cedcace5b473d6d8639c2",
+      "bytes": 2972548,
+      "red_can_pixel_fraction": 0.01039,
+      "blue_tray_pixel_fraction": 0.019354,
       "visual_gate": "pass",
       "reason": "captured room and support surface are clear; can, tray, gripper, and arm are simultaneously visible"
     },
     {
       "id": "droid_external_right",
-      "sha256": "5e0e596ec3f74c30bec1766465e91dd712de8bc6157bc8ee0a98d8a3a7963a53",
-      "bytes": 2278812,
-      "red_can_pixel_fraction": 0.003776,
-      "blue_tray_pixel_fraction": 0.049442,
+      "sha256": "2abdbe643aabf75c238a4780efbeb4a352b5e87822d877cea8cb1c389ed0da0e",
+      "bytes": 3354279,
+      "red_can_pixel_fraction": 0.003809,
+      "blue_tray_pixel_fraction": 0.049311,
       "visual_gate": "pass",
       "reason": "captured room and support surface are clear; can, tray, gripper, and arm are simultaneously visible"
     },
     {
       "id": "task_oblique_overhead",
-      "sha256": "85da1dcb6634879cad676a39ae11429f2d5f947947f3b5d7735b8d3f106e7a8c",
-      "bytes": 1927497,
-      "red_can_pixel_fraction": 0.006412,
-      "blue_tray_pixel_fraction": 0.051989,
+      "sha256": "e5bfc7301dc540da82ea93594434d6847e7d87af19faee1de9bd42d67e1e51b3",
+      "bytes": 2726348,
+      "red_can_pixel_fraction": 0.006434,
+      "blue_tray_pixel_fraction": 0.052517,
       "visual_gate": "pass",
       "reason": "task geometry and relative object-target placement are unambiguous"
     },
     {
       "id": "franka_wrist_mounted_initial",
-      "sha256": "7d5e0cdddba0785fb7eda5e4e8bd2b6d60d00bbd758b4bb91a3ca8bbbdc1be1d",
-      "bytes": 1131163,
-      "red_can_pixel_fraction": 0.06533,
-      "blue_tray_pixel_fraction": 0.176798,
+      "sha256": "2059223434f65e005f93fa0d3d4a5cb64339342a594bb21f5703d8ecd9544b41",
+      "bytes": 2024352,
+      "red_can_pixel_fraction": 0.025119,
+      "blue_tray_pixel_fraction": 0.100094,
       "visual_gate": "pass",
-      "reason": "link-derived view exposes the can, tray, gripper, and captured support surface without hand occlusion"
+      "reason": "the accepted physically plausible link-derived view exposes the can, tray, gripper, and captured support surface without camera-mount or hand occlusion"
     }
   ],
   "rejected_view": {
     "id": "franka_wrist_mounted_initial_v1",
     "reason": "camera was link-derived but located behind the hand; the hand occluded task state"
   },
+  "additional_rejected_or_nonprimary_views": [
+    {
+      "id": "robot_pov_wrist_balanced_with_mount_proxy",
+      "reason": "the preview camera-mount geometry intersected its own near field and occluded task state"
+    },
+    {
+      "id": "robot_pov_forearm_context",
+      "reason": "clearer context but the camera offset is too far from the hand to serve as the primary DROID-compatible wrist view"
+    }
+  ],
   "proof_boundary": {
     "captured_3dgs_displayed": true,
     "task_layers_registered_visually": true,
