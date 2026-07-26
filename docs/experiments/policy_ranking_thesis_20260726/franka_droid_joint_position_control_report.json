@@ -23,7 +23,7 @@
     ]
   },
   "positive_control": {
-    "artifact": "/Users/nijelhunt_1/.codex/visualizations/2026/07/26/019f9ec4-1698-7450-acbc-9119c3d07b90/franka_droid_joint_position_scripted_frozen_002/franka_droid_closed_loop.json",
+    "artifact": "private_evidence/franka_droid_joint_position_scripted_frozen_002/franka_droid_closed_loop.json",
     "file_sha256": "e18201f2204340db5eb1ee02f0dc7a59da2b0cc940ac1f3ac4c68d7fe099202e",
     "manifest_sha256": "b55de4d0b037aaaef7a5412aa0f424000ab00226cc1ac57ef94b928cbf4ffbed",
     "action_steps": 168,
@@ -35,7 +35,7 @@
     "task_success": true
   },
   "negative_control": {
-    "artifact": "/Users/nijelhunt_1/.codex/visualizations/2026/07/26/019f9ec4-1698-7450-acbc-9119c3d07b90/franka_droid_joint_position_stationary_frozen_001/franka_droid_closed_loop.json",
+    "artifact": "private_evidence/franka_droid_joint_position_stationary_frozen_001/franka_droid_closed_loop.json",
     "file_sha256": "1091b234361c3b970a5806305ff5818d3db6b7b999c3f8f9d5f90bcc0900c593",
     "manifest_sha256": "a98594c6c4a7ac902a40abc6cb8202586f4b819332c332afc0f2929feaa78a69",
     "lift_delta_m": 0.0011468296884047796,

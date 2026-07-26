@@ -3,7 +3,7 @@
   "status": "frozen",
   "queried_at_utc": "2026-07-26T20:01:59.463003+00:00",
   "source": "https://storage.googleapis.com/storage/v1/b/openpi-assets/o",
-  "cohort_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-thesis/docs/experiments/policy_ranking_thesis_20260726/warehouse_policy_cohort_v2_joint_position.json",
+  "cohort_path": "docs/experiments/policy_ranking_thesis_20260726/warehouse_policy_cohort_v2_joint_position.json",
   "openpi_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
   "entries": [
     {
@@ -1549,5 +1549,5 @@
     "learned_policy_executed": false,
     "checkpoint_license_resolved": false
   },
-  "inventory_sha256": "0514eeaef26bec006cc5fb6dafea3651624473e4c23172ac63b57865f3a3b92b"
+  "inventory_sha256": "492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063"
 }

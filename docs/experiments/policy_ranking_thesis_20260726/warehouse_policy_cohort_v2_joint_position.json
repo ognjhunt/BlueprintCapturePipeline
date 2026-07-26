@@ -9,7 +9,7 @@
   "openpi_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
   "checkpoint_inventory": {
     "artifact": "openpi_polaris_checkpoint_inventory.json",
-    "inventory_sha256": "0514eeaef26bec006cc5fb6dafea3651624473e4c23172ac63b57865f3a3b92b",
+    "inventory_sha256": "492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
     "file_sha256": "db580eb2afff326dac9adff37768680cd9ccc9382c0df03ad2ede16aa3cc3ea4",
     "includes_gcs_object_generations": true
   },

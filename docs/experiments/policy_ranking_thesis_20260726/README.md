@@ -32,7 +32,7 @@ The initially proposed Floppy Bagel checkpoint ladder was rejected before scorin
 - OpenPI DROID-to-MuJoCo bridge contract: `c187106f29386c362563057e46959cf64382cb4809e732a90253efa574f586a6`
 - Native-square captured-site policy camera contract: `f4a2a6c02de426922b4d52290ec758f06f41e5381871acc724ab9c186c800c0e`
 - Frozen captured-site ranking aggregator: `captured_site_policy_ranking.v1` with three preregistered can-position variants and strict interval separation
-- Frozen OpenPI PolaRiS checkpoint inventory: canonical SHA-256 `0514...`; 47,286,181,297 bytes across four exact checkpoint generations
+- Frozen OpenPI PolaRiS checkpoint inventory: canonical SHA-256 `492e...`; 47,286,181,297 bytes across four exact checkpoint generations
 
 ## Completed evidence
 

@@ -12,6 +12,7 @@ import zipfile
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 
 from .common import write_json
 from .openpi_policy_ranking_gpu_job import run_openpi_policy_ranking_gpu_campaign
@@ -117,8 +118,15 @@ def extract_private_input_bundle(
 
 
 def _download_signed_input(url: str, destination: Path) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("gpu_input_url_not_safe_https")
     request = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(request, timeout=180) as response, destination.open("wb") as handle:
+    with urllib.request.urlopen(  # nosec B310 - exact validated HTTPS URL and redirect check
+        request, timeout=180
+    ) as response, destination.open("wb") as handle:
+        if response.geturl() != url:
+            raise ValueError("gpu_input_url_redirect_forbidden")
         total = 0
         while chunk := response.read(1024 * 1024):
             total += len(chunk)
@@ -128,6 +136,9 @@ def _download_signed_input(url: str, destination: Path) -> None:
 
 
 def _upload_output(url: str, archive_path: Path) -> int:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("gpu_output_url_not_safe_https")
     data = archive_path.read_bytes()
     request = urllib.request.Request(
         url,
@@ -135,7 +146,11 @@ def _upload_output(url: str, archive_path: Path) -> int:
         method="PUT",
         headers={"Content-Type": "application/zip", "Content-Length": str(len(data))},
     )
-    with urllib.request.urlopen(request, timeout=300) as response:
+    with urllib.request.urlopen(  # nosec B310 - exact validated HTTPS URL and redirect check
+        request, timeout=300
+    ) as response:
+        if response.geturl() != url:
+            raise ValueError("gpu_output_url_redirect_forbidden")
         response.read()
         return int(getattr(response, "status", 200))
 

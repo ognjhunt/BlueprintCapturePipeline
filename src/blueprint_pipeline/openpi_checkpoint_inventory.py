@@ -86,6 +86,10 @@ def build_checkpoint_inventory(
     opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> dict[str, Any]:
     cohort_file = Path(cohort_path).expanduser().resolve()
+    try:
+        cohort_reference = cohort_file.relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        cohort_reference = cohort_file.name
     cohort = json.loads(cohort_file.read_text(encoding="utf-8"))
     if cohort.get("schema_version") != "policy_ranking_warehouse_policy_cohort.v2":
         raise ValueError("unsupported_policy_cohort_schema")
@@ -130,7 +134,7 @@ def build_checkpoint_inventory(
         "status": "blocked" if blockers else "frozen",
         "queried_at_utc": dt.datetime.now(dt.UTC).isoformat(),
         "source": GCS_JSON_API,
-        "cohort_path": str(cohort_file),
+        "cohort_path": cohort_reference,
         "openpi_revision": str(cohort["openpi_revision"]),
         "entries": entries,
         "blockers": blockers,

@@ -11,6 +11,7 @@ import pytest
 from blueprint_pipeline.openpi_droid_policy_runtime import (
     OpenPIWebsocketDroidPolicyClient,
     load_policy_spec,
+    serve_identity_bound_policy,
     validate_server_metadata,
     verify_local_checkpoint,
 )
@@ -201,3 +202,19 @@ def test_unknown_policy_and_bad_checkpoint_identity_fail(tmp_path: Path) -> None
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="invalid_checkpoint_object_manifest_sha256"):
         load_policy_spec(path, policy_id="pi0_fast_droid_jointpos_polaris")
+
+
+def test_policy_server_rejects_non_loopback_bind_before_checkpoint_io(
+    tmp_path: Path,
+) -> None:
+    spec = load_policy_spec(
+        _cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris"
+    )
+    with pytest.raises(ValueError, match="openpi_policy_server_must_be_loopback_only"):
+        serve_identity_bound_policy(
+            spec=spec,
+            checkpoint_dir=tmp_path / "missing",
+            checkpoint_inventory_path=tmp_path / "missing-inventory.json",
+            host="0.0.0.0",
+            port=8000,
+        )

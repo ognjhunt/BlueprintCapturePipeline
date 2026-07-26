@@ -338,6 +338,8 @@ def serve_identity_bound_policy(
 ) -> None:
     """Load the pinned OpenPI config/checkpoint and serve identity metadata."""
     spec.validate()
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("openpi_policy_server_must_be_loopback_only")
     checkpoint = Path(checkpoint_dir).expanduser().resolve()
     local_verification = verify_local_checkpoint(
         spec=spec,
@@ -370,7 +372,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--policy-id", required=True)
     parser.add_argument("--checkpoint-dir", required=True)
     parser.add_argument("--checkpoint-inventory", required=True)
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
     spec = load_policy_spec(args.cohort, policy_id=args.policy_id)
