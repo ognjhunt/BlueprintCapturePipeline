@@ -11,6 +11,7 @@ const state = {
   mesh: null,
   bounds: null,
   canvas: null,
+  overlayGroup: null,
 };
 
 async function load(url, width, height, clearColor) {
@@ -91,6 +92,39 @@ async function load(url, width, height, clearColor) {
   return { ...state.bounds, _diag: state._diag };
 }
 
+function setOverlay(items = []) {
+  const { scene } = state;
+  if (!scene) throw new Error("splat_not_loaded");
+  if (state.overlayGroup) scene.remove(state.overlayGroup);
+  const group = new THREE.Group();
+  group.name = "blueprint_hybrid_preview_overlay";
+  for (const item of items) {
+    const shape = item.shape || "box";
+    let geometry;
+    if (shape === "cylinder") {
+      geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 24);
+    } else {
+      geometry = new THREE.BoxGeometry(1, 1, 1);
+    }
+    const material = new THREE.MeshBasicMaterial({
+      color: item.color == null ? 0x22ccff : Number(item.color),
+      opacity: item.opacity == null ? 0.92 : Number(item.opacity),
+      transparent: Number(item.opacity == null ? 0.92 : item.opacity) < 1,
+      depthTest: true,
+      depthWrite: true,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = String(item.id || shape);
+    mesh.position.set(...(item.position || [0, 0, 0]));
+    mesh.scale.set(...(item.scale || [1, 1, 1]));
+    if (item.rotation_euler_rad) mesh.rotation.set(...item.rotation_euler_rad);
+    group.add(mesh);
+  }
+  scene.add(group);
+  state.overlayGroup = group;
+  return { item_count: group.children.length, ids: group.children.map((item) => item.name) };
+}
+
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Spark decodes splats in a worker and uploads/sorts them to the GPU across several
@@ -123,5 +157,5 @@ async function renderView(spec, settleFrames = 10, settleMs = 110) {
   return canvas.toDataURL("image/png");
 }
 
-window.BlueprintSplat = { load, warmup, renderView };
+window.BlueprintSplat = { load, setOverlay, warmup, renderView };
 window.__sparkReady = true;

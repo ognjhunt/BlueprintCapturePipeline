@@ -1,0 +1,80 @@
+{
+  "schema_version": "hybrid_3dgs_preview_overlay.v1",
+  "claim_boundary": "visual_registration_review_only_not_usd_loading_physics_or_policy_execution",
+  "items": [
+    {
+      "id": "work_surface_top_proxy",
+      "shape": "box",
+      "position": [-0.46, 4.60, -0.50],
+      "scale": [1.20, 0.08, 0.70],
+      "color": 7412244,
+      "opacity": 0.95
+    },
+    {
+      "id": "work_surface_left_leg_proxy",
+      "shape": "box",
+      "position": [-0.96, 4.98, -0.50],
+      "scale": [0.08, 0.72, 0.56],
+      "color": 4202516,
+      "opacity": 0.95
+    },
+    {
+      "id": "work_surface_right_leg_proxy",
+      "shape": "box",
+      "position": [0.04, 4.98, -0.50],
+      "scale": [0.08, 0.72, 0.56],
+      "color": 4202516,
+      "opacity": 0.95
+    },
+    {
+      "id": "simready_spraycan_proxy",
+      "shape": "cylinder",
+      "position": [-0.66, 4.45, -0.50],
+      "scale": [0.065, 0.22, 0.065],
+      "color": 15158332,
+      "opacity": 1.0
+    },
+    {
+      "id": "marked_tray_base_proxy",
+      "shape": "box",
+      "position": [-0.16, 4.545, -0.50],
+      "scale": [0.44, 0.03, 0.32],
+      "color": 14073,
+      "opacity": 0.92
+    },
+    {
+      "id": "franka_base_proxy",
+      "shape": "cylinder",
+      "position": [-0.46, 5.15, -1.05],
+      "scale": [0.16, 0.38, 0.16],
+      "color": 14540253,
+      "opacity": 0.95
+    },
+    {
+      "id": "franka_link_proxy_1",
+      "shape": "box",
+      "position": [-0.46, 4.84, -0.96],
+      "scale": [0.10, 0.42, 0.10],
+      "color": 15658734,
+      "opacity": 0.95,
+      "rotation_euler_rad": [0.55, 0.0, 0.0]
+    },
+    {
+      "id": "franka_link_proxy_2",
+      "shape": "box",
+      "position": [-0.46, 4.58, -0.76],
+      "scale": [0.09, 0.38, 0.09],
+      "color": 15658734,
+      "opacity": 0.95,
+      "rotation_euler_rad": [1.0, 0.0, 0.0]
+    },
+    {
+      "id": "franka_gripper_proxy",
+      "shape": "box",
+      "position": [-0.46, 4.43, -0.58],
+      "scale": [0.13, 0.08, 0.10],
+      "color": 2236962,
+      "opacity": 0.95
+    }
+  ]
+}

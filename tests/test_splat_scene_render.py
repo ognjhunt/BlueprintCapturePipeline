@@ -40,6 +40,26 @@ def test_blocked_when_cli_missing(tmp_path: Path) -> None:
     assert m["proof_boundary"]["captured_scene_displayed"] is False
 
 
+def test_invalid_focus_point_fails_closed_after_decode(tmp_path: Path, monkeypatch) -> None:
+    src = tmp_path / "scene.ply"
+    src.write_bytes(b"placeholder")
+    monkeypatch.setattr(
+        "blueprint_pipeline.splat_scene_render._decimate_to_standard_ply",
+        lambda *args, **kwargs: {"status": "completed"},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.splat_scene_render.read_standard_3dgs_ply",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.splat_scene_render.analyze_scene",
+        lambda *args, **kwargs: type("Geometry", (), {"to_dict": lambda self: {}})(),
+    )
+    result = render_splat_scene(src, tmp_path / "out", focus_point=[1.0, float("nan"), 2.0])
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["invalid_focus_point"]
+
+
 def test_encode_mp4_no_frames(tmp_path: Path) -> None:
     result = _encode_mp4([], tmp_path / "out.mp4")
     assert result["status"] == "blocked"

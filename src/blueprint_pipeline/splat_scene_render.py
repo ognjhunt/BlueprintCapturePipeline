@@ -19,6 +19,7 @@ GPU proof). All failures are fail-closed blockers, never a fabricated pass.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -113,6 +114,8 @@ def render_splat_scene(
     settle_ms: int = 100,
     warmup_ms: int = 2000,
     up_axis: int | None = None,
+    focus_point: Sequence[float] | None = None,
+    overlay_json: str | Path | None = None,
     repo_root: str | Path | None = None,
     node: str = "node",
     decode_timeout: int = 900,
@@ -134,6 +137,7 @@ def render_splat_scene(
         "blockers": [],
         "proof_boundary": {
             "captured_scene_displayed": False,
+            "interaction_overlay_displayed": False,
             "rendered_by_isaac_rtx": False,
             "physics_or_navigation_proven": False,
         },
@@ -164,7 +168,15 @@ def render_splat_scene(
     manifest["scene_geometry"] = geom.to_dict()
 
     # 3) frame the eval cameras and render headlessly
-    cameras = derive_eval_cameras(geom, camera_ids)
+    if focus_point is not None:
+        if len(focus_point) != 3 or not all(math.isfinite(float(value)) for value in focus_point):
+            manifest["blockers"].append("invalid_focus_point")
+            return manifest
+        normalized_focus = [float(value) for value in focus_point]
+    else:
+        normalized_focus = None
+    cameras = derive_eval_cameras(geom, camera_ids, focus_point=normalized_focus)
+    manifest["camera_focus_point"] = normalized_focus
     cameras_json = out_dir / "cameras.json"
     cameras_json.write_text(json.dumps(cameras), encoding="utf-8")
     harness = root / RENDER_HARNESS_REL
@@ -182,6 +194,12 @@ def render_splat_scene(
         "--settle-frames", str(settle_frames),
         "--settle-ms", str(settle_ms),
     ]
+    if overlay_json:
+        overlay_path = Path(overlay_json).expanduser().resolve()
+        if not overlay_path.is_file():
+            manifest["blockers"].append("interaction_overlay_missing")
+            return manifest
+        cmd += ["--overlay", str(overlay_path)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=render_timeout)
     except FileNotFoundError:
@@ -205,6 +223,7 @@ def render_splat_scene(
         "status": render_result.get("status"),
         "blockers": render_result.get("blockers", []),
         "page_errors": render_result.get("page_errors", [])[:5],
+        "overlay": render_result.get("overlay"),
         "stderr_tail": (proc.stderr or "")[-1200:] if proc.returncode != 0 else "",
     }
     rendered = render_result.get("cameras", []) or []
@@ -240,6 +259,11 @@ def render_splat_scene(
 
     manifest["status"] = "completed"
     manifest["proof_boundary"]["captured_scene_displayed"] = True
+    manifest["proof_boundary"]["interaction_overlay_displayed"] = bool(
+        render_result.get("overlay", {}).get("item_count")
+        if isinstance(render_result.get("overlay"), dict)
+        else False
+    )
     manifest["robot_start_pose"] = geom.suggested_start
     return manifest
 
@@ -317,6 +341,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--settle-frames", type=int, default=6)
     ap.add_argument("--warmup-ms", type=int, default=2000)
     ap.add_argument("--up-axis", type=int, default=None, choices=[0, 1, 2])
+    ap.add_argument(
+        "--focus-point",
+        type=float,
+        nargs=3,
+        metavar=("X", "Y", "Z"),
+        help="site-coordinate task focus used for wrist and task-focus framing",
+    )
+    ap.add_argument("--overlay", help="optional JSON box/cylinder preview overlay")
     ap.add_argument("--no-mp4", action="store_true")
     args = ap.parse_args(argv)
     manifest = render_splat_scene(
@@ -328,8 +360,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         settle_frames=args.settle_frames,
         warmup_ms=args.warmup_ms,
         up_axis=args.up_axis,
+        focus_point=args.focus_point,
+        overlay_json=args.overlay,
         encode_mp4=not args.no_mp4,
     )
+    manifest_path = Path(args.out).expanduser() / "splat_render_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(manifest, indent=2))
     return 0 if manifest.get("status") == "completed" else 1
 
