@@ -25,7 +25,7 @@ import yaml
 from .common import write_json
 
 
-PREREGISTRATION_SCHEMA = "policy_ranking_thesis_preregistration.v1"
+PREREGISTRATION_SCHEMA = "policy_ranking_thesis_preregistration.v2"
 ROLLOUT_INDEX_SCHEMA = "frozen_wam_rollout_index.v1"
 JUDGE_RESULT_SCHEMA = "policy_ranking_episode_judgment.v1"
 CALIBRATION_REPORT_SCHEMA = "policy_ranking_frozen_calibration_report.v1"
@@ -115,7 +115,7 @@ def build_preregistration(
 
     protocol: dict[str, Any] = {
         "schema_version": PREREGISTRATION_SCHEMA,
-        "protocol_id": "blueprint_franka_roboarena_oscar_v1",
+        "protocol_id": "blueprint_franka_roboarena_oscar_v2",
         "frozen": True,
         "split_salt": SPLIT_SALT,
         "hypotheses": {
@@ -145,6 +145,11 @@ def build_preregistration(
             "released_rollout_count": 441,
             "paper_pool_claim": 455,
             "unresolved_count_contradiction": 14,
+            "released_subset_selection_process": "not_documented",
+            "selection_bias_caveat": (
+                "The 441 released rollouts are an author-provided subset of the paper's "
+                "claimed 455; representativeness cannot be assumed."
+            ),
             "generated_half": "left_half_only",
             "third_party_physical_half_forbidden_to_evaluator": True,
         },
@@ -159,6 +164,57 @@ def build_preregistration(
             "full_temporal_method": "frozen_temporal_32_frame_progress_judge_v1",
             "cheap_baseline_method": "frozen_first_last_frame_progress_judge_v1",
             "no_benchmark_labels_in_request": True,
+            "provider_configuration": {
+                "model_snapshot": "gpt-5-2025-08-07",
+                "reasoning_effort": "high",
+                "max_output_tokens_including_reasoning": 8192,
+                "temperature": "not_requested_model_default",
+                "top_p": "not_requested_model_default",
+                "seed": "not_supported_by_this_responses_configuration",
+                "image_detail": "low",
+                "strict_json_schema": True,
+                "store": False,
+            },
+            "retry_rule": {
+                "maximum_exact_attempts_per_request": 2,
+                "configuration_change_between_attempts_forbidden": True,
+                "accept_first_valid_response_only": True,
+                "all_attempt_usage_preserved": True,
+                "exhausted_request_result": "explicit_abstention_and_inconclusive_if_required_matrix_incomplete",
+            },
+        },
+        "power_analysis": {
+            "artifact": "power_analysis.json",
+            "analysis_unit": "heldout_session_cluster",
+            "heldout_session_count": 49,
+            "within_session_pairs_treated_as_independent": False,
+            "one_sided_alpha": 0.05,
+            "target_power": 0.80,
+            "null_accuracy": 0.50,
+            "conservative_minimum_detectable_accuracy": 0.6776,
+            "exact_binomial_reference_minimum_accuracy": 0.6783,
+            "sample_size_basis": "all_released_complete_sessions_remaining_after_pilot_and_calibration",
+            "small_effect_or_wide_interval_disposition": "inconclusive",
+            "adjacent_pairs_exempt_from_decision_rule": False,
+        },
+        "experimental_lanes": {
+            "lane_a_frozen_benchmark": {
+                "rollout_mode": "author_generated_open_loop_action_replay",
+                "answer_key": "independent_frozen_roboarena_real_policy_outcomes",
+            },
+            "lane_b_controlled_bridge": {
+                "required_before_lane_c_claim": True,
+                "scene": "nvidia_physicalai_simready_warehouse_01",
+                "rollout_mode": "blueprint_operated_closed_loop_policy_in_the_loop",
+                "evaluator": "deterministic_object_state_predicates_plus_frozen_visual_consistency_check",
+                "independent_physical_answer_key": False,
+                "claim": "closed_loop_execution_and_internal_simulator_outcome_bridge_only",
+            },
+            "lane_c_captured_site": {
+                "rollout_mode": "blueprint_operated_closed_loop_policy_in_the_loop",
+                "claim": "prospective_externally_calibrated_ranking_only",
+            },
+            "lane_a_does_not_validate_lane_b_or_c_closed_loop_behavior": True,
         },
         "thresholds": {
             "episode_judge_confidence_min": 0.65,
@@ -211,6 +267,7 @@ def build_preregistration(
                 "full_temporal_pairwise_accuracy_gt_strongest_frozen_cheap_baseline",
                 "selective_accuracy_gain_gte_0_05_at_coverage_gte_0_25",
                 "heldout_action_following_pass_rate_gte_0_80",
+                "blueprint_operated_closed_loop_warehouse_bridge_passes_frozen_deterministic_predicates_without_policy_specific_scoring",
                 "identical_evaluator_digest_used_for_unseen_3dgs_transfer",
                 "hybrid_scene_keeps_3dgs_visual_source_and_local_interaction_assets_separate",
                 "prospective_transfer_ranks_at_least_four_policies_without_policy_specific_scoring",
@@ -223,6 +280,7 @@ def build_preregistration(
                 "heldout_action_following_pass_rate_lt_0_80",
                 "data_leakage_detected",
                 "transfer_requires_policy_specific_evaluator_changes",
+                "closed_loop_bridge_requires_policy_specific_tuning_or_cannot_execute",
                 "cost_advantage_eliminated",
             ],
             "inconclusive_if_any_required_component_unmeasured": True,
@@ -233,6 +291,8 @@ def build_preregistration(
             "captured_site_physical_success_proven": False,
             "captured_site_policy_ordering_proven": False,
             "blueprint_operated_physical_robot": False,
+            "open_loop_calibration_proves_blueprint_closed_loop_wam_behavior": False,
+            "warehouse_deterministic_predicates_are_independent_physical_truth": False,
         },
     }
     protocol["protocol_sha256"] = canonical_sha256(protocol)
