@@ -1,0 +1,51 @@
+{
+  "schema_version": "policy_ranking_label_basis_power_sensitivity.v1",
+  "protocol_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
+  "source_partition": "pilot",
+  "source_labels_opened": true,
+  "calibration_labels_opened": true,
+  "heldout_labels_opened": false,
+  "heldout_session_count": 49,
+  "within_session_pairs_treated_as_independent": false,
+  "basis_results": {
+    "binary_success": {
+      "sessions_with_any_informative_pair": 1,
+      "informative_pair_count": 6,
+      "pilot_session_count": 7,
+      "pilot_informative_session_fraction": 0.14285714285714285,
+      "projected_heldout_informative_session_count": 7,
+      "projection_rule": "round(heldout_sessions * pilot_informative_session_fraction)",
+      "projected_cluster_mde_accuracy": 0.9698995801543956,
+      "projected_exact_binomial_minimum_accuracy_for_80pct_power": 0.9686999999999484
+    },
+    "binary_then_partial": {
+      "sessions_with_any_informative_pair": 7,
+      "informative_pair_count": 130,
+      "pilot_session_count": 7,
+      "pilot_informative_session_fraction": 1.0,
+      "projected_heldout_informative_session_count": 49,
+      "projection_rule": "round(heldout_sessions * pilot_informative_session_fraction)",
+      "projected_cluster_mde_accuracy": 0.6776053471803133,
+      "projected_exact_binomial_minimum_accuracy_for_80pct_power": 0.6782999999999804
+    },
+    "preference_winner_vs_rest": {
+      "sessions_with_any_informative_pair": 7,
+      "informative_pair_count": 42,
+      "pilot_session_count": 7,
+      "pilot_informative_session_fraction": 1.0,
+      "projected_heldout_informative_session_count": 49,
+      "projection_rule": "round(heldout_sessions * pilot_informative_session_fraction)",
+      "projected_cluster_mde_accuracy": 0.6776053471803133,
+      "projected_exact_binomial_minimum_accuracy_for_80pct_power": 0.6782999999999804
+    }
+  },
+  "interpretation": {
+    "exploratory_sensitivity_only": true,
+    "uses_pilot_labels_only": true,
+    "registered_primary_basis_unchanged": "binary_then_partial",
+    "registered_decision_rule_unchanged": true,
+    "pilot_fraction_may_not_repeat_in_heldout": true,
+    "low_binary_informativeness_can_make_binary_only_results_inconclusive": true
+  },
+  "analysis_sha256": "de3da5e8c0833aaccdd548c591e626e981a7022ef68493fd9dae87038d38a2c5"
+}
