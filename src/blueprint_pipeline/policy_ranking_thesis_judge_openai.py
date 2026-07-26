@@ -17,6 +17,7 @@ import math
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -45,12 +46,12 @@ PROMPT_SHA256 = hashlib.sha256(PROMPT.encode()).hexdigest()
 MAX_DIMENSION = 768
 JPEG_QUALITY = 86
 REASONING_EFFORT = "high"
-MAX_OUTPUT_TOKENS = 900
+MAX_OUTPUT_TOKENS = 4096
 INPUT_USD_PER_MILLION_TOKENS = 1.25
 OUTPUT_USD_PER_MILLION_TOKENS = 10.0
 # Conservative admission allowance for one request. The real charge is recorded
 # from response.usage and is normally much lower than this ceiling.
-MAX_ESTIMATED_REQUEST_USD = 0.015
+MAX_ESTIMATED_REQUEST_USD = 0.05
 LOW_DETAIL_IMAGE_TOKENS = 70
 OUTPUT_SCHEMA = {
     "type": "object",
@@ -76,6 +77,22 @@ OUTPUT_SCHEMA = {
         "rationale",
     ],
 }
+
+
+class JudgeResponseError(RuntimeError):
+    """A provider response existed but did not contain a usable structured score."""
+
+    def __init__(self, reason: str, response: Any):
+        super().__init__(reason)
+        incomplete = getattr(response, "incomplete_details", None)
+        self.safe_details = {
+            "reason": reason,
+            "response_id": str(getattr(response, "id", "") or ""),
+            "response_status": str(getattr(response, "status", "") or ""),
+            "incomplete_reason": str(getattr(incomplete, "reason", "") or ""),
+            "usage": _usage(response),
+            "raw_response_persisted": False,
+        }
 
 
 def evaluator_digest(protocol: Mapping[str, Any]) -> str:
@@ -320,7 +337,10 @@ def _score_one(client: Any, request: Mapping[str, Any]) -> tuple[dict[str, Any],
         store=False,
     )
     elapsed = time.monotonic() - started
-    payload = _parse_json(str(getattr(response, "output_text", "")))
+    try:
+        payload = _parse_json(str(getattr(response, "output_text", "")))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise JudgeResponseError("unparseable_structured_output", response) from exc
     judgment = {
         "schema_version": JUDGE_RESULT_SCHEMA,
         "session_id": request["session_id"],
@@ -356,6 +376,7 @@ def run_inventory(
     output_path: str | Path,
     max_requests: int | None = None,
     max_estimated_cost_usd: float = 2.0,
+    max_workers: int = 4,
 ) -> dict[str, Any]:
     if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
         result = {
@@ -382,6 +403,9 @@ def run_inventory(
         return result
     from openai import OpenAI  # type: ignore[import-not-found]
 
+    if not 1 <= max_workers <= 8:
+        raise ValueError("max_workers_must_be_between_1_and_8")
+
     client = OpenAI(api_key=key)
     requests = list(inventory.get("requests", []))
     if max_requests is not None:
@@ -402,6 +426,11 @@ def run_inventory(
         if isinstance(row, Mapping) and str(row.get("request_id")) in selected_ids
     ]
     completed_ids = {str(row.get("request_id")) for row in judgments}
+    failed_requests = [
+        dict(row)
+        for row in previous.get("failed_requests", [])
+        if isinstance(row, Mapping) and str(row.get("request_id")) in selected_ids
+    ]
     blockers: list[str] = []
     started = time.monotonic()
     provider_called = bool(previous.get("provider_called"))
@@ -410,44 +439,81 @@ def run_inventory(
         float((row.get("usage") or {}).get("estimated_cost_usd_conservative") or 0.0)
         for row in judgments
     )
-    for request in requests:
-        if str(request.get("request_id")) in completed_ids:
-            continue
-        if estimated_cost + MAX_ESTIMATED_REQUEST_USD > max_estimated_cost_usd:
-            blockers.append("estimated_cost_cap_would_be_exceeded")
-            break
-        try:
-            provider_called = True
-            uploaded = True
-            judgment, _ = _score_one(client, request)
-            judgments.append(judgment)
-            completed_ids.add(str(judgment["request_id"]))
-            estimated_cost += float(
-                judgment["usage"]["estimated_cost_usd_conservative"]
-            )
-            checkpoint = {
-                "schema_version": "policy_ranking_judge_run.v1",
-                "status": "running",
-                "inventory_sha256": inventory.get("inventory_sha256"),
-                "provider": "openai",
-                "model": MODEL,
-                "request_count": len(requests),
-                "judgment_count": len(judgments),
-                "judgments": judgments,
-                "blockers": [],
-                "provider_called": provider_called,
-                "data_uploaded": uploaded,
-                "estimated_cost_usd_conservative": estimated_cost,
-                "max_estimated_cost_usd": max_estimated_cost_usd,
-                "raw_credentials_written": False,
-            }
-            write_json(output_path, checkpoint)
-        except Exception as exc:  # pragma: no cover - provider/runtime behavior
-            blockers.append(
-                f"request_failed:{request.get('session_id')}:{request.get('policy_id')}:"
-                f"{type(exc).__name__}"
-            )
-            break
+    request_order = {
+        str(request.get("request_id")): index for index, request in enumerate(requests)
+    }
+    pending = [
+        request
+        for request in requests
+        if str(request.get("request_id")) not in completed_ids
+    ]
+    remaining_allowance = max(0.0, max_estimated_cost_usd - estimated_cost)
+    admitted_count = min(
+        len(pending), int(remaining_allowance // MAX_ESTIMATED_REQUEST_USD)
+    )
+    admitted = pending[:admitted_count]
+    if admitted_count < len(pending):
+        blockers.append("estimated_cost_cap_would_be_exceeded")
+
+    def persist_checkpoint() -> None:
+        judgments.sort(key=lambda row: request_order.get(str(row.get("request_id")), len(requests)))
+        failed_requests.sort(
+            key=lambda row: request_order.get(str(row.get("request_id")), len(requests))
+        )
+        checkpoint = {
+            "schema_version": "policy_ranking_judge_run.v1",
+            "status": "running",
+            "inventory_sha256": inventory.get("inventory_sha256"),
+            "provider": "openai",
+            "model": MODEL,
+            "request_count": len(requests),
+            "judgment_count": len(judgments),
+            "judgments": judgments,
+            "failed_requests": failed_requests,
+            "blockers": blockers,
+            "provider_called": provider_called,
+            "data_uploaded": uploaded,
+            "estimated_cost_usd_conservative": estimated_cost,
+            "max_estimated_cost_usd": max_estimated_cost_usd,
+            "max_workers": max_workers,
+            "raw_credentials_written": False,
+        }
+        write_json(output_path, checkpoint)
+
+    if admitted:
+        provider_called = True
+        uploaded = True
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_score_one, client, request): request for request in admitted}
+            for future in as_completed(futures):
+                request = futures[future]
+                try:
+                    judgment, _ = future.result()
+                    judgments.append(judgment)
+                    completed_ids.add(str(judgment["request_id"]))
+                    estimated_cost += float(
+                        judgment["usage"]["estimated_cost_usd_conservative"]
+                    )
+                except Exception as exc:  # pragma: no cover - provider/runtime behavior
+                    if isinstance(exc, JudgeResponseError):
+                        failed = {
+                            "request_id": request.get("request_id"),
+                            "session_id": request.get("session_id"),
+                            "policy_id": request.get("policy_id"),
+                            **exc.safe_details,
+                        }
+                        failed_requests.append(failed)
+                        estimated_cost += float(
+                            (failed.get("usage") or {}).get(
+                                "estimated_cost_usd_conservative"
+                            )
+                            or 0.0
+                        )
+                    blockers.append(
+                        f"request_failed:{request.get('session_id')}:"
+                        f"{request.get('policy_id')}:{type(exc).__name__}"
+                    )
+                persist_checkpoint()
     result = {
         "schema_version": "policy_ranking_judge_run.v1",
         "status": "completed" if len(judgments) == len(requests) and not blockers else "blocked",
@@ -458,11 +524,13 @@ def run_inventory(
         "request_count": len(requests),
         "judgment_count": len(judgments),
         "judgments": judgments,
+        "failed_requests": failed_requests,
         "blockers": blockers,
         "provider_called": provider_called,
         "data_uploaded": uploaded,
         "estimated_cost_usd_conservative": estimated_cost,
         "max_estimated_cost_usd": max_estimated_cost_usd,
+        "max_workers": max_workers,
         "wall_time_seconds": time.monotonic() - started,
         "raw_credentials_written": False,
     }
@@ -485,6 +553,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--output", required=True)
     run.add_argument("--max-requests", type=int)
     run.add_argument("--max-estimated-cost-usd", type=float, default=2.0)
+    run.add_argument("--max-workers", type=int, default=4)
     args = parser.parse_args(argv)
     if args.command == "inventory":
         index_payload = json.loads(Path(args.index).read_text())
@@ -502,6 +571,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_path=args.output,
             max_requests=args.max_requests,
             max_estimated_cost_usd=args.max_estimated_cost_usd,
+            max_workers=args.max_workers,
         )
     return 0 if result["status"] in {"ready", "completed"} else 2
 

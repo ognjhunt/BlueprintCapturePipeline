@@ -1,0 +1,39 @@
+{
+  "schema_version": "policy_ranking_judge_run.v1",
+  "status": "blocked",
+  "inventory_sha256": "aa4126121d192d58ddfe5d753d9f095987fb65041ae304ec2da217fcad113162",
+  "provider": "openai",
+  "model": "gpt-5-2025-08-07",
+  "prompt_sha256": "095f2cf31b42eb9aef165c7d1665063807abe0e7023faf7bfe198f1936497ae4",
+  "request_count": 1,
+  "judgment_count": 0,
+  "judgments": [],
+  "failed_requests": [
+    {
+      "request_id": "a3b21867eae7491e313dd1f92af3246a05c7be51c5e6a43de36a5828f48e520c",
+      "session_id": "7ccd5be8-c1d6-4917-871d-905015915744",
+      "policy_id": "paligemma_binning_droid",
+      "reason": "unparseable_structured_output",
+      "response_id": "resp_0bdcbac5abcb249e016a662ac9be788197bfd10dd78645f339",
+      "response_status": "incomplete",
+      "incomplete_reason": "max_output_tokens",
+      "usage": {
+        "input_tokens": 2700,
+        "cached_input_tokens": 0,
+        "output_tokens": 1792,
+        "estimated_cost_usd_conservative": 0.021295
+      },
+      "raw_response_persisted": false
+    }
+  ],
+  "blockers": [
+    "request_failed:7ccd5be8-c1d6-4917-871d-905015915744:paligemma_binning_droid:JudgeResponseError"
+  ],
+  "provider_called": true,
+  "data_uploaded": true,
+  "estimated_cost_usd_conservative": 0.021295,
+  "max_estimated_cost_usd": 2.0,
+  "wall_time_seconds": 23.15508445771411,
+  "raw_credentials_written": false,
+  "run_sha256": "dbe728de93331befd84ebd1e4c91fbafacd93dad18c3ebd596438ebd950e0059"
+}

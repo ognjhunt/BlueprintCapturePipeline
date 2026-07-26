@@ -9,7 +9,9 @@ Snapshot: 2026-07-26 10:21 America/Chicago.
 | Label-blind action/motion diagnostic | None | None | $0 provider cost; local CPU |
 | Playroom 3DGS download and 20k-splat hybrid preview | None | None | $0 provider cost; local macOS CPU with Spark.js/Chromium/SwiftShader |
 | NVIDIA spray-can asset dependency materialization | Public download only | None | $0 provider cost; 143,801,263 bytes across 11 non-thumbnail files |
-| Proposed 98-call pilot judge | Not called | None | Conservative pre-call upper bound $1.0912125; hard admission cap $2.00 |
+| Pilot judge attempt 001 | One generated-only request; no accepted score | None | Provider usage was not preserved; conservatively charged the $0.015 per-request admission ceiling |
+| Pilot judge attempt 002 | One generated-only request; no accepted score | None | Measured conservative API cost $0.021295; provider reported `incomplete:max_output_tokens` |
+| Current 98-call pilot judge | Awaiting one-request validation | None | Conservative pre-call upper bound $4.2232925; cumulative pilot upper bound including attempts 001-002 is $4.2595875; hard cap $5.00 |
 | Controlled USD simulation | Not run | None | Unmeasured |
 | Captured-site policy/WAM rollout | Not run | None | Unmeasured; any paid lane requires a separate admission decision |
 | Physical robot evaluation | Forbidden in this goal | Forbidden | $0 spent |

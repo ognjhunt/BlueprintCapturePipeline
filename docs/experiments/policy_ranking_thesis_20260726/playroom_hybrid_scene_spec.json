@@ -14,10 +14,12 @@
     "reference_spark_render": {
       "status": "completed",
       "decimated_gaussian_count": 20000,
-      "nonblank_camera_count": 5,
+      "nonblank_camera_count": 6,
       "camera_count": 6,
-      "manifest_sha256": "a14f72d20808a1874ad8ff83ce17ed3172f66120b74bc91a240c94633848687c",
-      "hybrid_torso_preview_sha256": "79f9a2ee8d1db219ec847bf60569cb1c735093afa5a38fe6c88a36e910828076",
+      "manifest_sha256": "780fa387cd36a10caf23a6461dadea6de53646d3aff06885cb383113a9ff6081",
+      "hybrid_torso_preview_sha256": "2cc6b2e977537bbe7e94d171cd471b8601002cd9cfe662b900518e6c8d7aaa91",
+      "hybrid_wrist_preview_sha256": "4cae0c3dcce5ee28b2a026c6867b6cc60c0889d2134f9d41b7aef01610529588",
+      "camera_focus_point_site": [-0.41, 4.4975, -0.5],
       "rendered_by": "reference_spark_renderer_swiftshader_local",
       "physics_proven": false
     }
@@ -39,10 +41,9 @@
     "up_sign": -1.0,
     "floor_site_coordinate": 5.340919818878174,
     "quality_gaps": [
-      "one_of_six_automatic_views_is_blank",
-      "automatic_wrist_view_is_occluded",
       "metric_scale_not_independently_calibrated",
-      "local_proxy_visual_alignment_does_not_prove_collision_alignment"
+      "local_proxy_visual_alignment_does_not_prove_collision_alignment",
+      "task_focused_wrist_is_a_fixed_scene_camera_not_yet_a_robot_link_camera"
     ]
   },
   "interactive_assets": [

@@ -1,0 +1,21 @@
+{
+  "schema_version": "policy_ranking_judge_run.v1",
+  "status": "blocked",
+  "inventory_sha256": "b7c6ba4d0b303379b1cc3d1306457c304c43cd5e5bf1fb2bca173b106e9c820e",
+  "provider": "openai",
+  "model": "gpt-5-2025-08-07",
+  "prompt_sha256": "095f2cf31b42eb9aef165c7d1665063807abe0e7023faf7bfe198f1936497ae4",
+  "request_count": 98,
+  "judgment_count": 0,
+  "judgments": [],
+  "blockers": [
+    "request_failed:7ccd5be8-c1d6-4917-871d-905015915744:paligemma_binning_droid:JSONDecodeError"
+  ],
+  "provider_called": true,
+  "data_uploaded": true,
+  "estimated_cost_usd_conservative": 0,
+  "max_estimated_cost_usd": 2.0,
+  "wall_time_seconds": 15.637216832954437,
+  "raw_credentials_written": false,
+  "run_sha256": "c9de8c03154d5e25711f6bc8a267945df04d5c7b4b496a666776463477e359ca"
+}
