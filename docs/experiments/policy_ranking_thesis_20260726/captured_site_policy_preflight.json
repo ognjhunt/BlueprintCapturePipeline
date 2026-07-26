@@ -1,0 +1,93 @@
+{
+  "schema_version": "captured_site_policy_preflight.v1",
+  "status": "weights_attributable_runtime_not_yet_executed",
+  "checked_at": "2026-07-26T10:21:31-0500",
+  "source": {
+    "repository": "https://github.com/Physical-Intelligence/openpi",
+    "revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "license": "Apache-2.0",
+    "droid_documentation": "examples/droid/README.md",
+    "config_source": "src/openpi/training/misc/roboarena_config.py",
+    "config_excerpt_sha256": "0a8abee3517da19090349c88a98b3b6218e84c2a55a610f3bd7785590856c1ab",
+    "adapter_source": "src/openpi/policies/droid_policy.py",
+    "adapter_excerpt_sha256": "99ebf8b252bde5e33dba7af10552137c421589ec88887bb0ee6507366d24da68"
+  },
+  "selected_candidates": [
+    {
+      "policy_id": "paligemma_binning_droid",
+      "checkpoint": "gs://openpi-assets/checkpoints/roboarena/paligemma_binning_droid",
+      "object_count": 19,
+      "size_bytes": 10849851589,
+      "public_object_manifest_sha256": "1483475202a7db44864032875b871b2d57c0e9cb282b4c257dafd6c55b15fabd",
+      "action_horizon": 15,
+      "action_dimension": 8,
+      "tokenizer": "binning"
+    },
+    {
+      "policy_id": "paligemma_fast_droid",
+      "checkpoint": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_droid",
+      "object_count": 19,
+      "size_bytes": 10850689373,
+      "public_object_manifest_sha256": "82003a226f40d43da63d271c97a111ebe31bbd9de07f0172f31a31dadd68031e",
+      "action_horizon": 15,
+      "action_dimension": 8,
+      "tokenizer": "FAST_plus"
+    },
+    {
+      "policy_id": "paligemma_fast_specialist_droid",
+      "checkpoint": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_specialist_droid",
+      "object_count": 19,
+      "size_bytes": 10850020059,
+      "public_object_manifest_sha256": "b31c135781c62ba856db0f36e7dfa14c0051eb85620ff3552178698bb6cd8312",
+      "action_horizon": 15,
+      "action_dimension": 8,
+      "tokenizer": "FAST_DROID_specialist"
+    },
+    {
+      "policy_id": "paligemma_vq_droid",
+      "checkpoint": "gs://openpi-assets/checkpoints/roboarena/paligemma_vq_droid",
+      "object_count": 18,
+      "size_bytes": 10850197563,
+      "public_object_manifest_sha256": "69077e5423d839dae839cda9368d59fceb22e7ee68655fc97edca60621b70e0b",
+      "action_horizon": 15,
+      "action_dimension": 8,
+      "tokenizer": "FSQ_DROID"
+    }
+  ],
+  "total_checkpoint_bytes_if_all_materialized": 43400758584,
+  "selection_reason": "These four are exact identities in the frozen seven-policy RoboArena/OSCAR calibration pool and share the released DROID observation/action adapter, avoiding an unsupported cross-family extrapolation for the first transfer.",
+  "observation_contract": {
+    "external_image_key": "observation/exterior_image_1_left",
+    "wrist_image_key": "observation/wrist_image_left",
+    "image_shape_after_adapter": [224, 224, 3],
+    "joint_position_dimension": 7,
+    "gripper_position_dimension": 1,
+    "language_key": "prompt"
+  },
+  "action_contract": {
+    "dimension": 8,
+    "first_seven_dimensions": "joint_velocity",
+    "last_dimension": "gripper_position_binarized_at_0_5",
+    "control_frequency_hz": 15,
+    "execution_clip": [-1.0, 1.0]
+  },
+  "captured_site_adapter_requirements": [
+    "render_external_and_wrist_RGB_from_the_same_site_and_interaction_state",
+    "pin_initial_seven_joint_and_one_gripper_state",
+    "integrate_joint_velocity_actions_at_15Hz_with_joint_limits",
+    "render_OSCAR_skeleton_conditioning_from_the_integrated_joint_trajectory_and_pinned_cameras",
+    "feed_each_generated_chunk_back_through_the_same_policy_observation_contract",
+    "reject_camera_or_state_shape_mismatch",
+    "reject_missing_checkpoint_objects_or_manifest_drift"
+  ],
+  "weights_downloaded": false,
+  "policy_inference_executed": false,
+  "captured_site_action_rollout_executed": false,
+  "checkpoint_specific_license_metadata_verified": false,
+  "blockers": [
+    "checkpoint_specific_license_metadata_not_verified",
+    "external_and_wrist_camera_contract_not_frozen",
+    "joint_velocity_to_OSCAR_skeleton_integrator_not_executed",
+    "paid_GPU_runtime_not_admitted"
+  ]
+}

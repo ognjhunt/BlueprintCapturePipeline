@@ -1,0 +1,1631 @@
+{
+  "schema_version": "policy_ranking_wam_action_motion_diagnostic.v1",
+  "status": "completed",
+  "inventory_sha256": "af5248458397fc37ebcee48ccb1415484d4511d66db71a80aab409cd7450e652",
+  "row_count": 49,
+  "rows": [
+    {
+      "session_id": "3cb05d31-18ce-4154-897d-bec852521e5b",
+      "policy_id": "paligemma_binning_droid",
+      "video_sha256": "bb321f5dd2904ee986bc50c515c4b754aa7fcfeb98a5f97ca4dc69f7dd87d815",
+      "npz_sha256": "30721f60d5e350ff793024d432c6cddc2be7f896e1eb309c082c99d1d5df28f9",
+      "action_step_count": 361,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.015214559549495361,
+      "cartesian_start_end_displacement": 0.15614755885554646,
+      "generated_adjacent_motion_mean": 0.003239472753840447,
+      "generated_adjacent_motion_median": 0.001697610307019204,
+      "generated_adjacent_motion_p95": 0.0058348244987428185,
+      "generated_jump_to_median_ratio": 34.75076982558689,
+      "action_motion_pearson": 0.2336862149905069,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 361,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "3cb05d31-18ce-4154-897d-bec852521e5b",
+      "policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "4eea40c8f7874bf145d8fae38c6db8cc17bd98d8ee21c0c317e6cf3c9ff72b7d",
+      "npz_sha256": "314e6f7396a93aca172d73d8da2769ce56d706231e7c668f0601c8e33d48ac7b",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.16872441096689514,
+      "cartesian_start_end_displacement": 0.22129565575292862,
+      "generated_adjacent_motion_mean": 0.004327911307934886,
+      "generated_adjacent_motion_median": 0.003586192848160863,
+      "generated_adjacent_motion_p95": 0.009266932867467402,
+      "generated_jump_to_median_ratio": 4.152351868819908,
+      "action_motion_pearson": 0.15885906110725576,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "3cb05d31-18ce-4154-897d-bec852521e5b",
+      "policy_id": "paligemma_fast_droid",
+      "video_sha256": "348e1248ea47f804563b34fb17aec6a6e990e6c7bd26a4090fa96ee2a7aeef62",
+      "npz_sha256": "98360ef0f525dc3463a1873d39b5f797c1c5c2e1dfa8101b7d9e9a3e78a9e5a5",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.5534294248160982,
+      "cartesian_start_end_displacement": 0.20603586982066283,
+      "generated_adjacent_motion_mean": 0.014199727866098397,
+      "generated_adjacent_motion_median": 0.012747753411531448,
+      "generated_adjacent_motion_p95": 0.030072244256734843,
+      "generated_jump_to_median_ratio": 3.7685897715015626,
+      "action_motion_pearson": 0.42985194236563734,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "3cb05d31-18ce-4154-897d-bec852521e5b",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "50e1dea0de73a2b357cb64d480e41c812e62b53f256e0c8dc9cd92ec674948bf",
+      "npz_sha256": "45ae653e0903479c0219afeba95f091c8d783beaeeec93cba00cf9f73be197ca",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.7450872340483663,
+      "cartesian_start_end_displacement": 0.27279929074693543,
+      "generated_adjacent_motion_mean": 0.013132655057988427,
+      "generated_adjacent_motion_median": 0.011037785559892654,
+      "generated_adjacent_motion_p95": 0.026866582967340943,
+      "generated_jump_to_median_ratio": 3.604596526482374,
+      "action_motion_pearson": 0.5679445915659405,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "3cb05d31-18ce-4154-897d-bec852521e5b",
+      "policy_id": "paligemma_vq_droid",
+      "video_sha256": "bc672995561013005082ed84e9365794388d56db975b52d18cf0dea6e1875efe",
+      "npz_sha256": "8acec2bcde56d0e09bcb0922e29f04b5f705318e8ea143b26bc4f8be57d2b91d",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.32268528319756995,
+      "cartesian_start_end_displacement": 0.3991034173233281,
+      "generated_adjacent_motion_mean": 0.007619654780917831,
+      "generated_adjacent_motion_median": 0.006293096113950014,
+      "generated_adjacent_motion_p95": 0.018018136546015737,
+      "generated_jump_to_median_ratio": 5.702703672644745,
+      "action_motion_pearson": 0.5707147497187206,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "3cb05d31-18ce-4154-897d-bec852521e5b",
+      "policy_id": "pi0_droid",
+      "video_sha256": "4584d9de6784b4ceaea3b554c126cab73a3787cc7ce8b0b2985bcffd88593bcc",
+      "npz_sha256": "ce8aff8f4de5cd3f8e0cbae8c5d66659174d3e081482acf34e727d7245d4f1a6",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.4626044728214994,
+      "cartesian_start_end_displacement": 0.3681494855547786,
+      "generated_adjacent_motion_mean": 0.009322934703759028,
+      "generated_adjacent_motion_median": 0.008075368590652943,
+      "generated_adjacent_motion_p95": 0.019355291686952113,
+      "generated_jump_to_median_ratio": 3.1116925989241437,
+      "action_motion_pearson": 0.5800592048721985,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "3cb05d31-18ce-4154-897d-bec852521e5b",
+      "policy_id": "pi0_fast_droid",
+      "video_sha256": "83dc2a4ad7ab964627122aa0758d1ef1c18422a91f487a8232e64f094246a27c",
+      "npz_sha256": "d19413b81a2a5ada67f782541a4f74dfba14018fbbb2b6293853ea7b7277b319",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.618011871626518,
+      "cartesian_start_end_displacement": 0.4321557653876008,
+      "generated_adjacent_motion_mean": 0.013079868386824029,
+      "generated_adjacent_motion_median": 0.011682190001010895,
+      "generated_adjacent_motion_p95": 0.02606154065579175,
+      "generated_jump_to_median_ratio": 3.0222215915359922,
+      "action_motion_pearson": 0.3894263367631221,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "4f05ca12-ded4-43b0-83bd-6a35ed4ba120",
+      "policy_id": "paligemma_binning_droid",
+      "video_sha256": "5626a965d5cc8f20e3723a292816766652901ba25f1d2441a5ca00639bd4f0a3",
+      "npz_sha256": "710f3f110d14c98d66cfb8234c8d4231fc5447beceb96945769b5a78cce14d21",
+      "action_step_count": 89,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.03112637085367235,
+      "cartesian_start_end_displacement": 0.04664007019678381,
+      "generated_adjacent_motion_mean": 0.0014557848642818333,
+      "generated_adjacent_motion_median": 0.0014289215323515236,
+      "generated_adjacent_motion_p95": 0.0024164115078747265,
+      "generated_jump_to_median_ratio": 2.1263581328287033,
+      "action_motion_pearson": 0.18491371609551896,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 89,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "4f05ca12-ded4-43b0-83bd-6a35ed4ba120",
+      "policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "c41815419c64dba7b0a903d0a9a29c7f59ba8706ad9d63486c955762269f19ba",
+      "npz_sha256": "d9bfb5792b8e36b012ba17423788099b8ee9f40a702a4b903fc80fe5ab6eacb6",
+      "action_step_count": 386,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.17212715604278467,
+      "cartesian_start_end_displacement": 0.2758498031734607,
+      "generated_adjacent_motion_mean": 0.0016741761141728802,
+      "generated_adjacent_motion_median": 0.0010890524135902524,
+      "generated_adjacent_motion_p95": 0.005771936010569334,
+      "generated_jump_to_median_ratio": 9.301385831515478,
+      "action_motion_pearson": 0.4236767890676529,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 386,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "4f05ca12-ded4-43b0-83bd-6a35ed4ba120",
+      "policy_id": "paligemma_fast_droid",
+      "video_sha256": "29fe3dbcefa2724ca9486ac95f841eb51532f4e8dea59b20ad71294ea025e2ea",
+      "npz_sha256": "7c3b6ff6332178c831530de1115d9eaed7bc388ddaa36450aa67d8a7e77be0bb",
+      "action_step_count": 375,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.2752982780354438,
+      "cartesian_start_end_displacement": 0.24775027918070527,
+      "generated_adjacent_motion_mean": 0.0015087231362884725,
+      "generated_adjacent_motion_median": 0.0009263684332836419,
+      "generated_adjacent_motion_p95": 0.006535957939922808,
+      "generated_jump_to_median_ratio": 12.911256022937264,
+      "action_motion_pearson": 0.7761191540178886,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 375,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "4f05ca12-ded4-43b0-83bd-6a35ed4ba120",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "d6e4fa58ff5ff45583008a644990b3124308686512467d897eda56a95ca59068",
+      "npz_sha256": "450d7a8527bce5380b1339e945e0a12115f08fa40ed3540ed77145468ea7802a",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.3372339673364535,
+      "cartesian_start_end_displacement": 0.14369595887077982,
+      "generated_adjacent_motion_mean": 0.0032167960787518766,
+      "generated_adjacent_motion_median": 0.002462826669216156,
+      "generated_adjacent_motion_p95": 0.007403513230383393,
+      "generated_jump_to_median_ratio": 4.455963077248869,
+      "action_motion_pearson": 0.45847260418284663,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "4f05ca12-ded4-43b0-83bd-6a35ed4ba120",
+      "policy_id": "paligemma_vq_droid",
+      "video_sha256": "4235ecf7d38ea98fa2f5493ee6c69d2bf0c5c373cb432ff3cf3a1fc02e2a0f50",
+      "npz_sha256": "579df6987967ddaa7bce5b559a5facdccc9c4a1de0d1241e5e179d44dff277e7",
+      "action_step_count": 393,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.2906759565914293,
+      "cartesian_start_end_displacement": 0.271032212557331,
+      "generated_adjacent_motion_mean": 0.002160015568288331,
+      "generated_adjacent_motion_median": 0.0012041462468914688,
+      "generated_adjacent_motion_p95": 0.007008813740685582,
+      "generated_jump_to_median_ratio": 10.335339916348735,
+      "action_motion_pearson": 0.754067295657557,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 393,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "4f05ca12-ded4-43b0-83bd-6a35ed4ba120",
+      "policy_id": "pi0_droid",
+      "video_sha256": "cb0eb2cc93195009d3c539d3cb02bc994e9ad4cbf8df761b1b55ec954766d86a",
+      "npz_sha256": "726bc908fd7089876ba36b9b74c05bea53de1db042faebbc75b8b13632cc5484",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.26534803904037213,
+      "cartesian_start_end_displacement": 0.27541650341233664,
+      "generated_adjacent_motion_mean": 0.0022224187799892796,
+      "generated_adjacent_motion_median": 0.0016989378491416574,
+      "generated_adjacent_motion_p95": 0.005523917777463791,
+      "generated_jump_to_median_ratio": 6.598341140891333,
+      "action_motion_pearson": 0.46275993940401017,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "4f05ca12-ded4-43b0-83bd-6a35ed4ba120",
+      "policy_id": "pi0_fast_droid",
+      "video_sha256": "be62e1d92251e3d4f49663ac645c9bec01ccf9bf08601a0c23f578500b6ded3d",
+      "npz_sha256": "13e9e25e2ef7f0f54a841a815a5dda5cee57a90ad8c0aa000380cfc29e59546b",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.3499454701293531,
+      "cartesian_start_end_displacement": 0.2223759923053968,
+      "generated_adjacent_motion_mean": 0.0031795511969725803,
+      "generated_adjacent_motion_median": 0.0025696486700326204,
+      "generated_adjacent_motion_p95": 0.008018913771957157,
+      "generated_jump_to_median_ratio": 4.751291548623361,
+      "action_motion_pearson": 0.512264880696279,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "69f9098b-86c9-419e-9c4b-75f8ae7f7525",
+      "policy_id": "paligemma_binning_droid",
+      "video_sha256": "7a6dc076b26cbdcdb08b8b7a2a47c3f1139ee578f282b958d58aa40055d372b2",
+      "npz_sha256": "cc0c5c9ede0ab2689a450cb858a51c0f913f4e0720845a5cece6ef5648ded3da",
+      "action_step_count": 169,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.40904560254172284,
+      "cartesian_start_end_displacement": 0.08019511344912425,
+      "generated_adjacent_motion_mean": 0.005019172643923888,
+      "generated_adjacent_motion_median": 0.003937908448278904,
+      "generated_adjacent_motion_p95": 0.011831892980262637,
+      "generated_jump_to_median_ratio": 4.164004562593403,
+      "action_motion_pearson": 0.6147284192371272,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 169,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "69f9098b-86c9-419e-9c4b-75f8ae7f7525",
+      "policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "7fdf061f1296ed41a458dbe7744ca5742eb6fa154ab5218a988914c6a6bfe70d",
+      "npz_sha256": "af6f8f137bb550eb908f984400f67b9eb11a366921b351869c54b54401a5549a",
+      "action_step_count": 169,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.35463833624112173,
+      "cartesian_start_end_displacement": 0.11609708417494226,
+      "generated_adjacent_motion_mean": 0.0051352489210243915,
+      "generated_adjacent_motion_median": 0.004877348896116018,
+      "generated_adjacent_motion_p95": 0.009955289866775276,
+      "generated_jump_to_median_ratio": 2.9617874767746923,
+      "action_motion_pearson": 0.3180781334223639,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 169,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "69f9098b-86c9-419e-9c4b-75f8ae7f7525",
+      "policy_id": "paligemma_fast_droid",
+      "video_sha256": "5bafc43debd4666242fb1f46ea8feb000e119bcfa50bf71e866a4704b6f79abb",
+      "npz_sha256": "c573083fffa4151092f100bd85d4ca34e28971a4c2ecd9f794396933fcc24f06",
+      "action_step_count": 161,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.44066091407416624,
+      "cartesian_start_end_displacement": 0.06374140840117418,
+      "generated_adjacent_motion_mean": 0.005965305866993731,
+      "generated_adjacent_motion_median": 0.005972324637696147,
+      "generated_adjacent_motion_p95": 0.010550357587635516,
+      "generated_jump_to_median_ratio": 2.693455861401409,
+      "action_motion_pearson": 0.6977738941835744,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 161,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "69f9098b-86c9-419e-9c4b-75f8ae7f7525",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "c42b4144fc0163f0aef527b9e1a24bc70588052bf414f3e00b9a58109837a2e9",
+      "npz_sha256": "1cf256c671e603c23209429bf26c8613bac5af68c71870396fd93671182a8c9b",
+      "action_step_count": 392,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.37805569606484957,
+      "cartesian_start_end_displacement": 0.19753418273309015,
+      "generated_adjacent_motion_mean": 0.004145699629561304,
+      "generated_adjacent_motion_median": 0.0020541257690638304,
+      "generated_adjacent_motion_p95": 0.011074856854975224,
+      "generated_jump_to_median_ratio": 7.937159071060345,
+      "action_motion_pearson": 0.7518812162139972,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 392,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "69f9098b-86c9-419e-9c4b-75f8ae7f7525",
+      "policy_id": "paligemma_vq_droid",
+      "video_sha256": "6becdcf0c7f876e38b9d116a196e69fdfd589f041fb66e78d9345dc1c09a7220",
+      "npz_sha256": "17ceca7b22eab5be410c09685e0e95e6548bd8c6159f36de3189216245e4c01c",
+      "action_step_count": 57,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.03029500229956856,
+      "cartesian_start_end_displacement": 0.019426621451153397,
+      "generated_adjacent_motion_mean": 0.0008319692424265668,
+      "generated_adjacent_motion_median": 0.0005892564950045198,
+      "generated_adjacent_motion_p95": 0.001988102594623342,
+      "generated_jump_to_median_ratio": 4.901906824416168,
+      "action_motion_pearson": -0.4287356499398206,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 57,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "69f9098b-86c9-419e-9c4b-75f8ae7f7525",
+      "policy_id": "pi0_droid",
+      "video_sha256": "f7dcbcf2c834cde8513ad3eb32010fa7daa30f6724706f1c9d745834f9a529a1",
+      "npz_sha256": "c478b667c57770b5c28350e668bfc7ed098dc6735aa9328b31fff2127b73dc61",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.21611558218487611,
+      "cartesian_start_end_displacement": 0.21638735217571353,
+      "generated_adjacent_motion_mean": 0.0025572130934482344,
+      "generated_adjacent_motion_median": 0.0019675244111567736,
+      "generated_adjacent_motion_p95": 0.0058228556998074004,
+      "generated_jump_to_median_ratio": 6.647981120065397,
+      "action_motion_pearson": 0.6169467588301522,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "69f9098b-86c9-419e-9c4b-75f8ae7f7525",
+      "policy_id": "pi0_fast_droid",
+      "video_sha256": "670fb441487c19563644c57489587d13999cc1265eafc09094c4385b83cf53ed",
+      "npz_sha256": "0a3ffcd0b206a1032ef5e567ebaf0649d37e6366c0d218ac2c92d4d78eda50da",
+      "action_step_count": 129,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.5130749887139333,
+      "cartesian_start_end_displacement": 0.07423948921223546,
+      "generated_adjacent_motion_mean": 0.007647949282727495,
+      "generated_adjacent_motion_median": 0.008025428745895624,
+      "generated_adjacent_motion_p95": 0.013305627182126044,
+      "generated_jump_to_median_ratio": 2.1093595123310096,
+      "action_motion_pearson": 0.5597372257927375,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 129,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "70d36427-d166-4475-82ff-4de60431f2b0",
+      "policy_id": "paligemma_binning_droid",
+      "video_sha256": "39191a97a9ecb19f5e39a1f82a06a1f1bcb402b05f8d3bc42a499122f6cb44b8",
+      "npz_sha256": "7571cecba0f2258cd1148fa5aabea4be569786cfb8179f3837b8e3c50431200d",
+      "action_step_count": 289,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.2434751356381197,
+      "cartesian_start_end_displacement": 0.4193352210979262,
+      "generated_adjacent_motion_mean": 0.004648088554353712,
+      "generated_adjacent_motion_median": 0.0018632556893862784,
+      "generated_adjacent_motion_p95": 0.020184293016791338,
+      "generated_jump_to_median_ratio": 17.7008519926078,
+      "action_motion_pearson": 0.6642385406631691,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 289,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "70d36427-d166-4475-82ff-4de60431f2b0",
+      "policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "642a71e8833f1a1da7aa61b29de17d72cee3b1b8ba21d6010d62ef47c83906f1",
+      "npz_sha256": "51e68be1bc3247d4625f1b7a399df39c2af5a580b38751b612bf3a0dde098384",
+      "action_step_count": 361,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.6943244385324395,
+      "cartesian_start_end_displacement": 0.28217396594823374,
+      "generated_adjacent_motion_mean": 0.013216882232356713,
+      "generated_adjacent_motion_median": 0.012308108620345592,
+      "generated_adjacent_motion_p95": 0.026546377222985033,
+      "generated_jump_to_median_ratio": 2.9725941001674445,
+      "action_motion_pearson": 0.6934447115811416,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 361,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "70d36427-d166-4475-82ff-4de60431f2b0",
+      "policy_id": "paligemma_fast_droid",
+      "video_sha256": "b66364bd441c41952ae66a5588480b3e618f43265c6432bfb1055ae053094ab9",
+      "npz_sha256": "eef151f7a105260bc6d9ad718536ddad17fbcd55a27e84b1e540f2b85722e6a3",
+      "action_step_count": 129,
+      "action_dimension": 8,
+      "mean_action_magnitude": 1.1524306599655119,
+      "cartesian_start_end_displacement": 0.08131273187829219,
+      "generated_adjacent_motion_mean": 0.014934793684005854,
+      "generated_adjacent_motion_median": 0.01420863950625062,
+      "generated_adjacent_motion_p95": 0.02719788523390889,
+      "generated_jump_to_median_ratio": 2.693116575488055,
+      "action_motion_pearson": 0.4907272629465399,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 129,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "70d36427-d166-4475-82ff-4de60431f2b0",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "34cc8e554686169a0f0cce1a661d61eed7847fdebcf7173976c76f6a6fffa4d4",
+      "npz_sha256": "4ca77b575298f7440a7bb9bec808ba4f2aa41e868da0c053787b8ef3b57ca2c6",
+      "action_step_count": 137,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.42082924642216807,
+      "cartesian_start_end_displacement": 0.15546568045353154,
+      "generated_adjacent_motion_mean": 0.004917863648562857,
+      "generated_adjacent_motion_median": 0.0013977736234664917,
+      "generated_adjacent_motion_p95": 0.017153135035187006,
+      "generated_jump_to_median_ratio": 20.38650016523992,
+      "action_motion_pearson": 0.780585607828812,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 137,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "70d36427-d166-4475-82ff-4de60431f2b0",
+      "policy_id": "paligemma_vq_droid",
+      "video_sha256": "48fa3ff47cbb3e20730549ad703a6d3210694bce0b2db65b52b14a4c1650af19",
+      "npz_sha256": "91890c0a17852974cc4b1024ab9b926bff72ccd489169788e000cad59712843d",
+      "action_step_count": 185,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.41861694440501407,
+      "cartesian_start_end_displacement": 0.1473877306030319,
+      "generated_adjacent_motion_mean": 0.006210369151433596,
+      "generated_adjacent_motion_median": 0.0017070058966055512,
+      "generated_adjacent_motion_p95": 0.02222495730966329,
+      "generated_jump_to_median_ratio": 18.5007446940337,
+      "action_motion_pearson": 0.8926827591525792,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 185,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "70d36427-d166-4475-82ff-4de60431f2b0",
+      "policy_id": "pi0_droid",
+      "video_sha256": "638e75aa7f6f725c670011b773041916fec27503e59f8c2bf87be6090b0fa605",
+      "npz_sha256": "5d8b5097cfd03eadec57117fa682ad46eb7761befd9be1a8882a51d35d5d8dc2",
+      "action_step_count": 254,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.530771975930683,
+      "cartesian_start_end_displacement": 0.06281705047481664,
+      "generated_adjacent_motion_mean": 0.009314500283272494,
+      "generated_adjacent_motion_median": 0.00791748333722353,
+      "generated_adjacent_motion_p95": 0.021305495128035545,
+      "generated_jump_to_median_ratio": 3.28794790181728,
+      "action_motion_pearson": 0.38181648797106865,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 64,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "70d36427-d166-4475-82ff-4de60431f2b0",
+      "policy_id": "pi0_fast_droid",
+      "video_sha256": "5781cbf7244166125f6a35e71140a021ea84a5b908a24ebc858c5959205b3155",
+      "npz_sha256": "8b0c41eb0bc2b3ac2531dbcc1c4b8adca0df84d24f4bf95dcc44f342ba64f045",
+      "action_step_count": 185,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.823310781718652,
+      "cartesian_start_end_displacement": 0.2076050575502969,
+      "generated_adjacent_motion_mean": 0.012636024687838341,
+      "generated_adjacent_motion_median": 0.012618259992450476,
+      "generated_adjacent_motion_p95": 0.01938159819692373,
+      "generated_jump_to_median_ratio": 1.9116529059296856,
+      "action_motion_pearson": -0.1850473948562561,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 43,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "739165f0-2b54-4776-91b8-1530a4148feb",
+      "policy_id": "paligemma_binning_droid",
+      "video_sha256": "750a941135dcc13b06699d48287899dfd353e55f8388b3cec3b7c5b472aa0f64",
+      "npz_sha256": "22268a8e435787f75ba725aa69fad48edc6e3f54dc6970ea6f8f082335b253ab",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.18374699958794627,
+      "cartesian_start_end_displacement": 0.39618110417720176,
+      "generated_adjacent_motion_mean": 0.0026585484554648006,
+      "generated_adjacent_motion_median": 0.0013288399204611778,
+      "generated_adjacent_motion_p95": 0.013498937245458345,
+      "generated_jump_to_median_ratio": 27.583614317322795,
+      "action_motion_pearson": 0.6918617959960386,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "739165f0-2b54-4776-91b8-1530a4148feb",
+      "policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "c43cd4a6c7fe38e2827683046759668712c5f9568bf17a51566d06cb8fcf8b24",
+      "npz_sha256": "1b079b8c8721aa77140aa2fd51a064e73a69f4ab9d7d4974c0133d4763db9eaf",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.23485091391914292,
+      "cartesian_start_end_displacement": 0.3860253672785427,
+      "generated_adjacent_motion_mean": 0.004252255956754952,
+      "generated_adjacent_motion_median": 0.0024938725400716066,
+      "generated_adjacent_motion_p95": 0.014599571842700228,
+      "generated_jump_to_median_ratio": 12.222851040243201,
+      "action_motion_pearson": 0.7146974660549509,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "739165f0-2b54-4776-91b8-1530a4148feb",
+      "policy_id": "paligemma_fast_droid",
+      "video_sha256": "806a191c2c2263ccecd4f26d7c342b31757b2fc366308b8b7d0ce2fbeb337841",
+      "npz_sha256": "1181ba06f51817e0e5ae5587381c2a32d3db1c4ace11d42b57a0095136a00b91",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.61213828624535,
+      "cartesian_start_end_displacement": 0.3711064452732261,
+      "generated_adjacent_motion_mean": 0.012733177949188925,
+      "generated_adjacent_motion_median": 0.011099673807621002,
+      "generated_adjacent_motion_p95": 0.02668333407491445,
+      "generated_jump_to_median_ratio": 3.333173577451061,
+      "action_motion_pearson": 0.4270479182954476,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "739165f0-2b54-4776-91b8-1530a4148feb",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "e78bb065b7049aa73a892291d097695dd21017857645ee486a7c4093384908be",
+      "npz_sha256": "645ffbf958609d0c14a50cee2894a059d7146bb9a80189e79ae187909b0b0d94",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.5470724626409733,
+      "cartesian_start_end_displacement": 0.3542548458607814,
+      "generated_adjacent_motion_mean": 0.00776483024847472,
+      "generated_adjacent_motion_median": 0.006409722380340099,
+      "generated_adjacent_motion_p95": 0.0166163608431816,
+      "generated_jump_to_median_ratio": 3.892709026679261,
+      "action_motion_pearson": 0.3566735558322773,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "739165f0-2b54-4776-91b8-1530a4148feb",
+      "policy_id": "paligemma_vq_droid",
+      "video_sha256": "569eb4f62dd48a7eaa56cb11336a27e33e32214206d19ff441eb7b1f76d9069d",
+      "npz_sha256": "284c318312013fe463aa89625f5041df5e2368b5d9e29d76f9d271ff4f0ffd58",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.25758559486175536,
+      "cartesian_start_end_displacement": 0.24465851904108535,
+      "generated_adjacent_motion_mean": 0.003954537585290163,
+      "generated_adjacent_motion_median": 0.0018443628214299679,
+      "generated_adjacent_motion_p95": 0.014953022729605431,
+      "generated_jump_to_median_ratio": 12.106311473692157,
+      "action_motion_pearson": 0.8235634813092192,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "739165f0-2b54-4776-91b8-1530a4148feb",
+      "policy_id": "pi0_droid",
+      "video_sha256": "760ee53dc5500a1210861c97dcd31f208ed3d5ba3f1c47307398fcbeb68ac8ce",
+      "npz_sha256": "749541af7f773ad93f691e91287f186373c06190bb53b3dbe04ba415319784b6",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.3568515626638892,
+      "cartesian_start_end_displacement": 0.3126390017871806,
+      "generated_adjacent_motion_mean": 0.00608435865546481,
+      "generated_adjacent_motion_median": 0.005477941129356623,
+      "generated_adjacent_motion_p95": 0.012527510803192853,
+      "generated_jump_to_median_ratio": 3.4777033148078393,
+      "action_motion_pearson": 0.7011839810041974,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "739165f0-2b54-4776-91b8-1530a4148feb",
+      "policy_id": "pi0_fast_droid",
+      "video_sha256": "8119a8af1ad3c8ec8d1b060f87775a45410f7292b937787b5f1b7192a20f13ea",
+      "npz_sha256": "acd8314967c15044332654f7e8a6eac878c1f16f4d9908bbd9f297b7ce2869da",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.7154692308144135,
+      "cartesian_start_end_displacement": 0.20841447705922922,
+      "generated_adjacent_motion_mean": 0.01048313348640438,
+      "generated_adjacent_motion_median": 0.009283904917538166,
+      "generated_adjacent_motion_p95": 0.02422841116786003,
+      "generated_jump_to_median_ratio": 6.381902945041875,
+      "action_motion_pearson": 0.5096080100422272,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "d25151dd-e1c7-4851-ab78-9ccdfdd94e50",
+      "policy_id": "paligemma_binning_droid",
+      "video_sha256": "cb1fafabd8066d0838019d9e3dca06246fba9de65a5faf14f7022ec0e7646513",
+      "npz_sha256": "3cabaac2b7884343362561c85d7c0554a3e909386ac052ebb0daf7fa179a48fc",
+      "action_step_count": 265,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.12250271128806689,
+      "cartesian_start_end_displacement": 0.22048878855660192,
+      "generated_adjacent_motion_mean": 0.003216630178830008,
+      "generated_adjacent_motion_median": 0.0026296977885067463,
+      "generated_adjacent_motion_p95": 0.007256841892376542,
+      "generated_jump_to_median_ratio": 4.049164962734848,
+      "action_motion_pearson": 0.2536566045296554,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 265,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "d25151dd-e1c7-4851-ab78-9ccdfdd94e50",
+      "policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "0cadc8824a3f0024f39d2e5f857234dbd875f7f67123e205f91518a00fcb87c0",
+      "npz_sha256": "8ddad2aa9f1f9689011d234ab0347fe82a2d22d643e41609d47ddb34cc959d7f",
+      "action_step_count": 139,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.551905821698871,
+      "cartesian_start_end_displacement": 0.4971199364844916,
+      "generated_adjacent_motion_mean": 0.004959353149625595,
+      "generated_adjacent_motion_median": 0.004195772111415863,
+      "generated_adjacent_motion_p95": 0.01025077644735575,
+      "generated_jump_to_median_ratio": 3.617768096074382,
+      "action_motion_pearson": 0.5222882709620713,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 139,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "d25151dd-e1c7-4851-ab78-9ccdfdd94e50",
+      "policy_id": "paligemma_fast_droid",
+      "video_sha256": "16ba2d6518d8f804f948c8c1f9898da84dd5e93547ae68ad4700564a0a919b9d",
+      "npz_sha256": "3b7a7dc1e6d3828dd685798b4d94ce03401ca532f0261cf654b9b62061756ecc",
+      "action_step_count": 57,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.5960636256127351,
+      "cartesian_start_end_displacement": 0.3657006169065975,
+      "generated_adjacent_motion_mean": 0.009365152409632824,
+      "generated_adjacent_motion_median": 0.008645016234368086,
+      "generated_adjacent_motion_p95": 0.017146446742117405,
+      "generated_jump_to_median_ratio": 2.1593112341153646,
+      "action_motion_pearson": 0.3706864914020658,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 57,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "d25151dd-e1c7-4851-ab78-9ccdfdd94e50",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "f41c6ffdce57d8a9a517b917e0be7dbdbeecf9b5f2e3b5b2f41c1300a96cadd7",
+      "npz_sha256": "93ed39cce8066aec68e548772fc6f6de98b258032f79c24574d1eee82eb78cff",
+      "action_step_count": 333,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.1786938309847181,
+      "cartesian_start_end_displacement": 0.15310528196794077,
+      "generated_adjacent_motion_mean": 0.0028807238874822318,
+      "generated_adjacent_motion_median": 0.0010501430369913578,
+      "generated_adjacent_motion_p95": 0.011788296559825539,
+      "generated_jump_to_median_ratio": 21.94184461003962,
+      "action_motion_pearson": 0.7543361688815756,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 333,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "d25151dd-e1c7-4851-ab78-9ccdfdd94e50",
+      "policy_id": "paligemma_vq_droid",
+      "video_sha256": "a6faa0f61ee87a3bf3d341144383d19067b0486056add48dcbc25581d7d6aaaf",
+      "npz_sha256": "b30e83baf6c809848d8a09810a13e48bc247d6cb24dccb26c841658af46a3df9",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.2366218818005293,
+      "cartesian_start_end_displacement": 0.35367696173896446,
+      "generated_adjacent_motion_mean": 0.0029371621635425043,
+      "generated_adjacent_motion_median": 0.0024025733582675457,
+      "generated_adjacent_motion_p95": 0.0065998983569443195,
+      "generated_jump_to_median_ratio": 6.4452097660096825,
+      "action_motion_pearson": 0.3739033933515283,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "d25151dd-e1c7-4851-ab78-9ccdfdd94e50",
+      "policy_id": "pi0_droid",
+      "video_sha256": "966b8b5d652ef32638ac712672e8907083ee155458d20cf135d90a1c9d950875",
+      "npz_sha256": "2617e4df966fa10ac6da99c92386897369015f7933534e93ed482d029669f012",
+      "action_step_count": 400,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.4178219896049815,
+      "cartesian_start_end_displacement": 0.3004939720288526,
+      "generated_adjacent_motion_mean": 0.005376627844820186,
+      "generated_adjacent_motion_median": 0.00469975546002388,
+      "generated_adjacent_motion_p95": 0.012000898551195852,
+      "generated_jump_to_median_ratio": 3.7615381017944944,
+      "action_motion_pearson": 0.6493287215828512,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 400,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "d25151dd-e1c7-4851-ab78-9ccdfdd94e50",
+      "policy_id": "pi0_fast_droid",
+      "video_sha256": "ca1c594692f877c5f95061fa84870290989f742fb778d4012f8cc225ff98ba7c",
+      "npz_sha256": "a0a86d97bfd04ffad3918578b6a3ba655eecfec85570fbbbf5b40dfa65d1dc10",
+      "action_step_count": 343,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.8992607842354884,
+      "cartesian_start_end_displacement": 0.12405405450680107,
+      "generated_adjacent_motion_mean": 0.008774728490086,
+      "generated_adjacent_motion_median": 0.007282679900527,
+      "generated_adjacent_motion_p95": 0.015122936898842448,
+      "generated_jump_to_median_ratio": 17.590925913185103,
+      "action_motion_pearson": -0.014502677672959218,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 343,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "f3ee5084-5290-4ac0-a007-a4f4fa7b47e4",
+      "policy_id": "paligemma_binning_droid",
+      "video_sha256": "49127d0e4a46e06d333ac75d868d2858cca971bfaaff8fde6d49d1e1f5d12cc4",
+      "npz_sha256": "67f9fd58b7af9685dc14abce21e494c6d412d668cd3d15d3e4ee043e3fa675a6",
+      "action_step_count": 113,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.19563487103436888,
+      "cartesian_start_end_displacement": 0.12830938499989833,
+      "generated_adjacent_motion_mean": 0.0029447180246019605,
+      "generated_adjacent_motion_median": 0.0024123775074258447,
+      "generated_adjacent_motion_p95": 0.007493769982829683,
+      "generated_jump_to_median_ratio": 4.996867460518724,
+      "action_motion_pearson": 0.44661474198237994,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 113,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "f3ee5084-5290-4ac0-a007-a4f4fa7b47e4",
+      "policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "52499c9ed4f36de27725e3f5b50c4113adf154247090fc8a84990fc3551b7d30",
+      "npz_sha256": "fc5526323e3df2188c90da0d313dff263ca4b87a2827eafe10bee6254041397c",
+      "action_step_count": 345,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.4619560866273401,
+      "cartesian_start_end_displacement": 0.08058432980078442,
+      "generated_adjacent_motion_mean": 0.0048318798894057225,
+      "generated_adjacent_motion_median": 0.003948733676224947,
+      "generated_adjacent_motion_p95": 0.011237560911104082,
+      "generated_jump_to_median_ratio": 4.689546419561404,
+      "action_motion_pearson": 0.6586106435443322,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 345,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "f3ee5084-5290-4ac0-a007-a4f4fa7b47e4",
+      "policy_id": "paligemma_fast_droid",
+      "video_sha256": "b35e9e1f37bab1088e7eaa20455cc52a4ca436c70a1c8036268e555707c06b0f",
+      "npz_sha256": "23dbcd51d1ae222b2b56631dc8caf21a621033010d430de4e77b1ec784ba81ef",
+      "action_step_count": 275,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.926213431367497,
+      "cartesian_start_end_displacement": 0.4185553006594983,
+      "generated_adjacent_motion_mean": 0.010962285804154393,
+      "generated_adjacent_motion_median": 0.01082353014498949,
+      "generated_adjacent_motion_p95": 0.018470078334212294,
+      "generated_jump_to_median_ratio": 2.4170628731120303,
+      "action_motion_pearson": 0.40418494405564703,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 275,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "f3ee5084-5290-4ac0-a007-a4f4fa7b47e4",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "6a1b29f3a8f01a7b643bc4205cf8b33c32c5dfc807f46610af87ad2acc463f79",
+      "npz_sha256": "76f51197b77fc04b5b6ec6beed9a0e6f695d917190ad048e34aeb44ca6043f81",
+      "action_step_count": 250,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.8397638718054127,
+      "cartesian_start_end_displacement": 0.3120450449878885,
+      "generated_adjacent_motion_mean": 0.00888867894221232,
+      "generated_adjacent_motion_median": 0.008862949907779694,
+      "generated_adjacent_motion_p95": 0.015790972486138345,
+      "generated_jump_to_median_ratio": 2.6621805029569634,
+      "action_motion_pearson": 0.31614121038358967,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 250,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "f3ee5084-5290-4ac0-a007-a4f4fa7b47e4",
+      "policy_id": "paligemma_vq_droid",
+      "video_sha256": "d3cf5484447ad824ccc32f109a70c509b14f01f88d77b3e3825e18a8635d1798",
+      "npz_sha256": "d22d825c17b70ee40f43378c195545e99f20a70f050f760c2e6c0126e9cbab5f",
+      "action_step_count": 329,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.30692075844544847,
+      "cartesian_start_end_displacement": 0.24020403932289913,
+      "generated_adjacent_motion_mean": 0.003323069876897512,
+      "generated_adjacent_motion_median": 0.002915543387643993,
+      "generated_adjacent_motion_p95": 0.007960569951683278,
+      "generated_jump_to_median_ratio": 3.697782735387539,
+      "action_motion_pearson": 0.43604074299313417,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 329,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "f3ee5084-5290-4ac0-a007-a4f4fa7b47e4",
+      "policy_id": "pi0_droid",
+      "video_sha256": "0c2117619fca020ca9a6c3d5f1f2574717c203b72d4dbb874b149abe84cca1e6",
+      "npz_sha256": "3fff805fe63acaf06bb69c89fe45ea3666cdab356e096c7f9f9aa18f54a64f9c",
+      "action_step_count": 257,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.37997163380880056,
+      "cartesian_start_end_displacement": 0.07379822264540803,
+      "generated_adjacent_motion_mean": 0.004017235100263861,
+      "generated_adjacent_motion_median": 0.0033745913533493876,
+      "generated_adjacent_motion_p95": 0.008550295839086175,
+      "generated_jump_to_median_ratio": 4.155914136701385,
+      "action_motion_pearson": 0.40647792326544113,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 257,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    },
+    {
+      "session_id": "f3ee5084-5290-4ac0-a007-a4f4fa7b47e4",
+      "policy_id": "pi0_fast_droid",
+      "video_sha256": "d97fed3835b50d8e5dfb51ffd3dd5ace72782cf22a28a77fbf7f8fca06d5ff76",
+      "npz_sha256": "a5a89460c92da8e008829348747b604f6636639294b4936881dc8286c13fe959",
+      "action_step_count": 125,
+      "action_dimension": 8,
+      "mean_action_magnitude": 0.8018172351260201,
+      "cartesian_start_end_displacement": 0.33571962172149455,
+      "generated_adjacent_motion_mean": 0.010768851929066342,
+      "generated_adjacent_motion_median": 0.010204963851720095,
+      "generated_adjacent_motion_p95": 0.02136799618601799,
+      "generated_jump_to_median_ratio": 2.717423455257321,
+      "action_motion_pearson": 0.42410605090623615,
+      "security": {
+        "numpy_allow_pickle_used": false,
+        "restricted_pickle_globals": [
+          "numpy._core.multiarray._reconstruct",
+          "numpy.core.multiarray._reconstruct",
+          "numpy.dtype",
+          "numpy.ndarray"
+        ]
+      },
+      "claim_boundary": "pixel_motion_correlation_diagnostic_not_3d_action_following_or_task_success",
+      "frame_count": 125,
+      "generated_crop_pixels": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "third_party_physical_pixels_decoded_for_metric": false
+    }
+  ],
+  "blockers": [],
+  "benchmark_labels_seen": false,
+  "third_party_physical_video_pixels_seen": false,
+  "physical_proprioception_used_for_action_reference": true,
+  "task_success_scored": false,
+  "report_sha256": "dcbc8f383797caaf6ec92fd26c502b40c417b9c3cc542deecd7f22169ffa04f1"
+}

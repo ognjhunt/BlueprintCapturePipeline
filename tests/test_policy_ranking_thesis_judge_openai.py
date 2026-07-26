@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import sys
 import types
 from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from blueprint_pipeline.policy_ranking_thesis import build_preregistration, file_sha256
 from blueprint_pipeline.policy_ranking_thesis_judge_openai import (
     GATE_ENV,
+    JudgeResponseError,
     _score_one,
     build_request_inventory,
     evaluator_digest,
@@ -129,3 +132,76 @@ def test_score_emits_label_blind_schema(tmp_path: Path, monkeypatch) -> None:
     assert judgment["usage"]["input_tokens"] == 250
     assert judgment["usage"]["estimated_cost_usd_conservative"] > 0
     assert crop["third_party_physical_pixels_encoded"] is False
+
+
+def test_unparseable_provider_response_preserves_safe_usage(tmp_path: Path) -> None:
+    path = tmp_path / "paired.mp4"
+    _video(path)
+    protocol = build_preregistration([f"s{index:02d}" for index in range(63)])
+
+    class Responses:
+        def create(self, **kwargs):
+            return types.SimpleNamespace(
+                id="resp_incomplete",
+                status="incomplete",
+                incomplete_details=types.SimpleNamespace(reason="max_output_tokens"),
+                usage=types.SimpleNamespace(
+                    input_tokens=200,
+                    output_tokens=900,
+                    input_tokens_details=types.SimpleNamespace(cached_tokens=0),
+                ),
+                output_text="",
+            )
+
+    client = types.SimpleNamespace(responses=Responses())
+    with pytest.raises(JudgeResponseError) as raised:
+        _score_one(
+            client,
+            {
+                "video_path": str(path),
+                "frame_count": 2,
+                "task_instruction": "put the can in the tray",
+                "method": protocol["evaluator"]["cheap_baseline_method"],
+                "session_id": "s00",
+                "policy_id": "p",
+                "evaluator_digest": evaluator_digest(protocol),
+            },
+        )
+    assert raised.value.safe_details["incomplete_reason"] == "max_output_tokens"
+    assert raised.value.safe_details["usage"]["output_tokens"] == 900
+    assert raised.value.safe_details["raw_response_persisted"] is False
+
+
+def test_run_inventory_concurrent_checkpoint_is_request_ordered(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv(GATE_ENV, "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "not-sent")
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        types.SimpleNamespace(OpenAI=lambda **kwargs: object()),
+    )
+
+    def fake_score(client, request):
+        return (
+            {
+                "request_id": request["request_id"],
+                "usage": {"estimated_cost_usd_conservative": 0.001},
+            },
+            {},
+        )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.policy_ranking_thesis_judge_openai._score_one", fake_score
+    )
+    requests = [{"request_id": str(index)} for index in range(6)]
+    result = run_inventory(
+        {"inventory_sha256": "a" * 64, "requests": requests},
+        output_path=tmp_path / "run.json",
+        max_workers=3,
+        max_estimated_cost_usd=1.0,
+    )
+    assert result["status"] == "completed"
+    assert result["max_workers"] == 3
+    assert [row["request_id"] for row in result["judgments"]] == [str(i) for i in range(6)]

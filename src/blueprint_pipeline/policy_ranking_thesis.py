@@ -362,6 +362,8 @@ def validate_judgment(row: Mapping[str, Any], protocol: Mapping[str, Any]) -> li
         protocol["evaluator"]["cheap_baseline_method"],
     }:
         blockers.append("method")
+    if str(row.get("policy_id") or "") not in set(protocol["policies"]):
+        blockers.append("policy_id")
     for field in (
         "success_probability",
         "judge_confidence",
@@ -377,6 +379,8 @@ def validate_judgment(row: Mapping[str, Any], protocol: Mapping[str, Any]) -> li
         blockers.append("benchmark_label_leakage")
     if row.get("third_party_physical_pixels_seen") is not False:
         blockers.append("physical_half_leakage")
+    if not isinstance(row.get("abstained"), bool):
+        blockers.append("abstained")
     return blockers
 
 
@@ -497,12 +501,18 @@ def evaluate_frozen_calibration(
     protocol: Mapping[str, Any],
     roboarena_root: str | Path,
     partition: str = "heldout",
+    expected_evaluator_digest: str | None = None,
 ) -> dict[str, Any]:
     """Join frozen predictions to labels and compute preregistered metrics."""
 
     if partition not in {"pilot", "calibration", "heldout"}:
         raise ValueError("invalid_partition")
     rows, blockers = _episode_rows(judgments, protocol, partition)
+    evaluator_digests = sorted({str(row["evaluator_digest"]) for row in rows})
+    if len(evaluator_digests) != 1:
+        blockers.append(f"evaluator_digest_count:{len(evaluator_digests)}")
+    if expected_evaluator_digest is not None and evaluator_digests != [expected_evaluator_digest]:
+        blockers.append("evaluator_digest_mismatch")
     methods = (
         protocol["evaluator"]["full_temporal_method"],
         protocol["evaluator"]["cheap_baseline_method"],
@@ -525,6 +535,7 @@ def evaluate_frozen_calibration(
         brier_terms: list[float] = []
         correctness: list[float] = []
         selective_correctness: list[float] = []
+        selective_predicted_by_policy: dict[str, list[float]] = defaultdict(list)
         action_passes: list[float] = []
         false_success = false_failure = actual_failure = actual_success = 0
         thresholds = protocol["thresholds"]
@@ -553,9 +564,11 @@ def evaluate_frozen_calibration(
                 >= thresholds["selective_judge_confidence_min"]
                 and abs(probability - 0.5) >= thresholds["pair_score_margin_min"] / 2
                 and not bool(row.get("critical_contradiction"))
+                and not bool(row["abstained"])
             )
             if selective:
                 selective_correctness.append(float(predicted_class == actual))
+                selective_predicted_by_policy[row["policy_id"]].append(probability)
             if actual == 0:
                 actual_failure += 1
                 false_success += int(predicted_class == 1)
@@ -573,10 +586,10 @@ def evaluate_frozen_calibration(
         rng = random.Random(20260726)
         bootstrap_accuracy: list[float] = []
         lookup = {(row["session_id"], row["policy_id"]): row for row in selected}
-        replicates = int(thresholds["bootstrap_replicates"])
-        for _ in range(replicates):
-            sample = [rng.choice(session_ids) for _ in session_ids]
-            right = total = 0
+
+        def pairwise_accuracy(sample: Sequence[str]) -> float | None:
+            right = 0.0
+            total = 0
             for session_id in sample:
                 session_labels = labels.get(session_id, {})
                 for index, left_policy in enumerate(protocol["policies"]):
@@ -592,21 +605,45 @@ def evaluate_frozen_calibration(
                         delta = float(left_row["success_probability"]) - float(
                             right_row["success_probability"]
                         )
-                        if delta == 0:
-                            continue
                         total += 1
-                        right += int(delta * (left_label - right_label) > 0)
-            if total:
-                bootstrap_accuracy.append(right / total)
+                        if delta == 0:
+                            right += 0.5
+                        else:
+                            right += float(delta * (left_label - right_label) > 0)
+            return right / total if total else None
+
+        observed_pairwise_accuracy = pairwise_accuracy(session_ids)
+        replicates = int(thresholds["bootstrap_replicates"])
+        for _ in range(replicates):
+            sample = [rng.choice(session_ids) for _ in session_ids]
+            replicate_accuracy = pairwise_accuracy(sample)
+            if replicate_accuracy is not None:
+                bootstrap_accuracy.append(replicate_accuracy)
         accuracy = sum(correctness) / len(correctness) if correctness else None
         selective_accuracy = (
             sum(selective_correctness) / len(selective_correctness)
             if selective_correctness
             else None
         )
+        selective_predicted_means = {
+            policy: sum(values) / len(values)
+            for policy, values in selective_predicted_by_policy.items()
+        }
+        predicted_top = max(predicted_means, key=predicted_means.get) if predicted_means else None
+        benchmark_top = max(actual_means, key=actual_means.get) if actual_means else None
+        top_policy_regret = (
+            actual_means[benchmark_top] - actual_means[predicted_top]
+            if predicted_top in actual_means and benchmark_top in actual_means
+            else None
+        )
         by_method[method] = {
             "episode_count": len(selected),
             "predicted_policy_success": predicted_means,
+            "selective_predicted_policy_success": selective_predicted_means,
+            "selective_policy_episode_count": {
+                policy: len(selective_predicted_by_policy.get(policy, []))
+                for policy in protocol["policies"]
+            },
             "benchmark_policy_success": actual_means,
             "spearman": _spearman(predicted_means, actual_means),
             "kendall_tau_b": _kendall_tau_b(predicted_means, actual_means),
@@ -622,18 +659,19 @@ def evaluate_frozen_calibration(
             "action_following_pass_rate": (
                 sum(action_passes) / len(action_passes) if action_passes else None
             ),
+            "abstention_rate": (
+                1.0 - len(selective_correctness) / len(correctness) if correctness else None
+            ),
             "false_success_rate": false_success / actual_failure if actual_failure else None,
             "false_failure_rate": false_failure / actual_success if actual_success else None,
             "session_pairwise_accuracy_bootstrap_ci95": [
                 _percentile(bootstrap_accuracy, 0.025),
                 _percentile(bootstrap_accuracy, 0.975),
             ],
-            "top_policy": max(predicted_means, key=predicted_means.get)
-            if predicted_means
-            else None,
-            "benchmark_top_policy": max(actual_means, key=actual_means.get)
-            if actual_means
-            else None,
+            "session_pairwise_accuracy": observed_pairwise_accuracy,
+            "top_policy": predicted_top,
+            "benchmark_top_policy": benchmark_top,
+            "top_policy_regret": top_policy_regret,
         }
 
     full = by_method.get(methods[0], {})
@@ -646,9 +684,9 @@ def evaluate_frozen_calibration(
         ),
         "positive_kendall": bool((full.get("kendall_tau_b") or 0.0) > 0.0),
         "beats_cheap_baseline": bool(
-            full.get("episode_accuracy") is not None
-            and baseline.get("episode_accuracy") is not None
-            and full["episode_accuracy"] > baseline["episode_accuracy"]
+            full.get("session_pairwise_accuracy") is not None
+            and baseline.get("session_pairwise_accuracy") is not None
+            and full["session_pairwise_accuracy"] > baseline["session_pairwise_accuracy"]
         ),
         "abstention_improves": bool(
             (full.get("selective_coverage") or 0.0)
@@ -663,6 +701,7 @@ def evaluate_frozen_calibration(
         "status": "blocked" if blockers else "completed",
         "partition": partition,
         "protocol_sha256": protocol.get("protocol_sha256"),
+        "evaluator_digest": evaluator_digests[0] if len(evaluator_digests) == 1 else None,
         "benchmark_outcomes_unsealed_after_predictions": True,
         "methods": by_method,
         "gates": gates,
@@ -795,6 +834,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     evaluate.add_argument("--roboarena-root", required=True)
     evaluate.add_argument("--protocol", required=True)
     evaluate.add_argument("--partition", default="heldout")
+    evaluate.add_argument("--expected-evaluator-digest")
     evaluate.add_argument("--output", required=True)
     hybrid = sub.add_parser("hybrid-bundle")
     hybrid.add_argument("--spec", required=True)
@@ -820,6 +860,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             protocol=_read_json(args.protocol),
             roboarena_root=args.roboarena_root,
             partition=args.partition,
+            expected_evaluator_digest=args.expected_evaluator_digest,
         )
     elif args.command == "hybrid-bundle":
         result = build_hybrid_scene_bundle(_read_json(args.spec))
