@@ -106,5 +106,10 @@ def test_warehouse_control_uses_frozen_joint_position_cohort() -> None:
         "warehouse_policy_cohort_v2_joint_position.json"
     )
     assert len(preflight["learned_candidates"]) == 4
-    assert spec["environment"]["selected_workcell"]["dependency_closure_resolved"] is True
+    assert (
+        spec["environment"]["selected_workcell"][
+            "required_background_dependency_closure_resolved"
+        ]
+        is True
+    )
     assert spec["claim_boundary"]["simulator_is_physical_answer_key"] is False

@@ -10,6 +10,7 @@ from blueprint_pipeline.franka_droid_closed_loop import (
     _composite_mujoco_interaction,
     _enable_panda_gravity_compensation,
     _extract_action_chunk,
+    run_franka_droid_closed_loop,
 )
 from blueprint_pipeline.droid_policy_bridge import validate_droid_action_chunk
 
@@ -99,6 +100,24 @@ def test_hybrid_compositor_excludes_floor_and_preserves_live_geoms() -> None:
     assert pixel_count == 1
     assert np.all(composite[0, 0] == 10)
     assert np.all(composite[1, 1] == 200)
+
+
+def test_external_scene_identity_without_background_fails_closed() -> None:
+    with pytest.raises(ValueError, match="external_background_scene_id_without_background"):
+        run_franka_droid_closed_loop(
+            runtime={
+                "mujoco": None,
+                "np": np,
+                "model": None,
+                "data": None,
+                "ids": {},
+                "targets": {},
+                "gravity_compensated_bodies": [],
+            },
+            policy_client=StationaryDroidJointPositionClient(),
+            output_dir="unused",
+            external_background_scene_id="warehouse_control",
+        )
 
 
 def test_free_camera_conversion_has_finite_pose() -> None:

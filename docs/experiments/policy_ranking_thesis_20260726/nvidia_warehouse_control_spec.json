@@ -8,20 +8,37 @@
     "sha256": "4e01e55f055689ff0cd669f33c6c305f73add8903547eaf3ef070d515cb2ec8a",
     "size_bytes": 27933,
     "license": "CC-BY-4.0",
-    "materialization_status": "selected_workcell_dependency_closure_materialized_full_warehouse_not_downloaded",
+    "materialization_status": "selected_sorting_area_workcell_materialized_full_warehouse_not_downloaded",
     "full_dataset_size_bytes": 15000000000,
     "runtime_scope": "one_box_picking_table_workcell_only",
     "whole_warehouse_runtime_forbidden": true,
     "selected_workcell": {
-      "assembly_path": "Props/assembly/SM_BoxPicking_Table_A1/SM_BoxPicking_Table_A1_physics.usd",
-      "assembly_sha256": "44556279a525c6f39c896a45ef2eb6986303db7d698df023b9372234f9730e85",
+      "sorting_sublayer_path": "SubLayers/sorting_area_physics.usd",
+      "sorting_sublayer_sha256": "331d05475875ab18613e8c7112a92f0bede3b6d3bafd082633eea37b0483c398",
+      "sorting_area_instance_paths": [
+        "/World/Sorting_Area/SM_CratePacking_Table_A1_02",
+        "/World/Sorting_Area/SM_CratePacking_Table_A1_03"
+      ],
+      "assembly_path": "Props/assembly/SM_CratePacking_Table_A1/SM_CratePacking_Table_A1_physics.usd",
+      "assembly_sha256": "2173941e43b672206983ced927ea2f56f82247e1fc4a43c0a3727205f5c0c9aa",
       "table_path": "Props/general/SM_HeavyDutyPackingTable_C02_01/SM_HeavyDutyPackingTable_C02_01_physics.usd",
       "table_sha256": "7c7348b37d7be04eafabcaf20f1f5a05c7a9c0633bc1ba7048ff4fae2ba005c5",
-      "dependency_closure_resolved": true,
+      "required_background_dependency_closure_resolved": true,
+      "full_assembly_optional_clutter_dependency_closure_resolved": false,
+      "omitted_optional_clutter_used_for_task_or_scoring": false,
       "materialized_subset_file_count": 34,
-      "materialized_subset_size_bytes": 198662956,
-      "materialized_subset_manifest_sha256": "32b7484793a0d7a3f68ee4809e28f2fbcce2f29910bc705e08740ddd8760f7c5",
-      "selection_frozen_before_learned_policy_outcomes": true
+      "materialized_subset_size_bytes": 198666960,
+      "materialized_subset_manifest_sha256": "895d1114fc1d90f2be1baabb7dfee70bfb343f8cbaa241b8afaa001188fc07cd",
+      "selection_frozen_before_learned_policy_outcomes": true,
+      "robot_pov_background": {
+        "render_resolution": [224, 224],
+        "renderer": "usdrecord_metal",
+        "camera_contract": "same_frozen_external_camera_as_mujoco_interaction_layer",
+        "background_png_sha256": "6ea57b8f01e9cda36c63f0c6493d7407eaefcec2a332fa4dba8383555f489a13",
+        "background_png_size_bytes": 13360,
+        "derived_workcell_stage_sha256": "0105ebeced712b8ef5d99a10b9b410f644481cc37f63ce9877c30a0f309e230b",
+        "source_material_fallback_warning": true
+      }
     },
     "execution_backend": "nvidia_usd_visual_workcell_plus_frozen_mujoco_interaction_layer",
     "isaac_physics_claimed": false
@@ -95,12 +112,13 @@
     "live_policy_rollouts_executed": false
   },
   "claim_boundary": {
-    "controlled_scene_execution_completed": false,
+    "controlled_scene_execution_completed": true,
     "simulator_is_physical_answer_key": false,
     "physical_robot_operated": false,
     "purpose": "controlled_visual_domain_bridge_before_captured_site_transfer",
     "nvidia_usd_assets_used": true,
     "isaac_physics_execution_completed": false,
-    "prospective_policy_ranking_completed": false
+    "prospective_policy_ranking_completed": false,
+    "positive_and_negative_control_report": "nvidia_warehouse_dynamic_hybrid_control.json"
   }
 }

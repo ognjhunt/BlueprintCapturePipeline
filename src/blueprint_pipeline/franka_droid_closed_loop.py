@@ -411,9 +411,18 @@ def run_franka_droid_closed_loop(
     max_action_steps: int | None = None,
     settle_seconds: float = 2.0,
     captured_site_background_path: str | Path | None = None,
+    external_background_kind: str = "captured_3dgs",
+    external_background_scene_id: str | None = None,
     initial_can_position_m: Sequence[float] = _CAN_INITIAL,
 ) -> dict[str, Any]:
     """Execute one simulator episode through the exact DROID observation seam."""
+    if captured_site_background_path is not None and external_background_kind not in {
+        "captured_3dgs",
+        "controlled_nvidia_usd",
+    }:
+        raise ValueError("external_background_kind_invalid")
+    if captured_site_background_path is None and external_background_scene_id is not None:
+        raise ValueError("external_background_scene_id_without_background")
     mujoco = runtime["mujoco"]
     np = runtime["np"]
     model = runtime["model"]
@@ -624,6 +633,14 @@ def run_franka_droid_closed_loop(
         "policy_client_evidence": policy_client_evidence,
         "captured_site_observation": {
             "external_background_used": captured_site_background is not None,
+            "external_background_kind": (
+                external_background_kind if captured_site_background is not None else None
+            ),
+            "external_background_scene_id": (
+                str(external_background_scene_id)
+                if captured_site_background is not None and external_background_scene_id
+                else None
+            ),
             "external_background_path": (
                 str(Path(captured_site_background_path).expanduser().resolve())
                 if captured_site_background_path is not None
@@ -631,7 +648,11 @@ def run_franka_droid_closed_loop(
             ),
             "external_background_sha256": captured_site_background_sha256,
             "composition": (
-                "frozen_3dgs_background_plus_live_mujoco_robot_task_segmentation"
+                (
+                    "frozen_3dgs_background_plus_live_mujoco_robot_task_segmentation"
+                    if external_background_kind == "captured_3dgs"
+                    else "frozen_nvidia_usd_background_plus_live_mujoco_robot_task_segmentation"
+                )
                 if captured_site_background is not None
                 else "mujoco_only"
             ),
@@ -687,8 +708,17 @@ def run_franka_droid_closed_loop(
                 learned_policy and not blockers and action_step > 0
             ),
             "wam_executed": False,
-            "nvidia_warehouse_executed": False,
-            "captured_3dgs_composited": captured_site_background is not None,
+            "nvidia_warehouse_executed": bool(
+                captured_site_background is not None
+                and external_background_kind == "controlled_nvidia_usd"
+                and not blockers
+            ),
+            "captured_3dgs_composited": bool(
+                captured_site_background is not None
+                and external_background_kind == "captured_3dgs"
+            ),
+            "nvidia_warehouse_is_physical_answer_key": False,
+            "isaac_physics_executed": False,
             "physical_success_proven": False,
         },
     }
@@ -727,6 +757,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--policy-port", type=int, default=8000)
     parser.add_argument("--policy-api-key-file")
     parser.add_argument("--captured-site-background")
+    parser.add_argument(
+        "--external-background-kind",
+        choices=("captured_3dgs", "controlled_nvidia_usd"),
+        default="captured_3dgs",
+    )
+    parser.add_argument("--external-background-scene-id")
     args = parser.parse_args(argv)
     output = Path(args.output_dir).expanduser().resolve()
     runtime = prepare_franka_droid_runtime(
@@ -781,6 +817,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         prompt=args.prompt,
         max_action_steps=max_action_steps,
         captured_site_background_path=args.captured_site_background,
+        external_background_kind=args.external_background_kind,
+        external_background_scene_id=args.external_background_scene_id,
     )
     if result["status"] == "blocked":
         return 2
