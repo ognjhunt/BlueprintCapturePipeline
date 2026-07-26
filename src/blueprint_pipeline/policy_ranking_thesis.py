@@ -511,11 +511,20 @@ def _percentile(values: Sequence[float], fraction: float) -> float | None:
     return ordered[low] * (high - position) + ordered[high] * (position - low)
 
 
-def _benchmark_outcomes(metadata_path: Path) -> dict[str, dict[str, float]]:
+def _benchmark_session_labels(
+    metadata_path: Path,
+) -> tuple[dict[str, dict[str, float]], str | None]:
     payload = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
     outcomes: dict[str, dict[str, float]] = {}
     raw_policies = payload.get("policies", [])
-    policy_rows = raw_policies.values() if isinstance(raw_policies, Mapping) else raw_policies
+    slot_to_policy: dict[str, str] = {}
+    if isinstance(raw_policies, Mapping):
+        policy_rows = raw_policies.values()
+        for slot, row in raw_policies.items():
+            if isinstance(row, Mapping):
+                slot_to_policy[str(slot)] = str(row.get("policy_name") or "")
+    else:
+        policy_rows = raw_policies
     for row in policy_rows:
         if not isinstance(row, Mapping):
             continue
@@ -525,7 +534,17 @@ def _benchmark_outcomes(metadata_path: Path) -> dict[str, dict[str, float]]:
                 "binary_success": float(bool(row.get("binary_success"))),
                 "partial_success": float(row.get("partial_success") or 0.0),
             }
-    return outcomes
+    raw_preference = str(payload.get("preference") or "")
+    preferred_policy = slot_to_policy.get(raw_preference, raw_preference)
+    if preferred_policy not in outcomes:
+        preferred_policy = None
+    return outcomes, preferred_policy
+
+
+def _benchmark_outcomes(metadata_path: Path) -> dict[str, dict[str, float]]:
+    """Compatibility wrapper that returns only PII-free per-policy outcomes."""
+
+    return _benchmark_session_labels(metadata_path)[0]
 
 
 def _episode_rows(
@@ -582,10 +601,13 @@ def evaluate_frozen_calibration(
     expected = len(protocol["partitions"][partition]) * len(protocol["policies"])
     root = Path(roboarena_root).resolve()
     labels: dict[str, dict[str, dict[str, float]]] = {}
+    preferred_policies: dict[str, str | None] = {}
     for session_id in protocol["partitions"][partition]:
-        labels[session_id] = _benchmark_outcomes(
+        outcomes, preferred = _benchmark_session_labels(
             root / "evaluation_sessions" / session_id / "metadata.yaml"
         )
+        labels[session_id] = outcomes
+        preferred_policies[session_id] = preferred
 
     by_method: dict[str, dict[str, Any]] = {}
     for method in methods:
@@ -594,6 +616,7 @@ def evaluate_frozen_calibration(
             blockers.append(f"{method}:expected_{expected}:got_{len(selected)}")
         predicted_by_policy: dict[str, list[float]] = defaultdict(list)
         actual_by_policy: dict[str, list[float]] = defaultdict(list)
+        partial_by_policy: dict[str, list[float]] = defaultdict(list)
         brier_terms: list[float] = []
         correctness: list[float] = []
         selective_correctness: list[float] = []
@@ -610,6 +633,7 @@ def evaluate_frozen_calibration(
             actual = outcome["binary_success"]
             predicted_by_policy[row["policy_id"]].append(probability)
             actual_by_policy[row["policy_id"]].append(actual)
+            partial_by_policy[row["policy_id"]].append(outcome["partial_success"])
             brier_terms.append((probability - actual) ** 2)
             predicted_class = float(probability >= 0.5)
             correctness.append(float(predicted_class == actual))
@@ -644,10 +668,24 @@ def evaluate_frozen_calibration(
         actual_means = {
             policy: sum(values) / len(values) for policy, values in actual_by_policy.items()
         }
+        partial_means = {
+            policy: sum(values) / len(values) for policy, values in partial_by_policy.items()
+        }
+        # Binary success is primary; mean partial progress breaks binary-rate ties.
+        # Multiplying by n+1 guarantees one binary-success count dominates any
+        # possible partial-progress difference on an n-session partition.
+        lexicographic_actual = {
+            policy: actual_means[policy] * (len(protocol["partitions"][partition]) + 1)
+            + partial_means.get(policy, 0.0)
+            for policy in actual_means
+        }
         session_ids = list(protocol["partitions"][partition])
         rng = random.Random(20260726)
-        bootstrap_accuracy: list[float] = []
-        bootstrap_selective_accuracy: list[float] = []
+        label_bases = ("binary_success", "binary_then_partial", "preference_winner_vs_rest")
+        bootstrap_accuracy: dict[str, list[float]] = {basis: [] for basis in label_bases}
+        bootstrap_selective_accuracy: dict[str, list[float]] = {
+            basis: [] for basis in label_bases
+        }
         lookup = {(row["session_id"], row["policy_id"]): row for row in selected}
 
         def episode_is_selective(row: Mapping[str, Any]) -> bool:
@@ -663,7 +701,7 @@ def evaluate_frozen_calibration(
             )
 
         def pairwise_stats(
-            sample: Sequence[str], *, selective_only: bool
+            sample: Sequence[str], *, selective_only: bool, label_basis: str
         ) -> tuple[float | None, int, int]:
             right = 0.0
             evaluated = 0
@@ -674,7 +712,29 @@ def evaluate_frozen_calibration(
                     for right_policy in protocol["policies"][index + 1 :]:
                         left_label = session_labels.get(left_policy, {}).get("binary_success")
                         right_label = session_labels.get(right_policy, {}).get("binary_success")
-                        if left_label is None or right_label is None or left_label == right_label:
+                        if left_label is None or right_label is None:
+                            continue
+                        label_delta: float | None
+                        if label_basis == "binary_success":
+                            label_delta = left_label - right_label
+                        elif label_basis == "binary_then_partial":
+                            label_delta = left_label - right_label
+                            if label_delta == 0:
+                                label_delta = (
+                                    session_labels[left_policy]["partial_success"]
+                                    - session_labels[right_policy]["partial_success"]
+                                )
+                        elif label_basis == "preference_winner_vs_rest":
+                            preferred = preferred_policies.get(session_id)
+                            if left_policy == preferred and right_policy != preferred:
+                                label_delta = 1.0
+                            elif right_policy == preferred and left_policy != preferred:
+                                label_delta = -1.0
+                            else:
+                                label_delta = None
+                        else:  # pragma: no cover - locally fixed callers
+                            raise ValueError(f"unknown_label_basis:{label_basis}")
+                        if label_delta is None or label_delta == 0:
                             continue
                         informative += 1
                         left_row = lookup.get((session_id, left_policy))
@@ -694,35 +754,60 @@ def evaluate_frozen_calibration(
                         if delta == 0:
                             right += 0.5
                         else:
-                            right += float(delta * (left_label - right_label) > 0)
+                            right += float(delta * label_delta > 0)
             return (right / evaluated if evaluated else None, evaluated, informative)
 
-        observed_pairwise_accuracy, _, informative_pair_count = pairwise_stats(
-            session_ids, selective_only=False
-        )
-        (
-            observed_selective_pairwise_accuracy,
-            selective_pair_count,
-            _,
-        ) = pairwise_stats(session_ids, selective_only=True)
-        selective_pairwise_coverage = (
-            selective_pair_count / informative_pair_count if informative_pair_count else 0.0
-        )
-        selective_pairwise_gain = (
-            observed_selective_pairwise_accuracy - observed_pairwise_accuracy
-            if observed_selective_pairwise_accuracy is not None
-            and observed_pairwise_accuracy is not None
-            else None
-        )
+        pairwise_by_basis: dict[str, dict[str, Any]] = {}
+        for basis in label_bases:
+            observed, _, informative = pairwise_stats(
+                session_ids, selective_only=False, label_basis=basis
+            )
+            selective_observed, selective_count, _ = pairwise_stats(
+                session_ids, selective_only=True, label_basis=basis
+            )
+            coverage = selective_count / informative if informative else 0.0
+            pairwise_by_basis[basis] = {
+                "accuracy": observed,
+                "informative_pair_count": informative,
+                "selective_pair_count": selective_count,
+                "selective_accuracy": selective_observed,
+                "selective_coverage": coverage,
+                "selective_accuracy_gain": (
+                    selective_observed - observed
+                    if selective_observed is not None and observed is not None
+                    else None
+                ),
+            }
         replicates = int(thresholds["bootstrap_replicates"])
         for _ in range(replicates):
             sample = [rng.choice(session_ids) for _ in session_ids]
-            replicate_accuracy, _, _ = pairwise_stats(sample, selective_only=False)
-            if replicate_accuracy is not None:
-                bootstrap_accuracy.append(replicate_accuracy)
-            replicate_selective, _, _ = pairwise_stats(sample, selective_only=True)
-            if replicate_selective is not None:
-                bootstrap_selective_accuracy.append(replicate_selective)
+            for basis in label_bases:
+                replicate_accuracy, _, _ = pairwise_stats(
+                    sample, selective_only=False, label_basis=basis
+                )
+                if replicate_accuracy is not None:
+                    bootstrap_accuracy[basis].append(replicate_accuracy)
+                replicate_selective, _, _ = pairwise_stats(
+                    sample, selective_only=True, label_basis=basis
+                )
+                if replicate_selective is not None:
+                    bootstrap_selective_accuracy[basis].append(replicate_selective)
+        for basis in label_bases:
+            pairwise_by_basis[basis]["bootstrap_ci95"] = [
+                _percentile(bootstrap_accuracy[basis], 0.025),
+                _percentile(bootstrap_accuracy[basis], 0.975),
+            ]
+            pairwise_by_basis[basis]["bootstrap_valid_replicates"] = len(
+                bootstrap_accuracy[basis]
+            )
+            pairwise_by_basis[basis]["selective_bootstrap_ci95"] = [
+                _percentile(bootstrap_selective_accuracy[basis], 0.025),
+                _percentile(bootstrap_selective_accuracy[basis], 0.975),
+            ]
+            pairwise_by_basis[basis]["selective_bootstrap_valid_replicates"] = len(
+                bootstrap_selective_accuracy[basis]
+            )
+        primary_pairwise = pairwise_by_basis["binary_then_partial"]
         accuracy = sum(correctness) / len(correctness) if correctness else None
         selective_accuracy = (
             sum(selective_correctness) / len(selective_correctness)
@@ -734,7 +819,11 @@ def evaluate_frozen_calibration(
             for policy, values in selective_predicted_by_policy.items()
         }
         predicted_top = max(predicted_means, key=predicted_means.get) if predicted_means else None
-        benchmark_top = max(actual_means, key=actual_means.get) if actual_means else None
+        benchmark_top = (
+            max(lexicographic_actual, key=lexicographic_actual.get)
+            if lexicographic_actual
+            else None
+        )
         top_policy_regret = (
             actual_means[benchmark_top] - actual_means[predicted_top]
             if predicted_top in actual_means and benchmark_top in actual_means
@@ -749,8 +838,15 @@ def evaluate_frozen_calibration(
                 for policy in protocol["policies"]
             },
             "benchmark_policy_success": actual_means,
+            "benchmark_policy_partial_success": partial_means,
             "spearman": _spearman(predicted_means, actual_means),
             "kendall_tau_b": _kendall_tau_b(predicted_means, actual_means),
+            "spearman_binary_then_partial": _spearman(
+                predicted_means, lexicographic_actual
+            ),
+            "kendall_tau_b_binary_then_partial": _kendall_tau_b(
+                predicted_means, lexicographic_actual
+            ),
             "episode_accuracy": accuracy,
             "brier_score": sum(brier_terms) / len(brier_terms) if brier_terms else None,
             "selective_accuracy": selective_accuracy,
@@ -769,19 +865,20 @@ def evaluate_frozen_calibration(
             "false_success_rate": false_success / actual_failure if actual_failure else None,
             "false_failure_rate": false_failure / actual_success if actual_success else None,
             "session_pairwise_accuracy_bootstrap_ci95": [
-                _percentile(bootstrap_accuracy, 0.025),
-                _percentile(bootstrap_accuracy, 0.975),
+                *primary_pairwise["bootstrap_ci95"],
             ],
-            "session_pairwise_accuracy": observed_pairwise_accuracy,
-            "informative_session_pair_count": informative_pair_count,
-            "selective_session_pair_count": selective_pair_count,
-            "selective_session_pairwise_accuracy": observed_selective_pairwise_accuracy,
-            "selective_session_pairwise_coverage": selective_pairwise_coverage,
-            "selective_session_pairwise_accuracy_gain": selective_pairwise_gain,
+            "session_pairwise_accuracy": primary_pairwise["accuracy"],
+            "informative_session_pair_count": primary_pairwise["informative_pair_count"],
+            "selective_session_pair_count": primary_pairwise["selective_pair_count"],
+            "selective_session_pairwise_accuracy": primary_pairwise["selective_accuracy"],
+            "selective_session_pairwise_coverage": primary_pairwise["selective_coverage"],
+            "selective_session_pairwise_accuracy_gain": primary_pairwise[
+                "selective_accuracy_gain"
+            ],
             "selective_session_pairwise_accuracy_bootstrap_ci95": [
-                _percentile(bootstrap_selective_accuracy, 0.025),
-                _percentile(bootstrap_selective_accuracy, 0.975),
+                *primary_pairwise["selective_bootstrap_ci95"],
             ],
+            "pairwise_by_label_basis": pairwise_by_basis,
             "top_policy": predicted_top,
             "benchmark_top_policy": benchmark_top,
             "top_policy_regret": top_policy_regret,

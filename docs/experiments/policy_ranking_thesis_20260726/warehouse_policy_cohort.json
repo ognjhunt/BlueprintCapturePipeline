@@ -1,0 +1,114 @@
+{
+  "schema_version": "policy_ranking_warehouse_policy_cohort.v1",
+  "status": "frozen_pre_execution",
+  "frozen_before_warehouse_outcomes": true,
+  "task_instruction": "Pick up the can and place it inside the marked tray.",
+  "embodiment": "DROID-compatible Franka Panda",
+  "required_observations": [
+    "one external RGB camera",
+    "one wrist RGB camera",
+    "seven arm joint positions",
+    "gripper position",
+    "language instruction"
+  ],
+  "primary_cohort": [
+    {
+      "policy_id": "pi05_droid",
+      "role": "documented_positive_control",
+      "checkpoint": "gs://openpi-assets/checkpoints/pi05_droid",
+      "checkpoint_object_count": 20,
+      "checkpoint_size_bytes": 12429488598,
+      "public_object_manifest_sha256": "07e2ff7f1c4b23f205c97717c96086dff078f2ccbf3b41012d419aad2ac54bbe",
+      "benchmark_matched_in_released_oscar_pool": false,
+      "capability_evidence": "OpenPI describes this as its strongest generalist DROID policy and documents simple tabletop pick-and-place across varied environments, camera positions, and lighting.",
+      "capability_limit": "No evidence establishes success on this exact warehouse, can, tray, or initial state."
+    },
+    {
+      "policy_id": "pi0_fast_droid",
+      "role": "documented_positive_control_and_calibration_matched",
+      "checkpoint": "gs://openpi-assets/checkpoints/pi0_fast_droid",
+      "checkpoint_object_count": 21,
+      "checkpoint_size_bytes": 10841351138,
+      "public_object_manifest_sha256": "a452a35cfb69fadd23569275e9d0bd43aaa920a1d3f66d53919a427edc41811f",
+      "benchmark_matched_in_released_oscar_pool": true,
+      "capability_evidence": "OpenPI documents zero-shot simple tabletop manipulation in new DROID scenes.",
+      "capability_limit": "No evidence establishes success on this exact warehouse, can, tray, or initial state."
+    },
+    {
+      "policy_id": "pi0_droid",
+      "role": "same_family_weaker_language_following_comparator",
+      "checkpoint": "gs://openpi-assets/checkpoints/pi0_droid",
+      "checkpoint_object_count": 27,
+      "checkpoint_size_bytes": 12009244513,
+      "public_object_manifest_sha256": "f829e46eba16f7fc1a78dcbbb5512a0849c81025f1ba03387316c12ecf6eb2a3",
+      "benchmark_matched_in_released_oscar_pool": true,
+      "capability_evidence": "OpenPI provides the runnable DROID checkpoint and states that it may follow language commands less well than pi0-FAST-DROID.",
+      "capability_limit": "This is not a deliberately corrupted checkpoint and is not assumed to fail."
+    },
+    {
+      "policy_id": "paligemma_fast_specialist_droid",
+      "role": "calibration_matched_cross_architecture_candidate",
+      "checkpoint": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_specialist_droid",
+      "checkpoint_size_bytes": 10850020059,
+      "public_object_manifest_sha256": "b31c135781c62ba856db0f36e7dfa14c0051eb85620ff3552178698bb6cd8312",
+      "benchmark_matched_in_released_oscar_pool": true,
+      "capability_evidence": "OpenPI publishes the exact runnable RoboArena DROID checkpoint.",
+      "capability_limit": "No independent task-specific pick-and-place capability statement was found."
+    },
+    {
+      "policy_id": "paligemma_fast_droid",
+      "role": "calibration_matched_cross_architecture_candidate",
+      "checkpoint": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_droid",
+      "checkpoint_size_bytes": 10850689373,
+      "public_object_manifest_sha256": "82003a226f40d43da63d271c97a111ebe31bbd9de07f0172f31a31dadd68031e",
+      "benchmark_matched_in_released_oscar_pool": true,
+      "capability_evidence": "OpenPI publishes the exact runnable RoboArena DROID checkpoint.",
+      "capability_limit": "No independent task-specific pick-and-place capability statement was found."
+    }
+  ],
+  "negative_control": {
+    "policy_id": "zero_action_control_v1",
+    "role": "nonlearned_pipeline_sanity_control",
+    "definition": "Return a zero arm-velocity chunk and unchanged gripper command for every observation.",
+    "included_in_customer_policy_ranking": false,
+    "required_expected_behavior": "No task progress; deterministic evaluator must reject success."
+  },
+  "optional_not_frozen_into_primary_cohort": [
+    {
+      "policy_id": "nvidia/GR00T-N1.7-DROID",
+      "reason": "Correct DROID embodiment and public fine-tuned checkpoint, but no task-specific can/box pick-and-place outcome evidence was found."
+    },
+    {
+      "policy_id": "nvidia/GR00T-N1.7-LIBERO",
+      "reason": "Franka benchmark checkpoint but incompatible LIBERO observation/action contract; not a DROID policy."
+    },
+    {
+      "policy_id": "aloha_sim_transfer_cube_human",
+      "reason": "Task-specific transfer-cube data uses ALOHA, not the DROID Franka embodiment."
+    }
+  ],
+  "wam": {
+    "primary": "OSCAR-2B",
+    "reason": "Exact WAM family calibrated on four of the five learned cohort policies and joint-trajectory skeleton conditioning is compatible with all five.",
+    "ctrl_world_role": "nonprimary comparator only after exact action/state adapter validation"
+  },
+  "primary_cohort_total_checkpoint_bytes": 56980793681,
+  "controlled_truth": {
+    "source": "Isaac simulator object state and contacts",
+    "predicates": [
+      "can_lift_height",
+      "can_target_distance",
+      "can_contained_in_tray",
+      "can_final_stability",
+      "required_robot_object_contacts"
+    ],
+    "physical_answer_key": false
+  },
+  "frozen_ranking_stack": "same action adapter, OSCAR WAM, GPT-5 visual evaluator digest, thresholds, and aggregator across warehouse and captured 3DGS",
+  "policy_specific_evaluator_changes_allowed": false,
+  "claim_boundary": "Positive-control evidence establishes prior task plausibility, not success at the warehouse or captured site.",
+  "execution_blockers": [
+    "checkpoint-specific license metadata remains unresolved",
+    "warehouse closed-loop runtime not yet executed"
+  ]
+}

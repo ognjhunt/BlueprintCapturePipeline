@@ -124,6 +124,7 @@ def _judgments(protocol: dict, benchmark: Path, method: str) -> list[dict]:
 
 def test_calibration_computes_frozen_metrics_and_rejects_leakage(tmp_path: Path) -> None:
     protocol = build_preregistration(_sessions())
+    protocol["thresholds"]["bootstrap_replicates"] = 100
     benchmark = tmp_path / "benchmark"
     for index, session_id in enumerate(_sessions()):
         _metadata(benchmark / "evaluation_sessions" / session_id / "metadata.yaml", index)
@@ -156,6 +157,7 @@ def test_calibration_computes_frozen_metrics_and_rejects_leakage(tmp_path: Path)
 
 def test_calibration_honors_explicit_abstention_and_digest(tmp_path: Path) -> None:
     protocol = build_preregistration(_sessions())
+    protocol["thresholds"]["bootstrap_replicates"] = 100
     benchmark = tmp_path / "benchmark"
     for index, session_id in enumerate(_sessions()):
         _metadata(benchmark / "evaluation_sessions" / session_id / "metadata.yaml", index)
