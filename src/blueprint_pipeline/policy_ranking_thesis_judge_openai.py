@@ -17,6 +17,7 @@ import math
 import os
 import re
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -46,13 +47,26 @@ PROMPT_SHA256 = hashlib.sha256(PROMPT.encode()).hexdigest()
 MAX_DIMENSION = 768
 JPEG_QUALITY = 86
 REASONING_EFFORT = "high"
-MAX_OUTPUT_TOKENS = 4096
+MAX_OUTPUT_TOKENS = 8192
 INPUT_USD_PER_MILLION_TOKENS = 1.25
 OUTPUT_USD_PER_MILLION_TOKENS = 10.0
 # Conservative admission allowance for one request. The real charge is recorded
 # from response.usage and is normally much lower than this ceiling.
-MAX_ESTIMATED_REQUEST_USD = 0.05
+MAX_ESTIMATED_REQUEST_USD = 0.09
 LOW_DETAIL_IMAGE_TOKENS = 70
+SAMPLING_CONTRACT = {
+    "model_snapshot": MODEL,
+    "reasoning_effort": REASONING_EFFORT,
+    "max_output_tokens_including_reasoning": MAX_OUTPUT_TOKENS,
+    "temperature": "not_requested_model_default",
+    "top_p": "not_requested_model_default",
+    "seed": "not_supported_by_this_responses_configuration",
+    "image_detail": "low",
+    "max_image_dimension": MAX_DIMENSION,
+    "jpeg_quality": JPEG_QUALITY,
+    "response_format": "strict_json_schema",
+    "store": False,
+}
 OUTPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -106,6 +120,7 @@ def evaluator_digest(protocol: Mapping[str, Any]) -> str:
             "generated_crop": [0.0, 0.5],
             "reasoning_effort": REASONING_EFFORT,
             "max_output_tokens": MAX_OUTPUT_TOKENS,
+            "sampling_contract": SAMPLING_CONTRACT,
             "output_schema": OUTPUT_SCHEMA,
             "thresholds": protocol.get("thresholds"),
         }
@@ -256,6 +271,7 @@ def build_request_inventory(
         "provider": "openai",
         "model": MODEL,
         "prompt_sha256": PROMPT_SHA256,
+        "sampling_contract": SAMPLING_CONTRACT,
         "request_count": len(rows),
         "precall_cost_bound": {
             "basis": "official_gpt_5_standard_rates_and_70_tokens_per_low_detail_image",
@@ -377,6 +393,7 @@ def run_inventory(
     max_requests: int | None = None,
     max_estimated_cost_usd: float = 2.0,
     max_workers: int = 4,
+    max_attempts_per_request: int = 2,
 ) -> dict[str, Any]:
     if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
         result = {
@@ -405,6 +422,8 @@ def run_inventory(
 
     if not 1 <= max_workers <= 8:
         raise ValueError("max_workers_must_be_between_1_and_8")
+    if not 1 <= max_attempts_per_request <= 3:
+        raise ValueError("max_attempts_per_request_must_be_between_1_and_3")
 
     client = OpenAI(api_key=key)
     requests = list(inventory.get("requests", []))
@@ -439,6 +458,13 @@ def run_inventory(
         float((row.get("usage") or {}).get("estimated_cost_usd_conservative") or 0.0)
         for row in judgments
     )
+    estimated_cost += sum(
+        float((row.get("usage") or {}).get("estimated_cost_usd_conservative") or 0.0)
+        for row in failed_requests
+    )
+    attempt_counts: dict[str, int] = defaultdict(int)
+    for row in [*judgments, *failed_requests]:
+        attempt_counts[str(row.get("request_id"))] += 1
     request_order = {
         str(request.get("request_id")): index for index, request in enumerate(requests)
     }
@@ -446,7 +472,15 @@ def run_inventory(
         request
         for request in requests
         if str(request.get("request_id")) not in completed_ids
+        and attempt_counts[str(request.get("request_id"))] < max_attempts_per_request
     ]
+    exhausted_ids = {
+        str(request.get("request_id"))
+        for request in requests
+        if str(request.get("request_id")) not in completed_ids
+        and attempt_counts[str(request.get("request_id"))] >= max_attempts_per_request
+    }
+    blockers.extend(f"retry_exhausted:{request_id}" for request_id in sorted(exhausted_ids))
     remaining_allowance = max(0.0, max_estimated_cost_usd - estimated_cost)
     admitted_count = min(
         len(pending), int(remaining_allowance // MAX_ESTIMATED_REQUEST_USD)
@@ -466,6 +500,7 @@ def run_inventory(
             "inventory_sha256": inventory.get("inventory_sha256"),
             "provider": "openai",
             "model": MODEL,
+            "sampling_contract": SAMPLING_CONTRACT,
             "request_count": len(requests),
             "judgment_count": len(judgments),
             "judgments": judgments,
@@ -476,6 +511,7 @@ def run_inventory(
             "estimated_cost_usd_conservative": estimated_cost,
             "max_estimated_cost_usd": max_estimated_cost_usd,
             "max_workers": max_workers,
+            "max_attempts_per_request": max_attempts_per_request,
             "raw_credentials_written": False,
         }
         write_json(output_path, checkpoint)
@@ -503,6 +539,7 @@ def run_inventory(
                             **exc.safe_details,
                         }
                         failed_requests.append(failed)
+                        attempt_counts[str(request.get("request_id"))] += 1
                         estimated_cost += float(
                             (failed.get("usage") or {}).get(
                                 "estimated_cost_usd_conservative"
@@ -521,6 +558,7 @@ def run_inventory(
         "provider": "openai",
         "model": MODEL,
         "prompt_sha256": PROMPT_SHA256,
+        "sampling_contract": SAMPLING_CONTRACT,
         "request_count": len(requests),
         "judgment_count": len(judgments),
         "judgments": judgments,
@@ -531,6 +569,7 @@ def run_inventory(
         "estimated_cost_usd_conservative": estimated_cost,
         "max_estimated_cost_usd": max_estimated_cost_usd,
         "max_workers": max_workers,
+        "max_attempts_per_request": max_attempts_per_request,
         "wall_time_seconds": time.monotonic() - started,
         "raw_credentials_written": False,
     }
@@ -554,6 +593,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--max-requests", type=int)
     run.add_argument("--max-estimated-cost-usd", type=float, default=2.0)
     run.add_argument("--max-workers", type=int, default=4)
+    run.add_argument("--max-attempts-per-request", type=int, default=2)
     args = parser.parse_args(argv)
     if args.command == "inventory":
         index_payload = json.loads(Path(args.index).read_text())
@@ -572,6 +612,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_requests=args.max_requests,
             max_estimated_cost_usd=args.max_estimated_cost_usd,
             max_workers=args.max_workers,
+            max_attempts_per_request=args.max_attempts_per_request,
         )
     return 0 if result["status"] in {"ready", "completed"} else 2
 

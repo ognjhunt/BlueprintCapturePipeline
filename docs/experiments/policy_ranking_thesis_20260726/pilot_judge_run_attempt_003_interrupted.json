@@ -5,7 +5,7 @@
   "provider": "openai",
   "model": "gpt-5-2025-08-07",
   "request_count": 98,
-  "judgment_count": 42,
+  "judgment_count": 44,
   "judgments": [
     {
       "schema_version": "policy_ranking_episode_judgment.v1",
@@ -2415,6 +2415,80 @@
       "schema_version": "policy_ranking_episode_judgment.v1",
       "session_id": "dd029360-b954-4bfd-b154-401fb9f4d592",
       "policy_id": "paligemma_diffusion_droid",
+      "method": "frozen_temporal_32_frame_progress_judge_v1",
+      "success_probability": 0.02,
+      "progress_score_0_to_5": 0,
+      "judge_confidence": 0.68,
+      "action_following_confidence": 0.12,
+      "temporal_coherence_confidence": 0.93,
+      "critical_contradiction": false,
+      "abstained": false,
+      "rationale": "The robot never grasps the glasses nor opens/approaches the glasses case. Motion is focused near the cabinet drawers; no visible pickup or placement occurs. No state jumps; skeleton and arm are consistent. Some target occlusion later, but no earlier contact or progress is shown, so completion is not supported.",
+      "evaluator_digest": "0c3633e3fb247126aa5add998ca73082850b8b4f6225f63222445f2563d13b24",
+      "benchmark_labels_seen": false,
+      "third_party_physical_pixels_seen": false,
+      "source_video_sha256": "668c86aa32a622d787f2c9eaf547ddda7d889ae0a125825981e964a4be9f63ce",
+      "crop_attestation": {
+        "source_video_sha256": "668c86aa32a622d787f2c9eaf547ddda7d889ae0a125825981e964a4be9f63ce",
+        "source_width": 1280,
+        "source_height": 480,
+        "crop_x_pixels": [
+          0,
+          640
+        ],
+        "third_party_physical_pixels_encoded": false,
+        "sampled_frame_indices": [
+          0,
+          13,
+          26,
+          39,
+          51,
+          64,
+          77,
+          90,
+          103,
+          116,
+          129,
+          142,
+          154,
+          167,
+          180,
+          193,
+          206,
+          219,
+          232,
+          245,
+          257,
+          270,
+          283,
+          296,
+          309,
+          322,
+          335,
+          348,
+          360,
+          373,
+          386,
+          399
+        ]
+      },
+      "provider": "openai",
+      "model": "gpt-5-2025-08-07",
+      "request_id": "64909ea5e39cb01226c4a7039ba8a816ff63ba56c950f127d114a84cbafb13ad",
+      "response_id": "resp_0becb466acc32871016a662eb6564881938a9afd7d365a0b8e",
+      "response_status": "completed",
+      "usage": {
+        "input_tokens": 2700,
+        "cached_input_tokens": 0,
+        "output_tokens": 2678,
+        "estimated_cost_usd_conservative": 0.030155
+      },
+      "wall_time_seconds": 29.09388545807451
+    },
+    {
+      "schema_version": "policy_ranking_episode_judgment.v1",
+      "session_id": "dd029360-b954-4bfd-b154-401fb9f4d592",
+      "policy_id": "paligemma_diffusion_droid",
       "method": "frozen_first_last_frame_progress_judge_v1",
       "success_probability": 0.07,
       "progress_score_0_to_5": 0,
@@ -2454,6 +2528,50 @@
         "estimated_cost_usd_conservative": 0.029045
       },
       "wall_time_seconds": 24.662771875038743
+    },
+    {
+      "schema_version": "policy_ranking_episode_judgment.v1",
+      "session_id": "dd029360-b954-4bfd-b154-401fb9f4d592",
+      "policy_id": "paligemma_fast_droid",
+      "method": "frozen_first_last_frame_progress_judge_v1",
+      "success_probability": 0.03,
+      "progress_score_0_to_5": 0,
+      "judge_confidence": 0.78,
+      "action_following_confidence": 0.2,
+      "temporal_coherence_confidence": 0.85,
+      "critical_contradiction": false,
+      "abstained": false,
+      "rationale": "Glasses remain on the table in both first and last frames; no visible grasp or placement into a case by the robot. World-model appears coherent (skeleton aligns with the arm, no apparent state jumps).",
+      "evaluator_digest": "0c3633e3fb247126aa5add998ca73082850b8b4f6225f63222445f2563d13b24",
+      "benchmark_labels_seen": false,
+      "third_party_physical_pixels_seen": false,
+      "source_video_sha256": "aa52f2269366d3b26a8ae47b592ec400525815f1c67d07bce1e214955fe20c4f",
+      "crop_attestation": {
+        "source_video_sha256": "aa52f2269366d3b26a8ae47b592ec400525815f1c67d07bce1e214955fe20c4f",
+        "source_width": 1280,
+        "source_height": 480,
+        "crop_x_pixels": [
+          0,
+          640
+        ],
+        "third_party_physical_pixels_encoded": false,
+        "sampled_frame_indices": [
+          0,
+          399
+        ]
+      },
+      "provider": "openai",
+      "model": "gpt-5-2025-08-07",
+      "request_id": "040cb6a374e6388eb4d69232f8f07ceffe5494cd3d4386b94a7f9dd0eb969a9d",
+      "response_id": "resp_000c1562390221f3016a662ec52b7481958a8eb26a48c6a017",
+      "response_status": "completed",
+      "usage": {
+        "input_tokens": 508,
+        "cached_input_tokens": 0,
+        "output_tokens": 3538,
+        "estimated_cost_usd_conservative": 0.036015
+      },
+      "wall_time_seconds": 28.45092354202643
     }
   ],
   "failed_requests": [
@@ -2504,16 +2622,33 @@
         "estimated_cost_usd_conservative": 0.044335
       },
       "raw_response_persisted": false
+    },
+    {
+      "request_id": "b1bdcda37c5b5ba8a0ef3019270911370acdcfa069ef0b20e72221749220ce94",
+      "session_id": "dd029360-b954-4bfd-b154-401fb9f4d592",
+      "policy_id": "paligemma_fast_droid",
+      "reason": "unparseable_structured_output",
+      "response_id": "resp_0e5dc44e951982c7016a662ebf14248194b70d573355c88674",
+      "response_status": "incomplete",
+      "incomplete_reason": "max_output_tokens",
+      "usage": {
+        "input_tokens": 2700,
+        "cached_input_tokens": 0,
+        "output_tokens": 4096,
+        "estimated_cost_usd_conservative": 0.044335
+      },
+      "raw_response_persisted": false
     }
   ],
   "blockers": [
     "request_failed:7ccd5be8-c1d6-4917-871d-905015915744:pi0_droid:JudgeResponseError",
     "request_failed:7ccd5be8-c1d6-4917-871d-905015915744:pi0_fast_droid:JudgeResponseError",
-    "request_failed:cb3a637a-bea7-45f2-84dc-50fda57dd912:pi0_fast_droid:JudgeResponseError"
+    "request_failed:cb3a637a-bea7-45f2-84dc-50fda57dd912:pi0_fast_droid:JudgeResponseError",
+    "request_failed:dd029360-b954-4bfd-b154-401fb9f4d592:paligemma_fast_droid:JudgeResponseError"
   ],
   "provider_called": true,
   "data_uploaded": true,
-  "estimated_cost_usd_conservative": 1.2896275,
+  "estimated_cost_usd_conservative": 1.4001324999999998,
   "max_estimated_cost_usd": 5.0,
   "max_workers": 4,
   "raw_credentials_written": false

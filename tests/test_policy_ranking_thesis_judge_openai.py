@@ -70,6 +70,8 @@ def test_inventory_blocks_lfs_pointers_and_binds_materialized_video(tmp_path: Pa
     assert result["requests"][0]["third_party_physical_pixels_included"] is False
     assert result["precall_cost_bound"]["image_tokens"] == 2380
     assert result["precall_cost_bound"]["estimated_total_usd_upper_bound"] > 0
+    assert result["sampling_contract"]["max_output_tokens_including_reasoning"] == 8192
+    assert result["sampling_contract"]["temperature"] == "not_requested_model_default"
     assert "request_count_expected_98_got_2" in result["blockers"]
 
 
@@ -204,4 +206,41 @@ def test_run_inventory_concurrent_checkpoint_is_request_ordered(
     )
     assert result["status"] == "completed"
     assert result["max_workers"] == 3
+    assert result["max_attempts_per_request"] == 2
     assert [row["request_id"] for row in result["judgments"]] == [str(i) for i in range(6)]
+
+
+def test_retry_cap_counts_failed_usage_and_exhausts_request(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(GATE_ENV, "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "not-sent")
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        types.SimpleNamespace(OpenAI=lambda **kwargs: object()),
+    )
+    request = {"request_id": "r1"}
+    previous = {
+        "inventory_sha256": "b" * 64,
+        "judgments": [],
+        "failed_requests": [
+            {
+                "request_id": "r1",
+                "usage": {"estimated_cost_usd_conservative": 0.04},
+            },
+            {
+                "request_id": "r1",
+                "usage": {"estimated_cost_usd_conservative": 0.05},
+            },
+        ],
+    }
+    output = tmp_path / "run.json"
+    output.write_text(json.dumps(previous))
+    result = run_inventory(
+        {"inventory_sha256": "b" * 64, "requests": [request]},
+        output_path=output,
+        max_estimated_cost_usd=1.0,
+        max_attempts_per_request=2,
+    )
+    assert result["status"] == "blocked"
+    assert result["estimated_cost_usd_conservative"] == pytest.approx(0.09)
+    assert result["blockers"] == ["retry_exhausted:r1"]
