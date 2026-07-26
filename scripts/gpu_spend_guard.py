@@ -819,9 +819,20 @@ OWNER_ID_FILENAMES = (
 )
 MAX_OWNER_ID_BYTES = 1024
 MAX_QUALIFICATION_MANIFEST_BYTES = 2 * 1024 * 1024
-QUALIFICATION_SESSION_SCHEMA_VERSION = "single_g1_kitchen_qualification_session.v1"
-QUALIFICATION_RELEASE_BINDING_SCHEMA_VERSION = (
+QUALIFICATION_SESSION_SCHEMA_VERSIONS = frozenset(
+    {
+        "single_g1_kitchen_qualification_session.v1",
+        "single_g1_kitchen_qualification_session.v2",
+    }
+)
+LEGACY_QUALIFICATION_RELEASE_BINDING_SCHEMA_VERSION = (
     "single_g1_kitchen_qualification_release_binding.v1"
+)
+QUALIFICATION_RELEASE_BINDING_SCHEMA_VERSION = (
+    "single_g1_kitchen_qualification_release_binding.v2"
+)
+QUALIFICATION_RUNTIME_IDENTITY_SCHEMA_VERSION = (
+    "single_g1_kitchen_qualification_runtime_identity.v1"
 )
 QUALIFICATION_NAME_PREFIX_ROOT = "blueprint-groot-oscar-canary-qualification-"
 EMPTY_SOURCE_PATCH_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -896,6 +907,13 @@ def _is_lower_hex(value: object, *, length: int) -> bool:
     return len(text) == length and all(character in "0123456789abcdef" for character in text)
 
 
+def _canonical_mapping_sha256(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        dict(value), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _lightweight_qualification_manifest_binding(
     source: Path,
     manifest: Mapping[str, Any],
@@ -911,7 +929,7 @@ def _lightweight_qualification_manifest_binding(
     """
 
     if (
-        manifest.get("schema_version") != QUALIFICATION_SESSION_SCHEMA_VERSION
+        manifest.get("schema_version") not in QUALIFICATION_SESSION_SCHEMA_VERSIONS
         or manifest.get("provider") != "vast"
         or manifest.get("release_binding_status") != "bound"
         or str(manifest.get("instance_id") or "") != launched_id
@@ -955,20 +973,78 @@ def _lightweight_qualification_manifest_binding(
         for key in ("image_ref", "image_digest", "source_commit")
     ):
         return False
+    release_schema = release_binding.get("schema_version")
     if (
-        release_binding.get("schema_version")
-        != QUALIFICATION_RELEASE_BINDING_SCHEMA_VERSION
+        release_schema
+        not in {
+            LEGACY_QUALIFICATION_RELEASE_BINDING_SCHEMA_VERSION,
+            QUALIFICATION_RELEASE_BINDING_SCHEMA_VERSION,
+        }
         or release_binding.get("source_patch_sha256") != EMPTY_SOURCE_PATCH_SHA256
         or release_binding.get("runnable_platform") != "linux/amd64"
         or not str(release_binding.get("required_cuda_version") or "")
         or not str(release_binding.get("required_cuda_version_source") or "").startswith(
             "image_config_env:"
         )
-        or release_binding.get("models_externalized") is not True
         or release_binding.get("release_evidence_status") != "completed"
         or release_binding.get("thin_release_contract_status") != "passed"
     ):
         return False
+    model_assets_mode = release_binding.get("model_assets_mode")
+    if model_assets_mode is None and release_binding.get("models_externalized") is True:
+        model_assets_mode = "external"
+    externalized = release_binding.get("models_externalized") is True
+    embedded = release_binding.get("models_embedded_in_foundation") is True
+    if (
+        model_assets_mode not in {"external", "embedded"}
+        or (model_assets_mode == "external" and not externalized)
+        or (model_assets_mode == "embedded" and not embedded)
+        or externalized == embedded
+    ):
+        return False
+
+    if release_schema == QUALIFICATION_RELEASE_BINDING_SCHEMA_VERSION:
+        if (
+            not _is_lower_hex(release_binding.get("image_source_commit"), length=40)
+            or release_binding.get("image_source_commit") != source_commit
+            or not _is_lower_hex(
+                release_binding.get("orchestrator_source_commit"), length=40
+            )
+            or any(
+                not _is_lower_hex(release_binding.get(key), length=64)
+                for key in (
+                    "release_evidence_sha256",
+                    "thin_release_contract_sha256",
+                    "serverless_worker_contract_sha256",
+                )
+            )
+            or manifest.get("image_source_commit")
+            != release_binding.get("image_source_commit")
+            or manifest.get("orchestrator_source_commit")
+            != release_binding.get("orchestrator_source_commit")
+        ):
+            return False
+        runtime_identity = manifest.get("runtime_identity")
+        if not isinstance(runtime_identity, Mapping):
+            return False
+        identity_inputs = runtime_identity.get("identity_inputs")
+        if (
+            runtime_identity.get("schema_version")
+            != QUALIFICATION_RUNTIME_IDENTITY_SCHEMA_VERSION
+            or runtime_identity.get("status") != "bound"
+            or not _is_lower_hex(runtime_identity.get("image_source_commit"), length=40)
+            or not _is_lower_hex(
+                runtime_identity.get("orchestrator_source_commit"), length=40
+            )
+            or not isinstance(identity_inputs, Mapping)
+            or not identity_inputs
+            or runtime_identity.get("runtime_identity_sha256")
+            != _canonical_mapping_sha256(identity_inputs)
+            or runtime_identity.get("runtime_and_control_plane_commits_may_differ")
+            is not True
+            or runtime_identity.get("raw_secret_values_recorded") is not False
+        ):
+            return False
 
     bootstrap = manifest.get("bootstrap")
     if not isinstance(bootstrap, Mapping):

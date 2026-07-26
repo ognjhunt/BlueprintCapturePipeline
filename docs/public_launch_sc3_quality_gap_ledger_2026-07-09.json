@@ -5299,7 +5299,7 @@
             {
               "artifact_id": "RUN-07-AC-01-EV-01",
               "path": "scripts/gpu_spend_guard.py",
-              "sha256": "sha256:626d09c48b1bdb846a98a64b1e266f433e1b33d836d3442154268f9b0c8891b4",
+              "sha256": "sha256:1669354a56c77268182746c83f8ec7f59153000be26224ecacc62de69de49b0e",
               "role": "executable_control",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5315,7 +5315,7 @@
             {
               "artifact_id": "RUN-07-AC-01-EV-02",
               "path": "tests/test_gpu_spend_guard.py",
-              "sha256": "sha256:898d35d422e087840bb47470b6c13f8c6c414aa4413fbfa681fcce66ffbb7242",
+              "sha256": "sha256:2d16a04be6aa925ee75f1ef73595d23a0f542dc0ac10aedb507a596c16e65e55",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7196,7 +7196,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-01",
               "path": "docs/source_governance_policy.json",
-              "sha256": "sha256:59e0f545363e16259e28e794786371c0951ab870d81c11324efbbcd9e08ff3ad",
+              "sha256": "sha256:efbe057eca72399195e5d49cc5a1b5dcc864556a36e02ba3cd6fc4e2b83c861c",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13773,7 +13773,7 @@
             {
               "artifact_id": "P2-06-AC-01-EV-01",
               "path": "docs/bandit_triage.json",
-              "sha256": "sha256:3f0185ccb90ed645361a7538a0b7f84f51bcfa672f654696906d98b39ac8706d",
+              "sha256": "sha256:f0efb27e803865f9c14b9a85d51b09bf3866a7d7d40d39e68149379f7a8f7e4e",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",

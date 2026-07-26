@@ -836,6 +836,76 @@ def test_qualification_import_failure_preserves_bound_allocator_owner(
     assert protected == {"45483300"}
 
 
+def test_qualification_import_failure_preserves_v2_runtime_identity_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _write_qualification_owner(
+        tmp_path / "qualification", "45483300"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    release = manifest["release_binding"]
+    release.update(
+        {
+            "schema_version": "single_g1_kitchen_qualification_release_binding.v2",
+            "image_source_commit": manifest["source_commit"],
+            "orchestrator_source_commit": "c" * 40,
+            "release_evidence_sha256": "5" * 64,
+            "thin_release_contract_sha256": "6" * 64,
+            "serverless_worker_contract_sha256": "7" * 64,
+            "model_assets_mode": "external",
+            "models_embedded_in_foundation": False,
+        }
+    )
+    identity_inputs = {"release_image_ref": manifest["image_ref"]}
+    manifest.update(
+        {
+            "image_source_commit": manifest["source_commit"],
+            "orchestrator_source_commit": "c" * 40,
+            "runtime_identity": {
+                "schema_version": (
+                    "single_g1_kitchen_qualification_runtime_identity.v1"
+                ),
+                "status": "bound",
+                "image_source_commit": manifest["source_commit"],
+                "orchestrator_source_commit": "c" * 40,
+                "runtime_identity_sha256": hashlib.sha256(
+                    json.dumps(
+                        identity_inputs, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")
+                ).hexdigest(),
+                "identity_inputs": identity_inputs,
+                "runtime_and_control_plane_commits_may_differ": True,
+                "raw_secret_values_recorded": False,
+            },
+        }
+    )
+    qualification._private_write_json(manifest_path, manifest)
+    real_import = __import__
+
+    def _fail_qualification_import(
+        name: str,
+        globals: object = None,
+        locals: object = None,
+        fromlist: object = (),
+        level: int = 0,
+    ) -> object:
+        if name == "blueprint_pipeline.single_g1_kitchen_qualification_session":
+            raise ImportError("qualification runtime unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _fail_qualification_import)
+
+    protected = guard.find_protected_pod_ids(
+        [tmp_path],
+        process_cmdlines=[
+            "python -m blueprint_pipeline.paid_resource_allocator "
+            f"--qualification-session-manifest {manifest_path}"
+        ],
+    )
+
+    assert protected == {"45483300"}
+
+
 def test_qualification_import_failure_preserves_live_bound_watchdog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
