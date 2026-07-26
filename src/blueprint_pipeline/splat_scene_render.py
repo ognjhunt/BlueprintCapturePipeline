@@ -113,6 +113,7 @@ def render_splat_scene(
     settle_frames: int = 6,
     settle_ms: int = 100,
     warmup_ms: int = 2000,
+    graphics_backend: str = "swiftshader",
     up_axis: int | None = None,
     focus_point: Sequence[float] | None = None,
     overlay_json: str | Path | None = None,
@@ -135,6 +136,7 @@ def render_splat_scene(
         "source": str(source),
         "output_dir": str(out_dir),
         "blockers": [],
+        "graphics_backend": str(graphics_backend).strip().lower(),
         "proof_boundary": {
             "captured_scene_displayed": False,
             "interaction_overlay_displayed": False,
@@ -144,6 +146,10 @@ def render_splat_scene(
     }
     if not source.is_file() or source.suffix.lower() not in _SPLAT_SUFFIXES:
         manifest["blockers"].append("splat_source_missing_or_unsupported")
+        return manifest
+    normalized_graphics_backend = str(graphics_backend).strip().lower()
+    if normalized_graphics_backend not in {"swiftshader", "metal"}:
+        manifest["blockers"].append("unsupported_graphics_backend")
         return manifest
 
     # 1) decode/decimate to a standard 3DGS PLY (analysis + render input)
@@ -193,6 +199,7 @@ def render_splat_scene(
         "--warmup-ms", str(warmup_ms),
         "--settle-frames", str(settle_frames),
         "--settle-ms", str(settle_ms),
+        "--graphics-backend", normalized_graphics_backend,
     ]
     if overlay_json:
         overlay_path = Path(overlay_json).expanduser().resolve()
@@ -340,6 +347,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--decimate", type=int, default=200000, help="0 to disable")
     ap.add_argument("--settle-frames", type=int, default=6)
     ap.add_argument("--warmup-ms", type=int, default=2000)
+    ap.add_argument(
+        "--graphics-backend",
+        default="swiftshader",
+        choices=("swiftshader", "metal"),
+        help="local Spark graphics backend; Metal uses the Mac GPU, SwiftShader is software",
+    )
     ap.add_argument("--up-axis", type=int, default=None, choices=[0, 1, 2])
     ap.add_argument(
         "--focus-point",
@@ -359,6 +372,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         decimate=args.decimate,
         settle_frames=args.settle_frames,
         warmup_ms=args.warmup_ms,
+        graphics_backend=args.graphics_backend,
         up_axis=args.up_axis,
         focus_point=args.focus_point,
         overlay_json=args.overlay,

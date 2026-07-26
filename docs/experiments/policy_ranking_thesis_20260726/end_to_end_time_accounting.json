@@ -28,6 +28,15 @@
     "judge_only_pilot_speed_ratio_vs_physical_action_lower_bound": 2.274,
     "judge_only_ratio_is_end_to_end_claim": false
   },
+  "heldout_partial_attempt_observation": {
+    "status": "blocked_and_partial_artifact_overwritten",
+    "accepted_judgments_before_overwrite": 121,
+    "requested_judgments": 686,
+    "rate_limit_blockers_before_overwrite": 565,
+    "wall_time_seconds_before_overwrite": 3115.9156444580294,
+    "conservative_metered_cost_usd_before_overwrite": 3.6246274999999986,
+    "usable_for_heldout_metrics": false
+  },
   "pilot_single_gpu_attributed_end_to_end": {
     "wam_generation_plus_judge_seconds": 2240.423726829268,
     "wam_generation_plus_judge_minutes": 37.34039544715447,

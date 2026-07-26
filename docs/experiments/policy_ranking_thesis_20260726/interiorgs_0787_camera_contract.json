@@ -1,0 +1,88 @@
+{
+  "schema_version": "captured_site_camera_contract.v1",
+  "scene_id": "interiorgs_0787_841244_franka_can_to_tray_v1",
+  "coordinate_frame": {
+    "units": "meters",
+    "up_axis": "+Z",
+    "source": "InteriorGS metric scene frame"
+  },
+  "task_focus": [1.9, 1.24, 0.8],
+  "quality_gate": {
+    "required_views": [
+      "droid_external_left",
+      "droid_external_right",
+      "franka_wrist_mounted_initial"
+    ],
+    "required_visible_entities": [
+      "supporting_3dgs_table_surface",
+      "spray_can",
+      "marked_tray",
+      "franka_gripper"
+    ],
+    "minimum_render_splats": 250000,
+    "claim_boundary": "camera_registration_and_visual_observability_only_not_dynamic_link_tracking_or_policy_execution"
+  },
+  "robot_mounted_camera": {
+    "id": "franka_wrist_mounted_initial",
+    "parent_link": "franka_hand_proxy",
+    "parent_link_world_pose": {
+      "translation_m": [1.9086943, 1.15, 0.84],
+      "rotation_matrix_row_major": [
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0
+      ],
+      "provenance": "frozen_preview_pose_only"
+    },
+    "camera_mount_in_parent_link": {
+      "translation_m": [-0.08, -0.05, 0.22],
+      "forward_vector_parent": [0.0, 0.45, -0.88],
+      "up_vector_parent": [0.0, 0.0, 1.0]
+    },
+    "derived_world_camera": {
+      "position": [1.8286943, 1.1, 1.06],
+      "target": [1.8286943, 1.2593512605533532, 0.7483797571401092],
+      "up": [0.0, 0.0, 1.0],
+      "fov_deg": 88.0
+    },
+    "dynamic_runtime_requirement": "recompute the world camera from the live franka_hand transform on every simulator frame"
+  },
+  "render_cameras": [
+    {
+      "id": "droid_external_left",
+      "spec": {
+        "pos": [1.02, 0.48, 1.38],
+        "target": [1.91, 1.23, 0.8],
+        "fov": 50.0,
+        "up": [0.0, 0.0, 1.0]
+      }
+    },
+    {
+      "id": "droid_external_right",
+      "spec": {
+        "pos": [2.83, 0.5, 1.38],
+        "target": [1.91, 1.23, 0.8],
+        "fov": 50.0,
+        "up": [0.0, 0.0, 1.0]
+      }
+    },
+    {
+      "id": "task_oblique_overhead",
+      "spec": {
+        "pos": [1.91, 0.55, 1.78],
+        "target": [1.91, 1.25, 0.76],
+        "fov": 54.0,
+        "up": [0.0, 0.0, 1.0]
+      }
+    },
+    {
+      "id": "franka_wrist_mounted_initial",
+      "spec": {
+        "pos": [1.8286943, 1.1, 1.06],
+        "target": [1.8286943, 1.2593512605533532, 0.7483797571401092],
+        "fov": 88.0,
+        "up": [0.0, 0.0, 1.0]
+      }
+    }
+  ]
+}

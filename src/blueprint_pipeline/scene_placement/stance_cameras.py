@@ -19,7 +19,7 @@ Pure + stdlib-only (``math``); hermetic to unit-test.
 from __future__ import annotations
 
 import math
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Sequence
 
 from .perception_views import Camera
 from .robot_profile import RobotProfile
@@ -30,6 +30,67 @@ from .types import SceneObject, StandPose, Vec3
 EyeClearFn = Callable[[Vec3], bool]
 
 DEFAULT_STANCE_CAMERA_IDS = ("head_pov", "third_person", "overhead", "task_focus")
+
+
+def _rotate(rotation: Sequence[float], vector: Sequence[float]) -> Vec3:
+    if len(rotation) != 9 or len(vector) != 3:
+        raise ValueError("rotation_must_be_3x3_and_vector_must_be_3d")
+    return tuple(
+        sum(float(rotation[row * 3 + col]) * float(vector[col]) for col in range(3))
+        for row in range(3)
+    )  # type: ignore[return-value]
+
+
+def _unit(vector: Sequence[float]) -> Vec3:
+    if len(vector) != 3:
+        raise ValueError("camera_vector_must_be_3d")
+    values = tuple(float(value) for value in vector)
+    norm = math.sqrt(sum(value * value for value in values))
+    if not math.isfinite(norm) or norm <= 1e-9:
+        raise ValueError("camera_vector_must_be_finite_and_nonzero")
+    return tuple(value / norm for value in values)  # type: ignore[return-value]
+
+
+def link_mounted_camera_spec(
+    *,
+    parent_translation: Sequence[float],
+    parent_rotation_row_major: Sequence[float],
+    mount_translation: Sequence[float],
+    mount_forward: Sequence[float],
+    mount_up: Sequence[float] = (0.0, 0.0, 1.0),
+    look_distance_m: float = 0.45,
+    fov_deg: float = 72.0,
+) -> dict:
+    """Derive a render camera from a robot-link pose and a fixed link mount.
+
+    The result uses the Spark camera schema, but the transform is renderer-neutral.
+    A simulator must call this with the current link pose on every frame; freezing a
+    single link pose is valid only for an initial-observation registration preview.
+    """
+    if len(parent_translation) != 3 or len(mount_translation) != 3:
+        raise ValueError("camera_translations_must_be_3d")
+    if not math.isfinite(float(look_distance_m)) or float(look_distance_m) <= 0:
+        raise ValueError("look_distance_m_must_be_positive")
+    if not math.isfinite(float(fov_deg)) or not 1.0 <= float(fov_deg) < 179.0:
+        raise ValueError("fov_deg_out_of_range")
+
+    rotated_offset = _rotate(parent_rotation_row_major, mount_translation)
+    position = tuple(
+        float(parent_translation[index]) + rotated_offset[index] for index in range(3)
+    )
+    forward = _unit(_rotate(parent_rotation_row_major, mount_forward))
+    up = _unit(_rotate(parent_rotation_row_major, mount_up))
+    if abs(sum(forward[index] * up[index] for index in range(3))) > 0.995:
+        raise ValueError("camera_forward_and_up_are_collinear")
+    target = tuple(
+        position[index] + forward[index] * float(look_distance_m) for index in range(3)
+    )
+    return {
+        "pos": [float(value) for value in position],
+        "target": [float(value) for value in target],
+        "fov": float(fov_deg),
+        "up": [float(value) for value in up],
+    }
 
 
 def _eye_height_for_profile(robot_profile: Optional[RobotProfile]) -> float:
@@ -170,6 +231,7 @@ def to_splat_render_specs(cameras: Dict[str, Camera]) -> List[dict]:
 
 __all__ = [
     "DEFAULT_STANCE_CAMERA_IDS",
+    "link_mounted_camera_spec",
     "stance_task_cameras",
     "to_splat_render_specs",
 ]
