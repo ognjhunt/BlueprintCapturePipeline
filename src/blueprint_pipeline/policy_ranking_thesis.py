@@ -514,7 +514,9 @@ def _percentile(values: Sequence[float], fraction: float) -> float | None:
 def _benchmark_outcomes(metadata_path: Path) -> dict[str, dict[str, float]]:
     payload = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
     outcomes: dict[str, dict[str, float]] = {}
-    for row in payload.get("policies", []):
+    raw_policies = payload.get("policies", [])
+    policy_rows = raw_policies.values() if isinstance(raw_policies, Mapping) else raw_policies
+    for row in policy_rows:
         if not isinstance(row, Mapping):
             continue
         policy_id = str(row.get("policy_name") or "")
@@ -645,11 +647,27 @@ def evaluate_frozen_calibration(
         session_ids = list(protocol["partitions"][partition])
         rng = random.Random(20260726)
         bootstrap_accuracy: list[float] = []
+        bootstrap_selective_accuracy: list[float] = []
         lookup = {(row["session_id"], row["policy_id"]): row for row in selected}
 
-        def pairwise_accuracy(sample: Sequence[str]) -> float | None:
+        def episode_is_selective(row: Mapping[str, Any]) -> bool:
+            return bool(
+                float(row["action_following_confidence"])
+                >= thresholds["action_following_confidence_min"]
+                and float(row["temporal_coherence_confidence"])
+                >= thresholds["temporal_coherence_confidence_min"]
+                and float(row["judge_confidence"])
+                >= thresholds["selective_judge_confidence_min"]
+                and not bool(row.get("critical_contradiction"))
+                and not bool(row["abstained"])
+            )
+
+        def pairwise_stats(
+            sample: Sequence[str], *, selective_only: bool
+        ) -> tuple[float | None, int, int]:
             right = 0.0
-            total = 0
+            evaluated = 0
+            informative = 0
             for session_id in sample:
                 session_labels = labels.get(session_id, {})
                 for index, left_policy in enumerate(protocol["policies"]):
@@ -658,6 +676,7 @@ def evaluate_frozen_calibration(
                         right_label = session_labels.get(right_policy, {}).get("binary_success")
                         if left_label is None or right_label is None or left_label == right_label:
                             continue
+                        informative += 1
                         left_row = lookup.get((session_id, left_policy))
                         right_row = lookup.get((session_id, right_policy))
                         if left_row is None or right_row is None:
@@ -665,20 +684,45 @@ def evaluate_frozen_calibration(
                         delta = float(left_row["success_probability"]) - float(
                             right_row["success_probability"]
                         )
-                        total += 1
+                        if selective_only and (
+                            not episode_is_selective(left_row)
+                            or not episode_is_selective(right_row)
+                            or abs(delta) < thresholds["pair_score_margin_min"]
+                        ):
+                            continue
+                        evaluated += 1
                         if delta == 0:
                             right += 0.5
                         else:
                             right += float(delta * (left_label - right_label) > 0)
-            return right / total if total else None
+            return (right / evaluated if evaluated else None, evaluated, informative)
 
-        observed_pairwise_accuracy = pairwise_accuracy(session_ids)
+        observed_pairwise_accuracy, _, informative_pair_count = pairwise_stats(
+            session_ids, selective_only=False
+        )
+        (
+            observed_selective_pairwise_accuracy,
+            selective_pair_count,
+            _,
+        ) = pairwise_stats(session_ids, selective_only=True)
+        selective_pairwise_coverage = (
+            selective_pair_count / informative_pair_count if informative_pair_count else 0.0
+        )
+        selective_pairwise_gain = (
+            observed_selective_pairwise_accuracy - observed_pairwise_accuracy
+            if observed_selective_pairwise_accuracy is not None
+            and observed_pairwise_accuracy is not None
+            else None
+        )
         replicates = int(thresholds["bootstrap_replicates"])
         for _ in range(replicates):
             sample = [rng.choice(session_ids) for _ in session_ids]
-            replicate_accuracy = pairwise_accuracy(sample)
+            replicate_accuracy, _, _ = pairwise_stats(sample, selective_only=False)
             if replicate_accuracy is not None:
                 bootstrap_accuracy.append(replicate_accuracy)
+            replicate_selective, _, _ = pairwise_stats(sample, selective_only=True)
+            if replicate_selective is not None:
+                bootstrap_selective_accuracy.append(replicate_selective)
         accuracy = sum(correctness) / len(correctness) if correctness else None
         selective_accuracy = (
             sum(selective_correctness) / len(selective_correctness)
@@ -729,6 +773,15 @@ def evaluate_frozen_calibration(
                 _percentile(bootstrap_accuracy, 0.975),
             ],
             "session_pairwise_accuracy": observed_pairwise_accuracy,
+            "informative_session_pair_count": informative_pair_count,
+            "selective_session_pair_count": selective_pair_count,
+            "selective_session_pairwise_accuracy": observed_selective_pairwise_accuracy,
+            "selective_session_pairwise_coverage": selective_pairwise_coverage,
+            "selective_session_pairwise_accuracy_gain": selective_pairwise_gain,
+            "selective_session_pairwise_accuracy_bootstrap_ci95": [
+                _percentile(bootstrap_selective_accuracy, 0.025),
+                _percentile(bootstrap_selective_accuracy, 0.975),
+            ],
             "top_policy": predicted_top,
             "benchmark_top_policy": benchmark_top,
             "top_policy_regret": top_policy_regret,
@@ -749,9 +802,9 @@ def evaluate_frozen_calibration(
             and full["session_pairwise_accuracy"] > baseline["session_pairwise_accuracy"]
         ),
         "abstention_improves": bool(
-            (full.get("selective_coverage") or 0.0)
+            (full.get("selective_session_pairwise_coverage") or 0.0)
             >= protocol["thresholds"]["minimum_selective_coverage"]
-            and (full.get("selective_accuracy_gain") or -1.0)
+            and (full.get("selective_session_pairwise_accuracy_gain") or -1.0)
             >= protocol["thresholds"]["minimum_selective_accuracy_gain"]
         ),
         "action_following": bool((full.get("action_following_pass_rate") or 0.0) >= 0.80),
