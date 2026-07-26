@@ -255,26 +255,64 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
     output_url = os.getenv(
         "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL", ""
     ).strip()
-    if not input_url or not output_url or len(input_sha) != 64:
-        raise ValueError("signed_gpu_bootstrap_environment_missing")
     bundle = root / "policy-ranking-input.zip"
     extracted = root / "policy-ranking-input"
     campaign_output = root / "policy-ranking-output"
-    _download_signed_input(input_url, bundle)
-    extracted_input = extract_private_input_bundle(
-        bundle_path=bundle,
-        expected_bundle_sha256=input_sha,
-        output_dir=extracted,
-    )
-    campaign = run_openpi_policy_ranking_gpu_campaign(
-        cohort_path="/opt/blueprint/frozen/warehouse_policy_cohort_v2_joint_position.json",
-        checkpoint_inventory_path="/opt/blueprint/frozen/openpi_polaris_checkpoint_inventory.json",
-        captured_site_background_path=extracted_input["background_path"],
-        scene_backgrounds=extracted_input["scene_backgrounds"],
-        menagerie_root="/opt/mujoco-menagerie/franka_emika_panda",
-        output_dir=campaign_output,
-        policy_ids=POLICY_IDS,
-    )
+    extracted_input: dict[str, Any] = {}
+    campaign: dict[str, Any] = {}
+    failure_type = ""
+    try:
+        if not input_url or not output_url or len(input_sha) != 64:
+            raise ValueError("signed_gpu_bootstrap_environment_missing")
+        _download_signed_input(input_url, bundle)
+        extracted_input = extract_private_input_bundle(
+            bundle_path=bundle,
+            expected_bundle_sha256=input_sha,
+            output_dir=extracted,
+        )
+        campaign = run_openpi_policy_ranking_gpu_campaign(
+            cohort_path="/opt/blueprint/frozen/warehouse_policy_cohort_v2_joint_position.json",
+            checkpoint_inventory_path="/opt/blueprint/frozen/openpi_polaris_checkpoint_inventory.json",
+            captured_site_background_path=extracted_input["background_path"],
+            scene_backgrounds=extracted_input["scene_backgrounds"],
+            menagerie_root="/opt/mujoco-menagerie/franka_emika_panda",
+            output_dir=campaign_output,
+            policy_ids=POLICY_IDS,
+        )
+    except Exception as exc:  # noqa: BLE001 - upload a secret-safe terminal envelope
+        failure_type = type(exc).__name__
+        campaign_output.mkdir(parents=True, exist_ok=True)
+        failure_manifest: dict[str, Any] = {
+            "schema_version": "openpi_policy_ranking_gpu_job.v1",
+            "status": "blocked",
+            "inputs": {
+                "scenes": list(
+                    (extracted_input.get("manifest") or {}).get("scenes") or []
+                ),
+                "policy_ids": list(POLICY_IDS),
+            },
+            "policy_runs": [],
+            "rankings": {},
+            "blockers": [f"openpi_gpu_bootstrap_failed:{failure_type}"],
+            "claim_boundary": {
+                "learned_policy_simulator_execution": False,
+                "prospective_captured_site_ranking": False,
+                "prospective_controlled_warehouse_ranking": False,
+                "warehouse_ranking_is_independent_physical_answer_key": False,
+                "site_specific_physical_success_proven": False,
+                "physical_robot_endpoint_contacted": False,
+                "physical_robot_operated": False,
+                "wam_executed": False,
+            },
+        }
+        failure_manifest["manifest_sha256"] = canonical_sha256(failure_manifest)
+        write_json(
+            campaign_output / "openpi_policy_ranking_gpu_job.json",
+            failure_manifest,
+        )
+        campaign = failure_manifest
+    if not output_url:
+        raise ValueError("signed_gpu_bootstrap_output_environment_missing")
     output_archive_base = root / "openpi-policy-ranking-output"
     archive_path = Path(
         shutil.make_archive(str(output_archive_base), "zip", root_dir=campaign_output)
@@ -282,10 +320,11 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
     upload_status = _upload_output(output_url, archive_path)
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "status": "completed" if campaign["status"] == "completed" else "blocked",
+        "status": "completed" if campaign.get("status") == "completed" else "blocked",
         "input_bundle_sha256": input_sha,
-        "input_manifest": extracted_input["manifest"],
-        "campaign_manifest_sha256": campaign["manifest_sha256"],
+        "input_manifest": extracted_input.get("manifest"),
+        "campaign_manifest_sha256": campaign.get("manifest_sha256"),
+        "failure_type": failure_type or None,
         "output_archive_sha256": _sha256(archive_path),
         "output_archive_size_bytes": archive_path.stat().st_size,
         "output_upload_status": upload_status,

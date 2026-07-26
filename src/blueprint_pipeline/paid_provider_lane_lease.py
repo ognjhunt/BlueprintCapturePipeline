@@ -735,6 +735,101 @@ def transfer_paid_provider_lane_lease_to_watchdog(
     return handoff
 
 
+def transfer_paid_provider_compute_lane_lease_to_watchdog(
+    acquisition: Mapping[str, Any],
+    *,
+    watchdog_pid: int,
+    pending_teardown_record: str | os.PathLike[str],
+    watchdog_deadline_epoch: float,
+    resource_name_prefix: str,
+    clock: Any = time.time,
+) -> dict[str, Any]:
+    """Transfer a compute-only lane directly to its hard-TTL watchdog.
+
+    Unlike the network-volume handoff above, this path has no second canary
+    process that must consume a capability.  The launching process transfers
+    its exact lease to the already-live watchdog after opening the matching
+    compute-instance teardown record and before crossing the provider create
+    boundary.  The watchdog must release the transferred lease only after it
+    has independently proved provider-global absence and closed that record.
+    """
+
+    lease = acquisition.get("lease") if isinstance(acquisition, Mapping) else None
+    if not isinstance(lease, Mapping):
+        return {"status": "blocked", "blockers": ["paid_provider_lane_handoff_not_held"]}
+    now = float(clock())
+    prefix = str(resource_name_prefix or "").strip()
+    pending_path = Path(pending_teardown_record).expanduser().resolve()
+    if (
+        type(watchdog_pid) is not int
+        or watchdog_pid <= 0
+        or not _pid_is_alive(watchdog_pid)
+        or float(watchdog_deadline_epoch) <= now + MIN_HANDOFF_REMAINING_SECONDS
+        or not prefix
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["paid_provider_compute_lane_handoff_binding_invalid"],
+        }
+    try:
+        pending_value = json.loads(pending_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        pending_value = {}
+    provider = str(lease.get("provider") or "").strip().lower()
+    lane = str(lease.get("lane") or "").strip()
+    pending = dict(pending_value) if isinstance(pending_value, Mapping) else {}
+    if not bool(
+        pending.get("status") == "open"
+        and str(pending.get("provider") or "").strip().lower() == provider
+        and str(pending.get("lane") or "") == lane
+        and pending.get("resource_kind") == "compute_instance"
+        and str(pending.get("resource_name") or "").startswith(prefix)
+        and not str(pending.get("instance_id") or "").strip()
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["paid_provider_compute_lane_handoff_pending_invalid"],
+        }
+    path = Path(str(acquisition.get("path") or ""))
+    with _reclaim_mutex(path):
+        current = read_lease(provider, lane, path.parent)
+        if not isinstance(current, dict) or (
+            current.get("owner_pid") != lease.get("owner_pid")
+            or current.get("started_at_epoch") != lease.get("started_at_epoch")
+        ):
+            return {
+                "status": "blocked",
+                "blockers": ["paid_provider_compute_lane_handoff_not_current_owner"],
+            }
+        transfer = {
+            "schema_version": LEASE_HANDOFF_SCHEMA_VERSION,
+            "status": "accepted",
+            "lease_path": str(path),
+            "owner_pid": watchdog_pid,
+            "binding": {
+                "provider": provider,
+                "lane": lane,
+                "pending_teardown_record": str(pending_path),
+                "resource_name_prefix": prefix,
+                "watchdog_deadline_epoch": float(watchdog_deadline_epoch),
+            },
+            "accepted_at_epoch": now,
+            "release_mode": "watchdog_direct_compute",
+            "raw_capability_recorded": False,
+        }
+        current.update(
+            {
+                "owner_pid": watchdog_pid,
+                "retained_teardown_owner_pid": watchdog_pid,
+                "owner_role": "retained_compute_teardown_watchdog",
+                "heartbeat_at_epoch": now,
+                "direct_compute_handoff": transfer,
+            }
+        )
+        _write_lease(path, current)
+    return transfer
+
+
 def accept_paid_provider_lane_lease_handoff(
     handoff: Mapping[str, Any],
     *,

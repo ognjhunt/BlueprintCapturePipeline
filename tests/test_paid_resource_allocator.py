@@ -653,6 +653,7 @@ def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator
     assert observed["expected_source_commit"] == "c" * 40
     assert observed["execute"] is False
     assert observed["input_bundle_receipt"] == "input-receipt.json"
+    assert observed["provider_name"] == "vast"
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 

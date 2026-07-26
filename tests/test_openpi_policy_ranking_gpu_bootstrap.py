@@ -1,14 +1,18 @@
+import json
+import zipfile
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
+from blueprint_pipeline import openpi_policy_ranking_gpu_bootstrap as bootstrap_module
 from blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap import (
     _download_signed_input,
     _upload_output,
     build_multi_scene_private_input_bundle,
     build_private_input_bundle,
     extract_private_input_bundle,
+    run_signed_gpu_bootstrap,
 )
 
 
@@ -88,3 +92,42 @@ def test_multi_scene_bundle_keeps_warehouse_and_captured_claims_separate(
     assert Path(extracted["scene_backgrounds"][1]["background_path"]).read_bytes() == (
         warehouse.read_bytes()
     )
+
+
+def test_bootstrap_uploads_terminal_failure_envelope_for_early_runtime_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL",
+        "https://storage.example/input?signature=secret",
+    )
+    monkeypatch.setenv("BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256", "a" * 64)
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL",
+        "https://storage.example/output?signature=secret",
+    )
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_download_signed_input",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("secret detail")),
+    )
+    observed = {}
+
+    def upload(_url: str, archive_path: Path) -> int:
+        with zipfile.ZipFile(archive_path) as archive:
+            observed.update(
+                json.loads(
+                    archive.read("openpi_policy_ranking_gpu_job.json").decode("utf-8")
+                )
+            )
+        return 200
+
+    monkeypatch.setattr(bootstrap_module, "_upload_output", upload)
+
+    result = run_signed_gpu_bootstrap(workspace=tmp_path)
+
+    assert result["status"] == "blocked"
+    assert result["failure_type"] == "RuntimeError"
+    assert observed["status"] == "blocked"
+    assert observed["blockers"] == ["openpi_gpu_bootstrap_failed:RuntimeError"]
+    assert "secret detail" not in json.dumps(observed)

@@ -26,6 +26,10 @@ MAX_TTL_SECONDS = 14_400
 MAX_PREFLIGHT_AGE_SECONDS = 300
 MIN_GPU_MEMORY_BYTES = 24 * 1024**3
 MIN_CONTAINER_DISK_BYTES = 80 * 1024**3
+VAST_DEFAULT_MIN_GPU_RAM_MB = 45_000
+VAST_DEFAULT_MAX_HOURLY_RATE_USD = 0.75
+VAST_DEFAULT_MIN_RELIABILITY = 0.98
+VAST_DEFAULT_GPU_KEYWORDS = ("A40", "RTX A6000", "RTX 6000Ada", "L40")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _DIGEST_REF = re.compile(r"[^\s:@]+(?:/[^\s:@]+)*@sha256:[0-9a-f]{64}")
@@ -116,6 +120,93 @@ def collect_openpi_policy_ranking_runpod_preflight(
     return result
 
 
+def collect_openpi_policy_ranking_vast_preflight(
+    *,
+    name_prefix: str,
+    container_disk_bytes: int,
+    capacity_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    inventory_probe: Callable[[str], Mapping[str, Any]],
+    max_hourly_rate_usd: float = VAST_DEFAULT_MAX_HOURLY_RATE_USD,
+    min_gpu_ram_mb: int = VAST_DEFAULT_MIN_GPU_RAM_MB,
+    min_reliability: float = VAST_DEFAULT_MIN_RELIABILITY,
+    preferred_gpu_keywords: Sequence[str] = VAST_DEFAULT_GPU_KEYWORDS,
+    clock: Callable[[], float] = time.time,
+) -> dict[str, Any]:
+    """Collect the frozen lane's mutation-free Vast offer snapshot."""
+
+    preferred = [
+        str(value).strip() for value in preferred_gpu_keywords if str(value).strip()
+    ]
+    request = {
+        "max_hourly_rate_usd": float(max_hourly_rate_usd),
+        "min_gpu_ram_mb": int(min_gpu_ram_mb),
+        "min_reliability": float(min_reliability),
+        "require_avx": True,
+        "require_known_supported_isaac_driver": False,
+        "require_direct_port": False,
+        "preferred_gpu_keywords": preferred,
+    }
+    capacity = dict(capacity_probe(request))
+    attempt_inventory = dict(inventory_probe(name_prefix))
+    inventory = dict(inventory_probe(""))
+    selected_value = capacity.get("selected_offer")
+    selected = dict(selected_value) if isinstance(selected_value, Mapping) else {}
+    gpu_ram_mb = int(selected.get("gpu_ram_mb") or 0)
+    price = float(selected.get("on_demand_price_usd_per_hour") or 0.0)
+    single_gpu = bool(
+        selected
+        and int(selected.get("num_gpus") or 0) == 1
+        and gpu_ram_mb >= int(min_gpu_ram_mb)
+        and 0 < price <= float(max_hourly_rate_usd)
+    )
+    inventory_zero = bool(
+        inventory.get("api_confirmed") is True
+        and inventory.get("live_resource_count") == 0
+    )
+    provider_api_verified = bool(
+        capacity.get("status") == "available"
+        and inventory.get("api_confirmed") is True
+        and attempt_inventory.get("api_confirmed") is True
+    )
+    blockers: list[str] = []
+    if not provider_api_verified:
+        blockers.append("openpi_gpu_preflight_provider_api_not_verified")
+    if not single_gpu:
+        blockers.append("openpi_gpu_preflight_single_gpu_unavailable")
+    if not inventory_zero:
+        blockers.append("openpi_gpu_preflight_billable_inventory_not_zero")
+    if container_disk_bytes < MIN_CONTAINER_DISK_BYTES:
+        blockers.append("openpi_gpu_preflight_container_disk_below_80_gib")
+    result: dict[str, Any] = {
+        "schema_version": "openpi_policy_ranking_provider_preflight.v2",
+        "status": "verified" if not blockers else "blocked",
+        "provider": "vast",
+        "observed_at_epoch": clock(),
+        "blockers": sorted(set(blockers)),
+        "provider_api_verified": provider_api_verified,
+        "provider_inventory_verified_zero": inventory_zero,
+        "single_gpu_available": single_gpu,
+        "gpu_type_id": selected.get("gpu_type_id"),
+        "gpu_memory_bytes": gpu_ram_mb * 1_000_000,
+        # Reserve and launch against the frozen ceiling, not the transient
+        # selected offer price, so stale-offer fallback cannot exceed budget.
+        "on_demand_price_usd_per_hour": float(max_hourly_rate_usd),
+        "selected_offer_price_usd_per_hour": price or None,
+        "container_disk_bytes": int(container_disk_bytes),
+        "requested_gpu_types": preferred,
+        "capacity_request": request,
+        "capacity_snapshot": capacity,
+        "billable_inventory": inventory,
+        "attempt_billable_inventory": attempt_inventory,
+        "selected_offer": selected or None,
+        "provider_mutations_performed": 0,
+        "reservation_proven": False,
+        "raw_secret_values_recorded": False,
+    }
+    result["manifest_sha256"] = canonical_sha256(result)
+    return result
+
+
 def build_openpi_policy_ranking_gpu_admission(
     *,
     release: Mapping[str, Any],
@@ -194,12 +285,18 @@ def build_openpi_policy_ranking_gpu_admission(
         ):
             blockers.append(f"openpi_gpu_input_scene_background_sha256_invalid:{index}")
 
-    if preflight.get("schema_version") != "openpi_policy_ranking_runpod_preflight.v1":
+    if preflight.get("schema_version") not in {
+        "openpi_policy_ranking_runpod_preflight.v1",
+        "openpi_policy_ranking_provider_preflight.v2",
+    }:
         blockers.append("openpi_gpu_preflight_schema_invalid")
     if preflight.get("status") != "verified":
         blockers.append("openpi_gpu_preflight_not_verified")
-    if preflight.get("provider") != "runpod" or preflight.get("provider_api_verified") is not True:
-        blockers.append("openpi_gpu_runpod_provider_not_verified")
+    provider_name = str(preflight.get("provider") or "")
+    if provider_name not in {"runpod", "vast"} or preflight.get(
+        "provider_api_verified"
+    ) is not True:
+        blockers.append("openpi_gpu_provider_not_verified")
     observed = preflight.get("observed_at_epoch")
     now = time.time() if observed_now_epoch is None else float(observed_now_epoch)
     if type(observed) not in {int, float} or not math.isfinite(float(observed)):
@@ -241,8 +338,11 @@ def build_openpi_policy_ranking_gpu_admission(
     if spend.get("physical_robot_endpoint_access_allowed") is not False:
         blockers.append("openpi_gpu_physical_robot_endpoint_not_forbidden")
 
+    provider_resource_class = (
+        "gpu_render" if provider_name == "vast" else "runpod_provider_adapter"
+    )
     shared = build_paid_lane_admission(
-        resource_class="runpod_provider_adapter",
+        resource_class=provider_resource_class,
         blockers=blockers,
     )
     result: dict[str, Any] = {
@@ -255,6 +355,8 @@ def build_openpi_policy_ranking_gpu_admission(
         "input_bundle_sha256": bundle_sha or None,
         "checkpoint_size_bytes": CHECKPOINT_BYTES,
         "gpu_type_id": preflight.get("gpu_type_id"),
+        "provider": provider_name or None,
+        "provider_resource_class": provider_resource_class,
         "limits": {
             "hard_ttl_seconds": ttl,
             "max_spend_usd": max_spend,
@@ -302,5 +404,6 @@ if __name__ == "__main__":
 __all__ = [
     "PROBE_KIND",
     "build_openpi_policy_ranking_gpu_admission",
+    "collect_openpi_policy_ranking_vast_preflight",
     "collect_openpi_policy_ranking_runpod_preflight",
 ]

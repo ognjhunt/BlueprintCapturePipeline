@@ -17,6 +17,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .common import utc_now_iso, write_json
 from .gpu_render_providers import get_render_provider
+from .paid_lane_guard import load_pending_teardowns
 
 SCHEMA_VERSION = "groot_oscar_runpod_canary_watchdog.v1"
 EVIDENCE_NAME = "groot_oscar_runpod_canary_watchdog.json"
@@ -778,6 +779,8 @@ def run_watchdog(
                 close_pending_teardown,
             )
             from .paid_provider_lane_lease import (
+                build_paid_provider_lane_reconciliation,
+                release_transferred_paid_provider_lane_lease,
                 restore_paid_provider_lane_lease_to_retained_watchdog,
             )
 
@@ -795,7 +798,11 @@ def run_watchdog(
                     "runpod_wam_async"
                     if receipt.get("campaign_kind")
                     == "persistent_policy_wam_loop"
-                    else "groot_oscar_gpu_canary"
+                    else (
+                        "openpi_policy_ranking_gpu_canary"
+                        if receipt.get("campaign_kind") == "openpi_policy_ranking"
+                        else "groot_oscar_gpu_canary"
+                    )
                 )
                 and pending_record.get("resource_kind") == "compute_instance"
                 and str(pending_record.get("resource_name") or "").startswith(
@@ -830,15 +837,39 @@ def run_watchdog(
             else:
                 pending_close = {"status": "invalid"}
             result["pod_pending_teardown_close"] = pending_close
-            result["provider_lane_owner_return"] = (
-                restore_paid_provider_lane_lease_to_retained_watchdog(receipt)
-            )
+            if receipt.get("provider_lane_release_mode") == "watchdog_direct_compute":
+                terminal_reconciliation = build_paid_provider_lane_reconciliation(
+                    provider=resolved_provider,
+                    lane="openpi_policy_ranking_gpu_canary",
+                    provider_inventory=(
+                        result.get("final_inventory")
+                        if isinstance(result.get("final_inventory"), Mapping)
+                        else {}
+                    ),
+                    open_pending_teardowns=load_pending_teardowns(),
+                )
+                result["provider_lane_terminal_release"] = (
+                    release_transferred_paid_provider_lane_lease(
+                        lease_path_value=str(receipt.get("lease_path") or ""),
+                        teardown_owner_pid=os.getpid(),
+                        terminal_reconciliation=terminal_reconciliation,
+                        reason="openpi_watchdog_provider_and_pending_terminal",
+                    )
+                )
+            else:
+                result["provider_lane_owner_return"] = (
+                    restore_paid_provider_lane_lease_to_retained_watchdog(receipt)
+                )
     if receipt_control_required:
         control_terminal = bool(
             receipt_safe
             and result.get("pod_pending_teardown_close", {}).get("status")
             in {"closed", "cancelled_no_allocation"}
-            and result.get("provider_lane_owner_return", {}).get("status") == "restored"
+            and (
+                result.get("provider_lane_owner_return", {}).get("status") == "restored"
+                or result.get("provider_lane_terminal_release", {}).get("status")
+                == "released"
+            )
         )
         if not control_terminal:
             if result.get("provider_absence_confirmed") is True:

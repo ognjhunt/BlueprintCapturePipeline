@@ -518,6 +518,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--openpi-input-bundle-receipt")
     gpu.add_argument("--openpi-input-secret-url-file")
     gpu.add_argument("--openpi-output-secret-put-url-file")
+    gpu.add_argument("--openpi-output-secret-get-url-file")
+    gpu.add_argument(
+        "--openpi-provider",
+        choices=("vast", "runpod"),
+        default="vast",
+        help="Policy-ranking GPU provider; Vast is the frozen default.",
+    )
     gpu.add_argument("--openpi-hard-ttl-seconds", type=int, default=14_400)
     gpu.add_argument("--openpi-max-spend-usd", type=float, default=3.0)
     gpu.add_argument("--finetune-object-store-stage-dir")
@@ -756,8 +763,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if not getattr(args, name, None)
             ]
-            if args.provider != "runpod":
-                missing.append("provider_must_be_runpod")
             if args.execute:
                 missing.extend(
                     name
@@ -765,6 +770,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "campaign_budget_ledger",
                         "campaign_initial_spent_usd",
                         "campaign_initial_used_gpu_seconds",
+                        "openpi_output_secret_get_url_file",
                     )
                     if getattr(args, name, None) is None
                 )
@@ -821,8 +827,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                             if args.campaign_wall_cap_seconds is not None
                             else 36_000
                         ),
+                        output_secret_get_url_file=(
+                            args.openpi_output_secret_get_url_file
+                        ),
+                        provider_name=args.openpi_provider,
                     )
-            success = result.get("status") in {"dry_run_ready", "submitted"}
+            success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == G1_MICROWAVE_FINETUNE_PROBE_KIND:

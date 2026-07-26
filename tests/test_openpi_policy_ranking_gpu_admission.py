@@ -1,6 +1,7 @@
 from blueprint_pipeline.openpi_policy_ranking_gpu_admission import (
     build_openpi_policy_ranking_gpu_admission,
     collect_openpi_policy_ranking_runpod_preflight,
+    collect_openpi_policy_ranking_vast_preflight,
 )
 
 
@@ -153,3 +154,45 @@ def test_openpi_preflight_selects_verified_capacity_without_mutation() -> None:
     assert result["gpu_type_id"] == "NVIDIA A40"
     assert result["provider_mutations_performed"] == 0
     assert inventories == ["blueprint-openpi-ranking-", ""]
+
+
+def test_openpi_vast_preflight_reserves_frozen_rate_ceiling() -> None:
+    result = collect_openpi_policy_ranking_vast_preflight(
+        name_prefix="blueprint-openpi-ranking-",
+        container_disk_bytes=100 * 1024**3,
+        max_hourly_rate_usd=0.75,
+        capacity_probe=lambda request: {
+            "status": "available",
+            "selected_offer": {
+                "ask_contract_id": 123,
+                "gpu_type_id": "A40",
+                "gpu_ram_mb": 46_068,
+                "num_gpus": 1,
+                "on_demand_price_usd_per_hour": 0.28,
+            },
+            "selection_policy": request,
+        },
+        inventory_probe=lambda _prefix: {
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        },
+        clock=lambda: 1000.0,
+    )
+    assert result["status"] == "verified"
+    assert result["provider"] == "vast"
+    assert result["selected_offer_price_usd_per_hour"] == 0.28
+    assert result["on_demand_price_usd_per_hour"] == 0.75
+    release, bundle, _runpod_preflight, spend = _inputs()
+    spend["hard_ttl_seconds"] = 14_400
+    spend["max_spend_usd"] = 3.0
+    admission = build_openpi_policy_ranking_gpu_admission(
+        release=release,
+        input_bundle=bundle,
+        preflight=result,
+        spend=spend,
+        expected_source_commit="a" * 40,
+        observed_now_epoch=1001.0,
+    )
+    assert admission["status"] == "admitted"
+    assert admission["provider_resource_class"] == "gpu_render"
