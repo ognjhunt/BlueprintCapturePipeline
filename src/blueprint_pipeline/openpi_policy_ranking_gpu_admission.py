@@ -22,7 +22,7 @@ PROBE_KIND = "openpi-policy-ranking"
 OPENPI_REVISION = "15a9616a00943ada6c20a0f158e3adb39df2ccac"
 MENAGERIE_REVISION = "71f066ad0be9cd271f7ed58c030243ef157af9f4"
 CHECKPOINT_BYTES = 47_286_181_297
-MAX_TTL_SECONDS = 7_200
+MAX_TTL_SECONDS = 14_400
 MAX_PREFLIGHT_AGE_SECONDS = 300
 MIN_GPU_MEMORY_BYTES = 24 * 1024**3
 MIN_CONTAINER_DISK_BYTES = 80 * 1024**3
@@ -159,6 +159,8 @@ def build_openpi_policy_ranking_gpu_admission(
         blockers.append("openpi_gpu_input_bundle_sha256_invalid")
     manifest = input_bundle.get("manifest")
     manifest = manifest if isinstance(manifest, Mapping) else {}
+    if manifest.get("schema_version") != "openpi_policy_ranking_gpu_input_bundle.v2":
+        blockers.append("openpi_gpu_input_bundle_manifest_schema_invalid")
     if manifest.get("raw_3dgs_included") is not False:
         blockers.append("openpi_gpu_input_bundle_contains_raw_3dgs")
     if manifest.get("redistribution_authorized") is not False:
@@ -167,6 +169,30 @@ def build_openpi_policy_ranking_gpu_admission(
         blockers.append("openpi_gpu_input_bundle_purpose_invalid")
     if not _SHA256.fullmatch(str(manifest.get("background_sha256") or "")):
         blockers.append("openpi_gpu_input_background_sha256_invalid")
+    scenes = manifest.get("scenes")
+    scenes = scenes if isinstance(scenes, list) else []
+    scene_ids = {
+        str(row.get("source_scene_id") or "")
+        for row in scenes
+        if isinstance(row, Mapping)
+    }
+    scene_kinds = {
+        str(row.get("source_scene_kind") or "")
+        for row in scenes
+        if isinstance(row, Mapping)
+    }
+    if (
+        manifest.get("scene_count") != 2
+        or len(scenes) != 2
+        or len(scene_ids) != 2
+        or scene_kinds != {"captured_3dgs", "controlled_nvidia_usd"}
+    ):
+        blockers.append("openpi_gpu_input_scene_cohort_invalid")
+    for index, row in enumerate(scenes):
+        if not isinstance(row, Mapping) or not _SHA256.fullmatch(
+            str(row.get("background_sha256") or "")
+        ):
+            blockers.append(f"openpi_gpu_input_scene_background_sha256_invalid:{index}")
 
     if preflight.get("schema_version") != "openpi_policy_ranking_runpod_preflight.v1":
         blockers.append("openpi_gpu_preflight_schema_invalid")

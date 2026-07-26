@@ -518,7 +518,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--openpi-input-bundle-receipt")
     gpu.add_argument("--openpi-input-secret-url-file")
     gpu.add_argument("--openpi-output-secret-put-url-file")
-    gpu.add_argument("--openpi-hard-ttl-seconds", type=int, default=7_200)
+    gpu.add_argument("--openpi-hard-ttl-seconds", type=int, default=14_400)
     gpu.add_argument("--openpi-max-spend-usd", type=float, default=3.0)
     gpu.add_argument("--finetune-object-store-stage-dir")
     gpu.add_argument("--finetune-checkpoint-object-store-stage-dir")

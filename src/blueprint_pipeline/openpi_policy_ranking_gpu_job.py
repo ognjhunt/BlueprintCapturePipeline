@@ -38,6 +38,7 @@ FROZEN_VARIANTS = (
     ("left_2cm", (0.0, 0.02, 0.0)),
     ("right_2cm", (0.0, -0.02, 0.0)),
 )
+SCENE_KINDS = {"captured_3dgs", "controlled_nvidia_usd"}
 
 
 def _sha256(path: Path) -> str:
@@ -146,6 +147,7 @@ def run_openpi_policy_ranking_gpu_campaign(
     menagerie_root: str | Path,
     output_dir: str | Path,
     policy_ids: Sequence[str],
+    scene_backgrounds: Sequence[Mapping[str, Any]] | None = None,
     max_action_steps: int = DEFAULT_LEARNED_MAX_ACTION_STEPS,
     checkpoint_downloader: Callable[[str], Path] = _default_checkpoint_downloader,
     policy_loader: Callable[[OpenPIDroidPolicySpec, Path], Any] = _default_openpi_loader,
@@ -157,6 +159,33 @@ def run_openpi_policy_ranking_gpu_campaign(
     menagerie = Path(menagerie_root).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
+    scene_rows = list(scene_backgrounds or [])
+    if not scene_rows:
+        scene_rows = [
+            {
+                "scene_id": "captured_site",
+                "scene_kind": "captured_3dgs",
+                "background_path": str(background),
+            }
+        ]
+    normalized_scenes: list[dict[str, Any]] = []
+    seen_scene_ids: set[str] = set()
+    for row in scene_rows:
+        scene_id = str(row.get("scene_id") or "").strip()
+        scene_kind = str(row.get("scene_kind") or "").strip()
+        scene_background = Path(str(row.get("background_path") or "")).expanduser().resolve()
+        if not scene_id or scene_id in seen_scene_ids:
+            raise ValueError("gpu_campaign_scene_id_missing_or_duplicate")
+        if scene_kind not in SCENE_KINDS:
+            raise ValueError("gpu_campaign_scene_kind_invalid")
+        seen_scene_ids.add(scene_id)
+        normalized_scenes.append(
+            {
+                "scene_id": scene_id,
+                "scene_kind": scene_kind,
+                "background_path": scene_background,
+            }
+        )
     gpu = _gpu_runtime_evidence()
     blockers: list[str] = []
     if not gpu.get("gpu_device_present"):
@@ -166,13 +195,18 @@ def run_openpi_policy_ranking_gpu_campaign(
     for label, path in (
         ("cohort", cohort),
         ("checkpoint_inventory", inventory),
-        ("captured_site_background", background),
     ):
         if not path.is_file() or path.is_symlink():
             blockers.append(f"{label}_missing_or_unsafe")
+    for scene in normalized_scenes:
+        path = scene["background_path"]
+        if not path.is_file() or path.is_symlink():
+            blockers.append(f"scene_background_missing_or_unsafe:{scene['scene_id']}")
     if not menagerie.is_dir() or menagerie.is_symlink():
         blockers.append("menagerie_root_missing_or_unsafe")
-    episodes_by_policy: dict[str, list[dict[str, Any]]] = {}
+    episodes_by_scene: dict[str, dict[str, list[dict[str, Any]]]] = {
+        scene["scene_id"]: {} for scene in normalized_scenes
+    }
     policy_runs: list[dict[str, Any]] = []
     if not blockers:
         for policy_id in policy_ids:
@@ -192,40 +226,60 @@ def run_openpi_policy_ranking_gpu_campaign(
                     policy=policy,
                     local_verification=local_verification,
                 )
-                episodes: list[dict[str, Any]] = []
                 episode_records: list[dict[str, Any]] = []
-                for variant_id, offset in FROZEN_VARIANTS:
-                    runtime = prepare_franka_droid_runtime(
-                        menagerie_root=menagerie,
-                        output_dir=output / policy_id / variant_id,
-                    )
-                    initial = tuple(
-                        float(base + delta) for base, delta in zip(_CAN_INITIAL, offset, strict=True)
-                    )
-                    episode = run_franka_droid_closed_loop(
-                        runtime=runtime,
-                        policy_client=client,
-                        output_dir=output / policy_id / variant_id,
-                        max_action_steps=max_action_steps,
-                        captured_site_background_path=background,
-                        initial_can_position_m=initial,
-                    )
-                    episodes.append(episode)
-                    episode_records.append(
-                        {
+                scene_runs: list[dict[str, Any]] = []
+                for scene in normalized_scenes:
+                    scene_id = scene["scene_id"]
+                    episodes: list[dict[str, Any]] = []
+                    scene_episode_records: list[dict[str, Any]] = []
+                    for variant_id, offset in FROZEN_VARIANTS:
+                        episode_output = output / policy_id / scene_id / variant_id
+                        runtime = prepare_franka_droid_runtime(
+                            menagerie_root=menagerie,
+                            output_dir=episode_output,
+                        )
+                        initial = tuple(
+                            float(base + delta)
+                            for base, delta in zip(_CAN_INITIAL, offset, strict=True)
+                        )
+                        episode = run_franka_droid_closed_loop(
+                            runtime=runtime,
+                            policy_client=client,
+                            output_dir=episode_output,
+                            max_action_steps=max_action_steps,
+                            captured_site_background_path=scene["background_path"],
+                            external_background_kind=scene["scene_kind"],
+                            external_background_scene_id=scene_id,
+                            initial_can_position_m=initial,
+                        )
+                        episodes.append(episode)
+                        record = {
+                            "scene_id": scene_id,
+                            "scene_kind": scene["scene_kind"],
                             "variant_id": variant_id,
                             "initial_can_offset_m": list(offset),
                             "episode_manifest_sha256": episode["manifest_sha256"],
                         }
+                        scene_episode_records.append(record)
+                        episode_records.append(record)
+                    episodes_by_scene[scene_id][policy_id] = episodes
+                    scene_runs.append(
+                        {
+                            "scene_id": scene_id,
+                            "scene_kind": scene["scene_kind"],
+                            "episode_records": scene_episode_records,
+                        }
                     )
-                episodes_by_policy[policy_id] = episodes
                 run_summary.update(
                     {
                         "status": "completed",
                         "checkpoint_dir": str(checkpoint),
                         "local_checkpoint_verification": local_verification,
-                        "episode_manifest_sha256s": [row["manifest_sha256"] for row in episodes],
+                        "episode_manifest_sha256s": [
+                            row["episode_manifest_sha256"] for row in episode_records
+                        ],
                         "episode_records": episode_records,
+                        "scene_runs": scene_runs,
                     }
                 )
             except Exception as exc:  # noqa: BLE001 - policy failure is experimental evidence
@@ -242,14 +296,27 @@ def run_openpi_policy_ranking_gpu_campaign(
                 except Exception:  # noqa: BLE001 - cleanup best effort, execution evidence remains
                     pass
             policy_runs.append(run_summary)
-    ranking = (
-        aggregate_policy_rankings(episodes_by_policy)
-        if not blockers and len(episodes_by_policy) == len(policy_ids)
-        else None
+    rankings = {
+        scene["scene_id"]: aggregate_policy_rankings(episodes_by_scene[scene["scene_id"]])
+        for scene in normalized_scenes
+        if not blockers and len(episodes_by_scene[scene["scene_id"]]) == len(policy_ids)
+    }
+    captured_scene_id = next(
+        (
+            scene["scene_id"]
+            for scene in normalized_scenes
+            if scene["scene_kind"] == "captured_3dgs"
+        ),
+        None,
     )
+    ranking = rankings.get(captured_scene_id) if captured_scene_id else None
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "status": "completed" if not blockers and ranking is not None else "blocked",
+        "status": (
+            "completed"
+            if not blockers and len(rankings) == len(normalized_scenes)
+            else "blocked"
+        ),
         "gpu_runtime": gpu,
         "inputs": {
             "cohort_path": str(cohort),
@@ -258,6 +325,15 @@ def run_openpi_policy_ranking_gpu_campaign(
             "checkpoint_inventory_file_sha256": _sha256(inventory) if inventory.is_file() else None,
             "captured_site_background_path": str(background),
             "captured_site_background_sha256": _sha256(background) if background.is_file() else None,
+            "scenes": [
+                {
+                    "scene_id": scene["scene_id"],
+                    "scene_kind": scene["scene_kind"],
+                    "background_path": str(scene["background_path"]),
+                    "background_sha256": _sha256(scene["background_path"]),
+                }
+                for scene in normalized_scenes
+            ],
             "menagerie_root": str(menagerie),
             "menagerie_git_revision": _git_revision(menagerie),
             "policy_ids": list(policy_ids),
@@ -269,12 +345,19 @@ def run_openpi_policy_ranking_gpu_campaign(
         },
         "policy_runs": policy_runs,
         "ranking": ranking,
+        "rankings": rankings,
         "blockers": blockers,
         "claim_boundary": {
             "learned_policy_simulator_execution": bool(not blockers and policy_runs),
             "prospective_captured_site_ranking": bool(
                 ranking and ranking.get("status") == "completed"
             ),
+            "prospective_controlled_warehouse_ranking": any(
+                scene["scene_kind"] == "controlled_nvidia_usd"
+                and rankings.get(scene["scene_id"], {}).get("status") == "completed"
+                for scene in normalized_scenes
+            ),
+            "warehouse_ranking_is_independent_physical_answer_key": False,
             "site_specific_physical_success_proven": False,
             "physical_robot_endpoint_contacted": False,
             "physical_robot_operated": False,

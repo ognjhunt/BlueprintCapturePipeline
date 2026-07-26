@@ -43,9 +43,10 @@ def test_campaign_keeps_variant_metadata_outside_hashed_episode(
     cohort = tmp_path / "cohort.json"
     inventory = tmp_path / "inventory.json"
     background = tmp_path / "background.png"
+    warehouse_background = tmp_path / "warehouse.png"
     menagerie = tmp_path / "menagerie"
     checkpoint = tmp_path / "checkpoint"
-    for path in (cohort, inventory, background):
+    for path in (cohort, inventory, background, warehouse_background):
         path.write_bytes(b"x")
     menagerie.mkdir()
     checkpoint.mkdir()
@@ -63,10 +64,12 @@ def test_campaign_keeps_variant_metadata_outside_hashed_episode(
     )
     monkeypatch.setattr(job_module, "prepare_franka_droid_runtime", lambda **_kwargs: object())
     observed = []
+    observed_calls = []
 
-    def run_episode(**_kwargs):
+    def run_episode(**kwargs):
         episode = {"manifest_sha256": "e" * 64, "status": "completed"}
         observed.append(episode)
+        observed_calls.append(kwargs)
         return episode
 
     monkeypatch.setattr(job_module, "run_franka_droid_closed_loop", run_episode)
@@ -82,6 +85,18 @@ def test_campaign_keeps_variant_metadata_outside_hashed_episode(
         menagerie_root=menagerie,
         output_dir=tmp_path / "output",
         policy_ids=("p1", "p2", "p3", "p4"),
+        scene_backgrounds=(
+            {
+                "scene_id": "captured",
+                "scene_kind": "captured_3dgs",
+                "background_path": background,
+            },
+            {
+                "scene_id": "warehouse",
+                "scene_kind": "controlled_nvidia_usd",
+                "background_path": warehouse_background,
+            },
+        ),
         checkpoint_downloader=lambda _uri: checkpoint,
         policy_loader=lambda _spec, _checkpoint: object(),
     )
@@ -89,4 +104,17 @@ def test_campaign_keeps_variant_metadata_outside_hashed_episode(
     assert all("variant_id" not in episode for episode in observed)
     assert [
         row["variant_id"] for row in result["policy_runs"][0]["episode_records"]
-    ] == ["center", "left_2cm", "right_2cm"]
+    ] == [
+        "center",
+        "left_2cm",
+        "right_2cm",
+        "center",
+        "left_2cm",
+        "right_2cm",
+    ]
+    assert set(result["rankings"]) == {"captured", "warehouse"}
+    assert result["claim_boundary"]["prospective_controlled_warehouse_ranking"] is True
+    assert {row["external_background_kind"] for row in observed_calls} == {
+        "captured_3dgs",
+        "controlled_nvidia_usd",
+    }

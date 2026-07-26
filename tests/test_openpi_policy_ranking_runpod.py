@@ -27,10 +27,24 @@ def _inputs():
         "schema_version": "openpi_policy_ranking_gpu_input_bundle_receipt.v1",
         "bundle_sha256": "c" * 64,
         "manifest": {
+            "schema_version": "openpi_policy_ranking_gpu_input_bundle.v2",
             "raw_3dgs_included": False,
             "redistribution_authorized": False,
             "purpose": "private_internal_noncommercial_research_gpu_execution",
             "background_sha256": "d" * 64,
+            "scene_count": 2,
+            "scenes": [
+                {
+                    "source_scene_id": "captured",
+                    "source_scene_kind": "captured_3dgs",
+                    "background_sha256": "d" * 64,
+                },
+                {
+                    "source_scene_id": "warehouse",
+                    "source_scene_kind": "controlled_nvidia_usd",
+                    "background_sha256": "e" * 64,
+                },
+            ],
         },
     }
     preflight = {

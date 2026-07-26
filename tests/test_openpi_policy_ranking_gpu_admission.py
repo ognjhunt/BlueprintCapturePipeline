@@ -20,10 +20,24 @@ def _inputs():
         "schema_version": "openpi_policy_ranking_gpu_input_bundle_receipt.v1",
         "bundle_sha256": "c" * 64,
         "manifest": {
+            "schema_version": "openpi_policy_ranking_gpu_input_bundle.v2",
             "raw_3dgs_included": False,
             "redistribution_authorized": False,
             "purpose": "private_internal_noncommercial_research_gpu_execution",
             "background_sha256": "d" * 64,
+            "scene_count": 2,
+            "scenes": [
+                {
+                    "source_scene_id": "captured",
+                    "source_scene_kind": "captured_3dgs",
+                    "background_sha256": "d" * 64,
+                },
+                {
+                    "source_scene_id": "warehouse",
+                    "source_scene_kind": "controlled_nvidia_usd",
+                    "background_sha256": "e" * 64,
+                },
+            ],
         },
     }
     preflight = {
@@ -82,6 +96,32 @@ def test_openpi_gpu_admission_blocks_rights_robot_and_budget_regressions() -> No
     assert "openpi_gpu_input_bundle_contains_raw_3dgs" in result["blockers"]
     assert "openpi_gpu_physical_robot_endpoint_not_forbidden" in result["blockers"]
     assert "openpi_gpu_ttl_cost_exceeds_max_spend" in result["blockers"]
+
+
+def test_openpi_gpu_admission_accepts_four_hour_two_scene_watchdog_window() -> None:
+    release, bundle, preflight, spend = _inputs()
+    spend["hard_ttl_seconds"] = 14_400
+    spend["max_spend_usd"] = 2.0
+    admitted = build_openpi_policy_ranking_gpu_admission(
+        release=release,
+        input_bundle=bundle,
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit="a" * 40,
+        observed_now_epoch=1001.0,
+    )
+    assert admitted["status"] == "admitted"
+
+    spend["hard_ttl_seconds"] = 14_401
+    blocked = build_openpi_policy_ranking_gpu_admission(
+        release=release,
+        input_bundle=bundle,
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit="a" * 40,
+        observed_now_epoch=1001.0,
+    )
+    assert "openpi_gpu_ttl_invalid" in blocked["blockers"]
 
 
 def test_openpi_preflight_selects_verified_capacity_without_mutation() -> None:
