@@ -42,9 +42,38 @@
       "label_basis_amendment": "All three preregistered label sources are now reported separately; binary success remains visible, partial success is a deterministic tie-break, and preference is a separate contradiction metric.",
       "report_sha256": "3f4f2faf83cbd3b89cf17638a84c5b175583c2e30fe0d1819eb466c3425031fc",
       "eligible_for_heldout_evidence": false
+    },
+    {
+      "partition": "calibration",
+      "scope": "all_seven_frozen_calibration_sessions",
+      "opened_at": "2026-07-26T11:38:43-0500",
+      "opened_by": "Codex experiment operator",
+      "reason": "registered calibration evaluation after 98 of 98 label-blind predictions passed completeness and leakage checks",
+      "prediction_run_sha256": "40125739f72fdb5917470704628796c27be936b23844d15002b1e73f9279363c",
+      "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
+      "metadata_sources": [
+        {"session_id": "d25151dd-e1c7-4851-ab78-9ccdfdd94e50", "metadata_sha256": "aad756965cc2b9bc4918c6f16bf5e17e86a31bd8c9dcc1114560a0ebd85a3885"},
+        {"session_id": "70d36427-d166-4475-82ff-4de60431f2b0", "metadata_sha256": "1430ee6ff34f2954cacd08f0da0e4193de4225232914aa92c9caa8db9b78b867"},
+        {"session_id": "f3ee5084-5290-4ac0-a007-a4f4fa7b47e4", "metadata_sha256": "40fe5b4755827e3063434daa3a39ce9245a6f9f71f25e927eec5f65338314e32"},
+        {"session_id": "4f05ca12-ded4-43b0-83bd-6a35ed4ba120", "metadata_sha256": "dacbd08862c177e3f06a269568e1f4c5d49ae91adbdeda23d9c111345e5b8cb8"},
+        {"session_id": "739165f0-2b54-4776-91b8-1530a4148feb", "metadata_sha256": "7fceeb464c7ff3ce19838b98f39e46c9b4116c40bda5d0959530ca2a78559699"},
+        {"session_id": "69f9098b-86c9-419e-9c4b-75f8ae7f7525", "metadata_sha256": "18c13f0df5e77d9eaefec062584755efc034ed26c0030cdd9370741065c3d0f6"},
+        {"session_id": "3cb05d31-18ce-4154-897d-bec852521e5b", "metadata_sha256": "aa36ed8e2b357cb3117a7b291a45fb9d08281320667ca4c14a07763edef19843"}
+      ],
+      "pii_present_in_sources": true,
+      "pii_copied_to_experiment_artifacts": false,
+      "labels_copied_to_evaluator_requests": false,
+      "pilot_labels_previously_seen": true,
+      "calibration_labels_opened": true,
+      "heldout_labels_opened": false,
+      "threshold_changed_after_exposure": false,
+      "label_basis_amendment": "label_basis_amendment_001.json was recorded after pilot unseal and before calibration unseal",
+      "report_sha256": "e485937135c2ab37bafe414e0c49d37c44bd513bf783b4293877e59224e4a9ca",
+      "eligible_for_calibration_decision": true,
+      "eligible_for_final_heldout_claim": false
     }
   ],
-  "calibration_partition_unsealed": false,
+  "calibration_partition_unsealed": true,
   "heldout_partition_unsealed": false,
   "unlogged_label_access_detected": false,
   "claim_boundary": "The disclosed pilot exposure cannot support held-out evidence and cannot be used to change frozen gates."
