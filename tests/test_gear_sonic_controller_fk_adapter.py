@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from blueprint_pipeline import gear_sonic_controller_fk_adapter as adapter
 from blueprint_pipeline import gear_sonic_joint_order_contract as contract
 from blueprint_pipeline import gear_sonic_official_zmq_executor as official_executor
+from blueprint_pipeline import isaac_runtime_task_backend as isaac_backend
 from blueprint_pipeline.oscar_isaac_closed_loop_eval import (
     CONTROLLER_FK_CAMERA_PROJECTION_CONTEXT_ENV,
     SC3_FK_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256_ENV,
@@ -62,7 +64,10 @@ result = {
      'applied_value': positions[index]}
     for index, name in enumerate(names)
   ],
-  'proprioceptive_state': {'base_height_m': 0.79, 'official_controller_protocol': 4},
+  'proprioceptive_state': {
+    'base_height_m': 0.79, 'official_controller_protocol': 4,
+    'base_quat_measured': [1.0, 0.0, 0.0, 0.0],
+  },
   'state_timestamp': '2026-07-10T12:00:00Z',
   'camera_projection_context_sha256': camera_context_sha,
   'camera_source_frame_sha256': source_frame_sha,
@@ -113,6 +118,7 @@ if controller_action:
       'landmarks': frame_landmarks,
       'proprioceptive_state': {
         'base_height_m': 0.79, 'official_controller_protocol': 4,
+        'base_quat_measured': [1.0, 0.0, 0.0, 0.0],
       },
       'state_timestamp': str(1000 + frame_index),
     })
@@ -147,6 +153,28 @@ if controller_action:
       ).hexdigest(),
     },
   })
+state_seed = request['controller_fk_state_seed']
+initial_fk_frame = {
+  'frame_kind': 'initial_observation_live_isaac_state',
+  'seed_authority': 'initial_observation_live_isaac_state',
+  'source_state_seed_sha256': request['controller_fk_state_seed_sha256'],
+  'joint_positions': (
+    state_seed['body_q'] + state_seed['left_hand_q'] + state_seed['right_hand_q']
+  ),
+  'joint_names': names,
+  'applied_dof_mapping': [
+    {'joint_name': name, 'protocol_index': index,
+     'model_qpos_address': index + 7, 'applied_value': 0.0}
+    for index, name in enumerate(names)
+  ],
+  'base_quaternion_wxyz': state_seed['base_quaternion_wxyz'],
+  'landmarks': result['landmarks'],
+}
+result['initial_fk_frame'] = initial_fk_frame
+result['initial_fk_frame_sha256'] = hashlib.sha256(
+  json.dumps(initial_fk_frame, sort_keys=True, separators=(',', ':')).encode()
+).hexdigest()
+result['controller_fk_state_seed_sha256'] = request['controller_fk_state_seed_sha256']
 MUTATE
 json.dump(result, open(os.environ['BLUEPRINT_GEAR_SONIC_OUTPUT'], 'w'))
 """.strip()
@@ -293,12 +321,29 @@ def _projector(tmp_path):
     )
 
 
+def _live_seed() -> dict:
+    names = list(contract.PROTOCOL_V4_FULL_JOINT_ORDER)
+    return isaac_backend.build_gear_sonic_isaac_state_snapshot(
+        live_joint_names=names,
+        live_joint_positions=[0.0] * len(names),
+        live_joint_velocities=[0.0] * len(names),
+        base_quaternion_wxyz=[1.0, 0.0, 0.0, 0.0],
+        base_angular_velocity_xyz=[0.0, 0.0, 0.0],
+        simulator_session_id="isaac-session-1",
+        stage_id="stage-1",
+        heartbeat_sequence=1,
+        captured_at_ns=time.time_ns(),
+        source="test_live_seed",
+    )
+
+
 def _action() -> dict:
     return {
         "policy_action": "UNITREE_G1_SONIC",
         "action_chunk": [0.25, -0.5],
         "action_units": ["latent", "latent"],
         "action_timing": {"control_hz": 50.0, "sample_index": 0},
+        "controller_fk_state_seed": _live_seed(),
     }
 
 
@@ -331,13 +376,14 @@ def _horizon_action(frame_count: int = 3) -> dict:
             "frames_sha256": frames_sha256,
             "source_frames_sha256": "f" * 64,
         },
+        "controller_fk_state_seed": _live_seed(),
     }
 
 
 def _run_adapter_directly(tmp_path) -> dict:
     action = _action()
     request = {
-        "schema_version": "controller_fk_skeleton_request.v1",
+        "schema_version": "controller_fk_skeleton_request.v3",
         "step_index": 1,
         "source_action_sha256": hashlib.sha256(
             json.dumps(action, sort_keys=True, separators=(",", ":"), default=str).encode(
@@ -345,6 +391,10 @@ def _run_adapter_directly(tmp_path) -> dict:
             )
         ).hexdigest(),
         "action": action,
+        "controller_fk_state_seed": action["controller_fk_state_seed"],
+        "controller_fk_state_seed_sha256": action["controller_fk_state_seed"][
+            "payload_sha256"
+        ],
         "camera_projection_context": json.loads(
             Path(
                 os.environ[CONTROLLER_FK_CAMERA_PROJECTION_CONTEXT_ENV]
@@ -613,6 +663,7 @@ def test_protocol_v4_result_traverses_policy_zmq_controller_mujoco_fk_path(
         "sonic_action_chunk": [0.01] * 78,
         "action_units": ["latent"] * 78,
         "action_timing": {"control_hz": 50.0, "sample_index": 0},
+        "controller_fk_state_seed": _live_seed(),
     }
     result = _projector(tmp_path)(action, 2)
     expected_sha = hashlib.sha256(

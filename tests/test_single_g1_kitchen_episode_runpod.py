@@ -22,6 +22,79 @@ from blueprint_pipeline import single_g1_kitchen_episode_runpod as single_episod
 from blueprint_pipeline.gpu_render_providers import RenderLaunchSpec, VastRenderProvider
 
 
+def test_direct_external_evaluators_default_to_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(single_episode.DIRECT_WAM_CONSISTENCY_COMMAND_ENV, raising=False)
+    monkeypatch.delenv(single_episode.DIRECT_WAM_SUCCESS_LABEL_COMMAND_ENV, raising=False)
+    for name in single_episode.DIRECT_EXTERNAL_EVALUATOR_GATE_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    command, plan_env = single_episode._configure_direct_external_evaluators(
+        [
+            "python",
+            "-m",
+            "blueprint_pipeline.oscar_isaac_closed_loop_eval",
+            "--wam-consistency-command",
+            "stale-command",
+            "--allow-wam-consistency-scoring",
+            "--require-forward-inverse-consistency",
+            "--wam-success-label-command",
+            "stale-labeler",
+            "--allow-wam-success-labeling",
+            "--require-generated-video-success-label",
+        ],
+        {
+            "BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING": "true",
+            "BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING": "true",
+            "BLUEPRINT_ALLOW_OPENAI_WAM_SUCCESS_LABELING": "true",
+        },
+    )
+
+    assert all(option not in command for option in {
+        *single_episode.EXTERNAL_CONSISTENCY_OPTIONS,
+        *single_episode.EXTERNAL_SUCCESS_LABEL_OPTIONS,
+    })
+    assert "BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING" not in plan_env
+    assert "BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING" not in plan_env
+    assert "BLUEPRINT_ALLOW_OPENAI_WAM_SUCCESS_LABELING" not in plan_env
+
+
+def test_direct_external_evaluators_can_be_signed_into_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    consistency_command = (
+        "/opt/oscar-venv/bin/python -m "
+        "blueprint_pipeline.wam_episode_consistency_label_openai"
+    )
+    success_command = (
+        "/opt/oscar-venv/bin/python -m "
+        "blueprint_pipeline.wam_generated_video_success_label_openai"
+    )
+    monkeypatch.setenv(
+        single_episode.DIRECT_WAM_CONSISTENCY_COMMAND_ENV,
+        consistency_command,
+    )
+    monkeypatch.setenv(
+        single_episode.DIRECT_WAM_SUCCESS_LABEL_COMMAND_ENV,
+        success_command,
+    )
+    monkeypatch.setenv("BLUEPRINT_ALLOW_OPENAI_WAM_EPISODE_CONSISTENCY", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_OPENAI_WAM_SUCCESS_LABELING", "true")
+    command, plan_env = single_episode._configure_direct_external_evaluators(
+        ["python", "-m", "blueprint_pipeline.oscar_isaac_closed_loop_eval"],
+        {"PYTHONPATH": "/workspace/runtime_overlay/package"},
+    )
+
+    assert command[command.index("--wam-consistency-command") + 1] == consistency_command
+    assert command[command.index("--wam-success-label-command") + 1] == success_command
+    assert "--allow-wam-consistency-scoring" in command
+    assert "--require-forward-inverse-consistency" in command
+    assert "--allow-wam-success-labeling" in command
+    assert "--require-generated-video-success-label" in command
+    assert plan_env["BLUEPRINT_ALLOW_WAM_EPISODE_CONSISTENCY_SCORING"] == "true"
+    assert plan_env["BLUEPRINT_ALLOW_WAM_SUCCESS_LABELING"] == "true"
+    assert plan_env["BLUEPRINT_ALLOW_OPENAI_WAM_EPISODE_CONSISTENCY"] == "true"
+    assert plan_env["BLUEPRINT_ALLOW_OPENAI_WAM_SUCCESS_LABELING"] == "true"
+
+
 def test_manipulation_policy_task_compatibility_fails_closed_without_declaration() -> None:
     report = single_episode._manipulation_policy_task_compatibility(
         plan={},
@@ -1440,6 +1513,7 @@ def test_single_episode_bootstrap_requires_live_isaac_frame_and_camera_context(
     assert closed_loop_command[oscar_num_steps_index + 1] == str(
         single_episode.DIRECT_OSCAR_NUM_STEPS
     )
+    assert single_episode.DIRECT_OSCAR_NUM_STEPS == 12
     min_steps_index = closed_loop_command.index("--min-steps")
     assert closed_loop_command[min_steps_index + 1] == str(single_episode.DIRECT_EPISODE_MIN_STEPS)
     assert single_episode.DIRECT_EPISODE_MIN_STEPS == 1
@@ -1459,7 +1533,7 @@ def test_single_episode_bootstrap_requires_live_isaac_frame_and_camera_context(
     assert closed_loop_command[execution_frame_count_index + 1] == str(
         single_episode.DIRECT_GROOT_SONIC_EXECUTION_FRAME_COUNT
     )
-    assert single_episode.DIRECT_GROOT_SONIC_EXECUTION_FRAME_COUNT == 40
+    assert single_episode.DIRECT_GROOT_SONIC_EXECUTION_FRAME_COUNT == 16
     harness_backend_index = closed_loop_command.index("--harness-backend-kind")
     assert closed_loop_command[harness_backend_index + 1] == (
         single_episode.GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND
@@ -1514,6 +1588,18 @@ def test_single_episode_bootstrap_requires_live_isaac_frame_and_camera_context(
     assert "wam_derived_observation_harness.py" in (single_episode.RUNTIME_PACKAGE_OVERLAY_MODULES)
     assert "task_episode_baseline.py" in single_episode.RUNTIME_PACKAGE_OVERLAY_MODULES
     assert "gear_sonic_joint_order_contract.py" in (single_episode.RUNTIME_PACKAGE_OVERLAY_MODULES)
+    assert "wam_isaac_evaluation_hierarchy.py" in (
+        single_episode.RUNTIME_PACKAGE_OVERLAY_MODULES
+    )
+    assert "wam_episode_consistency_label_openai.py" in (
+        single_episode.RUNTIME_PACKAGE_OVERLAY_MODULES
+    )
+    assert "wam_generated_video_success_label_gemini.py" in (
+        single_episode.RUNTIME_PACKAGE_OVERLAY_MODULES
+    )
+    assert "wam_generated_video_success_label_openai.py" in (
+        single_episode.RUNTIME_PACKAGE_OVERLAY_MODULES
+    )
     assert "gear_sonic_process_supervisor.py" in (
         single_episode.RUNTIME_PACKAGE_OVERLAY_MODULES
     )

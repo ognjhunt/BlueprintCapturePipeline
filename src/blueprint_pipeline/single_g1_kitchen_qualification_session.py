@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import signal
 import shlex
 import shutil
 import stat
@@ -69,6 +70,7 @@ from .paid_lane_guard import (
     bind_pending_teardown_instance,
     cancel_pending_teardown,
     close_pending_teardown,
+    extend_pending_teardown_max_age,
     mark_pending_teardown_ambiguous,
     open_pending_teardown,
 )
@@ -156,6 +158,7 @@ SESSION_ACTIONS = (
     "gpu-status",
     "restart-component",
     "stop-component",
+    "extend-watchdog",
     "teardown",
 )
 COMPONENT_ALIASES = {
@@ -4230,6 +4233,220 @@ def _teardown(
     return result
 
 
+def _watchdog_process_matches(
+    *, pid: int, root: Path, pod_name_prefix: str, deadline_epoch: float
+) -> bool:
+    if pid <= 1:
+        return False
+    probe = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "command="],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+    command = probe.stdout.strip()
+    return bool(
+        probe.returncode == 0
+        and "blueprint_pipeline.groot_oscar_runpod_watchdog" in command
+        and f"--out-dir {root}" in command
+        and f"--pod-name-prefix {pod_name_prefix}" in command
+        and f"--deadline-epoch {deadline_epoch}" in command
+        and "--provider vast" in command
+    )
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _extend_watchdog(
+    *,
+    session_manifest: str | Path,
+    adapter_output: str | Path,
+    execute: bool,
+    extension_seconds: int | None,
+    extension_spend_cap_usd: float | None,
+) -> dict[str, Any]:
+    """Handoff one retained Vast allocation to a longer hard-TTL watchdog."""
+
+    result_path = Path(adapter_output).expanduser().resolve()
+    manifest_path, manifest = _load_private_manifest(session_manifest)
+    seconds = int(extension_seconds or 0)
+    spend_cap = float(extension_spend_cap_usd or 0.0)
+    if seconds < 60 or seconds > 24 * 60 * 60:
+        raise ValueError("qualification_watchdog_extension_seconds_invalid")
+    if not (0.0 < spend_cap <= 100.0):
+        raise ValueError("qualification_watchdog_extension_spend_cap_invalid")
+    if manifest.get("continuing_spend") is not True or manifest.get("provider") != "vast":
+        raise ValueError("qualification_watchdog_extension_session_not_live_vast")
+    instance_id = str(manifest.get("instance_id") or "").strip()
+    prefix = str(manifest.get("resource_name_prefix") or "").strip()
+    armed = dict(manifest.get("watchdog") or {})
+    old_pid = int(armed.get("pid") or 0)
+    old_deadline = float(manifest.get("watchdog_deadline_epoch") or 0.0)
+    if (
+        not instance_id
+        or not prefix
+        or str(armed.get("provider") or "") != "vast"
+        or str(armed.get("pod_name_prefix") or "") != prefix
+        or float(armed.get("deadline_epoch") or 0.0) != old_deadline
+        or old_deadline <= time.time() + 120.0
+    ):
+        raise ValueError("qualification_watchdog_extension_binding_invalid")
+    root = manifest_path.parent.resolve()
+    if not _watchdog_process_matches(
+        pid=old_pid,
+        root=root,
+        pod_name_prefix=prefix,
+        deadline_epoch=old_deadline,
+    ):
+        raise ValueError("qualification_watchdog_extension_old_process_unverified")
+
+    provider = get_render_provider("vast")
+    inspected = provider.inspect(instance_id)
+    rate = float(inspected.get("cost_per_hour") or 0.0)
+    if (
+        inspected.get("api_confirmed") is not True
+        or str(inspected.get("instance_id") or "") != instance_id
+        or not str(inspected.get("name") or "").startswith(prefix)
+        or rate <= 0.0
+        or rate > MAX_HOURLY_RATE_USD
+    ):
+        raise ValueError("qualification_watchdog_extension_provider_binding_invalid")
+    projected_spend = rate * seconds / 3600.0
+    if projected_spend > spend_cap + 1e-9:
+        raise ValueError("qualification_watchdog_extension_spend_cap_exceeded")
+    new_deadline = old_deadline + seconds
+    evidence = {
+        "schema_version": "single_g1_kitchen_watchdog_extension.v1",
+        "status": "dry_run_ready" if not execute else "handoff_pending",
+        "requested_at": utc_now_iso(),
+        "provider": "vast",
+        "instance_id": instance_id,
+        "resource_name_prefix": prefix,
+        "old_watchdog_pid": old_pid,
+        "old_deadline_epoch": old_deadline,
+        "extension_seconds": seconds,
+        "new_deadline_epoch": new_deadline,
+        "verified_hourly_rate_usd": rate,
+        "projected_additional_spend_usd": projected_spend,
+        "authorized_additional_spend_cap_usd": spend_cap,
+        "raw_secret_values_recorded": False,
+    }
+    if not execute:
+        result = {
+            **evidence,
+            "action": "extend-watchdog",
+            "provider_mutations_performed": 0,
+            "continuing_spend": True,
+            "blockers": [],
+        }
+        write_json(result_path, result)
+        return result
+
+    handoff_path = root / f"watchdog_extension_{int(new_deadline)}.json"
+    _private_write_json(handoff_path, evidence)
+    new_armed = arm_watchdog(
+        out_dir=root,
+        pod_name_prefix=prefix,
+        deadline_epoch=new_deadline,
+        provider_name="vast",
+    )
+    new_watchdog = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "blueprint_pipeline.groot_oscar_runpod_watchdog",
+            "--out-dir",
+            str(root),
+            "--pod-name-prefix",
+            prefix,
+            "--deadline-epoch",
+            str(new_deadline),
+            "--provider",
+            "vast",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    time.sleep(0.5)
+    if new_watchdog.poll() is not None or not _watchdog_process_matches(
+        pid=new_watchdog.pid,
+        root=root,
+        pod_name_prefix=prefix,
+        deadline_epoch=new_deadline,
+    ):
+        raise ValueError("qualification_watchdog_extension_new_process_unverified")
+
+    os.kill(old_pid, signal.SIGTERM)
+    for _ in range(50):
+        if not _pid_alive(old_pid):
+            break
+        time.sleep(0.1)
+    if _pid_alive(old_pid):
+        os.kill(old_pid, signal.SIGKILL)
+        time.sleep(0.2)
+    if _pid_alive(old_pid) or not _pid_alive(new_watchdog.pid):
+        raise ValueError("qualification_watchdog_extension_handoff_failed")
+
+    pending = extend_pending_teardown_max_age(
+        str(manifest.get("pending_teardown_record") or ""),
+        instance_id=instance_id,
+        extension_seconds=seconds,
+        evidence={
+            "watchdog_extension_path": str(handoff_path),
+            "new_deadline_epoch": new_deadline,
+            "projected_additional_spend_usd": projected_spend,
+        },
+    )
+    completed = {
+        **evidence,
+        "status": "watchdog_extended_continuing_spend",
+        "completed_at": utc_now_iso(),
+        "new_watchdog_pid": new_watchdog.pid,
+        "old_watchdog_process_absent": True,
+        "new_watchdog_process_alive": True,
+        "pending_teardown_status": pending.get("status"),
+        "pending_teardown_max_age_seconds": pending.get("max_age_seconds"),
+    }
+    _private_write_json(handoff_path, completed)
+    manifest["watchdog_deadline_epoch"] = new_deadline
+    manifest["session_ttl_seconds"] = int(manifest.get("session_ttl_seconds") or 0) + seconds
+    manifest["watchdog"] = {**new_armed, "pid": new_watchdog.pid}
+    manifest["pending_teardown_status"] = pending.get("status")
+    manifest.setdefault("watchdog_extensions", []).append(completed)
+    manifest.setdefault("history", []).append(
+        {
+            "action": "extend-watchdog",
+            "status": completed["status"],
+            "recorded_at": completed["completed_at"],
+            "provider_mutation_performed": False,
+            "projected_additional_spend_usd": projected_spend,
+            "authorized_additional_spend_cap_usd": spend_cap,
+        }
+    )
+    _private_write_json(manifest_path, manifest)
+    result = {
+        **completed,
+        "action": "extend-watchdog",
+        "session_manifest": str(manifest_path),
+        "continuing_spend": True,
+        "provider_mutations_performed": 0,
+        "blockers": [],
+    }
+    write_json(result_path, result)
+    return result
+
+
 def run_qualification_session(
     *,
     action: str,
@@ -4254,6 +4471,8 @@ def run_qualification_session(
     bound_request_out: str | Path | None = None,
     adapter_output: str | Path,
     pod_name: str = "",
+    watchdog_extension_seconds: int | None = None,
+    watchdog_extension_spend_cap_usd: float | None = None,
     execute: bool = False,
 ) -> dict[str, Any]:
     """Execute one canonical qualification lifecycle action."""
@@ -4302,6 +4521,14 @@ def run_qualification_session(
         )
     if action == "teardown":
         return _teardown(session_manifest=session_manifest, adapter_output=adapter_output, execute=execute)
+    if action == "extend-watchdog":
+        return _extend_watchdog(
+            session_manifest=session_manifest,
+            adapter_output=adapter_output,
+            execute=execute,
+            extension_seconds=watchdog_extension_seconds,
+            extension_spend_cap_usd=watchdog_extension_spend_cap_usd,
+        )
     if action == "collect":
         return _collect(
             session_manifest=session_manifest,

@@ -26,8 +26,10 @@ from pathlib import Path
 from typing import Any
 
 from .gear_sonic_joint_order_contract import (
+    JOINT_ORDER_SCHEMA_VERSION,
     PROTOCOL_V4_BODY_JOINT_NAMES,
     PROTOCOL_V4_FULL_JOINT_ORDER,
+    PROTOCOL_V4_MAPPING_DIGEST,
     PINNED_WBC_SOURCE_REVISION,
     build_isaac_dof_mapping,
     controller_frame_sequence_start,
@@ -1118,7 +1120,8 @@ def _zmq_roundtrip(
 
 def _official_mujoco_fk(
     *, model_path: Path, body_positions: Sequence[float],
-    left_hand: Sequence[float], right_hand: Sequence[float]
+    left_hand: Sequence[float], right_hand: Sequence[float],
+    base_quaternion_wxyz: Sequence[float] | None = None,
 ) -> tuple[list[str], list[float], list[dict[str, Any]], list[dict[str, Any]]]:
     """Apply protocol-v4 targets to the pinned model by joint name.
 
@@ -1130,6 +1133,25 @@ def _official_mujoco_fk(
 
     model = mujoco.MjModel.from_xml_path(str(model_path))
     data = mujoco.MjData(model)
+    if base_quaternion_wxyz is not None:
+        quaternion = _finite_vector(
+            base_quaternion_wxyz,
+            size=4,
+            name="official_live_seed_base_quaternion_wxyz",
+        )
+        norm = math.sqrt(sum(value * value for value in quaternion))
+        if norm <= 1e-9:
+            raise ValueError("official_live_seed_base_quaternion_invalid")
+        quaternion = [value / norm for value in quaternion]
+        free_joint_ids = [
+            index
+            for index in range(model.njnt)
+            if int(model.jnt_type[index]) == int(mujoco.mjtJoint.mjJNT_FREE)
+        ]
+        if len(free_joint_ids) != 1:
+            raise ValueError("official_live_seed_free_joint_count_invalid")
+        qpos_address = int(model.jnt_qposadr[free_joint_ids[0]])
+        data.qpos[qpos_address + 3 : qpos_address + 7] = quaternion
     model_joint_names: list[str] = []
     for index in range(model.njnt):
         if int(model.jnt_type[index]) == int(mujoco.mjtJoint.mjJNT_FREE):
@@ -1206,6 +1228,53 @@ def execute(
     expected_sha = str(request.get("source_action_sha256") or "")
     if _canonical(action) != expected_sha:
         raise ValueError("official_gear_sonic_request_action_sha256_mismatch")
+    if request.get("schema_version") != "controller_fk_skeleton_request.v3":
+        raise ValueError("official_gear_sonic_request_schema_mismatch")
+    state_seed = dict(request.get("controller_fk_state_seed") or {})
+    state_seed_sha256 = str(
+        request.get("controller_fk_state_seed_sha256") or ""
+    ).lower()
+    seed_payload = {key: value for key, value in state_seed.items() if key != "payload_sha256"}
+    live_initial_seed = (
+        state_seed.get("schema_version") == "gear_sonic_isaac_state_snapshot.v1"
+        and state_seed.get("status") == "live"
+        and state_seed.get("surrogate") is False
+        and state_seed.get("ready_for_native_dds_bridge") is True
+        and state_seed.get("source") == "live_isaac_articulation"
+    )
+    predicted_seed = (
+        state_seed.get("schema_version") == "controller_fk_state_seed.v1"
+        and state_seed.get("status") == "predicted"
+        and state_seed.get("seed_authority") == "wam_controller_fk_prediction"
+        and state_seed.get("source") == "controller_fk_prediction"
+    )
+    if (
+        not (live_initial_seed or predicted_seed)
+        or state_seed.get("surrogate") is not False
+        or state_seed.get("joint_order_schema_version") != JOINT_ORDER_SCHEMA_VERSION
+        or str(state_seed.get("mapping_digest") or "") != PROTOCOL_V4_MAPPING_DIGEST
+        or str(state_seed.get("payload_sha256") or "").lower() != state_seed_sha256
+        or _canonical(seed_payload) != state_seed_sha256
+    ):
+        raise ValueError("official_gear_sonic_state_seed_invalid")
+    seed_body = _finite_vector(
+        state_seed.get("body_q"), size=BODY_DIM, name="official_state_seed_body_q"
+    )
+    seed_left = _finite_vector(
+        state_seed.get("left_hand_q"), size=HAND_DIM, name="official_state_seed_left_hand_q"
+    )
+    seed_right = _finite_vector(
+        state_seed.get("right_hand_q"), size=HAND_DIM, name="official_state_seed_right_hand_q"
+    )
+    seed_quaternion = _finite_vector(
+        state_seed.get("base_quaternion_wxyz"),
+        size=4,
+        name="official_state_seed_base_quaternion_wxyz",
+    )
+    if list(state_seed.get("body_joint_names") or []) != list(
+        PROTOCOL_V4_BODY_JOINT_NAMES
+    ):
+        raise ValueError("official_gear_sonic_state_seed_body_joint_order_invalid")
     action_frames, action_sequence_contract = _validated_action_frames(action)
     protocol_frames = [_protocol_v4_action_frame(frame) for frame in action_frames]
     control_hz = float(action_sequence_contract["control_hz"])
@@ -1295,6 +1364,37 @@ def execute(
             context=validated_context,
             standing_landmarks=standing_landmarks,
         )
+    seed_names, seed_positions, seed_landmarks, seed_applied_dof_mapping = fk_solver(
+        model_path=model,
+        body_positions=seed_body,
+        left_hand=seed_left,
+        right_hand=seed_right,
+        base_quaternion_wxyz=seed_quaternion,
+    )
+    if validated_context is not None:
+        seed_landmarks, camera_projection_context_sha256 = _project_fk_landmarks(
+            seed_landmarks,
+            validated_context,
+        )
+    initial_fk_frame = {
+        "frame_kind": (
+            "initial_observation_live_isaac_state"
+            if live_initial_seed
+            else "wam_controller_fk_predicted_state"
+        ),
+        "seed_authority": (
+            "initial_observation_live_isaac_state"
+            if live_initial_seed
+            else "wam_controller_fk_prediction"
+        ),
+        "source_state_seed_sha256": state_seed_sha256,
+        "joint_positions": seed_positions,
+        "joint_names": seed_names,
+        "applied_dof_mapping": seed_applied_dof_mapping,
+        "base_quaternion_wxyz": seed_quaternion,
+        "landmarks": seed_landmarks,
+    }
+    initial_fk_frame_sha256 = _canonical(initial_fk_frame)
     isaac_dof_mapping = (
         build_isaac_dof_mapping(isaac_joint_names)
         if isaac_joint_names is not None
@@ -1471,6 +1571,9 @@ def execute(
         "controller_fk_sequence": controller_fk_sequence,
         "controller_fk_sequence_sha256": controller_fk_sequence_sha256,
         "execution_contract": execution_contract,
+        "initial_fk_frame": initial_fk_frame,
+        "initial_fk_frame_sha256": initial_fk_frame_sha256,
+        "controller_fk_state_seed_sha256": state_seed_sha256,
     }
 
 

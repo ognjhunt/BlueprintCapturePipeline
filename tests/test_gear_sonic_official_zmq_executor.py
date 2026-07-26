@@ -18,12 +18,28 @@ FIXTURE_MODEL = (
 
 
 def _request(action: dict) -> dict:
+    names = list(contract.PROTOCOL_V4_FULL_JOINT_ORDER)
+    live_seed = isaac_backend.build_gear_sonic_isaac_state_snapshot(
+        live_joint_names=names,
+        live_joint_positions=[0.0] * len(names),
+        live_joint_velocities=[0.0] * len(names),
+        base_quaternion_wxyz=[1.0, 0.0, 0.0, 0.0],
+        base_angular_velocity_xyz=[0.0, 0.0, 0.0],
+        simulator_session_id="isaac-session-1",
+        stage_id="stage-1",
+        heartbeat_sequence=1,
+        captured_at_ns=1,
+        source="test_live_seed",
+    )
     return {
+        "schema_version": "controller_fk_skeleton_request.v3",
         "step_index": 3,
         "action": action,
         "source_action_sha256": hashlib.sha256(
             json.dumps(action, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest(),
+        "controller_fk_state_seed": live_seed,
+        "controller_fk_state_seed_sha256": live_seed["payload_sha256"],
     }
 
 
@@ -548,16 +564,20 @@ def test_executor_sends_78d_sonic_action_to_official_protocol_and_uses_fk(
     _, model = wbc_env
     action = {"sonic_action_chunk": [float(index) / 100 for index in range(78)]}
     calls = []
+    fk_calls = []
     transport = _echoing_transport(calls)
 
     def fk_solver(**kwargs):
+        fk_calls.append(kwargs)
         assert kwargs["model_path"] == model
-        assert kwargs["body_positions"] == [0.1] * 29
         return _fake_fk(**kwargs)
 
     result = _execute(_request(action), transport=transport, fk_solver=fk_solver)
 
     assert len(calls) == 1
+    assert fk_calls[0]["body_positions"] == [0.0] * 29
+    assert fk_calls[0]["base_quaternion_wxyz"] == [1.0, 0.0, 0.0, 0.0]
+    assert fk_calls[1]["body_positions"] == [0.1] * 29
     assert len(calls[0]["motion_token"]) == 64
     assert calls[0]["left_hand"] == pytest.approx(
         [0.68, 0.69, 0.70, 0.64, 0.65, 0.66, 0.67]

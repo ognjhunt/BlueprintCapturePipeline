@@ -404,6 +404,7 @@ def start_resident_oscar_generate_from_args(
     *,
     python: str,
     extract_next_frame: Callable[[Path, Path], Path | None],
+    extract_prefix_aligned_frame: Callable[[Path, Path, int], Path | None] | None = None,
     build_skeleton_video: Callable[[Sequence[Mapping[str, Any]], Path], Path | None] | None = None,
     require_gpu_residency: bool = True,
 ) -> tuple["ResidentOscarWorker", Callable[[Mapping[str, Any]], dict[str, Any]]]:
@@ -444,6 +445,7 @@ def start_resident_oscar_generate_from_args(
         worker=worker,
         build_skeleton_video=build_skeleton_video,
         extract_next_frame=extract_next_frame,
+        extract_prefix_aligned_frame=extract_prefix_aligned_frame,
     )
     return worker, generate
 
@@ -452,6 +454,7 @@ def make_resident_oscar_generate(
     *,
     worker: ResidentOscarWorker,
     extract_next_frame: Callable[[Path, Path], Path | None],
+    extract_prefix_aligned_frame: Callable[[Path, Path, int], Path | None] | None = None,
     build_skeleton_video: Callable[[Sequence[Mapping[str, Any]], Path], Path | None] | None = None,
 ) -> Callable[[Mapping[str, Any]], dict[str, Any]]:
     """Adapt a resident worker to the per-step ``oscar_generate`` contract.
@@ -538,7 +541,25 @@ def make_resident_oscar_generate(
                 "stderr_log_path": str(stderr_log),
             }
 
-        next_frame = extract_next_frame(output_video, out_dir)
+        timing = _mapping(request.get("next_observation_timing"))
+        target_frame_index = int(timing.get("target_wam_frame_index") or 0)
+        if target_frame_index > 0:
+            if extract_prefix_aligned_frame is None:
+                return {
+                    "status": "blocked",
+                    "blockers": ["oscar_prefix_aligned_frame_extractor_missing"],
+                    "generated_frame_path": "",
+                    "generated_video_path": str(output_video),
+                    "stdout_log_path": str(stdout_log),
+                    "stderr_log_path": str(stderr_log),
+                }
+            next_frame = extract_prefix_aligned_frame(
+                output_video,
+                out_dir,
+                target_frame_index,
+            )
+        else:
+            next_frame = extract_next_frame(output_video, out_dir)
         if next_frame is None:
             return {
                 "status": "blocked",
@@ -558,6 +579,7 @@ def make_resident_oscar_generate(
             "warm_generate_seconds": response.get("generate_seconds"),
             "client_elapsed_seconds": response.get("client_elapsed_seconds"),
             "runtime_result_id": response.get("runtime_result_id"),
+            "next_observation_timing": timing or None,
         }
 
     return _generate

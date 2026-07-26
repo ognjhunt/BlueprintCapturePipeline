@@ -1004,10 +1004,15 @@ else:
 
             controller_fk_result = execute_controller_fk(
                 {
+                    'schema_version': 'controller_fk_skeleton_request.v3',
                     'action': canary_action,
                     'source_action_sha256': source_action_sha256,
                     'step_index': -1,
                     'camera_projection_context': projection_context,
+                    'controller_fk_state_seed': live_snapshot,
+                    'controller_fk_state_seed_sha256': live_snapshot[
+                        'payload_sha256'
+                    ],
                 },
                 transport=retained_canary_transport,
             )

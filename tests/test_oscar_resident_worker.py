@@ -190,6 +190,41 @@ def test_generate_adapter_matches_the_per_step_response_contract(
     assert Path(result["stderr_log_path"]).is_file()
 
 
+def test_generate_adapter_uses_prefix_aligned_extractor_for_timed_request(
+    fake_worker_script: Path,
+    tmp_path: Path,
+) -> None:
+    worker = _worker(fake_worker_script)
+    worker.start()
+    selected: list[int] = []
+
+    def _aligned(_video: Path, _out_dir: Path, target_index: int) -> Path:
+        selected.append(target_index)
+        frame = tmp_path / "aligned-next.png"
+        frame.write_bytes(b"frame")
+        return frame
+
+    generate = make_resident_oscar_generate(
+        worker=worker,
+        extract_next_frame=lambda _video, _out_dir: pytest.fail(
+            "timed request must not use earliest-future extraction"
+        ),
+        extract_prefix_aligned_frame=_aligned,
+    )
+    result = generate(
+        {
+            "output_dir": str(tmp_path / "step0"),
+            "reference_frame_path": "f.png",
+            "next_observation_timing": {"target_wam_frame_index": 5},
+        }
+    )
+    worker.close()
+
+    assert result["status"] == "completed"
+    assert selected == [5]
+    assert result["next_observation_timing"]["target_wam_frame_index"] == 5
+
+
 def test_adapter_blocks_when_the_worker_produces_no_video(
     fake_worker_script: Path, tmp_path: Path
 ) -> None:
