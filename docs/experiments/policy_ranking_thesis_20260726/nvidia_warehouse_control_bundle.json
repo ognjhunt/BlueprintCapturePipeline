@@ -51,15 +51,26 @@
     "policy_specific_scoring_changes": false,
     "physical_answer_key": false
   },
+  "scene_feasibility_control": {
+    "controller": "deterministic_scripted_pick_and_place_v1",
+    "uses_learned_policy": false,
+    "must_run_before_learned_policy_scoring": true,
+    "must_pass_all_frozen_success_predicates": true,
+    "failure_disposition": "block_learned_policy_ranking_and_repair_scene_or_task_contract_without_inspecting_learned_policy_outcomes",
+    "interpretation_if_oracle_passes_and_all_learned_policies_fail": "sim_visual_domain_gap_confound_or_policy_sim_transfer_failure; do not call this physical policy incompetence and do not retune the scene after observing policy identities",
+    "claim_boundary": "This proves only that the simulated task, controller path, contacts, and deterministic predicates are achievable."
+  },
   "candidate_policy_preflight": {
     "minimum_policy_count": 4,
-    "preferred_same_family_ladder": "Floppy Bagel checkpoints if runnable weights become attributable",
-    "fallback_candidates": [
-      "pi0_droid",
+    "frozen_cohort_artifact": "warehouse_policy_cohort.json",
+    "learned_candidates": [
+      "pi05_droid",
       "pi0_fast_droid",
-      "paligemma_fast_droid",
-      "paligemma_fast_specialist_droid"
+      "pi0_droid",
+      "paligemma_fast_specialist_droid",
+      "paligemma_fast_droid"
     ],
+    "nonlearned_negative_control": "zero_action_control_v1",
     "weights_and_exact_adapters_verified": false,
     "live_policy_rollouts_executed": false
   },
@@ -73,5 +84,5 @@
   "independent_physical_ranking_answer_key": false,
   "site_specific_physical_accuracy_proven": false,
   "blockers": [],
-  "bundle_sha256": "274f68e9c219915906c5f01d11b09d0f440419b9a1be3ef964ca8047fd3007aa"
+  "bundle_sha256": "fa7ddacdfafadcc9208665ba3c8b3fd5e0fed90a42f9f83ad4532ba7f72c6a95"
 }

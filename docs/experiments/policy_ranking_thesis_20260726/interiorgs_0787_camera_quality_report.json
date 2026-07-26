@@ -1,0 +1,70 @@
+{
+  "schema_version": "captured_site_camera_quality_report.v1",
+  "scene_id": "interiorgs_0787_841244_franka_can_to_tray_v1",
+  "status": "passed_for_static_registration_preview",
+  "render": {
+    "renderer": "Spark reference 3DGS renderer",
+    "graphics_backend": "local_apple_metal",
+    "cloud_gpu_used": false,
+    "source_splat_count": 630898,
+    "render_splat_count": 300000,
+    "resolution": [1600, 1200],
+    "four_view_wall_time_seconds": 23.07,
+    "standard_ply_sha256": "ee5b6cc287dffdf2ef03be9f05f65cdeb57d84500e0903c329eaf3e5942e6ad4"
+  },
+  "frozen_inputs": {
+    "camera_contract_sha256": "7a3b1c465324c2fd16bbab78ae99703a1b355f3cb11a3d37db17f28f260fb371",
+    "preview_overlay_sha256": "8ac1b8b5bb5981516ab4d9821ec9b430e2a7578070bcf140645af751bf45fca1"
+  },
+  "views": [
+    {
+      "id": "droid_external_left",
+      "sha256": "f91c30aa310a867dc2b4e31835d0de61c47b04e3e47859dc47283c34e4674ff1",
+      "bytes": 2082612,
+      "red_can_pixel_fraction": 0.010331,
+      "blue_tray_pixel_fraction": 0.014828,
+      "visual_gate": "pass",
+      "reason": "captured room and support surface are clear; can, tray, gripper, and arm are simultaneously visible"
+    },
+    {
+      "id": "droid_external_right",
+      "sha256": "5e0e596ec3f74c30bec1766465e91dd712de8bc6157bc8ee0a98d8a3a7963a53",
+      "bytes": 2278812,
+      "red_can_pixel_fraction": 0.003776,
+      "blue_tray_pixel_fraction": 0.049442,
+      "visual_gate": "pass",
+      "reason": "captured room and support surface are clear; can, tray, gripper, and arm are simultaneously visible"
+    },
+    {
+      "id": "task_oblique_overhead",
+      "sha256": "85da1dcb6634879cad676a39ae11429f2d5f947947f3b5d7735b8d3f106e7a8c",
+      "bytes": 1927497,
+      "red_can_pixel_fraction": 0.006412,
+      "blue_tray_pixel_fraction": 0.051989,
+      "visual_gate": "pass",
+      "reason": "task geometry and relative object-target placement are unambiguous"
+    },
+    {
+      "id": "franka_wrist_mounted_initial",
+      "sha256": "7d5e0cdddba0785fb7eda5e4e8bd2b6d60d00bbd758b4bb91a3ca8bbbdc1be1d",
+      "bytes": 1131163,
+      "red_can_pixel_fraction": 0.06533,
+      "blue_tray_pixel_fraction": 0.176798,
+      "visual_gate": "pass",
+      "reason": "link-derived view exposes the can, tray, gripper, and captured support surface without hand occlusion"
+    }
+  ],
+  "rejected_view": {
+    "id": "franka_wrist_mounted_initial_v1",
+    "reason": "camera was link-derived but located behind the hand; the hand occluded task state"
+  },
+  "proof_boundary": {
+    "captured_3dgs_displayed": true,
+    "task_layers_registered_visually": true,
+    "robot_camera_transform_derived_from_link_pose": true,
+    "dynamic_link_tracking_executed": false,
+    "franka_visual_asset_rendered": false,
+    "physics_or_policy_execution_proven": false,
+    "captured_site_ranking_proven": false
+  }
+}

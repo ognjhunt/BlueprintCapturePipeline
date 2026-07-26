@@ -84,6 +84,29 @@ def test_run_requires_explicit_gate(tmp_path: Path, monkeypatch) -> None:
     assert result["data_uploaded"] is False
 
 
+def test_missing_credential_preserves_matching_resumable_checkpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv(GATE_ENV, "1")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    output = tmp_path / "run.json"
+    previous = {
+        "inventory_sha256": "a" * 64,
+        "status": "running",
+        "judgments": [{"request_id": "already-paid"}],
+    }
+    output.write_text(json.dumps(previous))
+
+    result = run_inventory(
+        {"inventory_sha256": "a" * 64, "requests": []}, output_path=output
+    )
+
+    assert result["status"] == "blocked"
+    assert result["existing_checkpoint_preserved"] is True
+    assert result["existing_judgment_count"] == 1
+    assert json.loads(output.read_text()) == previous
+
+
 def test_score_emits_label_blind_schema(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "paired.mp4"
     _video(path)

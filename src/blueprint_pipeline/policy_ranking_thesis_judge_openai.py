@@ -395,29 +395,39 @@ def run_inventory(
     max_workers: int = 4,
     max_attempts_per_request: int = 2,
 ) -> dict[str, Any]:
-    if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
+    output_path = Path(output_path)
+
+    def preflight_blocked(blocker: str) -> dict[str, Any]:
         result = {
             "schema_version": "policy_ranking_judge_run.v1",
             "status": "blocked",
-            "blockers": [f"missing_env_{GATE_ENV}"],
+            "blockers": [blocker],
             "judgments": [],
             "provider_called": False,
             "data_uploaded": False,
+            "existing_checkpoint_preserved": False,
         }
-        write_json(Path(output_path), result)
+        if output_path.is_file():
+            try:
+                existing = json.loads(output_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                existing = {}
+            same_inventory = existing.get("inventory_sha256") == inventory.get(
+                "inventory_sha256"
+            )
+            existing_count = len(existing.get("judgments") or [])
+            if same_inventory and existing_count > 0:
+                result["existing_checkpoint_preserved"] = True
+                result["existing_judgment_count"] = existing_count
+                return result
+        write_json(output_path, result)
         return result
+
+    if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
+        return preflight_blocked(f"missing_env_{GATE_ENV}")
     key = os.getenv("OPENAI_API_KEY", "").strip()
     if not key:
-        result = {
-            "schema_version": "policy_ranking_judge_run.v1",
-            "status": "blocked",
-            "blockers": ["missing_openai_api_key"],
-            "judgments": [],
-            "provider_called": False,
-            "data_uploaded": False,
-        }
-        write_json(Path(output_path), result)
-        return result
+        return preflight_blocked("missing_openai_api_key")
     from openai import OpenAI  # type: ignore[import-not-found]
 
     if not 1 <= max_workers <= 8:
@@ -429,7 +439,6 @@ def run_inventory(
     requests = list(inventory.get("requests", []))
     if max_requests is not None:
         requests = requests[:max_requests]
-    output_path = Path(output_path)
     previous: dict[str, Any] = {}
     if output_path.is_file():
         try:

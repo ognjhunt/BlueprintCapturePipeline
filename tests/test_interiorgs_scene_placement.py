@@ -23,6 +23,7 @@ from blueprint_pipeline.scene_placement import (
     compute_stand_pose,
     load_interiorgs_labels,
     load_interiorgs_structure,
+    link_mounted_camera_spec,
     point_in_polygon,
     resolve_target_by_instance,
     stance_task_cameras,
@@ -437,6 +438,30 @@ class TestStanceCameras:
         assert by_id["head_pov"]["fov"] == pytest.approx(60.0)
         assert by_id["head_pov"]["pos"] == pytest.approx([2.5, 4.8, 1.23])
         assert by_id["head_pov"]["up"] == [0.0, 0.0, 1.0]
+
+    def test_link_mounted_camera_tracks_parent_translation(self):
+        kwargs = {
+            "parent_rotation_row_major": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            "mount_translation": [0.0, -0.09, 0.1],
+            "mount_forward": [-0.04, 0.83, -0.56],
+        }
+        first = link_mounted_camera_spec(parent_translation=[1.9, 1.15, 0.84], **kwargs)
+        moved = link_mounted_camera_spec(parent_translation=[2.0, 1.35, 0.94], **kwargs)
+        assert first["pos"] == pytest.approx([1.9, 1.06, 0.94])
+        assert moved["pos"] == pytest.approx([2.0, 1.26, 1.04])
+        assert [moved["target"][i] - first["target"][i] for i in range(3)] == pytest.approx(
+            [0.1, 0.2, 0.1]
+        )
+
+    def test_link_mounted_camera_rejects_collinear_up(self):
+        with pytest.raises(ValueError, match="collinear"):
+            link_mounted_camera_spec(
+                parent_translation=[0.0, 0.0, 0.0],
+                parent_rotation_row_major=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                mount_translation=[0.0, 0.0, 0.0],
+                mount_forward=[0.0, 0.0, 1.0],
+                mount_up=[0.0, 0.0, 2.0],
+            )
 
 
 # ----------------------------- compressed PLY chunk bounds -----------------------------

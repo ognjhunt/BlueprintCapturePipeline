@@ -1,0 +1,10 @@
+{
+  "schema_version": "policy_ranking_judge_run.v1",
+  "status": "blocked",
+  "blockers": [
+    "missing_openai_api_key"
+  ],
+  "judgments": [],
+  "provider_called": false,
+  "data_uploaded": false
+}

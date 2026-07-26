@@ -1,0 +1,152 @@
+{
+  "scene_id": "interiorgs_0787_841244_franka_can_to_tray_v1",
+  "site_visual": {
+    "representation": "3dgs_ply",
+    "source": "https://huggingface.co/datasets/spatialverse/InteriorGS",
+    "source_revision": "5201ed9fd11fc2b8ac23e069796c386dbbf8f943",
+    "source_path": "0787_841244/3dgs_compressed.ply",
+    "sha256": "9a0c451e57edf3623a77026937757efb09e6a1fc33de1f67699a6b076354ccf6",
+    "size_bytes": 38664050,
+    "gaussian_count": 630898,
+    "license": "InteriorGS custom terms: non-commercial research and education only; no redistribution; citation required",
+    "user_authorized_for_this_experiment": true,
+    "previously_unseen_by_frozen_benchmark": true,
+    "benchmark_labels_available": false,
+    "reference_spark_render": {
+      "status": "completed",
+      "render_gaussian_count": 300000,
+      "camera_count": 4,
+      "resolution": [1600, 1200],
+      "wall_time_seconds": 23.07,
+      "camera_quality_report_sha256": "a61ffc2b28326949ca4e4253119af5ebebbdc447e880cae6484f3ce8777ca50d",
+      "external_right_preview_sha256": "5e0e596ec3f74c30bec1766465e91dd712de8bc6157bc8ee0a98d8a3a7963a53",
+      "wrist_preview_sha256": "7d5e0cdddba0785fb7eda5e4e8bd2b6d60d00bbd758b4bb91a3ca8bbbdc1be1d",
+      "camera_focus_point_site": [1.9, 1.24, 0.8],
+      "rendered_by": "reference_spark_renderer_local_apple_metal",
+      "cloud_gpu_used": false,
+      "physics_proven": false
+    }
+  },
+  "site_spatial": {
+    "is_complete_usd_rebuild": false,
+    "work_surface_proxy_only": true,
+    "interaction_frame": "interiorgs_0787_metric_z_up",
+    "site_from_interaction_frame_row_major": [
+      1.0, 0.0, 0.0, 0.0,
+      0.0, 1.0, 0.0, 0.0,
+      0.0, 0.0, 1.0, 0.0,
+      0.0, 0.0, 0.0, 1.0
+    ],
+    "registration_status": "visually_verified_local_preview",
+    "registration_preview_overlay_sha256": "8ac1b8b5bb5981516ab4d9821ec9b430e2a7578070bcf140645af751bf45fca1",
+    "camera_contract_sha256": "7a3b1c465324c2fd16bbab78ae99703a1b355f3cb11a3d37db17f28f260fb371",
+    "labels_sha256": "b6bc08ec84818111ca736da5a746643c36c3d9ebbfd67ab8e4f8b4359ba49856",
+    "structure_sha256": "4cd397f59ce3c876bbf0ca118cb9e849ef5747e8ead6d9cc8f14d352d902b4ed",
+    "metric_scale_status": "source_declared_metric_and_semantic_box_dimensions_consistent",
+    "up_axis": 2,
+    "up_sign": 1.0,
+    "floor_site_coordinate": 0.0,
+    "selected_support": {
+      "source_instance_id": "74",
+      "label": "table",
+      "center_site_m": [1.9086943, 1.2457356, 0.369],
+      "size_m": [1.43993, 0.52, 0.738],
+      "top_z_m": 0.738
+    },
+    "quality_gaps": [
+      "local_proxy_visual_alignment_does_not_prove_collision_alignment",
+      "preview_robot_is_a_kinematic_proxy_not_the_pinned_franka_visual_asset",
+      "link_mounted_camera_is_verified_at_the_initial_pose_only_not_during_articulation"
+    ]
+  },
+  "interactive_assets": [
+    {
+      "asset_id": "nvidia_simready_spraycan_a01",
+      "role": "task_object",
+      "source": "https://huggingface.co/datasets/nvidia/PhysicalAI-SimReady-Warehouse-01",
+      "source_revision": "c7fe115cb79c7ddbd0532630d7768b5736b0ecc4",
+      "source_path": "Props/general/HandManipulation/paint_container_spraycan_a/sm_paint_container_spraycan_a01_simready_01.usd",
+      "sha256": "fe34476927334e5cb6cba9b90cfa3b442e46580af8150bda1ae867827b3c40a2",
+      "dependency_tree_sha256": "1b6c75702518b24171b424c189adcb516b14b03ef60986288d9e56d5b4f16ce2",
+      "license": "CC-BY-4.0",
+      "transform_site_m": [1.65, 1.2, 0.848]
+    },
+    {
+      "asset_id": "blueprint_marked_tray_v1",
+      "role": "task_target",
+      "source_path": "assets/marked_tray.usda",
+      "sha256": "1404a44e537300fd96baad7fa7e95da888e15f4512553b75c323a78e69013ee0",
+      "license": "Blueprint-authored",
+      "transform_site_m": [2.12, 1.22, 0.763]
+    },
+    {
+      "asset_id": "blueprint_local_work_surface_proxy_v1",
+      "role": "local_collision_proxy",
+      "source_path": "assets/work_surface_proxy.usda",
+      "sha256": "99c485f68dcf0ace90f6337640c400b0f6388a09efee6ec48aae10aac649a1ec",
+      "license": "Blueprint-authored",
+      "transform_site_m": [1.9086943, 1.2457356, 0.748]
+    }
+  ],
+  "robot_runtime": {
+    "profile_id": "franka_droid_fixed_base_v1",
+    "embodiment": "Franka Emika Panda with parallel gripper",
+    "base_transform_site_m": [1.9086943, 0.45, 0.0],
+    "action_interface": "DROID-compatible Cartesian delta end-effector plus gripper, adapted fail-closed per policy metadata",
+    "visual_kinematic_source": "https://github.com/google-deepmind/mujoco_menagerie/tree/71f066ad0be9cd271f7ed58c030243ef157af9f4/franka_emika_panda",
+    "visual_kinematic_revision": "71f066ad0be9cd271f7ed58c030243ef157af9f4",
+    "visual_kinematic_tree_sha256": "3142d8e707b36ad61bd5e242a32f2406321f14eb05be5833cde442123d067d6f",
+    "model_entrypoint_sha256": "96ad67da03710f17f798c9478fd9e9efdf24a3bf8359f05e456dd9fb158ea273",
+    "license": "Apache-2.0",
+    "camera_contract": "interiorgs_0787_camera_contract.json",
+    "preview_is_articulated_robot_asset": false,
+    "preview_claim": "proxy_only_for_visual_registration"
+  },
+  "task_semantics": {
+    "instruction": "Pick up the spray can and place it inside the marked tray.",
+    "task_family": "rigid_pick_and_place",
+    "success_predicates": [
+      "spraycan_bottom_above_table_by_at_least_0_05m_during_lift",
+      "spraycan_center_enters_tray_interior_aabb",
+      "spraycan_final_linear_speed_below_0_02m_per_s_for_2s",
+      "spraycan_not_in_robot_contact_at_final_state"
+    ],
+    "progress_signals": [
+      "end_effector_to_spraycan_distance",
+      "spraycan_vertical_displacement",
+      "spraycan_to_tray_center_distance",
+      "containment_fraction",
+      "final_stability"
+    ],
+    "abstention_rules": [
+      "3dgs_metric_scale_or_registration_not_accepted_by_runtime_preflight",
+      "task_object_or_target_occluded_in_required_views",
+      "robot_link_camera_transform_not_updated_each_frame",
+      "wam_action_following_below_frozen_threshold",
+      "wam_temporal_coherence_below_frozen_threshold",
+      "wam_sim_disagreement",
+      "deterministic_state_predicates_unavailable",
+      "candidate_policy_action_interface_not_exactly_adaptable"
+    ],
+    "evaluator_digest_source": "preregistered_protocol.json",
+    "policy_specific_scoring_changes": false
+  },
+  "optional_physics_sidecar": {
+    "backend_candidates": ["MuJoCo", "Isaac Sim"],
+    "full_site_physics": false,
+    "local_interaction_assets_only": true,
+    "advisory_only_for_site_specific_physical_truth": true
+  },
+  "rights_constraints": {
+    "use": "internal non-commercial research proof only",
+    "redistribution": false,
+    "customer_or_fundraising_media": false,
+    "citation_required": true
+  },
+  "claim_boundary": {
+    "result_type": "prospective_externally_calibrated_prediction",
+    "site_specific_policy_ordering_proven": false,
+    "site_specific_physical_success_proven": false,
+    "physical_robot_operated": false
+  }
+}
