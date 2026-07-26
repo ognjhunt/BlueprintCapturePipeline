@@ -73,6 +73,15 @@
     "included_in_customer_policy_ranking": false,
     "required_expected_behavior": "No task progress; deterministic evaluator must reject success."
   },
+  "scene_feasibility_control": {
+    "controller": "deterministic_scripted_pick_and_place_v1",
+    "role": "oracle_scene_task_predicate_control",
+    "included_in_customer_policy_ranking": false,
+    "runs_before_learned_policies": true,
+    "required_expected_behavior": "Complete the can-to-tray task and pass every frozen deterministic predicate.",
+    "failure_disposition": "No learned policy receives an interpretable warehouse score until scene feasibility passes.",
+    "all_learned_fail_after_oracle_passes_disposition": "Record sim_visual_domain_gap_confound_or_policy_sim_transfer_failure; do not infer physical policy incompetence."
+  },
   "optional_not_frozen_into_primary_cohort": [
     {
       "policy_id": "nvidia/GR00T-N1.7-DROID",
