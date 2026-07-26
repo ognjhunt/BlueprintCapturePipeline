@@ -71,3 +71,40 @@ def test_generation_changes_identity() -> None:
     before = _objects()
     after = [dict(before[0], generation="11")]
     assert generation_manifest_sha256(before) != generation_manifest_sha256(after)
+
+
+def test_frozen_policy_ranking_evidence_binds_inventory_file_bytes() -> None:
+    evidence = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "experiments"
+        / "policy_ranking_thesis_20260726"
+    )
+    inventory_path = evidence / "openpi_polaris_checkpoint_inventory.json"
+    cohort = json.loads(
+        (evidence / "warehouse_policy_cohort_v2_joint_position.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert cohort["checkpoint_inventory"]["file_sha256"] == hashlib.sha256(
+        inventory_path.read_bytes()
+    ).hexdigest()
+
+
+def test_warehouse_control_uses_frozen_joint_position_cohort() -> None:
+    evidence = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "experiments"
+        / "policy_ranking_thesis_20260726"
+    )
+    spec = json.loads(
+        (evidence / "nvidia_warehouse_control_spec.json").read_text(encoding="utf-8")
+    )
+    preflight = spec["candidate_policy_preflight"]
+    assert preflight["frozen_cohort_artifact"] == (
+        "warehouse_policy_cohort_v2_joint_position.json"
+    )
+    assert len(preflight["learned_candidates"]) == 4
+    assert spec["environment"]["selected_workcell"]["dependency_closure_resolved"] is True
+    assert spec["claim_boundary"]["simulator_is_physical_answer_key"] is False

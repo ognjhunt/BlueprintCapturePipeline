@@ -1,5 +1,5 @@
 {
-  "scene_id": "nvidia_warehouse_franka_can_to_tray_control_v1",
+  "scene_id": "nvidia_warehouse_franka_can_to_tray_control_v2",
   "environment": {
     "representation": "usd",
     "source": "https://huggingface.co/datasets/nvidia/PhysicalAI-SimReady-Warehouse-01",
@@ -8,17 +8,36 @@
     "sha256": "4e01e55f055689ff0cd669f33c6c305f73add8903547eaf3ef070d515cb2ec8a",
     "size_bytes": 27933,
     "license": "CC-BY-4.0",
-    "materialization_status": "root_lfs_pointer_indexed_full_dependency_archive_not_downloaded",
+    "materialization_status": "selected_workcell_dependency_closure_materialized_full_warehouse_not_downloaded",
     "full_dataset_size_bytes": 15000000000,
-    "runtime_scope": "one_empty_reachable_workcell_only",
-    "whole_warehouse_runtime_forbidden": true
+    "runtime_scope": "one_box_picking_table_workcell_only",
+    "whole_warehouse_runtime_forbidden": true,
+    "selected_workcell": {
+      "assembly_path": "Props/assembly/SM_BoxPicking_Table_A1/SM_BoxPicking_Table_A1_physics.usd",
+      "assembly_sha256": "44556279a525c6f39c896a45ef2eb6986303db7d698df023b9372234f9730e85",
+      "table_path": "Props/general/SM_HeavyDutyPackingTable_C02_01/SM_HeavyDutyPackingTable_C02_01_physics.usd",
+      "table_sha256": "7c7348b37d7be04eafabcaf20f1f5a05c7a9c0633bc1ba7048ff4fae2ba005c5",
+      "dependency_closure_resolved": true,
+      "materialized_subset_file_count": 34,
+      "materialized_subset_size_bytes": 198662956,
+      "materialized_subset_manifest_sha256": "32b7484793a0d7a3f68ee4809e28f2fbcce2f29910bc705e08740ddd8760f7c5",
+      "selection_frozen_before_learned_policy_outcomes": true
+    },
+    "execution_backend": "nvidia_usd_visual_workcell_plus_frozen_mujoco_interaction_layer",
+    "isaac_physics_claimed": false
   },
   "interactive_assets": [
     {
       "asset_id": "nvidia_simready_spraycan_a01",
       "role": "task_object",
       "sha256": "fe34476927334e5cb6cba9b90cfa3b442e46580af8150bda1ae867827b3c40a2",
-      "dependency_tree_sha256": "1b6c75702518b24171b424c189adcb516b14b03ef60986288d9e56d5b4f16ce2"
+      "dependency_tree_sha256": "1b6c75702518b24171b424c189adcb516b14b03ef60986288d9e56d5b4f16ce2",
+      "runtime_collision_representation": "frozen_mujoco_rigid_cylinder_proxy",
+      "unresolved_optional_omniverse_material_references": [
+        "physics_metal.usda",
+        "physics_plastic.usda",
+        "OmniPBR.mdl"
+      ]
     },
     {
       "asset_id": "blueprint_marked_tray_v1",
@@ -35,7 +54,9 @@
     "profile_id": "franka_droid_fixed_base_v1",
     "visual_kinematic_source_revision": "71f066ad0be9cd271f7ed58c030243ef157af9f4",
     "visual_kinematic_tree_sha256": "3142d8e707b36ad61bd5e242a32f2406321f14eb05be5833cde442123d067d6f",
-    "action_interface": "DROID-compatible Cartesian delta end-effector plus gripper"
+    "action_interface": "OpenPI PolaRiS DROID absolute joint position plus gripper position",
+    "action_dimensions": 8,
+    "action_adapter_frozen": true
   },
   "task_semantics": {
     "instruction": "Pick up the spray can and place it inside the marked tray.",
@@ -50,7 +71,7 @@
     "physical_answer_key": false
   },
   "scene_feasibility_control": {
-    "controller": "deterministic_scripted_pick_and_place_v1",
+    "controller": "scripted_ik_joint_position_positive_control",
     "uses_learned_policy": false,
     "must_run_before_learned_policy_scoring": true,
     "must_pass_all_frozen_success_predicates": true,
@@ -60,22 +81,26 @@
   },
   "candidate_policy_preflight": {
     "minimum_policy_count": 4,
-    "frozen_cohort_artifact": "warehouse_policy_cohort.json",
+    "frozen_cohort_artifact": "warehouse_policy_cohort_v2_joint_position.json",
     "learned_candidates": [
-      "pi05_droid",
-      "pi0_fast_droid",
-      "pi0_droid",
-      "paligemma_fast_specialist_droid",
-      "paligemma_fast_droid"
+      "pi05_droid_jointpos_polaris",
+      "pi0_fast_droid_jointpos_polaris",
+      "pi0_droid_jointpos_polaris",
+      "pi0_droid_jointpos_100k_polaris"
     ],
-    "nonlearned_negative_control": "zero_action_control_v1",
-    "weights_and_exact_adapters_verified": false,
+    "nonlearned_negative_control": "stationary_joint_position_negative_control",
+    "checkpoint_inventory_artifact": "openpi_polaris_checkpoint_inventory.json",
+    "checkpoint_inventory_sha256": "492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+    "weights_and_exact_adapters_verified": true,
     "live_policy_rollouts_executed": false
   },
   "claim_boundary": {
     "controlled_scene_execution_completed": false,
     "simulator_is_physical_answer_key": false,
     "physical_robot_operated": false,
-    "purpose": "diagnose WAM_simulator_evaluator_disagreement_before_captured_site_transfer"
+    "purpose": "controlled_visual_domain_bridge_before_captured_site_transfer",
+    "nvidia_usd_assets_used": true,
+    "isaac_physics_execution_completed": false,
+    "prospective_policy_ranking_completed": false
   }
 }
