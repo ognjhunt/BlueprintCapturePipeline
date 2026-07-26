@@ -81,6 +81,8 @@ def test_openpi_packet_binds_full_context_and_executable(tmp_path: Path) -> None
         name.endswith("/src/blueprint_pipeline/openpi_policy_ranking_gpu_bootstrap.py")
         for name in names
     )
+    assert not any(".egg-info/" in name for name in names)
+    assert "openpi_policy_ranking_remote_build/context/src/AGENTS.md" not in names
     assert result["openpi_revision"] == OPENPI_REVISION
     assert result["menagerie_revision"] == MENAGERIE_REVISION
 

@@ -64,16 +64,19 @@ def _versioned_image_ref(image_ref: str) -> bool:
     )
 
 
-def _context_sources(root: Path) -> list[Path]:
+def _context_sources(root: Path) -> tuple[list[Path], bool]:
     paths = [root / relative for relative in REQUIRED_CONTEXT_PATHS]
-    source_root = root / "src"
-    if source_root.is_dir():
-        paths.extend(
-            path
-            for path in sorted(source_root.rglob("*"))
-            if path.is_file() and not path.is_symlink() and "__pycache__" not in path.parts
-        )
-    return sorted(set(paths))
+    try:
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z", "--", "src/blueprint_pipeline"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        tracked = b""
+    paths.extend(root / value.decode("utf-8") for value in tracked.split(b"\0") if value)
+    return sorted(set(paths)), bool(tracked)
 
 
 def render_remote_build_script(
@@ -285,7 +288,9 @@ def prepare_remote_build_packet(
         blockers.append("openpi_packet_requires_clean_source_worktree")
 
     ensure_dir(context)
-    sources = _context_sources(root)
+    sources, tracked_source_available = _context_sources(root)
+    if not tracked_source_available:
+        blockers.append("openpi_tracked_source_inventory_unavailable")
     missing = [
         relative.as_posix()
         for relative in REQUIRED_CONTEXT_PATHS
