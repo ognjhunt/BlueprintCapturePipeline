@@ -1083,6 +1083,40 @@ def test_gpu_canary_source_checkout_binding_requires_live_remote_main_parity(
     )
 
 
+def test_gpu_qualification_control_plane_identity_records_main_drift_without_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        allocator, "_current_checkout_source_state", lambda: ("c" * 40, True)
+    )
+    monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "b" * 40)
+    monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "a" * 40)
+
+    blockers, identity = allocator._control_plane_checkout_blockers()
+
+    assert blockers == []
+    assert identity["orchestrator_source_commit"] == "c" * 40
+    assert identity["checkout_clean"] is True
+    assert identity["orchestrator_equals_origin_main"] is False
+    assert identity["orchestrator_equals_remote_main"] is False
+    assert identity["main_parity_is_diagnostic_not_runtime_identity"] is True
+
+
+def test_gpu_qualification_control_plane_identity_still_requires_clean_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        allocator, "_current_checkout_source_state", lambda: ("c" * 40, False)
+    )
+    monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "b" * 40)
+    monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "a" * 40)
+
+    blockers, identity = allocator._control_plane_checkout_blockers()
+
+    assert blockers == ["gpu_canary_orchestrator_checkout_not_clean"]
+    assert identity["orchestrator_source_commit"] == "c" * 40
+
+
 def test_gpu_canary_rejects_digitalocean_provider_for_runpod_probe(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1216,14 +1250,14 @@ def test_gpu_qualification_allocate_requires_independent_source_commit(
     result = json.loads((out / "result.json").read_text())
     assert result["provider_mutations_performed"] == 0
     assert result["blockers"] == [
-        "single_kitchen_qualification_required_arguments_missing:expected_source_commit"
+        "single_kitchen_qualification_required_arguments_missing:expected_image_source_commit"
     ]
     for name in ("request.json", "preflight.json", "admission.json", "bound.json"):
         assert json.loads((out / name).read_text()) == result
     assert json.loads(capsys.readouterr().out) == {"success": False}
 
 
-def test_gpu_qualification_allocate_blocks_mismatched_checkout_before_session(
+def test_gpu_qualification_allocate_blocks_dirty_or_unavailable_orchestrator_before_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1232,13 +1266,19 @@ def test_gpu_qualification_allocate_blocks_mismatched_checkout_before_session(
         allocator,
         "run_qualification_session",
         lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("qualification session reached from a mismatched checkout")
+            AssertionError("qualification session reached from an invalid orchestrator checkout")
         ),
     )
     monkeypatch.setattr(
         allocator,
-        "_source_checkout_blockers",
-        lambda _expected: (["gpu_canary_checkout_not_origin_main"], "b" * 40),
+        "_control_plane_checkout_blockers",
+        lambda: (
+            ["gpu_canary_orchestrator_checkout_not_clean"],
+            {
+                "schema_version": "blueprint.gpu_canary_control_plane_identity.v1",
+                "orchestrator_source_commit": "c" * 40,
+            },
+        ),
     )
     out = tmp_path / "mismatched-checkout"
 
@@ -1269,7 +1309,11 @@ def test_gpu_qualification_allocate_blocks_mismatched_checkout_before_session(
     assert exit_code == 2
     assert json.loads((out / "result.json").read_text()) == {
         "status": "blocked",
-        "blockers": ["gpu_canary_checkout_not_origin_main"],
+        "blockers": ["gpu_canary_orchestrator_checkout_not_clean"],
+        "control_plane_identity": {
+            "schema_version": "blueprint.gpu_canary_control_plane_identity.v1",
+            "orchestrator_source_commit": "c" * 40,
+        },
         "provider_mutations_performed": 0,
     }
     for name in ("request.json", "preflight.json", "admission.json", "bound.json"):
@@ -1277,6 +1321,61 @@ def test_gpu_qualification_allocate_blocks_mismatched_checkout_before_session(
             (out / "result.json").read_text()
         )
     assert json.loads(capsys.readouterr().out) == {"success": False}
+
+
+def test_gpu_qualification_allows_clean_orchestrator_commit_to_differ_from_image(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run_qualification_session(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_qualification_session", fake_run_qualification_session)
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: (
+            [],
+            {
+                "schema_version": "blueprint.gpu_canary_control_plane_identity.v1",
+                "orchestrator_source_commit": "c" * 40,
+                "checkout_clean": True,
+                "orchestrator_equals_remote_main": False,
+            },
+        ),
+    )
+    out = tmp_path / "separate-identities"
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider", "vast",
+            "--probe-kind", allocator.SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
+            "--qualification-action", "allocate",
+            "--qualification-session-manifest", str(out / "session.json"),
+            "--episode-bundle", str(out / "episode.zip"),
+            "--provider-bundle-url-file", str(out / "bundle-url.txt"),
+            "--provider-output-put-url-file", str(out / "put-url.txt"),
+            "--provider-output-get-url-file", str(out / "get-url.txt"),
+            "--provider-launch-request", str(out / "request.json"),
+            "--release-evidence", str(out / "release.json"),
+            "--model-cache-evidence", str(out / "models.json"),
+            "--preflight-bundle", str(out / "preflight.json"),
+            "--admission-out", str(out / "admission.json"),
+            "--bound-request-out", str(out / "bound.json"),
+            "--adapter-output", str(out / "result.json"),
+            "--pod-name", "retained-qualification-gpu",
+            "--expected-image-source-commit", "b" * 40,
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["expected_source_commit"] == "b" * 40
+    assert observed["orchestrator_source_commit"] == "c" * 40
+    assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
 def test_gpu_qualification_component_stop_is_a_successful_control_action(

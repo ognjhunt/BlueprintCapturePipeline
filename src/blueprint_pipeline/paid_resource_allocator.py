@@ -192,6 +192,40 @@ def _source_checkout_blockers(expected_source_commit: str) -> tuple[list[str], s
     return blockers, checkout_commit
 
 
+def _control_plane_checkout_blockers() -> tuple[list[str], dict[str, object]]:
+    """Pin the clean allocator identity without coupling it to the runtime image.
+
+    Main pointers remain recorded diagnostics.  A clean detached commit or
+    reviewed branch is a valid orchestrator identity and does not force an
+    immutable runtime-image rebuild.
+    """
+
+    checkout_commit, checkout_clean = _current_checkout_source_state()
+    origin_main_commit = _current_origin_main_commit()
+    remote_main_commit = _current_remote_main_commit()
+    blockers: list[str] = []
+    if not checkout_commit:
+        blockers.append("gpu_canary_orchestrator_source_commit_unavailable")
+    if not checkout_clean:
+        blockers.append("gpu_canary_orchestrator_checkout_not_clean")
+    identity = {
+        "schema_version": "blueprint.gpu_canary_control_plane_identity.v1",
+        "orchestrator_source_commit": checkout_commit or None,
+        "checkout_clean": checkout_clean,
+        "origin_main_commit": origin_main_commit or None,
+        "remote_main_commit": remote_main_commit or None,
+        "orchestrator_equals_origin_main": bool(
+            checkout_commit and checkout_commit == origin_main_commit
+        ),
+        "orchestrator_equals_remote_main": bool(
+            checkout_commit and checkout_commit == remote_main_commit
+        ),
+        "main_parity_is_diagnostic_not_runtime_identity": True,
+        "raw_secret_values_recorded": False,
+    }
+    return blockers, identity
+
+
 def _write_blocked_qualification_allocation_outputs(args: argparse.Namespace, result: dict) -> None:
     """Persist every promised allocation output when source admission blocks."""
 
@@ -441,6 +475,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adapter-output", required=True)
     gpu.add_argument("--pod-name", required=True)
     gpu.add_argument("--expected-source-commit")
+    gpu.add_argument(
+        "--expected-image-source-commit",
+        help=(
+            "Exact source commit represented by the runtime image. "
+            "--expected-source-commit remains a compatibility alias."
+        ),
+    )
     gpu.add_argument(
         "--provider",
         choices=("runpod", "vast", "digitalocean"),
@@ -755,6 +796,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.provider != "vast":
                 missing.append("provider_must_be_vast")
             if args.qualification_action == "allocate":
+                expected_image_source_commit = (
+                    args.expected_image_source_commit or args.expected_source_commit
+                )
                 missing.extend(
                     name
                     for name in (
@@ -762,10 +806,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "provider_bundle_url_file",
                         "provider_output_put_url_file",
                         "provider_output_get_url_file",
-                        "expected_source_commit",
+                        "expected_image_source_commit",
                     )
-                    if not getattr(args, name, None)
+                    if not (
+                        expected_image_source_commit
+                        if name == "expected_image_source_commit"
+                        else getattr(args, name, None)
+                    )
                 )
+                if (
+                    args.expected_image_source_commit
+                    and args.expected_source_commit
+                    and args.expected_image_source_commit != args.expected_source_commit
+                ):
+                    missing.append("conflicting_image_source_commit_arguments")
             if args.qualification_action == "refresh-bootstrap" and not getattr(
                 args, "episode_bundle", None
             ):
@@ -811,13 +865,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     write_json(Path(args.adapter_output), result)
             else:
                 if args.qualification_action == "allocate":
-                    source_blockers, _checkout_commit = _source_checkout_blockers(
-                        args.expected_source_commit or ""
+                    source_blockers, control_plane_identity = (
+                        _control_plane_checkout_blockers()
                     )
                     if source_blockers:
                         result = {
                             "status": "blocked",
                             "blockers": source_blockers,
+                            "control_plane_identity": control_plane_identity,
                             "provider_mutations_performed": 0,
                         }
                         _write_blocked_qualification_allocation_outputs(args, result)
@@ -840,7 +895,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                         provider_bootstrap_url_file=args.provider_bootstrap_url_file,
                         release_evidence=args.release_evidence,
                         model_cache_evidence=args.model_cache_evidence,
-                        expected_source_commit=args.expected_source_commit,
+                        expected_source_commit=(
+                            args.expected_image_source_commit
+                            or args.expected_source_commit
+                        ),
+                        orchestrator_source_commit=(
+                            str(control_plane_identity["orchestrator_source_commit"])
+                            if args.qualification_action == "allocate"
+                            else None
+                        ),
                         provider_launch_request=args.provider_launch_request,
                         preflight_bundle=args.preflight_bundle,
                         admission_out=args.admission_out,
