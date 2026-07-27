@@ -64,6 +64,22 @@ def test_authorized_probe_runner_internal_json_reader_edges(tmp_path: Path) -> N
     empty_budget = tmp_path / "empty-budget.json"
     empty_budget.write_text(json.dumps({"status": "empty"}), encoding="utf-8")
     assert guards._session_estimated_cost(empty_budget) == (0.0, None)
+    assert (
+        guards.bounded_container_missing_retry_attempts(
+            max_wait_seconds=900,
+            retry_interval_seconds=15,
+            max_missing_seconds=720,
+        )
+        == 48
+    )
+    assert (
+        guards.bounded_container_missing_retry_attempts(
+            max_wait_seconds=30,
+            retry_interval_seconds=15,
+            max_missing_seconds=720,
+        )
+        == 2
+    )
     exhausted = guards.target_spend_guard(
         budget_path=attempts_budget,
         target_spend_usd=0.35,

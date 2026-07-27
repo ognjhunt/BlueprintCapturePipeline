@@ -1,0 +1,28 @@
+{
+  "schema_version": "policy_ranking_successor_bound_gpu_request.v1",
+  "status": "bound",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "source_commit": "fbc5d9bf8fc97c3337b8c63b8e795c2c02e36fe1",
+  "provider": "vast",
+  "probe_kind": "policy-ranking-successor-cosmos",
+  "public_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+  "provider_bundle_sha256": "481870aa449f8d5c7bfb2cc4403cc4145f7e82d256c5281259ff626d6c880e21",
+  "smoke_inventory_sha256": "c925d168c166ec7bf53ed9252a33a937416a3f6fa9ecad8a01d0e201920a07aa",
+  "selected_offer_id": 45070628,
+  "limits": {
+    "hard_cap_usd": 6.0,
+    "target_spend_usd": 3.25,
+    "max_hourly_rate_usd": 1.05,
+    "hard_ttl_seconds": 10800,
+    "one_resource": true,
+    "disk_gb": 250,
+    "min_gpu_ram_mb": 95000,
+    "min_reliability": 0.98,
+    "allowed_gpu_keywords": [
+      "RTX PRO 6000"
+    ]
+  },
+  "blockers": [],
+  "provider_mutations_performed": 0,
+  "manifest_sha256": "3af2c350ea488fea072d6a60e5f9e11cb1efde8ea95f376bc7d2dc4bc557b5f6"
+}

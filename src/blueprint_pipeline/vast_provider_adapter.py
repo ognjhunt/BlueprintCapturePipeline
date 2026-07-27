@@ -59,6 +59,12 @@ from .provider_runtime_bundle_contract import (
     PROVIDER_RUNTIME_BUNDLE_KINDS as VAST_PROVIDER_BUNDLE_KINDS,
     provider_runtime_contract_blockers,
 )
+from .vast_independent_watchdog_control import write_started_vast_instance_id
+from .vast_probe_guards import (
+    DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
+    VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
+    bounded_container_missing_retry_attempts,
+)
 from .wam_provider_output import (
     inspect_provider_runtime_output_zip,
     probe_mp4_video,
@@ -3969,8 +3975,10 @@ def run_vast_provider_adapter(
     preferred_gpu_keywords: Sequence[str] = (),
     preferred_geolocation_regex: str = "",
     prefer_isaac_rt: bool | None = None,
-    gpu_selection_policy: str | None = None,
+    gpu_selection_policy: str | Mapping[str, Any] | None = None,
     vast_launch_lock_file: str | Path | None = None,
+    instance_label_prefix: str = "blueprint-vast-probe-",
+    started_instance_id_path: str | Path | None = None,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
@@ -3983,6 +3991,9 @@ def run_vast_provider_adapter(
     if resolved_image_login_mode not in NGC_IMAGE_LOGIN_MODES:
         raise ValueError(f"unsupported_ngc_image_login_mode:{resolved_image_login_mode}")
     resolved_job_dir = Path(job_dir).expanduser().resolve()
+    resolved_label_prefix = _string(instance_label_prefix)
+    if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}", resolved_label_prefix):
+        raise ValueError("invalid_vast_instance_label_prefix")
     ensure_dir(resolved_job_dir)
     generated_at = utc_now_iso()
     resolved_machine_avoidlist_path = (
@@ -5139,7 +5150,7 @@ def run_vast_provider_adapter(
             )
             create_payload = _create_payload(
                 image=create_request_image,
-                label=f"blueprint-vast-probe-{int(time.time())}",
+                label=f"{resolved_label_prefix}{int(time.time())}",
                 launch_mode=launch_mode,
                 probe_script=probe_script,
                 disk_gb=resolved_disk_gb,
@@ -5240,6 +5251,8 @@ def run_vast_provider_adapter(
             raise RuntimeError("vast_create_response_missing_instance_id")
         started_at_monotonic = time.monotonic()
         instance_ids.append(instance_id)
+        if started_instance_id_path:
+            write_started_vast_instance_id(started_instance_id_path, instance_id)
         _budget_ledger(
             job_dir=resolved_job_dir,
             generated_at=utc_now_iso(),
@@ -5349,8 +5362,21 @@ def run_vast_provider_adapter(
             max_wait_seconds=min(startup_timeout_seconds, max_live_minutes * 60),
             retry_interval_seconds=30,
             success_markers=log_success_markers,
-            container_missing_retry_attempts=int(
-                os.environ.get(VAST_CONTAINER_MISSING_RETRY_ATTEMPTS_ENV, "2")
+            container_missing_retry_attempts=(
+                int(os.environ[VAST_CONTAINER_MISSING_RETRY_ATTEMPTS_ENV])
+                if VAST_CONTAINER_MISSING_RETRY_ATTEMPTS_ENV in os.environ
+                else bounded_container_missing_retry_attempts(
+                    max_wait_seconds=min(startup_timeout_seconds, max_live_minutes * 60),
+                    retry_interval_seconds=30,
+                    max_missing_seconds=(
+                        _env_int(
+                            VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
+                            DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
+                        )
+                        if provider_bundle_kind == "wam"
+                        else 60
+                    ),
+                )
             ),
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
         )

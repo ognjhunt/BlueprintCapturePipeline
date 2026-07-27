@@ -1,7 +1,7 @@
 {
   "schema_version": "policy_ranking_successor_provider_incident_ledger.v1",
   "experiment_id": "policy_ranking_successor_experiment_20260727",
-  "status": "second_zero_spend_infrastructure_retry_authorized",
+  "status": "paid_cold_container_infrastructure_failure_closed_v4_retry_authorized",
   "incidents": [
     {
       "incident_id": "successor-vast-pre-provider-gate-001",
@@ -67,11 +67,51 @@
         "gpu_admission_execute": "ce4ea530d4ed17422b41bea55563e537519e522735e6e98238aa467988cb4843",
         "vast_session_cost_summary": "98f3075413c8bb37c7c42c56d6a1e0f993c1d0fd4e92a63dd0eb62028d02fcdc"
       }
+    },
+    {
+      "incident_id": "successor-vast-cold-container-startup-003",
+      "observed_at": "2026-07-27T14:03:24-0500",
+      "classification": "infrastructure_failure",
+      "failure_stage": "paid_provider_cold_container_startup",
+      "blockers": [
+        "vast_heartbeat_container_missing"
+      ],
+      "source_commit": "fbc5d9bf8fc97c3337b8c63b8e795c2c02e36fe1",
+      "launcher_entrypoint": "python -m blueprint_pipeline.paid_resource_allocator",
+      "authorization_id_consumed": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v3",
+      "provider_api_mutation_reached": true,
+      "provider_allocation_created": true,
+      "provider_instance_id": 46031731,
+      "gpu": "RTX PRO 6000 WS",
+      "selected_gpu_hourly_rate_usd": 1.0162962962962963,
+      "actual_live_runtime_seconds_observed_by_adapter": 97.48557691695169,
+      "compute_spend_usd_estimated": 0.027521,
+      "api_vlm_spend_usd": 0.0,
+      "provider_teardown_verified": true,
+      "provider_zero_verified": true,
+      "scientific_output_consumed": false,
+      "scientific_rollout_count": 0,
+      "failure_mechanism": "Vast exposed the contract as running while the pinned cold image container was still absent; the synchronous WAM path used the generic two-poll missing-container tolerance and tore down before the configured startup window.",
+      "watchdog_contract_contradiction": "The v3 authorization required an independent watchdog armed before allocation, but only the adapter's in-process finally teardown was active. The adapter teardown succeeded; v4 adds a detached name-and-instance-bound watchdog and blocks before create unless its armed evidence exists.",
+      "retry_kind": "single_paid_infrastructure_retry_under_unchanged_cap",
+      "retry_authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v4",
+      "cumulative_compute_cap_usd": 6.0,
+      "additional_compute_authority_usd": 0.0,
+      "evidence_directory": "provider_attempt_v3_live",
+      "local_evidence_sha256": {
+        "vast_provider_adapter_result": "92c948d66d146230040e457975e25de20ab5a736e82ec3b103150bb4bf05f798",
+        "vast_wam_authorized_runner_manifest": "959d885d41009c859da085e9ab732078f0551fe409a32b94cd7a2a7277b043d0",
+        "gpu_admission_execute": "06a209e2022ac17cf79412274dc63e0515d6a0857e094cbb3ab93f3b0109223b",
+        "vast_session_cost_summary": "3cc1316222e3d84f4f589c24ba2b7cdc2322ecc9ec53c3b6b26a0942b53e0582",
+        "vast_teardown_manifest": "1794b43de1bcecb778a8dc9afe03655ea19373e5627e6bf4c56f44724c4dc56c",
+        "provider_zero_spend_guard": "4c55e34ab191fd1943e6d6f25cb559124dcc40d2a65f6606b6940f25cb7b0bb1",
+        "published_artifact_manifest": "e9b776b786794f39eddc14368d329f6fe939b32a8ba29dae934e77e8bf017aab"
+      }
     }
   ],
-  "infrastructure_retry_count": 2,
+  "infrastructure_retry_count": 3,
   "scientific_retry_count": 0,
-  "provider_mutations_performed": 0,
+  "provider_mutations_performed": 2,
   "claims": {
     "implementation": true,
     "runtime": false,

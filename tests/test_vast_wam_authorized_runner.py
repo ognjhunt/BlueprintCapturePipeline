@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -321,6 +322,105 @@ def test_vast_wam_authorized_runner_completed_path_and_cli(
     assert captured["allow_unverified_public_staging_for_paid_launch"] is True
     assert captured["allow_target_spend_overrun"] is True
     assert captured["vast_template_hash_id"] == "template-456"
+    assert captured["require_independent_watchdog"] is True
+
+
+def test_vast_wam_runner_arms_watchdog_before_adapter_and_closes_after_teardown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "bundle.zip"
+    _write_minimal_bundle(bundle)
+    order: list[str] = []
+    started_id = tmp_path / "watchdog" / "started_vast_instance_id.txt"
+    handle = SimpleNamespace(
+        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-test-",
+        started_instance_id_path=started_id,
+    )
+
+    def fake_arm(**_kwargs: Any) -> tuple[dict[str, Any], Any]:
+        order.append("arm")
+        return {"status": "armed", "blockers": []}, handle
+
+    def fake_adapter(**kwargs: Any) -> dict[str, Any]:
+        order.append("adapter")
+        assert kwargs["instance_label_prefix"] == handle.pod_name_prefix
+        assert kwargs["started_instance_id_path"] == started_id
+        return {
+            "status": "completed",
+            "reason": "ok",
+            "blockers": [],
+            "vast_instance_ids": [123],
+            "continuing_spend_from_this_run": False,
+        }
+
+    def fake_close(**kwargs: Any) -> dict[str, Any]:
+        order.append("close")
+        assert kwargs["instance_ids"] == [123]
+        assert kwargs["provider_teardown_completed"] is True
+        return {"status": "provider_terminal", "provider_absence_confirmed": True}
+
+    monkeypatch.setattr(runner, "arm_independent_vast_watchdog", fake_arm)
+    monkeypatch.setattr(runner, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(runner, "close_independent_vast_watchdog", fake_close)
+    monkeypatch.setattr(runner, "verify_public_staging_urls", _passed_public_staging)
+
+    result = runner.run_vast_wam_authorized_runner(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        public_base_url="https://example.trycloudflare.com",
+        token_file=tmp_path / "token",
+        secret_env_file=tmp_path / "urls.env",
+        session_budget_ledger=tmp_path / "budget.json",
+        allow_paid_vast_launch=True,
+        allow_target_spend_overrun=True,
+        require_independent_watchdog=True,
+        generated_at="2026-07-27T00:00:00+00:00",
+    )
+
+    assert order == ["arm", "adapter", "close"]
+    assert result["status"] == "completed"
+    assert result["independent_watchdog_handoff"]["status"] == "armed"
+    assert result["independent_watchdog_close"]["status"] == "provider_terminal"
+
+
+def test_vast_wam_runner_blocks_before_adapter_when_watchdog_does_not_arm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "bundle.zip"
+    _write_minimal_bundle(bundle)
+    monkeypatch.setattr(
+        runner,
+        "arm_independent_vast_watchdog",
+        lambda **_kwargs: (
+            {"status": "blocked", "blockers": ["independent_vast_watchdog_not_armed"]},
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_vast_provider_adapter",
+        lambda **_kwargs: pytest.fail("adapter must not run without watchdog"),
+    )
+    monkeypatch.setattr(runner, "verify_public_staging_urls", _passed_public_staging)
+
+    result = runner.run_vast_wam_authorized_runner(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        public_base_url="https://example.trycloudflare.com",
+        token_file=tmp_path / "token",
+        secret_env_file=tmp_path / "urls.env",
+        session_budget_ledger=tmp_path / "budget.json",
+        allow_paid_vast_launch=True,
+        allow_target_spend_overrun=True,
+        require_independent_watchdog=True,
+        generated_at="2026-07-27T00:00:00+00:00",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["paid_launch_attempted"] is False
+    assert "paid_vast_launch_watchdog_blocked" in result["blockers"]
 
 
 def test_vast_wam_authorized_runner_blocks_paid_launch_when_target_spend_would_be_exceeded(

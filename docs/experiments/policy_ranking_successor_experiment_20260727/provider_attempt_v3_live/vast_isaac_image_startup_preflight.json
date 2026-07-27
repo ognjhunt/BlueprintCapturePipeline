@@ -1,0 +1,21 @@
+{
+  "schema_version": "vast_isaac_image_startup_preflight.v1",
+  "generated_at": "2026-07-27T19:01:45.021622+00:00",
+  "status": "not_required",
+  "provider_bundle_kind": "wam",
+  "isaac_path_requested": false,
+  "selected_container_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+  "default_official_isaac_image": "nvcr.io/nvidia/isaac-sim:6.0.0",
+  "direct_official_isaac_image": false,
+  "vast_template_hash_present": false,
+  "use_vast_template_image": false,
+  "template_image_cache_proven": false,
+  "template_image_cache_evidence": "not_requested",
+  "custom_or_template_image_path": false,
+  "allow_cold_isaac_image_pull": true,
+  "max_live_minutes": 180,
+  "min_cold_isaac_pull_live_minutes": 18,
+  "blockers": [],
+  "warnings": [],
+  "raw_secret_values_recorded": false
+}

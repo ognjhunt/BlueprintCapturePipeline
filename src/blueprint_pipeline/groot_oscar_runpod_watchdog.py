@@ -18,13 +18,16 @@ from typing import Any, Callable, Mapping, Sequence
 from .common import utc_now_iso, write_json
 from .gpu_render_providers import get_render_provider
 from .paid_lane_guard import load_pending_teardowns
+from .watchdog_owner_teardown_contract import (
+    OWNER_TEARDOWN_CANCEL_NAME,
+    OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION,
+    WATCHDOG_EVIDENCE_NAME,
+    write_owner_teardown_cancel_request as _write_owner_teardown_cancel_request,
+)
 
 SCHEMA_VERSION = "groot_oscar_runpod_canary_watchdog.v1"
-EVIDENCE_NAME = "groot_oscar_runpod_canary_watchdog.json"
-OWNER_TEARDOWN_CANCEL_NAME = "groot_oscar_runpod_canary_watchdog_cancel.json"
-OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION = (
-    "groot_oscar_runpod_canary_watchdog_cancel.v1"
-)
+EVIDENCE_NAME = WATCHDOG_EVIDENCE_NAME
+write_owner_teardown_cancel_request = _write_owner_teardown_cancel_request
 SUPPORTED_PROVIDERS = ("runpod", "vast")
 VAST_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
 
@@ -73,30 +76,6 @@ def _owner_teardown_cancel_request(
     ):
         return {}
     return dict(payload)
-
-
-def write_owner_teardown_cancel_request(
-    *, root: Path, pod_name_prefix: str, provider_name: str, instance_id: str
-) -> dict[str, Any]:
-    """Persist the private request that makes the hard-TTL watchdog exit early."""
-
-    payload = {
-        "schema_version": OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION,
-        "requested_at": utc_now_iso(),
-        "requested_by": "qualification_owner_teardown",
-        "provider": provider_name,
-        "instance_id": instance_id,
-        "pod_name_prefix": pod_name_prefix,
-        "provider_absence_confirmed": True,
-        "provider_absence_evidence": (
-            "provider_api_exact_id_prefix_and_global_inventory"
-        ),
-        "raw_secret_values_recorded": False,
-    }
-    path = root / OWNER_TEARDOWN_CANCEL_NAME
-    write_json(path, payload)
-    os.chmod(path, 0o600)
-    return payload
 
 
 def _vast_billable_inventory(*, provider: Any, name_prefix: str) -> dict[str, Any]:

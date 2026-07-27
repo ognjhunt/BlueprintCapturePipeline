@@ -125,6 +125,7 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     assert captured["min_gpu_ram_mb"] == 95_000
     assert captured["max_compute_cap"] == 0
     assert captured["gpu_selection_policy"]["allowed_gpu_keywords"] == ("RTX PRO 6000",)
+    assert captured["require_independent_watchdog"] is True
 
     second = admission.run_successor_gpu_lane(
         authorization_path=EXPERIMENT / "compute_authorization.json",

@@ -1,0 +1,31 @@
+{
+  "schema_version": "vast_session_cost_summary.v4",
+  "generated_at": "2026-07-27T19:01:45.021622+00:00",
+  "status": "completed",
+  "parse_error_recovered": null,
+  "attempts": [
+    {
+      "generated_at": "2026-07-27T19:01:45.021622+00:00",
+      "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v3",
+      "status": "failed",
+      "reason": "vast_probe_failed",
+      "blockers": [
+        "vast_heartbeat_container_missing"
+      ],
+      "vast_instance_ids": [
+        46031731
+      ],
+      "selected_hourly_rate_usd": 1.0162962962962963,
+      "actual_live_runtime_seconds_observed_by_adapter": 97.48557691695169,
+      "estimated_cost_usd": 0.027521,
+      "continuing_spend_from_this_run": false,
+      "gpu_model_slug": "rtx_pro_6000_ws",
+      "machine_id": 141671,
+      "offer_id": 43983628
+    }
+  ],
+  "attempt_count": 1,
+  "estimated_cost_usd": 0.027521,
+  "live_runtime_seconds": 97.485577,
+  "raw_secret_values_recorded": false
+}

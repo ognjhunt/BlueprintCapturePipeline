@@ -61,8 +61,8 @@ DISK_GB = 250
 MIN_GPU_RAM_MB = 95_000
 MIN_RELIABILITY = 0.98
 MAX_PREFLIGHT_AGE_SECONDS = 900
-AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v3"
-PREDECESSOR_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v2"
+AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v4"
+PREDECESSOR_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v3"
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 EXPECTED_BUNDLE_SHA256 = "481870aa449f8d5c7bfb2cc4403cc4145f7e82d256c5281259ff626d6c880e21"
 EXPECTED_BUNDLE_SIZE_BYTES = 294_167
@@ -323,16 +323,22 @@ def build_successor_gpu_admission(
         authorization_blockers.append("successor_compute_authorization_single_use_invalid")
     if authorization.get("infrastructure_retry_of") != PREDECESSOR_AUTHORIZATION_ID:
         authorization_blockers.append("successor_compute_authorization_retry_predecessor_invalid")
-    if authorization.get("predecessor_provider_allocations") != 0:
+    if authorization.get("predecessor_provider_allocations") != 1:
         authorization_blockers.append(
             "successor_compute_authorization_retry_allocation_count_invalid"
         )
-    if authorization.get("predecessor_compute_spend_usd") != 0.0:
+    if authorization.get("predecessor_compute_spend_usd") != 0.027521:
         authorization_blockers.append("successor_compute_authorization_retry_prior_spend_invalid")
     if authorization.get("additional_compute_authority_usd") != 0.0:
         authorization_blockers.append(
             "successor_compute_authorization_retry_additional_authority_invalid"
         )
+    if (
+        authorization.get("infrastructure_retry_limit") != 1
+        or authorization.get("paid_infrastructure_retry_index") != 1
+        or authorization.get("pre_provider_zero_spend_authorization_replacements") != 2
+    ):
+        authorization_blockers.append("successor_compute_authorization_retry_contract_invalid")
     if authorization.get("paid_mutation_authorized") is not True:
         authorization_blockers.append("successor_compute_not_explicitly_authorized")
     try:
@@ -642,6 +648,7 @@ def run_successor_gpu_lane(
         preferred_gpu_keywords=RTX_ALLOWED_KEYWORDS,
         prefer_isaac_rt=False,
         gpu_selection_policy=RTX_SELECTION_POLICY,
+        require_independent_watchdog=True,
         paid_resource_admission_grant=grant,
     )
     result["authorization_consumption"] = consumption

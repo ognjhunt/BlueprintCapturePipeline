@@ -1,6 +1,6 @@
 # Policy-ranking successor experiment — 2026-07-27
 
-Status: `compute_authorized_second_zero_spend_infrastructure_repair_pending`
+Status: `paid_infrastructure_failure_closed_v4_repair_pending`
 
 This is a new experiment. Experiment 1 and Experiment 2 remain immutable historical
 experiments; none of their prediction matrices, held-out partitions, outcomes, thresholds,
@@ -41,17 +41,25 @@ Cosmos first passes causal qualification.
 ## Current state
 
 The user explicitly changed the compute ceiling to USD 6.00 while retaining the single
-RTX PRO 6000 Blackwell arm. Two execute requests failed closed before a provider API mutation:
-the first because two explicit Vast environment gates were absent, and the second because the
-provider bundle did not satisfy the shared crash-fallback marker contract. No resource was
-allocated and compute/API/VLM spend remains zero. A second bounded infrastructure retry is
-authorized under the unchanged USD 6 ceiling after bundle-contract preflight is added and the
-repair merges through protected main. No model weights have been downloaded, no WAM output has
-been generated, and no API/VLM request has been sent.
+RTX PRO 6000 Blackwell arm. Two execute requests first failed closed before a provider API
+mutation: missing explicit Vast environment gates, then a missing shared crash-fallback bundle
+contract. The repaired v3 request allocated one Blackwell instance through the shared allocator.
+Vast exposed the contract as running while its cold image container was still absent; the
+synchronous WAM path allowed only two missing-container polls, then destroyed the instance after
+97.49 seconds. Estimated compute spend is USD 0.027521, provider-zero is independently verified,
+and API/VLM spend remains zero. No scientific rollout or WAM output was produced.
+
+The v3 evidence also exposed that its authorization required a detached watchdog armed before
+allocation while only the adapter's in-process teardown was active. Teardown succeeded, but that
+requirement is recorded as not met. The v4 repair reuses the bounded cold-pull policy already used
+by asynchronous WAM runs and blocks every successor create call unless a detached name- and
+instance-bound hard-TTL watchdog has first written armed evidence. One paid infrastructure retry
+is authorized under the unchanged USD 6 ceiling, with no additional spending authority.
 
 ## Proof boundary
 
-This namespace currently proves implementation and zero-cost admission preparation only. It
-does not prove runtime, generated media, WAM causal validity, evaluator validity, simulator
+This namespace currently proves implementation, provider allocation/teardown, and a closed
+infrastructure failure only. It does not prove successful model runtime, generated media, WAM
+causal validity, evaluator validity, simulator
 outcomes, ranking fidelity, captured-site portability, warehouse portability, economics versus
 physical evaluation, or physical performance.

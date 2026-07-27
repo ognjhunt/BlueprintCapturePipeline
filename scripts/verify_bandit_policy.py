@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Enforce the reviewed Bandit high/medium-finding policy.
 
-Bandit findings are matched by exact code-and-location fingerprints so a moved
-or edited finding re-enters review instead of silently inheriting an exception.
+Bandit findings are matched by exact code fingerprints anchored to their file
+and scanner rule. Pure line-number drift does not invalidate a review, while a
+code edit, file move, or rule change re-enters review.
 High findings can never be baselined. Medium exceptions are temporary,
 owner-bound, and expire.
 """
@@ -10,6 +11,7 @@ owner-bound, and expire.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -19,9 +21,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-SCHEMA_VERSION = "blueprint.bandit_triage.v1"
+SCHEMA_VERSION = "blueprint.bandit_triage.v2"
 REPORT_SCHEMA_VERSION = "blueprint.bandit_policy_gate.v1"
 EXPECTED_SCANNER_VERSION = "1.8.6"
+FINGERPRINT_POLICY = (
+    "filename_test_id_ast_scope_column_issue_text_canonical_code_and_source_anchor"
+)
 ALLOWED_DISPOSITIONS = {"accepted_risk", "false_positive", "mitigated_by_control"}
 
 
@@ -47,14 +52,67 @@ def _relative_filename(value: object, root: Path) -> str:
         return path.as_posix()
 
 
+def _scope_name(filename: object, line_number: object, root: Path) -> str:
+    """Return the narrowest AST scope containing a finding's source line."""
+
+    path = Path(str(filename or ""))
+    if not path.is_absolute():
+        path = root / path
+    try:
+        line = int(str(line_number))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, SyntaxError, TypeError, ValueError):
+        return "<module>"
+    candidates: list[tuple[int, str]] = []
+
+    def visit(node: ast.AST, parents: tuple[str, ...] = ()) -> None:
+        name = getattr(node, "name", None)
+        next_parents = parents
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and name:
+            end = int(getattr(node, "end_lineno", node.lineno))
+            if int(node.lineno) <= line <= end:
+                next_parents = (*parents, str(name))
+                candidates.append((end - int(node.lineno), ".".join(next_parents)))
+        for child in ast.iter_child_nodes(node):
+            visit(child, next_parents)
+
+    visit(tree)
+    return min(candidates)[1] if candidates else "<module>"
+
+
+def _source_anchor(
+    filename: object, line_number: object, root: Path, *, radius: int = 6
+) -> str:
+    """Return normalized nearby source to disambiguate repeated code in one scope."""
+
+    path = Path(str(filename or ""))
+    if not path.is_absolute():
+        path = root / path
+    try:
+        line = int(str(line_number))
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError, TypeError, ValueError):
+        return ""
+    start = max(0, line - 1 - radius)
+    end = min(len(lines), line + radius)
+    return "\n".join(
+        normalized
+        for raw in lines[start:end]
+        if (normalized := " ".join(raw.split()))
+    )
+
+
 def finding_fingerprint(finding: Mapping[str, Any], *, root: Path) -> str:
     identity = {
         "filename": _relative_filename(finding.get("filename"), root),
         "test_id": str(finding.get("test_id") or ""),
-        # Bandit can report multiple findings from the same short context block.
-        # Keeping the exact scanner line distinguishes those sites and makes an
-        # edit re-enter review instead of inheriting a nearby exception.
-        "line_number": finding.get("line_number"),
+        "scope": _scope_name(
+            finding.get("filename"), finding.get("line_number"), root
+        ),
+        "source_anchor": _source_anchor(
+            finding.get("filename"), finding.get("line_number"), root
+        ),
+        "col_offset": finding.get("col_offset"),
         "issue_text": " ".join(str(finding.get("issue_text") or "").split()),
         "code": _canonical_code(finding.get("code")),
     }
@@ -86,6 +144,8 @@ def validate_policy(
         blockers.append("triage_schema_version_invalid")
     if triage.get("scanner_version") != EXPECTED_SCANNER_VERSION:
         blockers.append("triage_scanner_version_invalid")
+    if triage.get("fingerprint_policy") != FINGERPRINT_POLICY:
+        blockers.append("triage_fingerprint_policy_invalid")
     raw_entries = triage.get("entries")
     entries = raw_entries if isinstance(raw_entries, list) else []
     if not isinstance(raw_entries, list):
@@ -155,7 +215,6 @@ def validate_policy(
         metadata = {
             "test_id": item["test_id"],
             "filename": item["filename"],
-            "line_number": item["line_number"],
         }
         for key, expected in metadata.items():
             if matched_entry.get(key) != expected:
