@@ -1,6 +1,6 @@
 # Policy-ranking successor experiment — 2026-07-27
 
-Status: `compute_authorized_prelaunch_admission_and_protected_main_pending`
+Status: `compute_authorized_second_zero_spend_infrastructure_repair_pending`
 
 This is a new experiment. Experiment 1 and Experiment 2 remain immutable historical
 experiments; none of their prediction matrices, held-out partitions, outcomes, thresholds,
@@ -41,11 +41,13 @@ Cosmos first passes causal qualification.
 ## Current state
 
 The user explicitly changed the compute ceiling to USD 6.00 while retaining the single
-RTX PRO 6000 Blackwell arm. The first execute request failed closed before a provider API
-mutation because two explicit Vast environment gates were absent; no resource was allocated
-and compute/API/VLM spend remained zero. One infrastructure retry is authorized after the
-gate-order repair merges through protected main. No model weights have been downloaded, no WAM
-output has been generated, and no API/VLM request has been sent.
+RTX PRO 6000 Blackwell arm. Two execute requests failed closed before a provider API mutation:
+the first because two explicit Vast environment gates were absent, and the second because the
+provider bundle did not satisfy the shared crash-fallback marker contract. No resource was
+allocated and compute/API/VLM spend remains zero. A second bounded infrastructure retry is
+authorized under the unchanged USD 6 ceiling after bundle-contract preflight is added and the
+repair merges through protected main. No model weights have been downloaded, no WAM output has
+been generated, and no API/VLM request has been sent.
 
 ## Proof boundary
 

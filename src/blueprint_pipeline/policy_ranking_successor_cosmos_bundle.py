@@ -52,7 +52,7 @@ mkdir -p "$OUTPUT_DIR"
 export BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR="$OUTPUT_DIR"
 python "$RUNTIME_DIR/wam_provider_runtime_runner.py"
 runner_rc=$?
-if [ ! -f "$OUTPUT_DIR/wam_runtime_result.json" ]; then
+write_missing_result() {
   python - "$OUTPUT_DIR/wam_runtime_result.json" "$runner_rc" <<'PY'
 import json
 import sys
@@ -70,6 +70,9 @@ payload = {
 }
 path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
 PY
+}
+if [ ! -f "$OUTPUT_DIR/wam_runtime_result.json" ]; then
+  write_missing_result
 fi
 exit "$runner_rc"
 """
@@ -159,8 +162,7 @@ def _build_action_streams(sample_root: Path) -> dict[str, Any]:
         source_gripper_action_flipped=True,
     )
     swapped_actions = [
-        [0.001, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0 if i < 8 else 0.0]
-        for i in range(16)
+        [0.001, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0 if i < 8 else 0.0] for i in range(16)
     ]
     swapped = droid_action_stream(swapped_actions)
     conditions = build_action_controls(recorded, swapped, shuffle_seed=SHUFFLE_SEED)
@@ -175,7 +177,9 @@ def _build_action_streams(sample_root: Path) -> dict[str, Any]:
     }
 
 
-def _zip_write(archive: zipfile.ZipFile, name: str, data: bytes, *, executable: bool = False) -> None:
+def _zip_write(
+    archive: zipfile.ZipFile, name: str, data: bytes, *, executable: bool = False
+) -> None:
     info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = ((0o755 if executable else 0o644) & 0xFFFF) << 16
@@ -208,12 +212,13 @@ def build_successor_cosmos_bundle(
         initial_hash = _compose_initial_observation(root, initial)
         if inventory["initial_observation_sha256"] != initial_hash:
             raise ValueError("frozen_initial_observation_hash_mismatch")
-        action_payload = json.dumps(
-            action_streams, indent=2, sort_keys=True, allow_nan=False
-        ).encode("utf-8") + b"\n"
-        inventory_payload = json.dumps(
-            inventory, indent=2, sort_keys=True, allow_nan=False
-        ).encode("utf-8") + b"\n"
+        action_payload = (
+            json.dumps(action_streams, indent=2, sort_keys=True, allow_nan=False).encode("utf-8")
+            + b"\n"
+        )
+        inventory_payload = (
+            json.dumps(inventory, indent=2, sort_keys=True, allow_nan=False).encode("utf-8") + b"\n"
+        )
         input_manifest = {
             "schema_version": "policy_ranking_successor_wam_rollout_input.v1",
             "experiment_id": EXPERIMENT_ID,
