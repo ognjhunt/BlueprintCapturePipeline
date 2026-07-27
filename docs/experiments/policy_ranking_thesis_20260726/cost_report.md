@@ -1,6 +1,6 @@
 # Cost and resource report
 
-Snapshot: 2026-07-26 13:26 America/Chicago.
+Snapshot: 2026-07-26 20:37 America/Chicago.
 
 | Stage | Provider mutation | Paid GPU | Measured or admitted cost |
 |---|---|---|---|
@@ -27,7 +27,19 @@ Snapshot: 2026-07-26 13:26 America/Chicago.
 | V2 held-out judge attempt 002 | Exact frozen rerun at concurrency two; 0/686 accepted and 686 final provider rate-limit blockers | None | $0 metered usage cost; 2,199.172 seconds wall time; labels remained sealed and no held-out metric exists |
 | Attributed OSCAR generation for 49-rollout pilot | Authors generated the released media; not a Blueprint provider mutation | Single GH200 in paper | At the paper's 2.214 FPS, an 81-frame-by-49 serial equivalent is approximately 1,792.7 seconds (29.88 minutes), excluding load/I/O/preprocessing; this is attributed, not Blueprint-measured |
 | Controlled MuJoCo task simulation | Local controls only | None | Positive/negative controls measured locally for both InteriorGS and the NVIDIA Warehouse visual-domain bridge; no learned-policy episode |
-| Two-scene learned-policy rollout | Not run | None | Vast's frozen $0.75/hour ceiling exactly consumes the $3 hard cap at the four-hour watchdog TTL; the live A40 snapshot would be cheaper but is not reserved capacity. Actual checkpoint/policy/simulator runtime remains unmeasured and any paid lane requires exact-main admission |
+| Exact-main OpenPI image build | One DigitalOcean CPU builder, torn down | None | 1,319.309 seconds; maximum compute spend $0.0610804; immutable digest `f8f4dc01...`; provider absence confirmed |
+| Two-scene learned-policy rollout | One Vast instance, torn down | RTX 6000 Ada | 991 charged GPU-seconds; conservative settlement $0.206458; 24/24 episodes completed; exact/prefix/global absence confirmed; lease released |
 | Physical robot evaluation | Forbidden in this goal | Forbidden | $0 spent |
 
-The current evidence does not yet establish the thesis's speed or cost advantage. The 2.27x pilot ratio is judge-only and is not an end-to-end claim. Adding the paper-attributed single-GH200 OSCAR generation estimate gives approximately 37.34 minutes for pilot WAM generation plus judging, versus a 16.97-minute physical action-only lower bound; that comparison omits overhead on both sides and cannot decide the thesis. The experiment establishes that label-blind preparation and hybrid-site ingestion can be performed locally without a paid GPU and records the completed v2 pilot and calibration judge measurements. The interrupted attempt's elapsed time was not finalized; the process was observed beyond 446 seconds and that lower-bound observation is preserved rather than converted into a false exact duration. A final verdict still needs Blueprint-operated WAM/policy/simulator runtime and a fair physical counterfactual, and must state whether any physical-exhaustive comparison is measured, sourced, or merely a range.
+The exact-main build plus learned-policy execution consumed about 38.5 serial
+compute minutes and $0.267539. Conservative paid-provider accounting across the
+recorded judge attempts, builder, and GPU campaign is approximately $11.60.
+This proves that the offline experiment can be inexpensive, but not that it is
+substantially faster or cheaper than exhaustive physical evaluation. The 2.27x
+pilot ratio is judge-only and is not an end-to-end claim. Adding the
+paper-attributed single-GH200 OSCAR generation estimate gives approximately
+37.34 minutes for pilot WAM generation plus judging, versus a 16.97-minute
+physical action-only lower bound; that comparison omits overhead on both sides.
+Physical total monetary cost remains unmeasured. These economic gaps are
+retained in the `thesis_not_supported` verdict rather than filled with assumed
+robot costs.

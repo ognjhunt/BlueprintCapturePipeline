@@ -2290,6 +2290,32 @@ class VastRenderProvider(GpuRenderProvider):
             )
             else _instance_list_rows(response)
         )
+        # Vast's exact-instance endpoint returns HTTP 200 with
+        # ``{"instances": null}`` after a contract has been deleted.  That is
+        # an authoritative negative lookup, not a transport failure.  Keep
+        # malformed 200 responses fail-closed, but allow the explicit empty
+        # ``instances`` value to prove exact-ID absence so teardown watchdogs
+        # do not remain armed until their hard deadline after a successful
+        # delete.
+        explicit_empty_instance = bool(
+            status == 200
+            and "instances" in response
+            and (
+                response.get("instances") is None
+                or response.get("instances") is False
+            )
+        )
+        if explicit_empty_instance:
+            return {
+                "status": "absent",
+                "provider": self.name,
+                "http": status,
+                "instance_id": normalized_id,
+                "provider_absence_confirmed": True,
+                "api_confirmed": True,
+                "absence_evidence": "exact_instance_endpoint_explicit_empty",
+                "raw_provider_response_recorded": False,
+            }
         if status != 200 or not rows:
             return {
                 "status": "unavailable",
