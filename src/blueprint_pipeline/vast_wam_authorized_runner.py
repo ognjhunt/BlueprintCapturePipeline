@@ -42,6 +42,8 @@ from .vast_probe_guards import (
 )
 from .oscar_official_release import OFFICIAL_OSCAR_WAM_IMAGE_REF
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .policy_ranking_successor_retained_session import create_retained_session_manifest
+from .gpu_render_providers import get_render_provider
 
 
 VAST_WAM_AUTHORIZED_RUNNER_SCHEMA_VERSION = "vast_wam_authorized_runner.v1"
@@ -111,6 +113,8 @@ def run_vast_wam_authorized_runner(
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     require_independent_watchdog: bool = False,
+    retain_instance_on_runtime_failure: bool = False,
+    retention_binding: Mapping[str, Any] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
@@ -220,6 +224,7 @@ def run_vast_wam_authorized_runner(
     watchdog_handle: VastWatchdogHandle | None = None
     watchdog_handoff: dict[str, Any] = {"status": "not_required"}
     watchdog_close: dict[str, Any] = {"status": "not_required"}
+    retained_session: dict[str, Any] = {"status": "not_created"}
     paid_launch_attempted = False
     if allow_paid_vast_launch:
         if not provider_bundle_url or not provider_output_put_url:
@@ -280,6 +285,10 @@ def run_vast_wam_authorized_runner(
                     started_instance_id_path=(
                         watchdog_handle.started_instance_id_path if watchdog_handle else None
                     ),
+                    retain_instance_on_runtime_failure=(
+                        retain_instance_on_runtime_failure and watchdog_handle is not None
+                    ),
+                    retention_watchdog_handoff=watchdog_handoff,
                     paid_resource_admission_grant=paid_resource_admission_grant,
                 )
                 if watchdog_handle:
@@ -300,15 +309,71 @@ def run_vast_wam_authorized_runner(
                     if watchdog_close.get("status") not in {
                         "provider_terminal",
                         "cancelled_no_allocation",
+                        "retained_until_hard_ttl",
                     }:
                         blockers.append("independent_vast_watchdog_not_terminal")
+                    if (
+                        adapter_result.get("retained_owned") is True
+                        and watchdog_close.get("status") == "retained_until_hard_ttl"
+                    ):
+                        binding = dict(retention_binding or {})
+                        try:
+                            retained_session = create_retained_session_manifest(
+                                job_dir=resolved_job_dir,
+                                adapter_result=adapter_result,
+                                watchdog_handoff=watchdog_handoff,
+                                source_commit=str(binding["source_commit"]),
+                                dirty_state_declaration=str(binding["dirty_state_declaration"]),
+                                bundle_sha256=str(binding["bundle_sha256"]),
+                                authorization_receipt_sha256=str(
+                                    binding["authorization_receipt_sha256"]
+                                ),
+                                image_digest=str(binding["image_digest"]),
+                                checkpoint=str(binding["checkpoint"]),
+                                checkpoint_revision=str(binding["checkpoint_revision"]),
+                            )
+                        except (KeyError, OSError, ValueError) as exc:
+                            blockers.append(
+                                f"successor_retained_session_handoff_failed:{type(exc).__name__}"
+                            )
+                            retained_ids = [
+                                int(value)
+                                for value in adapter_result.get("vast_instance_ids") or []
+                            ]
+                            teardown = (
+                                get_render_provider("vast").terminate(str(retained_ids[-1]))
+                                if retained_ids
+                                else {"status": "blocked"}
+                            )
+                            retained_session = {
+                                "status": "teardown_requested",
+                                "reason": "retained_session_handoff_failed",
+                                "provider_teardown": teardown,
+                            }
+                            if teardown.get("status") == "terminated":
+                                adapter_result["retained_owned"] = False
+                                adapter_result["continuing_spend_from_this_run"] = False
+                                watchdog_close = close_independent_vast_watchdog(
+                                    job_dir=resolved_job_dir,
+                                    handle=watchdog_handle,
+                                    instance_ids=retained_ids,
+                                    provider_teardown_completed=True,
+                                )
                 if adapter_result.get("status") != "completed":
                     blockers.extend(str(item) for item in adapter_result.get("blockers") or [])
     else:
         blockers.append("paid_vast_launch_not_authorized_by_runner_flag")
 
+    retained_owned = bool(
+        paid_launch_attempted
+        and adapter_result
+        and adapter_result.get("retained_owned") is True
+        and watchdog_close.get("status") == "retained_until_hard_ttl"
+    )
     status = (
-        "completed"
+        "retained_owned"
+        if retained_owned
+        else "completed"
         if paid_launch_attempted
         and adapter_result
         and adapter_result.get("status") == "completed"
@@ -347,6 +412,9 @@ def run_vast_wam_authorized_runner(
         "allow_paid_vast_launch": allow_paid_vast_launch,
         "paid_launch_attempted": paid_launch_attempted,
         "independent_watchdog_required": require_independent_watchdog,
+        "retention_requested": retain_instance_on_runtime_failure,
+        "retained_owned": retained_owned,
+        "retained_session": retained_session,
         "independent_watchdog_handoff": watchdog_handoff,
         "independent_watchdog_close": watchdog_close,
         "adapter_result_status": adapter_result.get("status") if adapter_result else None,

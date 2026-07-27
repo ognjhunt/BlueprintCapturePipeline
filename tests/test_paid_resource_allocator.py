@@ -222,6 +222,72 @@ def test_allocator_cli_never_prints_provider_result_secrets(monkeypatch, capsys)
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def test_allocator_routes_successor_refresh_without_new_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+    commit = "a" * 40
+    authorization = tmp_path / "authorization.json"
+    authorization.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": commit}),
+    )
+
+    def fake_refresh(**kwargs):  # type: ignore[no-untyped-def]
+        observed.update(kwargs)
+        return {"status": "provider_absent", "continuing_spend": False}
+
+    monkeypatch.setattr(allocator, "refresh_retained_session", fake_refresh)
+
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            allocator.POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
+            "--successor-action",
+            "refresh",
+            "--provider-launch-request",
+            str(authorization),
+            "--release-evidence",
+            str(tmp_path / "release.json"),
+            "--model-cache-evidence",
+            str(tmp_path / "models.json"),
+            "--preflight-bundle",
+            str(tmp_path / "preflight.json"),
+            "--admission-out",
+            str(tmp_path / "admission.json"),
+            "--bound-request-out",
+            str(tmp_path / "bound.json"),
+            "--adapter-output",
+            str(tmp_path / "result.json"),
+            "--pod-name",
+            str(tmp_path / "job"),
+            "--episode-bundle",
+            str(tmp_path / "bundle.zip"),
+            "--successor-public-base-url",
+            "https://example.test",
+            "--successor-token-file",
+            str(tmp_path / "token"),
+            "--successor-session-manifest",
+            str(tmp_path / "session.json"),
+            "--expected-source-commit",
+            commit,
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["session_manifest"] == str(tmp_path / "session.json")
+    assert observed["source_commit"] == commit
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
 def test_gpu_warm_worker_uses_canonical_allocator_and_redacts_stdout(monkeypatch, capsys) -> None:
     observed = {}
 

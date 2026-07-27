@@ -66,20 +66,16 @@ DISK_GB = 250
 MIN_GPU_RAM_MB = 95_000
 MIN_RELIABILITY = 0.98
 MAX_PREFLIGHT_AGE_SECONDS = 900
-AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v5"
-PREDECESSOR_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v3"
-REPLACED_ZERO_SPEND_AUTHORIZATION_ID = (
-    "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v4"
-)
+AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v6"
+PREDECESSOR_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v5"
+REPLACED_ZERO_SPEND_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v4"
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
-EXPECTED_BUNDLE_SHA256 = "3fc9f7a0e7d5a5e21ccad6a879f8c5ec9e81a4c031104d3ca91b9cc431142d7c"
-EXPECTED_BUNDLE_SIZE_BYTES = 296_645
+EXPECTED_BUNDLE_SHA256 = "79e25e21290a826479cd675b5363c3787f4925b094ae53514e493370e1935948"
+EXPECTED_BUNDLE_SIZE_BYTES = 301_170
 QUALIFICATION_CANARY_REQUEST_COUNT = 2
 SCIENTIFIC_MATRIX_REQUEST_COUNT = 10
 TOTAL_INITIAL_GENERATION_REQUEST_COUNT = 12
-REQUEST_BUDGET_AMENDMENT_SHA256 = (
-    "e67226e16318a073e9190915554dc37b1d378fc155c6eb6bec7ecc79fb27786a"
-)
+REQUEST_BUDGET_AMENDMENT_SHA256 = "e67226e16318a073e9190915554dc37b1d378fc155c6eb6bec7ecc79fb27786a"
 EXPECTED_EMBEDDED_INPUT_HASHES = {
     "initial_observation_sha256": (
         "8843f0fc9c68914dfb62222c961db19b37a5f155e602ff4a545eea1dcf42636d"
@@ -102,6 +98,7 @@ REQUIRED_BUNDLE_ENTRIES = frozenset(
     {
         "provider_runtime/wam_provider_runtime_runner.py",
         "provider_runtime/run_wam_provider_runtime.sh",
+        "provider_runtime/successor_retained_control.py",
         "provider_runtime/wam_provider_runtime_manifest.json",
         "provider_runtime/wam_rollout_input_manifest.json",
         "provider_runtime/cosmos3_input/initial_observation.png",
@@ -352,19 +349,19 @@ def build_successor_gpu_admission(
         authorization_blockers.append(
             "successor_compute_authorization_zero_spend_replacement_invalid"
         )
-    if authorization.get("predecessor_provider_allocations") != 1:
+    if authorization.get("predecessor_provider_allocations") != 2:
         authorization_blockers.append(
             "successor_compute_authorization_retry_allocation_count_invalid"
         )
-    if authorization.get("predecessor_compute_spend_usd") != 0.027521:
+    if authorization.get("predecessor_compute_spend_usd") != 0.050839:
         authorization_blockers.append("successor_compute_authorization_retry_prior_spend_invalid")
     if authorization.get("additional_compute_authority_usd") != 0.0:
         authorization_blockers.append(
             "successor_compute_authorization_retry_additional_authority_invalid"
         )
     if (
-        authorization.get("infrastructure_retry_limit") != 1
-        or authorization.get("paid_infrastructure_retry_index") != 1
+        authorization.get("infrastructure_retry_limit") != 2
+        or authorization.get("paid_infrastructure_retry_index") != 2
         or authorization.get("pre_provider_zero_spend_authorization_replacements") != 3
     ):
         authorization_blockers.append("successor_compute_authorization_retry_contract_invalid")
@@ -731,6 +728,18 @@ def run_successor_gpu_lane(
         prefer_isaac_rt=False,
         gpu_selection_policy=RTX_SELECTION_POLICY,
         require_independent_watchdog=True,
+        retain_instance_on_runtime_failure=True,
+        retention_binding={
+            "source_commit": expected_source_commit,
+            "dirty_state_declaration": "clean_exact_commit",
+            "bundle_sha256": bundle["bundle_sha256"],
+            "authorization_receipt_sha256": _sha256_file(
+                Path(provider_bundle_receipt_path).expanduser().resolve()
+            ),
+            "image_digest": VLLM_IMAGE_DIGEST,
+            "checkpoint": CHECKPOINT_REPOSITORY,
+            "checkpoint_revision": CHECKPOINT_REVISION,
+        },
         paid_resource_admission_grant=grant,
     )
     result["authorization_consumption"] = consumption

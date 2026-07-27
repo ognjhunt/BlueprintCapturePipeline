@@ -50,6 +50,9 @@ RUNTIME_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 OUTPUT_DIR=${BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR:-"$RUNTIME_DIR/../runtime_output"}
 mkdir -p "$OUTPUT_DIR"
 export BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR="$OUTPUT_DIR"
+RETAINED_ROOT=${BLUEPRINT_COSMOS_RETAINED_ROOT:-/workspace/blueprint_vast_probe/cosmos3_retained}
+mkdir -p "$RETAINED_ROOT"
+install -m 700 "$RUNTIME_DIR/successor_retained_control.py" "$RETAINED_ROOT/successor_retained_control.py"
 python "$RUNTIME_DIR/wam_provider_runtime_runner.py"
 runner_rc=$?
 write_missing_result() {
@@ -195,7 +198,11 @@ def build_successor_cosmos_bundle(
 ) -> dict[str, Any]:
     root = Path(sample_root).expanduser().resolve()
     inventory_path = Path(smoke_inventory_path).expanduser().resolve()
-    output = Path(output_bundle).expanduser().resolve()
+    output_argument = Path(output_bundle).expanduser()
+    output = output_argument.resolve()
+    receipt_bundle_path = (
+        output_argument.as_posix() if not output_argument.is_absolute() else output.name
+    )
     source_hashes = _verify_sample(root)
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     validate_smoke_inventory_manifest(inventory)
@@ -206,6 +213,9 @@ def build_successor_cosmos_bundle(
             raise ValueError(f"frozen_action_hash_mismatch:{condition}")
     runtime_source = (
         Path(__file__).with_name("policy_ranking_successor_cosmos_provider_runtime.py")
+    ).read_bytes()
+    retained_control_source = (
+        Path(__file__).with_name("policy_ranking_successor_retained_remote.py")
     ).read_bytes()
     with tempfile.TemporaryDirectory(prefix="cosmos3-successor-bundle-") as temporary:
         initial = Path(temporary) / "initial_observation.png"
@@ -280,6 +290,12 @@ def build_successor_cosmos_bundle(
             )
             _zip_write(
                 archive,
+                "provider_runtime/successor_retained_control.py",
+                retained_control_source,
+                executable=True,
+            )
+            _zip_write(
+                archive,
                 "provider_runtime/wam_provider_runtime_manifest.json",
                 json.dumps(runtime_manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n",
             )
@@ -307,7 +323,7 @@ def build_successor_cosmos_bundle(
         "schema_version": "policy_ranking_successor_cosmos_bundle_receipt.v1",
         "experiment_id": EXPERIMENT_ID,
         "status": "built",
-        "bundle_path": str(output),
+        "bundle_path": receipt_bundle_path,
         "bundle_sha256": _sha256_file(output),
         "bundle_size_bytes": output.stat().st_size,
         "public_image": f"{VLLM_IMAGE}@{VLLM_IMAGE_DIGEST}",

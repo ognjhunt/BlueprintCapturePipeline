@@ -35,6 +35,96 @@ from blueprint_pipeline.vast_provider_adapter import (
 pytestmark = pytest.mark.slow
 
 
+def test_retention_requires_healthy_host_and_armed_watchdog() -> None:
+    decision = vpa._retention_decision(
+        requested=True,
+        watchdog_handoff={
+            "status": "armed",
+            "independent_process": True,
+            "watchdog_armed_before_allocation": True,
+            "watchdog_pid": 123,
+            "watchdog_deadline_epoch": 2_000.0,
+        },
+        instance_ids=[456],
+        startup_probe={"status": "completed", "startup_probe_proven": True},
+        gpu_sanity={"status": "completed", "gpu_sanity_proven": True},
+        video_smoke={"status": "blocked"},
+        observed_now_epoch=1_000.0,
+    )
+
+    assert decision["status"] == "retained_owned"
+    assert decision["blockers"] == []
+
+
+@pytest.mark.parametrize(
+    ("watchdog", "startup", "gpu", "video", "expected_blocker"),
+    [
+        (
+            {},
+            {"status": "completed", "startup_probe_proven": True},
+            {"status": "completed", "gpu_sanity_proven": True},
+            {"status": "blocked"},
+            "retention_independent_watchdog_not_armed",
+        ),
+        (
+            {
+                "status": "armed",
+                "independent_process": True,
+                "watchdog_armed_before_allocation": True,
+                "watchdog_deadline_epoch": 2_000.0,
+            },
+            {},
+            {"status": "completed", "gpu_sanity_proven": True},
+            {"status": "blocked"},
+            "retention_container_health_not_proven",
+        ),
+        (
+            {
+                "status": "armed",
+                "independent_process": True,
+                "watchdog_armed_before_allocation": True,
+                "watchdog_deadline_epoch": 2_000.0,
+            },
+            {"status": "completed", "startup_probe_proven": True},
+            {},
+            {"status": "blocked"},
+            "retention_gpu_health_not_proven",
+        ),
+        (
+            {
+                "status": "armed",
+                "independent_process": True,
+                "watchdog_armed_before_allocation": True,
+                "watchdog_deadline_epoch": 2_000.0,
+            },
+            {"status": "completed", "startup_probe_proven": True},
+            {"status": "completed", "gpu_sanity_proven": True},
+            {"status": "completed"},
+            "retention_not_needed_after_terminal_bundle_success",
+        ),
+    ],
+)
+def test_retention_fails_closed(
+    watchdog: dict[str, object],
+    startup: dict[str, object],
+    gpu: dict[str, object],
+    video: dict[str, object],
+    expected_blocker: str,
+) -> None:
+    decision = vpa._retention_decision(
+        requested=True,
+        watchdog_handoff=watchdog,
+        instance_ids=[456],
+        startup_probe=startup,
+        gpu_sanity=gpu,
+        video_smoke=video,
+        observed_now_epoch=1_000.0,
+    )
+
+    assert decision["status"] == "teardown_required"
+    assert expected_blocker in decision["blockers"]
+
+
 def test_args_log_hold_wraps_terminal_heredoc_and_preserves_probe_rc() -> None:
     probe = """set -e
 python3 - <<'PY'

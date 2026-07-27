@@ -31,6 +31,66 @@ def test_server_command_pins_pipeline_revision_dtype_and_guardrail_mode(
     assert "--allowed-local-media-path" not in command
 
 
+def test_retained_server_reuses_exact_healthy_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    retained = tmp_path / "retained"
+    retained.mkdir()
+    identity = {
+        "pid": 321,
+        "process_start_ticks": "444",
+        "server_port": runtime.SERVER_PORT,
+        "pipeline_class": runtime.PIPELINE_CLASS,
+        "checkpoint": runtime.CHECKPOINT,
+        "checkpoint_revision": runtime.CHECKPOINT_REVISION,
+    }
+    runtime.write_json(retained / "server_identity.json", identity)
+
+    class Response:
+        ok = True
+
+    monkeypatch.setenv(runtime.RETAIN_SERVER_ENV, "true")
+    monkeypatch.setenv(runtime.RETAINED_ROOT_ENV, str(retained))
+    monkeypatch.setattr(runtime, "_process_start_ticks", lambda pid: "444")
+    monkeypatch.setattr(runtime.requests, "get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("healthy retained server must not restart"),
+    )
+
+    process, observed, log, reused = runtime._acquire_server(
+        output_dir=tmp_path / "output", environment={}
+    )
+
+    assert reused is True
+    assert process.pid == 321
+    assert process.poll() is None
+    assert observed["reused_retained_server"] is True
+    assert log is None
+
+
+def test_retained_server_rejects_changed_checkpoint_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    retained = tmp_path / "retained"
+    retained.mkdir()
+    identity = {
+        "pid": 321,
+        "process_start_ticks": "444",
+        "server_port": runtime.SERVER_PORT,
+        "pipeline_class": runtime.PIPELINE_CLASS,
+        "checkpoint": runtime.CHECKPOINT,
+        "checkpoint_revision": "wrong",
+    }
+    runtime.write_json(retained / "server_identity.json", identity)
+
+    monkeypatch.setenv(runtime.RETAIN_SERVER_ENV, "true")
+    monkeypatch.setenv(runtime.RETAINED_ROOT_ENV, str(retained))
+    monkeypatch.setattr(runtime, "_process_start_ticks", lambda pid: "444")
+    assert runtime._retained_server_identity_valid(identity) is False
+
+
 def test_direct_and_wrapper_requests_match_exact_pinned_forward_dynamics_contract() -> None:
     direct = runtime._serialize_rollout_request(
         request_row=_row(), action_stream=_stream(), num_inference_steps=4
@@ -73,6 +133,33 @@ def test_qualification_and_scientific_request_budgets_are_accounted_separately()
     assert runtime.QUALIFICATION_CANARY_REQUEST_COUNT == 2
     assert runtime.SCIENTIFIC_MATRIX_REQUEST_COUNT == 10
     assert runtime.TOTAL_INITIAL_GENERATION_REQUEST_COUNT == 12
+
+
+def test_frozen_action_condition_validation_accepts_sorted_bundle_key_order() -> None:
+    sorted_conditions = {
+        condition: {"actions": []} for condition in sorted(runtime.EXPECTED_CONDITIONS)
+    }
+
+    assert tuple(sorted_conditions) != runtime.EXPECTED_CONDITIONS
+    assert runtime._action_conditions_match_frozen_contract(sorted_conditions)
+
+
+@pytest.mark.parametrize(
+    "conditions",
+    [
+        None,
+        {},
+        {condition: {} for condition in runtime.EXPECTED_CONDITIONS[:-1]},
+        {
+            **{condition: {} for condition in runtime.EXPECTED_CONDITIONS},
+            "unexpected": {},
+        },
+    ],
+)
+def test_frozen_action_condition_validation_rejects_missing_or_extra_conditions(
+    conditions: object,
+) -> None:
+    assert not runtime._action_conditions_match_frozen_contract(conditions)
 
 
 @pytest.mark.parametrize(
