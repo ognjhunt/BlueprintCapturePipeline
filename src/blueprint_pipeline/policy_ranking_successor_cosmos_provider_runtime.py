@@ -29,8 +29,20 @@ SERVER_BASE_URL = f"http://127.0.0.1:{SERVER_PORT}"
 SERVER_START_TIMEOUT_SECONDS = 3600
 REQUEST_POLL_TIMEOUT_SECONDS = 1200
 INFRASTRUCTURE_RETRY_LIMIT = 1
+PIPELINE_CLASS = "Cosmos3OmniDiffusersPipeline"
+VLLM_OMNI_SOURCE_REVISION = "9c1b7504b178afcf541867c1a2d30db48c69cda8"
+RAW_ACTION_DIM = 10
+ACTION_CHUNK_SIZE = 16
+ACTION_SPACE = "midtrain"
+CANARY_INFERENCE_STEPS = 4
+PUBLICATION_INFERENCE_STEPS = 30
 EXPECTED_CONDITIONS = ("recorded", "zero", "shuffled", "reversed", "policy_swapped")
 EXPECTED_SEEDS = (0, 1)
+QUALIFICATION_CANARY_REQUEST_COUNT = 2
+SCIENTIFIC_MATRIX_REQUEST_COUNT = 10
+TOTAL_INITIAL_GENERATION_REQUEST_COUNT = (
+    QUALIFICATION_CANARY_REQUEST_COUNT + SCIENTIFIC_MATRIX_REQUEST_COUNT
+)
 
 
 def canonical_sha256(value: Any) -> str:
@@ -141,10 +153,27 @@ def _decode_video_metrics(path: Path) -> dict[str, Any]:
         if len(frames) > 1
         else np.asarray([], dtype=np.float32)
     )
+    streams = probe_payload.get("streams") if isinstance(probe_payload, dict) else None
+    stream = streams[0] if isinstance(streams, list) and streams else {}
+    width = int(stream.get("width") or 0)
+    height = int(stream.get("height") or 0)
+    declared_frames = int(stream.get("nb_frames") or 0)
+    structural_blockers: list[str] = []
+    if (width, height) != (640, 540):
+        structural_blockers.append(f"unexpected_video_dimensions:{width}x{height}")
+    if declared_frames != 17 or len(frames) != 17:
+        structural_blockers.append(
+            f"unexpected_video_frame_count:declared={declared_frames}:decoded={len(frames)}"
+        )
     blank = bool(float(frame_stds.max(initial=0.0)) < 2.0)
     static = bool(float(temporal.max(initial=0.0)) < 0.5)
     return {
-        "status": "passed" if not blank and not static else "scientific_failure",
+        "status": (
+            "blocked"
+            if structural_blockers
+            else ("passed" if not blank and not static else "scientific_failure")
+        ),
+        "blockers": structural_blockers,
         "frame_count_decoded": int(len(frames)),
         "mean_luma_min": float(frame_means.min(initial=0.0)),
         "mean_luma_max": float(frame_means.max(initial=0.0)),
@@ -168,6 +197,8 @@ def _server_command() -> list[str]:
         "--revision",
         CHECKPOINT_REVISION,
         "--omni",
+        "--model-class-name",
+        PIPELINE_CLASS,
         "--host",
         "127.0.0.1",
         "--port",
@@ -176,7 +207,77 @@ def _server_command() -> list[str]:
         "1800",
         "--dtype",
         "bfloat16",
+        "--no-guardrails",
     ]
+
+
+def _run_cuda_preflight() -> dict[str, Any]:
+    commands = {
+        "nvidia_smi": [
+            "nvidia-smi",
+            "--query-gpu=timestamp,name,uuid,driver_version,memory.total,memory.free,memory.used",
+            "--format=csv,noheader,nounits",
+        ],
+        "container_cuda": ["nvcc", "--version"],
+    }
+    command_results: dict[str, Any] = {}
+    for name, command in commands.items():
+        started = time.time()
+        completed = subprocess.run(
+            command, check=False, capture_output=True, text=True, timeout=60
+        )
+        command_results[name] = {
+            "command": command,
+            "started_at_epoch": started,
+            "finished_at_epoch": time.time(),
+            "exit_code": completed.returncode,
+            "stdout": completed.stdout[-12000:],
+            "stderr": completed.stderr[-12000:],
+        }
+    import torch
+    import vllm
+    import vllm_omni
+    from vllm_omni.diffusion.models.cosmos3.pipeline_cosmos3 import (
+        Cosmos3OmniDiffusersPipeline,
+    )
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("torch_cuda_unavailable")
+    capability = tuple(int(value) for value in torch.cuda.get_device_capability())
+    if capability != (12, 0):
+        raise RuntimeError(f"unexpected_cuda_capability:{capability}")
+    if not torch.cuda.is_bf16_supported():
+        raise RuntimeError("cuda_bf16_unsupported")
+    torch.cuda.reset_peak_memory_stats()
+    left = torch.randn((256, 256), device="cuda", dtype=torch.bfloat16)
+    right = torch.randn((256, 256), device="cuda", dtype=torch.bfloat16)
+    product = left @ right
+    torch.cuda.synchronize()
+    if product.dtype != torch.bfloat16 or not bool(torch.isfinite(product).all().item()):
+        raise RuntimeError("bf16_cuda_matrix_operation_invalid")
+    memory = torch.cuda.mem_get_info()
+    return {
+        "status": "passed",
+        "commands": command_results,
+        "torch_version": torch.__version__,
+        "vllm_version": getattr(vllm, "__version__", "unknown"),
+        "vllm_omni_version": getattr(vllm_omni, "__version__", "unknown"),
+        "vllm_omni_source_revision": VLLM_OMNI_SOURCE_REVISION,
+        "pipeline_import": Cosmos3OmniDiffusersPipeline.__name__,
+        "torch_cuda_available": True,
+        "cuda_device_capability": list(capability),
+        "cuda_bf16_supported": True,
+        "bf16_cuda_matrix_operation": True,
+        "bf16_result_shape": list(product.shape),
+        "gpu_memory_bytes": {
+            "free": int(memory[0]),
+            "total": int(memory[1]),
+            "allocated": int(torch.cuda.memory_allocated()),
+            "reserved": int(torch.cuda.memory_reserved()),
+            "peak_allocated": int(torch.cuda.max_memory_allocated()),
+            "peak_reserved": int(torch.cuda.max_memory_reserved()),
+        },
+    }
 
 
 def _wait_for_server(process: subprocess.Popen[bytes]) -> None:
@@ -196,67 +297,104 @@ def _wait_for_server(process: subprocess.Popen[bytes]) -> None:
     raise RuntimeError(f"vllm_server_start_timeout:{last_error}")
 
 
-def _submit_rollout(
+def _serialize_rollout_request(
     *,
     request_row: dict[str, Any],
     action_stream: dict[str, Any],
-    initial_observation: Path,
-    output_path: Path,
+    num_inference_steps: int,
 ) -> dict[str, Any]:
+    actions = action_stream.get("actions")
+    if not isinstance(actions, list) or len(actions) != ACTION_CHUNK_SIZE:
+        raise ValueError("action_chunk_row_count_invalid")
+    if any(not isinstance(row, list) or len(row) != RAW_ACTION_DIM for row in actions):
+        raise ValueError("action_chunk_raw_dimension_invalid")
     extra_params = {
         "action_mode": "forward_dynamics",
         "domain_name": "droid_lerobot",
-        "action_chunk_size": 16,
+        "raw_action_dim": RAW_ACTION_DIM,
+        "action_chunk_size": ACTION_CHUNK_SIZE,
+        "action_space": ACTION_SPACE,
         "image_size": 480,
         "view_point": "concat_view",
-        "action": action_stream["actions"],
+        "action": actions,
         # The pinned NVIDIA DROID example disables guardrails. This bundle is
         # restricted to that public robotics sample and records the exception.
         "guardrails": False,
     }
-    form = {
+    return {
+        "model": CHECKPOINT,
         "prompt": "A robot manipulates an object.",
         "num_frames": "17",
         "fps": "15",
         "size": "640x540",
-        "num_inference_steps": "30",
+        "num_inference_steps": str(num_inference_steps),
         "guidance_scale": "1.0",
         "flow_shift": "10.0",
         "seed": str(request_row["seed"]),
         "extra_params": json.dumps(extra_params, separators=(",", ":")),
     }
+
+
+def _serialize_blueprint_wrapper_request(
+    *,
+    request_row: dict[str, Any],
+    action_stream: dict[str, Any],
+    num_inference_steps: int,
+) -> dict[str, Any]:
+    """Serialize the Blueprint wrapper contract without calling the direct serializer."""
+    actions = action_stream.get("actions")
+    if not isinstance(actions, list) or len(actions) != ACTION_CHUNK_SIZE:
+        raise ValueError("action_chunk_row_count_invalid")
+    if any(not isinstance(row, list) or len(row) != RAW_ACTION_DIM for row in actions):
+        raise ValueError("action_chunk_raw_dimension_invalid")
+    wrapper_extra_params = {
+        "action_mode": "forward_dynamics",
+        "domain_name": "droid_lerobot",
+        "raw_action_dim": 10,
+        "action_chunk_size": 16,
+        "action_space": "midtrain",
+        "image_size": 480,
+        "view_point": "concat_view",
+        "action": actions,
+        "guardrails": False,
+    }
+    return {
+        "model": "nvidia/Cosmos3-Nano",
+        "prompt": "A robot manipulates an object.",
+        "num_frames": "17",
+        "fps": "15",
+        "size": "640x540",
+        "num_inference_steps": str(num_inference_steps),
+        "guidance_scale": "1.0",
+        "flow_shift": "10.0",
+        "seed": str(request_row["seed"]),
+        "extra_params": json.dumps(wrapper_extra_params, separators=(",", ":")),
+    }
+
+
+def _submit_rollout(
+    *,
+    serialized_request: dict[str, Any],
+    initial_observation: Path,
+    output_path: Path,
+) -> dict[str, Any]:
     with initial_observation.open("rb") as image_file:
         response = requests.post(
-            f"{SERVER_BASE_URL}/v1/videos",
-            data=form,
+            f"{SERVER_BASE_URL}/v1/videos/sync",
+            headers={"Accept": "video/mp4"},
+            data=serialized_request,
             files={"input_reference": (initial_observation.name, image_file, "image/png")},
-            timeout=180,
+            timeout=REQUEST_POLL_TIMEOUT_SECONDS,
         )
     response.raise_for_status()
-    initial = response.json()
-    job_id = str(initial["id"])
-    deadline = time.monotonic() + REQUEST_POLL_TIMEOUT_SECONDS
-    final: dict[str, Any] = {}
-    while time.monotonic() < deadline:
-        polled = requests.get(f"{SERVER_BASE_URL}/v1/videos/{job_id}", timeout=30)
-        polled.raise_for_status()
-        final = dict(polled.json())
-        if final.get("status") == "completed":
-            break
-        if final.get("status") in {"failed", "cancelled"}:
-            raise RuntimeError(f"vllm_job_{final.get('status')}:{job_id}")
-        time.sleep(2)
-    else:
-        raise TimeoutError(f"vllm_job_timeout:{job_id}")
-    content = requests.get(
-        f"{SERVER_BASE_URL}/v1/videos/{job_id}/content", timeout=300
-    )
-    content.raise_for_status()
-    output_path.write_bytes(content.content)
+    output_path.write_bytes(response.content)
+    if not response.content:
+        raise RuntimeError("vllm_sync_video_response_empty")
     return {
-        "provider_job_id": job_id,
-        "initial_response": initial,
-        "final_response": final,
+        "endpoint": "/v1/videos/sync",
+        "http_status_code": response.status_code,
+        "content_type": response.headers.get("content-type"),
+        "serialized_request_sha256": canonical_sha256(serialized_request),
         "output_sha256": sha256_file(output_path),
         "output_size_bytes": output_path.stat().st_size,
     }
@@ -303,7 +441,7 @@ def run() -> dict[str, Any]:
     }
     rows = inventory.get("requests") if isinstance(inventory.get("requests"), list) else []
     observed_pairs = {(row.get("condition"), row.get("seed")) for row in rows}
-    if observed_pairs != expected_pairs or len(rows) != 10:
+    if observed_pairs != expected_pairs or len(rows) != SCIENTIFIC_MATRIX_REQUEST_COUNT:
         blockers.append("smoke_request_matrix_invalid")
     if blockers:
         result = {
@@ -317,6 +455,35 @@ def run() -> dict[str, Any]:
         write_json(result_path, result)
         return result
 
+    try:
+        cuda_preflight = _run_cuda_preflight()
+    except Exception as exc:
+        cuda_preflight = {
+            "status": "blocked",
+            "failure_class": "cuda_driver_or_runtime_failure",
+            "blockers": [f"{type(exc).__name__}:{str(exc)[:300]}"],
+        }
+        write_json(output_dir / "blackwell_cuda_canary.json", cuda_preflight)
+        result = {
+            "schema_version": "policy_ranking_successor_cosmos_runtime.v1",
+            "experiment_id": EXPERIMENT_ID,
+            "status": "blocked",
+            "failure_class": "cuda_driver_or_runtime_failure",
+            "blockers": cuda_preflight["blockers"],
+            "provider_requests_submitted_valid": 0,
+            "action_conditioned_video_rollout_generated": False,
+            "evaluator_eligible": False,
+        }
+        write_json(result_path, result)
+        return result
+    write_json(output_dir / "blackwell_cuda_canary.json", cuda_preflight)
+    journal.append(
+        {
+            "event": "blackwell_cuda_canary_passed",
+            "cuda_device_capability": cuda_preflight["cuda_device_capability"],
+            "bf16_cuda_matrix_operation": True,
+        }
+    )
     command = _server_command()
     environment = dict(os.environ)
     environment.update(
@@ -328,6 +495,13 @@ def run() -> dict[str, Any]:
     )
     server_log = (output_dir / "vllm_server.log").open("wb")
     process = subprocess.Popen(command, stdout=server_log, stderr=subprocess.STDOUT, env=environment)
+    server_identity = {
+        "pid": process.pid,
+        "server_port": SERVER_PORT,
+        "pipeline_class": PIPELINE_CLASS,
+        "checkpoint": CHECKPOINT,
+        "checkpoint_revision": CHECKPOINT_REVISION,
+    }
     started_at = time.monotonic()
     journal.append(
         {
@@ -337,6 +511,7 @@ def run() -> dict[str, Any]:
             "command": command,
             "trust_remote_code": False,
             "precision": "bf16",
+            "server_identity": server_identity,
             "guardrail_exception": "public_nvidia_droid_example_only",
         }
     )
@@ -344,9 +519,85 @@ def run() -> dict[str, Any]:
     accepted_request_ids: set[str] = set()
     exact_stack_preflight = "pending"
     failure_class: str | None = None
+    provider_generation_requests_attempted = 0
+    qualification_canary_responses_valid = 0
     try:
         _wait_for_server(process)
-        journal.append({"event": "exact_model_server_ready"})
+        model_load_seconds = time.monotonic() - started_at
+        health = requests.get(f"{SERVER_BASE_URL}/health", timeout=10)
+        health.raise_for_status()
+        journal.append(
+            {
+                "event": "exact_model_server_ready",
+                "server_identity": server_identity,
+                "model_load_seconds": model_load_seconds,
+                "health_status_code": health.status_code,
+            }
+        )
+        canary_row = next(
+            row for row in rows if row.get("condition") == "recorded" and row.get("seed") == 0
+        )
+        canary_action = conditions["recorded"]
+        direct_request = _serialize_rollout_request(
+            request_row=canary_row,
+            action_stream=canary_action,
+            num_inference_steps=CANARY_INFERENCE_STEPS,
+        )
+        wrapper_request = _serialize_blueprint_wrapper_request(
+            request_row=canary_row,
+            action_stream=canary_action,
+            num_inference_steps=CANARY_INFERENCE_STEPS,
+        )
+        if direct_request != wrapper_request:
+            raise RuntimeError("blueprint_wrapper_direct_request_mismatch")
+        canary_records: dict[str, Any] = {}
+        for canary_kind, serialized_request in (
+            ("direct", direct_request),
+            ("blueprint_wrapper", wrapper_request),
+        ):
+            canary_path = output_dir / "canary" / f"{canary_kind}.mp4"
+            canary_path.parent.mkdir(parents=True, exist_ok=True)
+            canary_started = time.monotonic()
+            provider_generation_requests_attempted += 1
+            response = _submit_rollout(
+                serialized_request=serialized_request,
+                initial_observation=initial_observation,
+                output_path=canary_path,
+            )
+            metrics = _decode_video_metrics(canary_path)
+            if metrics.get("status") not in {"passed", "scientific_failure"}:
+                raise RuntimeError(f"{canary_kind}_video_validation_failed")
+            if process.poll() is not None:
+                raise RuntimeError(f"server_exited_during_{canary_kind}_canary")
+            qualification_canary_responses_valid += 1
+            canary_records[canary_kind] = {
+                "request": serialized_request,
+                "request_sha256": canonical_sha256(serialized_request),
+                "response": response,
+                "metrics": metrics,
+                "elapsed_seconds": time.monotonic() - canary_started,
+                "server_identity": server_identity,
+            }
+            write_json(output_dir / "canary" / f"{canary_kind}.json", canary_records[canary_kind])
+            journal.append(
+                {
+                    "event": f"{canary_kind}_canary_passed",
+                    "request_sha256": canonical_sha256(serialized_request),
+                    "output_sha256": response["output_sha256"],
+                    "server_pid": process.pid,
+                }
+            )
+        write_json(
+            output_dir / "canary" / "same_process_handoff.json",
+            {
+                "status": "passed",
+                "request_payloads_equal": True,
+                "request_sha256": canonical_sha256(direct_request),
+                "server_identity_before_and_after": server_identity,
+                "server_process_unchanged": process.poll() is None,
+                "model_reloaded": False,
+            },
+        )
         for row in rows:
             request_id = str(row["request_id"])
             condition = str(row["condition"])
@@ -383,9 +634,14 @@ def run() -> dict[str, Any]:
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 request_started = time.monotonic()
                 try:
-                    response = _submit_rollout(
+                    serialized_request = _serialize_blueprint_wrapper_request(
                         request_row=row,
                         action_stream=action_stream,
+                        num_inference_steps=PUBLICATION_INFERENCE_STEPS,
+                    )
+                    provider_generation_requests_attempted += 1
+                    response = _submit_rollout(
+                        serialized_request=serialized_request,
                         initial_observation=initial_observation,
                         output_path=output_path,
                     )
@@ -444,7 +700,11 @@ def run() -> dict[str, Any]:
                     raise
         hashes = [row["response"]["output_sha256"] for row in rollout_records]
         duplicate_output_hashes = len(hashes) - len(set(hashes))
-        runtime_status = "completed" if len(rollout_records) == 10 else "blocked"
+        runtime_status = (
+            "completed"
+            if len(rollout_records) == SCIENTIFIC_MATRIX_REQUEST_COUNT
+            else "blocked"
+        )
         result = {
             "schema_version": "policy_ranking_successor_cosmos_runtime.v1",
             "experiment_id": EXPERIMENT_ID,
@@ -453,13 +713,29 @@ def run() -> dict[str, Any]:
             "checkpoint": CHECKPOINT,
             "checkpoint_revision": CHECKPOINT_REVISION,
             "precision": "bf16",
+            "pipeline_class": PIPELINE_CLASS,
+            "vllm_omni_source_revision": VLLM_OMNI_SOURCE_REVISION,
+            "server_identity": server_identity,
+            "model_load_seconds": model_load_seconds,
+            "direct_canary_passed": True,
+            "blueprint_wrapper_same_process_canary_passed": True,
             "exact_action_conditioned_stack_preflight": exact_stack_preflight,
-            "request_count_frozen": 10,
-            "provider_requests_submitted_valid": len(rollout_records),
+            "qualification_canary_request_count_frozen": QUALIFICATION_CANARY_REQUEST_COUNT,
+            "qualification_canary_responses_valid": qualification_canary_responses_valid,
+            "scientific_matrix_request_count_frozen": SCIENTIFIC_MATRIX_REQUEST_COUNT,
+            "total_initial_generation_request_count_frozen": (
+                TOTAL_INITIAL_GENERATION_REQUEST_COUNT
+            ),
+            "provider_generation_requests_attempted_total": (
+                provider_generation_requests_attempted
+            ),
+            "provider_scientific_matrix_responses_valid": len(rollout_records),
             "accepted_first_valid_count": len(accepted_request_ids),
             "output_duplicate_hash_count": duplicate_output_hashes,
-            "action_conditioned_video_rollout_generated": len(rollout_records) > 0,
-            "complete_action_condition_seed_matrix_generated": len(rollout_records) == 10,
+            "action_conditioned_video_rollout_generated": bool(rollout_records),
+            "complete_action_condition_seed_matrix_generated": (
+                len(rollout_records) == SCIENTIFIC_MATRIX_REQUEST_COUNT
+            ),
             "runtime_seconds": time.monotonic() - started_at,
             "immutable_request_journal_tail_sha256": journal.previous,
             "guardrail_exception": "public_nvidia_droid_example_only",
@@ -467,7 +743,7 @@ def run() -> dict[str, Any]:
             "evaluator_eligible": False,
             "claims": {
                 "runtime": True,
-                "generated_media": len(rollout_records) > 0,
+                "generated_media": bool(rollout_records),
                 "wam_causal_validity": False,
                 "evaluator_validity": False,
                 "ranking_fidelity": False,
@@ -484,8 +760,12 @@ def run() -> dict[str, Any]:
             "failure_class": failure_class or "infrastructure_failure",
             "blockers": [f"{type(exc).__name__}:{str(exc)[:300]}"],
             "exact_action_conditioned_stack_preflight": exact_stack_preflight,
-            "provider_requests_submitted_valid": len(rollout_records),
-            "action_conditioned_video_rollout_generated": len(rollout_records) > 0,
+            "qualification_canary_responses_valid": qualification_canary_responses_valid,
+            "provider_generation_requests_attempted_total": (
+                provider_generation_requests_attempted
+            ),
+            "provider_scientific_matrix_responses_valid": len(rollout_records),
+            "action_conditioned_video_rollout_generated": bool(rollout_records),
             "runtime_seconds": time.monotonic() - started_at,
             "immutable_request_journal_tail_sha256": journal.previous,
             "evaluator_eligible": False,

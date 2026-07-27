@@ -2,8 +2,9 @@
 
 This module is an adapter behind ``paid_resource_allocator gpu-canary``.  It
 cannot be used as a standalone launcher.  The first paid phase is restricted to
-one Vast RTX PRO 6000 Blackwell instance: it must prove the exact pinned stack
-before the already-frozen ten-rollout smoke matrix is allowed to continue.
+one Vast RTX PRO 6000 Blackwell instance: two reduced-step qualification
+generations must prove the exact direct and wrapper stack before the
+already-frozen ten-rollout scientific matrix is allowed to continue.
 """
 
 from __future__ import annotations
@@ -71,8 +72,14 @@ REPLACED_ZERO_SPEND_AUTHORIZATION_ID = (
     "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v4"
 )
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
-EXPECTED_BUNDLE_SHA256 = "481870aa449f8d5c7bfb2cc4403cc4145f7e82d256c5281259ff626d6c880e21"
-EXPECTED_BUNDLE_SIZE_BYTES = 294_167
+EXPECTED_BUNDLE_SHA256 = "3fc9f7a0e7d5a5e21ccad6a879f8c5ec9e81a4c031104d3ca91b9cc431142d7c"
+EXPECTED_BUNDLE_SIZE_BYTES = 296_645
+QUALIFICATION_CANARY_REQUEST_COUNT = 2
+SCIENTIFIC_MATRIX_REQUEST_COUNT = 10
+TOTAL_INITIAL_GENERATION_REQUEST_COUNT = 12
+REQUEST_BUDGET_AMENDMENT_SHA256 = (
+    "e67226e16318a073e9190915554dc37b1d378fc155c6eb6bec7ecc79fb27786a"
+)
 EXPECTED_EMBEDDED_INPUT_HASHES = {
     "initial_observation_sha256": (
         "8843f0fc9c68914dfb62222c961db19b37a5f155e602ff4a545eea1dcf42636d"
@@ -205,6 +212,14 @@ def inspect_successor_bundle(
         blockers.append("successor_cosmos_provider_bundle_checkpoint_mismatch")
     if manifest.get("public_image") != PUBLIC_IMAGE:
         blockers.append("successor_cosmos_provider_bundle_image_mismatch")
+    expected_request_budget = {
+        "qualification_canary_request_count": QUALIFICATION_CANARY_REQUEST_COUNT,
+        "scientific_matrix_request_count": SCIENTIFIC_MATRIX_REQUEST_COUNT,
+        "total_initial_generation_request_count": TOTAL_INITIAL_GENERATION_REQUEST_COUNT,
+        "request_budget_amendment_sha256": REQUEST_BUDGET_AMENDMENT_SHA256,
+    }
+    if any(manifest.get(key) != value for key, value in expected_request_budget.items()):
+        blockers.append("successor_cosmos_provider_bundle_request_budget_mismatch")
     receipt_value = _mapping(receipt)
     bundle_sha256 = _sha256_file(resolved) if resolved.is_file() else None
     bundle_size_bytes = resolved.stat().st_size if resolved.is_file() else 0
@@ -395,6 +410,12 @@ def build_successor_gpu_admission(
         "smoke_inventory_sha256": canonical_sha256(smoke_inventory),
         "provider_preflight_sha256": canonical_sha256(provider_preflight),
         "provider_bundle_sha256": bundle_inspection.get("bundle_sha256"),
+        "request_budget": {
+            "qualification_canary_request_count": QUALIFICATION_CANARY_REQUEST_COUNT,
+            "scientific_matrix_request_count": SCIENTIFIC_MATRIX_REQUEST_COUNT,
+            "total_initial_generation_request_count": TOTAL_INITIAL_GENERATION_REQUEST_COUNT,
+            "amendment_sha256": REQUEST_BUDGET_AMENDMENT_SHA256,
+        },
         "selected_offer": dict(offer),
         "authorization": {
             "status": "accepted" if not authorization_blockers else "blocked",
@@ -606,6 +627,7 @@ def run_successor_gpu_lane(
         "public_image": PUBLIC_IMAGE,
         "provider_bundle_sha256": bundle.get("bundle_sha256"),
         "smoke_inventory_sha256": canonical_sha256(smoke_inventory),
+        "request_budget": admission.get("request_budget"),
         "selected_offer_id": _mapping(admission.get("selected_offer")).get("ask_contract_id"),
         "limits": admission["limits"],
         "session_live_limit": session_limit,

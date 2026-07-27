@@ -1,0 +1,35 @@
+{
+  "schema_version": "policy_ranking_successor_protocol_amendment.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "amendment_id": "gpu_qualification_request_budget_20260727",
+  "amendment_scope": "request_accounting_only",
+  "prior_protocol_sha256": "0bdbb41e38c45cbac14351eb0f25479b6b4ee9ef13e4f7584cc50431037e8158",
+  "made_before_any_successful_provider_generation_output": true,
+  "scientific_thresholds_changed": false,
+  "scientific_matrix_inputs_changed": false,
+  "qualification_canaries": {
+    "direct_request_count": 1,
+    "blueprint_wrapper_request_count": 1,
+    "inference_steps": 4,
+    "scientific_matrix_membership": false,
+    "purpose": "runtime_and_same_process_wrapper_qualification"
+  },
+  "scientific_matrix": {
+    "request_count": 10,
+    "inference_steps": 30,
+    "purpose": "frozen_action_conditioning_falsification"
+  },
+  "total_initial_generation_request_count": 12,
+  "infrastructure_retries": {
+    "limit_per_scientific_request": 1,
+    "counted_in_actual_provider_generation_requests_attempted": true
+  },
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "ranking_fidelity": false,
+    "physical_performance": false
+  }
+}
