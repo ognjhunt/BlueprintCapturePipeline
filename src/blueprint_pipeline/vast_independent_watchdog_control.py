@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from .common import ensure_dir, utc_now_iso, write_json
-from .groot_oscar_runpod_watchdog import (
-    EVIDENCE_NAME,
+from .watchdog_owner_teardown_contract import (
+    WATCHDOG_EVIDENCE_NAME,
     write_owner_teardown_cancel_request,
 )
 
@@ -22,6 +22,7 @@ from .groot_oscar_runpod_watchdog import (
 HANDOFF_SCHEMA = "vast_independent_watchdog_handoff.v1"
 HANDOFF_NAME = "vast_independent_watchdog_handoff.json"
 WATCHDOG_DIR_NAME = "independent_vast_watchdog"
+EVIDENCE_NAME = WATCHDOG_EVIDENCE_NAME
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,23 @@ def arm_independent_vast_watchdog(
     out_dir = job_dir / WATCHDOG_DIR_NAME
     ensure_dir(out_dir)
     prefix = f"blueprint-groot-oscar-canary-vast-wam-{_safe_suffix(generated_at)}-"
+    if int(max_live_minutes) < 2:
+        blocked = {
+            "schema_version": HANDOFF_SCHEMA,
+            "generated_at": generated_at,
+            "status": "blocked",
+            "independent_process": False,
+            "watchdog_armed_before_allocation": False,
+            "pod_name_prefix": prefix,
+            "watchdog_out_dir": str(out_dir),
+            "started_instance_id_path": str(out_dir / "started_vast_instance_id.txt"),
+            "provider_mutations_performed": 0,
+            "blockers": ["independent_vast_watchdog_ttl_too_short"],
+            "raw_secret_values_recorded": False,
+        }
+        write_json(out_dir / EVIDENCE_NAME, blocked)
+        write_json(job_dir / HANDOFF_NAME, blocked)
+        return blocked, None
     deadline = time.time() + max(1, int(max_live_minutes)) * 60
     log_path = out_dir / "watchdog.log"
     log_handle = log_path.open("a", encoding="utf-8")
@@ -171,11 +189,24 @@ def close_independent_vast_watchdog(
     handle: VastWatchdogHandle,
     instance_ids: list[int],
     provider_teardown_completed: bool,
+    provider_allocation_impossible: bool = False,
     wait_seconds: float = 45.0,
 ) -> dict[str, Any]:
     """Ask the watchdog to close only after owner teardown, or leave it armed."""
 
     if not instance_ids:
+        if not provider_allocation_impossible:
+            result = {
+                "schema_version": HANDOFF_SCHEMA,
+                "generated_at": utc_now_iso(),
+                "status": "retained_until_hard_ttl",
+                "reason": "provider_allocation_identity_ambiguous",
+                "watchdog_armed_before_allocation": True,
+                "provider_mutations_performed": 0,
+                "raw_secret_values_recorded": False,
+            }
+            write_json(job_dir / HANDOFF_NAME, result)
+            return result
         handle.process.terminate()
         try:
             handle.process.wait(timeout=5)
@@ -193,7 +224,7 @@ def close_independent_vast_watchdog(
         write_json(job_dir / HANDOFF_NAME, result)
         return result
     if not provider_teardown_completed:
-        return {
+        result = {
             "schema_version": HANDOFF_SCHEMA,
             "generated_at": utc_now_iso(),
             "status": "retained_until_hard_ttl",
@@ -202,6 +233,8 @@ def close_independent_vast_watchdog(
             "provider_mutations_performed": 0,
             "raw_secret_values_recorded": False,
         }
+        write_json(job_dir / HANDOFF_NAME, result)
+        return result
     instance_id = str(instance_ids[-1])
     write_owner_teardown_cancel_request(
         root=handle.out_dir,

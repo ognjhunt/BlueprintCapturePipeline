@@ -294,7 +294,10 @@ def run_vast_wam_authorized_runner(
                             adapter_result.get("continuing_spend_from_this_run") is False
                         ),
                     )
-                    if instance_ids and watchdog_close.get("status") != "provider_terminal":
+                    if watchdog_close.get("status") not in {
+                        "provider_terminal",
+                        "cancelled_no_allocation",
+                    }:
                         blockers.append("independent_vast_watchdog_not_terminal")
                 if adapter_result.get("status") != "completed":
                     blockers.extend(str(item) for item in adapter_result.get("blockers") or [])

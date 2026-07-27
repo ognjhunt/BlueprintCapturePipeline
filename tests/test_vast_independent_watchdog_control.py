@@ -94,7 +94,51 @@ def test_watchdog_process_start_failure_blocks_before_allocation(
     assert handoff["blockers"] == ["independent_vast_watchdog_process_start_failed"]
 
 
+def test_watchdog_rejects_one_minute_ttl_before_process_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        control.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("short TTL must block before process start"),
+    )
+
+    handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=1,
+        generated_at="2026-07-27T00:00:00+00:00",
+    )
+
+    assert handle is None
+    assert handoff["status"] == "blocked"
+    assert handoff["blockers"] == ["independent_vast_watchdog_ttl_too_short"]
+
+
 def test_watchdog_without_allocation_is_cancelled_without_provider_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path,
+        max_live_minutes=3,
+        generated_at="2026-07-27T00:00:00+00:00",
+    )
+    assert handle is not None
+
+    result = control.close_independent_vast_watchdog(
+        job_dir=tmp_path,
+        handle=handle,
+        instance_ids=[],
+        provider_teardown_completed=True,
+        provider_allocation_impossible=True,
+    )
+
+    assert result["status"] == "cancelled_no_allocation"
+    assert result["provider_mutations_performed"] == 0
+    assert handle.process.poll() == -15
+
+
+def test_watchdog_stays_armed_when_create_identity_is_ambiguous(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
@@ -112,6 +156,6 @@ def test_watchdog_without_allocation_is_cancelled_without_provider_mutation(
         provider_teardown_completed=True,
     )
 
-    assert result["status"] == "cancelled_no_allocation"
-    assert result["provider_mutations_performed"] == 0
-    assert handle.process.poll() == -15
+    assert result["status"] == "retained_until_hard_ttl"
+    assert result["reason"] == "provider_allocation_identity_ambiguous"
+    assert handle.process.poll() is None
