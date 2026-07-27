@@ -35,7 +35,7 @@ def test_frozen_successor_bundle_passes_integrity_inspection() -> None:
     assert result["status"] == "passed"
     assert result["blockers"] == []
     assert result["bundle_sha256"] == (
-        "f733fdddf9ef3780d303d5672c2c30c767807c43e87b4d9f5fc6dd860256c873"
+        "481870aa449f8d5c7bfb2cc4403cc4145f7e82d256c5281259ff626d6c880e21"
     )
 
 
@@ -124,9 +124,7 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     assert captured["disk_gb"] == 250
     assert captured["min_gpu_ram_mb"] == 95_000
     assert captured["max_compute_cap"] == 0
-    assert captured["gpu_selection_policy"]["allowed_gpu_keywords"] == (
-        "RTX PRO 6000",
-    )
+    assert captured["gpu_selection_policy"]["allowed_gpu_keywords"] == ("RTX PRO 6000",)
 
     second = admission.run_successor_gpu_lane(
         authorization_path=EXPERIMENT / "compute_authorization.json",
@@ -186,8 +184,7 @@ def test_successor_lane_checks_provider_env_before_consuming_authorization(
         session_budget_ledger=tmp_path / "budget.json",
         expected_source_commit="f" * 40,
         execute=True,
-        observed_now_epoch=float(_load("vast_compute_preflight.json")["observed_at_epoch"])
-        + 1,
+        observed_now_epoch=float(_load("vast_compute_preflight.json")["observed_at_epoch"]) + 1,
     )
 
     assert result["status"] == "blocked"
@@ -212,6 +209,26 @@ def test_successor_bundle_is_bound_to_receipt_and_embedded_inputs(
 
     assert result["status"] == "blocked"
     assert "successor_cosmos_provider_bundle_receipt_hash_mismatch" in result["blockers"]
+
+
+def test_successor_bundle_requires_shared_crash_fallback_contract(
+    tmp_path: Path,
+) -> None:
+    altered = tmp_path / "missing-crash-fallback.zip"
+    with (
+        zipfile.ZipFile(EXPERIMENT / "cosmos3_successor_provider_bundle.zip") as source,
+        zipfile.ZipFile(altered, "w") as target,
+    ):
+        for info in source.infolist():
+            payload = source.read(info.filename)
+            if info.filename == "provider_runtime/run_wam_provider_runtime.sh":
+                payload = payload.replace(b"write_missing_result", b"removed_fallback")
+            target.writestr(info, payload)
+
+    result = _inspect_bundle(altered)
+
+    assert result["status"] == "blocked"
+    assert "provider_entrypoint_missing_runtime_result_crash_fallback" in result["blockers"]
 
 
 def test_successor_lane_writes_blocked_artifacts_for_unreadable_input(

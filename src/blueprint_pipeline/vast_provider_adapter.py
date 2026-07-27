@@ -55,6 +55,10 @@ from .paid_resource_admission import (
     require_paid_resource_admission_grant,
 )
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
+from .provider_runtime_bundle_contract import (
+    PROVIDER_RUNTIME_BUNDLE_KINDS as VAST_PROVIDER_BUNDLE_KINDS,
+    provider_runtime_contract_blockers,
+)
 from .wam_provider_output import (
     inspect_provider_runtime_output_zip,
     probe_mp4_video,
@@ -127,7 +131,6 @@ DEFAULT_PUBLIC_DISK_GB = 32
 DEFAULT_ISAAC_DISK_GB = 100
 DEFAULT_VAST_LAUNCH_MODE = "auto"
 VAST_LAUNCH_MODES = ("auto", "ssh_direct", "jupyter_direct", "args")
-VAST_PROVIDER_BUNDLE_KINDS = ("isaac", "wam", "unitree_unifolm", "unitree_groot_n17_sonic")
 DEFAULT_NGC_IMAGE_LOGIN_MODE = "auto"
 NGC_IMAGE_LOGIN_MODES = ("auto", "always", "never")
 DEFAULT_MAX_HOURLY_RATE = 0.60
@@ -2037,7 +2040,14 @@ def _blueprint_bundle_preflight(
                     f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}"
                 )
             missing_entries = sorted(required_entries - set(zip_entries))
-            cosmos3_inputs_present = all(f"provider_runtime/cosmos3_input/{name}" in zip_entries for name in ("initial_observation.png", "smoke_request_inventory.json", "action_streams.json"))
+            cosmos3_inputs_present = all(
+                f"provider_runtime/cosmos3_input/{name}" in zip_entries
+                for name in (
+                    "initial_observation.png",
+                    "smoke_request_inventory.json",
+                    "action_streams.json",
+                )
+            )
             if missing_entries and not (provider_bundle_kind == "wam" and cosmos3_inputs_present):
                 blockers.append("provider_runtime_bundle_required_entries_missing")
             if zip_testzip_result is not None:
@@ -2045,60 +2055,13 @@ def _blueprint_bundle_preflight(
             if json_member_parse_errors:
                 blockers.append("provider_runtime_bundle_json_parse_failed")
             if zip_entries:
-                if provider_bundle_kind == "isaac":
-                    entrypoint_has_crash_fallback = (
-                        "write_missing_result" in entrypoint_text
-                        and "isaac_runner_process_exited_without_runtime_result" in entrypoint_text
-                        and "blocked_isaac_process_exited_without_result" in entrypoint_text
+                blockers.extend(
+                    provider_runtime_contract_blockers(
+                        provider_bundle_kind=provider_bundle_kind,
+                        entrypoint_text=entrypoint_text,
+                        runner_text=runner_text,
                     )
-                    runner_has_required_runtime = "SimulationApp" in runner_text
-                    missing_runtime_blocker = "provider_runner_missing_isaac_simulation_app_smoke"
-                elif provider_bundle_kind == "unitree_unifolm":
-                    entrypoint_has_crash_fallback = (
-                        "unitree_unifolm_provider_runner_failed_without_runtime_result"
-                        in entrypoint_text
-                        and "blocked_unitree_unifolm_process_exited_without_result"
-                        in entrypoint_text
-                    )
-                    runner_has_required_runtime = (
-                        "unitree_unifolm_policy_provider_output.json" in runner_text
-                        and "unitree_unifolm_model_executed" in runner_text
-                        and "unitree_unifolm_policy_action_command_ran" in runner_text
-                    )
-                    missing_runtime_blocker = (
-                        "provider_runner_missing_unitree_unifolm_runtime_contract"
-                    )
-                elif provider_bundle_kind == "unitree_groot_n17_sonic":
-                    entrypoint_has_crash_fallback = (
-                        "unitree_groot_n17_sonic_provider_runner_failed_without_runtime_result"
-                        in entrypoint_text
-                        and "blocked_unitree_groot_n17_sonic_process_exited_without_result"
-                        in entrypoint_text
-                    )
-                    runner_has_required_runtime = (
-                        "unitree_groot_n17_sonic_policy_provider_output.json" in runner_text
-                        and "unitree_groot_n17_sonic_model_executed" in runner_text
-                        and "unitree_groot_n17_sonic_policy_action_command_ran" in runner_text
-                    )
-                    missing_runtime_blocker = (
-                        "provider_runner_missing_unitree_groot_n17_sonic_runtime_contract"
-                    )
-                else:
-                    entrypoint_has_crash_fallback = (
-                        "write_missing_result" in entrypoint_text
-                        and "wam_runner_process_exited_without_runtime_result" in entrypoint_text
-                        and "blocked_wam_process_exited_without_result" in entrypoint_text
-                    )
-                    runner_has_required_runtime = (
-                        "wam_runtime_result.json" in runner_text
-                        and ("OSCAR-2B" in runner_text or "Cosmos3-Nano" in runner_text)
-                        and "action_conditioned_video_rollout_generated" in runner_text
-                    )
-                    missing_runtime_blocker = "provider_runner_missing_wam_runtime_contract"
-                if not entrypoint_has_crash_fallback:
-                    blockers.append("provider_entrypoint_missing_runtime_result_crash_fallback")
-                if not runner_has_required_runtime:
-                    blockers.append(missing_runtime_blocker)
+                )
                 if provider_bundle_kind == "isaac":
                     relative_paths = _mapping(eval_manifest.get("relative_paths"))
                     prefixed_relative_paths = sorted(

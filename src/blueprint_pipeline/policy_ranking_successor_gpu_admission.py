@@ -37,6 +37,7 @@ from .policy_ranking_successor_cosmos import (
     canonical_sha256,
     validate_smoke_inventory_manifest,
 )
+from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .vast_wam_authorized_runner import run_vast_wam_authorized_runner
 from .vast_provider_adapter import (
     VAST_API_GATE_ENV,
@@ -60,27 +61,17 @@ DISK_GB = 250
 MIN_GPU_RAM_MB = 95_000
 MIN_RELIABILITY = 0.98
 MAX_PREFLIGHT_AGE_SECONDS = 900
-AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v2"
-PREDECESSOR_AUTHORIZATION_ID = (
-    "policy-ranking-successor-cosmos-smoke-20260727-cap-3p25-v1"
-)
-AUTHORIZATION_CONSUMPTION_ROOT = (
-    Path.home() / ".blueprint-spend-authority" / "consumed"
-)
-EXPECTED_BUNDLE_SHA256 = (
-    "f733fdddf9ef3780d303d5672c2c30c767807c43e87b4d9f5fc6dd860256c873"
-)
-EXPECTED_BUNDLE_SIZE_BYTES = 294_148
+AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v3"
+PREDECESSOR_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v2"
+AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
+EXPECTED_BUNDLE_SHA256 = "481870aa449f8d5c7bfb2cc4403cc4145f7e82d256c5281259ff626d6c880e21"
+EXPECTED_BUNDLE_SIZE_BYTES = 294_167
 EXPECTED_EMBEDDED_INPUT_HASHES = {
     "initial_observation_sha256": (
         "8843f0fc9c68914dfb62222c961db19b37a5f155e602ff4a545eea1dcf42636d"
     ),
-    "smoke_inventory_sha256": (
-        "c925d168c166ec7bf53ed9252a33a937416a3f6fa9ecad8a01d0e201920a07aa"
-    ),
-    "action_streams_sha256": (
-        "9ece91bb2a2e50165bf21c6fa62afd25831281ade80607d7a6987e29e4f80c58"
-    ),
+    "smoke_inventory_sha256": ("c925d168c166ec7bf53ed9252a33a937416a3f6fa9ecad8a01d0e201920a07aa"),
+    "action_streams_sha256": ("9ece91bb2a2e50165bf21c6fa62afd25831281ade80607d7a6987e29e4f80c58"),
 }
 RTX_ALLOWED_KEYWORDS = ("RTX PRO 6000",)
 RTX_SELECTION_POLICY: Mapping[str, Any] = {
@@ -136,6 +127,8 @@ def inspect_successor_bundle(
     names: set[str] = set()
     manifest: Mapping[str, Any] = {}
     embedded_hashes: dict[str, str] = {}
+    entrypoint_text = ""
+    runner_text = ""
     if not resolved.is_file():
         blockers.append("successor_cosmos_provider_bundle_missing")
     else:
@@ -147,16 +140,22 @@ def inspect_successor_bundle(
                     blockers.append("successor_cosmos_provider_bundle_zip_invalid")
                 if "provider_runtime/wam_provider_runtime_manifest.json" in names:
                     manifest_value = json.loads(
-                        archive.read(
-                            "provider_runtime/wam_provider_runtime_manifest.json"
-                        ).decode("utf-8")
+                        archive.read("provider_runtime/wam_provider_runtime_manifest.json").decode(
+                            "utf-8"
+                        )
                     )
                     manifest = _mapping(manifest_value)
+                if "provider_runtime/run_wam_provider_runtime.sh" in names:
+                    entrypoint_text = archive.read(
+                        "provider_runtime/run_wam_provider_runtime.sh"
+                    ).decode("utf-8")
+                if "provider_runtime/wam_provider_runtime_runner.py" in names:
+                    runner_text = archive.read(
+                        "provider_runtime/wam_provider_runtime_runner.py"
+                    ).decode("utf-8")
                 embedded_hashes = {
                     "initial_observation_sha256": hashlib.sha256(
-                        archive.read(
-                            "provider_runtime/cosmos3_input/initial_observation.png"
-                        )
+                        archive.read("provider_runtime/cosmos3_input/initial_observation.png")
                     ).hexdigest(),
                     "smoke_inventory_sha256": canonical_sha256(
                         json.loads(
@@ -184,6 +183,13 @@ def inspect_successor_bundle(
     missing = sorted(REQUIRED_BUNDLE_ENTRIES - names)
     if missing:
         blockers.append("successor_cosmos_provider_bundle_entries_missing")
+    blockers.extend(
+        provider_runtime_contract_blockers(
+            provider_bundle_kind="wam",
+            entrypoint_text=entrypoint_text,
+            runner_text=runner_text,
+        )
+    )
     if manifest.get("schema_version") != BUNDLE_SCHEMA:
         blockers.append("successor_cosmos_provider_bundle_manifest_invalid")
     if manifest.get("experiment_id") != EXPERIMENT_ID:
@@ -195,9 +201,7 @@ def inspect_successor_bundle(
     receipt_value = _mapping(receipt)
     bundle_sha256 = _sha256_file(resolved) if resolved.is_file() else None
     bundle_size_bytes = resolved.stat().st_size if resolved.is_file() else 0
-    if receipt_value.get("schema_version") != (
-        "policy_ranking_successor_cosmos_bundle_receipt.v1"
-    ):
+    if receipt_value.get("schema_version") != ("policy_ranking_successor_cosmos_bundle_receipt.v1"):
         blockers.append("successor_cosmos_provider_bundle_receipt_invalid")
     if receipt_value.get("experiment_id") != EXPERIMENT_ID:
         blockers.append("successor_cosmos_provider_bundle_receipt_experiment_mismatch")
@@ -288,9 +292,7 @@ def build_successor_gpu_admission(
     try:
         gpu_ram_mb = int(offer.get("gpu_ram_mb") or 0)
         hourly_rate = float(
-            offer.get("hourly_rate_usd")
-            or offer.get("on_demand_price_usd_per_hour")
-            or 0.0
+            offer.get("hourly_rate_usd") or offer.get("on_demand_price_usd_per_hour") or 0.0
         )
         reliability = float(offer.get("reliability") or 0.0)
     except (TypeError, ValueError):
@@ -316,24 +318,18 @@ def build_successor_gpu_admission(
     if authorization.get("authorization_id") != AUTHORIZATION_ID:
         authorization_blockers.append("successor_compute_authorization_id_invalid")
     if authorization.get("maximum_provider_allocations") != 1:
-        authorization_blockers.append(
-            "successor_compute_authorization_allocation_limit_invalid"
-        )
+        authorization_blockers.append("successor_compute_authorization_allocation_limit_invalid")
     if authorization.get("single_use_consumption_required") is not True:
         authorization_blockers.append("successor_compute_authorization_single_use_invalid")
     if authorization.get("infrastructure_retry_of") != PREDECESSOR_AUTHORIZATION_ID:
-        authorization_blockers.append(
-            "successor_compute_authorization_retry_predecessor_invalid"
-        )
+        authorization_blockers.append("successor_compute_authorization_retry_predecessor_invalid")
     if authorization.get("predecessor_provider_allocations") != 0:
         authorization_blockers.append(
             "successor_compute_authorization_retry_allocation_count_invalid"
         )
     if authorization.get("predecessor_compute_spend_usd") != 0.0:
-        authorization_blockers.append(
-            "successor_compute_authorization_retry_prior_spend_invalid"
-        )
-    if authorization.get("additional_compute_authority_usd") != 2.75:
+        authorization_blockers.append("successor_compute_authorization_retry_prior_spend_invalid")
+    if authorization.get("additional_compute_authority_usd") != 0.0:
         authorization_blockers.append(
             "successor_compute_authorization_retry_additional_authority_invalid"
         )
@@ -364,9 +360,7 @@ def build_successor_gpu_admission(
     if len(source_commit) != 40 or any(c not in "0123456789abcdef" for c in source_commit):
         blockers.append("successor_expected_source_commit_invalid")
 
-    shared = build_paid_lane_admission(
-        resource_class="vast_provider_adapter", blockers=blockers
-    )
+    shared = build_paid_lane_admission(resource_class="vast_provider_adapter", blockers=blockers)
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "admitted" if not blockers else "blocked",
@@ -548,9 +542,7 @@ def run_successor_gpu_lane(
         "public_image": PUBLIC_IMAGE,
         "provider_bundle_sha256": bundle.get("bundle_sha256"),
         "smoke_inventory_sha256": canonical_sha256(smoke_inventory),
-        "selected_offer_id": _mapping(admission.get("selected_offer")).get(
-            "ask_contract_id"
-        ),
+        "selected_offer_id": _mapping(admission.get("selected_offer")).get("ask_contract_id"),
         "limits": admission["limits"],
         "blockers": admission["blockers"],
         "provider_mutations_performed": 0,
