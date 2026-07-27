@@ -1,0 +1,93 @@
+{
+  "schema_version": "policy_ranking_successor_environment_source_manifest.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "recorded_at": "2026-07-27T10:32:10-0500",
+  "blueprint_source": {
+    "origin_main_sha": "115e9caec0755aa2fa0c47b84c92ead6a85ea074",
+    "isolated_worktree_branch": "codex/policy-ranking-successor-experiment-20260727",
+    "primary_checkout_user_changelog_preserved": true
+  },
+  "upstream_source": {
+    "cosmos": {
+      "repository": "https://github.com/NVIDIA/cosmos",
+      "revision": "bebca76311266941d06c5f5572fb601184ba24fa",
+      "license_sha256": "2ab44b68365473c112f5092211a38f231cb23e50de68b75a13369adbd76a74df",
+      "action_readme_sha256": "48df78f0531c6faa05c1435dcbcfc538163fbd8e94d5f59b5d9f2d1bd29e0ec2",
+      "vllm_forward_dynamics_notebook_sha256": "a5219902c1780311f1b987ca4ed84f6a8d13f3f4866f11ddc6edfe2b6d44966d"
+    },
+    "cosmos_framework": {
+      "repository": "https://github.com/NVIDIA/cosmos-framework",
+      "revision": "09f23119ea92c707207bba55565e7a09d16896a2",
+      "license_sha256": "6bd3fdb9356edb6e4c1f00ad9cd6639a1cf06ca0a415a5071fd70d68799209e6",
+      "notice_sha256": "0a3ebe37fb632d02a6a4d1cfce96109bb026b7833d8a3f0853091bb303c21ad9",
+      "pyproject_sha256": "f9a476ddb1b66366ad046d93c5a9286b9be1d62caa1f38b2f8a33dfbbbce2d34",
+      "uv_lock_sha256": "6df54ed0928bb3698a161fa9219451b00b03c36d35c221e517c2d23a17d69e7d",
+      "dockerfile_sha256": "ddb527c5a6a71639cb4e555670a68572694fd730df20b0bacf7b886f0b3c858d",
+      "droid_dataset_sha256": "19f58a2e1f1c4d24947ee8445cb78c65ff7a85fb58b91efef34ee3a10f22cb3b",
+      "droid_dataset_config_sha256": "e3a857ca49a2a7e3e43829acbb6f6a393d725a147ca6f9420df4e07ed9b80684",
+      "droid_stats_sha256": "be878e8972d51ed3b35586deecf2aa51a88c68a5e688dad594d44b46ed14e411",
+      "action_inference_sha256": "b81a40c639a2f4083b49ebe56c5058d1a3f8ece4ce4345a7a0fbc8cebfc8afd1"
+    },
+    "vllm_omni": {
+      "repository": "https://github.com/vllm-project/vllm-omni",
+      "discovered_main_revision": "fb89ab43ead813afa8a5580f8aa986f2b111771c",
+      "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+      "linux_amd64_manifest_digest": "sha256:970dee6658ea223f615b2438ce41e47f1d5322225482546e6e6bc5d8134f757c"
+    }
+  },
+  "checkpoint": {
+    "repository": "nvidia/Cosmos3-Nano",
+    "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "model_card_sha256": "656f1a410d6be6319f09693590acb1df7acdbe442de90cbc5496ae92e66c5f3b",
+    "expected_total_file_bytes": 34986890326,
+    "expected_safetensor_bytes": 34894818144,
+    "component_tree_git_oids": {
+      "sound_tokenizer": "15c71934456a3e65418268d2ac8f5d100be1d860",
+      "text_tokenizer": "b02172583bfe46cadc7370ebc5a6b476ed86fcdd",
+      "transformer": "b61f6d9ebf582aeebe809276b3ef12118613d2b4",
+      "vae": "57ceb96a9930eecaa436ab8ab94d6c5beb65e3c3",
+      "vision_encoder": "f3c5fdefdf30cb31b508b88e9c04fb286c3bb8a3"
+    },
+    "lfs_sha256": {
+      "text_tokenizer/tokenizer.json": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+      "vae/diffusion_pytorch_model.safetensors": "230496cb59ff85bc9c040487737c4062480cb61c71e697b197b4c30142f2a0da",
+      "vision_encoder/model.safetensors": "b0c0f719fcf5f2cdadb676701477c236020713657976592ad046583707a6a95a",
+      "sound_tokenizer/diffusion_pytorch_model.safetensors": "a4b6da5975bf89f6853fe589ad4752d281ac79fbdfad52ea90537fa080b4b9c2",
+      "transformer/diffusion_pytorch_model-00001-of-00007.safetensors": "7d0f718198cac14cf323d58568c78aa1290b4bd1dcced6481624b5b9c6d70dc2",
+      "transformer/diffusion_pytorch_model-00002-of-00007.safetensors": "7e6e7d270c193a58a1aec0cbc89f6f5afcaef6e3b951d86b0a432244c449e34e",
+      "transformer/diffusion_pytorch_model-00003-of-00007.safetensors": "15d08936149a7e77c6668e5b1cd47dc92a35e33741f0090d619045b66da9ff8d",
+      "transformer/diffusion_pytorch_model-00004-of-00007.safetensors": "02cebbb557bced701eb825901e1de5f86d2e1feb49cb9a8d1fb7d1b878fdb31b",
+      "transformer/diffusion_pytorch_model-00005-of-00007.safetensors": "a5e3edd742b8f1fcf27a3eb3878c67dfcb0e6881588fa35deef503d640ea69d1",
+      "transformer/diffusion_pytorch_model-00006-of-00007.safetensors": "1bb99750f7ab4a47f8b0403a87aa43fefc9648660609ab2ace4cab361b957cd0",
+      "transformer/diffusion_pytorch_model-00007-of-00007.safetensors": "3f159bc8b82477adde771ae9e4f54f76564e02844a2fc6267903bd745111d7f6"
+    },
+    "external_text_encoder": "none_listed_as_a_separate_checkpoint_component",
+    "remote_code_policy": "no_unpinned_remote_code_and_trust_remote_code_false"
+  },
+  "runtime_versions": {
+    "python": ">=3.10",
+    "cosmos_framework": "1.2.2",
+    "diffusers": "0.39.0",
+    "transformers": "4.57.6",
+    "vllm": "0.19.1",
+    "torch": "2.10.0+cu130_or_2.10.0+cu128_as_locked",
+    "transformer_engine_training_only": "2.12.0",
+    "triton_training_only": "3.6.0",
+    "lerobot_git_revision": "1a4316c6845330bc552fb982dbc44bdb4f66f2f1",
+    "cuda_primary": "13.0",
+    "cuda_compatibility_alternative": "12.8"
+  },
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  }
+}

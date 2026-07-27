@@ -1,0 +1,33 @@
+{
+  "schema_version": "policy_ranking_successor_cosmos_bundle_receipt.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "status": "built",
+  "bundle_path": "docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
+  "bundle_sha256": "26d28cba2cbecaa9ab1373e9192b2f84e952f3313bea190ea08661d4cd14dcad",
+  "bundle_size_bytes": 294165,
+  "public_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+  "checkpoint_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+  "initial_observation_sha256": "8843f0fc9c68914dfb62222c961db19b37a5f155e602ff4a545eea1dcf42636d",
+  "smoke_inventory_sha256": "c925d168c166ec7bf53ed9252a33a937416a3f6fa9ecad8a01d0e201920a07aa",
+  "action_streams_sha256": "9ece91bb2a2e50165bf21c6fa62afd25831281ade80607d7a6987e29e4f80c58",
+  "source_file_hashes": {
+    "data/chunk-000/file-000.parquet": "56e3defd9e75a101a7b812ad7ae263dde8ec5699b6b47db51ba6954f81be2593",
+    "meta/info.json": "64e39f3dbedbd5ffade567007093d92d1827fcdb68c5d9d573ff3e80eef23cf6",
+    "meta/episodes/chunk-000/file-000.parquet": "23f8e342bec24cf1af5fc4c5f58d8b51097ce09c2aaaafe6d467328af6dc016e",
+    "meta/tasks.parquet": "ee2c7ec4f086cf2025b9a1d169bf6ba1857fed2579604c8859b49741f5eb29d6",
+    "videos/observation.image.wrist_image_left/chunk-000/file-000.mp4": "e9d641240f9efc344924c31715a44be1f66207f667dd63c292bbd943dfa816d0",
+    "videos/observation.image.exterior_image_1_left/chunk-000/file-000.mp4": "6aac49551ff9b9fc7b8e9899df4fc050f5cd31164ed4ee3c014f332bcef3b9f1",
+    "videos/observation.image.exterior_image_2_left/chunk-000/file-000.mp4": "34f6e5dae8591809324f1df9bf166c6e304bd2cbdad643595a991f641cbb4fd7"
+  },
+  "provider_mutations_performed": 0,
+  "paid_resources_used": false,
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "ranking_fidelity": false,
+    "physical_performance": false
+  }
+}

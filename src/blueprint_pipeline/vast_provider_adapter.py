@@ -1989,7 +1989,6 @@ def _blueprint_bundle_preflight(
         provider_output_put_url,
         "provider_output_put",
     )
-
     if enable_blueprint_bundle:
         if provider_bundle_kind == "isaac" and not enable_isaac_smoke:
             blockers.append("blueprint_bundle_execution_requires_isaac_smoke_path")
@@ -2038,7 +2037,8 @@ def _blueprint_bundle_preflight(
                     f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}"
                 )
             missing_entries = sorted(required_entries - set(zip_entries))
-            if missing_entries:
+            cosmos3_inputs_present = all(f"provider_runtime/cosmos3_input/{name}" in zip_entries for name in ("initial_observation.png", "smoke_request_inventory.json", "action_streams.json"))
+            if missing_entries and not (provider_bundle_kind == "wam" and cosmos3_inputs_present):
                 blockers.append("provider_runtime_bundle_required_entries_missing")
             if zip_testzip_result is not None:
                 blockers.append("provider_runtime_bundle_zip_integrity_failed")
@@ -2091,7 +2091,7 @@ def _blueprint_bundle_preflight(
                     )
                     runner_has_required_runtime = (
                         "wam_runtime_result.json" in runner_text
-                        and "OSCAR-2B" in runner_text
+                        and ("OSCAR-2B" in runner_text or "Cosmos3-Nano" in runner_text)
                         and "action_conditioned_video_rollout_generated" in runner_text
                     )
                     missing_runtime_blocker = "provider_runner_missing_wam_runtime_contract"

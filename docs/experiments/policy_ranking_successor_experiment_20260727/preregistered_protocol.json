@@ -1,0 +1,166 @@
+{
+  "schema_version": "policy_ranking_successor_preregistration.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "frozen_local_date": "2026-07-27",
+  "source_commit_at_namespace_creation": "115e9caec0755aa2fa0c47b84c92ead6a85ea074",
+  "scientific_question": "Can a replaceable general WAM predict meaningfully different future observations from different candidate-policy action trajectories, and can an independent frozen evaluator use those predictions to recover a useful policy ordering and abstain on unreliable or out-of-distribution cases?",
+  "historical_experiments": [
+    {
+      "path": "docs/experiments/policy_ranking_thesis_20260726",
+      "role": "immutable_history_only",
+      "verdict": "inconclusive",
+      "predictions_or_outcomes_reused": false
+    },
+    {
+      "path": "docs/experiments/policy_ranking_thesis_experiment_2_20260727",
+      "role": "immutable_history_only",
+      "verdict": "thesis_not_supported",
+      "predictions_or_outcomes_reused": false
+    }
+  ],
+  "embodiment": {
+    "initial_anchor": "DROID-compatible Franka Panda",
+    "permanent_product_boundary": false,
+    "later_adapter_targets": [
+      "mobile_manipulators",
+      "dual_arm_systems",
+      "forklifts_and_amrs",
+      "humanoids",
+      "warehouse_specific_cameras_and_action_spaces"
+    ]
+  },
+  "world_model": {
+    "repository": "nvidia/Cosmos3-Nano",
+    "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "role": "general_forward_dynamics_wam",
+    "released_weights_frozen": true,
+    "precision": "bf16",
+    "post_training_or_lora": false,
+    "interface": [
+      "initial_observation",
+      "task_instruction",
+      "normalized_candidate_policy_action_trajectory",
+      "predicted_future_observations_or_video"
+    ],
+    "explicitly_not_the_wam": "nvidia/Cosmos3-Nano-Policy-DROID"
+  },
+  "smoke_canary": {
+    "data": "one calibration-only label-free DROID session",
+    "independent_policy_outcomes_accessed": false,
+    "action_conditions": [
+      "recorded",
+      "zero",
+      "shuffled",
+      "reversed",
+      "policy_swapped"
+    ],
+    "seeds": [0, 1],
+    "request_count": 10,
+    "all_conditions_require_counterfactual_cosmos_regeneration": true,
+    "deterministic_checks_before_any_vlm": [
+      "output_video_identity_or_near_identity",
+      "scene_motion",
+      "object_motion",
+      "end_effector_motion",
+      "direction_and_timing_agreement",
+      "action_variant_divergence",
+      "static_blank_or_corrupt_frames",
+      "camera_stability",
+      "seed_sensitivity",
+      "action_conditioned_effect_against_strongest_placebo"
+    ],
+    "kill_conditions": [
+      "materially_identical_futures_for_different_actions",
+      "actions_ignored",
+      "static_blank_corrupt_or_annotation_dominated_output",
+      "action_semantics_unattributable",
+      "seed_instability_overwhelms_action_effect",
+      "compute_projection_exceeds_authorized_cap",
+      "reproducibility_requires_scientific_model_change"
+    ]
+  },
+  "wam_qualification_gates": {
+    "analysis_unit": "session_cluster",
+    "action_conditioned_excess_lower_95_bound_gt": 0.05,
+    "session_cluster_bootstrap_validity_lower_95_bound_gte": 0.8,
+    "bootstrap_replicates": 10000,
+    "scene_response_not_overlay_only": true,
+    "strongest_placebo_must_not_explain_signal": true,
+    "seed_robustness_required": true,
+    "camera_and_normalization_sensitivity_within_frozen_tolerances": true,
+    "underpowered_result": "inconclusive"
+  },
+  "evaluator": {
+    "admission_condition": "cosmos_wam_qualification_supported",
+    "proposed_snapshot": "gpt-5-mini-2025-08-07",
+    "independent_of_wam_and_candidate_policies": true,
+    "fixed_prompt_schema_sampling_decoding_and_retry_contract_required": true,
+    "policy_names_or_performance_metadata_in_request": false,
+    "private_restricted_or_interiorgs_imagery_allowed": false,
+    "synthetic_generated_frame_canary_first": true,
+    "api_vlm_hard_cap_usd": 10.0,
+    "valid_cosmos_rollout_required": true
+  },
+  "benchmark": {
+    "admission_condition": "cosmos_and_evaluator_calibration_supported",
+    "new_disjoint_heldout_required": true,
+    "experiment_2_heldout_reuse_forbidden": true,
+    "complete_matrix_before_outcome_unseal": true,
+    "outcomes_unsealed_once": true,
+    "policy_rows_are_not_independent_units": true
+  },
+  "ranking_support_gates": {
+    "pairwise_accuracy_clustered_lower_95_gt": 0.5,
+    "kendall_tau_b_gt": 0.0,
+    "kendall_significance_required": true,
+    "correct_top_policy_required": true,
+    "selective_coverage_gte": 0.25,
+    "selective_pairwise_lower_95_gte": 0.6,
+    "wam_validity_lower_95_gte": 0.8,
+    "action_conditioned_evaluator_beats_endpoint_and_leakage_controls": true
+  },
+  "gpu_selection": {
+    "reasonably_close_fraction": 0.15,
+    "default_when_prices_reasonably_close": "H100 SXM 80GB",
+    "blackwell_candidate": "RTX PRO 6000 Blackwell 96GB",
+    "blackwell_selection_requires": [
+      "exact_action_conditioned_stack_preflight_passed",
+      "projected_all_in_cost_per_valid_rollout_lower_than_h100"
+    ],
+    "no_fallback_gpu_without_separate_cap_admission": true
+  },
+  "retry_contract": {
+    "valid_response_accepted_first_and_exactly_once": true,
+    "valid_response_never_resampled": true,
+    "infrastructure_retry_limit_per_request": 1,
+    "scientific_failure_not_retried_with_weaker_thresholds": true,
+    "resume_idempotent": true
+  },
+  "verdicts": {
+    "components": [
+      "cosmos_wam_qualification",
+      "frozen_benchmark_calibration",
+      "captured_site_transfer",
+      "economics_and_speed"
+    ],
+    "overall_allowed": [
+      "thesis_supported",
+      "thesis_not_supported",
+      "inconclusive"
+    ],
+    "optimize_for_thesis_supported": false
+  },
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  }
+}

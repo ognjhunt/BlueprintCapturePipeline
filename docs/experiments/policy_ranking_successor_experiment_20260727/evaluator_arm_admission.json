@@ -1,0 +1,37 @@
+{
+  "schema_version": "policy_ranking_successor_evaluator_arm_admission.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "discovered_at_local_date": "2026-07-27",
+  "official_model_page": "https://developers.openai.com/api/docs/models/gpt-5-mini",
+  "model_snapshot": "gpt-5-mini-2025-08-07",
+  "snapshot_listed_current": true,
+  "responses_api_supported": true,
+  "image_input_supported": true,
+  "structured_outputs_supported": true,
+  "pricing_usd_per_million_tokens": {
+    "input": 0.25,
+    "cached_input": 0.025,
+    "output": 2.0
+  },
+  "admission_status": "blocked_until_cosmos_wam_qualification_supported",
+  "paid_api_calls_made": 0,
+  "prompt_frozen": false,
+  "response_schema_frozen": false,
+  "frame_sampling_frozen": false,
+  "full_matrix_projection_frozen": false,
+  "reason": "Phase E is conditional on a supported Cosmos WAM qualification; freezing an evaluator request matrix now would be premature.",
+  "private_restricted_or_interiorgs_imagery_allowed": false,
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  }
+}

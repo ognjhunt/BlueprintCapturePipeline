@@ -1,0 +1,50 @@
+{
+  "schema_version": "policy_ranking_successor_wam_action_adapter_freeze.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "adapter_module": "blueprint_pipeline.policy_ranking_successor_cosmos",
+  "official_entrypoint": "torchrun --nproc-per-node=1 -m cosmos_framework.scripts.inference --parallelism-preset=latency -i <frozen_spec>.jsonl -o <isolated_output> --checkpoint-path <Cosmos3-Nano@411f42a8...> --seed <frozen_seed>",
+  "alternative_pinned_runtime": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+  "generic_preview_path_is_action_conditioned_entrypoint": false,
+  "contract": {
+    "model_mode": "forward_dynamics",
+    "domain_name": "droid_lerobot",
+    "shape": [16, 10],
+    "frequency_hz": 15,
+    "action_names": ["pos_x", "pos_y", "pos_z", "rot_0", "rot_1", "rot_2", "rot_3", "rot_4", "rot_5", "gripper"],
+    "pose_convention": "backward_framewise",
+    "rotation_representation": "rot6d",
+    "translation_unit": "meter",
+    "coordinate_conversion_matrix": [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+    "coordinate_conversion_application": "right_multiply_panda_link8_native_rotation_to_opencv",
+    "gripper_semantics": "cosmos_open_close_value_after_dataset_version_flip",
+    "viewpoint": "concat_view_wrist_top_exterior_left_and_right_bottom",
+    "normalization_boundary": "external_action_json_is_raw_and_unpadded; official inference pads to_model_width and records action_normalizer_none",
+    "q01_reference_only": [-0.0142, -0.013416, -0.015206, 0.998459, -0.047659, -0.034774, -0.047609, 0.998428, -0.035553, 0.0],
+    "q99_reference_only": [0.014515, 0.011517, 0.01452, 1.0, 0.047596, 0.03466, 0.047654, 1.0, 0.038888, 1.0]
+  },
+  "fail_closed_on": [
+    "missing_action_stream",
+    "wrong_horizon_or_dimension",
+    "nonfinite_values",
+    "frequency_not_15_hz",
+    "unknown_embodiment_or_frame",
+    "wrong_rotation_or_pose_convention",
+    "gripper_outside_unit_interval",
+    "action_hash_mismatch",
+    "policy_or_performance_metadata",
+    "artifact_path_outside_successor_namespace"
+  ],
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  }
+}

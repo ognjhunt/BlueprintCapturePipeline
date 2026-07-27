@@ -115,6 +115,52 @@ def resolve_max_compute_cap(explicit: Any = None) -> int:
     return max(0, int(resolved if resolved is not None else 0))
 
 
+def capacity_selection_overrides(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Return optional architecture and policy controls for offer selection."""
+
+    raw_minimum = request.get("min_compute_cap")
+    minimum = int(raw_minimum) if type(raw_minimum) is int and raw_minimum > 0 else 0
+    raw_maximum = request.get("max_compute_cap")
+    maximum = (
+        int(raw_maximum)
+        if type(raw_maximum) is int and raw_maximum >= 0
+        else resolve_max_compute_cap()
+    )
+    return {
+        "min_compute_cap": minimum,
+        "max_compute_cap": maximum,
+        "prefer_isaac_rt": request.get("prefer_isaac_rt") is True,
+        "gpu_selection_policy": request.get("gpu_selection_policy"),
+    }
+
+
+def capacity_selection_policy(
+    request: Mapping[str, Any], selection: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Build the artifact-safe policy projection for a capacity preflight."""
+
+    policy = {
+        "max_hourly_rate_usd": selection["max_hourly_rate"],
+        "min_gpu_ram_mb": selection["min_gpu_ram_mb"],
+        "min_reliability": selection["min_reliability"],
+        "require_avx": selection["require_avx"],
+        "require_known_supported_isaac_driver": selection[
+            "require_known_supported_isaac_driver"
+        ],
+        "require_direct_port": selection["require_direct_port"],
+        "preferred_gpu_keywords": selection["preferred_gpu_keywords"],
+    }
+    optional_keys = {
+        "min_compute_cap",
+        "max_compute_cap",
+        "prefer_isaac_rt",
+        "gpu_selection_policy",
+    }
+    if optional_keys.intersection(request):
+        policy.update({key: selection[key] for key in optional_keys})
+    return policy
+
+
 def any_offer_exceeds_ceiling(summaries: "list[Mapping[str, Any]]", max_compute_cap: int) -> bool:
     """Whether any offer was removed specifically for its architecture."""
 

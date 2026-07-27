@@ -1,0 +1,25 @@
+{
+  "schema_version": "policy_ranking_successor_api_budget_ledger.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "hard_cap_usd": 10.0,
+  "actual_spend_usd": 0.0,
+  "failed_call_spend_usd": 0.0,
+  "retry_reserve_usd": 0.0,
+  "remaining_usd": 10.0,
+  "provider_calls_made": 0,
+  "admission_status": "not_admitted_until_cosmos_wam_qualification_supported",
+  "proposed_model": "gpt-5-mini-2025-08-07",
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  }
+}

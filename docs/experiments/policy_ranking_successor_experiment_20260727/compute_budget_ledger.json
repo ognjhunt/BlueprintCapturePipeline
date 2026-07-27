@@ -1,0 +1,105 @@
+{
+  "schema_version": "policy_ranking_successor_compute_budget_ledger.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "price_observed_at": "2026-07-27T11:03:28-0500",
+  "provider": "Vast",
+  "provider_inventory_active_at_observation": 0,
+  "paid_allocator_entrypoint": "python -m blueprint_pipeline.paid_resource_allocator",
+  "compute_cap_authorized_usd": 3.25,
+  "actual_compute_spend_usd": 0.0,
+  "allocation_status": "authorized_but_not_allocated_pending_protected_main_and_fresh_admission",
+  "canary_inventory": {
+    "calibration_sessions": 1,
+    "action_conditions": 5,
+    "seeds": 2,
+    "rollouts": 10,
+    "resolution": "480p",
+    "precision": "bf16"
+  },
+  "live_offers": [
+    {
+      "gpu": "RTX PRO 6000 Blackwell 96GB",
+      "vast_offer_id_at_observation": 28016142,
+      "gpu_hourly_usd": 1.0075555555555555,
+      "storage_usd_per_gb_month": 0.2666666666666666,
+      "download_usd_per_tb": 0.13333333333333333,
+      "disk_available_gb": 1150.25,
+      "internet_download_mbps": 2915.5,
+      "reliability": 0.9991573,
+      "cuda_max": 13.0,
+      "driver": "580.126.09",
+      "exact_action_stack_preflight": "pending_paid_hardware_execution"
+    },
+    {
+      "gpu": "H100 SXM 80GB",
+      "vast_offer_id_at_observation": 45065175,
+      "gpu_hourly_usd": 3.005333333333333,
+      "storage_usd_per_gb_month": 0.48,
+      "download_usd_per_tb": 2.6666666666666665,
+      "disk_available_gb": 313.4136615216746,
+      "internet_download_mbps": 498.1,
+      "reliability": 0.9841689,
+      "cuda_max": 13.0,
+      "driver": "580.95.05",
+      "exact_action_stack_preflight": "pending_paid_hardware_execution"
+    }
+  ],
+  "official_latency_proxy": {
+    "source": "NVIDIA/cosmos inference_benchmarks.md at bebca76311266941d06c5f5572fb601184ba24fa",
+    "note": "Cosmos3-Nano DROID forward-dynamics latency is not published; 480p single-GPU Nano vLLM image-to-video is used as a conservative proxy, not runtime proof.",
+    "rtx_pro_6000_blackwell_seconds": 107.77,
+    "h100_sxm_80gb_seconds": 59.77
+  },
+  "three_hour_all_in_projection": {
+    "assumed_disk_gb": 250,
+    "assumed_checkpoint_download_gb_decimal": 35,
+    "rtx_pro_6000_blackwell_usd": 3.082444444444444,
+    "h100_sxm_80gb_usd": 9.593333333333334,
+    "rtx_cost_per_planned_rollout_usd": 0.30824444444444443,
+    "h100_cost_per_planned_rollout_usd": 0.9593333333333334,
+    "network_upload_cost_excluded_because_only_small_evidence_manifests_are_expected": true,
+    "price_volatility_requires_recheck_at_admission": true
+  },
+  "gpu_selection_rule": {
+    "reasonably_close_fraction": 0.15,
+    "h100_preferred_when_reasonably_close": true,
+    "blackwell_can_be_selected_only_after_exact_action_stack_preflight": true,
+    "current_provisional_preflight_target": "RTX PRO 6000 Blackwell 96GB",
+    "reason": "Projected three-hour all-in cost is materially lower than H100; selection for scientific rollout remains conditional on exact-stack preflight."
+  },
+  "smallest_credible_authorization_request": {
+    "cap_usd": 3.25,
+    "hard_ttl_seconds": 10800,
+    "provider": "Vast",
+    "candidate_gpu": "single RTX PRO 6000 Blackwell 96GB",
+    "scope": "exact-stack compatibility preflight followed, only if it passes, by the frozen 10-rollout Cosmos smoke canary",
+    "watchdog": true,
+    "automatic_spend_cutoff": true,
+    "teardown": true,
+    "provider_zero_verification": true,
+    "h100_fallback_under_this_cap": false,
+    "new_authority_required_if_blackwell_fails": true
+  },
+  "authorization": {
+    "status": "authorized",
+    "authorized_at": "2026-07-27T11:03:41-0500",
+    "authorization_artifact": "compute_authorization.json",
+    "maximum_gpu_time_charge_at_frozen_rate_ceiling_usd": 3.15,
+    "authorized_cap_headroom_usd": 0.1,
+    "h100_fallback_authorized": false,
+    "expanded_qualification_authorized": false
+  },
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  }
+}

@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from blueprint_pipeline import safe_outbound_http
+from blueprint_pipeline import safe_outbound_http, vast_compute_capability as vcc
 from blueprint_pipeline.paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
@@ -1971,6 +1971,7 @@ class VastRenderProvider(GpuRenderProvider):
             "min_reliability": min_reliability,
             "require_direct_port": require_direct_port,
             "preferred_gpu_keywords": preferred_gpu_keywords,
+            **vcc.capacity_selection_overrides(req),
         }
         selected = _select_offer(offers, **selection_kwargs)
         viable: list[dict[str, Any]] = []
@@ -2004,15 +2005,7 @@ class VastRenderProvider(GpuRenderProvider):
             "offer_count": len(offers),
             "viable_gpu_types": viable,
             "selected_offer": viable[0] if viable else None,
-            "selection_policy": {
-                "max_hourly_rate_usd": max_rate,
-                "min_gpu_ram_mb": min_ram,
-                "min_reliability": min_reliability,
-                "require_avx": require_avx,
-                "require_known_supported_isaac_driver": require_known_driver,
-                "require_direct_port": require_direct_port,
-                "preferred_gpu_keywords": preferred_gpu_keywords,
-            },
+            "selection_policy": vcc.capacity_selection_policy(req, selection_kwargs),
             "reservation_proven": False,
             "capacity_confidence": "advisory" if selected else "unavailable",
             "authoritative_capacity_source": "provider_create_response",
