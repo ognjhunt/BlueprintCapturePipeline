@@ -16,4 +16,8 @@ These contradictions are retained as evidence. None is resolved by redefining ge
 
 7. **Procedural lock versus pristine blinding.** After the immutable provider matrix began, a broad provenance search displayed policy names and some free-text action feedback from the dataset tree before completion. It did not display the exact `binary_success`, `partial_success`, or `preference` fields and could not alter frozen requests or deterministic metrics, but pristine metadata sealing cannot be claimed.
 
+8. **Cheaper models versus frozen-arm identity.** GPT-5 mini and nano are materially cheaper than GPT-5, and a valid Gemini credential was found, but swapping models after the exact GPT-5 matrix began would change the scientific arm. With no unused disjoint OSCAR holdout left, cheaper models are successor-experiment candidates rather than repairs to this frozen replication.
+
+9. **Low partial API spend versus a complete ranking result.** The run stayed below the user-authorized `$10` cap, but only 43/686 requests completed. Low spend proves bounded execution cost, not held-out rank fidelity or a complete faster-than-physical comparison.
+
 Evidence class: limitations and contradiction accounting. This document does not itself prove ranking fidelity, captured-site transfer, economics, or physical performance.

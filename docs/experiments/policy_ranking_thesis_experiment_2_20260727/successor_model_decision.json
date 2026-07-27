@@ -1,0 +1,46 @@
+{
+  "schema_version": "policy_ranking_experiment_2_successor_model_decision.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "decided_by": "user",
+  "decision": "use_gpt5_mini_for_the_next_valid_experiment",
+  "selected_model_snapshot": "gpt-5-mini-2025-08-07",
+  "live_model_discovery": {
+    "verified_at": "2026-07-27T13:31:04Z",
+    "endpoint": "GET /v1/models/gpt-5-mini-2025-08-07",
+    "id": "gpt-5-mini-2025-08-07",
+    "object": "model",
+    "owned_by": "system",
+    "available": true,
+    "paid_request_performed": false
+  },
+  "official_pricing_usd_per_million_tokens": {
+    "input": 0.25,
+    "output": 2.0,
+    "source": "https://developers.openai.com/api/docs/models/gpt-5-mini"
+  },
+  "official_published_proxies": {
+    "VideoMMMU": 0.825,
+    "MMMU": 0.816,
+    "GPQA_diamond": 0.823,
+    "SWE_bench_Verified": 0.71,
+    "source": "https://openai.com/index/introducing-gpt-5-for-developers/",
+    "claim_boundary": "General published proxies; none measures DROID robot-policy rank fidelity."
+  },
+  "observed_token_identical_full_matrix_projection_usd": 4.1502,
+  "combined_with_experiment_2_conservative_exposure_usd": 5.63093,
+  "cap_usd": 10.0,
+  "current_experiment_disposition": {
+    "added_to_frozen_heldout": false,
+    "reason": "The governing request forbids adding evaluator arms after heldout predictions begin and requires new arms to use a disjoint heldout split or new benchmark snapshot.",
+    "outcome_labels_remain_sealed": true,
+    "scientific_request_count": 0,
+    "incremental_cost_usd": 0.0
+  },
+  "next_valid_experiment": {
+    "required": "newly generated disjoint DROID-compatible rollout benchmark with labels frozen independently of the judge",
+    "development": "calibrate GPT-5 mini on pilot/calibration only",
+    "heldout": "freeze exact prompt, sampling, snapshot, thresholds, and budget before any mini prediction",
+    "stop": "do not run if WAM generation plus the mini matrix cannot remain under the user cap"
+  },
+  "claim_boundary": "Model selection and live availability evidence only; not a mini calibration, heldout result, or ranking claim."
+}

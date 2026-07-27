@@ -1,0 +1,13 @@
+{
+  "schema_version": "policy_ranking_experiment_2_policy_intervals.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "partition": "heldout",
+  "status": "not_emitted_incomplete_prediction_matrix",
+  "provider_request_count_required": 686,
+  "provider_request_count_accepted": 43,
+  "heldout_labels_unsealed": false,
+  "partial_prediction_outcome_join_performed": false,
+  "policy_rankings_with_clustered_bootstrap_ci95": null,
+  "reason": "A valid heldout policy ranking and its confidence intervals require the complete frozen request matrix before outcome unsealing. Reporting intervals from 43 non-randomly completed requests would violate the protocol.",
+  "claim_boundary": "Explicit absence artifact; no policy ordering is inferred from incomplete heldout predictions."
+}

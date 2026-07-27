@@ -1,0 +1,25 @@
+{
+  "schema_version": "policy_ranking_experiment_2_provider_zero.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "checked_at": "2026-07-27T08:27:06-0500",
+  "vast": {
+    "query": "vastai show instances --raw",
+    "response_type": "array",
+    "global_instance_count": 0,
+    "global_inventory_zero": true,
+    "provider_mutation_performed": false
+  },
+  "openai": {
+    "api_mode": "synchronous Responses API requests",
+    "persistent_compute_resource_created": false,
+    "provider_process_running_locally": false,
+    "remaining_inflight_response_recovery_attempted": false
+  },
+  "gemini": {
+    "scientific_request_count": 0,
+    "persistent_compute_resource_created": false
+  },
+  "new_gpu_or_builder_allocated_by_experiment_2": false,
+  "billable_gpu_inventory_zero": true,
+  "claim_boundary": "Read-only Vast global inventory and local process closure. This is resource-absence evidence, not provider invoice reconciliation or ranking evidence."
+}

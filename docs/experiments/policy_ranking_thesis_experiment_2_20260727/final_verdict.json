@@ -1,0 +1,49 @@
+{
+  "schema_version": "blueprint_policy_ranking_thesis_experiment_2_final_verdict.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "primary_thesis": "Given a captured real-site representation, a real robot task, and multiple candidate robot policies, Blueprint can predict a useful ordering of those policies substantially faster and more cheaply than exhaustively evaluating every policy physically, while abstaining when its prediction is not trustworthy.",
+  "components": {
+    "frozen_benchmark_calibration": {
+      "verdict": "not_supported",
+      "basis": "The 49-cluster heldout causal-conditioning diagnostic was powered for the registered 0.05 margin, but the overlay-masked scene residual had mean excess 0.039976, 95% CI [0.012196, 0.067883], p=0.762824 against the useful margin, and Wilson-lower validity pass rate 0.388648 versus the required 0.8. All causal gates failed. The heldout GPT-5 ranking matrix closed at 43/686 and was not scored."
+    },
+    "captured_site_transfer": {
+      "verdict": "not_supported",
+      "basis": "InteriorGS was historically ingested and executed, but under a different OpenPI/MuJoCo stack. No frozen WAM/evaluator transfer, useful total ordering, calibrated abstention correctness, or site-specific physical accuracy was demonstrated."
+    }
+  },
+  "overall_verdict": "thesis_not_supported",
+  "overall_decision_rule": "A sufficiently powered heldout failure of causal action signal or captured transfer yields thesis_not_supported. Both registered components are not_supported. Incomplete rank-fidelity and economic measurements are retained as unmeasured and do not erase direct falsification of necessary thesis conditions.",
+  "confidence_and_power": {
+    "target_power": 0.8,
+    "one_sided_alpha": 0.05,
+    "heldout_session_cluster_count": 49,
+    "minimum_detectable_excess": 0.031975861614677296,
+    "registered_meaningful_excess": 0.05,
+    "powered_for_registered_margin": true,
+    "verdict_confidence": "high_for_failure_of_the_frozen_causal_gate_low_for_universal_generalization",
+    "reason": "The registered causal gate failed with development-estimated sensitivity finer than the useful margin, but rank fidelity and site-specific physical outcomes remain unmeasured."
+  },
+  "economics": {
+    "experiment_2_conservative_paid_cost_upper_bound_usd": 1.48073,
+    "substantially_faster_proven": false,
+    "substantially_cheaper_proven": false
+  },
+  "physical_robot_operated_or_funded_by_blueprint": false,
+  "heldout_outcome_labels_unsealed_in_experiment_2": false,
+  "successor_model": {
+    "user_selected": "gpt-5-mini-2025-08-07",
+    "live_snapshot_available": true,
+    "added_to_current_frozen_holdout": false,
+    "incremental_paid_cost_usd": 0.0,
+    "reason": "New evaluator arms require a disjoint heldout split or new benchmark snapshot."
+  },
+  "unresolved_limitations": [
+    "The heldout GPT-5 ranking matrix is incomplete and no heldout ranking metric, confidence interval, or risk/coverage curve exists.",
+    "The causal diagnostic is a falsification test based on 2D pixel/action temporal alignment, not counterfactual WAM regeneration or 3D task success.",
+    "Captured-site evidence used a different stack and lacks site-specific physical labels.",
+    "Physical monetary cost and full physical wall-clock duration are unmeasured.",
+    "A broad metadata search and one precompletion canary inspection prevent a claim of pristine procedural blinding."
+  ],
+  "scope": "This verdict applies to the frozen OSCAR representation/evaluator, released DROID-compatible policy cohort, registered causal test, and retained InteriorGS evidence. It is not a universal impossibility claim for future models, WAMs, tasks, or newly collected disjoint benchmarks."
+}

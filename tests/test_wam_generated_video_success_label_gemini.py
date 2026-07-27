@@ -79,9 +79,11 @@ def test_gemini_wam_success_labeler_blocks_without_gate_or_key(
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_GENAI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_AI_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY_FILE", raising=False)
-    monkeypatch.delenv("GOOGLE_GENAI_API_KEY_FILE", raising=False)
-    monkeypatch.delenv("GOOGLE_AI_API_KEY_FILE", raising=False)
+    # Override every file path so this no-key test remains hermetic on
+    # developer machines that intentionally provision a default secret file.
+    monkeypatch.setenv("GEMINI_API_KEY_FILE", str(tmp_path / "missing-gemini-key"))
+    monkeypatch.setenv("GOOGLE_GENAI_API_KEY_FILE", str(tmp_path / "missing-google-genai-key"))
+    monkeypatch.setenv("GOOGLE_AI_API_KEY_FILE", str(tmp_path / "missing-google-ai-key"))
 
     result = gemini_labeler.build_gemini_wam_success_labels(
         input_path=_request(tmp_path),

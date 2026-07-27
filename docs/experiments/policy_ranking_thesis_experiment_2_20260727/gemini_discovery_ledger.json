@@ -1,0 +1,29 @@
+{
+  "schema_version": "policy_ranking_experiment_2_gemini_discovery_ledger.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "provider": "google_gemini",
+  "discovery": {
+    "primary_env_credential_status": "api_key_invalid",
+    "private_secret_file_credential_status": "valid_for_model_discovery",
+    "private_secret_file_mode": "0600",
+    "models_observed": [
+      "models/gemini-3.5-flash-lite",
+      "models/gemini-3.6-flash"
+    ],
+    "credential_value_persisted": false
+  },
+  "admission": {
+    "paid_billing_programmatically_verified": false,
+    "paid_service_data_treatment_programmatically_verified": false,
+    "exact_model_pricing_and_rate_limits_frozen": false,
+    "synthetic_generated_frame_canary_run": false,
+    "restricted_oscar_media_uploaded": false,
+    "scientific_request_count": 0,
+    "cost_usd": 0.0,
+    "status": "not_admitted"
+  },
+  "scientific_role": "none_in_experiment_2",
+  "reason": "Gemini cannot replace the frozen GPT-5 arm after execution begins. No unused disjoint OSCAR heldout partition remains, and provider billing/data-treatment admission was incomplete.",
+  "future_use": "A successor experiment may calibrate a pinned Gemini Flash snapshot on development data and evaluate it only on a newly generated, disjoint rollout pool.",
+  "claim_boundary": "Valid model discovery proves credential transport only, not paid-account treatment, benchmark fitness, rank fidelity, or permission to upload restricted media."
+}

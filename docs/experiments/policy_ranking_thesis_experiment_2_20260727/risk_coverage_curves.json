@@ -1,0 +1,23 @@
+{
+  "schema_version": "policy_ranking_experiment_2_risk_coverage_closure.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "partition": "heldout",
+  "status": "not_computed_incomplete_prediction_matrix",
+  "provider_request_count_required": 686,
+  "provider_request_count_accepted": 43,
+  "heldout_pair_rows": null,
+  "risk_coverage_curve": null,
+  "uncertainty_error_association": null,
+  "heldout_labels_unsealed": false,
+  "partial_prediction_outcome_join_performed": false,
+  "historical_calibration_selective_summary": {
+    "temporal_selective_pair_count": 1,
+    "temporal_informative_pair_count": 113,
+    "temporal_selective_pairwise_coverage": 0.008849557522123894,
+    "temporal_selective_pairwise_accuracy": 1.0,
+    "required_selective_pairwise_coverage": 0.25,
+    "registered_selective_coverage_gate_passed": false
+  },
+  "reason": "A complete heldout risk/coverage curve requires all frozen predictions and outcome unsealing. The experiment preserves the curve as unavailable instead of treating missing rows as abstentions or selecting completed rows post hoc.",
+  "claim_boundary": "Explicit absence artifact. Historical calibration coverage does not substitute for heldout uncertainty calibration or captured-site abstention correctness."
+}

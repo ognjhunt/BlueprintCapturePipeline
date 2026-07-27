@@ -1,0 +1,46 @@
+{
+  "schema_version": "policy_ranking_experiment_2_validation.v1",
+  "validated_at": "2026-07-27T13:45:40Z",
+  "runtime": "uv-managed CPython 3.12.11",
+  "focused_tests": {
+    "command": "uv run pytest -q tests/test_policy_ranking_causal_conditioning.py tests/test_policy_ranking_evidence.py tests/test_policy_ranking_experiment_2.py tests/test_policy_ranking_experiment_2_adjudication.py tests/test_wam_episode_consistency_label_gemini.py tests/test_wam_generated_video_success_label_gemini.py",
+    "passed": 30,
+    "failed": 0
+  },
+  "full_tests": {
+    "command": "uv run pytest -q",
+    "collected": 6897,
+    "selected": 5255,
+    "passed": 5252,
+    "skipped": 3,
+    "deselected": 1642,
+    "failed": 0,
+    "elapsed_seconds": 795.26
+  },
+  "lint_and_format": {
+    "ruff_check": "passed",
+    "ruff_format_check": "passed",
+    "files_checked": 10
+  },
+  "dependency_lock": {
+    "command": "uv lock --check",
+    "status": "passed",
+    "resolved_package_count": 243
+  },
+  "provider_evidence_integrity": {
+    "manifest_verification": "passed",
+    "journal_event_count": 135,
+    "accepted_request_count": 43,
+    "failed_attempt_count": 0,
+    "last_event_sha256": "a856161f8630f45cd123b27dcea4c0acc0270a5fde300c3a25f772cd518c34ff",
+    "derived_aggregate_sha256": "1bef0abf76d4247ed8b6b215170be2d99bd7a3976b113f0a2e9fb339debfff61"
+  },
+  "secret_scan": {
+    "scanner": "blueprint_pipeline.policy_ranking_evidence.scan_for_secrets",
+    "scope": "Experiment-2 evidence directory",
+    "hit_count": 0,
+    "status": "passed"
+  },
+  "json_parse_and_diff_check": "passed",
+  "claim_boundary": "Implementation and evidence-integrity validation. Passing tests does not itself prove evaluator validity, ranking fidelity, transfer, economics, or physical performance."
+}
