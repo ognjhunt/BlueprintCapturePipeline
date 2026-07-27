@@ -2,7 +2,7 @@
   "schema_version": "policy_ranking_experiment_2_dataset_manifest.v1",
   "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
   "oscar_code": {
-    "path": "/Users/nijelhunt_1/workspace/policy-ranking-experiment-2-inputs/oscar-public",
+    "path": "evidence-input://oscar-public",
     "revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
     "license_file_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
   },
@@ -12,7 +12,7 @@
     "media_rights": "internal_only_no_explicit_dataset_license_found"
   },
   "roboarena": {
-    "path": "/Users/nijelhunt_1/workspace/policy-ranking-experiment-2-inputs/RoboArena_DataDump_07-17-2026",
+    "path": "evidence-input://RoboArena_DataDump_07-17-2026",
     "revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
     "license": "MIT",
     "heldout_metadata_parsed_or_displayed": false

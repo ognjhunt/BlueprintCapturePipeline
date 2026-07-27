@@ -2,7 +2,7 @@
   "schema_version": "policy_ranking_experiment_environment.v1",
   "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
   "starting_origin_main_sha": "1cebc0a77eb12f72f375e5794289a04154259a64",
-  "worktree_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-experiment-2",
+  "worktree_path": "workspace://BlueprintCapturePipeline-policy-ranking-experiment-2",
   "experiment_branch": "codex/policy-ranking-thesis-experiment-2-20260727",
   "python_executable": "/opt/homebrew/Caskroom/miniforge/base/bin/python",
   "python_version": "3.12.11",

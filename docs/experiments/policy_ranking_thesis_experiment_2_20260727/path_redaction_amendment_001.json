@@ -1,0 +1,34 @@
+{
+  "schema_version": "policy_ranking_experiment_2_path_redaction_amendment.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "recorded_at": "2026-07-27T13:53:59Z",
+  "reason": "Protected-source governance forbids publication of personal absolute filesystem paths.",
+  "affected_artifacts": [
+    "calibration_judge_inventory.json",
+    "dataset_and_split_manifest.json",
+    "environment_and_source_manifest.json",
+    "heldout_judge_inventory.json",
+    "pilot_judge_inventory.json"
+  ],
+  "replacement_namespaces": {
+    "workspace": "workspace://BlueprintCapturePipeline-policy-ranking-experiment-2",
+    "oscar_code": "evidence-input://oscar-public",
+    "oscar_rollout_media": "evidence-input://OSCAR_policy_rollout/",
+    "roboarena": "evidence-input://RoboArena_DataDump_07-17-2026"
+  },
+  "scientific_fields_changed": false,
+  "unchanged_fields": [
+    "split membership",
+    "media content hashes",
+    "inventory logical hashes",
+    "request identifiers",
+    "provider responses",
+    "outcome labels",
+    "causal metrics",
+    "confidence intervals",
+    "component verdicts",
+    "overall verdict"
+  ],
+  "integrity_note": "File-level hashes and byte sizes for the five affected JSON artifacts necessarily change. The experiment artifact manifest is regenerated to index the portable publication copies.",
+  "claim_boundary": "This is a post-freeze publication-path redaction only. It does not add observations, inspect new outcomes, rerun a judge, modify a prediction, or upgrade any experimental claim."
+}

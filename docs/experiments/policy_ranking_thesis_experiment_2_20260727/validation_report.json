@@ -1,6 +1,6 @@
 {
   "schema_version": "policy_ranking_experiment_2_validation.v1",
-  "validated_at": "2026-07-27T13:45:40Z",
+  "validated_at": "2026-07-27T13:55:00Z",
   "runtime": "uv-managed CPython 3.12.11",
   "focused_tests": {
     "command": "uv run pytest -q tests/test_policy_ranking_causal_conditioning.py tests/test_policy_ranking_evidence.py tests/test_policy_ranking_experiment_2.py tests/test_policy_ranking_experiment_2_adjudication.py tests/test_wam_episode_consistency_label_gemini.py tests/test_wam_generated_video_success_label_gemini.py",
@@ -26,6 +26,13 @@
     "command": "uv lock --check",
     "status": "passed",
     "resolved_package_count": 243
+  },
+  "source_governance": {
+    "command": "uv run --no-project --python 3.12 python scripts/verify_source_governance.py --output <temporary-output>/source-governance.json",
+    "status": "passed",
+    "modules_checked": 539,
+    "clis_checked": 159,
+    "critical_capability_policy_only": "passed"
   },
   "provider_evidence_integrity": {
     "manifest_verification": "passed",
