@@ -3444,7 +3444,6 @@ def test_vast_adapter_private_helper_edges(
                         "estimated_cost_usd_using_observed_rate": 0.4,
                         "observed_hourly_rate_usd": 1.2,
                     },
-                    "bad",
                 ]
             }
         ),
@@ -5429,6 +5428,7 @@ def test_vast_adapter_run_clears_stale_artifacts_and_blocks_session_budget(
 
     assert result["status"] == "blocked"
     assert result["reason"] == "vast_session_budget_guard_blocked"
+    assert result["provider_create_attempted"] is False
     guard = _read_json(job_dir / "vast_session_budget_guard.json")
     assert "session_estimated_spend_hard_cap_exhausted" in guard["blockers"]
     preservation = _read_json(job_dir / "vast_latest_attempt_preservation_manifest.json")

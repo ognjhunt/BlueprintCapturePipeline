@@ -1,6 +1,6 @@
 # Policy-ranking successor experiment — 2026-07-27
 
-Status: `paid_infrastructure_failure_closed_v4_repair_pending`
+Status: `v4_precreate_code_failure_closed_v5_repair_pending`
 
 This is a new experiment. Experiment 1 and Experiment 2 remain immutable historical
 experiments; none of their prediction matrices, held-out partitions, outcomes, thresholds,
@@ -53,8 +53,14 @@ The v3 evidence also exposed that its authorization required a detached watchdog
 allocation while only the adapter's in-process teardown was active. Teardown succeeded, but that
 requirement is recorded as not met. The v4 repair reuses the bounded cold-pull policy already used
 by asynchronous WAM runs and blocks every successor create call unless a detached name- and
-instance-bound hard-TTL watchdog has first written armed evidence. One paid infrastructure retry
-is authorized under the unchanged USD 6 ceiling, with no additional spending authority.
+instance-bound hard-TTL watchdog has first written armed evidence. V4 reached that repaired path,
+but the downstream session guard rejected the new three-hour resource reservation because the
+same three-hour value was also used as the aggregate limit and the ledger already contained 97.49
+seconds from v3. The failure occurred before offer search or create, added zero spend, and provider
+zero was reverified. V5 moves the same ledger check ahead of authorization consumption, reserves a
+full per-resource TTL on top of attributable prior runtime, and explicitly cancels the detached
+watchdog when the adapter proves no create was attempted. This is a zero-spend replacement under
+the unchanged USD 6 ceiling, not additional spending authority.
 
 ## Proof boundary
 

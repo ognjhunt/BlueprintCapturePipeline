@@ -293,6 +293,9 @@ def run_vast_wam_authorized_runner(
                         provider_teardown_completed=(
                             adapter_result.get("continuing_spend_from_this_run") is False
                         ),
+                        provider_allocation_impossible=(
+                            adapter_result.get("provider_create_attempted") is False
+                        ),
                     )
                     if watchdog_close.get("status") not in {
                         "provider_terminal",

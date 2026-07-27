@@ -1,0 +1,57 @@
+{
+  "schema_version": "vast_bundle_staging_manifest.v1",
+  "generated_at": "2026-07-27T20:31:27.419668+00:00",
+  "status": "ready",
+  "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v4",
+  "bundle_path": "<launch-worktree>/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
+  "bundle_present": true,
+  "bundle_size_bytes": 294167,
+  "bundle_zip_entry_count": 7,
+  "bundle_zip_parse_error": null,
+  "bundle_zip_testzip_result": null,
+  "bundle_zip_integrity_passed": true,
+  "output_path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v4.zip",
+  "token_file": {
+    "path_redacted": true,
+    "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "token_recorded_in_manifest": false,
+    "path_source": "staging_token_file",
+    "created": false
+  },
+  "secret_env_file": {
+    "path_redacted": true,
+    "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "raw_secret_values_recorded_in_manifest": false,
+    "path_source": "staging_secret_env_file"
+  },
+  "secret_artifact_policy": {
+    "local_secret_file_paths_recorded": false,
+    "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+    "publishable_release_artifacts_must_not_include_local_secret_paths": true
+  },
+  "base_url_redacted": "https://theorem-pete-furthermore-contacts.trycloudflare.com",
+  "bundle_url_path": "/bundle.zip?token=<redacted-token>",
+  "output_put_url_path": "/output.zip?token=<redacted-token>",
+  "provider_bundle_url_present": true,
+  "provider_output_put_url_present": true,
+  "provider_fetchable_bundle_uri_ready": true,
+  "provider_output_callback_ready": true,
+  "cloudflared_available": true,
+  "cloudflared_path": "/opt/homebrew/bin/cloudflared",
+  "suggested_local_server": {
+    "host": "127.0.0.1",
+    "bundle_route": "/bundle.zip",
+    "output_route": "/output.zip",
+    "health_route": "/health"
+  },
+  "privacy_boundary": "Token-gated staging for a bounded provider run only. Raw tokenized URLs are written only to the chmod 600 secret env file when a base URL is supplied.",
+  "blockers": [],
+  "warnings": [],
+  "raw_secret_values_recorded": false
+}

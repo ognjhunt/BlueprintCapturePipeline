@@ -1,0 +1,19 @@
+{
+  "schema_version": "vast_budget_ledger.v1",
+  "generated_at": "2026-07-27T20:31:39.023592+00:00",
+  "status": "planned",
+  "target_spend_usd": 3.25,
+  "hard_cap_usd": 6.0,
+  "max_hourly_rate_usd": 1.05,
+  "max_live_runtime_minutes": 180,
+  "selected_hourly_rate_usd": null,
+  "vast_instance_ids": [],
+  "actual_live_runtime_seconds_observed_by_adapter": 0.0,
+  "estimated_cost_usd": 0.0,
+  "actual_cost_usd": null,
+  "actual_cost_source": "not_available_from_instance_probe_api",
+  "estimated_spend_under_target": true,
+  "estimated_spend_under_hard_cap": true,
+  "continuing_spend_from_this_run": false,
+  "raw_secret_values_recorded": false
+}

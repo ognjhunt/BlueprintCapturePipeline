@@ -65,6 +65,11 @@ from .vast_probe_guards import (
     VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
     bounded_container_missing_retry_attempts,
 )
+from .vast_session_budget_contract import (
+    attempt_estimated_cost as _attempt_estimated_cost,
+    attempt_runtime_seconds as _attempt_runtime_seconds,
+    build_vast_session_budget_guard,
+)
 from .wam_provider_output import (
     inspect_provider_runtime_output_zip,
     probe_mp4_video,
@@ -1792,36 +1797,6 @@ def _append_session_budget_attempt(
     return summary
 
 
-def _attempt_runtime_seconds(attempt: Mapping[str, Any]) -> float:
-    for key in (
-        "runtime_seconds_observed_by_adapter",
-        "actual_live_runtime_seconds_observed_by_adapter",
-        "runtime_seconds_estimated_from_teardown_artifact_mtime",
-    ):
-        value = _number(attempt.get(key))
-        if value is not None:
-            return max(0.0, value)
-    cost = _number(
-        attempt.get("estimated_cost_usd_using_observed_rate")
-        if attempt.get("estimated_cost_usd_using_observed_rate") is not None
-        else attempt.get("estimated_cost_usd")
-    )
-    hourly = _number(attempt.get("observed_hourly_rate_usd")) or _number(
-        attempt.get("selected_hourly_rate_usd")
-    )
-    if cost is not None and hourly and hourly > 0:
-        return max(0.0, cost * 3600.0 / hourly)
-    return 0.0
-
-
-def _attempt_estimated_cost(attempt: Mapping[str, Any]) -> float:
-    for key in ("estimated_cost_usd_using_observed_rate", "estimated_cost_usd"):
-        value = _number(attempt.get(key))
-        if value is not None:
-            return max(0.0, value)
-    return 0.0
-
-
 def _session_budget_guard(
     *,
     job_dir: Path,
@@ -1833,57 +1808,15 @@ def _session_budget_guard(
     hard_cap_usd: float,
     max_hourly_rate: float,
 ) -> dict[str, Any]:
-    blockers: list[str] = []
-    warnings: list[str] = []
-    attempts: list[Mapping[str, Any]] = []
-    budget_parse_error = None
-    if budget_path.is_file():
-        try:
-            payload = json.loads(budget_path.read_text(encoding="utf-8"))
-            attempts = [item for item in payload.get("attempts") or [] if isinstance(item, Mapping)]
-        except Exception as exc:
-            budget_parse_error = f"{type(exc).__name__}:{str(exc)[:200]}"
-            blockers.append("session_budget_ledger_parse_failed")
-    prior_live_seconds = sum(_attempt_runtime_seconds(attempt) for attempt in attempts)
-    prior_estimated_cost = sum(_attempt_estimated_cost(attempt) for attempt in attempts)
-    requested_max_seconds = max(0, requested_max_live_minutes) * 60.0
-    projected_max_cost = max(0.0, max_hourly_rate) * max(0, requested_max_live_minutes) / 60.0
-    session_max_seconds = (
-        max(0, session_max_live_minutes) * 60.0 if session_max_live_minutes is not None else None
+    guard = build_vast_session_budget_guard(
+        generated_at=generated_at,
+        budget_path=budget_path,
+        session_max_live_minutes=session_max_live_minutes,
+        requested_max_live_minutes=requested_max_live_minutes,
+        target_spend_usd=target_spend_usd,
+        hard_cap_usd=hard_cap_usd,
+        max_hourly_rate=max_hourly_rate,
     )
-    if session_max_seconds is not None:
-        if prior_live_seconds >= session_max_seconds:
-            blockers.append("session_live_runtime_limit_exhausted")
-        elif prior_live_seconds + requested_max_seconds > session_max_seconds:
-            blockers.append("requested_live_runtime_would_exceed_session_limit")
-    if prior_estimated_cost >= hard_cap_usd:
-        blockers.append("session_estimated_spend_hard_cap_exhausted")
-    elif prior_estimated_cost + projected_max_cost > hard_cap_usd:
-        blockers.append("requested_max_spend_would_exceed_hard_cap")
-    if prior_estimated_cost >= target_spend_usd:
-        warnings.append("session_estimated_spend_target_already_exceeded")
-    elif prior_estimated_cost + projected_max_cost > target_spend_usd:
-        warnings.append("requested_max_spend_would_exceed_target")
-    guard = {
-        "schema_version": "vast_session_budget_guard.v1",
-        "generated_at": generated_at,
-        "status": "blocked" if blockers else "passed",
-        "budget_path": str(budget_path),
-        "budget_ledger_present": budget_path.is_file(),
-        "budget_parse_error": budget_parse_error,
-        "attempt_count": len(attempts),
-        "prior_live_runtime_seconds": round(prior_live_seconds, 6),
-        "prior_live_runtime_minutes": round(prior_live_seconds / 60.0, 6),
-        "requested_max_live_runtime_minutes": requested_max_live_minutes,
-        "session_max_live_runtime_minutes": session_max_live_minutes,
-        "prior_estimated_cost_usd": round(prior_estimated_cost, 6),
-        "projected_max_incremental_cost_usd": round(projected_max_cost, 6),
-        "target_spend_usd": target_spend_usd,
-        "hard_cap_usd": hard_cap_usd,
-        "blockers": blockers,
-        "warnings": warnings,
-        "raw_secret_values_recorded": False,
-    }
     write_json(job_dir / "vast_session_budget_guard.json", guard)
     return guard
 
@@ -4210,6 +4143,7 @@ def run_vast_provider_adapter(
         "mode": mode,
         "api_call_performed": False,
         "vast_side_effects_may_have_occurred": False,
+        "provider_create_attempted": False,
         "vast_instance_ids": instance_ids,
         "vast_launch_mode": launch_mode,
         "provider_bundle_kind": provider_bundle_kind,
@@ -5177,6 +5111,7 @@ def run_vast_provider_adapter(
                 create_attempt_index=create_attempt_index,
             )
             try:
+                base_result["provider_create_attempted"] = True
                 create_status, create_response = _api_json(
                     method="PUT",
                     path=f"/asks/{selected_offer['ask_contract_id']}/",

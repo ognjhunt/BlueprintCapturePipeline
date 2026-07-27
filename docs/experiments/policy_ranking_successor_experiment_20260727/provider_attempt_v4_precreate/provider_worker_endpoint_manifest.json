@@ -1,0 +1,76 @@
+{
+  "schema_version": "provider_worker_endpoint_manifest.v1",
+  "generated_at": "2026-07-27T20:31:39.220094+00:00",
+  "status": "endpoint_discovery_pending_provider_runtime",
+  "provider_worker_contract_schema_version": "provider_worker_contract.v1",
+  "provider": "vast",
+  "provider_mode": "live-startup-probe",
+  "job_id": "provider-job-v4",
+  "worker_invocation_grain": "direct_http_worker_after_provider_endpoint_discovery",
+  "direct_http_worker_endpoint_expected": true,
+  "direct_policy_infer_from_local_loop_allowed": false,
+  "reason": "vast_instance_must_report_reachable_worker_urls_before_local_loop_reuse",
+  "known_endpoint": {
+    "worker_url_present": false,
+    "worker_url_redacted": null,
+    "ready_url_present": false,
+    "ready_url_redacted": null,
+    "shutdown_url_present": false,
+    "shutdown_url_redacted": null,
+    "serverless_endpoint_id_present": false,
+    "serverless_endpoint_id_redacted": null,
+    "provider_instance_id_present": false,
+    "provider_instance_id_redacted": null
+  },
+  "http_contract": {
+    "healthz": {
+      "method": "GET",
+      "path": "/healthz"
+    },
+    "readyz": {
+      "method": "GET",
+      "path": "/readyz"
+    },
+    "infer": {
+      "method": "POST",
+      "path": "/infer"
+    },
+    "shutdown": {
+      "method": "POST",
+      "path": "/shutdown"
+    }
+  },
+  "consumer_env_contract": {
+    "worker_url_env": "BLUEPRINT_PROVIDER_POLICY_WORKER_URL",
+    "ready_url_env": "BLUEPRINT_PROVIDER_POLICY_WORKER_READY_URL",
+    "auth_token_file_env": "BLUEPRINT_PROVIDER_POLICY_WORKER_AUTH_TOKEN_FILE",
+    "policy_command_adapter": "blueprint-provider-worker-policy-command-adapter",
+    "session_runner": "blueprint-run-provider-worker-session"
+  },
+  "provider_runtime_must_write": [
+    "provider_worker_endpoint_manifest.json",
+    "worker_readyz_probe.json",
+    "provider_worker_session_run.json",
+    "provider_teardown_manifest.json"
+  ],
+  "provider_request_summary": {
+    "operation": "vast_provider_worker_startup_probe",
+    "command_configured": true,
+    "image_configured": true,
+    "manifest_uri_present": false
+  },
+  "blockers": [
+    "provider_worker_endpoint_not_discovered_yet"
+  ],
+  "raw_credentials_written_to_artifacts": false,
+  "secret_hashes_written_to_artifacts": false,
+  "claim_boundary": {
+    "endpoint_manifest_is_not_provider_allocation_proof": true,
+    "endpoint_manifest_is_not_worker_ready_proof": true,
+    "readyz_probe_required_before_customer_eval": true,
+    "shutdown_response_is_not_provider_teardown_or_cost_proof": true,
+    "generated_world_rank_fidelity_result_proven": false,
+    "generated_world_policy_evaluation_scope_proven": false,
+    "non_ranking_operational_claim_proven": false
+  }
+}

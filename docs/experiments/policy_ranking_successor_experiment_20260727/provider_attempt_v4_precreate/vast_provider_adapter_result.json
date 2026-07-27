@@ -1,0 +1,281 @@
+{
+  "schema_version": "vast_provider_adapter_result.v1",
+  "generated_at": "2026-07-27T20:31:39.023592+00:00",
+  "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v4",
+  "mode": "live-startup-probe",
+  "api_call_performed": false,
+  "vast_side_effects_may_have_occurred": false,
+  "vast_instance_ids": [],
+  "vast_launch_mode": "ssh_direct",
+  "provider_bundle_kind": "wam",
+  "ngc_image_login_mode": "never",
+  "vast_template_hash_present": false,
+  "use_vast_template_image": false,
+  "allow_cold_isaac_image_pull": true,
+  "min_cold_isaac_pull_live_minutes": 18,
+  "disk_gb": 250,
+  "public_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+  "isaac_image": "nvcr.io/nvidia/isaac-sim:6.0.0",
+  "selected_container_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+  "require_known_supported_isaac_driver": false,
+  "provider_bundle_inline_transport_used": false,
+  "provider_bundle_inline_transport_reason": "provider_bundle_too_large_for_inline_env",
+  "provider_bundle_inline_transport_size_bytes": 294167,
+  "provider_bundle_inline_transport_base64_length": 392224,
+  "provider_bundle_inline_transport_sha256_present": false,
+  "machine_avoidlist_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v4/vast_machine_avoidlist.json",
+  "excluded_machine_ids": [],
+  "allowed_machine_ids": [],
+  "machine_allowlist_active": false,
+  "min_gpu_ram_mb": 95000,
+  "min_compute_cap": 1200,
+  "max_compute_cap": 0,
+  "session_budget_ledger_path": "/private/tmp/policy-ranking-successor-live-20260727/vast_session_cost_summary.json",
+  "vast_launch_lock_path": "<local-secret-dir>/vast_paid_launch.lock",
+  "vast_launch_lock_manifest_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v4/vast_launch_lock_manifest.json",
+  "secret_values_in_artifact": false,
+  "raw_api_key_stored": false,
+  "vast_secret_file_status": {
+    "env_var": "VAST_API_KEY_FILE",
+    "path": "<local-secret-dir>/vast_api_key",
+    "path_source": "default_blueprint_secret_file_path",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "raw_secret_value_recorded": false,
+    "secret_nonempty": true
+  },
+  "ngc_secret_file_status": {
+    "env_var": "NGC_API_KEY_FILE",
+    "path": "<local-secret-dir>/ngc_api_key",
+    "path_source": "default_blueprint_secret_file_path",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "raw_secret_value_recorded": false,
+    "secret_nonempty": true
+  },
+  "docker_username_file_status": {
+    "env_var": "DOCKER_USERNAME_FILE",
+    "path": "<local-secret-dir>/docker_username",
+    "path_source": "default_blueprint_secret_file_path",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "raw_secret_value_recorded": false,
+    "secret_nonempty": true
+  },
+  "docker_pat_file_status": {
+    "env_var": "DOCKER_PAT_FILE",
+    "path": "<local-secret-dir>/docker_pat",
+    "path_source": "default_blueprint_secret_file_path",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "raw_secret_value_recorded": false,
+    "secret_nonempty": true
+  },
+  "hf_token_file_status": {
+    "env_var": "HF_TOKEN_FILE",
+    "path": "<local-secret-dir>/huggingface_token",
+    "path_source": "default_blueprint_secret_file_path",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "raw_secret_value_recorded": false,
+    "secret_nonempty": true,
+    "accepted_env_vars": [
+      "HF_TOKEN_FILE",
+      "HUGGINGFACE_TOKEN_FILE",
+      "HUGGING_FACE_HUB_TOKEN_FILE",
+      "BLUEPRINT_HF_TOKEN_FILE"
+    ]
+  },
+  "isaac_sim_does_not_make_spz_or_3dgs_physical": true,
+  "direct_splat_collision_proven": false,
+  "collider_source_if_used": "metadata_derived_collider_proxy_required",
+  "splat_visuals_if_used": "splat_rendered_visual_evidence_synchronized_with_isaac_state",
+  "real_wam_vla_runtime_proven": false,
+  "generated_world_rank_fidelity_result_proven": false,
+  "generated_world_policy_evaluation_scope_proven": false,
+  "dexterous_hand_policy_proven": false,
+  "controller_grade_execution_proven": false,
+  "official_policy_execution_proven": false,
+  "rank_fidelity_result_proven": false,
+  "public_claim_upgrade_allowed": false,
+  "provider_worker_endpoint_manifest_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v4/provider_worker_endpoint_manifest.json",
+  "provider_worker_endpoint_manifest": {
+    "schema_version": "provider_worker_endpoint_manifest.v1",
+    "generated_at": "2026-07-27T20:31:39.220094+00:00",
+    "status": "endpoint_discovery_pending_provider_runtime",
+    "provider_worker_contract_schema_version": "provider_worker_contract.v1",
+    "provider": "vast",
+    "provider_mode": "live-startup-probe",
+    "job_id": "provider-job-v4",
+    "worker_invocation_grain": "direct_http_worker_after_provider_endpoint_discovery",
+    "direct_http_worker_endpoint_expected": true,
+    "direct_policy_infer_from_local_loop_allowed": false,
+    "reason": "vast_instance_must_report_reachable_worker_urls_before_local_loop_reuse",
+    "known_endpoint": {
+      "worker_url_present": false,
+      "worker_url_redacted": null,
+      "ready_url_present": false,
+      "ready_url_redacted": null,
+      "shutdown_url_present": false,
+      "shutdown_url_redacted": null,
+      "serverless_endpoint_id_present": false,
+      "serverless_endpoint_id_redacted": null,
+      "provider_instance_id_present": false,
+      "provider_instance_id_redacted": null
+    },
+    "http_contract": {
+      "healthz": {
+        "method": "GET",
+        "path": "/healthz"
+      },
+      "readyz": {
+        "method": "GET",
+        "path": "/readyz"
+      },
+      "infer": {
+        "method": "POST",
+        "path": "/infer"
+      },
+      "shutdown": {
+        "method": "POST",
+        "path": "/shutdown"
+      }
+    },
+    "consumer_env_contract": {
+      "worker_url_env": "BLUEPRINT_PROVIDER_POLICY_WORKER_URL",
+      "ready_url_env": "BLUEPRINT_PROVIDER_POLICY_WORKER_READY_URL",
+      "auth_token_file_env": "BLUEPRINT_PROVIDER_POLICY_WORKER_AUTH_TOKEN_FILE",
+      "policy_command_adapter": "blueprint-provider-worker-policy-command-adapter",
+      "session_runner": "blueprint-run-provider-worker-session"
+    },
+    "provider_runtime_must_write": [
+      "provider_worker_endpoint_manifest.json",
+      "worker_readyz_probe.json",
+      "provider_worker_session_run.json",
+      "provider_teardown_manifest.json"
+    ],
+    "provider_request_summary": {
+      "operation": "vast_provider_worker_startup_probe",
+      "command_configured": true,
+      "image_configured": true,
+      "manifest_uri_present": false
+    },
+    "blockers": [
+      "provider_worker_endpoint_not_discovered_yet"
+    ],
+    "raw_credentials_written_to_artifacts": false,
+    "secret_hashes_written_to_artifacts": false,
+    "claim_boundary": {
+      "endpoint_manifest_is_not_provider_allocation_proof": true,
+      "endpoint_manifest_is_not_worker_ready_proof": true,
+      "readyz_probe_required_before_customer_eval": true,
+      "shutdown_response_is_not_provider_teardown_or_cost_proof": true,
+      "generated_world_rank_fidelity_result_proven": false,
+      "generated_world_policy_evaluation_scope_proven": false,
+      "non_ranking_operational_claim_proven": false
+    }
+  },
+  "status": "blocked",
+  "reason": "vast_session_budget_guard_blocked",
+  "blockers": [
+    "requested_live_runtime_would_exceed_session_limit"
+  ],
+  "session_budget_guard": {
+    "schema_version": "vast_session_budget_guard.v1",
+    "generated_at": "2026-07-27T20:31:39.023592+00:00",
+    "status": "blocked",
+    "budget_path": "/private/tmp/policy-ranking-successor-live-20260727/vast_session_cost_summary.json",
+    "budget_ledger_present": true,
+    "budget_parse_error": null,
+    "attempt_count": 1,
+    "prior_live_runtime_seconds": 97.485577,
+    "prior_live_runtime_minutes": 1.62476,
+    "requested_max_live_runtime_minutes": 180,
+    "session_max_live_runtime_minutes": 180,
+    "prior_estimated_cost_usd": 0.027521,
+    "projected_max_incremental_cost_usd": 3.15,
+    "target_spend_usd": 3.25,
+    "hard_cap_usd": 6.0,
+    "blockers": [
+      "requested_live_runtime_would_exceed_session_limit"
+    ],
+    "warnings": [],
+    "raw_secret_values_recorded": false
+  },
+  "blueprint_bundle_preflight": {
+    "schema_version": "vast_blueprint_bundle_preflight.v1",
+    "generated_at": "2026-07-27T20:31:39.023592+00:00",
+    "status": "passed",
+    "blueprint_bundle_enabled": true,
+    "provider_bundle_kind": "wam",
+    "isaac_smoke_enabled": false,
+    "bundle_path": "<launch-worktree>/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
+    "bundle_present": true,
+    "bundle_size_bytes": 294167,
+    "provider_bundle_fetch_url_present": true,
+    "provider_output_put_url_present": true,
+    "staging_url_verification_requested": true,
+    "staging_output_put_probe_allowed": false,
+    "bundle_url_probe": {
+      "status": "passed",
+      "method": "HEAD",
+      "http_status_code": 200,
+      "content_type": "application/zip",
+      "content_length": 294167
+    },
+    "output_put_probe": {
+      "status": "skipped",
+      "reason": "output_put_probe_requires_explicit_allow",
+      "method": "PUT"
+    },
+    "zip_entry_count": 7,
+    "zip_required_entries_present": false,
+    "zip_integrity_test_passed": true,
+    "zip_testzip_result": null,
+    "json_member_parse_errors": [],
+    "missing_zip_entries": [
+      "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
+      "provider_runtime/oscar_input/first_frame.png"
+    ],
+    "zip_parse_error": null,
+    "provider_eval_manifest_parse_error": null,
+    "provider_eval_manifest_relative_paths": {},
+    "provider_bundle_readiness_path": "<launch-worktree>/docs/experiments/policy_ranking_successor_experiment_20260727/oscar_wam_provider_bundle_manifest.json",
+    "provider_bundle_readiness_present": false,
+    "provider_bundle_readiness_parse_error": null,
+    "provider_bundle_local_ready_for_remote_staging": null,
+    "blockers": [],
+    "warnings": [
+      "provider_bundle_readiness_manifest_missing",
+      "provider_output_put_url_not_mutation_probed"
+    ],
+    "raw_secret_values_recorded": false
+  },
+  "isaac_image_startup_preflight": {
+    "schema_version": "vast_isaac_image_startup_preflight.v1",
+    "generated_at": "2026-07-27T20:31:39.023592+00:00",
+    "status": "not_required",
+    "provider_bundle_kind": "wam",
+    "isaac_path_requested": false,
+    "selected_container_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "default_official_isaac_image": "nvcr.io/nvidia/isaac-sim:6.0.0",
+    "direct_official_isaac_image": false,
+    "vast_template_hash_present": false,
+    "use_vast_template_image": false,
+    "template_image_cache_proven": false,
+    "template_image_cache_evidence": "not_requested",
+    "custom_or_template_image_path": false,
+    "allow_cold_isaac_image_pull": true,
+    "max_live_minutes": 180,
+    "min_cold_isaac_pull_live_minutes": 18,
+    "blockers": [],
+    "warnings": [],
+    "raw_secret_values_recorded": false
+  },
+  "final_validation_status": "passed"
+}

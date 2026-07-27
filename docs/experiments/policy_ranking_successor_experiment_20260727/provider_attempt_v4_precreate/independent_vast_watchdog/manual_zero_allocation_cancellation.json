@@ -1,0 +1,19 @@
+{
+  "schema_version": "vast_independent_watchdog_manual_zero_allocation_cancellation.v1",
+  "recorded_at": "2026-07-27T15:32:46-0500",
+  "recorded_at_epoch": 1785184366,
+  "watchdog_pid": 1623,
+  "watchdog_process_stopped": true,
+  "reason": "provider_allocation_impossible_after_pre_create_session_budget_guard",
+  "adapter_status": "blocked",
+  "adapter_reason": "vast_session_budget_guard_blocked",
+  "adapter_blocker": "requested_live_runtime_would_exceed_session_limit",
+  "adapter_instance_ids": [],
+  "provider_api_confirmed_zero_before_stop": true,
+  "provider_api_confirmed_zero_after_stop": true,
+  "live_resource_count_after_stop": 0,
+  "provider_mutations_performed": 0,
+  "compute_spend_increment_usd": 0.0,
+  "raw_secret_values_recorded": false,
+  "claim_boundary": "This proves local watchdog cancellation after a pre-create provider-zero failure only; it does not prove runtime, generated media, WAM validity, ranking, transfer, economics, or physical performance."
+}

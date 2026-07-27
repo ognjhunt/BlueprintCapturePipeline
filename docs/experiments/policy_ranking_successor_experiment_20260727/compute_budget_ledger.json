@@ -8,7 +8,7 @@
   "compute_cap_authorized_usd": 6.0,
   "actual_compute_spend_usd": 0.027521,
   "actual_compute_spend_basis": "adapter estimate from 97.48557691695169 live seconds at the selected USD 1.0162962962962963 GPU hourly rate; provider invoice reconciliation remains pending",
-  "allocation_status": "v3 Blackwell allocation closed after cold-container infrastructure failure; provider-zero verified; one paid infrastructure retry v4 pending protected-main repair",
+  "allocation_status": "v3 Blackwell allocation closed after cold-container infrastructure failure; v4 then failed before provider offer search because its full three-hour reservation plus 97.49 seconds of prior runtime exceeded the aggregate session limit; v4 added zero spend and provider-zero was reverified; v5 zero-spend replacement pending protected-main repair",
   "last_live_attempt": {
     "authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v3",
     "provider_instance_id": 46031731,
@@ -107,7 +107,8 @@
     "target_spend_usd": 3.25,
     "h100_fallback_authorized": false,
     "expanded_qualification_authorized": false,
-    "active_retry_authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v4",
+    "active_retry_authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v5",
+    "replaces_consumed_zero_provider_mutation_authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v4",
     "active_retry_additional_compute_authority_usd": 0.0,
     "active_retry_independent_watchdog_required_before_allocation": true
   },
