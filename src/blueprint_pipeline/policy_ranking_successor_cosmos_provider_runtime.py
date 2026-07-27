@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import shutil
 import subprocess
 import time
@@ -43,6 +44,9 @@ SCIENTIFIC_MATRIX_REQUEST_COUNT = 10
 TOTAL_INITIAL_GENERATION_REQUEST_COUNT = (
     QUALIFICATION_CANARY_REQUEST_COUNT + SCIENTIFIC_MATRIX_REQUEST_COUNT
 )
+RETAIN_SERVER_ENV = "BLUEPRINT_RETAIN_COSMOS_SERVER"
+RETAINED_ROOT_ENV = "BLUEPRINT_COSMOS_RETAINED_ROOT"
+DEFAULT_RETAINED_ROOT = "/workspace/blueprint_vast_probe/cosmos3_retained"
 
 
 def canonical_sha256(value: Any) -> str:
@@ -63,6 +67,136 @@ def write_json(path: Path, value: Any) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _process_start_ticks(pid: int) -> str | None:
+    try:
+        fields = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8").split()
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return fields[21] if len(fields) > 21 else None
+
+
+class ServerProcess:
+    """Small Popen-compatible handle that can adopt a detached retained process."""
+
+    def __init__(
+        self,
+        *,
+        pid: int,
+        start_ticks: str | None,
+        process: subprocess.Popen[bytes] | None = None,
+    ) -> None:
+        self.pid = int(pid)
+        self.start_ticks = start_ticks
+        self.process = process
+
+    def poll(self) -> int | None:
+        if self.process is not None:
+            return self.process.poll()
+        observed = _process_start_ticks(self.pid)
+        if observed is None or (self.start_ticks is not None and observed != self.start_ticks):
+            return 1
+        return None
+
+    def terminate(self) -> None:
+        if self.process is not None:
+            self.process.terminate()
+            return
+        os.killpg(self.pid, signal.SIGTERM)
+
+    def kill(self) -> None:
+        if self.process is not None:
+            self.process.kill()
+            return
+        os.killpg(self.pid, signal.SIGKILL)
+
+    def wait(self, timeout: float) -> int:
+        if self.process is not None:
+            return self.process.wait(timeout=timeout)
+        deadline = time.monotonic() + timeout
+        while self.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if self.poll() is None:
+            raise subprocess.TimeoutExpired("retained_cosmos_server", timeout)
+        return 0
+
+
+def _retained_server_identity_valid(identity: dict[str, Any]) -> bool:
+    required = {
+        "checkpoint": CHECKPOINT,
+        "checkpoint_revision": CHECKPOINT_REVISION,
+        "pipeline_class": PIPELINE_CLASS,
+        "server_port": SERVER_PORT,
+    }
+    if any(identity.get(key) != value for key, value in required.items()):
+        return False
+    try:
+        pid = int(identity.get("pid"))
+    except (TypeError, ValueError):
+        return False
+    start_ticks = identity.get("process_start_ticks")
+    return bool(start_ticks and _process_start_ticks(pid) == start_ticks)
+
+
+def _acquire_server(
+    *, output_dir: Path, environment: dict[str, str]
+) -> tuple[ServerProcess, dict[str, Any], Any, bool]:
+    retain = _env_truthy(RETAIN_SERVER_ENV)
+    retained_root = Path(os.environ.get(RETAINED_ROOT_ENV, DEFAULT_RETAINED_ROOT)).resolve()
+    identity_path = retained_root / "server_identity.json"
+    if retain and identity_path.is_file():
+        try:
+            identity = json.loads(identity_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            identity = {}
+        if isinstance(identity, dict) and _retained_server_identity_valid(identity):
+            try:
+                health = requests.get(f"{SERVER_BASE_URL}/health", timeout=10)
+                if health.ok:
+                    handle = ServerProcess(
+                        pid=int(identity["pid"]),
+                        start_ticks=str(identity["process_start_ticks"]),
+                    )
+                    return handle, {**identity, "reused_retained_server": True}, None, True
+            except requests.RequestException:
+                pass
+    command = _server_command()
+    log_root = retained_root if retain else output_dir
+    log_root.mkdir(parents=True, exist_ok=True)
+    server_log = (log_root / "vllm_server.log").open("ab" if retain else "wb")
+    process = subprocess.Popen(
+        command,
+        stdout=server_log,
+        stderr=subprocess.STDOUT,
+        env=environment,
+        start_new_session=retain,
+    )
+    start_ticks = _process_start_ticks(process.pid)
+    identity = {
+        "pid": process.pid,
+        "process_start_ticks": start_ticks,
+        "server_port": SERVER_PORT,
+        "pipeline_class": PIPELINE_CLASS,
+        "checkpoint": CHECKPOINT,
+        "checkpoint_revision": CHECKPOINT_REVISION,
+        "command_sha256": canonical_sha256(command),
+        "started_at_epoch": time.time(),
+        "reused_retained_server": False,
+        "retention_enabled": retain,
+    }
+    if retain:
+        write_json(identity_path, identity)
+    return (
+        ServerProcess(pid=process.pid, start_ticks=start_ticks, process=process),
+        identity,
+        server_log,
+        False,
+    )
 
 
 class HashChainedJournal:
@@ -223,9 +357,7 @@ def _run_cuda_preflight() -> dict[str, Any]:
     command_results: dict[str, Any] = {}
     for name, command in commands.items():
         started = time.time()
-        completed = subprocess.run(
-            command, check=False, capture_output=True, text=True, timeout=60
-        )
+        completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=60)
         command_results[name] = {
             "command": command,
             "started_at_epoch": started,
@@ -280,7 +412,7 @@ def _run_cuda_preflight() -> dict[str, Any]:
     }
 
 
-def _wait_for_server(process: subprocess.Popen[bytes]) -> None:
+def _wait_for_server(process: ServerProcess) -> None:
     deadline = time.monotonic() + SERVER_START_TIMEOUT_SECONDS
     last_error = ""
     while time.monotonic() < deadline:
@@ -411,6 +543,14 @@ def _classify_retryable(exc: BaseException) -> bool:
     )
 
 
+def _action_conditions_match_frozen_contract(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and len(value) == len(EXPECTED_CONDITIONS)
+        and frozenset(value) == frozenset(EXPECTED_CONDITIONS)
+    )
+
+
 def run() -> dict[str, Any]:
     runtime_dir = Path(__file__).resolve().parent
     input_dir = runtime_dir / "cosmos3_input"
@@ -429,12 +569,10 @@ def run() -> dict[str, Any]:
         "action_streams_sha256": canonical_sha256(action_streams),
     }
     blockers: list[str] = []
-    if input_checks["initial_observation_sha256"] != inventory.get(
-        "initial_observation_sha256"
-    ):
+    if input_checks["initial_observation_sha256"] != inventory.get("initial_observation_sha256"):
         blockers.append("initial_observation_sha256_mismatch")
     conditions = action_streams.get("conditions")
-    if not isinstance(conditions, dict) or tuple(conditions) != EXPECTED_CONDITIONS:
+    if not _action_conditions_match_frozen_contract(conditions):
         blockers.append("action_stream_condition_order_invalid")
     expected_pairs = {
         (condition, seed) for condition in EXPECTED_CONDITIONS for seed in EXPECTED_SEEDS
@@ -484,7 +622,6 @@ def run() -> dict[str, Any]:
             "bf16_cuda_matrix_operation": True,
         }
     )
-    command = _server_command()
     environment = dict(os.environ)
     environment.update(
         {
@@ -493,15 +630,11 @@ def run() -> dict[str, Any]:
             "TRANSFORMERS_NO_ADVISORY_WARNINGS": "1",
         }
     )
-    server_log = (output_dir / "vllm_server.log").open("wb")
-    process = subprocess.Popen(command, stdout=server_log, stderr=subprocess.STDOUT, env=environment)
-    server_identity = {
-        "pid": process.pid,
-        "server_port": SERVER_PORT,
-        "pipeline_class": PIPELINE_CLASS,
-        "checkpoint": CHECKPOINT,
-        "checkpoint_revision": CHECKPOINT_REVISION,
-    }
+    process, server_identity, server_log, reused_retained_server = _acquire_server(
+        output_dir=output_dir,
+        environment=environment,
+    )
+    command = _server_command()
     started_at = time.monotonic()
     journal.append(
         {
@@ -523,7 +656,7 @@ def run() -> dict[str, Any]:
     qualification_canary_responses_valid = 0
     try:
         _wait_for_server(process)
-        model_load_seconds = time.monotonic() - started_at
+        model_load_seconds = 0.0 if reused_retained_server else time.monotonic() - started_at
         health = requests.get(f"{SERVER_BASE_URL}/health", timeout=10)
         health.raise_for_status()
         journal.append(
@@ -532,6 +665,7 @@ def run() -> dict[str, Any]:
                 "server_identity": server_identity,
                 "model_load_seconds": model_load_seconds,
                 "health_status_code": health.status_code,
+                "reused_retained_server": reused_retained_server,
             }
         )
         canary_row = next(
@@ -695,15 +829,15 @@ def run() -> dict[str, Any]:
                     if retryable and attempt <= INFRASTRUCTURE_RETRY_LIMIT:
                         continue
                     failure_class = (
-                        "infrastructure_failure" if retryable else "wam_scientific_or_runtime_failure"
+                        "infrastructure_failure"
+                        if retryable
+                        else "wam_scientific_or_runtime_failure"
                     )
                     raise
         hashes = [row["response"]["output_sha256"] for row in rollout_records]
         duplicate_output_hashes = len(hashes) - len(set(hashes))
         runtime_status = (
-            "completed"
-            if len(rollout_records) == SCIENTIFIC_MATRIX_REQUEST_COUNT
-            else "blocked"
+            "completed" if len(rollout_records) == SCIENTIFIC_MATRIX_REQUEST_COUNT else "blocked"
         )
         result = {
             "schema_version": "policy_ranking_successor_cosmos_runtime.v1",
@@ -717,6 +851,7 @@ def run() -> dict[str, Any]:
             "vllm_omni_source_revision": VLLM_OMNI_SOURCE_REVISION,
             "server_identity": server_identity,
             "model_load_seconds": model_load_seconds,
+            "reused_retained_server": reused_retained_server,
             "direct_canary_passed": True,
             "blueprint_wrapper_same_process_canary_passed": True,
             "exact_action_conditioned_stack_preflight": exact_stack_preflight,
@@ -773,13 +908,26 @@ def run() -> dict[str, Any]:
         write_json(result_path, result)
         return result
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=30)
-        server_log.close()
+        retained = _env_truthy(RETAIN_SERVER_ENV) and process.poll() is None
+        write_json(
+            output_dir / "cosmos_server_retention.json",
+            {
+                "status": "retained_loaded" if retained else "terminal_shutdown",
+                "server_identity": server_identity,
+                "process_alive": process.poll() is None,
+                "server_remained_loaded": retained,
+                "reused_retained_server": reused_retained_server,
+            },
+        )
+        if not retained:
+            process.terminate()
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=30)
+        if server_log is not None:
+            server_log.close()
 
 
 if __name__ == "__main__":

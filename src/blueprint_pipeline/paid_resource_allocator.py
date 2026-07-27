@@ -7,6 +7,7 @@ modules are adapters behind this interface and their mutation CLIs are disabled.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -67,6 +68,7 @@ from .policy_ranking_successor_gpu_admission import (
     PROBE_KIND as POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
     run_successor_gpu_lane,
 )
+from .policy_ranking_successor_retained_session import refresh_retained_session
 from .single_g1_kitchen_episode_runpod import (
     PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
     run_single_episode,
@@ -257,12 +259,10 @@ def _configure_detached_supervisor_signal_policy(command: str) -> bool:
     """
 
     detached_model_volume = (
-        command == "model-volume-run"
-        and os.getenv(DETACHED_MODEL_VOLUME_SUPERVISOR_ENV) == "1"
+        command == "model-volume-run" and os.getenv(DETACHED_MODEL_VOLUME_SUPERVISOR_ENV) == "1"
     )
     detached_cpu_build = (
-        command == "cpu-build-run"
-        and os.getenv(DETACHED_CPU_BUILD_SUPERVISOR_ENV) == "1"
+        command == "cpu-build-run" and os.getenv(DETACHED_CPU_BUILD_SUPERVISOR_ENV) == "1"
     )
     if not (detached_model_volume or detached_cpu_build):
         return False
@@ -538,6 +538,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--successor-output-path")
     gpu.add_argument("--successor-session-budget-ledger")
     gpu.add_argument("--successor-bundle-receipt")
+    gpu.add_argument(
+        "--successor-action",
+        choices=("launch", "refresh"),
+        default="launch",
+    )
+    gpu.add_argument("--successor-session-manifest")
+    gpu.add_argument(
+        "--successor-dirty-state-declaration",
+        choices=("clean_exact_commit", "declared_dirty_overlay"),
+        default="clean_exact_commit",
+    )
     gpu.add_argument("--finetune-object-store-stage-dir")
     gpu.add_argument("--finetune-checkpoint-object-store-stage-dir")
     gpu.add_argument(
@@ -764,6 +775,69 @@ def main(argv: Sequence[str] | None = None) -> int:
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
         if args.probe_kind == POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND:
+            if args.successor_action == "refresh":
+                missing = [
+                    name
+                    for name in (
+                        "provider_launch_request",
+                        "episode_bundle",
+                        "successor_public_base_url",
+                        "successor_token_file",
+                        "successor_session_manifest",
+                        "adapter_output",
+                        "expected_source_commit",
+                    )
+                    if not getattr(args, name, None)
+                ]
+                control_blockers, control_identity = _control_plane_checkout_blockers()
+                if (
+                    args.expected_source_commit
+                    and args.expected_source_commit.strip().lower()
+                    != control_identity.get("orchestrator_source_commit")
+                ):
+                    control_blockers.append(
+                        "gpu_canary_expected_source_commit_not_current_checkout"
+                    )
+                if missing or control_blockers or not args.execute:
+                    result = {
+                        "status": "blocked",
+                        "blockers": [
+                            *control_blockers,
+                            *(
+                                [
+                                    "policy_ranking_successor_refresh_required_arguments_missing:"
+                                    + ",".join(sorted(set(missing)))
+                                ]
+                                if missing
+                                else []
+                            ),
+                            *(
+                                ["policy_ranking_successor_refresh_execute_required"]
+                                if not args.execute
+                                else []
+                            ),
+                        ],
+                        "provider_mutations_performed": 0,
+                    }
+                else:
+                    authorization_path = Path(args.provider_launch_request).expanduser().resolve()
+                    authorization_receipt_sha256 = hashlib.sha256(
+                        authorization_path.read_bytes()
+                    ).hexdigest()
+                    result = refresh_retained_session(
+                        session_manifest=args.successor_session_manifest,
+                        bundle_path=args.episode_bundle,
+                        public_base_url=args.successor_public_base_url,
+                        token_file=args.successor_token_file,
+                        source_commit=str(control_identity["orchestrator_source_commit"]),
+                        dirty_state_declaration=args.successor_dirty_state_declaration,
+                        authorization_receipt_sha256=authorization_receipt_sha256,
+                        identity_file=args.qualification_identity_file,
+                    )
+                write_json(Path(args.adapter_output), result)
+                success = result.get("status") == "provider_absent"
+                print(json.dumps({"success": success}, sort_keys=True))
+                return 0 if success else 2
             missing = [
                 name
                 for name in (
@@ -831,7 +905,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         expected_source_commit=checkout_commit,
                         execute=args.execute,
                     )
-            success = result.get("status") in {"dry_run_ready", "completed"}
+            success = result.get("status") in {
+                "dry_run_ready",
+                "completed",
+                "retained_owned",
+            }
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == OPENPI_POLICY_RANKING_PROBE_KIND:
@@ -886,32 +964,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                         bound_request_out=args.bound_request_out,
                         adapter_output=args.adapter_output,
                         input_secret_url_file=args.openpi_input_secret_url_file,
-                        output_secret_put_url_file=(
-                            args.openpi_output_secret_put_url_file
-                        ),
+                        output_secret_put_url_file=(args.openpi_output_secret_put_url_file),
                         pod_name=args.pod_name,
                         expected_source_commit=checkout_commit,
                         execute=args.execute,
                         hard_ttl_seconds=args.openpi_hard_ttl_seconds,
                         max_spend_usd=args.openpi_max_spend_usd,
                         campaign_budget_ledger=args.campaign_budget_ledger,
-                        campaign_initial_spent_usd=(
-                            args.campaign_initial_spent_usd
-                        ),
-                        campaign_initial_used_gpu_seconds=(
-                            args.campaign_initial_used_gpu_seconds
-                        ),
-                        campaign_total_spend_cap_usd=(
-                            args.campaign_total_spend_cap_usd
-                        ),
+                        campaign_initial_spent_usd=(args.campaign_initial_spent_usd),
+                        campaign_initial_used_gpu_seconds=(args.campaign_initial_used_gpu_seconds),
+                        campaign_total_spend_cap_usd=(args.campaign_total_spend_cap_usd),
                         campaign_wall_cap_seconds=(
                             args.campaign_wall_cap_seconds
                             if args.campaign_wall_cap_seconds is not None
                             else 36_000
                         ),
-                        output_secret_get_url_file=(
-                            args.openpi_output_secret_get_url_file
-                        ),
+                        output_secret_get_url_file=(args.openpi_output_secret_get_url_file),
                         provider_name=args.openpi_provider,
                     )
             success = result.get("status") in {"dry_run_ready", "completed"}
@@ -1007,8 +1075,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ):
                 missing.append("episode_bundle")
             if args.qualification_action == "restart-component" and (
-                args.qualification_component
-                not in {"groot", "controller", "isaac", "bridge"}
+                args.qualification_component not in {"groot", "controller", "isaac", "bridge"}
             ):
                 missing.append("restartable_qualification_component")
             if args.qualification_action == "stop-component" and (
@@ -1047,9 +1114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     write_json(Path(args.adapter_output), result)
             else:
                 if args.qualification_action == "allocate":
-                    source_blockers, control_plane_identity = (
-                        _control_plane_checkout_blockers()
-                    )
+                    source_blockers, control_plane_identity = _control_plane_checkout_blockers()
                     if source_blockers:
                         result = {
                             "status": "blocked",
@@ -1078,8 +1143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         release_evidence=args.release_evidence,
                         model_cache_evidence=args.model_cache_evidence,
                         expected_source_commit=(
-                            args.expected_image_source_commit
-                            or args.expected_source_commit
+                            args.expected_image_source_commit or args.expected_source_commit
                         ),
                         orchestrator_source_commit=(
                             str(control_plane_identity["orchestrator_source_commit"])
@@ -1092,9 +1156,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         bound_request_out=args.bound_request_out,
                         adapter_output=args.adapter_output,
                         pod_name=args.pod_name,
-                        watchdog_extension_seconds=(
-                            args.qualification_watchdog_extension_seconds
-                        ),
+                        watchdog_extension_seconds=(args.qualification_watchdog_extension_seconds),
                         watchdog_extension_spend_cap_usd=(
                             args.qualification_watchdog_extension_spend_cap_usd
                         ),
@@ -1168,9 +1230,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     adapter_output=args.adapter_output,
                     pod_name=args.pod_name,
                     execute=args.execute,
-                    qualification_checkpoint_report=(
-                        args.qualification_checkpoint_report
-                    ),
+                    qualification_checkpoint_report=(args.qualification_checkpoint_report),
                     qualification_checkpoint_part_stage_dirs=tuple(
                         args.qualification_checkpoint_part_stage_dir
                     ),

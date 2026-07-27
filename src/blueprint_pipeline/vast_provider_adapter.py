@@ -75,6 +75,14 @@ from .wam_provider_output import (
     probe_mp4_video,
     summarize_runtime_result,
 )
+from .retained_gpu_session_lifecycle import record_retained_gpu_state
+from .vast_retained_instance import (
+    bind_all_in_cost,
+    record_initial_lifecycle,
+    record_terminal_lifecycle,
+    retention_decision as _retention_decision,
+)
+from .vast_provider_validation import final_validation as _final_validation
 
 
 VAST_PROVIDER_ADAPTER_RESULT_SCHEMA_VERSION = "vast_provider_adapter_result.v1"
@@ -160,12 +168,16 @@ VAST_LIVE_ATTEMPT_ARTIFACT_NAMES = (
     "vast_runtime_phase_log.jsonl",
     "vast_offer_selection_manifest.json",
     "vast_budget_ledger.json",
+    "vast_all_in_cost_binding.json",
     "vast_startup_probe_manifest.json",
     "vast_gpu_sanity_report.json",
     "vast_isaac_smoke_result.json",
     "vast_provider_command_result.json",
     "vast_video_smoke_result.json",
     "vast_teardown_manifest.json",
+    "vast_retained_instance_decision.json",
+    "retained_gpu_session_lifecycle.jsonl",
+    "retained_gpu_session_manifest.json",
     "vast_final_validation.json",
     "vast_provider_adapter_result.json",
     "vast_session_budget_guard.json",
@@ -279,6 +291,13 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
 
 def _mapping(value: Any) -> Dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _read_mapping_json(path: Path) -> dict[str, Any]:
+    try:
+        return _mapping(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
 
 
 def _number(value: Any) -> float | None:
@@ -2425,6 +2444,7 @@ def _probe_env(
     provider_output_put_url: str | None = None,
     provider_bundle_inline_base64: str | None = None,
     provider_bundle_inline_sha256: str | None = None,
+    retain_cosmos_server: bool = False,
 ) -> dict[str, str]:
     env = {
         "BLUEPRINT_VAST_PROBE": "true",
@@ -2446,6 +2466,9 @@ def _probe_env(
         env[VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV] = _string(provider_bundle_inline_base64)
     if _string(provider_bundle_inline_sha256):
         env[VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV] = _string(provider_bundle_inline_sha256)
+    if retain_cosmos_server:
+        env["BLUEPRINT_RETAIN_COSMOS_SERVER"] = "true"
+        env["BLUEPRINT_COSMOS_RETAINED_ROOT"] = "/workspace/blueprint_vast_probe/cosmos3_retained"
     hf_token, _hf_token_status = _read_hf_token_file()
     if hf_token:
         env["HF_TOKEN"] = hf_token
@@ -3665,96 +3688,6 @@ def _ensure_offer_manifest(job_dir: Path, *, generated_at: str, blockers: Sequen
     )
 
 
-def _final_validation(
-    *,
-    job_dir: Path,
-    generated_at: str,
-    instance_ids: Sequence[int],
-    continuing_spend: bool,
-    estimated_cost_usd: float,
-    hard_cap_usd: float,
-) -> dict[str, Any]:
-    required = [
-        "vast_runtime_discovery.json",
-        "vast_provider_plan.json",
-        "vast_offer_selection_manifest.json",
-        "vast_budget_ledger.json",
-        "vast_runtime_phase_log.jsonl",
-        "vast_startup_probe_manifest.json",
-        "vast_gpu_sanity_report.json",
-        "vast_isaac_smoke_result.json",
-        "vast_provider_command_result.json",
-        "vast_video_smoke_result.json",
-        "vast_teardown_manifest.json",
-    ]
-    missing = [name for name in required if not (job_dir / name).exists()]
-    json_errors: list[str] = []
-    for path in job_dir.glob("*.json"):
-        try:
-            json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            json_errors.append(f"{path.name}:{type(exc).__name__}")
-    phase_lines = []
-    phase_path = job_dir / "vast_runtime_phase_log.jsonl"
-    if phase_path.exists():
-        for line_number, line in enumerate(
-            phase_path.read_text(encoding="utf-8").splitlines(),
-            start=1,
-        ):
-            if not line.strip():
-                continue
-            try:
-                parsed = json.loads(line)
-            except Exception as exc:
-                json_errors.append(f"{phase_path.name}:{line_number}:{type(exc).__name__}")
-                continue
-            if isinstance(parsed, Mapping):
-                phase_lines.append(dict(parsed))
-    phases = {str(row.get("phase")) for row in phase_lines}
-    missing_phases = [phase for phase in VAST_REQUIRED_PHASES if phase not in phases]
-    blockers: list[str] = []
-    if missing:
-        blockers.append("missing_required_vast_artifacts")
-    if json_errors:
-        blockers.append("json_parse_errors")
-    if missing_phases:
-        blockers.append("missing_required_vast_runtime_phases")
-    if continuing_spend:
-        blockers.append("continuing_vast_spend_detected")
-    if estimated_cost_usd > hard_cap_usd:
-        blockers.append("vast_estimated_spend_exceeded_hard_cap")
-    video_smoke: dict[str, Any] = {}
-    video_path = job_dir / "vast_video_smoke_result.json"
-    if video_path.is_file():
-        try:
-            video_smoke = _mapping(json.loads(video_path.read_text(encoding="utf-8")))
-        except Exception:
-            video_smoke = {}
-    validation = {
-        "schema_version": VAST_FINAL_VALIDATION_SCHEMA_VERSION,
-        "generated_at": generated_at,
-        "status": "passed" if not blockers else "blocked",
-        "job_dir": str(job_dir),
-        "required_artifacts": required,
-        "missing_required_artifacts": missing,
-        "json_parse_errors": json_errors,
-        "required_phases": list(VAST_REQUIRED_PHASES),
-        "missing_required_phases": missing_phases,
-        "vast_instance_ids": list(instance_ids),
-        "estimated_cost_usd": estimated_cost_usd,
-        "spend_hard_cap_usd": hard_cap_usd,
-        "continuing_spend_from_this_run": continuing_spend,
-        "all_vast_instances_destroyed_by_adapter": not continuing_spend,
-        "video_smoke_proven": video_smoke.get("video_smoke_proven") is True,
-        "video_smoke_status": video_smoke.get("status"),
-        "raw_secret_values_recorded": False,
-        "blockers": blockers,
-        **_truth_boundaries(),
-    }
-    write_json(job_dir / "vast_final_validation.json", validation)
-    return validation
-
-
 def _api_gate_blockers(
     *, allow_vast_api_call: bool, allow_instance_launch: bool, api_key: str
 ) -> list[str]:
@@ -3912,6 +3845,8 @@ def run_vast_provider_adapter(
     vast_launch_lock_file: str | Path | None = None,
     instance_label_prefix: str = "blueprint-vast-probe-",
     started_instance_id_path: str | Path | None = None,
+    retain_instance_on_runtime_failure: bool = False,
+    retention_watchdog_handoff: Mapping[str, Any] | None = None,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
@@ -5099,6 +5034,7 @@ def run_vast_provider_adapter(
                     provider_bundle_inline_sha256=_string(
                         inline_bundle_transport.get("inline_provider_bundle_sha256")
                     ),
+                    retain_cosmos_server=retain_instance_on_runtime_failure,
                 ),
                 image_login=image_login,
                 template_hash_id=template_hash,
@@ -5186,6 +5122,14 @@ def run_vast_provider_adapter(
             raise RuntimeError("vast_create_response_missing_instance_id")
         started_at_monotonic = time.monotonic()
         instance_ids.append(instance_id)
+        if retain_instance_on_runtime_failure:
+            record_initial_lifecycle(
+                resolved_job_dir,
+                instance_id=instance_id,
+                offer_id=selected_offer.get("ask_contract_id") if selected_offer else None,
+                image=selected_container_image,
+                watchdog_handoff=retention_watchdog_handoff,
+            )
         if started_instance_id_path:
             write_started_vast_instance_id(started_instance_id_path, instance_id)
         _budget_ledger(
@@ -5216,6 +5160,17 @@ def run_vast_provider_adapter(
             timeout_seconds=min(startup_timeout_seconds, max_live_minutes * 60),
             poll_interval_seconds=poll_interval_seconds,
         )
+        all_in_cost_binding = bind_all_in_cost(
+            resolved_job_dir,
+            selected_offer=selected_offer,
+            instance_payload=instance_payload,
+            instance_id=instance_id,
+            disk_gb=resolved_disk_gb,
+            max_live_minutes=max_live_minutes,
+            hard_cap_usd=hard_cap_usd,
+        )
+        if not all_in_cost_binding["projected_all_in_cost_under_hard_cap"]:
+            raise RuntimeError("created_instance_projected_all_in_runtime_exceeds_hard_cap")
         instance_running = status.lower() == "running"
         instance_log_readable = instance_running or (
             launch_mode == "args" and status.lower() in {"exited", "stopped"}
@@ -5924,16 +5879,47 @@ def run_vast_provider_adapter(
             provider_reason=exception_blockers[0],
         )
     finally:
-        if instance_ids:
+        startup_probe = _read_mapping_json(resolved_job_dir / "vast_startup_probe_manifest.json")
+        gpu_sanity = _read_mapping_json(resolved_job_dir / "vast_gpu_sanity_report.json")
+        video_smoke = _read_mapping_json(resolved_job_dir / "vast_video_smoke_result.json")
+        retention_decision = _retention_decision(
+            requested=retain_instance_on_runtime_failure,
+            watchdog_handoff=retention_watchdog_handoff,
+            instance_ids=instance_ids,
+            startup_probe=startup_probe,
+            gpu_sanity=gpu_sanity,
+            video_smoke=video_smoke,
+        )
+        retention_authorized = retention_decision["status"] == "retained_owned"
+        write_json(
+            resolved_job_dir / "vast_retained_instance_decision.json",
+            retention_decision,
+        )
+        if retain_instance_on_runtime_failure and instance_ids:
+            record_terminal_lifecycle(
+                resolved_job_dir,
+                instance_id=instance_ids[-1],
+                decision=retention_decision,
+                video_smoke_completed=video_smoke.get("status") == "completed",
+            )
+        if instance_ids and not retention_authorized:
             _append_phase(
                 resolved_job_dir,
                 "vast_instance_teardown_started",
                 "running",
                 instance_ids=instance_ids,
             )
-        else:
+        elif not instance_ids:
             _append_phase(
                 resolved_job_dir, "vast_instance_teardown_started", "completed", instance_ids=[]
+            )
+        else:
+            _append_phase(
+                resolved_job_dir,
+                "vast_instance_teardown_started",
+                "completed",
+                instance_ids=instance_ids,
+                proof_effect="teardown_deferred_to_independent_watchdog_for_retained_session",
             )
         _write_blocked_phase_artifacts(
             job_dir=resolved_job_dir,
@@ -5947,7 +5933,7 @@ def run_vast_provider_adapter(
             provider_reason=_string(base_result.get("reason"))
             or "vast_probe_ended_before_phase_artifacts",
         )
-        for instance_id in list(instance_ids):
+        for instance_id in [] if retention_authorized else list(instance_ids):
             try:
                 status_code, response = _api_json(
                     method="DELETE",
@@ -5998,7 +5984,37 @@ def run_vast_provider_adapter(
                         "error": _redact_text(f"{type(exc).__name__}: {str(exc)[:300]}", [api_key]),
                     }
                 )
-        teardown_status = "completed" if not continuing_spend else "blocked"
+        if (
+            retain_instance_on_runtime_failure
+            and instance_ids
+            and not retention_authorized
+            and not continuing_spend
+        ):
+            record_retained_gpu_state(
+                resolved_job_dir,
+                "provider_absent",
+                evidence={
+                    "provider": "vast",
+                    "provider_instance_id": instance_ids[-1],
+                    "destroy_request_completed": True,
+                },
+            )
+        if retention_authorized:
+            continuing_spend = True
+            teardown_actions.append(
+                {
+                    "instance_id": instance_ids[-1],
+                    "action": "retain_instance",
+                    "status": "retained_owned",
+                    "watchdog_pid": retention_decision.get("watchdog_pid"),
+                    "watchdog_deadline_epoch": retention_decision.get("watchdog_deadline_epoch"),
+                }
+            )
+        teardown_status = (
+            "retained_owned"
+            if retention_authorized
+            else ("completed" if not continuing_spend else "blocked")
+        )
         write_json(
             resolved_job_dir / "vast_teardown_manifest.json",
             {
@@ -6009,18 +6025,32 @@ def run_vast_provider_adapter(
                 "teardown_actions_performed": teardown_actions,
                 "runner_gpu_teardown_completed": not continuing_spend,
                 "continuing_spend_from_this_run": continuing_spend,
-                "zero_continuing_spend_scope": "all Vast instances created by this adapter were destroyed"
-                if not continuing_spend
-                else "teardown failure requires manual Vast console/API verification",
+                "retention_authorized": retention_authorized,
+                "retention_decision": retention_decision,
+                "zero_continuing_spend_scope": (
+                    "all Vast instances created by this adapter were destroyed"
+                    if not continuing_spend
+                    else "watchdog-owned retained instance remains billable until terminal teardown"
+                    if retention_authorized
+                    else "teardown failure requires manual Vast console/API verification"
+                ),
                 "raw_secret_values_recorded": False,
             },
         )
         _append_phase(
             resolved_job_dir,
             "vast_instance_teardown_completed",
-            "completed" if not continuing_spend else "blocked",
-            blockers=[] if not continuing_spend else ["vast_instance_destroy_failed"],
-            proof_effect="vast_instances_destroyed_by_adapter" if not continuing_spend else "none",
+            "completed" if (not continuing_spend or retention_authorized) else "blocked",
+            blockers=[]
+            if (not continuing_spend or retention_authorized)
+            else ["vast_instance_destroy_failed"],
+            proof_effect=(
+                "vast_instances_destroyed_by_adapter"
+                if not continuing_spend
+                else "vast_instance_retained_under_independent_watchdog"
+                if retention_authorized
+                else "none"
+            ),
             instance_ids=instance_ids,
         )
         ended_at_monotonic = time.monotonic()
@@ -6035,7 +6065,11 @@ def run_vast_provider_adapter(
             instance_ids=instance_ids,
             started_at_monotonic=started_at_monotonic,
             ended_at_monotonic=ended_at_monotonic,
-            status="completed" if not continuing_spend else "blocked_teardown",
+            status=(
+                "retained_owned"
+                if retention_authorized
+                else ("completed" if not continuing_spend else "blocked_teardown")
+            ),
             continuing_spend=continuing_spend,
         )
         estimated_cost_usd = float(ledger["estimated_cost_usd"])
@@ -6107,6 +6141,7 @@ def run_vast_provider_adapter(
             continuing_spend=continuing_spend,
             estimated_cost_usd=estimated_cost_usd,
             hard_cap_usd=hard_cap_usd,
+            authorized_retention=retention_authorized,
         )
         if "status" not in base_result or base_result.get("status") not in {"failed", "blocked"}:
             heartbeat = _mapping(
@@ -6173,6 +6208,8 @@ def run_vast_provider_adapter(
                 "session_budget_summary": session_budget_summary,
                 "estimated_cost_usd": estimated_cost_usd,
                 "continuing_spend_from_this_run": continuing_spend,
+                "retained_owned": retention_authorized,
+                "retention_decision": retention_decision,
                 "final_validation_status": validation["status"],
                 "vast_launch_lock_status": (
                     launch_lock_release_manifest or launch_lock_manifest
@@ -6186,6 +6223,9 @@ def run_vast_provider_adapter(
                         resolved_job_dir / "vast_offer_selection_manifest.json"
                     ),
                     "vast_budget_ledger": str(resolved_job_dir / "vast_budget_ledger.json"),
+                    "vast_all_in_cost_binding": str(
+                        resolved_job_dir / "vast_all_in_cost_binding.json"
+                    ),
                     "vast_runtime_phase_log": str(
                         resolved_job_dir / "vast_runtime_phase_log.jsonl"
                     ),
@@ -6203,6 +6243,9 @@ def run_vast_provider_adapter(
                         resolved_job_dir / "vast_video_smoke_result.json"
                     ),
                     "vast_teardown_manifest": str(resolved_job_dir / "vast_teardown_manifest.json"),
+                    "vast_retained_instance_decision": str(
+                        resolved_job_dir / "vast_retained_instance_decision.json"
+                    ),
                     "vast_final_validation": str(resolved_job_dir / "vast_final_validation.json"),
                     "vast_launch_lock_manifest": str(
                         resolved_job_dir / "vast_launch_lock_manifest.json"

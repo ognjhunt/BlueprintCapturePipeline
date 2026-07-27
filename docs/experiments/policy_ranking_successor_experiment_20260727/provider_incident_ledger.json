@@ -1,7 +1,7 @@
 {
   "schema_version": "policy_ranking_successor_provider_incident_ledger.v1",
   "experiment_id": "policy_ranking_successor_experiment_20260727",
-  "status": "v4_precreate_session_budget_code_failure_closed_v5_zero_spend_replacement_authorized",
+  "status": "v5_runtime_bundle_ordering_failure_closed_v6_causal_change_retry_authorized",
   "incidents": [
     {
       "incident_id": "successor-vast-pre-provider-gate-001",
@@ -152,11 +152,60 @@
         "manual_zero_allocation_cancellation": "a45682a7a4ccc522bf5e22810d6e68410207308cc1b23943d63c433b4db0e1f3",
         "published_artifact_manifest": "872ba45658a3b99d821184b6c12e8d4a805acad48a248e367506a23d9e60da29"
       }
+    },
+    {
+      "incident_id": "successor-vast-runtime-bundle-action-order-005",
+      "observed_at": "2026-07-27T18:03:00-0500",
+      "classification": "runtime_bundle_contract_failure",
+      "failure_stage": "provider_runtime_frozen_action_validation",
+      "blockers": [
+        "action_stream_condition_order_invalid"
+      ],
+      "failure_mechanism": "The deterministic bundle serialized JSON object keys in sorted order while the runtime incorrectly compared dictionary iteration order with the preregistered scientific tuple. The exact condition set was present, but validation blocked before CUDA, model download, model load, or generation. The legacy provider adapter then unconditionally destroyed the otherwise healthy instance.",
+      "source_commit": "ffb6e27b89cee589fe6a97b91b6d862ec6e16579",
+      "launcher_entrypoint": "python -m blueprint_pipeline.paid_resource_allocator",
+      "authorization_id_consumed": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v5",
+      "provider_api_mutation_reached": true,
+      "provider_allocation_created": true,
+      "provider_instance_id": 46051923,
+      "offer_id": 36478238,
+      "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "selected_gpu_hourly_rate_usd": 1.0066666666666666,
+      "observed_provider_all_in_hourly_rate_usd": 1.2083333333333333,
+      "actual_live_runtime_seconds_observed_by_adapter": 62.240012,
+      "compute_spend_usd_estimated": 0.017404,
+      "all_in_spend_usd_estimated": 0.020891,
+      "cumulative_compute_spend_usd_estimated": 0.050839,
+      "api_vlm_spend_usd": 0.0,
+      "provider_teardown_verified": true,
+      "provider_zero_verified": true,
+      "independent_watchdog_armed_before_allocation": true,
+      "scientific_output_consumed": false,
+      "scientific_rollout_count": 0,
+      "unchanged_paid_retry_forbidden": true,
+      "causal_changes_before_retry": [
+        "validate the exact frozen condition set independently of JSON key order",
+        "retain a healthy instance under the independent watchdog on correctable runtime failure",
+        "retain and reuse an exact healthy Cosmos server process by PID and process-start identity",
+        "add SHA-256-bound signed runtime refresh through the canonical allocator",
+        "bind the provider-reported all-in compute plus storage rate before continued execution"
+      ],
+      "retry_kind": "causal_change_paid_retry_under_unchanged_campaign_cap",
+      "retry_authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v6",
+      "cumulative_compute_cap_usd": 6.0,
+      "additional_compute_authority_usd": 0.0,
+      "local_evidence_sha256": {
+        "vast_provider_adapter_result": "153553bfaf237694cc26a5335791572f361d7d5a809a627e002a7d933a404f4e",
+        "vast_wam_authorized_runner_manifest": "612f4ac06a7dbbbd9ec90a70b49cb3fab6b691f094bfbbea468ba6e45d64c747",
+        "vast_teardown_manifest": "d6c462d8d0c6f54234628d0845f020f9a30c7ba731246cbf325ab80f634b5517",
+        "vast_session_cost_summary": "a597c6353a0b25b429f6030a941562b25317708ac6d928c06940e8c18a802a1a",
+        "provider_runtime_output": "a4721dcb0482b07df3feb14748bd1a881cc1d1b65d72b7655fa27eba750b5345"
+      }
     }
   ],
-  "infrastructure_retry_count": 4,
+  "infrastructure_retry_count": 5,
   "scientific_retry_count": 0,
-  "provider_mutations_performed": 2,
+  "provider_mutations_performed": 4,
   "claims": {
     "implementation": true,
     "runtime": false,
