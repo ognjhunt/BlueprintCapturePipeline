@@ -60,7 +60,7 @@ def _load_attempts(budget_path: Path) -> tuple[list[Mapping[str, Any]], str | No
         payload = json.loads(budget_path.read_text(encoding="utf-8"))
         if not isinstance(payload, Mapping):
             raise ValueError("session budget ledger must be a JSON object")
-        raw_attempts = payload.get("attempts") or []
+        raw_attempts = payload["attempts"] if "attempts" in payload else []
         if not isinstance(raw_attempts, list):
             raise ValueError("session budget ledger attempts must be a JSON array")
         if any(not isinstance(item, Mapping) for item in raw_attempts):

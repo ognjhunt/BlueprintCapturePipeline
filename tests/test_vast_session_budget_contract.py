@@ -61,7 +61,16 @@ def test_successor_limit_reserves_full_ttl_above_prior_runtime(tmp_path: Path) -
 
 @pytest.mark.parametrize(
     "payload",
-    ["[]", '{"attempts": "not-an-array"}', '{"attempts": [1]}'],
+    [
+        "[]",
+        '{"attempts": null}',
+        '{"attempts": false}',
+        '{"attempts": 0}',
+        '{"attempts": ""}',
+        '{"attempts": {}}',
+        '{"attempts": "not-an-array"}',
+        '{"attempts": [1]}',
+    ],
 )
 def test_malformed_session_ledgers_fail_closed(tmp_path: Path, payload: str) -> None:
     budget = tmp_path / "budget.json"
