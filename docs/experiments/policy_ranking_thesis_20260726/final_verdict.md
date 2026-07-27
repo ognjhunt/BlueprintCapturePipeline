@@ -1,15 +1,19 @@
 # Final verdict
 
-Verdict: `thesis_not_supported`
+Verdict: `inconclusive`
 
 The frozen pipeline did not satisfy the preregistered conjunction required to
-support Blueprint's policy-ranking thesis. This is a verdict on the tested
-pipeline and evidence, not a claim that every future Blueprint evaluator or
-world model must fail.
+support Blueprint's policy-ranking thesis. The evidence is materially
+unfavorable: the calibration gate set failed and both prospective scene lanes
+abstained from total rankings. However, the required held-out benchmark matrix
+was never completed after the two frozen provider attempts were exhausted. The
+protocol explicitly requires an inconclusive final disposition when any
+required component is unmeasured, so the calibration failures cannot be
+promoted into a held-out falsification result.
 
 ## Separately reported components
 
-### 1. Frozen benchmark calibration: not supported
+### 1. Frozen benchmark calibration: calibration gate set failed; held-out verdict unmeasured
 
 The independently labeled RoboArena calibration partition produced primary
 pairwise accuracy 0.672566 with a session-cluster 95% bootstrap interval of
@@ -22,10 +26,12 @@ top policy. Those favorable results are insufficient under the frozen rule:
 - a complete held-out result was never obtained because the two frozen attempts
   were rate-limited, so no held-out generalization claim is made.
 
-The benchmark component therefore did not demonstrate a useful, trustworthy
-ordering. The failed selective-abstention gate is an explicit
-`thesis_not_supported_if_any` condition in the frozen protocol; it is not
-relaxed because held-out scoring remained unavailable.
+The calibration partition therefore did not demonstrate a useful, trustworthy
+ordering. This is a failed calibration gate set, not a held-out final verdict.
+The frozen negative-decision conditions reference held-out results, and the
+retry rule assigns explicit abstention and an inconclusive disposition when the
+required matrix remains incomplete. The unfavorable calibration evidence is
+retained without relaxing any gate or imputing the missing held-out result.
 
 ### 2. Captured-site transfer: execution succeeded; useful ranking did not
 
@@ -90,9 +96,12 @@ site-specific physical campaign. Physical monetary cost was not measured.
   proven on this exact can-to-tray simulator setup. Their universal task failure
   may reflect policy/task/domain mismatch as well as policy quality.
 
-The evidence is sufficient to reject the tested capital-constrained pipeline's
-claim of a useful, trustworthy policy ordering. It is not sufficient to claim
-that the policies would fail physically at either new site.
+The evidence does not support the tested capital-constrained pipeline's claim
+of a useful, trustworthy policy ordering. It also does not meet the frozen
+requirements for a definitive falsification because the required held-out
+benchmark component is unmeasured. The registered final disposition is
+therefore `inconclusive`. Nothing in this result establishes that the policies
+would fail physically at either new site.
 
 ## Evidence identities
 

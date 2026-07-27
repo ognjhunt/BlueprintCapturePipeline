@@ -1,12 +1,15 @@
 # Blueprint policy-ranking thesis experiment
 
-Status: complete. Final verdict: `thesis_not_supported`.
+Status: complete. Final verdict: `inconclusive`.
 
 The exact-main Vast campaign completed 24 learned-policy episodes and then
 abstained from a total ordering in both transfer scenes. Frozen RoboArena
 calibration did not pass the registered selective-abstention or action-following
-gates. See `final_verdict.md` and `final_verdict.json` for the decision and
-claim boundaries.
+gates. The required held-out benchmark matrix remained unmeasured after both
+frozen provider attempts were exhausted, so the preregistered decision rule
+requires an inconclusive disposition rather than a definitive falsification.
+See `final_verdict.md` and `final_verdict.json` for the decision and claim
+boundaries.
 
 ## Claim under test
 

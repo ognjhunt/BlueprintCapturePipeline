@@ -1,10 +1,16 @@
 {
   "schema_version": "blueprint_policy_ranking_thesis_final_verdict.v1",
-  "verdict": "thesis_not_supported",
+  "verdict": "inconclusive",
   "decision_rule": "frozen_protocol_v2_with_preserved_v1_decision_thresholds",
   "protocol_v2_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
+  "disposition_basis": {
+    "required_heldout_matrix_complete": false,
+    "protocol_inconclusive_if_any_required_component_unmeasured": true,
+    "retry_exhaustion_disposition": "explicit_abstention_and_inconclusive_if_required_matrix_incomplete",
+    "calibration_failure_is_not_heldout_falsification": true
+  },
   "benchmark_calibration": {
-    "status": "failed_registered_gate_set",
+    "status": "failed_registered_calibration_gate_set",
     "session_pairwise_accuracy": 0.672566371681416,
     "session_pairwise_accuracy_bootstrap_ci95": [
       0.5483870967741935,
@@ -19,6 +25,12 @@
     "top_policy_correct": true,
     "heldout_metric_available": false,
     "benchmark_component_passed": false
+  },
+  "heldout_benchmark": {
+    "status": "unmeasured_after_frozen_retries_exhausted",
+    "metric_available": false,
+    "labels_remained_sealed": true,
+    "final_disposition": "inconclusive"
   },
   "captured_site_transfer": {
     "status": "executed_and_abstained",

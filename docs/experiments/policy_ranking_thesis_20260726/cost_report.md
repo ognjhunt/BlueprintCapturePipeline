@@ -41,5 +41,5 @@ paper-attributed single-GH200 OSCAR generation estimate gives approximately
 37.34 minutes for pilot WAM generation plus judging, versus a 16.97-minute
 physical action-only lower bound; that comparison omits overhead on both sides.
 Physical total monetary cost remains unmeasured. These economic gaps are
-retained in the `thesis_not_supported` verdict rather than filled with assumed
-robot costs.
+retained in the `inconclusive` verdict rather than filled with assumed robot
+costs.
