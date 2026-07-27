@@ -38,6 +38,7 @@ from .policy_ranking_successor_cosmos import (
     validate_smoke_inventory_manifest,
 )
 from .vast_wam_authorized_runner import run_vast_wam_authorized_runner
+from .vast_provider_adapter import VAST_API_GATE_ENV, VAST_INSTANCE_LAUNCH_GATE_ENV
 
 
 PROBE_KIND = "policy-ranking-successor-cosmos"
@@ -47,15 +48,18 @@ PREFLIGHT_SCHEMA = "policy_ranking_successor_vast_preflight.v1"
 BUNDLE_SCHEMA = "policy_ranking_successor_cosmos_bundle.v1"
 PUBLIC_IMAGE = f"{VLLM_IMAGE}@{VLLM_IMAGE_DIGEST}"
 
-MAX_COMPUTE_CAP_USD = 3.25
+MAX_COMPUTE_CAP_USD = 6.0
 MAX_HOURLY_RATE_USD = 1.05
-TARGET_SPEND_USD = MAX_COMPUTE_CAP_USD
+TARGET_SPEND_USD = 3.25
 HARD_TTL_SECONDS = 10_800
 DISK_GB = 250
 MIN_GPU_RAM_MB = 95_000
 MIN_RELIABILITY = 0.98
 MAX_PREFLIGHT_AGE_SECONDS = 900
-AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-3p25-v1"
+AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v2"
+PREDECESSOR_AUTHORIZATION_ID = (
+    "policy-ranking-successor-cosmos-smoke-20260727-cap-3p25-v1"
+)
 AUTHORIZATION_CONSUMPTION_ROOT = (
     Path.home() / ".blueprint-spend-authority" / "consumed"
 )
@@ -313,6 +317,22 @@ def build_successor_gpu_admission(
         )
     if authorization.get("single_use_consumption_required") is not True:
         authorization_blockers.append("successor_compute_authorization_single_use_invalid")
+    if authorization.get("infrastructure_retry_of") != PREDECESSOR_AUTHORIZATION_ID:
+        authorization_blockers.append(
+            "successor_compute_authorization_retry_predecessor_invalid"
+        )
+    if authorization.get("predecessor_provider_allocations") != 0:
+        authorization_blockers.append(
+            "successor_compute_authorization_retry_allocation_count_invalid"
+        )
+    if authorization.get("predecessor_compute_spend_usd") != 0.0:
+        authorization_blockers.append(
+            "successor_compute_authorization_retry_prior_spend_invalid"
+        )
+    if authorization.get("additional_compute_authority_usd") != 2.75:
+        authorization_blockers.append(
+            "successor_compute_authorization_retry_additional_authority_invalid"
+        )
     if authorization.get("paid_mutation_authorized") is not True:
         authorization_blockers.append("successor_compute_not_explicitly_authorized")
     try:
@@ -320,7 +340,7 @@ def build_successor_gpu_admission(
     except (TypeError, ValueError):
         authorized_cap = math.nan
     if not math.isfinite(authorized_cap) or authorized_cap != MAX_COMPUTE_CAP_USD:
-        authorization_blockers.append("successor_compute_cap_must_equal_3_25_usd")
+        authorization_blockers.append("successor_compute_cap_must_equal_6_usd")
     required_controls = {
         "one_resource_limit": True,
         "independent_teardown_watchdog": True,
@@ -559,6 +579,21 @@ def run_successor_gpu_lane(
             "status": "blocked",
             "reason": "shared_paid_resource_admission_blocked",
             "blockers": [*admission["blockers"], *exc.blockers],
+            "provider_mutations_performed": 0,
+        }
+        write_json(Path(adapter_output), result)
+        return result
+    launch_gate_blockers = [
+        f"missing_env_{name}"
+        for name in (VAST_API_GATE_ENV, VAST_INSTANCE_LAUNCH_GATE_ENV)
+        if os.environ.get(name) != "true"
+    ]
+    if launch_gate_blockers:
+        result = {
+            "status": "blocked",
+            "reason": "provider_launch_env_gate_blocked_before_authorization_consumption",
+            "blockers": launch_gate_blockers,
+            "authorization_consumed": False,
             "provider_mutations_performed": 0,
         }
         write_json(Path(adapter_output), result)
