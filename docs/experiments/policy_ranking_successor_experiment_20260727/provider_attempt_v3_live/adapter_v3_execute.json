@@ -1,0 +1,103 @@
+{
+  "schema_version": "vast_wam_authorized_runner.v1",
+  "generated_at": "2026-07-27T19:01:33.686057+00:00",
+  "status": "blocked",
+  "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v3",
+  "bundle_path": "<personal-absolute-path-redacted>",
+  "bundle_present": true,
+  "bundle_size_bytes": 294167,
+  "output_path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output.zip",
+  "output_inspection": {},
+  "token_file": {
+    "path_redacted": true,
+    "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "token_recorded_in_manifest": false,
+    "path_source": "staging_token_file",
+    "created": false
+  },
+  "secret_env_file": "<local-secret-path-redacted>",
+  "public_base_url_present": true,
+  "bundle_url_path": "/bundle.zip?token=<redacted-token>",
+  "output_put_url_path": "/output.zip?token=<redacted-token>",
+  "local_staging_self_test_status": "passed",
+  "staging_manifest_status": "ready",
+  "provider_bundle_kind": "wam",
+  "public_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+  "vast_launch_mode": "auto",
+  "allow_paid_vast_launch": true,
+  "paid_launch_attempted": true,
+  "adapter_result_status": "failed",
+  "adapter_result_reason": "vast_probe_failed",
+  "adapter_result_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v3/vast_provider_adapter_result.json",
+  "session_budget_ledger": "/private/tmp/policy-ranking-successor-live-20260727/vast_session_cost_summary.json",
+  "max_live_minutes": 180,
+  "session_max_live_minutes": 180,
+  "startup_timeout_seconds": 3600,
+  "hardware_constraints": {
+    "disk_gb": 250,
+    "min_gpu_ram_mb": 95000,
+    "min_compute_cap": 1200,
+    "max_compute_cap": 0,
+    "min_reliability": 0.98,
+    "preferred_gpu_keywords": [
+      "RTX PRO 6000"
+    ],
+    "prefer_isaac_rt": false,
+    "gpu_selection_policy_present": true
+  },
+  "staging_verification_guard": {
+    "schema_version": "vast_authorized_probe_staging_verification_guard.v1",
+    "status": "passed",
+    "verify_staging_urls": true,
+    "allow_unverified_public_staging_for_paid_launch": false,
+    "provider_fetchable_bundle_uri_ready": true,
+    "provider_output_callback_ready": true,
+    "public_staging_verification_status": "passed",
+    "blockers": [],
+    "raw_secret_values_recorded": false
+  },
+  "public_staging_verification_status": "passed",
+  "public_staging_verification_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v3/vast_public_staging_verification.json",
+  "public_staging_required_consecutive_successes": 3,
+  "allow_staging_output_put_probe": true,
+  "target_spend_guard": {
+    "schema_version": "vast_authorized_probe_target_spend_guard.v1",
+    "status": "passed",
+    "budget_path": "/private/tmp/policy-ranking-successor-live-20260727/vast_session_cost_summary.json",
+    "budget_ledger_present": true,
+    "budget_parse_error": null,
+    "target_spend_usd": 3.25,
+    "prior_estimated_cost_usd": 0.0,
+    "projected_max_incremental_cost_usd": 3.15,
+    "projected_total_estimated_cost_usd": 3.15,
+    "remaining_to_target_before_request_usd": 3.25,
+    "allow_target_spend_overrun": false,
+    "blockers": [],
+    "raw_secret_values_recorded": false
+  },
+  "allow_target_spend_overrun": false,
+  "allow_unverified_public_staging_for_paid_launch": false,
+  "adapter_env_gates_required": [
+    "BLUEPRINT_ALLOW_VAST_API_CALLS",
+    "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"
+  ],
+  "blockers": [
+    "vast_heartbeat_container_missing"
+  ],
+  "raw_secret_values_recorded": false,
+  "wam_vla_runtime_proven": false,
+  "action_conditioned_video_rollout_generated": false,
+  "generated_world_rank_fidelity_result_proven": false,
+  "generated_world_policy_evaluation_scope_proven": false,
+  "official_policy_execution_proven": false,
+  "controller_grade_execution_proven": false,
+  "authorization_consumption": {
+    "status": "consumed",
+    "authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v3",
+    "consumption_record_sha256": "565f3049351c03150e7bcc0cd8f5d5317e964c0799b8a600ac6dea0bcd5552fb",
+    "record_location_disclosed": false
+  }
+}

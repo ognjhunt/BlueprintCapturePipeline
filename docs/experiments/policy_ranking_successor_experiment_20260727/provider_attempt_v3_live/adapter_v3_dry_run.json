@@ -1,0 +1,7 @@
+{
+  "status": "dry_run_ready",
+  "reason": "admission_validated_without_provider_mutation",
+  "blockers": [],
+  "provider_mutations_performed": 0,
+  "admission_status": "admitted"
+}

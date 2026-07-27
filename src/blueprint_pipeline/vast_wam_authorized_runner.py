@@ -22,6 +22,11 @@ from .vast_bundle_staging import (
     run_local_staging_self_test,
     verify_public_staging_urls,
 )
+from .vast_independent_watchdog_control import (
+    VastWatchdogHandle,
+    arm_independent_vast_watchdog,
+    close_independent_vast_watchdog,
+)
 from .vast_provider_adapter import (
     DEFAULT_HARD_CAP_USD,
     DEFAULT_MAX_HOURLY_RATE,
@@ -105,6 +110,7 @@ def run_vast_wam_authorized_runner(
     prefer_isaac_rt: bool = False,
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
+    require_independent_watchdog: bool = False,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
@@ -211,6 +217,9 @@ def run_vast_wam_authorized_runner(
         blockers.extend(str(item) for item in target_spend_guard.get("blockers") or [])
 
     adapter_result: dict[str, Any] | None = None
+    watchdog_handle: VastWatchdogHandle | None = None
+    watchdog_handoff: dict[str, Any] = {"status": "not_required"}
+    watchdog_close: dict[str, Any] = {"status": "not_required"}
     paid_launch_attempted = False
     if allow_paid_vast_launch:
         if not provider_bundle_url or not provider_output_put_url:
@@ -218,51 +227,86 @@ def run_vast_wam_authorized_runner(
         elif blockers:
             blockers.append("paid_vast_launch_preflight_blocked")
         else:
-            paid_launch_attempted = True
-            adapter_result = run_vast_provider_adapter(
-                job_dir=resolved_job_dir,
-                mode="live-startup-probe",
-                allow_vast_api_call=True,
-                allow_instance_launch=True,
-                max_hourly_rate=max_hourly_rate,
-                target_spend_usd=target_spend_usd,
-                hard_cap_usd=hard_cap_usd,
-                max_live_minutes=max_live_minutes,
-                public_image=public_image,
-                provider_bundle=resolved_bundle,
-                provider_bundle_url=provider_bundle_url,
-                provider_output_put_url=provider_output_put_url,
-                provider_runtime_output_zip=resolved_output,
-                enable_isaac_smoke=False,
-                enable_blueprint_bundle=True,
-                provider_bundle_kind="wam",
-                vast_launch_mode=vast_launch_mode,
-                startup_timeout_seconds=startup_timeout_seconds,
-                session_budget_ledger_path=resolved_session_budget_ledger,
-                session_max_live_minutes=session_max_live_minutes,
-                verify_staging_urls=verify_staging_urls,
-                ngc_image_login_mode="never",
-                vast_template_hash_id=vast_template_hash_id,
-                use_vast_template_image=use_vast_template_image,
-                require_known_supported_isaac_driver=False,
-                disk_gb=disk_gb,
-                min_gpu_ram_mb=min_gpu_ram_mb,
-                min_compute_cap=min_compute_cap,
-                max_compute_cap=max_compute_cap,
-                min_reliability=min_reliability,
-                preferred_gpu_keywords=preferred_gpu_keywords,
-                prefer_isaac_rt=prefer_isaac_rt,
-                gpu_selection_policy=gpu_selection_policy,
-                paid_resource_admission_grant=paid_resource_admission_grant,
-            )
-            if adapter_result.get("status") != "completed":
-                blockers.extend(str(item) for item in adapter_result.get("blockers") or [])
+            if require_independent_watchdog:
+                watchdog_handoff, watchdog_handle = arm_independent_vast_watchdog(
+                    job_dir=resolved_job_dir,
+                    max_live_minutes=max_live_minutes,
+                    generated_at=generated,
+                )
+                blockers.extend(str(item) for item in watchdog_handoff.get("blockers") or [])
+            if blockers:
+                blockers.append("paid_vast_launch_watchdog_blocked")
+            else:
+                paid_launch_attempted = True
+                adapter_result = run_vast_provider_adapter(
+                    job_dir=resolved_job_dir,
+                    mode="live-startup-probe",
+                    allow_vast_api_call=True,
+                    allow_instance_launch=True,
+                    max_hourly_rate=max_hourly_rate,
+                    target_spend_usd=target_spend_usd,
+                    hard_cap_usd=hard_cap_usd,
+                    max_live_minutes=max_live_minutes,
+                    public_image=public_image,
+                    provider_bundle=resolved_bundle,
+                    provider_bundle_url=provider_bundle_url,
+                    provider_output_put_url=provider_output_put_url,
+                    provider_runtime_output_zip=resolved_output,
+                    enable_isaac_smoke=False,
+                    enable_blueprint_bundle=True,
+                    provider_bundle_kind="wam",
+                    vast_launch_mode=vast_launch_mode,
+                    startup_timeout_seconds=startup_timeout_seconds,
+                    session_budget_ledger_path=resolved_session_budget_ledger,
+                    session_max_live_minutes=session_max_live_minutes,
+                    verify_staging_urls=verify_staging_urls,
+                    ngc_image_login_mode="never",
+                    vast_template_hash_id=vast_template_hash_id,
+                    use_vast_template_image=use_vast_template_image,
+                    require_known_supported_isaac_driver=False,
+                    disk_gb=disk_gb,
+                    min_gpu_ram_mb=min_gpu_ram_mb,
+                    min_compute_cap=min_compute_cap,
+                    max_compute_cap=max_compute_cap,
+                    min_reliability=min_reliability,
+                    preferred_gpu_keywords=preferred_gpu_keywords,
+                    prefer_isaac_rt=prefer_isaac_rt,
+                    gpu_selection_policy=gpu_selection_policy,
+                    instance_label_prefix=(
+                        watchdog_handle.pod_name_prefix
+                        if watchdog_handle
+                        else "blueprint-vast-probe-"
+                    ),
+                    started_instance_id_path=(
+                        watchdog_handle.started_instance_id_path if watchdog_handle else None
+                    ),
+                    paid_resource_admission_grant=paid_resource_admission_grant,
+                )
+                if watchdog_handle:
+                    instance_ids = [
+                        int(value) for value in adapter_result.get("vast_instance_ids") or []
+                    ]
+                    watchdog_close = close_independent_vast_watchdog(
+                        job_dir=resolved_job_dir,
+                        handle=watchdog_handle,
+                        instance_ids=instance_ids,
+                        provider_teardown_completed=(
+                            adapter_result.get("continuing_spend_from_this_run") is False
+                        ),
+                    )
+                    if instance_ids and watchdog_close.get("status") != "provider_terminal":
+                        blockers.append("independent_vast_watchdog_not_terminal")
+                if adapter_result.get("status") != "completed":
+                    blockers.extend(str(item) for item in adapter_result.get("blockers") or [])
     else:
         blockers.append("paid_vast_launch_not_authorized_by_runner_flag")
 
     status = (
         "completed"
-        if paid_launch_attempted and adapter_result and adapter_result.get("status") == "completed"
+        if paid_launch_attempted
+        and adapter_result
+        and adapter_result.get("status") == "completed"
+        and not blockers
         else "blocked"
     )
     output_inspection: dict[str, Any] = {}
@@ -296,6 +340,9 @@ def run_vast_wam_authorized_runner(
         "vast_launch_mode": vast_launch_mode,
         "allow_paid_vast_launch": allow_paid_vast_launch,
         "paid_launch_attempted": paid_launch_attempted,
+        "independent_watchdog_required": require_independent_watchdog,
+        "independent_watchdog_handoff": watchdog_handoff,
+        "independent_watchdog_close": watchdog_close,
         "adapter_result_status": adapter_result.get("status") if adapter_result else None,
         "adapter_result_reason": adapter_result.get("reason") if adapter_result else None,
         "adapter_result_path": str(resolved_job_dir / "vast_provider_adapter_result.json")
@@ -410,6 +457,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         vast_launch_mode=args.vast_launch_mode,
         vast_template_hash_id=args.vast_template_hash_id,
         use_vast_template_image=args.use_vast_template_image,
+        require_independent_watchdog=True,
     )
     print(
         "[vast-wam-authorized-runner] manifest="

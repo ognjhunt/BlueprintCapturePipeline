@@ -1,0 +1,22 @@
+{
+  "schema_version": "vast_gpu_sanity_report.v1",
+  "generated_at": "2026-07-27T19:01:45.021622+00:00",
+  "status": "blocked",
+  "blockers": [
+    "vast_heartbeat_container_missing"
+  ],
+  "nvidia_smi_visible": false,
+  "gpu_sanity_proven": false,
+  "isaac_sim_does_not_make_spz_or_3dgs_physical": true,
+  "direct_splat_collision_proven": false,
+  "collider_source_if_used": "metadata_derived_collider_proxy_required",
+  "splat_visuals_if_used": "splat_rendered_visual_evidence_synchronized_with_isaac_state",
+  "real_wam_vla_runtime_proven": false,
+  "generated_world_rank_fidelity_result_proven": false,
+  "generated_world_policy_evaluation_scope_proven": false,
+  "dexterous_hand_policy_proven": false,
+  "controller_grade_execution_proven": false,
+  "official_policy_execution_proven": false,
+  "rank_fidelity_result_proven": false,
+  "public_claim_upgrade_allowed": false
+}

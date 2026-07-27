@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 
+VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV = "BLUEPRINT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS"
+DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS = 720
+
+
 def _number(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -136,3 +140,20 @@ def staging_verification_guard(
         "blockers": blockers,
         "raw_secret_values_recorded": False,
     }
+
+
+def bounded_container_missing_retry_attempts(
+    *,
+    max_wait_seconds: int,
+    retry_interval_seconds: int,
+    max_missing_seconds: int,
+) -> int:
+    """Bound cold-container tolerance below the run deadline.
+
+    Vast can expose a contract as running while Docker is still pulling the
+    image and the named container does not yet exist. This window is long
+    enough for a credible cold pull, but it cannot idle the entire paid run.
+    """
+
+    window = min(max(1, int(max_wait_seconds)), max(60, int(max_missing_seconds)))
+    return max(1, int(window / max(1, int(retry_interval_seconds))))

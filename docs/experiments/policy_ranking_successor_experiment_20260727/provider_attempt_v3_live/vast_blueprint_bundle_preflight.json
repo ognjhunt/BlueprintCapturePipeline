@@ -1,0 +1,49 @@
+{
+  "schema_version": "vast_blueprint_bundle_preflight.v1",
+  "generated_at": "2026-07-27T19:01:45.021622+00:00",
+  "status": "passed",
+  "blueprint_bundle_enabled": true,
+  "provider_bundle_kind": "wam",
+  "isaac_smoke_enabled": false,
+  "bundle_path": "<personal-absolute-path-redacted>",
+  "bundle_present": true,
+  "bundle_size_bytes": 294167,
+  "provider_bundle_fetch_url_present": true,
+  "provider_output_put_url_present": true,
+  "staging_url_verification_requested": true,
+  "staging_output_put_probe_allowed": false,
+  "bundle_url_probe": {
+    "status": "passed",
+    "method": "HEAD",
+    "http_status_code": 200,
+    "content_type": "application/zip",
+    "content_length": 294167
+  },
+  "output_put_probe": {
+    "status": "skipped",
+    "reason": "output_put_probe_requires_explicit_allow",
+    "method": "PUT"
+  },
+  "zip_entry_count": 7,
+  "zip_required_entries_present": false,
+  "zip_integrity_test_passed": true,
+  "zip_testzip_result": null,
+  "json_member_parse_errors": [],
+  "missing_zip_entries": [
+    "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
+    "provider_runtime/oscar_input/first_frame.png"
+  ],
+  "zip_parse_error": null,
+  "provider_eval_manifest_parse_error": null,
+  "provider_eval_manifest_relative_paths": {},
+  "provider_bundle_readiness_path": "<personal-absolute-path-redacted>",
+  "provider_bundle_readiness_present": false,
+  "provider_bundle_readiness_parse_error": null,
+  "provider_bundle_local_ready_for_remote_staging": null,
+  "blockers": [],
+  "warnings": [
+    "provider_bundle_readiness_manifest_missing",
+    "provider_output_put_url_not_mutation_probed"
+  ],
+  "raw_secret_values_recorded": false
+}

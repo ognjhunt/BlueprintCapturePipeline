@@ -1,0 +1,24 @@
+{
+  "schema_version": "vast_machine_avoidlist.v1",
+  "generated_at": "2026-07-27T19:03:24.093283+00:00",
+  "status": "completed",
+  "machine_ids": [
+    141671
+  ],
+  "entries": [
+    {
+      "generated_at": "2026-07-27T19:03:24.093283+00:00",
+      "machine_id": 141671,
+      "instance_id": 46031731,
+      "offer_id": 43983628,
+      "gpu_model_slug": "rtx_pro_6000_ws",
+      "driver_version": "595.71.05",
+      "reason": "vast_startup_control_plane_did_not_reach_onstart_heartbeat",
+      "blockers": [
+        "vast_heartbeat_container_missing"
+      ],
+      "retry_policy": "exclude_for_current_job_until_manual_review"
+    }
+  ],
+  "raw_secret_values_recorded": false
+}

@@ -1,0 +1,63 @@
+{
+  "schema_version": "policy_ranking_successor_vast_preflight.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "status": "verified",
+  "provider": "vast",
+  "observed_at_epoch": 1785178774.339332,
+  "provider_api_verified": true,
+  "provider_inventory_verified_zero": true,
+  "provider_mutations_performed": 0,
+  "reservation_proven": false,
+  "raw_provider_response_recorded": false,
+  "viable_offer_count": 1,
+  "selected_offer": {
+    "ask_contract_id": 45070628,
+    "machine_id": 144235,
+    "gpu_name": "RTX PRO 6000 WS",
+    "gpu_ram_mb": 97887,
+    "num_gpus": 1,
+    "compute_cap": 1200,
+    "cuda_max_good": 13.2,
+    "driver_version": "595.71.05",
+    "has_avx": true,
+    "hourly_rate_usd": 0.9348148148148148,
+    "reliability": 0.9895434,
+    "rentable": true,
+    "capacity_confidence": "advisory",
+    "reservation_proven": false
+  },
+  "selection_policy": {
+    "max_hourly_rate_usd": 1.05,
+    "min_gpu_ram_mb": 95000,
+    "min_compute_cap": 1200,
+    "max_compute_cap": 0,
+    "min_reliability": 0.98,
+    "require_avx": true,
+    "require_direct_port": false,
+    "allowed_gpu_keywords": [
+      "RTX PRO 6000"
+    ],
+    "exact_stack_preflight_required_before_remaining_rollouts": true
+  },
+  "projection": {
+    "selected_hourly_rate_usd": 0.9348148148148148,
+    "hard_ttl_hours": 3.0,
+    "selected_offer_maximum_time_charge_usd": 2.804444444444444,
+    "maximum_gpu_rate_usd_per_hour": 1.05,
+    "maximum_gpu_time_charge_usd": 3.15,
+    "authorized_compute_cap_usd": 6.0,
+    "target_spend_usd": 3.25,
+    "headroom_at_selected_offer_usd": 3.195555555555556,
+    "offer_price_can_change_before_create": true,
+    "create_must_fail_closed_above_maximum_rate": true
+  },
+  "provider_zero_evidence": {
+    "status": "observed",
+    "api_confirmed": true,
+    "live_resource_count": 0,
+    "name_prefix": "blueprint",
+    "observed_at_epoch": 1785178774.339332,
+    "resources": []
+  },
+  "claim_boundary": "Read-only marketplace and provider-zero evidence only; no capacity reservation, image startup, runtime, generated media, WAM validity, ranking, or physical performance is proved."
+}

@@ -56,8 +56,11 @@ def test_bandit_policy_accepts_only_exact_expiring_medium_triage(tmp_path: Path)
     finding = _bandit_finding(tmp_path)
     fingerprint = finding_fingerprint(finding, root=tmp_path)
     triage = {
-        "schema_version": "blueprint.bandit_triage.v1",
+        "schema_version": "blueprint.bandit_triage.v2",
         "scanner_version": "1.8.6",
+        "fingerprint_policy": (
+            "filename_test_id_ast_scope_column_issue_text_canonical_code_and_source_anchor"
+        ),
         "entries": [
             {
                 "fingerprint": fingerprint,
@@ -104,13 +107,25 @@ def test_bandit_policy_accepts_only_exact_expiring_medium_triage(tmp_path: Path)
 
     triage["scanner_version"] = "1.8.6"
     triage["entries"][0]["line_number"] = 2  # type: ignore[index]
-    metadata_mismatch = validate_policy(
-        bandit_report={"results": [finding]},
+    (tmp_path / "src" / "example.py").write_text("\nprint('x')\n", encoding="utf-8")
+    shifted = dict(finding, line_number=2, code="2 print('x')\n")
+    line_shift_only = validate_policy(
+        bandit_report={"results": [shifted]},
         triage=triage,
         root=tmp_path,
         today=date(2026, 7, 9),
     )
-    assert any(item.endswith(":line_number") for item in metadata_mismatch["blockers"])
+    assert line_shift_only["status"] == "passed"
+
+    edited = dict(shifted, code="2 print('changed')\n")
+    code_edit = validate_policy(
+        bandit_report={"results": [edited]},
+        triage=triage,
+        root=tmp_path,
+        today=date(2026, 7, 9),
+    )
+    assert any(item.startswith("untriaged_medium:") for item in code_edit["blockers"])
+    assert any(item.startswith("orphaned_triage_entry:") for item in code_edit["blockers"])
 
     triage["entries"][0]["line_number"] = 1  # type: ignore[index]
     triage["entries"][0]["expires_on"] = "2027-08-08"  # type: ignore[index]
@@ -1214,6 +1229,7 @@ def test_committed_bandit_triage_is_internally_consistent() -> None:
     from scripts.verify_bandit_policy import (
         ALLOWED_DISPOSITIONS,
         EXPECTED_SCANNER_VERSION,
+        FINGERPRINT_POLICY,
         SCHEMA_VERSION as TRIAGE_SCHEMA_VERSION,
     )
 
@@ -1221,6 +1237,7 @@ def test_committed_bandit_triage_is_internally_consistent() -> None:
     triage = json.loads((root / "docs" / "bandit_triage.json").read_text())
     assert triage["schema_version"] == TRIAGE_SCHEMA_VERSION
     assert triage["scanner_version"] == EXPECTED_SCANNER_VERSION
+    assert triage["fingerprint_policy"] == FINGERPRINT_POLICY
     assert triage["policy"]["expired_or_orphaned_entries_block"] is True
     assert triage["policy"]["high_findings_may_not_be_baselined"] is True
 

@@ -105,6 +105,11 @@ from .vast_provider_adapter import (
     _vast_session_budget_ledger_path,
     _release_vast_launch_lock,
 )
+from .vast_probe_guards import (
+    DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
+    VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
+    bounded_container_missing_retry_attempts,
+)
 from .vast_wam_authorized_runner import DEFAULT_WAM_PUBLIC_IMAGE, DEFAULT_WAM_VAST_LAUNCH_MODE
 from .vast_wam_teardown import destroy_vast_instance_with_retry
 from .wam_async_runner_common import (
@@ -131,8 +136,6 @@ DEFAULT_HEARTBEAT_URL = "https://example.com/"
 # but a container that never appears is a dud offer that would otherwise idle for the entire
 # live window before teardown. Cap the tolerance so a dud is detected and torn down quickly,
 # letting the caller re-fire on a fresh offer. Default 12 minutes (override via env).
-VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV = "BLUEPRINT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS"
-DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS = 720
 VAST_API_GATE_ENV = _VAST_API_GATE_ENV
 VAST_INSTANCE_LAUNCH_GATE_ENV = _VAST_INSTANCE_LAUNCH_GATE_ENV
 DEFAULT_WAM_PREFERRED_GPU_KEYWORDS = (
@@ -1474,18 +1477,13 @@ def poll_async_vast_wam_run(
     )
     # Tolerate a missing container only for a bounded boot/pull window; a dud offer whose
     # container never materializes is torn down quickly instead of idling the full deadline.
-    container_missing_max_seconds = min(
-        int(effective_max_wait_seconds),
-        max(
-            60,
-            _env_int(
-                VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
-                DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
-            ),
+    container_missing_retry_attempts = bounded_container_missing_retry_attempts(
+        max_wait_seconds=effective_max_wait_seconds,
+        retry_interval_seconds=retry_interval_seconds,
+        max_missing_seconds=_env_int(
+            VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
+            DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
         ),
-    )
-    container_missing_retry_attempts = max(
-        1, int(container_missing_max_seconds / max(1, retry_interval_seconds))
     )
     onstart_logs = _request_logs_and_fetch(
         instance_id=instance_id,

@@ -1,0 +1,109 @@
+{
+  "schema_version": "vast_public_staging_verification.v1",
+  "generated_at": "2026-07-27T19:01:33.686057+00:00",
+  "completed_at": "2026-07-27T19:01:45.020624+00:00",
+  "status": "passed",
+  "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v3",
+  "provider_bundle_url_redacted": "https://theorem-pete-furthermore-contacts.trycloudflare.com/bundle.zip?REDACTED_QUERY",
+  "provider_output_put_url_redacted": "https://theorem-pete-furthermore-contacts.trycloudflare.com/output.zip?REDACTED_QUERY",
+  "bundle_path": "<personal-absolute-path-redacted>",
+  "output_path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output.zip",
+  "max_wait_seconds": 180,
+  "retry_interval_seconds": 5.0,
+  "timeout_seconds": 20.0,
+  "required_consecutive_successes": 3,
+  "require_bundle_fetch_probe": true,
+  "successful_attempt_count": 3,
+  "final_consecutive_success_count": 3,
+  "allow_output_put_probe": true,
+  "cleanup_output_probe": true,
+  "attempt_count": 3,
+  "attempts": [
+    {
+      "attempt": 1,
+      "checked_at": "2026-07-27T19:01:34.619178+00:00",
+      "bundle_probe": {
+        "status": "passed",
+        "method": "HEAD",
+        "http_status_code": 200,
+        "content_type": "application/zip",
+        "content_length": 294167,
+        "expected_content_length": 294167
+      },
+      "output_put_probe": {
+        "status": "passed",
+        "method": "PUT",
+        "http_status_code": 200,
+        "probe_bytes": 22,
+        "response_preview": "{\"bytes_written\": 22, \"ok\": true, \"output_path\": \"/private/tmp/policy-ranking-successor-live-20260727/runtime-output.zip\"}"
+      },
+      "output_probe_cleanup": {
+        "status": "removed",
+        "path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output.zip",
+        "removed_bytes": 22
+      },
+      "passed": true,
+      "consecutive_successes_after_attempt": 1
+    },
+    {
+      "attempt": 2,
+      "checked_at": "2026-07-27T19:01:39.816035+00:00",
+      "bundle_probe": {
+        "status": "passed",
+        "method": "HEAD",
+        "http_status_code": 200,
+        "content_type": "application/zip",
+        "content_length": 294167,
+        "expected_content_length": 294167
+      },
+      "output_put_probe": {
+        "status": "passed",
+        "method": "PUT",
+        "http_status_code": 200,
+        "probe_bytes": 22,
+        "response_preview": "{\"bytes_written\": 22, \"ok\": true, \"output_path\": \"/private/tmp/policy-ranking-successor-live-20260727/runtime-output.zip\"}"
+      },
+      "output_probe_cleanup": {
+        "status": "removed",
+        "path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output.zip",
+        "removed_bytes": 22
+      },
+      "passed": true,
+      "consecutive_successes_after_attempt": 2
+    },
+    {
+      "attempt": 3,
+      "checked_at": "2026-07-27T19:01:45.020611+00:00",
+      "bundle_probe": {
+        "status": "passed",
+        "method": "HEAD",
+        "http_status_code": 200,
+        "content_type": "application/zip",
+        "content_length": 294167,
+        "expected_content_length": 294167
+      },
+      "output_put_probe": {
+        "status": "passed",
+        "method": "PUT",
+        "http_status_code": 200,
+        "probe_bytes": 22,
+        "response_preview": "{\"bytes_written\": 22, \"ok\": true, \"output_path\": \"/private/tmp/policy-ranking-successor-live-20260727/runtime-output.zip\"}"
+      },
+      "output_probe_cleanup": {
+        "status": "removed",
+        "path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output.zip",
+        "removed_bytes": 22
+      },
+      "passed": true,
+      "consecutive_successes_after_attempt": 3
+    }
+  ],
+  "blockers": [],
+  "warnings": [],
+  "output_probe_cleanup": {
+    "status": "removed",
+    "path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output.zip",
+    "removed_bytes": 22
+  },
+  "raw_secret_values_recorded": false
+}
