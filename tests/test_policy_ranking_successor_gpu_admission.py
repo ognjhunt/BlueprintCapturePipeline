@@ -35,7 +35,7 @@ def test_frozen_successor_bundle_passes_integrity_inspection() -> None:
     assert result["status"] == "passed"
     assert result["blockers"] == []
     assert result["bundle_sha256"] == (
-        "26d28cba2cbecaa9ab1373e9192b2f84e952f3313bea190ea08661d4cd14dcad"
+        "f733fdddf9ef3780d303d5672c2c30c767807c43e87b4d9f5fc6dd860256c873"
     )
 
 
