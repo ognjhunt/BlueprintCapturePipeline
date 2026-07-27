@@ -68,6 +68,15 @@ def test_inventory_blocks_lfs_pointers_and_binds_materialized_video(tmp_path: Pa
     assert result["request_count"] == 2
     assert result["requests"][0]["benchmark_labels_included"] is False
     assert result["requests"][0]["third_party_physical_pixels_included"] is False
+    original_request_id = result["requests"][0]["request_id"]
+    moved_root = tmp_path / "moved"
+    moved_path = (
+        moved_root / session_id / "paligemma_binning_droid" / "left" / "compare_overlay_vs_gt.mp4"
+    )
+    moved_path.parent.mkdir(parents=True)
+    moved_path.write_bytes(path.read_bytes())
+    moved = build_request_inventory(index, protocol, rollout_root=moved_root, partition="pilot")
+    assert moved["requests"][0]["request_id"] == original_request_id
     assert result["precall_cost_bound"]["image_tokens"] == 2380
     assert result["precall_cost_bound"]["estimated_total_usd_upper_bound"] > 0
     assert result["sampling_contract"]["max_output_tokens_including_reasoning"] == 8192
@@ -97,9 +106,7 @@ def test_missing_credential_preserves_matching_resumable_checkpoint(
     }
     output.write_text(json.dumps(previous))
 
-    result = run_inventory(
-        {"inventory_sha256": "a" * 64, "requests": []}, output_path=output
-    )
+    result = run_inventory({"inventory_sha256": "a" * 64, "requests": []}, output_path=output)
 
     assert result["status"] == "blocked"
     assert result["existing_checkpoint_preserved"] is True
@@ -135,7 +142,7 @@ def test_score_emits_label_blind_schema(tmp_path: Path, monkeypatch) -> None:
                         "abstain": False,
                         "rationale": "Visible progress.",
                     }
-                )
+                ),
             )
 
     client = types.SimpleNamespace(responses=Responses())
