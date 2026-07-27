@@ -31,6 +31,8 @@
     "vllm_omni": {
       "repository": "https://github.com/vllm-project/vllm-omni",
       "discovered_main_revision": "fb89ab43ead813afa8a5580f8aa986f2b111771c",
+      "pinned_image_source_revision": "9c1b7504b178afcf541867c1a2d30db48c69cda8",
+      "pinned_image_vllm_revision": "dd10e03f95f94edbea1975c67ace3a35ec9a8a40",
       "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
       "linux_amd64_manifest_digest": "sha256:970dee6658ea223f615b2438ce41e47f1d5322225482546e6e6bc5d8134f757c"
     }
