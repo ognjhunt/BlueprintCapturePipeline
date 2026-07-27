@@ -53,6 +53,28 @@ def test_direct_and_wrapper_requests_match_exact_pinned_forward_dynamics_contrac
     assert all(len(row) == 10 for row in extra["action"])
 
 
+def test_wrapper_serializer_is_independent_of_direct_serializer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_called(**_: object) -> dict[str, object]:
+        raise AssertionError("direct serializer must not implement the wrapper boundary")
+
+    monkeypatch.setattr(runtime, "_serialize_rollout_request", fail_if_called)
+
+    wrapper = runtime._serialize_blueprint_wrapper_request(
+        request_row=_row(), action_stream=_stream(), num_inference_steps=4
+    )
+
+    assert wrapper["model"] == "nvidia/Cosmos3-Nano"
+    assert runtime.json.loads(wrapper["extra_params"])["raw_action_dim"] == 10
+
+
+def test_qualification_and_scientific_request_budgets_are_accounted_separately() -> None:
+    assert runtime.QUALIFICATION_CANARY_REQUEST_COUNT == 2
+    assert runtime.SCIENTIFIC_MATRIX_REQUEST_COUNT == 10
+    assert runtime.TOTAL_INITIAL_GENERATION_REQUEST_COUNT == 12
+
+
 @pytest.mark.parametrize(
     "actions, expected",
     [
@@ -108,4 +130,3 @@ def test_sync_submit_writes_direct_mp4_response(
     assert output.read_bytes() == b"mp4-payload"
     assert result["endpoint"] == "/v1/videos/sync"
     assert result["content_type"] == "video/mp4"
-

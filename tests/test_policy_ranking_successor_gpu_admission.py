@@ -35,8 +35,11 @@ def test_frozen_successor_bundle_passes_integrity_inspection() -> None:
     assert result["status"] == "passed"
     assert result["blockers"] == []
     assert result["bundle_sha256"] == (
-        "005975524158f81fc11c956515c07720a3c0f4952868d2aa14492314e1ac8412"
+        "3fc9f7a0e7d5a5e21ccad6a879f8c5ec9e81a4c031104d3ca91b9cc431142d7c"
     )
+    assert result["manifest"]["qualification_canary_request_count"] == 2
+    assert result["manifest"]["scientific_matrix_request_count"] == 10
+    assert result["manifest"]["total_initial_generation_request_count"] == 12
 
 
 def test_successor_gpu_admission_requires_explicit_authorization() -> None:
@@ -73,6 +76,7 @@ def test_successor_gpu_admission_accepts_only_frozen_rtx_envelope() -> None:
     assert result["limits"]["hard_cap_usd"] == 6.0
     assert result["limits"]["allowed_gpu_keywords"] == ["RTX PRO 6000"]
     assert result["shared_paid_lane_admission"]["status"] == "admitted"
+    assert result["request_budget"]["total_initial_generation_request_count"] == 12
 
 
 def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
