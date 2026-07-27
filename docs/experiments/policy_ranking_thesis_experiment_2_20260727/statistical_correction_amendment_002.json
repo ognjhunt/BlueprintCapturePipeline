@@ -1,0 +1,26 @@
+{
+  "schema_version": "policy_ranking_experiment_2_statistical_correction.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "recorded_at": "2026-07-27T14:31:26Z",
+  "trigger": "Post-publication code review found that the validity-rate confidence bound treated 343 policy rows as independent although the preregistered analysis unit was the session cluster.",
+  "correction": "Validity pass rates are now averaged within session and their 95 percent interval is bootstrapped over independent session clusters. The unclustered Wilson bound remains only as an explicitly labeled descriptive field in detailed reports and is not used by a gate.",
+  "heldout_before": {
+    "method": "unclustered Wilson lower 95 percent bound over 343 rows",
+    "point_estimate": 0.4402332361516035,
+    "lower95": 0.3886480585451787
+  },
+  "heldout_after": {
+    "method": "session-cluster bootstrap over 49 independent sessions",
+    "point_estimate": 0.4402332361516035,
+    "ci95": [0.38775510204081626, 0.49854227405247803],
+    "lower95": 0.38775510204081626
+  },
+  "registered_threshold": 0.8,
+  "gate_before": false,
+  "gate_after": false,
+  "component_verdict_changed": false,
+  "overall_verdict_changed": false,
+  "outcome_labels_opened": false,
+  "provider_predictions_scored": false,
+  "claim_boundary": "This correction repairs the uncertainty calculation after review. It does not change inputs, outcomes, thresholds, policy rows, point estimates, provider predictions, or verdict rules."
+}

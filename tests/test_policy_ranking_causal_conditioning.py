@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from blueprint_pipeline.policy_ranking_causal_conditioning import (
+    _cluster_summary,
     _controls,
     build_causal_report,
     generated_motion_channels,
@@ -63,6 +64,32 @@ def test_controls_are_deterministic_and_include_required_placebos() -> None:
         "within_session_swapped_policy_actions",
     }
     assert all(np.array_equal(first[key], second[key]) for key in first)
+
+
+def test_validity_confidence_interval_clusters_policy_rows_by_session() -> None:
+    def row(session_id: str, passed: bool) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "channels": {
+                "overlay_masked_residual": {
+                    "excess_over_strongest_placebo": 0.1 if passed else 0.0,
+                    "validity_pass": passed,
+                }
+            },
+        }
+
+    summary = _cluster_summary(
+        [row("s1", True), row("s2", False), row("s2", False), row("s2", False)],
+        channel="overlay_masked_residual",
+        margin=0.05,
+        bootstrap_replicates=1_000,
+    )
+
+    assert summary["session_cluster_count"] == 2
+    assert summary["row_count"] == 4
+    assert summary["validity_pass_rate"] == 0.5
+    assert "validity_pass_rate_clustered_bootstrap_lower95" in summary
+    assert summary["validity_pass_rate_wilson_lower95_unclustered_descriptive"] < 0.5
 
 
 def test_causal_report_is_label_blind_and_clustered(tmp_path: Path) -> None:

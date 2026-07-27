@@ -57,7 +57,11 @@
     ],
     "overlay_masked_residual_one_sided_p_against_margin": 0.7628237176282372,
     "overlay_masked_residual_validity_pass_rate": 0.4402332361516035,
-    "overlay_masked_residual_validity_wilson_lower95": 0.3886480585451787,
+    "overlay_masked_residual_validity_clustered_bootstrap_ci95": [
+      0.38775510204081626,
+      0.49854227405247803
+    ],
+    "overlay_masked_residual_validity_clustered_bootstrap_lower95": 0.38775510204081626,
     "required_validity_pass_rate_lower95": 0.8,
     "residual_excess_lower95_above_margin": false,
     "residual_validity_pass_rate_lower95": false,

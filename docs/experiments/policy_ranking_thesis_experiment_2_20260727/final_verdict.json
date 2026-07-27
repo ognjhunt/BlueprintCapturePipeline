@@ -5,7 +5,7 @@
   "components": {
     "frozen_benchmark_calibration": {
       "verdict": "not_supported",
-      "basis": "The 49-cluster heldout causal-conditioning diagnostic was powered for the registered 0.05 margin, but the overlay-masked scene residual had mean excess 0.039976, 95% CI [0.012196, 0.067883], p=0.762824 against the useful margin, and Wilson-lower validity pass rate 0.388648 versus the required 0.8. All causal gates failed. The heldout GPT-5 ranking matrix closed at 43/686 and was not scored."
+      "basis": "The 49-cluster heldout causal-conditioning diagnostic was powered for the registered 0.05 margin, but the overlay-masked scene residual had mean excess 0.039976, 95% CI [0.012196, 0.067883], p=0.762824 against the useful margin, and session-clustered-bootstrap lower validity pass rate 0.387755 versus the required 0.8. All causal gates failed. The heldout GPT-5 ranking matrix closed at 43/686 and was not scored."
     },
     "captured_site_transfer": {
       "verdict": "not_supported",

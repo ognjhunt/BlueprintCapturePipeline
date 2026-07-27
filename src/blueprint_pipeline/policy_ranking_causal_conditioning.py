@@ -148,13 +148,12 @@ def _cluster_summary(
     bootstrap_replicates: int,
 ) -> dict[str, Any]:
     session_values: dict[str, list[float]] = defaultdict(list)
-    passes = 0
+    session_passes: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         result = row["channels"][channel]
-        session_values[str(row["session_id"])].append(
-            float(result["excess_over_strongest_placebo"])
-        )
-        passes += bool(result["validity_pass"])
+        session_id = str(row["session_id"])
+        session_values[session_id].append(float(result["excess_over_strongest_placebo"]))
+        session_passes[session_id].append(float(bool(result["validity_pass"])))
     clustered = np.asarray(
         [float(np.mean(values)) for _, values in sorted(session_values.items())], dtype=np.float64
     )
@@ -173,6 +172,26 @@ def _cluster_summary(
     permutation_p = float(
         (1 + np.sum(null_means >= observed - margin)) / (bootstrap_replicates + 1)
     )
+    clustered_pass_rates = np.asarray(
+        [float(np.mean(values)) for _, values in sorted(session_passes.items())],
+        dtype=np.float64,
+    )
+    pass_rate_bootstrap = np.asarray(
+        [
+            float(
+                np.mean(
+                    generator.choice(
+                        clustered_pass_rates,
+                        size=len(clustered_pass_rates),
+                        replace=True,
+                    )
+                )
+            )
+            for _ in range(bootstrap_replicates)
+        ],
+        dtype=np.float64,
+    )
+    row_passes = sum(bool(row["channels"][channel]["validity_pass"]) for row in rows)
     return {
         "session_cluster_count": len(clustered),
         "row_count": len(rows),
@@ -182,8 +201,17 @@ def _cluster_summary(
             float(np.quantile(bootstrap, 0.975)),
         ],
         "one_sided_sign_flip_p_against_margin": permutation_p,
-        "validity_pass_rate": passes / len(rows) if rows else 0.0,
-        "validity_pass_rate_wilson_lower95": _wilson_lower(passes, len(rows)),
+        "validity_pass_rate": float(np.mean(clustered_pass_rates)),
+        "validity_pass_rate_clustered_bootstrap_ci95": [
+            float(np.quantile(pass_rate_bootstrap, 0.025)),
+            float(np.quantile(pass_rate_bootstrap, 0.975)),
+        ],
+        "validity_pass_rate_clustered_bootstrap_lower95": float(
+            np.quantile(pass_rate_bootstrap, 0.025)
+        ),
+        "validity_pass_rate_wilson_lower95_unclustered_descriptive": _wilson_lower(
+            row_passes, len(rows)
+        ),
     }
 
 
@@ -282,7 +310,9 @@ def build_causal_report(
             residual and residual["clustered_bootstrap_ci95"][0] > meaningful_margin
         ),
         "residual_validity_pass_rate_lower95": bool(
-            residual and residual["validity_pass_rate_wilson_lower95"] >= minimum_validity_pass_rate
+            residual
+            and residual["validity_pass_rate_clustered_bootstrap_lower95"]
+            >= minimum_validity_pass_rate
         ),
         "conditioning_annotation_not_sole_signal": bool(
             residual

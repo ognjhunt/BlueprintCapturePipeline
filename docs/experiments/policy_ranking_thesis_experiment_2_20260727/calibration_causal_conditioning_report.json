@@ -2472,7 +2472,12 @@
       ],
       "one_sided_sign_flip_p_against_margin": 0.008799120087991202,
       "validity_pass_rate": 0.8163265306122449,
-      "validity_pass_rate_wilson_lower95": 0.6864239739710013
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.7346938775510204,
+        0.9183673469387755
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.7346938775510204,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.6864239739710013
     },
     "overlay_region": {
       "session_cluster_count": 7,
@@ -2483,8 +2488,13 @@
         0.2979056771705813
       ],
       "one_sided_sign_flip_p_against_margin": 0.008799120087991202,
-      "validity_pass_rate": 0.8367346938775511,
-      "validity_pass_rate_wilson_lower95": 0.7096366156608318
+      "validity_pass_rate": 0.836734693877551,
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.7551020408163265,
+        0.9183673469387755
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.7551020408163265,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.7096366156608318
     },
     "overlay_masked_residual": {
       "session_cluster_count": 7,
@@ -2495,8 +2505,13 @@
         0.10148097098204062
       ],
       "one_sided_sign_flip_p_against_margin": 0.7502249775022498,
-      "validity_pass_rate": 0.4489795918367347,
-      "validity_pass_rate_wilson_lower95": 0.31852841068686655
+      "validity_pass_rate": 0.44897959183673464,
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.26530612244897955,
+        0.6326530612244898
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.26530612244897955,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.31852841068686655
     }
   },
   "gates": {
@@ -2511,5 +2526,5 @@
   "third_party_physical_video_pixels_decoded": false,
   "physical_action_trace_used_as_independent_condition_reference": true,
   "claim_boundary": "Label-free temporal-alignment falsification diagnostic; not counterfactual WAM regeneration, 3D action following, task success, ranking fidelity, or physical proof.",
-  "report_sha256": "9e4d51f4800d9b63919b4c7bf0429b1c64afb6b1eefa56863b53c373b951e8cf"
+  "report_sha256": "d1016b25283c233b604448c44ee97c2ae677e5d6d991a0d41569842176048dc6"
 }

@@ -695,8 +695,7 @@ def run_inventory_v2(
         if projected_total_cost_usd is not None
         else len(requests) * MAX_ESTIMATED_REQUEST_USD
     )
-    current_cost = float(store.rebuild()["estimated_cost_usd_recomputed"])
-    if projected + current_cost > max_estimated_cost_usd:
+    if projected > max_estimated_cost_usd:
         return blocked("projected_cost_cap_would_be_exceeded")
 
     from openai import OpenAI  # type: ignore[import-not-found]

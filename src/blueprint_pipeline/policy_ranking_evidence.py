@@ -331,7 +331,6 @@ class EvidenceStore:
             state = self.state()
             if request_id in state["accepted"]:
                 event_type = "duplicate_completion_ignored"
-                valid = False
             else:
                 claim = state["claims"].get(request_id)
                 if not claim or claim["payload"].get("claim_id") != claim_id:

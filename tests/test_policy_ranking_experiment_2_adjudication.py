@@ -101,3 +101,80 @@ def test_prediction_freeze_requires_exact_complete_identity_set(tmp_path: Path) 
     assert result["status"] == "frozen"
     assert result["accepted_request_count"] == 1
     assert result["estimated_cost_usd_recomputed"] == 0.01
+
+
+def test_prediction_freeze_allows_recovered_infrastructure_failure(tmp_path: Path) -> None:
+    request = {
+        "request_id": "r1",
+        "deterministic_input_hash": "h1",
+        "session_id": "s1",
+        "policy_id": "p1",
+        "task_id": "t1",
+    }
+    root = tmp_path / "evidence"
+    store = EvidenceStore(
+        root,
+        experiment_id="e1",
+        inventory_sha256="inventory",
+        configuration_sha256="configuration",
+    )
+    failed_claim = store.claim(
+        request,
+        arm_id="temporal",
+        attempt_type="scientific_request",
+        provider="test",
+        model_snapshot="m1",
+    )
+    assert failed_claim
+    store.complete(
+        request=request,
+        claim_id=failed_claim,
+        arm_id="temporal",
+        attempt_type="infrastructure_failure",
+        provider="test",
+        model_snapshot="m1",
+        started_at=utc_now(),
+        elapsed_seconds=1.0,
+        structured_response=None,
+        validation_result="provider_failure_no_usable_output",
+        usage={},
+        estimated_cost_usd=0.0,
+        actual_cost_usd=None,
+        consumed_infrastructure_retry=True,
+        consumed_scientific_response=False,
+    )
+    accepted_claim = store.claim(
+        request,
+        arm_id="temporal",
+        attempt_type="infrastructure_retry",
+        provider="test",
+        model_snapshot="m1",
+    )
+    assert accepted_claim
+    store.complete(
+        request=request,
+        claim_id=accepted_claim,
+        arm_id="temporal",
+        attempt_type="infrastructure_retry",
+        provider="test",
+        model_snapshot="m1",
+        started_at=utc_now(),
+        elapsed_seconds=1.0,
+        structured_response={"request_id": "r1"},
+        validation_result="valid",
+        usage={"input_tokens": 1, "output_tokens": 1},
+        estimated_cost_usd=0.01,
+        actual_cost_usd=None,
+        response_id="response-1",
+        consumed_scientific_response=True,
+    )
+
+    result = build_prediction_freeze(
+        {"inventory_sha256": "inventory", "requests": [request]},
+        evidence_root=root,
+    )
+
+    assert result["status"] == "frozen"
+    assert result["failed_attempt_count"] == 1
+    assert result["resolved_infrastructure_failure_count"] == 1
+    assert result["unresolved_failed_attempt_count"] == 0

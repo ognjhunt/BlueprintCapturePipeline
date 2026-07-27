@@ -2471,8 +2471,13 @@
         0.31303219830270423
       ],
       "one_sided_sign_flip_p_against_margin": 0.008799120087991202,
-      "validity_pass_rate": 0.8367346938775511,
-      "validity_pass_rate_wilson_lower95": 0.7096366156608318
+      "validity_pass_rate": 0.836734693877551,
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.7346938775510203,
+        0.9387755102040816
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.7346938775510203,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.7096366156608318
     },
     "overlay_region": {
       "session_cluster_count": 7,
@@ -2484,7 +2489,12 @@
       ],
       "one_sided_sign_flip_p_against_margin": 9.999000099990002e-05,
       "validity_pass_rate": 0.8775510204081632,
-      "validity_pass_rate_wilson_lower95": 0.7575560270624349
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.7959183673469388,
+        0.9591836734693878
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.7959183673469388,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.7575560270624349
     },
     "overlay_masked_residual": {
       "session_cluster_count": 7,
@@ -2496,7 +2506,12 @@
       ],
       "one_sided_sign_flip_p_against_margin": 0.28687131286871315,
       "validity_pass_rate": 0.5102040816326531,
-      "validity_pass_rate_wilson_lower95": 0.3746756374046804
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.4285714285714285,
+        0.5714285714285713
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.4285714285714285,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.3746756374046804
     }
   },
   "gates": {
@@ -2511,5 +2526,5 @@
   "third_party_physical_video_pixels_decoded": false,
   "physical_action_trace_used_as_independent_condition_reference": true,
   "claim_boundary": "Label-free temporal-alignment falsification diagnostic; not counterfactual WAM regeneration, 3D action following, task success, ranking fidelity, or physical proof.",
-  "report_sha256": "2effe0b0d74642d046d9229f8beddaa9180aec4afa665f30466d7301c7f70fe7"
+  "report_sha256": "f145df247f567df763c42f26042ce9341c5102a2caee51b4d5172c52257613f2"
 }

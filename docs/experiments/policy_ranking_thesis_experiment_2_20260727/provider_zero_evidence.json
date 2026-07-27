@@ -1,7 +1,7 @@
 {
   "schema_version": "policy_ranking_experiment_2_provider_zero.v1",
   "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
-  "checked_at": "2026-07-27T08:27:06-0500",
+  "checked_at": "2026-07-27T09:41:54-0500",
   "vast": {
     "query": "vastai show instances --raw",
     "response_type": "array",

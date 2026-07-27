@@ -346,6 +346,36 @@ def test_valid_response_is_not_resampled_on_retry_invocation(
     assert calls == 1
 
 
+def test_resume_compares_total_projection_without_double_counting_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_openai(monkeypatch)
+    calls = 0
+
+    def score(client, request):
+        nonlocal calls
+        calls += 1
+        return (
+            {
+                "request_id": request["request_id"],
+                "response_id": "ok",
+                "usage": {"estimated_cost_usd_conservative": 0.01},
+            },
+            {},
+        )
+
+    monkeypatch.setattr("blueprint_pipeline.policy_ranking_thesis_judge_openai._score_one", score)
+    kwargs = dict(
+        evidence_root=tmp_path / "evidence",
+        experiment_id="experiment-2-test",
+        max_estimated_cost_usd=0.195,
+        projected_total_cost_usd=0.19,
+    )
+    assert run_inventory_v2(_inventory(), **kwargs)["status"] == "completed"
+    assert run_inventory_v2(_inventory(), **kwargs)["status"] == "completed"
+    assert calls == 1
+
+
 def test_quota_failure_before_first_acceptance_is_preserved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

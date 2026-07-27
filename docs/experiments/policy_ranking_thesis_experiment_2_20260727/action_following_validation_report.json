@@ -1,5 +1,5 @@
 {
-  "schema_version": "policy_ranking_experiment_2_action_following_validation.v1",
+  "schema_version": "policy_ranking_experiment_2_action_following_validation.v2",
   "status": "completed",
   "analysis_unit": "session cluster",
   "placebos": [
@@ -16,7 +16,8 @@
       "residual_mean_excess": 0.059636,
       "residual_clustered_ci95": [0.026423, 0.090777],
       "residual_pass_rate": 0.510204,
-      "residual_pass_rate_wilson_lower95": 0.37468
+      "residual_pass_rate_clustered_bootstrap_ci95": [0.428571, 0.571429],
+      "residual_pass_rate_clustered_bootstrap_lower95": 0.428571
     },
     "calibration": {
       "session_clusters": 7,
@@ -24,7 +25,8 @@
       "residual_mean_excess": 0.018647,
       "residual_clustered_ci95": [-0.061232, 0.101481],
       "residual_pass_rate": 0.44898,
-      "residual_pass_rate_wilson_lower95": 0.31853
+      "residual_pass_rate_clustered_bootstrap_ci95": [0.265306, 0.632653],
+      "residual_pass_rate_clustered_bootstrap_lower95": 0.265306
     }
   },
   "heldout": {
@@ -38,11 +40,15 @@
     "overlay_masked_residual_ci95": [0.012196217592608695, 0.06788345853542152],
     "overlay_masked_residual_one_sided_p_against_0_05_margin": 0.7628237176282372,
     "overlay_masked_residual_pass_rate": 0.4402332361516035,
-    "overlay_masked_residual_pass_rate_wilson_lower95": 0.3886480585451787
+    "overlay_masked_residual_pass_rate_clustered_bootstrap_ci95": [
+      0.38775510204081626,
+      0.49854227405247803
+    ],
+    "overlay_masked_residual_pass_rate_clustered_bootstrap_lower95": 0.38775510204081626
   },
   "frozen_gates": {
     "residual_lower_ci_gt_0_05": false,
-    "residual_pass_rate_wilson_lower95_gte_0_80": false,
+    "residual_pass_rate_clustered_bootstrap_lower95_gte_0_80": false,
     "conditioning_annotation_not_sole_signal": false
   },
   "all_gates_passed": false,

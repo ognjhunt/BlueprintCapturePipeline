@@ -1,26 +1,26 @@
 {
   "schema_version": "policy_ranking_experiment_2_validation.v1",
-  "validated_at": "2026-07-27T13:55:00Z",
+  "validated_at": "2026-07-27T14:47:45Z",
   "runtime": "uv-managed CPython 3.12.11",
   "focused_tests": {
     "command": "uv run pytest -q tests/test_policy_ranking_causal_conditioning.py tests/test_policy_ranking_evidence.py tests/test_policy_ranking_experiment_2.py tests/test_policy_ranking_experiment_2_adjudication.py tests/test_wam_episode_consistency_label_gemini.py tests/test_wam_generated_video_success_label_gemini.py",
-    "passed": 30,
+    "passed": 33,
     "failed": 0
   },
   "full_tests": {
     "command": "uv run pytest -q",
-    "collected": 6897,
-    "selected": 5255,
-    "passed": 5252,
+    "collected": 6900,
+    "selected": 5258,
+    "passed": 5255,
     "skipped": 3,
     "deselected": 1642,
     "failed": 0,
-    "elapsed_seconds": 795.26
+    "elapsed_seconds": 776.68
   },
   "lint_and_format": {
     "ruff_check": "passed",
     "ruff_format_check": "passed",
-    "files_checked": 10
+    "files_checked": 7
   },
   "dependency_lock": {
     "command": "uv lock --check",

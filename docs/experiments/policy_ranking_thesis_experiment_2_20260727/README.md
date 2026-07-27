@@ -18,8 +18,10 @@ Key evidence:
 - `risk_coverage_curves.json` and `policy_rankings_with_confidence_intervals.json`: explicit unavailability records
 - `economics_and_time_report.json`: attributable spend/time and physical-counterfactual limits
 - `validation_report.json`: focused/full tests, lint, lock, integrity, and secret-scan evidence
+- `statistical_correction_amendment_002.json`: session-clustered validity-interval correction found during review; gates and verdict remain unchanged
 - `label_access_incident_001.json`: procedural deviations
 - `successor_model_decision.json`: user-selected GPT-5 mini successor and why it was not inserted into the frozen holdout
+- `successor_wam_decision.json`: general Cosmos3-Nano forward-dynamics qualification design, hardware choice, and cross-embodiment/warehouse boundaries
 - `cheapest_next_experiment.json`: current public-snapshot check and the lowest-cost valid successor design
 - `evidence_claim_matrix.md`: claim-by-claim proof boundaries for every artifact group
 - `limitations.md` and `unresolved_contradictions.md`: proof boundaries

@@ -17172,7 +17172,12 @@
       ],
       "one_sided_sign_flip_p_against_margin": 9.999000099990002e-05,
       "validity_pass_rate": 0.8221574344023324,
-      "validity_pass_rate_wilson_lower95": 0.7781896414729861
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.7900874635568513,
+        0.8542274052478134
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.7900874635568513,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.7781896414729861
     },
     "overlay_region": {
       "session_cluster_count": 49,
@@ -17184,7 +17189,12 @@
       ],
       "one_sided_sign_flip_p_against_margin": 9.999000099990002e-05,
       "validity_pass_rate": 0.8367346938775511,
-      "validity_pass_rate_wilson_lower95": 0.7939291322016349
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.8046647230320698,
+        0.8688046647230321
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.8046647230320698,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.7939291322016349
     },
     "overlay_masked_residual": {
       "session_cluster_count": 49,
@@ -17196,7 +17206,12 @@
       ],
       "one_sided_sign_flip_p_against_margin": 0.7628237176282372,
       "validity_pass_rate": 0.4402332361516035,
-      "validity_pass_rate_wilson_lower95": 0.3886480585451787
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.38775510204081626,
+        0.49854227405247803
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.38775510204081626,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.3886480585451787
     }
   },
   "gates": {
@@ -17211,5 +17226,5 @@
   "third_party_physical_video_pixels_decoded": false,
   "physical_action_trace_used_as_independent_condition_reference": true,
   "claim_boundary": "Label-free temporal-alignment falsification diagnostic; not counterfactual WAM regeneration, 3D action following, task success, ranking fidelity, or physical proof.",
-  "report_sha256": "f57262020a2743ce0e3829d7e5799e9d1e0c04a97b4078284375fc8925bb6bf1"
+  "report_sha256": "7b9974c7b2c29d8d62aac6a03dd7d7495cc0898bb59457c89205a0ef4ce7caa2"
 }

@@ -16,5 +16,7 @@
 | `final_verdict.json`, `final_report.md` | no | no | no | no | synthesis | synthesis | synthesis | synthesis | no |
 | rights, label-access, contradictions, and limitations records | no | no | no | no | claim constraints | claim constraints | claim constraints | claim constraints | claim constraints |
 | `successor_model_decision.json`, `gemini_discovery_ledger.json` | no | model-discovery only | no | no | no | no | no | projected only | no |
+| `successor_wam_decision.json` | no | model-discovery only | no | no | no | no | no | projected only | no |
+| `statistical_correction_amendment_002.json` | no | no | no | no | uncertainty-method correction only | no | no | no | no |
 
 No Experiment-2 artifact proves physical task performance. Generated media and simulator execution remain support evidence and are never promoted to physical truth.

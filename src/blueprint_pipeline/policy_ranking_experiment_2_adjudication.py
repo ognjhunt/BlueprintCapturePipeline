@@ -79,13 +79,36 @@ def build_prediction_freeze(
     requested = {str(row["request_id"]) for row in inventory.get("requests", [])}
     judgments = accepted_judgments(evidence_root)
     accepted = {str(row["request_id"]) for row in judgments}
+    failed_events = [
+        event for event in aggregate["events"] if event["event_type"] == "attempt_failed"
+    ]
+    unresolved_failures = [
+        event
+        for event in failed_events
+        if str(event["payload"].get("request_id") or "") not in accepted
+    ]
+    scientifically_consumed_failures = [
+        event
+        for event in failed_events
+        if bool(event["payload"].get("consumed_scientific_response"))
+    ]
+    resolved_infrastructure_failures = [
+        event
+        for event in failed_events
+        if str(event["payload"].get("request_id") or "") in accepted
+        and not bool(event["payload"].get("consumed_scientific_response"))
+    ]
     blockers: list[str] = []
     if accepted != requested:
         blockers.append(
             f"request_identity_mismatch:missing_{len(requested - accepted)}:extra_{len(accepted - requested)}"
         )
-    if aggregate["failed_attempt_count"]:
-        blockers.append(f"failed_attempts_present:{aggregate['failed_attempt_count']}")
+    if unresolved_failures:
+        blockers.append(f"unresolved_failed_attempts:{len(unresolved_failures)}")
+    if scientifically_consumed_failures:
+        blockers.append(
+            f"scientifically_consumed_failed_attempts:{len(scientifically_consumed_failures)}"
+        )
     response_digest = canonical_sha256(
         [
             {
@@ -103,6 +126,9 @@ def build_prediction_freeze(
         "request_count": len(requested),
         "accepted_request_count": len(accepted),
         "failed_attempt_count": aggregate["failed_attempt_count"],
+        "resolved_infrastructure_failure_count": len(resolved_infrastructure_failures),
+        "unresolved_failed_attempt_count": len(unresolved_failures),
+        "scientifically_consumed_failed_attempt_count": len(scientifically_consumed_failures),
         "estimated_cost_usd_recomputed": aggregate["estimated_cost_usd_recomputed"],
         "actual_cost_usd_recomputed": aggregate["actual_cost_usd_recomputed"],
         "journal_event_count": aggregate["event_count"],
