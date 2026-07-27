@@ -1,0 +1,64 @@
+{
+  "schema_version": "policy_ranking_experiment_2_provider_matrix_closure.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "status": "irrecoverably_closed_by_user_spend_cap",
+  "provider": "openai",
+  "model_snapshot": "gpt-5-2025-08-07",
+  "requested_request_count": 686,
+  "accepted_request_count": 43,
+  "completion_fraction": 0.06268221574344023,
+  "failed_attempt_count": 0,
+  "claimed_request_count": 45,
+  "unresolved_inflight_claim_count": 2,
+  "arms": {
+    "frozen_temporal_32_frame_progress_judge_v1": {
+      "accepted_request_count": 22,
+      "input_tokens": 59423,
+      "output_tokens": 67128,
+      "estimated_cost_usd": 0.74555875
+    },
+    "frozen_first_last_frame_progress_judge_v1": {
+      "accepted_request_count": 21,
+      "input_tokens": 10689,
+      "output_tokens": 54181,
+      "estimated_cost_usd": 0.55517125
+    }
+  },
+  "usage": {
+    "input_tokens": 70112,
+    "output_tokens": 121309,
+    "recorded_estimated_cost_usd": 1.30073,
+    "conservative_unrecorded_inflight_reserve_usd": 0.18,
+    "conservative_total_cost_upper_bound_usd": 1.48073
+  },
+  "timing": {
+    "first_accepted_request_started_at": "2026-07-27T12:55:10.075555Z",
+    "last_accepted_request_finished_at": "2026-07-27T13:13:36.655609Z",
+    "accepted_request_wall_interval_seconds": 1106.580054,
+    "summed_request_elapsed_seconds": 2069.4437882946804
+  },
+  "evidence": {
+    "journal_event_count": 135,
+    "last_event_sequence": 135,
+    "last_event_sha256": "a856161f8630f45cd123b27dcea4c0acc0270a5fde300c3a25f772cd518c34ff",
+    "derived_aggregate_sha256": "1bef0abf76d4247ed8b6b215170be2d99bd7a3976b113f0a2e9fb339debfff61",
+    "evidence_manifest_sha256": "68ee579e124783f7cfe54780b6fd4916459f572c00f628043fd913ca4c939303"
+  },
+  "adjudication": {
+    "heldout_ranking_metric_available": false,
+    "partial_matrix_scored": false,
+    "outcome_labels_unsealed": false,
+    "partial_predictions_used_for_verdict": false,
+    "risk_coverage_curve_available": false,
+    "policy_ranking_available": false,
+    "replacement_model_allowed_in_same_arm": false
+  },
+  "projection_from_observed_token_rate": {
+    "caveat": "Token-identical counterfactual only; different models may consume different reasoning and output tokens.",
+    "gpt5_usd": 20.7512,
+    "gpt5_mini_usd": 4.1502,
+    "gpt5_nano_usd": 0.83,
+    "gpt4o_usd": 22.1493
+  },
+  "claim_boundary": "Immutable provider transport and partial-execution evidence. This closure does not estimate heldout rank fidelity and cannot be joined to outcomes."
+}

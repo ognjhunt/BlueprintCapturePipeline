@@ -1,0 +1,37 @@
+{
+  "schema_version": "policy_ranking_experiment_2_cheapest_next_experiment.v1",
+  "recorded_at": "2026-07-27T13:38:59Z",
+  "current_public_snapshot_check": {
+    "oscar_rollout_dataset": {
+      "source": "https://huggingface.co/datasets/zywu2115/OSCAR_policy_rollout",
+      "revision": "db5edfaef285c15d0a41d5115177a983c08b4f5f",
+      "last_modified": "2026-06-16T05:06:46.000Z",
+      "unchanged_from_frozen_experiment": true,
+      "released_complete_session_count": 63,
+      "unused_disjoint_complete_session_count": 0
+    },
+    "roboarena_outcome_dataset": {
+      "source": "https://huggingface.co/datasets/RoboArena/DataDump_07-17-2026",
+      "revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+      "unchanged_from_frozen_experiment": true
+    }
+  },
+  "cheapest_next_experiment_that_could_change_the_decision": {
+    "stage_1": "Repair or replace the WAM action adapter on development-only data and require the overlay-masked residual causal gates to pass before any judge spend.",
+    "stage_2": "Obtain a new independently labeled, disjoint DROID-compatible multi-policy rollout snapshot without Blueprint funding or operating physical robots.",
+    "stage_3": "Freeze gpt-5-mini-2025-08-07, the existing temporal and endpoint prompts, sampling, thresholds, and a hard stop before any new heldout call.",
+    "minimum_screening_design": "Seven new independent sessions by seven candidate policies, both temporal and endpoint arms: 98 calls. This is a screening experiment, not the originally powered 49-session confirmation.",
+    "token_identical_mini_judge_projection_usd": 0.5928908837209301,
+    "existing_experiment_conservative_exposure_usd": 1.48073,
+    "projected_combined_api_exposure_usd": 2.07362088372093,
+    "gpu_or_wam_generation_cost_usd": null,
+    "admission_rule": "Do not execute until independent labels, action semantics, media rights, WAM generation cost, and total spend under the user cap are all attributable and frozen."
+  },
+  "why_not_run_now": [
+    "All 63 complete public OSCAR sessions are already allocated to pilot, calibration, or the frozen heldout partition.",
+    "The governing protocol forbids adding a new evaluator arm to the started holdout.",
+    "The released WAM adapter has not passed the necessary counterfactual action-conditioning gate.",
+    "A seven-session screen cannot by itself meet the original 49-cluster confirmation power."
+  ],
+  "claim_boundary": "A bounded next-step design and token-identical API projection, not evidence that new data exist, that WAM generation fits the cap, or that GPT-5 mini ranks robot policies correctly."
+}

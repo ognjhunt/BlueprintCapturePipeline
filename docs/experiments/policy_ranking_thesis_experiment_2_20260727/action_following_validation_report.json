@@ -1,0 +1,59 @@
+{
+  "schema_version": "policy_ranking_experiment_2_action_following_validation.v2",
+  "status": "completed",
+  "analysis_unit": "session cluster",
+  "placebos": [
+    "zero actions",
+    "shuffled action order",
+    "temporally reversed actions",
+    "circularly shifted actions",
+    "within-session swapped-policy actions"
+  ],
+  "development": {
+    "pilot": {
+      "session_clusters": 7,
+      "rows": 49,
+      "residual_mean_excess": 0.059636,
+      "residual_clustered_ci95": [0.026423, 0.090777],
+      "residual_pass_rate": 0.510204,
+      "residual_pass_rate_clustered_bootstrap_ci95": [0.428571, 0.571429],
+      "residual_pass_rate_clustered_bootstrap_lower95": 0.428571
+    },
+    "calibration": {
+      "session_clusters": 7,
+      "rows": 49,
+      "residual_mean_excess": 0.018647,
+      "residual_clustered_ci95": [-0.061232, 0.101481],
+      "residual_pass_rate": 0.44898,
+      "residual_pass_rate_clustered_bootstrap_ci95": [0.265306, 0.632653],
+      "residual_pass_rate_clustered_bootstrap_lower95": 0.265306
+    }
+  },
+  "heldout": {
+    "session_clusters": 49,
+    "rows": 343,
+    "full_generated_mean_excess": 0.2860772770095629,
+    "full_generated_ci95": [0.26113057329085265, 0.3120528518980003],
+    "overlay_region_mean_excess": 0.2967031288511536,
+    "overlay_region_ci95": [0.27114938419517554, 0.3235700519135051],
+    "overlay_masked_residual_mean_excess": 0.03997627399442967,
+    "overlay_masked_residual_ci95": [0.012196217592608695, 0.06788345853542152],
+    "overlay_masked_residual_one_sided_p_against_0_05_margin": 0.7628237176282372,
+    "overlay_masked_residual_pass_rate": 0.4402332361516035,
+    "overlay_masked_residual_pass_rate_clustered_bootstrap_ci95": [
+      0.38775510204081626,
+      0.49854227405247803
+    ],
+    "overlay_masked_residual_pass_rate_clustered_bootstrap_lower95": 0.38775510204081626
+  },
+  "frozen_gates": {
+    "residual_lower_ci_gt_0_05": false,
+    "residual_pass_rate_clustered_bootstrap_lower95_gte_0_80": false,
+    "conditioning_annotation_not_sole_signal": false
+  },
+  "all_gates_passed": false,
+  "falsified": "The generated scene outside the colored skeleton mask does not show the preregistered useful temporal alignment with supplied policy actions beyond the strongest placebo.",
+  "remaining_uncertainty": "This correlation design cannot test true counterfactual causality because alternative action sequences were not regenerated through OSCAR.",
+  "proves": "powered label-free temporal-alignment falsification",
+  "does_not_prove": "3D action following, task success, ranking fidelity, captured-site performance, or physical performance"
+}

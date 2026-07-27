@@ -1,0 +1,34 @@
+{
+  "schema_version": "policy_ranking_experiment_2_label_access_incident.v1",
+  "incident_id": "precompletion_inspection_incident_001",
+  "recorded_at": "2026-07-27T12:58:11.921190000Z",
+  "occurred_after_provider_matrix_started": true,
+  "occurred_before_provider_matrix_completed": true,
+  "access_path": "A recursive ripgrep provenance search over the RoboArena checkout matched policy-name lines and some action-related free-text feedback from evaluation-session metadata. The command was not partition-scoped.",
+  "fields_explicitly_searched_or_displayed": [
+    "action-related free-text lines",
+    "policy_name"
+  ],
+  "outcome_fields_not_displayed": [
+    "binary_success",
+    "partial_success",
+    "preference"
+  ],
+  "heldout_membership_of_displayed_rows_checked": false,
+  "conservative_classification": "potential_heldout_outcome_context_exposure",
+  "additional_precompletion_prediction_inspection": {
+    "occurred": true,
+    "scope": "The accepted canary event was printed in full while verifying the new evidence system, exposing one temporal-arm held-out prediction before the matrix completed.",
+    "request_count": 1,
+    "bulk_execution_already_started": true,
+    "provider_inputs_or_execution_changed_after_inspection": false,
+    "scientific_thresholds_or_adjudication_changed_after_inspection": false,
+    "disposition": "Preserve as a second procedural deviation. Do not claim that no held-out prediction was inspected selectively before matrix closure."
+  },
+  "predictions_changed_after_incident": false,
+  "protocol_or_thresholds_changed_after_incident": false,
+  "provider_inputs_affected": false,
+  "adjudicator_discretion": "none; all gates and outcome joins remain deterministic and preregistered",
+  "disposition": "Preserve both procedural deviations. Do not claim pristine held-out metadata sealing or zero selective prediction inspection, even though exact outcome fields were not displayed and the already-running frozen request matrix could not be influenced.",
+  "claim_boundary": "This incident does not alter the independent label-free causal-conditioning falsification result. It weakens the benchmark replication's procedural-blinding claim and forbids treating it as perfectly sealed evidence."
+}

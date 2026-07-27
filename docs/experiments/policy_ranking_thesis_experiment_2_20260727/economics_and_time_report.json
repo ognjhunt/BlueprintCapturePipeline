@@ -1,0 +1,53 @@
+{
+  "schema_version": "policy_ranking_experiment_2_economics.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "experiment_2_incremental_paid_cost": {
+    "openai_recorded_estimated_usd": 1.30073,
+    "openai_unrecorded_inflight_reserve_usd": 0.18,
+    "openai_conservative_upper_bound_usd": 1.48073,
+    "gemini_usd": 0.0,
+    "new_gpu_or_builder_usd": 0.0,
+    "new_storage_usd": 0.0,
+    "physical_robotics_usd": 0.0,
+    "total_conservative_upper_bound_usd": 1.48073,
+    "user_model_api_cap_usd": 10.0
+  },
+  "provider_timing": {
+    "accepted_request_wall_interval_seconds": 1106.580054,
+    "summed_request_elapsed_seconds": 2069.4437882946804,
+    "accepted_request_count": 43,
+    "full_matrix_elapsed_time": null
+  },
+  "engineering_and_operator_time": {
+    "codex_goal_active_seconds_at_validation": 5521,
+    "codex_goal_active_minutes_at_validation": 92.01666666666667,
+    "measurement_source": "goal runtime meter",
+    "human_operator_time_minutes": null,
+    "reason_human_time_unmeasured": "No operator timesheet was collected; user messages are not treated as labor-duration evidence."
+  },
+  "historical_reused_execution_cost_not_incremental_to_experiment_2": {
+    "exact_main_builder_plus_two_scene_gpu_usd": 0.267538344083841,
+    "exact_main_builder_plus_two_scene_gpu_serial_seconds": 2310.3090460300446
+  },
+  "physical_counterfactual": {
+    "heldout_action_execution_lower_bound_seconds": 6620.133333333333,
+    "heldout_action_execution_lower_bound_minutes": 110.33555555555554,
+    "full_physical_evaluation_duration_measured": false,
+    "physical_monetary_cost_measured": false,
+    "excluded": [
+      "robot and scene setup",
+      "resets",
+      "operator labor",
+      "safety checks",
+      "hardware acquisition or scheduling",
+      "failed or repeated episodes",
+      "benchmark administration"
+    ]
+  },
+  "economic_gates": {
+    "substantially_faster_than_physical_proven": false,
+    "substantially_cheaper_than_physical_proven": false,
+    "reason": "The model matrix did not complete, and only an action-time lower bound—not total duration or monetary cost—exists for exhaustive physical evaluation."
+  },
+  "claim_boundary": "Attributable experiment spend and timing only. Low cloud spend does not by itself prove the primary thesis's faster-and-cheaper clause."
+}

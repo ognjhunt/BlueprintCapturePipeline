@@ -1,0 +1,53 @@
+{
+  "schema_version": "policy_ranking_experiment_2_validation.v1",
+  "validated_at": "2026-07-27T14:47:45Z",
+  "runtime": "uv-managed CPython 3.12.11",
+  "focused_tests": {
+    "command": "uv run pytest -q tests/test_policy_ranking_causal_conditioning.py tests/test_policy_ranking_evidence.py tests/test_policy_ranking_experiment_2.py tests/test_policy_ranking_experiment_2_adjudication.py tests/test_wam_episode_consistency_label_gemini.py tests/test_wam_generated_video_success_label_gemini.py",
+    "passed": 33,
+    "failed": 0
+  },
+  "full_tests": {
+    "command": "uv run pytest -q",
+    "collected": 6900,
+    "selected": 5258,
+    "passed": 5255,
+    "skipped": 3,
+    "deselected": 1642,
+    "failed": 0,
+    "elapsed_seconds": 776.68
+  },
+  "lint_and_format": {
+    "ruff_check": "passed",
+    "ruff_format_check": "passed",
+    "files_checked": 7
+  },
+  "dependency_lock": {
+    "command": "uv lock --check",
+    "status": "passed",
+    "resolved_package_count": 243
+  },
+  "source_governance": {
+    "command": "uv run --no-project --python 3.12 python scripts/verify_source_governance.py --output <temporary-output>/source-governance.json",
+    "status": "passed",
+    "modules_checked": 539,
+    "clis_checked": 159,
+    "critical_capability_policy_only": "passed"
+  },
+  "provider_evidence_integrity": {
+    "manifest_verification": "passed",
+    "journal_event_count": 135,
+    "accepted_request_count": 43,
+    "failed_attempt_count": 0,
+    "last_event_sha256": "a856161f8630f45cd123b27dcea4c0acc0270a5fde300c3a25f772cd518c34ff",
+    "derived_aggregate_sha256": "1bef0abf76d4247ed8b6b215170be2d99bd7a3976b113f0a2e9fb339debfff61"
+  },
+  "secret_scan": {
+    "scanner": "blueprint_pipeline.policy_ranking_evidence.scan_for_secrets",
+    "scope": "Experiment-2 evidence directory",
+    "hit_count": 0,
+    "status": "passed"
+  },
+  "json_parse_and_diff_check": "passed",
+  "claim_boundary": "Implementation and evidence-integrity validation. Passing tests does not itself prove evaluator validity, ranking fidelity, transfer, economics, or physical performance."
+}

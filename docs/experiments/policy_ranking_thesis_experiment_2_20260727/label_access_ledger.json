@@ -1,0 +1,12 @@
+{
+  "schema_version": "policy_ranking_experiment_2_label_access_ledger.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "historical_pilot_labels_opened": true,
+  "historical_calibration_labels_opened": true,
+  "heldout_labels_opened": false,
+  "heldout_metadata_parsed_or_displayed": false,
+  "heldout_files_touched_only_by_git_checkout_lfs_and_sha256": true,
+  "heldout_outcome_join_count": 0,
+  "unseal_allowed_only_after_complete_prediction_cost_and_manifest_freeze": true,
+  "ledger_sha256": "d72874a3f82b972ace968e59071fad60f231f58ea9797e2dd86ed47734cfc60d"
+}

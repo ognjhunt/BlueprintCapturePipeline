@@ -1,0 +1,26 @@
+{
+  "amendment_id": "provider_evidence_implementation_amendment_001",
+  "created_before_provider_calls": true,
+  "created_before_heldout_label_access": true,
+  "created_at": "2026-07-27T07:52:02-0500",
+  "reason": "Record provider-call intent durably before network I/O so a process kill after request transmission cannot be mistaken for a request that was never sent.",
+  "scientific_protocol_changed": false,
+  "ranking_arms_changed": false,
+  "thresholds_changed": false,
+  "inventory_changed": false,
+  "labels_accessed": false,
+  "provider_calls_made_before_amendment": 0,
+  "implementation_commit": "0ed3ace3f6b27f6e3288abc53bdc4191fb518509",
+  "implementation_sha256": {
+    "src/blueprint_pipeline/policy_ranking_evidence.py": "8d95786a79a6c1a82f3b00e8fe38cca935fd4480831775d42a74a403bf715d47",
+    "src/blueprint_pipeline/policy_ranking_thesis_judge_openai.py": "355252ddb3f88f18a1382bed6dcde62359b6f6dd0c6aa543c127ca39c9e0ce13",
+    "tests/test_policy_ranking_evidence.py": "66ad747a412e7552b230de0500e363ef81b712f963a5f9c09d0ac659322a75e3"
+  },
+  "implementation_change": {
+    "event_type": "provider_call_started",
+    "ordering": "durably appended after an exclusive request claim and immediately before provider network I/O",
+    "resume_behavior": "an expired unaccepted claim may be retried, while the earlier provider_call_started event remains immutable evidence of possible provider consumption",
+    "accepted_response_behavior": "unchanged; the first schema-valid accepted response remains terminal for each request"
+  },
+  "claim_boundary": "This is an operational evidence-preservation amendment. It does not alter model inputs, prompts, frame selection, evaluator snapshot, candidate policies, labels, statistical tests, gates, or verdict rules."
+}

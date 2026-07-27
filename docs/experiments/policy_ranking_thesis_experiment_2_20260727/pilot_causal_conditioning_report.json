@@ -1,0 +1,2530 @@
+{
+  "schema_version": "policy_ranking_causal_conditioning_report.v1",
+  "status": "completed",
+  "inventory_sha256": "4df30f10aece1a24b2426c6bf154dcca808d75727a8dd7939368894d109a5f28",
+  "thresholds": {
+    "meaningful_correlation_margin": 0.05,
+    "minimum_original_correlation": 0.1,
+    "minimum_validity_pass_rate": 0.8,
+    "bootstrap_replicates": 10000
+  },
+  "row_count": 49,
+  "rows": [
+    {
+      "session_id": "7ccd5be8-c1d6-4917-871d-905015915744",
+      "policy_id": "paligemma_binning_droid",
+      "swapped_policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "2e156eb2513f4b2f9531beaf121bb1f76c2e421cc44aa0b55bf1cfcc88def026",
+      "npz_sha256": "c218cdf854cb4235dabda169c03c06f946c0101478b3df626d0b910041480035",
+      "frame_count": 73,
+      "overlay_mask_fraction_mean": 0.5129837328767124,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.07615920605406207,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.05758736952746149,
+            "temporally_reversed_actions": -0.0803192917673367,
+            "circularly_shifted_actions": -0.12352682837562028,
+            "within_session_swapped_policy_actions": 0.1187860745916944
+          },
+          "strongest_placebo_correlation": 0.1187860745916944,
+          "excess_over_strongest_placebo": -0.042626868537632326,
+          "validity_pass": false
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.07283266739263505,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.08699742551153843,
+            "temporally_reversed_actions": -0.08826512478180266,
+            "circularly_shifted_actions": -0.11895783581047698,
+            "within_session_swapped_policy_actions": 0.10389637601334771
+          },
+          "strongest_placebo_correlation": 0.10389637601334771,
+          "excess_over_strongest_placebo": -0.031063708620712657,
+          "validity_pass": false
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.0873178736405041,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.14457266143981243,
+            "temporally_reversed_actions": -0.04552248764361207,
+            "circularly_shifted_actions": -0.1374158503580304,
+            "within_session_swapped_policy_actions": 0.17289781081801436
+          },
+          "strongest_placebo_correlation": 0.17289781081801436,
+          "excess_over_strongest_placebo": -0.08557993717751027,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "7ccd5be8-c1d6-4917-871d-905015915744",
+      "policy_id": "paligemma_diffusion_droid",
+      "swapped_policy_id": "paligemma_fast_droid",
+      "video_sha256": "2382ded19f50b34361b61275c9cb0ea764f3e4f43cd04472b24c2202d28e63b3",
+      "npz_sha256": "f248e4574693161acaa89f64914b14f0a1aa4134f9de31650ee79ff8311a3a96",
+      "frame_count": 121,
+      "overlay_mask_fraction_mean": 0.5051015840220386,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.644695683982023,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.006280423358290306,
+            "temporally_reversed_actions": -0.22221315084576404,
+            "circularly_shifted_actions": -0.3805413874709887,
+            "within_session_swapped_policy_actions": 0.29530704842892985
+          },
+          "strongest_placebo_correlation": 0.29530704842892985,
+          "excess_over_strongest_placebo": 0.3493886355530932,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.644548056948262,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.0789836693878658,
+            "temporally_reversed_actions": -0.21075272464275982,
+            "circularly_shifted_actions": -0.37680812011086545,
+            "within_session_swapped_policy_actions": 0.2949393744610667
+          },
+          "strongest_placebo_correlation": 0.2949393744610667,
+          "excess_over_strongest_placebo": 0.3496086824871953,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.31939655504637976,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.05047315737792116,
+            "temporally_reversed_actions": -0.2893719946114148,
+            "circularly_shifted_actions": -0.24356861679407818,
+            "within_session_swapped_policy_actions": 0.2000008472654221
+          },
+          "strongest_placebo_correlation": 0.2000008472654221,
+          "excess_over_strongest_placebo": 0.11939570778095765,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "7ccd5be8-c1d6-4917-871d-905015915744",
+      "policy_id": "paligemma_fast_droid",
+      "swapped_policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "2ee20863b4d7b6efcf636a98719ba3e932a874f8d74b6ce52c20bea32492a7a9",
+      "npz_sha256": "2273c26976a79ac421698bb4a97ca7848bd31a13a2238bc1967639d448692d73",
+      "frame_count": 153,
+      "overlay_mask_fraction_mean": 0.5201875680827887,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.4071902521765485,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.0440300687380912,
+            "temporally_reversed_actions": 0.2802725704608175,
+            "circularly_shifted_actions": -0.028646103196425396,
+            "within_session_swapped_policy_actions": 0.3645925836762181
+          },
+          "strongest_placebo_correlation": 0.3645925836762181,
+          "excess_over_strongest_placebo": 0.042597668500330366,
+          "validity_pass": false
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.4216435670106099,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.06597790189726034,
+            "temporally_reversed_actions": 0.276241601011134,
+            "circularly_shifted_actions": -0.030341596656256194,
+            "within_session_swapped_policy_actions": 0.34529257333819324
+          },
+          "strongest_placebo_correlation": 0.34529257333819324,
+          "excess_over_strongest_placebo": 0.07635099367241666,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.10735904225256458,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.09335972194200094,
+            "temporally_reversed_actions": 0.22766956358929547,
+            "circularly_shifted_actions": 0.02726614773946147,
+            "within_session_swapped_policy_actions": 0.3505434962384736
+          },
+          "strongest_placebo_correlation": 0.3505434962384736,
+          "excess_over_strongest_placebo": -0.243184453985909,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "7ccd5be8-c1d6-4917-871d-905015915744",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "swapped_policy_id": "paligemma_vq_droid",
+      "video_sha256": "42dda51e3483019d886110c5f416d3748a9ab57829425c86edf37ad125b71c29",
+      "npz_sha256": "90b17fc3b77e46c2a0158f5d9133a80dd43e8cfe21b8a801d0df71c52e47a8e0",
+      "frame_count": 161,
+      "overlay_mask_fraction_mean": 0.5006359989648033,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.888292684600193,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.042335037141257297,
+            "temporally_reversed_actions": -0.1699649335321557,
+            "circularly_shifted_actions": -0.16866800474369734,
+            "within_session_swapped_policy_actions": -0.240723310568744
+          },
+          "strongest_placebo_correlation": 0.0,
+          "excess_over_strongest_placebo": 0.888292684600193,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.8877800752651691,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.021978717621977287,
+            "temporally_reversed_actions": -0.17039819018000166,
+            "circularly_shifted_actions": -0.17045563723258314,
+            "within_session_swapped_policy_actions": -0.24215862996359103
+          },
+          "strongest_placebo_correlation": 0.021978717621977287,
+          "excess_over_strongest_placebo": 0.8658013576431918,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.7086065083648742,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.11146890344620315,
+            "temporally_reversed_actions": -0.1442355043802581,
+            "circularly_shifted_actions": -0.1178058714237244,
+            "within_session_swapped_policy_actions": -0.20806567059380884
+          },
+          "strongest_placebo_correlation": 0.11146890344620315,
+          "excess_over_strongest_placebo": 0.597137604918671,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "7ccd5be8-c1d6-4917-871d-905015915744",
+      "policy_id": "paligemma_vq_droid",
+      "swapped_policy_id": "pi0_droid",
+      "video_sha256": "5c19d00c4f657854c31aecb50cd3fb0089122b14473781d206f126082d7ceb3e",
+      "npz_sha256": "c341276d68adf2abcfe42787d0f541494f6827feb19cb03557a769d6e55c327e",
+      "frame_count": 241,
+      "overlay_mask_fraction_mean": 0.5312400587828493,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.42115487302141363,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.06888336765962833,
+            "temporally_reversed_actions": 0.10401668039316388,
+            "circularly_shifted_actions": 0.09528462698979825,
+            "within_session_swapped_policy_actions": 0.05055840790799265
+          },
+          "strongest_placebo_correlation": 0.10401668039316388,
+          "excess_over_strongest_placebo": 0.31713819262824977,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.40559613677728173,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.04609873863153902,
+            "temporally_reversed_actions": 0.13069974073101,
+            "circularly_shifted_actions": 0.12555548029859073,
+            "within_session_swapped_policy_actions": 0.05355107189160139
+          },
+          "strongest_placebo_correlation": 0.13069974073101,
+          "excess_over_strongest_placebo": 0.2748963960462717,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.3667460120816389,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.07271794547170254,
+            "temporally_reversed_actions": -0.2641082286882361,
+            "circularly_shifted_actions": -0.2383789662683167,
+            "within_session_swapped_policy_actions": 0.02512491553852849
+          },
+          "strongest_placebo_correlation": 0.02512491553852849,
+          "excess_over_strongest_placebo": 0.3416210965431104,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "7ccd5be8-c1d6-4917-871d-905015915744",
+      "policy_id": "pi0_droid",
+      "swapped_policy_id": "pi0_fast_droid",
+      "video_sha256": "ad8208d1009decfffb695f65f7ed642974db3bfcef8a43f98b7596350b47177d",
+      "npz_sha256": "c29eef80ccedea02828757d43ba99426a71119665797dca453080c014283dd2c",
+      "frame_count": 154,
+      "overlay_mask_fraction_mean": 0.5416815476190476,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.5058654161128219,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.004099819220455957,
+            "temporally_reversed_actions": 0.1300111524837598,
+            "circularly_shifted_actions": 0.0843878869997382,
+            "within_session_swapped_policy_actions": -0.01849345704743347
+          },
+          "strongest_placebo_correlation": 0.1300111524837598,
+          "excess_over_strongest_placebo": 0.37585426362906205,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.5138402442308367,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.07843313847535233,
+            "temporally_reversed_actions": 0.1318363613099274,
+            "circularly_shifted_actions": 0.08941276475970819,
+            "within_session_swapped_policy_actions": -0.017020618865911046
+          },
+          "strongest_placebo_correlation": 0.1318363613099274,
+          "excess_over_strongest_placebo": 0.38200388292090937,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.21879225002084243,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.09632255216483057,
+            "temporally_reversed_actions": 0.06307924972027201,
+            "circularly_shifted_actions": -0.014949564961724943,
+            "within_session_swapped_policy_actions": 0.06818714748091959
+          },
+          "strongest_placebo_correlation": 0.09632255216483057,
+          "excess_over_strongest_placebo": 0.12246969785601186,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "7ccd5be8-c1d6-4917-871d-905015915744",
+      "policy_id": "pi0_fast_droid",
+      "swapped_policy_id": "paligemma_binning_droid",
+      "video_sha256": "91ad964971bc8183a7535e85e8cc3bfbdc22d57f323447816b2b7fd5c0c0c58d",
+      "npz_sha256": "31ea0fb3b8d9ddc4bcc95918d439a79829502ff6d76b567ecf4310a3bb223835",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.5557998697916666,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.22135660999202586,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.09693639406928113,
+            "temporally_reversed_actions": 0.009947017090272485,
+            "circularly_shifted_actions": 0.2506854409597775,
+            "within_session_swapped_policy_actions": 0.17909874641141846
+          },
+          "strongest_placebo_correlation": 0.2506854409597775,
+          "excess_over_strongest_placebo": -0.029328830967751657,
+          "validity_pass": false
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.272061129803685,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.010678908926928746,
+            "temporally_reversed_actions": 0.015503896680576053,
+            "circularly_shifted_actions": 0.22649137359711458,
+            "within_session_swapped_policy_actions": 0.15499232329877224
+          },
+          "strongest_placebo_correlation": 0.22649137359711458,
+          "excess_over_strongest_placebo": 0.045569756206570444,
+          "validity_pass": false
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.08489010631073601,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.026117830097331197,
+            "temporally_reversed_actions": 0.020963097574176446,
+            "circularly_shifted_actions": 0.23962345624081008,
+            "within_session_swapped_policy_actions": 0.18607595115002498
+          },
+          "strongest_placebo_correlation": 0.23962345624081008,
+          "excess_over_strongest_placebo": -0.15473334993007407,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "cb3a637a-bea7-45f2-84dc-50fda57dd912",
+      "policy_id": "paligemma_binning_droid",
+      "swapped_policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "2278bf632c90ef0bd3b647c37d3dee2d2453206b205b5d77fe9fb03e3c0a5540",
+      "npz_sha256": "a0042dc9d2cf8d5c7ddb63456c91b7bd959a7582e553c4d51ba49a0444b4f4db",
+      "frame_count": 71,
+      "overlay_mask_fraction_mean": 0.4474141725352112,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.0,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.0,
+            "temporally_reversed_actions": 0.0,
+            "circularly_shifted_actions": 0.0,
+            "within_session_swapped_policy_actions": -0.09118295565199588
+          },
+          "strongest_placebo_correlation": 0.0,
+          "excess_over_strongest_placebo": 0.0,
+          "validity_pass": false
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.0,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.0,
+            "temporally_reversed_actions": 0.0,
+            "circularly_shifted_actions": 0.0,
+            "within_session_swapped_policy_actions": -0.07929228116329103
+          },
+          "strongest_placebo_correlation": 0.0,
+          "excess_over_strongest_placebo": 0.0,
+          "validity_pass": false
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.0,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.0,
+            "temporally_reversed_actions": 0.0,
+            "circularly_shifted_actions": 0.0,
+            "within_session_swapped_policy_actions": -0.11069223773688099
+          },
+          "strongest_placebo_correlation": 0.0,
+          "excess_over_strongest_placebo": 0.0,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "cb3a637a-bea7-45f2-84dc-50fda57dd912",
+      "policy_id": "paligemma_diffusion_droid",
+      "swapped_policy_id": "paligemma_fast_droid",
+      "video_sha256": "23e75352b1e59f9529d6ef0cdb6c947da788adbdfd53a992ad5361505720d7ba",
+      "npz_sha256": "281cde4daf80463cfb25163173771c1278603026d43badbf0f3dd086bd904e49",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4557131510416667,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.5647876729407261,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.03404048167370153,
+            "temporally_reversed_actions": -0.1852818404409333,
+            "circularly_shifted_actions": -0.03672936291067448,
+            "within_session_swapped_policy_actions": 0.19545792664859213
+          },
+          "strongest_placebo_correlation": 0.19545792664859213,
+          "excess_over_strongest_placebo": 0.36932974629213394,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.5731388723501157,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.04558436303636976,
+            "temporally_reversed_actions": -0.18457504144721548,
+            "circularly_shifted_actions": -0.04309625223913985,
+            "within_session_swapped_policy_actions": 0.1960659186630384
+          },
+          "strongest_placebo_correlation": 0.1960659186630384,
+          "excess_over_strongest_placebo": 0.37707295368707733,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.10881659877432742,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.04024260512239527,
+            "temporally_reversed_actions": -0.1181469262343771,
+            "circularly_shifted_actions": 0.0717808572670123,
+            "within_session_swapped_policy_actions": 0.026425783239498613
+          },
+          "strongest_placebo_correlation": 0.0717808572670123,
+          "excess_over_strongest_placebo": 0.03703574150731512,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "cb3a637a-bea7-45f2-84dc-50fda57dd912",
+      "policy_id": "paligemma_fast_droid",
+      "swapped_policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "0102b796b85464b646b4735229eba6d2a88ed79a8419cce5bc3e3a48a07c4ff9",
+      "npz_sha256": "7600d54bd27e910592d795b6d13a79966ec098cf5b78be802a098b5977c86b3c",
+      "frame_count": 193,
+      "overlay_mask_fraction_mean": 0.45649692357512955,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.3942851631084412,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.058527995526182236,
+            "temporally_reversed_actions": 0.17186624909475054,
+            "circularly_shifted_actions": -0.22132320644966996,
+            "within_session_swapped_policy_actions": 0.12399544518378974
+          },
+          "strongest_placebo_correlation": 0.17186624909475054,
+          "excess_over_strongest_placebo": 0.22241891401369066,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.3888433197331497,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.05102615141262509,
+            "temporally_reversed_actions": 0.18514422113699833,
+            "circularly_shifted_actions": -0.21552457139114795,
+            "within_session_swapped_policy_actions": 0.11671929694991688
+          },
+          "strongest_placebo_correlation": 0.18514422113699833,
+          "excess_over_strongest_placebo": 0.20369909859615135,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.19867739218616068,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.031464658211660605,
+            "temporally_reversed_actions": -0.06080820624544786,
+            "circularly_shifted_actions": -0.18690614768861533,
+            "within_session_swapped_policy_actions": 0.2772515611353525
+          },
+          "strongest_placebo_correlation": 0.2772515611353525,
+          "excess_over_strongest_placebo": -0.07857416894919181,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "cb3a637a-bea7-45f2-84dc-50fda57dd912",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "swapped_policy_id": "paligemma_vq_droid",
+      "video_sha256": "eda5681acf74fddd99976f2f5d0b9d9d35bf6e11b925e33511e8675202c728c6",
+      "npz_sha256": "74de17bbc13eea7f2a91aab651ead7a59b39030c96b9f0b231618bb21b70731b",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.45416523437500006,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.5786497036697777,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.024887439561140808,
+            "temporally_reversed_actions": -0.08822807769093222,
+            "circularly_shifted_actions": 0.16584928537248417,
+            "within_session_swapped_policy_actions": 0.3237206501221873
+          },
+          "strongest_placebo_correlation": 0.3237206501221873,
+          "excess_over_strongest_placebo": 0.25492905354759043,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.5823997293543656,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.027618109474163013,
+            "temporally_reversed_actions": -0.07985649419657469,
+            "circularly_shifted_actions": 0.16631630143047568,
+            "within_session_swapped_policy_actions": 0.316386410401863
+          },
+          "strongest_placebo_correlation": 0.316386410401863,
+          "excess_over_strongest_placebo": 0.2660133189525026,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.19930359551610288,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.037714584417793205,
+            "temporally_reversed_actions": -0.09021241683336222,
+            "circularly_shifted_actions": 0.032245270505556686,
+            "within_session_swapped_policy_actions": 0.06125901293154967
+          },
+          "strongest_placebo_correlation": 0.06125901293154967,
+          "excess_over_strongest_placebo": 0.1380445825845532,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "cb3a637a-bea7-45f2-84dc-50fda57dd912",
+      "policy_id": "paligemma_vq_droid",
+      "swapped_policy_id": "pi0_droid",
+      "video_sha256": "3ac0897dbff7e4ebd0e1e9053d0a632802415f57cd487c225bab64c526dd194a",
+      "npz_sha256": "c669957ad1e3e13f2005dbc9f5978a2fa92afaa45401d2ece5515d2303320486",
+      "frame_count": 342,
+      "overlay_mask_fraction_mean": 0.44921281067251456,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.4910813577936289,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.07426612675534101,
+            "temporally_reversed_actions": 0.21461311113914505,
+            "circularly_shifted_actions": -0.056021320667428494,
+            "within_session_swapped_policy_actions": -0.17039641497053262
+          },
+          "strongest_placebo_correlation": 0.21461311113914505,
+          "excess_over_strongest_placebo": 0.27646824665448383,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.5752743448827947,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.07766817333809921,
+            "temporally_reversed_actions": 0.17139549540474797,
+            "circularly_shifted_actions": -0.06474806495681398,
+            "within_session_swapped_policy_actions": -0.12435138370807693
+          },
+          "strongest_placebo_correlation": 0.17139549540474797,
+          "excess_over_strongest_placebo": 0.40387884947804675,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": -0.1121037843622176,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.08684437150858014,
+            "temporally_reversed_actions": 0.3008427947292492,
+            "circularly_shifted_actions": 0.013488112634736184,
+            "within_session_swapped_policy_actions": -0.30578784148280136
+          },
+          "strongest_placebo_correlation": 0.3008427947292492,
+          "excess_over_strongest_placebo": -0.4129465790914668,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "cb3a637a-bea7-45f2-84dc-50fda57dd912",
+      "policy_id": "pi0_droid",
+      "swapped_policy_id": "pi0_fast_droid",
+      "video_sha256": "217ba75d8349d4c161953c7a651ffc6a9c4cb55f32fe767ece5dbf3d1b8491a6",
+      "npz_sha256": "bee5984ec0a07f93326f5a90334f664e7e614f170b71fc8547fcd2177be758e2",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4671158854166667,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.26546758359060335,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.038378298996332175,
+            "temporally_reversed_actions": 0.024309346046790872,
+            "circularly_shifted_actions": -0.03982034923369589,
+            "within_session_swapped_policy_actions": 0.24328205494165553
+          },
+          "strongest_placebo_correlation": 0.24328205494165553,
+          "excess_over_strongest_placebo": 0.022185528648947822,
+          "validity_pass": false
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.2792244258580342,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.08060551147591115,
+            "temporally_reversed_actions": 0.009379083194774067,
+            "circularly_shifted_actions": -0.04755859540422242,
+            "within_session_swapped_policy_actions": 0.240758362148465
+          },
+          "strongest_placebo_correlation": 0.240758362148465,
+          "excess_over_strongest_placebo": 0.038466063709569204,
+          "validity_pass": false
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.0030905040243420787,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.036374601950117345,
+            "temporally_reversed_actions": 0.13111589852155148,
+            "circularly_shifted_actions": 0.05772241452473453,
+            "within_session_swapped_policy_actions": 0.1609107747734667
+          },
+          "strongest_placebo_correlation": 0.1609107747734667,
+          "excess_over_strongest_placebo": -0.15782027074912464,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "cb3a637a-bea7-45f2-84dc-50fda57dd912",
+      "policy_id": "pi0_fast_droid",
+      "swapped_policy_id": "paligemma_binning_droid",
+      "video_sha256": "d8d485ccdf876100e682cedc6009bf4338eb5a6054ef0306eac8a8ccb687d611",
+      "npz_sha256": "87754279aaf8f99e6b32111efbea0daeb0d0c7fbe4e7e7348e01b8f04d775f00",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4572858072916667,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.6205869802112459,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.05281097727430113,
+            "temporally_reversed_actions": -0.25956928324765705,
+            "circularly_shifted_actions": 0.042409024754241166,
+            "within_session_swapped_policy_actions": 0.0
+          },
+          "strongest_placebo_correlation": 0.042409024754241166,
+          "excess_over_strongest_placebo": 0.5781779554570048,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.636145560081669,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.057815755515650845,
+            "temporally_reversed_actions": -0.26009707726311515,
+            "circularly_shifted_actions": 0.039769175625928736,
+            "within_session_swapped_policy_actions": 0.0
+          },
+          "strongest_placebo_correlation": 0.057815755515650845,
+          "excess_over_strongest_placebo": 0.5783298045660181,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.381606539318187,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.03928904403400354,
+            "temporally_reversed_actions": -0.15718608098363343,
+            "circularly_shifted_actions": 0.007564158667988602,
+            "within_session_swapped_policy_actions": 0.0
+          },
+          "strongest_placebo_correlation": 0.007564158667988602,
+          "excess_over_strongest_placebo": 0.3740423806501984,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "d2ebd2f2-a807-4be5-a72f-e7ed624659d4",
+      "policy_id": "paligemma_binning_droid",
+      "swapped_policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "aeb68570cabf383a416935ec27513cd6356395f0f6b1761c22e60ea189901da3",
+      "npz_sha256": "e878202b134641840ae1bddcc93ced5873e064a9dfca3a512a93cd336e109111",
+      "frame_count": 339,
+      "overlay_mask_fraction_mean": 0.5229816556047198,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.5263482851839927,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.029871257412760345,
+            "temporally_reversed_actions": -0.3505054052310296,
+            "circularly_shifted_actions": -0.333163639908461,
+            "within_session_swapped_policy_actions": 0.004701513507367086
+          },
+          "strongest_placebo_correlation": 0.029871257412760345,
+          "excess_over_strongest_placebo": 0.4964770277712323,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.5510059994707782,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.06783800848528031,
+            "temporally_reversed_actions": -0.3827255031427193,
+            "circularly_shifted_actions": -0.35896268231827544,
+            "within_session_swapped_policy_actions": 0.0035895697856294906
+          },
+          "strongest_placebo_correlation": 0.06783800848528031,
+          "excess_over_strongest_placebo": 0.4831679909854979,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.14802111379079522,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.008697798242597763,
+            "temporally_reversed_actions": -0.1132743787002939,
+            "circularly_shifted_actions": -0.02510352647333773,
+            "within_session_swapped_policy_actions": 0.021567772070536968
+          },
+          "strongest_placebo_correlation": 0.021567772070536968,
+          "excess_over_strongest_placebo": 0.12645334172025824,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "d2ebd2f2-a807-4be5-a72f-e7ed624659d4",
+      "policy_id": "paligemma_diffusion_droid",
+      "swapped_policy_id": "paligemma_fast_droid",
+      "video_sha256": "7d4b0d0961e09b9f4acded9b799e326ca73e9fb310120cf91a3c01f93391a9b3",
+      "npz_sha256": "6d731af0b6d4dfdb1945dbb27404482124469d79c08c858b7527de18e2282b00",
+      "frame_count": 182,
+      "overlay_mask_fraction_mean": 0.48384787087912096,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.26748152471945597,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.00010049535710983833,
+            "temporally_reversed_actions": -0.28155389185518287,
+            "circularly_shifted_actions": -0.07395393686193127,
+            "within_session_swapped_policy_actions": 0.18911551659343717
+          },
+          "strongest_placebo_correlation": 0.18911551659343717,
+          "excess_over_strongest_placebo": 0.0783660081260188,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.2751320841391531,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.007919831381346259,
+            "temporally_reversed_actions": -0.27716972503791126,
+            "circularly_shifted_actions": -0.07612090566077905,
+            "within_session_swapped_policy_actions": 0.19236767733597482
+          },
+          "strongest_placebo_correlation": 0.19236767733597482,
+          "excess_over_strongest_placebo": 0.08276440680317826,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.14552100522731692,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.02000148511329708,
+            "temporally_reversed_actions": -0.22872767817678155,
+            "circularly_shifted_actions": -0.09756232857179993,
+            "within_session_swapped_policy_actions": 0.08404281185144342
+          },
+          "strongest_placebo_correlation": 0.08404281185144342,
+          "excess_over_strongest_placebo": 0.0614781933758735,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "d2ebd2f2-a807-4be5-a72f-e7ed624659d4",
+      "policy_id": "paligemma_fast_droid",
+      "swapped_policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "f5ac51b5e8ca2e7bc7b78c4d501ee8bb28378e0bd3eb93c1ccd78133718fd932",
+      "npz_sha256": "298b0a6ca0130658eb866a45773fdfaf561e551f09e359925daedfca4db7568f",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4887434895833333,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.5259791039696227,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.037791007023866126,
+            "temporally_reversed_actions": -0.1633395725617956,
+            "circularly_shifted_actions": 0.21788238894327527,
+            "within_session_swapped_policy_actions": 0.16052269924596144
+          },
+          "strongest_placebo_correlation": 0.21788238894327527,
+          "excess_over_strongest_placebo": 0.3080967150263474,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.5537991272675069,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.011352549704219325,
+            "temporally_reversed_actions": -0.14593366094118523,
+            "circularly_shifted_actions": 0.20208132404176354,
+            "within_session_swapped_policy_actions": 0.16415136729094798
+          },
+          "strongest_placebo_correlation": 0.20208132404176354,
+          "excess_over_strongest_placebo": 0.35171780322574336,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.20341875049845895,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.06038501154220252,
+            "temporally_reversed_actions": -0.21610892310840646,
+            "circularly_shifted_actions": 0.2465898042749937,
+            "within_session_swapped_policy_actions": 0.06858063881501511
+          },
+          "strongest_placebo_correlation": 0.2465898042749937,
+          "excess_over_strongest_placebo": -0.04317105377653474,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "d2ebd2f2-a807-4be5-a72f-e7ed624659d4",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "swapped_policy_id": "paligemma_vq_droid",
+      "video_sha256": "cde98d85073af9cebf8850bac2c847164294193612b48b17064397b64244af21",
+      "npz_sha256": "e35411478550b976100806f879e2d23b991749626884be394f151adbda54b3ea",
+      "frame_count": 265,
+      "overlay_mask_fraction_mean": 0.5106623427672955,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.4705509141474435,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.009111566010375738,
+            "temporally_reversed_actions": 0.006355062240373245,
+            "circularly_shifted_actions": 0.17209945195996557,
+            "within_session_swapped_policy_actions": -0.06348321430675956
+          },
+          "strongest_placebo_correlation": 0.17209945195996557,
+          "excess_over_strongest_placebo": 0.2984514621874779,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.46515273187445116,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.03974458944051938,
+            "temporally_reversed_actions": 0.01364197873425334,
+            "circularly_shifted_actions": 0.17818306018242872,
+            "within_session_swapped_policy_actions": -0.060666273588421346
+          },
+          "strongest_placebo_correlation": 0.17818306018242872,
+          "excess_over_strongest_placebo": 0.2869696716920225,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.15695525436417895,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.00448638742589022,
+            "temporally_reversed_actions": -0.00636782727813991,
+            "circularly_shifted_actions": 0.006635368373021166,
+            "within_session_swapped_policy_actions": -0.1844388750749086
+          },
+          "strongest_placebo_correlation": 0.006635368373021166,
+          "excess_over_strongest_placebo": 0.15031988599115778,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "d2ebd2f2-a807-4be5-a72f-e7ed624659d4",
+      "policy_id": "paligemma_vq_droid",
+      "swapped_policy_id": "pi0_droid",
+      "video_sha256": "4f85e47093b11ddaf057b6f001139c2549813ee2297cae0fa1642f92190ee973",
+      "npz_sha256": "6237b78ba1ab31669c2be621ff42f427b328d56e0ad777b7e848086f95965157",
+      "frame_count": 193,
+      "overlay_mask_fraction_mean": 0.4679638924870466,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.3802561847726173,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.04362294797424241,
+            "temporally_reversed_actions": -0.05429022769558042,
+            "circularly_shifted_actions": -0.22434623079534702,
+            "within_session_swapped_policy_actions": -0.044923424298773426
+          },
+          "strongest_placebo_correlation": 0.0,
+          "excess_over_strongest_placebo": 0.3802561847726173,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.39749292289680477,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.04508202764914729,
+            "temporally_reversed_actions": -0.05051575758699746,
+            "circularly_shifted_actions": -0.2435010197211467,
+            "within_session_swapped_policy_actions": -0.03790099355994929
+          },
+          "strongest_placebo_correlation": 0.04508202764914729,
+          "excess_over_strongest_placebo": 0.35241089524765745,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.1593518671937186,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.10914261550346165,
+            "temporally_reversed_actions": 0.042380069094518635,
+            "circularly_shifted_actions": -0.08475399199548558,
+            "within_session_swapped_policy_actions": -0.07285681168911994
+          },
+          "strongest_placebo_correlation": 0.042380069094518635,
+          "excess_over_strongest_placebo": 0.11697179809919997,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "d2ebd2f2-a807-4be5-a72f-e7ed624659d4",
+      "policy_id": "pi0_droid",
+      "swapped_policy_id": "pi0_fast_droid",
+      "video_sha256": "4954776dd5a0f949772f79d864f709f8df447607ce00c73b3d39aa5fe1a3e67f",
+      "npz_sha256": "be3a16fe190ee157b2c31eae7079914cd55bb49b11119dc93d2a7d5154393037",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.5119807291666666,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.4140640084862961,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.014198144955495656,
+            "temporally_reversed_actions": 0.23128768171418543,
+            "circularly_shifted_actions": -0.06820647486800081,
+            "within_session_swapped_policy_actions": 0.06867629604327559
+          },
+          "strongest_placebo_correlation": 0.23128768171418543,
+          "excess_over_strongest_placebo": 0.18277632677211067,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.41454553249511594,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.010575255094737106,
+            "temporally_reversed_actions": 0.22537268358558474,
+            "circularly_shifted_actions": -0.06586191298557119,
+            "within_session_swapped_policy_actions": 0.07282484841465592
+          },
+          "strongest_placebo_correlation": 0.22537268358558474,
+          "excess_over_strongest_placebo": 0.1891728489095312,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.21043708970820282,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.05986885615043589,
+            "temporally_reversed_actions": 0.17515372301698698,
+            "circularly_shifted_actions": -0.030206189030723654,
+            "within_session_swapped_policy_actions": -0.09682572545979817
+          },
+          "strongest_placebo_correlation": 0.17515372301698698,
+          "excess_over_strongest_placebo": 0.035283366691215845,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "d2ebd2f2-a807-4be5-a72f-e7ed624659d4",
+      "policy_id": "pi0_fast_droid",
+      "swapped_policy_id": "paligemma_binning_droid",
+      "video_sha256": "6c217a21ba98c461d8d53cf97e6765aa122dccbb03c5138136e44563487d4c7b",
+      "npz_sha256": "a32e4cbaf3df2444fde17dceb7dafb5fdd17be87d509cf4aa710de41acd9fe60",
+      "frame_count": 169,
+      "overlay_mask_fraction_mean": 0.5101217332347141,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.40925634100856023,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.06817612337289171,
+            "temporally_reversed_actions": 0.1183517220677165,
+            "circularly_shifted_actions": -0.26723606811734885,
+            "within_session_swapped_policy_actions": 0.17680244435861928
+          },
+          "strongest_placebo_correlation": 0.17680244435861928,
+          "excess_over_strongest_placebo": 0.23245389664994096,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.44225974267313356,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.06346863278217163,
+            "temporally_reversed_actions": 0.10273236499380821,
+            "circularly_shifted_actions": -0.23506462601005004,
+            "within_session_swapped_policy_actions": 0.19085615056706626
+          },
+          "strongest_placebo_correlation": 0.19085615056706626,
+          "excess_over_strongest_placebo": 0.25140359210606733,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": -0.023185251942975,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.029007332932597586,
+            "temporally_reversed_actions": 0.2024603916381822,
+            "circularly_shifted_actions": 0.11284432142290182,
+            "within_session_swapped_policy_actions": -0.300055660128014
+          },
+          "strongest_placebo_correlation": 0.2024603916381822,
+          "excess_over_strongest_placebo": -0.22564564358115718,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "dd029360-b954-4bfd-b154-401fb9f4d592",
+      "policy_id": "paligemma_binning_droid",
+      "swapped_policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "41b9da8419dcebd86e5f967ad8a6cfd3c8c324d38c3d5f4ffbbb2f5377949d0e",
+      "npz_sha256": "9e0041bf81406a32298976fa0242471c84edbd7df4aa5bf177f0555c94c975fe",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4424391927083334,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.5085754729562242,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.02078116895075327,
+            "temporally_reversed_actions": -0.13865142163622451,
+            "circularly_shifted_actions": -0.004582969141530523,
+            "within_session_swapped_policy_actions": 0.3818165638593214
+          },
+          "strongest_placebo_correlation": 0.3818165638593214,
+          "excess_over_strongest_placebo": 0.1267589090969028,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.5090274685258067,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.011612516605437143,
+            "temporally_reversed_actions": -0.1401926197388086,
+            "circularly_shifted_actions": -0.00458644573833434,
+            "within_session_swapped_policy_actions": 0.3728717801226393
+          },
+          "strongest_placebo_correlation": 0.3728717801226393,
+          "excess_over_strongest_placebo": 0.13615568840316744,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.21647084084853618,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.07322406454086687,
+            "temporally_reversed_actions": -0.029918199374960073,
+            "circularly_shifted_actions": 0.0796034158570124,
+            "within_session_swapped_policy_actions": 0.3857804842166595
+          },
+          "strongest_placebo_correlation": 0.3857804842166595,
+          "excess_over_strongest_placebo": -0.16930964336812332,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "dd029360-b954-4bfd-b154-401fb9f4d592",
+      "policy_id": "paligemma_diffusion_droid",
+      "swapped_policy_id": "paligemma_fast_droid",
+      "video_sha256": "668c86aa32a622d787f2c9eaf547ddda7d889ae0a125825981e964a4be9f63ce",
+      "npz_sha256": "88005b02b77ce27572de11ae518c283efbe517a698901cbf9ba51fbda67ff87b",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.47840000000000005,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.5768406910146278,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.025365151686506746,
+            "temporally_reversed_actions": -0.2535892956258721,
+            "circularly_shifted_actions": -0.016211100239622796,
+            "within_session_swapped_policy_actions": 0.1193625865940205
+          },
+          "strongest_placebo_correlation": 0.1193625865940205,
+          "excess_over_strongest_placebo": 0.45747810442060727,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.5911453416860951,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.024646767974306844,
+            "temporally_reversed_actions": -0.2421563838145631,
+            "circularly_shifted_actions": -0.027236900519645994,
+            "within_session_swapped_policy_actions": 0.13077472128335632
+          },
+          "strongest_placebo_correlation": 0.13077472128335632,
+          "excess_over_strongest_placebo": 0.4603706204027388,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.09829918165689099,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.00941324891094228,
+            "temporally_reversed_actions": -0.2696537878897547,
+            "circularly_shifted_actions": 0.13827900415292654,
+            "within_session_swapped_policy_actions": -0.03463720052676464
+          },
+          "strongest_placebo_correlation": 0.13827900415292654,
+          "excess_over_strongest_placebo": -0.03997982249603556,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "dd029360-b954-4bfd-b154-401fb9f4d592",
+      "policy_id": "paligemma_fast_droid",
+      "swapped_policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "aa52f2269366d3b26a8ae47b592ec400525815f1c67d07bce1e214955fe20c4f",
+      "npz_sha256": "122c408bed1670421283f03c20bcd3e7f73ffc5741b09b5c484ecf99f4ab7916",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4769549479166666,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.173672461667952,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.025933816290119666,
+            "temporally_reversed_actions": 0.14977985310582695,
+            "circularly_shifted_actions": -0.13265142652581777,
+            "within_session_swapped_policy_actions": 0.0400746371062582
+          },
+          "strongest_placebo_correlation": 0.14977985310582695,
+          "excess_over_strongest_placebo": 0.02389260856212505,
+          "validity_pass": false
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.2603692104058696,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.03624412890496882,
+            "temporally_reversed_actions": 0.1678445661945838,
+            "circularly_shifted_actions": -0.14404596966039063,
+            "within_session_swapped_policy_actions": 0.0718678592539046
+          },
+          "strongest_placebo_correlation": 0.1678445661945838,
+          "excess_over_strongest_placebo": 0.09252464421128578,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": -0.023299184905341146,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.0030048658218846456,
+            "temporally_reversed_actions": 0.09467697553304551,
+            "circularly_shifted_actions": -0.060376741362941445,
+            "within_session_swapped_policy_actions": -0.028793877263341313
+          },
+          "strongest_placebo_correlation": 0.09467697553304551,
+          "excess_over_strongest_placebo": -0.11797616043838666,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "dd029360-b954-4bfd-b154-401fb9f4d592",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "swapped_policy_id": "paligemma_vq_droid",
+      "video_sha256": "e7af33d6e2e7e3155f506389427da248f1d7d6e068d0d775397f87b45c73f0cb",
+      "npz_sha256": "9c137c0b558390f858b8a93e61c2c5cfa8f62b0adfd09352e65191d117f195ef",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4641701822916666,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.6777828680215429,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.0894940823038557,
+            "temporally_reversed_actions": -0.11448884264112126,
+            "circularly_shifted_actions": -0.15578742466067744,
+            "within_session_swapped_policy_actions": 0.40727397961617023
+          },
+          "strongest_placebo_correlation": 0.40727397961617023,
+          "excess_over_strongest_placebo": 0.2705088884053726,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.6809442560775104,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.04472447085410801,
+            "temporally_reversed_actions": -0.1090260048926858,
+            "circularly_shifted_actions": -0.1584108342156313,
+            "within_session_swapped_policy_actions": 0.4159058334550961
+          },
+          "strongest_placebo_correlation": 0.4159058334550961,
+          "excess_over_strongest_placebo": 0.26503842262241434,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.26610367328410073,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.05856123450390316,
+            "temporally_reversed_actions": -0.11897165834708379,
+            "circularly_shifted_actions": -0.0419992050095636,
+            "within_session_swapped_policy_actions": 0.07290998524685748
+          },
+          "strongest_placebo_correlation": 0.07290998524685748,
+          "excess_over_strongest_placebo": 0.19319368803724324,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "dd029360-b954-4bfd-b154-401fb9f4d592",
+      "policy_id": "paligemma_vq_droid",
+      "swapped_policy_id": "pi0_droid",
+      "video_sha256": "abf7ae9d429f570fd31f0794d3430a9b274ab871c665abe6ada7118ab8473e76",
+      "npz_sha256": "91f53c79ec59e9412f85250a789097544598d688a4c75b1225ff80abab9e1af9",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.47043932291666674,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.7290199768006808,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.06199953396669859,
+            "temporally_reversed_actions": -0.13690709035811197,
+            "circularly_shifted_actions": -0.19315448029222482,
+            "within_session_swapped_policy_actions": 0.11453640840788616
+          },
+          "strongest_placebo_correlation": 0.11453640840788616,
+          "excess_over_strongest_placebo": 0.6144835683927946,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.7403224911570768,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.006019014566987629,
+            "temporally_reversed_actions": -0.14689692470203197,
+            "circularly_shifted_actions": -0.19673577803108858,
+            "within_session_swapped_policy_actions": 0.09918132861432412
+          },
+          "strongest_placebo_correlation": 0.09918132861432412,
+          "excess_over_strongest_placebo": 0.6411411625427527,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.35639806614136704,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.024813089318962957,
+            "temporally_reversed_actions": -0.0309260049144948,
+            "circularly_shifted_actions": -0.09972566357427647,
+            "within_session_swapped_policy_actions": 0.13910077440380958
+          },
+          "strongest_placebo_correlation": 0.13910077440380958,
+          "excess_over_strongest_placebo": 0.21729729173755746,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "dd029360-b954-4bfd-b154-401fb9f4d592",
+      "policy_id": "pi0_droid",
+      "swapped_policy_id": "pi0_fast_droid",
+      "video_sha256": "44b14ba226a0ba74cf087c70a4f5983fbc8cb8a23563477beb16f4e3e485dfaa",
+      "npz_sha256": "9755a7620a846929f9b08c14c3ab2a076390dda5f67da256a89dc8ba99eaa3a6",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4861251302083333,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.6455579928393772,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.028445496220488354,
+            "temporally_reversed_actions": 0.10655332780445151,
+            "circularly_shifted_actions": -0.29233044531349417,
+            "within_session_swapped_policy_actions": 0.1974090790760826
+          },
+          "strongest_placebo_correlation": 0.1974090790760826,
+          "excess_over_strongest_placebo": 0.4481489137632946,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.6598961159471207,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.016994185146469172,
+            "temporally_reversed_actions": 0.09715001590998151,
+            "circularly_shifted_actions": -0.2962475910841235,
+            "within_session_swapped_policy_actions": 0.18965925331764566
+          },
+          "strongest_placebo_correlation": 0.18965925331764566,
+          "excess_over_strongest_placebo": 0.47023686262947506,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.3082756930067286,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.06785211291793249,
+            "temporally_reversed_actions": 0.23686007065037146,
+            "circularly_shifted_actions": -0.20105488004875002,
+            "within_session_swapped_policy_actions": 0.22991861140917183
+          },
+          "strongest_placebo_correlation": 0.23686007065037146,
+          "excess_over_strongest_placebo": 0.07141562235635712,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "dd029360-b954-4bfd-b154-401fb9f4d592",
+      "policy_id": "pi0_fast_droid",
+      "swapped_policy_id": "paligemma_binning_droid",
+      "video_sha256": "dc671aedad484145235db26b0f29d8585d38870014e67e421e1e794e2b1d0825",
+      "npz_sha256": "f7ac7d45c21229ba68bd3a89ab0794e0c41c1a226a1cf24ce4394c258a4803f2",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.48238268229166664,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.6473046441443665,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.07211719976536228,
+            "temporally_reversed_actions": -0.17137753023782928,
+            "circularly_shifted_actions": -0.17868256637495747,
+            "within_session_swapped_policy_actions": 0.3496965518120111
+          },
+          "strongest_placebo_correlation": 0.3496965518120111,
+          "excess_over_strongest_placebo": 0.2976080923323554,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.6562806983554103,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.007292154284070083,
+            "temporally_reversed_actions": -0.1749509854239989,
+            "circularly_shifted_actions": -0.18204340413184464,
+            "within_session_swapped_policy_actions": 0.34085624225814637
+          },
+          "strongest_placebo_correlation": 0.34085624225814637,
+          "excess_over_strongest_placebo": 0.3154244560972639,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.2997293573323858,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.08597047924635093,
+            "temporally_reversed_actions": -0.02376458363836816,
+            "circularly_shifted_actions": -0.03804866147627038,
+            "within_session_swapped_policy_actions": 0.27705267713046555
+          },
+          "strongest_placebo_correlation": 0.27705267713046555,
+          "excess_over_strongest_placebo": 0.022676680201920263,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "ea52540c-3f2d-45ff-80c1-ac44cdd4d054",
+      "policy_id": "paligemma_binning_droid",
+      "swapped_policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "c5903d6d6ad1fd44c2625ea7d9bf20da3118860d9b7859e3fb2d7bb5e996b77b",
+      "npz_sha256": "7145fc59f908412b3569bf9eb7648f72cef0ace769abf9132daee91badfcf133",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4604182291666667,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.0,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.0,
+            "temporally_reversed_actions": 0.0,
+            "circularly_shifted_actions": 0.0,
+            "within_session_swapped_policy_actions": 0.3154527143940318
+          },
+          "strongest_placebo_correlation": 0.3154527143940318,
+          "excess_over_strongest_placebo": -0.3154527143940318,
+          "validity_pass": false
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.0,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.0,
+            "temporally_reversed_actions": 0.0,
+            "circularly_shifted_actions": 0.0,
+            "within_session_swapped_policy_actions": 0.31982301153295584
+          },
+          "strongest_placebo_correlation": 0.31982301153295584,
+          "excess_over_strongest_placebo": -0.31982301153295584,
+          "validity_pass": false
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.0,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.0,
+            "temporally_reversed_actions": 0.0,
+            "circularly_shifted_actions": 0.0,
+            "within_session_swapped_policy_actions": 0.15198274255090236
+          },
+          "strongest_placebo_correlation": 0.15198274255090236,
+          "excess_over_strongest_placebo": -0.15198274255090236,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "ea52540c-3f2d-45ff-80c1-ac44cdd4d054",
+      "policy_id": "paligemma_diffusion_droid",
+      "swapped_policy_id": "paligemma_fast_droid",
+      "video_sha256": "61f3c9a1e6cbcda2fa7097addcd179a1f896c1424a6cb3fb32545659bb82db7e",
+      "npz_sha256": "9305310de8fdf34a95afc6308211f70a177d06bd3a1130f7922383650e0de32c",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.45446497395833335,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.7009933937112691,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.030442468072882253,
+            "temporally_reversed_actions": 0.10958729901703974,
+            "circularly_shifted_actions": -0.2783269024361738,
+            "within_session_swapped_policy_actions": -0.19469738206083412
+          },
+          "strongest_placebo_correlation": 0.10958729901703974,
+          "excess_over_strongest_placebo": 0.5914060946942293,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.7106126889628611,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.01621223486583981,
+            "temporally_reversed_actions": 0.10746880644307182,
+            "circularly_shifted_actions": -0.2837268647228874,
+            "within_session_swapped_policy_actions": -0.18139728311066078
+          },
+          "strongest_placebo_correlation": 0.10746880644307182,
+          "excess_over_strongest_placebo": 0.6031438825197893,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.4123106029870166,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.09442766846662447,
+            "temporally_reversed_actions": 0.12108275769913714,
+            "circularly_shifted_actions": -0.17029442801193306,
+            "within_session_swapped_policy_actions": -0.24202445638744244
+          },
+          "strongest_placebo_correlation": 0.12108275769913714,
+          "excess_over_strongest_placebo": 0.2912278452878795,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "ea52540c-3f2d-45ff-80c1-ac44cdd4d054",
+      "policy_id": "paligemma_fast_droid",
+      "swapped_policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "2f2b2ac750f8eaba298f3c02aab37e8c1d2af4b03f31155a1eae8450a315621c",
+      "npz_sha256": "c07cbe3477ab0032069f2a939a69d99338515a90bd0ee160ecf1088a5ad89496",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.45562656250000005,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.42787271304012203,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.07929076861465996,
+            "temporally_reversed_actions": 0.08240200236162105,
+            "circularly_shifted_actions": 0.02575449741675424,
+            "within_session_swapped_policy_actions": 0.29421179899546096
+          },
+          "strongest_placebo_correlation": 0.29421179899546096,
+          "excess_over_strongest_placebo": 0.13366091404466107,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.43546047488141326,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.027685906546864755,
+            "temporally_reversed_actions": 0.07646658883548961,
+            "circularly_shifted_actions": 0.022630852881604963,
+            "within_session_swapped_policy_actions": 0.2952527263606164
+          },
+          "strongest_placebo_correlation": 0.2952527263606164,
+          "excess_over_strongest_placebo": 0.14020774852079687,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.09304081463395664,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.040740380709666305,
+            "temporally_reversed_actions": 0.20238596489018829,
+            "circularly_shifted_actions": 0.07737132753958399,
+            "within_session_swapped_policy_actions": 0.16429658810771344
+          },
+          "strongest_placebo_correlation": 0.20238596489018829,
+          "excess_over_strongest_placebo": -0.10934515025623165,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "ea52540c-3f2d-45ff-80c1-ac44cdd4d054",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "swapped_policy_id": "paligemma_vq_droid",
+      "video_sha256": "6a887efe26130d9d750aa10ef6bffe333ac9bd92b058713fd9a3bfb58a48a2c3",
+      "npz_sha256": "9096f7e9c736b00a08ae730363f9cab13ad514249aa419adb940f4663e0eab5c",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.3327850260416667,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.705836165194911,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.04708812397858642,
+            "temporally_reversed_actions": -0.22780037682234758,
+            "circularly_shifted_actions": 0.024763606048734253,
+            "within_session_swapped_policy_actions": 0.12614318198274876
+          },
+          "strongest_placebo_correlation": 0.12614318198274876,
+          "excess_over_strongest_placebo": 0.5796929832121622,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.7266289816595347,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.071930048392203,
+            "temporally_reversed_actions": -0.2354656414398354,
+            "circularly_shifted_actions": -0.0045736221582285954,
+            "within_session_swapped_policy_actions": 0.1381135161862673
+          },
+          "strongest_placebo_correlation": 0.1381135161862673,
+          "excess_over_strongest_placebo": 0.5885154654732674,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.5174534418848541,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.007853028782675516,
+            "temporally_reversed_actions": -0.09165706977245625,
+            "circularly_shifted_actions": 0.04501870581500596,
+            "within_session_swapped_policy_actions": -0.01253654781097349
+          },
+          "strongest_placebo_correlation": 0.04501870581500596,
+          "excess_over_strongest_placebo": 0.47243473606984815,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "ea52540c-3f2d-45ff-80c1-ac44cdd4d054",
+      "policy_id": "paligemma_vq_droid",
+      "swapped_policy_id": "pi0_droid",
+      "video_sha256": "5719cee4c3060a8cfb3ec2e94f0fa976a6e2adac6af69544d78e3006bbd95e03",
+      "npz_sha256": "d282148a62132504547810979271274ce2333caacb3ee1c04167cdb4309e6607",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4533447916666667,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.4392029153053498,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.04747123766760792,
+            "temporally_reversed_actions": 0.07371968856157796,
+            "circularly_shifted_actions": 0.18817952334870386,
+            "within_session_swapped_policy_actions": -0.018871358131391645
+          },
+          "strongest_placebo_correlation": 0.18817952334870386,
+          "excess_over_strongest_placebo": 0.2510233919566459,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.4392165305795789,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.06794749802960483,
+            "temporally_reversed_actions": 0.06910688491799064,
+            "circularly_shifted_actions": 0.20114213306362447,
+            "within_session_swapped_policy_actions": -0.004413896995967563
+          },
+          "strongest_placebo_correlation": 0.20114213306362447,
+          "excess_over_strongest_placebo": 0.2380743975159544,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.20065792308931,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.09551003417409423,
+            "temporally_reversed_actions": 0.13467738663156573,
+            "circularly_shifted_actions": 0.02636449371311509,
+            "within_session_swapped_policy_actions": -0.1260909052262786
+          },
+          "strongest_placebo_correlation": 0.13467738663156573,
+          "excess_over_strongest_placebo": 0.06598053645774427,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "ea52540c-3f2d-45ff-80c1-ac44cdd4d054",
+      "policy_id": "pi0_droid",
+      "swapped_policy_id": "pi0_fast_droid",
+      "video_sha256": "ead5dba0f32cf879ea5a75b3a312da9a474d0f1305ac7ac18b281a3e34fba92a",
+      "npz_sha256": "90af5eabf75d64a2e229f4a1af674adefb17896e98033460c3869b51e5f3aff0",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.45837213541666666,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.45656048094204965,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.005206548291175314,
+            "temporally_reversed_actions": 0.1956282468876288,
+            "circularly_shifted_actions": -0.17209668735142694,
+            "within_session_swapped_policy_actions": -0.29971808230586033
+          },
+          "strongest_placebo_correlation": 0.1956282468876288,
+          "excess_over_strongest_placebo": 0.26093223405442084,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.4606647704001117,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.028706219412070768,
+            "temporally_reversed_actions": 0.19714814400343045,
+            "circularly_shifted_actions": -0.18861245354398662,
+            "within_session_swapped_policy_actions": -0.30529184932733966
+          },
+          "strongest_placebo_correlation": 0.19714814400343045,
+          "excess_over_strongest_placebo": 0.2635166263966813,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.2735754892154865,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.0337257163134604,
+            "temporally_reversed_actions": 0.19627744867363286,
+            "circularly_shifted_actions": -0.023927677485411497,
+            "within_session_swapped_policy_actions": -0.21042457460433242
+          },
+          "strongest_placebo_correlation": 0.19627744867363286,
+          "excess_over_strongest_placebo": 0.07729804054185366,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "ea52540c-3f2d-45ff-80c1-ac44cdd4d054",
+      "policy_id": "pi0_fast_droid",
+      "swapped_policy_id": "paligemma_binning_droid",
+      "video_sha256": "54f8de00ca1e8f8b02953a898e3d450af62e0aff1a2471791ff5a9dc550b0065",
+      "npz_sha256": "b83fd8d58212eee60467c26cf1e51125c46bfb9f200efe368c9fcac39875b66c",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.44263554687500006,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.49844025113984636,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.08762097477145891,
+            "temporally_reversed_actions": 0.15019475174016383,
+            "circularly_shifted_actions": 0.21352272005974313,
+            "within_session_swapped_policy_actions": 0.0
+          },
+          "strongest_placebo_correlation": 0.21352272005974313,
+          "excess_over_strongest_placebo": 0.2849175310801032,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.5137350893949482,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.007850787684889358,
+            "temporally_reversed_actions": 0.14405715307198033,
+            "circularly_shifted_actions": 0.21133850474529514,
+            "within_session_swapped_policy_actions": 0.0
+          },
+          "strongest_placebo_correlation": 0.21133850474529514,
+          "excess_over_strongest_placebo": 0.302396584649653,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.1613629806944288,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.03545211793908766,
+            "temporally_reversed_actions": 0.1713615884722988,
+            "circularly_shifted_actions": 0.17776386715558973,
+            "within_session_swapped_policy_actions": 0.0
+          },
+          "strongest_placebo_correlation": 0.17776386715558973,
+          "excess_over_strongest_placebo": -0.01640088646116092,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "f6e9020f-8abf-43e7-b6fc-9af024909f0d",
+      "policy_id": "paligemma_binning_droid",
+      "swapped_policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "0678f59de29ddbcbe886b7c0c7899d170fa2765798e3af142b51bad3d5ea208f",
+      "npz_sha256": "265db4af524a046f14427d33fb435d622c0159ea44311e06b2ea68a27b95983b",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.440263671875,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.3428592418323955,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.07219535888894717,
+            "temporally_reversed_actions": -0.06460839010581713,
+            "circularly_shifted_actions": -0.04648950069023038,
+            "within_session_swapped_policy_actions": -0.04004758704306188
+          },
+          "strongest_placebo_correlation": 0.0,
+          "excess_over_strongest_placebo": 0.3428592418323955,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.3397038555395277,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.029747264486994787,
+            "temporally_reversed_actions": -0.07584648964676217,
+            "circularly_shifted_actions": -0.047259308159445006,
+            "within_session_swapped_policy_actions": -0.06420813520368789
+          },
+          "strongest_placebo_correlation": 0.0,
+          "excess_over_strongest_placebo": 0.3397038555395277,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.27100360748487307,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.09082523784813716,
+            "temporally_reversed_actions": -0.010320187666506216,
+            "circularly_shifted_actions": -0.03762851686032439,
+            "within_session_swapped_policy_actions": 0.05693671656126321
+          },
+          "strongest_placebo_correlation": 0.09082523784813716,
+          "excess_over_strongest_placebo": 0.1801783696367359,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "f6e9020f-8abf-43e7-b6fc-9af024909f0d",
+      "policy_id": "paligemma_diffusion_droid",
+      "swapped_policy_id": "paligemma_fast_droid",
+      "video_sha256": "0efba03f8d21f1aa4a17a8d3f8d418936d67fa6f13d401cfd5c5424c4bd75ee2",
+      "npz_sha256": "61aef993988d8fb6aeb405b5df4be763ac2da8bb7124aebc11021112eb8a524d",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.467887109375,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.5995309066754845,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.020444730073290462,
+            "temporally_reversed_actions": 0.402816050394916,
+            "circularly_shifted_actions": -0.22356186787190663,
+            "within_session_swapped_policy_actions": -0.30445125144772295
+          },
+          "strongest_placebo_correlation": 0.402816050394916,
+          "excess_over_strongest_placebo": 0.19671485628056845,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.613882827341335,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.023140902073769697,
+            "temporally_reversed_actions": 0.4072025967751247,
+            "circularly_shifted_actions": -0.2340257359516367,
+            "within_session_swapped_policy_actions": -0.30437760188652324
+          },
+          "strongest_placebo_correlation": 0.4072025967751247,
+          "excess_over_strongest_placebo": 0.20668023056621032,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.12544685705085315,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.004201882963447691,
+            "temporally_reversed_actions": 0.11166927581388723,
+            "circularly_shifted_actions": -0.03353109820794852,
+            "within_session_swapped_policy_actions": -0.11743531635304315
+          },
+          "strongest_placebo_correlation": 0.11166927581388723,
+          "excess_over_strongest_placebo": 0.013777581236965916,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "f6e9020f-8abf-43e7-b6fc-9af024909f0d",
+      "policy_id": "paligemma_fast_droid",
+      "swapped_policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "3f4d3c4e1f8c64f40428359e6fbf278235ce565ab6bd66f210721d343e49371a",
+      "npz_sha256": "55554304fcaeda7c4cfd1d0544878078fbc1d36ab2c1900f2082b028159b1c7f",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.46509127604166667,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.3661673363897465,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.019555692113523874,
+            "temporally_reversed_actions": -0.10058567112998043,
+            "circularly_shifted_actions": 0.024252819023049224,
+            "within_session_swapped_policy_actions": 0.23068757053683567
+          },
+          "strongest_placebo_correlation": 0.23068757053683567,
+          "excess_over_strongest_placebo": 0.13547976585291086,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.37739693694438864,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.059712499644641266,
+            "temporally_reversed_actions": -0.09746820238225717,
+            "circularly_shifted_actions": 0.027317653957664858,
+            "within_session_swapped_policy_actions": 0.22916077140870245
+          },
+          "strongest_placebo_correlation": 0.22916077140870245,
+          "excess_over_strongest_placebo": 0.1482361655356862,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": -0.047291141467579394,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.036348152926327974,
+            "temporally_reversed_actions": -0.15177564970614388,
+            "circularly_shifted_actions": 0.04101863255061764,
+            "within_session_swapped_policy_actions": 0.23548778505913398
+          },
+          "strongest_placebo_correlation": 0.23548778505913398,
+          "excess_over_strongest_placebo": -0.2827789265267134,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "f6e9020f-8abf-43e7-b6fc-9af024909f0d",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "swapped_policy_id": "paligemma_vq_droid",
+      "video_sha256": "9a3433be453abc4e36cc478d781c1945a6fee3b56af13d17f3493e9b062bd099",
+      "npz_sha256": "e00d4bc2995a7dd2d147e370212a70d3d540942d4eb18bc2fab0383616574550",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.44002825520833333,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.34294416497539393,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.004431503608312716,
+            "temporally_reversed_actions": 0.05131090217731156,
+            "circularly_shifted_actions": -0.08869532827301023,
+            "within_session_swapped_policy_actions": 0.07985125199314136
+          },
+          "strongest_placebo_correlation": 0.07985125199314136,
+          "excess_over_strongest_placebo": 0.26309291298225257,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.35358386919021967,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.0030063738684169197,
+            "temporally_reversed_actions": 0.04443947493263692,
+            "circularly_shifted_actions": -0.09651315907532282,
+            "within_session_swapped_policy_actions": 0.08462060848145869
+          },
+          "strongest_placebo_correlation": 0.08462060848145869,
+          "excess_over_strongest_placebo": 0.268963260708761,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.05374595347040053,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.009945253285918271,
+            "temporally_reversed_actions": 0.0983148977039086,
+            "circularly_shifted_actions": 0.07224365340456976,
+            "within_session_swapped_policy_actions": -0.023830548489001575
+          },
+          "strongest_placebo_correlation": 0.0983148977039086,
+          "excess_over_strongest_placebo": -0.044568944233508066,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "f6e9020f-8abf-43e7-b6fc-9af024909f0d",
+      "policy_id": "paligemma_vq_droid",
+      "swapped_policy_id": "pi0_droid",
+      "video_sha256": "b1448e6df01972de488fcae793971a98fb8aedcbef7b8c7a6500aaa8341db484",
+      "npz_sha256": "d81c2e30637a297419738bfcbbec33391ca804aecc6f03b3aac1ee09eb676da5",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4723889322916666,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.7082916298077189,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.06261670613151248,
+            "temporally_reversed_actions": 0.05184721946802706,
+            "circularly_shifted_actions": -0.022660571211695252,
+            "within_session_swapped_policy_actions": -0.2838705551003061
+          },
+          "strongest_placebo_correlation": 0.06261670613151248,
+          "excess_over_strongest_placebo": 0.6456749236762064,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.7096086628504055,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.07189647940822544,
+            "temporally_reversed_actions": 0.0453462490841771,
+            "circularly_shifted_actions": -0.03437605197924095,
+            "within_session_swapped_policy_actions": -0.28137537779367006
+          },
+          "strongest_placebo_correlation": 0.07189647940822544,
+          "excess_over_strongest_placebo": 0.6377121834421801,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.5087557594879368,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.03240103471933053,
+            "temporally_reversed_actions": 0.057045453390244964,
+            "circularly_shifted_actions": 0.08254655029723337,
+            "within_session_swapped_policy_actions": -0.21606577189528262
+          },
+          "strongest_placebo_correlation": 0.08254655029723337,
+          "excess_over_strongest_placebo": 0.4262092091907035,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "f6e9020f-8abf-43e7-b6fc-9af024909f0d",
+      "policy_id": "pi0_droid",
+      "swapped_policy_id": "pi0_fast_droid",
+      "video_sha256": "cee11ecf2dedbe5c94539707aa8e973b6ccb8ef997efddbd174df170204a00f6",
+      "npz_sha256": "95315e735c0063a6eff28555d5f62e08f96581364415b40c0f6629fecb593778",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4540044270833333,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.5973705878444198,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.0228829301926129,
+            "temporally_reversed_actions": -0.13313584333784872,
+            "circularly_shifted_actions": 0.21112988738196845,
+            "within_session_swapped_policy_actions": -0.031853886533099625
+          },
+          "strongest_placebo_correlation": 0.21112988738196845,
+          "excess_over_strongest_placebo": 0.3862407004624513,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.6150748730033925,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.03425387119442804,
+            "temporally_reversed_actions": -0.13311829461849853,
+            "circularly_shifted_actions": 0.22494457851392222,
+            "within_session_swapped_policy_actions": -0.03631661287091209
+          },
+          "strongest_placebo_correlation": 0.22494457851392222,
+          "excess_over_strongest_placebo": 0.39013029448947023,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.2661404466270739,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.035527787881204684,
+            "temporally_reversed_actions": -0.08456900444540415,
+            "circularly_shifted_actions": 0.11304871258664478,
+            "within_session_swapped_policy_actions": -0.03385464453370562
+          },
+          "strongest_placebo_correlation": 0.11304871258664478,
+          "excess_over_strongest_placebo": 0.15309173404042914,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "f6e9020f-8abf-43e7-b6fc-9af024909f0d",
+      "policy_id": "pi0_fast_droid",
+      "swapped_policy_id": "paligemma_binning_droid",
+      "video_sha256": "8b39cf714ce5bfeb6206dff66051d88508e1b05f0d37fabdd85a3eab6bbff27a",
+      "npz_sha256": "93144864c837d3ae6164d40b5a2c133c9eca37d63133d9658037bf046a0eb5dd",
+      "frame_count": 400,
+      "overlay_mask_fraction_mean": 0.4489920572916667,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.573722695193787,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.020184515928275745,
+            "temporally_reversed_actions": -0.045309940816490306,
+            "circularly_shifted_actions": 0.0860894868326763,
+            "within_session_swapped_policy_actions": 0.05491138537250445
+          },
+          "strongest_placebo_correlation": 0.0860894868326763,
+          "excess_over_strongest_placebo": 0.48763320836111074,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.5790423541374444,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.05673170731774422,
+            "temporally_reversed_actions": -0.052247307726933874,
+            "circularly_shifted_actions": 0.10150417146374079,
+            "within_session_swapped_policy_actions": 0.053830388910488705
+          },
+          "strongest_placebo_correlation": 0.10150417146374079,
+          "excess_over_strongest_placebo": 0.4775381826737036,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.43656214517829334,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.01575123738913688,
+            "temporally_reversed_actions": -0.04102555102222394,
+            "circularly_shifted_actions": 0.06631516816084082,
+            "within_session_swapped_policy_actions": 0.039233045835760275
+          },
+          "strongest_placebo_correlation": 0.06631516816084082,
+          "excess_over_strongest_placebo": 0.3702469770174525,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "f80985e2-fda2-40c8-9a1c-e84e26693ceb",
+      "policy_id": "paligemma_binning_droid",
+      "swapped_policy_id": "paligemma_diffusion_droid",
+      "video_sha256": "882e46aab41c8dc34c12cacc88fd1ce2e2a14f508b1e2f0a670d92862640f29a",
+      "npz_sha256": "ca0d72175c74f65ab02a13abb44ef63da1aec47344d5ab0946c873b2591634a7",
+      "frame_count": 225,
+      "overlay_mask_fraction_mean": 0.43799120370370376,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.532251745825288,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.004796642146044159,
+            "temporally_reversed_actions": -0.25302312297647256,
+            "circularly_shifted_actions": -0.026906134928595338,
+            "within_session_swapped_policy_actions": 0.1750364193326375
+          },
+          "strongest_placebo_correlation": 0.1750364193326375,
+          "excess_over_strongest_placebo": 0.35721532649265053,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.5436468008682876,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.04821480650969928,
+            "temporally_reversed_actions": -0.24768509699889818,
+            "circularly_shifted_actions": -0.04182868898170252,
+            "within_session_swapped_policy_actions": 0.17100865824291608
+          },
+          "strongest_placebo_correlation": 0.17100865824291608,
+          "excess_over_strongest_placebo": 0.37263814262537154,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.19165103362429106,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.06502245038578357,
+            "temporally_reversed_actions": -0.13306431039376285,
+            "circularly_shifted_actions": 0.03972772641650719,
+            "within_session_swapped_policy_actions": 0.08522490996663129
+          },
+          "strongest_placebo_correlation": 0.08522490996663129,
+          "excess_over_strongest_placebo": 0.10642612365765977,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "f80985e2-fda2-40c8-9a1c-e84e26693ceb",
+      "policy_id": "paligemma_diffusion_droid",
+      "swapped_policy_id": "paligemma_fast_droid",
+      "video_sha256": "85fc95304d8b30d18fc3af190bfef90f43735471ce85e4644be474a69b2539f1",
+      "npz_sha256": "5f00a3ecbcf488a3a29880984d88cff219f462b67e252e9adb65b546d8f444bc",
+      "frame_count": 194,
+      "overlay_mask_fraction_mean": 0.4662073131443299,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.45440331990473254,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.07733209739814634,
+            "temporally_reversed_actions": -0.12748872344857937,
+            "circularly_shifted_actions": 0.11701559005553337,
+            "within_session_swapped_policy_actions": -0.054827845227495946
+          },
+          "strongest_placebo_correlation": 0.11701559005553337,
+          "excess_over_strongest_placebo": 0.3373877298491992,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.4557125002608208,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.027018564476218594,
+            "temporally_reversed_actions": -0.12066176881012686,
+            "circularly_shifted_actions": 0.11809405736842399,
+            "within_session_swapped_policy_actions": -0.04934805001750146
+          },
+          "strongest_placebo_correlation": 0.11809405736842399,
+          "excess_over_strongest_placebo": 0.3376184428923968,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.34409214914495195,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.03616652282880767,
+            "temporally_reversed_actions": -0.17035419566795157,
+            "circularly_shifted_actions": 0.06690525346553947,
+            "within_session_swapped_policy_actions": -0.05680913459486565
+          },
+          "strongest_placebo_correlation": 0.06690525346553947,
+          "excess_over_strongest_placebo": 0.27718689567941246,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "f80985e2-fda2-40c8-9a1c-e84e26693ceb",
+      "policy_id": "paligemma_fast_droid",
+      "swapped_policy_id": "paligemma_fast_specialist_droid",
+      "video_sha256": "7d3b1484ee20a31be7704afed9c5e2025ba93b78038fed7df38d4a81fbff89dc",
+      "npz_sha256": "b364ab31c8049a69fa312dbbaceef3f8f75e14992420f4be81b50ee1b759e563",
+      "frame_count": 201,
+      "overlay_mask_fraction_mean": 0.46553093905472637,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.4690521729035201,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.03683315271502469,
+            "temporally_reversed_actions": 0.2607498310426438,
+            "circularly_shifted_actions": -0.3957911459097966,
+            "within_session_swapped_policy_actions": 0.41408226075788546
+          },
+          "strongest_placebo_correlation": 0.41408226075788546,
+          "excess_over_strongest_placebo": 0.054969912145634625,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.47305109453036004,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.04902296597617187,
+            "temporally_reversed_actions": 0.26128031300991905,
+            "circularly_shifted_actions": -0.39311293441034567,
+            "within_session_swapped_policy_actions": 0.41663505126214007
+          },
+          "strongest_placebo_correlation": 0.41663505126214007,
+          "excess_over_strongest_placebo": 0.05641604326821997,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.12837359850024754,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.027258423783129468,
+            "temporally_reversed_actions": 0.2671019649318855,
+            "circularly_shifted_actions": -0.17793131368618906,
+            "within_session_swapped_policy_actions": 0.2262118775424928
+          },
+          "strongest_placebo_correlation": 0.2671019649318855,
+          "excess_over_strongest_placebo": -0.13872836643163794,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "f80985e2-fda2-40c8-9a1c-e84e26693ceb",
+      "policy_id": "paligemma_fast_specialist_droid",
+      "swapped_policy_id": "paligemma_vq_droid",
+      "video_sha256": "86d6ff5596c85562f992117914c5b8f14a7082a8e57853cefa99894b55d40fc0",
+      "npz_sha256": "f99569fe24d178193b1b79538f9ffd079328b988a68873d75ac6e8ce26d8ce4f",
+      "frame_count": 112,
+      "overlay_mask_fraction_mean": 0.46659412202380957,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.23336802436326304,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.14355491624921934,
+            "temporally_reversed_actions": -0.20186208986925414,
+            "circularly_shifted_actions": 0.15387155456868015,
+            "within_session_swapped_policy_actions": 0.30602911959072626
+          },
+          "strongest_placebo_correlation": 0.30602911959072626,
+          "excess_over_strongest_placebo": -0.07266109522746322,
+          "validity_pass": false
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.2421637024333875,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.036300115570739484,
+            "temporally_reversed_actions": -0.20206923395354567,
+            "circularly_shifted_actions": 0.14571379912627766,
+            "within_session_swapped_policy_actions": 0.29570471791563235
+          },
+          "strongest_placebo_correlation": 0.29570471791563235,
+          "excess_over_strongest_placebo": -0.05354101548224485,
+          "validity_pass": false
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.030093615902614987,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.003275421339237897,
+            "temporally_reversed_actions": -0.0067712668137054136,
+            "circularly_shifted_actions": 0.11293103239093388,
+            "within_session_swapped_policy_actions": 0.2768334947565311
+          },
+          "strongest_placebo_correlation": 0.2768334947565311,
+          "excess_over_strongest_placebo": -0.24673987885391607,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "f80985e2-fda2-40c8-9a1c-e84e26693ceb",
+      "policy_id": "paligemma_vq_droid",
+      "swapped_policy_id": "pi0_droid",
+      "video_sha256": "86594a30a44d21f151093854d5923d964edce845acab7b710231a73c7dff73de",
+      "npz_sha256": "debe5f99eab403b1d89f21cb57cad10f1d140ce754163e93a980d3d6a98ab4a8",
+      "frame_count": 210,
+      "overlay_mask_fraction_mean": 0.4457450396825397,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.6964167845146745,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.06835164922848103,
+            "temporally_reversed_actions": -0.09814049306566532,
+            "circularly_shifted_actions": -0.09960140836055222,
+            "within_session_swapped_policy_actions": -0.0008113632331589876
+          },
+          "strongest_placebo_correlation": 0.06835164922848103,
+          "excess_over_strongest_placebo": 0.6280651352861935,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.6850337647738571,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.0897245757882676,
+            "temporally_reversed_actions": -0.11034289908146726,
+            "circularly_shifted_actions": -0.09883587279251764,
+            "within_session_swapped_policy_actions": 0.010345756401810959
+          },
+          "strongest_placebo_correlation": 0.010345756401810959,
+          "excess_over_strongest_placebo": 0.6746880083720461,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.41031442850419925,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.020521770527183153,
+            "temporally_reversed_actions": 0.12367106262401792,
+            "circularly_shifted_actions": -0.033834141205711286,
+            "within_session_swapped_policy_actions": -0.10681474377144454
+          },
+          "strongest_placebo_correlation": 0.12367106262401792,
+          "excess_over_strongest_placebo": 0.28664336588018136,
+          "validity_pass": true
+        }
+      }
+    },
+    {
+      "session_id": "f80985e2-fda2-40c8-9a1c-e84e26693ceb",
+      "policy_id": "pi0_droid",
+      "swapped_policy_id": "pi0_fast_droid",
+      "video_sha256": "28b97adf52673e825a9f711ce93a5c3aa0795e6898f008fe10c074b69e23dd85",
+      "npz_sha256": "9fc1aa7fa6ce17423bb3a86303698b7a43e611ad03e9940258e62a802cccbc65",
+      "frame_count": 171,
+      "overlay_mask_fraction_mean": 0.4615695053606238,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.22183521064203512,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.06764361688685094,
+            "temporally_reversed_actions": -0.051466812835280845,
+            "circularly_shifted_actions": 0.057208407445088705,
+            "within_session_swapped_policy_actions": 0.04852168905547444
+          },
+          "strongest_placebo_correlation": 0.057208407445088705,
+          "excess_over_strongest_placebo": 0.16462680319694642,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.23345848912301148,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.1716889002567184,
+            "temporally_reversed_actions": -0.05179654046382337,
+            "circularly_shifted_actions": 0.06181284727942246,
+            "within_session_swapped_policy_actions": 0.05070585386228011
+          },
+          "strongest_placebo_correlation": 0.1716889002567184,
+          "excess_over_strongest_placebo": 0.06176958886629308,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.01562709408484096,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.045298346860340656,
+            "temporally_reversed_actions": -0.035741919934034784,
+            "circularly_shifted_actions": -0.004468488174264001,
+            "within_session_swapped_policy_actions": -0.0051562754539603625
+          },
+          "strongest_placebo_correlation": 0.0,
+          "excess_over_strongest_placebo": 0.01562709408484096,
+          "validity_pass": false
+        }
+      }
+    },
+    {
+      "session_id": "f80985e2-fda2-40c8-9a1c-e84e26693ceb",
+      "policy_id": "pi0_fast_droid",
+      "swapped_policy_id": "paligemma_binning_droid",
+      "video_sha256": "285bed9e091849436632ea4773f3b16e96a9eb7941717fba14603a75325880df",
+      "npz_sha256": "38f718d6f4b3c02200a0b2e11c6aa8096330e9676b725a2d942282f390b9e981",
+      "frame_count": 217,
+      "overlay_mask_fraction_mean": 0.48066004224270353,
+      "channels": {
+        "full_generated": {
+          "original_action_correlation": 0.49032272145302075,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": -0.010160882571898726,
+            "temporally_reversed_actions": -0.29804657076493896,
+            "circularly_shifted_actions": -0.30795225863092474,
+            "within_session_swapped_policy_actions": 0.03594622049190442
+          },
+          "strongest_placebo_correlation": 0.03594622049190442,
+          "excess_over_strongest_placebo": 0.4543765009611163,
+          "validity_pass": true
+        },
+        "overlay_region": {
+          "original_action_correlation": 0.4956954629046333,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.08998250601853786,
+            "temporally_reversed_actions": -0.2856611016623914,
+            "circularly_shifted_actions": -0.3211451971234229,
+            "within_session_swapped_policy_actions": 0.06940418242948773
+          },
+          "strongest_placebo_correlation": 0.08998250601853786,
+          "excess_over_strongest_placebo": 0.40571295688609543,
+          "validity_pass": true
+        },
+        "overlay_masked_residual": {
+          "original_action_correlation": 0.23889528639115065,
+          "placebo_correlations": {
+            "zero_actions": 0.0,
+            "shuffled_action_order": 0.05842567625929324,
+            "temporally_reversed_actions": -0.2922823459032787,
+            "circularly_shifted_actions": -0.04939847233307673,
+            "within_session_swapped_policy_actions": -0.19086206597147726
+          },
+          "strongest_placebo_correlation": 0.05842567625929324,
+          "excess_over_strongest_placebo": 0.18046961013185742,
+          "validity_pass": true
+        }
+      }
+    }
+  ],
+  "clustered_summaries": {
+    "full_generated": {
+      "session_cluster_count": 7,
+      "row_count": 49,
+      "mean_excess_over_strongest_placebo": 0.2858864949612032,
+      "clustered_bootstrap_ci95": [
+        0.2629200823166721,
+        0.31303219830270423
+      ],
+      "one_sided_sign_flip_p_against_margin": 0.008799120087991202,
+      "validity_pass_rate": 0.836734693877551,
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.7346938775510203,
+        0.9387755102040816
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.7346938775510203,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.7096366156608318
+    },
+    "overlay_region": {
+      "session_cluster_count": 7,
+      "row_count": 49,
+      "mean_excess_over_strongest_placebo": 0.29284539896226347,
+      "clustered_bootstrap_ci95": [
+        0.2691406311651012,
+        0.3201449551694845
+      ],
+      "one_sided_sign_flip_p_against_margin": 9.999000099990002e-05,
+      "validity_pass_rate": 0.8775510204081632,
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.7959183673469388,
+        0.9591836734693878
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.7959183673469388,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.7575560270624349
+    },
+    "overlay_masked_residual": {
+      "session_cluster_count": 7,
+      "row_count": 49,
+      "mean_excess_over_strongest_placebo": 0.05963609836954247,
+      "clustered_bootstrap_ci95": [
+        0.026422547490018707,
+        0.09077721588296064
+      ],
+      "one_sided_sign_flip_p_against_margin": 0.28687131286871315,
+      "validity_pass_rate": 0.5102040816326531,
+      "validity_pass_rate_clustered_bootstrap_ci95": [
+        0.4285714285714285,
+        0.5714285714285713
+      ],
+      "validity_pass_rate_clustered_bootstrap_lower95": 0.4285714285714285,
+      "validity_pass_rate_wilson_lower95_unclustered_descriptive": 0.3746756374046804
+    }
+  },
+  "gates": {
+    "residual_excess_lower95_above_margin": false,
+    "residual_validity_pass_rate_lower95": false,
+    "conditioning_annotation_not_sole_signal": false
+  },
+  "all_action_following_validity_gates_passed": false,
+  "blockers": [],
+  "benchmark_labels_seen": false,
+  "task_success_scored": false,
+  "third_party_physical_video_pixels_decoded": false,
+  "physical_action_trace_used_as_independent_condition_reference": true,
+  "claim_boundary": "Label-free temporal-alignment falsification diagnostic; not counterfactual WAM regeneration, 3D action following, task success, ranking fidelity, or physical proof.",
+  "report_sha256": "f145df247f567df763c42f26042ce9341c5102a2caee51b4d5172c52257613f2"
+}

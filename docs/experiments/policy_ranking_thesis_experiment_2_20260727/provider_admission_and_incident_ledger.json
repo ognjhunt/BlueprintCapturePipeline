@@ -1,0 +1,89 @@
+{
+  "schema_version": "policy_ranking_experiment_2_provider_ledger.v1",
+  "provider": "openai",
+  "model_snapshot": "gpt-5-2025-08-07",
+  "model_discovery": {
+    "endpoint_status": 200,
+    "exact_model_present": true,
+    "request_id": "5b8360c6-e51a-4314-8fe1-e3676e14621c",
+    "project_header_present": false,
+    "organization_header_present": false,
+    "project_environment_override_present": false,
+    "organization_environment_override_present": false,
+    "project_verification": "API key scope accepted the exact model, but the models endpoint and environment exposed no project identifier. No project identity is invented."
+  },
+  "available_rate_limit_evidence": {
+    "models_endpoint_request_limit_header_present": false,
+    "models_endpoint_token_limit_header_present": false,
+    "account_specific_documented_rpm": null,
+    "account_specific_documented_tpm": null,
+    "disposition": "The run used observed canary success, concurrency two, one frozen infrastructure retry, capped backoff, and automatic stop after five consecutive systemic failures."
+  },
+  "canary": {
+    "request_count": 1,
+    "accepted_count": 1,
+    "failed_attempt_count": 0,
+    "elapsed_seconds": 29.611574959009886,
+    "input_tokens": 2698,
+    "output_tokens": 1987,
+    "estimated_cost_usd": 0.0232425,
+    "response_id": "resp_03dd9dfb4a6ba3b5016a675532fb808190b9526b09de20dd54",
+    "evidence_event_sha256": "5b3211886c8b1d7a9f986b724040b0766aba066deba576c7acf094a6486a1a6d"
+  },
+  "initial_bulk_admission": {
+    "request_count": 686,
+    "projected_cost_usd": 22.0,
+    "hard_stop_usd": 29.0,
+    "observed_canary_rate_projection_usd": 15.944355,
+    "max_workers": 2,
+    "infrastructure_retries_per_request": 1,
+    "systemic_rejection_threshold": 5,
+    "bounded_backoff_seconds_max": 60.0,
+    "accepted_first_valid_only": true,
+    "completed_request_ids_never_resampled": true
+  },
+  "user_cap_amendment": {
+    "authorized_at": "2026-07-27T13:14:12.217231Z",
+    "all_model_api_providers_total_usd_max": 10.0,
+    "matrix_stopped_immediately": true,
+    "amendment_file": "spend_cap_amendment_001.json"
+  },
+  "historical_incidents_preserved": [
+    {
+      "experiment": "policy_ranking_thesis_20260726",
+      "incident": "mutable checkpoint was overwritten by a later no-key preflight after 121 accepted held-out rows"
+    },
+    {
+      "experiment": "policy_ranking_thesis_20260726",
+      "incident": "exact retry returned generic RateLimitError for all 686 requests; this was not described as proven daily-quota exhaustion"
+    }
+  ],
+  "experiment_2_live_incidents": [
+    {
+      "incident": "broad metadata search displayed policy names and free-text action feedback after execution began",
+      "disposition": "preserved in label_access_incident_001.json"
+    },
+    {
+      "incident": "one accepted canary prediction was printed before matrix closure",
+      "disposition": "preserved in label_access_incident_001.json"
+    },
+    {
+      "incident": "two provider-call claims were unresolved when the process was terminated for the user cap",
+      "disposition": "USD 0.18 conservative reserve charged; no response recovered or scored"
+    }
+  ],
+  "final_bulk_result": {
+    "status": "irrecoverably_closed_by_user_spend_cap",
+    "accepted_request_count": 43,
+    "requested_request_count": 686,
+    "failed_attempt_count": 0,
+    "unresolved_inflight_claim_count": 2,
+    "input_tokens": 70112,
+    "output_tokens": 121309,
+    "recorded_estimated_cost_usd": 1.30073,
+    "conservative_total_cost_upper_bound_usd": 1.48073,
+    "labels_unsealed": false,
+    "heldout_metric_available": false
+  },
+  "claim_boundary": "Canary and provider transport evidence; not ranking fidelity, causal action following, captured-site transfer, economics, or physical performance."
+}

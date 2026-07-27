@@ -1,0 +1,79 @@
+{
+  "schema_version": "policy_ranking_experiment_2_benchmark_component.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "component": "frozen_benchmark_calibration",
+  "component_verdict": "not_supported",
+  "status": "powered_causal_gate_failed_ranking_replication_closed_incomplete",
+  "historical_frozen_calibration": {
+    "source_experiment": "policy_ranking_thesis_20260726",
+    "partition": "calibration",
+    "temporal_pairwise_accuracy": 0.672566371681416,
+    "temporal_pairwise_clustered_bootstrap_ci95": [
+      0.5483870967741935,
+      0.7777777777777778
+    ],
+    "endpoint_pairwise_accuracy": 0.6592920353982301,
+    "temporal_minus_endpoint_accuracy": 0.013274336283185887,
+    "required_temporal_minus_endpoint_accuracy": 0.05,
+    "kendall_tau_b_binary_then_partial": 0.3333333333333333,
+    "temporal_top_policy": "pi0_fast_droid",
+    "benchmark_top_policy": "pi0_fast_droid",
+    "selective_pairwise_accuracy": 1.0,
+    "selective_pairwise_coverage": 0.008849557522123894,
+    "required_selective_pairwise_coverage": 0.25,
+    "action_following_pass_rate": 0.10204081632653061,
+    "required_action_following_pass_rate": 0.8,
+    "registered_gate_set_passed": false,
+    "interpretation": "The point estimate ordered the top policy correctly, but its pairwise lower confidence bound was only modestly above chance, it did not beat the endpoint baseline by the registered margin, and useful selective coverage/action following failed."
+  },
+  "experiment_2_heldout_ranking_replication": {
+    "requested_request_count": 686,
+    "accepted_request_count": 43,
+    "completion_fraction": 0.06268221574344023,
+    "matrix_complete": false,
+    "heldout_labels_unsealed": false,
+    "heldout_pairwise_accuracy": null,
+    "heldout_kendall_tau_b": null,
+    "heldout_top_policy": null,
+    "heldout_policy_intervals": null,
+    "heldout_risk_coverage_curve": null,
+    "partial_predictions_scored": false,
+    "reason": "The user reduced the combined model API cap to USD 10 during execution. The run stopped immediately and the exact frozen matrix was closed rather than resumed or silently replaced with another model."
+  },
+  "experiment_2_heldout_causal_conditioning": {
+    "analysis_unit": "49 session clusters and 343 policy rows",
+    "development_power_reestimate_minimum_detectable_excess": 0.031975861614677296,
+    "preregistered_meaningful_margin": 0.05,
+    "powered_for_preregistered_margin": true,
+    "overlay_region_mean_excess": 0.2967031288511536,
+    "overlay_region_clustered_bootstrap_ci95": [
+      0.27114938419517554,
+      0.3235700519135051
+    ],
+    "overlay_masked_residual_mean_excess": 0.03997627399442967,
+    "overlay_masked_residual_clustered_bootstrap_ci95": [
+      0.012196217592608695,
+      0.06788345853542152
+    ],
+    "overlay_masked_residual_one_sided_p_against_margin": 0.7628237176282372,
+    "overlay_masked_residual_validity_pass_rate": 0.4402332361516035,
+    "overlay_masked_residual_validity_clustered_bootstrap_ci95": [
+      0.38775510204081626,
+      0.49854227405247803
+    ],
+    "overlay_masked_residual_validity_clustered_bootstrap_lower95": 0.38775510204081626,
+    "required_validity_pass_rate_lower95": 0.8,
+    "residual_excess_lower95_above_margin": false,
+    "residual_validity_pass_rate_lower95": false,
+    "conditioning_annotation_not_sole_signal": false,
+    "all_registered_action_following_gates_passed": false,
+    "interpretation": "The visible skeleton annotation follows the recorded action, but after masking that annotation the generated scene does not retain the registered useful action-following signal."
+  },
+  "procedural_deviations": [
+    "A broad metadata search displayed policy names and some free-text action feedback after provider execution began.",
+    "One accepted canary prediction was printed before the matrix closed.",
+    "Neither exact outcome fields nor a prediction-outcome join was displayed; inputs, thresholds, and deterministic adjudication remained unchanged."
+  ],
+  "decision_basis": "The frozen overall rule assigns not_supported when a sufficiently powered heldout result fails causal action signal. The heldout causal test was powered and all three registered gates failed. The incomplete ranking matrix is reported as unmeasured and is not used to manufacture a rank-fidelity result.",
+  "claim_boundary": "This component falsifies the registered causal-conditioning requirement for this OSCAR representation and evaluator. It does not prove that all future WAMs, models, or robot tasks must fail."
+}

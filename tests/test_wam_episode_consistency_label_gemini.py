@@ -53,9 +53,11 @@ def test_gemini_wam_episode_consistency_blocks_without_gate_or_key(
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_GENAI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_AI_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY_FILE", raising=False)
-    monkeypatch.delenv("GOOGLE_GENAI_API_KEY_FILE", raising=False)
-    monkeypatch.delenv("GOOGLE_AI_API_KEY_FILE", raising=False)
+    # Override every file path so this no-key test remains hermetic on
+    # developer machines that intentionally provision a default secret file.
+    monkeypatch.setenv("GEMINI_API_KEY_FILE", str(tmp_path / "missing-gemini-key"))
+    monkeypatch.setenv("GOOGLE_GENAI_API_KEY_FILE", str(tmp_path / "missing-google-genai-key"))
+    monkeypatch.setenv("GOOGLE_AI_API_KEY_FILE", str(tmp_path / "missing-google-ai-key"))
 
     result = consistency_labeler.build_gemini_wam_episode_consistency_labels(
         input_path=_request(tmp_path),
@@ -152,13 +154,19 @@ def test_gemini_wam_episode_consistency_uses_sdk_without_writing_secret(
     assert result["rollout_checks"][0]["deployment_readiness_claimed_from_consistency"] is False
     assert result["rollout_checks"][0]["sensor_truth_claimed_from_consistency"] is False
     assert result["rollout_checks"][0]["external_validation_claimed_from_consistency"] is False
-    assert result["claim_boundary"][
-        "forward_inverse_consistency_is_reliability_review_signal_only"
-    ] is True
-    assert result["claim_boundary"][
-        "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking"
-    ] is True
-    assert result["claim_boundary"]["forward_inverse_consistency_is_not_external_validation"] is True
+    assert (
+        result["claim_boundary"]["forward_inverse_consistency_is_reliability_review_signal_only"]
+        is True
+    )
+    assert (
+        result["claim_boundary"][
+            "forward_inverse_consistency_does_not_upgrade_evaluator_bounded_policy_ranking"
+        ]
+        is True
+    )
+    assert (
+        result["claim_boundary"]["forward_inverse_consistency_is_not_external_validation"] is True
+    )
     assert output.is_file()
     serialized = output.read_text(encoding="utf-8")
     assert "secret-gemini-key" not in serialized

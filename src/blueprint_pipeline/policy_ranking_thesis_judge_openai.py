@@ -17,6 +17,7 @@ import math
 import os
 import re
 import time
+import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Mapping, Sequence
@@ -25,6 +26,7 @@ from typing import Any
 
 from .common import write_json
 from .policy_ranking_thesis import JUDGE_RESULT_SCHEMA, canonical_sha256, file_sha256
+from .policy_ranking_evidence import EvidenceStore, InventoryMismatchError, utc_now
 
 
 GATE_ENV = "BLUEPRINT_ALLOW_POLICY_RANKING_THESIS_OPENAI_JUDGE"
@@ -222,11 +224,15 @@ def build_request_inventory(
             blockers.append(f"video_missing:{source.get('session_id')}:{source.get('policy_id')}")
             continue
         if video_path.read_bytes()[:42].startswith(b"version https://git-lfs.github.com"):
-            blockers.append(f"video_not_materialized:{source.get('session_id')}:{source.get('policy_id')}")
+            blockers.append(
+                f"video_not_materialized:{source.get('session_id')}:{source.get('policy_id')}"
+            )
             continue
         actual_sha = file_sha256(video_path)
         if actual_sha != source.get("sha256"):
-            blockers.append(f"video_digest_mismatch:{source.get('session_id')}:{source.get('policy_id')}")
+            blockers.append(
+                f"video_digest_mismatch:{source.get('session_id')}:{source.get('policy_id')}"
+            )
             continue
         for method, frame_count in (
             (protocol["evaluator"]["full_temporal_method"], 32),
@@ -246,7 +252,19 @@ def build_request_inventory(
                     "third_party_physical_pixels_included": False,
                 }
             )
-            rows[-1]["request_id"] = canonical_sha256(rows[-1])
+            request_identity = {
+                "session_id": source["session_id"],
+                "policy_id": source["policy_id"],
+                "task_instruction": source["language_instruction"],
+                "video_sha256": actual_sha,
+                "method": method,
+                "frame_count": frame_count,
+                "evaluator_digest": digest,
+                "benchmark_labels_included": False,
+                "third_party_physical_pixels_included": False,
+            }
+            rows[-1]["deterministic_input_hash"] = canonical_sha256(request_identity)
+            rows[-1]["request_id"] = rows[-1]["deterministic_input_hash"]
     expected = len(sessions) * len(protocol["policies"]) * 2
     if len(rows) != expected:
         blockers.append(f"request_count_expected_{expected}_got_{len(rows)}")
@@ -254,8 +272,7 @@ def build_request_inventory(
     # This is a deliberately conservative pre-call bound, not provider metering.
     # One token per three UTF-8 characters overstates typical English prompt tokenization.
     text_tokens_bound = sum(
-        math.ceil((len(PROMPT) + len(str(row["task_instruction"])) + 512) / 3)
-        for row in rows
+        math.ceil((len(PROMPT) + len(str(row["task_instruction"])) + 512) / 3) for row in rows
     )
     output_tokens_bound = len(rows) * MAX_OUTPUT_TOKENS
     total_cost_bound = (
@@ -303,12 +320,9 @@ def _usage(response: Any) -> dict[str, Any]:
     usage = getattr(response, "usage", None)
     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-    cached = int(
-        getattr(getattr(usage, "input_tokens_details", None), "cached_tokens", 0) or 0
-    )
+    cached = int(getattr(getattr(usage, "input_tokens_details", None), "cached_tokens", 0) or 0)
     conservative_cost = (
-        input_tokens * INPUT_USD_PER_MILLION_TOKENS
-        + output_tokens * OUTPUT_USD_PER_MILLION_TOKENS
+        input_tokens * INPUT_USD_PER_MILLION_TOKENS + output_tokens * OUTPUT_USD_PER_MILLION_TOKENS
     ) / 1_000_000
     return {
         "input_tokens": input_tokens,
@@ -412,9 +426,7 @@ def run_inventory(
                 existing = json.loads(output_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 existing = {}
-            same_inventory = existing.get("inventory_sha256") == inventory.get(
-                "inventory_sha256"
-            )
+            same_inventory = existing.get("inventory_sha256") == inventory.get("inventory_sha256")
             existing_count = len(existing.get("judgments") or [])
             if same_inventory and existing_count > 0:
                 result["existing_checkpoint_preserved"] = True
@@ -491,9 +503,7 @@ def run_inventory(
     }
     blockers.extend(f"retry_exhausted:{request_id}" for request_id in sorted(exhausted_ids))
     remaining_allowance = max(0.0, max_estimated_cost_usd - estimated_cost)
-    admitted_count = min(
-        len(pending), int(remaining_allowance // MAX_ESTIMATED_REQUEST_USD)
-    )
+    admitted_count = min(len(pending), int(remaining_allowance // MAX_ESTIMATED_REQUEST_USD))
     admitted = pending[:admitted_count]
     if admitted_count < len(pending):
         blockers.append("estimated_cost_cap_would_be_exceeded")
@@ -529,16 +539,16 @@ def run_inventory(
         provider_called = True
         uploaded = True
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_score_one, client, request): request for request in admitted}
+            futures = {
+                executor.submit(_score_one, client, request): request for request in admitted
+            }
             for future in as_completed(futures):
                 request = futures[future]
                 try:
                     judgment, _ = future.result()
                     judgments.append(judgment)
                     completed_ids.add(str(judgment["request_id"]))
-                    estimated_cost += float(
-                        judgment["usage"]["estimated_cost_usd_conservative"]
-                    )
+                    estimated_cost += float(judgment["usage"]["estimated_cost_usd_conservative"])
                 except Exception as exc:  # pragma: no cover - provider/runtime behavior
                     if isinstance(exc, JudgeResponseError):
                         failed = {
@@ -550,9 +560,7 @@ def run_inventory(
                         failed_requests.append(failed)
                         attempt_counts[str(request.get("request_id"))] += 1
                         estimated_cost += float(
-                            (failed.get("usage") or {}).get(
-                                "estimated_cost_usd_conservative"
-                            )
+                            (failed.get("usage") or {}).get("estimated_cost_usd_conservative")
                             or 0.0
                         )
                     blockers.append(
@@ -587,6 +595,259 @@ def run_inventory(
     return result
 
 
+def _provider_error_details(exc: Exception) -> dict[str, Any]:
+    response = getattr(exc, "response", None)
+    status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    headers = getattr(response, "headers", None) or getattr(exc, "headers", None) or {}
+    retry_after: float | None = None
+    reset: dict[str, Any] = {}
+    if isinstance(headers, Mapping):
+        for key, value in headers.items():
+            lowered = str(key).lower()
+            if lowered == "retry-after":
+                try:
+                    retry_after = float(value)
+                except (TypeError, ValueError):
+                    reset[lowered] = str(value)[:200]
+            elif "ratelimit" in lowered or lowered.startswith("x-request-id"):
+                reset[lowered] = str(value)[:200]
+    category = type(exc).__name__
+    if status_code:
+        category = f"http_{status_code}:{category}"
+    return {
+        "category": category,
+        "retry_after_seconds": retry_after,
+        "reset_metadata": reset,
+        "response_id": str(getattr(exc, "request_id", "") or ""),
+    }
+
+
+def run_inventory_v2(
+    inventory: Mapping[str, Any],
+    *,
+    evidence_root: str | Path,
+    experiment_id: str,
+    max_requests: int | None = None,
+    max_estimated_cost_usd: float = 2.0,
+    projected_total_cost_usd: float | None = None,
+    max_workers: int = 2,
+    infrastructure_retries_per_request: int = 1,
+    systemic_rejection_threshold: int = 5,
+    sleep_function: Any = time.sleep,
+) -> dict[str, Any]:
+    """Execute an inventory through the immutable Experiment-2 evidence system."""
+
+    if not 1 <= max_workers <= 8:
+        raise ValueError("max_workers_must_be_between_1_and_8")
+    if not 0 <= infrastructure_retries_per_request <= 3:
+        raise ValueError("infrastructure_retries_per_request_must_be_between_0_and_3")
+    inventory_sha = str(inventory.get("inventory_sha256") or canonical_sha256(dict(inventory)))
+    configuration_sha = canonical_sha256(
+        {
+            "inventory_sha256": inventory_sha,
+            "model": MODEL,
+            "prompt_sha256": PROMPT_SHA256,
+            "sampling_contract": SAMPLING_CONTRACT,
+            "max_workers": max_workers,
+            "infrastructure_retries_per_request": infrastructure_retries_per_request,
+        }
+    )
+    try:
+        store = EvidenceStore(
+            evidence_root,
+            experiment_id=experiment_id,
+            inventory_sha256=inventory_sha,
+            configuration_sha256=configuration_sha,
+        )
+    except InventoryMismatchError:
+        return {
+            "schema_version": "policy_ranking_judge_run.v2",
+            "status": "blocked",
+            "blockers": ["evidence_store_identity_mismatch"],
+            "provider_called": False,
+        }
+
+    def blocked(reason: str) -> dict[str, Any]:
+        store.record_preflight_failure(reason, provider="openai")
+        aggregate = store.rebuild()
+        return {
+            "schema_version": "policy_ranking_judge_run.v2",
+            "status": "blocked",
+            "blockers": [reason],
+            "provider_called": aggregate["provider_called"],
+            "accepted_request_count": aggregate["accepted_request_count"],
+            "evidence_root": str(store.root),
+            "aggregate_sha256": aggregate["aggregate_sha256"],
+        }
+
+    if inventory.get("status") == "blocked" or inventory.get("blockers"):
+        return blocked("frozen_inventory_not_ready")
+    if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
+        return blocked(f"missing_env_{GATE_ENV}")
+    key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not key:
+        return blocked("missing_openai_api_key")
+    requests = [dict(row) for row in inventory.get("requests", [])]
+    if max_requests is not None:
+        requests = requests[:max_requests]
+    projected = (
+        float(projected_total_cost_usd)
+        if projected_total_cost_usd is not None
+        else len(requests) * MAX_ESTIMATED_REQUEST_USD
+    )
+    if projected > max_estimated_cost_usd:
+        return blocked("projected_cost_cap_would_be_exceeded")
+
+    from openai import OpenAI  # type: ignore[import-not-found]
+
+    client = OpenAI(api_key=key)
+    stop_event = threading.Event()
+    shared_lock = threading.Lock()
+    consecutive_infrastructure_failures = 0
+
+    def execute(request: Mapping[str, Any]) -> None:
+        nonlocal consecutive_infrastructure_failures
+        request_id = str(request["request_id"])
+        arm_id = str(request.get("method") or request.get("arm_id") or "unknown")
+        for infrastructure_attempt in range(infrastructure_retries_per_request + 1):
+            if stop_event.is_set() or request_id in store.state()["accepted"]:
+                return
+            aggregate = store.rebuild()
+            if (
+                float(aggregate["estimated_cost_usd_recomputed"])
+                + MAX_ESTIMATED_REQUEST_USD * max_workers
+                > max_estimated_cost_usd
+            ):
+                stop_event.set()
+                return
+            claim_id = store.claim(
+                request,
+                arm_id=arm_id,
+                provider="openai",
+                model_snapshot=MODEL,
+                attempt_type="scientific_request",
+                lease_seconds=900.0,
+            )
+            if claim_id is None:
+                return
+            started_at = utc_now()
+            started = time.monotonic()
+            store.mark_provider_call_started(
+                request=request,
+                claim_id=claim_id,
+                arm_id=arm_id,
+                attempt_type="scientific_request",
+                provider="openai",
+                model_snapshot=MODEL,
+                started_at=started_at,
+            )
+            try:
+                judgment, _ = _score_one(client, request)
+                usage = judgment.get("usage") or {}
+                store.complete(
+                    request=request,
+                    claim_id=claim_id,
+                    arm_id=arm_id,
+                    attempt_type="scientific_request",
+                    provider="openai",
+                    model_snapshot=MODEL,
+                    started_at=started_at,
+                    elapsed_seconds=time.monotonic() - started,
+                    structured_response=judgment,
+                    validation_result="valid",
+                    usage=usage,
+                    estimated_cost_usd=float(usage.get("estimated_cost_usd_conservative") or 0.0),
+                    actual_cost_usd=None,
+                    response_id=str(judgment.get("response_id") or ""),
+                    consumed_scientific_response=True,
+                )
+                with shared_lock:
+                    consecutive_infrastructure_failures = 0
+                return
+            except JudgeResponseError as exc:
+                usage = exc.safe_details.get("usage") or {}
+                store.complete(
+                    request=request,
+                    claim_id=claim_id,
+                    arm_id=arm_id,
+                    attempt_type="scientific_request",
+                    provider="openai",
+                    model_snapshot=MODEL,
+                    started_at=started_at,
+                    elapsed_seconds=time.monotonic() - started,
+                    structured_response=None,
+                    validation_result=str(exc.safe_details.get("reason") or "invalid_response"),
+                    usage=usage,
+                    estimated_cost_usd=float(usage.get("estimated_cost_usd_conservative") or 0.0),
+                    actual_cost_usd=None,
+                    response_id=str(exc.safe_details.get("response_id") or ""),
+                    provider_error_category="invalid_structured_response",
+                    consumed_scientific_response=True,
+                )
+                return
+            except Exception as exc:  # pragma: no cover - provider behavior
+                details = _provider_error_details(exc)
+                will_retry = infrastructure_attempt < infrastructure_retries_per_request
+                store.complete(
+                    request=request,
+                    claim_id=claim_id,
+                    arm_id=arm_id,
+                    attempt_type="infrastructure_failure",
+                    provider="openai",
+                    model_snapshot=MODEL,
+                    started_at=started_at,
+                    elapsed_seconds=time.monotonic() - started,
+                    structured_response=None,
+                    validation_result="provider_failure_no_usable_output",
+                    usage={},
+                    estimated_cost_usd=0.0,
+                    actual_cost_usd=None,
+                    response_id=details["response_id"],
+                    provider_error_category=details["category"],
+                    retry_after_seconds=details["retry_after_seconds"],
+                    reset_metadata=details["reset_metadata"],
+                    consumed_infrastructure_retry=will_retry,
+                    consumed_scientific_response=False,
+                )
+                with shared_lock:
+                    consecutive_infrastructure_failures += 1
+                    if consecutive_infrastructure_failures >= systemic_rejection_threshold:
+                        stop_event.set()
+                if not will_retry or stop_event.is_set():
+                    return
+                delay = details["retry_after_seconds"]
+                if delay is None:
+                    delay = min(30.0, 2.0**infrastructure_attempt)
+                sleep_function(max(0.0, min(float(delay), 60.0)))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(execute, request) for request in requests]
+        for future in as_completed(futures):
+            future.result()
+    aggregate = store.rebuild()
+    store.verify_manifest()
+    accepted = aggregate["accepted_request_count"]
+    status = "completed" if accepted == len(requests) else "blocked"
+    blockers: list[str] = []
+    if stop_event.is_set():
+        blockers.append("systemic_provider_rejection_or_cost_stop")
+    if accepted != len(requests):
+        blockers.append(f"request_matrix_incomplete:{accepted}_of_{len(requests)}")
+    result = {
+        "schema_version": "policy_ranking_judge_run.v2",
+        "status": status,
+        "blockers": blockers,
+        "request_count": len(requests),
+        "accepted_request_count": accepted,
+        "provider_called": aggregate["provider_called"],
+        "estimated_cost_usd_recomputed": aggregate["estimated_cost_usd_recomputed"],
+        "evidence_root": str(store.root),
+        "aggregate_sha256": aggregate["aggregate_sha256"],
+    }
+    result["run_sha256"] = canonical_sha256(result)
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -594,7 +855,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     inventory.add_argument("--index", required=True)
     inventory.add_argument("--protocol", required=True)
     inventory.add_argument("--rollout-root", required=True)
-    inventory.add_argument("--partition", required=True, choices=("pilot", "calibration", "heldout"))
+    inventory.add_argument(
+        "--partition", required=True, choices=("pilot", "calibration", "heldout")
+    )
     inventory.add_argument("--output", required=True)
     run = sub.add_parser("run")
     run.add_argument("--inventory", required=True)
@@ -603,6 +866,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--max-estimated-cost-usd", type=float, default=2.0)
     run.add_argument("--max-workers", type=int, default=4)
     run.add_argument("--max-attempts-per-request", type=int, default=2)
+    run_v2 = sub.add_parser("run-v2")
+    run_v2.add_argument("--inventory", required=True)
+    run_v2.add_argument("--evidence-root", required=True)
+    run_v2.add_argument("--experiment-id", required=True)
+    run_v2.add_argument("--max-requests", type=int)
+    run_v2.add_argument("--max-estimated-cost-usd", type=float, required=True)
+    run_v2.add_argument("--projected-total-cost-usd", type=float, required=True)
+    run_v2.add_argument("--max-workers", type=int, default=2)
+    run_v2.add_argument("--infrastructure-retries-per-request", type=int, default=1)
     args = parser.parse_args(argv)
     if args.command == "inventory":
         index_payload = json.loads(Path(args.index).read_text())
@@ -614,7 +886,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             partition=args.partition,
         )
         write_json(Path(args.output), result)
-    else:
+    elif args.command == "run":
         result = run_inventory(
             json.loads(Path(args.inventory).read_text()),
             output_path=args.output,
@@ -622,6 +894,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_estimated_cost_usd=args.max_estimated_cost_usd,
             max_workers=args.max_workers,
             max_attempts_per_request=args.max_attempts_per_request,
+        )
+    else:
+        result = run_inventory_v2(
+            json.loads(Path(args.inventory).read_text()),
+            evidence_root=args.evidence_root,
+            experiment_id=args.experiment_id,
+            max_requests=args.max_requests,
+            max_estimated_cost_usd=args.max_estimated_cost_usd,
+            projected_total_cost_usd=args.projected_total_cost_usd,
+            max_workers=args.max_workers,
+            infrastructure_retries_per_request=args.infrastructure_retries_per_request,
         )
     return 0 if result["status"] in {"ready", "completed"} else 2
 

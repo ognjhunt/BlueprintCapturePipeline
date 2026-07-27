@@ -1,0 +1,30 @@
+{
+  "schema_version": "policy_ranking_causal_power_reestimate.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "timing": "before_heldout_causal_diagnostic_and_before_bulk_provider_run",
+  "protocol_sha256": "a8f7ec31a61073fabe55a375c2a60fb0400d8c48336a319395d4914c952569b7",
+  "inputs": {
+    "pilot_report_file_sha256": "fcca350575d5ba8ba384c1387c1917caa502f706d96fe396c7cb45d26c9b965c",
+    "calibration_report_file_sha256": "0d26c4690df4a20d655bab7604831101c2c3d1a4103cbd837bfd3d59dd799e8a",
+    "outcome_labels_used": false,
+    "development_session_cluster_count": 14
+  },
+  "overlay_masked_residual_session_statistics": {
+    "mean_excess_over_strongest_placebo": 0.03914146105464905,
+    "session_standard_deviation": 0.09001942261967456
+  },
+  "heldout_power": {
+    "session_cluster_count": 49,
+    "one_sided_alpha": 0.05,
+    "target_power": 0.8,
+    "meaningful_margin": 0.05,
+    "normal_approximation_minimum_detectable_excess": 0.031975861614677296,
+    "powered_for_preregistered_margin": true
+  },
+  "admission": {
+    "heldout_label_free_causal_diagnostic": "admitted",
+    "bulk_provider_run": "requires_separate_model_project_rate_limit_canary",
+    "threshold_changed": false
+  },
+  "claim_boundary": "Development alignment used no benchmark outcomes. Power applies to the label-free temporal-alignment diagnostic, not ranking accuracy or counterfactual WAM regeneration."
+}

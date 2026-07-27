@@ -1,0 +1,87 @@
+{
+  "schema_version": "policy_ranking_experiment_2_successor_wam_decision.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "recorded_at": "2026-07-27T14:31:26Z",
+  "decision": "qualify_general_cosmos3_nano_forward_dynamics_before_any_new_ranking_matrix",
+  "world_model": {
+    "repository": "nvidia/Cosmos3-Nano",
+    "discovered_snapshot": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "parameter_count": "16B",
+    "precision_for_qualification": "BF16",
+    "mode": "forward_dynamics",
+    "required_inputs": [
+      "initial observation",
+      "task instruction",
+      "candidate policy action trajectory"
+    ],
+    "required_output": "future observation video",
+    "license_disclosure": "Model card states OpenMDW-1.1; live Hub API labels the license field as other, so the exact downloaded license must be archived before execution."
+  },
+  "not_the_world_model": {
+    "repository": "nvidia/Cosmos3-Nano-Policy-DROID",
+    "role": "candidate DROID policy and action-schema reference",
+    "reason": "It maps observations and instructions to its own DROID actions. Using it as the neutral future predictor would collapse or bias differences among candidate policies."
+  },
+  "independent_evaluator": {
+    "model_snapshot": "gpt-5-mini-2025-08-07",
+    "role": "frozen visual task-progress and validity judge",
+    "replaceable_contract": true
+  },
+  "calibration_only_canary": {
+    "heldout_or_outcome_use": false,
+    "conditions": [
+      "recorded candidate actions",
+      "zero actions",
+      "shuffled actions",
+      "temporally reversed actions",
+      "within-session policy-swapped actions"
+    ],
+    "primary_gate": "overlay-free generated scene must beat the strongest action placebo by the frozen 0.05 margin",
+    "validity_gate": "session-clustered-bootstrap lower 95 percent validity pass rate must be at least 0.80",
+    "seed_robustness_required": true,
+    "full_matrix_allowed_only_after_canary_pass": true
+  },
+  "hardware": {
+    "preferred_bounded_rental": "single H100 SXM 80GB",
+    "workstation_alternative": "RTX PRO 6000 Blackwell 96GB",
+    "higher_headroom_not_required": ["H200 141GB", "B200 192GB"],
+    "post_training_authorized": false,
+    "reason": "Released-weight qualification is the cheapest causal test. NVIDIA post-training recipes are multi-H100 and exceed the current experiment scope and cap."
+  },
+  "cross_embodiment_contract": {
+    "droid_role": "first independently benchmarked calibration anchor, not permanent product scope",
+    "target_adapters": [
+      "Franka/DROID",
+      "mobile manipulator",
+      "dual arm",
+      "forklift or AMR",
+      "humanoid"
+    ],
+    "warehouse_without_outcomes": "Report scene ingestion, causal sensitivity, deterministic simulator predicates, robustness, uncertainty, and abstention as prospective transfer evidence. Do not claim ranking accuracy without independent outcomes.",
+    "abstain_on": [
+      "embodiment out of distribution",
+      "task out of distribution",
+      "camera or registration sensitivity",
+      "failed action semantics",
+      "failed WAM causal validity"
+    ]
+  },
+  "spend": {
+    "new_spend_authorized_by_this_record": false,
+    "current_user_cap_usd": 10.0,
+    "required_before_allocation": [
+      "frozen request matrix",
+      "live provider price check",
+      "projected total below remaining cap",
+      "shared paid-resource allocator admission",
+      "TTL and watchdog",
+      "teardown and provider-zero proof"
+    ]
+  },
+  "sources": [
+    "https://github.com/NVIDIA/cosmos",
+    "https://huggingface.co/nvidia/Cosmos3-Nano",
+    "https://github.com/NVIDIA/cosmos/blob/main/inference_benchmarks.md"
+  ],
+  "claim_boundary": "Successor architecture and admission decision only; not a Cosmos qualification result, ranking result, warehouse transfer result, or authorization to spend."
+}

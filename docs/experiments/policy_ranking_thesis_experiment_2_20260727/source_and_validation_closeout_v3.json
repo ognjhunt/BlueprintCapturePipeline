@@ -1,0 +1,47 @@
+{
+  "schema_version": "policy_ranking_experiment_2_source_closeout.v3",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "recorded_at": "2026-07-27T14:50:03Z",
+  "supersedes": "source_and_validation_closeout_v2.json",
+  "exact_source_and_complete_portable_evidence_commit": "70f017bf10889b9c78a144c1c0c7d9b6b1a6bdb7",
+  "exact_source_and_complete_portable_evidence_tree": "ad9a91fc49af3b81755d3c4fd6a34f1c379c84d3",
+  "branch": "codex/policy-ranking-thesis-experiment-2-20260727",
+  "artifact_manifest_file_sha256": "0cc7155d8ef1fa1861907a731b818c2c647d378fd2cb202647b55cb26bbb5010",
+  "provider_evidence_manifest_logical_sha256": "68ee579e124783f7cfe54780b6fd4916459f572c00f628043fd913ca4c939303",
+  "review_corrections": {
+    "projected_total_resume_double_counting": "fixed_and_regression_tested",
+    "recovered_infrastructure_failure_freeze": "fixed_and_regression_tested",
+    "session_clustered_validity_interval": "fixed_and_regression_tested",
+    "unused_assignment": "removed",
+    "scientific_verdict_changed": false,
+    "correction_record": "statistical_correction_amendment_002.json"
+  },
+  "validation": {
+    "focused_tests_passed": 33,
+    "full_tests_collected": 6900,
+    "full_tests_selected": 5258,
+    "full_tests_passed": 5255,
+    "full_tests_skipped": 3,
+    "full_tests_failed": 0,
+    "ruff_check": "passed",
+    "ruff_format_check": "passed",
+    "uv_lock_check": "passed",
+    "source_governance": "passed",
+    "critical_capability_policy_only": "passed",
+    "staged_diff_check": "passed",
+    "secret_scan_hit_count": 0,
+    "artifact_integrity_mismatch_count": 0
+  },
+  "resource_closeout": {
+    "vast_checked_at": "2026-07-27T09:41:54-0500",
+    "vast_global_instance_count": 0,
+    "new_gpu_or_builder_allocated": false,
+    "openai_persistent_resource_created": false,
+    "gemini_scientific_request_count": 0
+  },
+  "original_checkout": {
+    "user_owned_docs_changelog_modification_preserved": true,
+    "modification_published_by_this_experiment": false
+  },
+  "claim_boundary": "Commit 70f017bf contains the corrected implementation, terminal verdict, portable artifact manifest, and indexed evidence. This following closeout file records that exact source/evidence commit and does not alter predictions, metrics, gates, or verdict."
+}
