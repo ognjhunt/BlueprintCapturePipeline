@@ -1,0 +1,91 @@
+{
+  "schema_version": "hybrid_3dgs_preview_overlay.v2",
+  "claim_boundary": "visual_registration_review_only_not_usd_loading_physics_or_policy_execution",
+  "design_note": "Narrower translucent robot proxies preserve captured-scene visibility; the actual controlled run must use the pinned Franka asset.",
+  "items": [
+    {
+      "id": "table_74_local_surface_proxy",
+      "shape": "box",
+      "position": [1.9086943, 1.2457356, 0.748],
+      "scale": [1.43993, 0.52, 0.02],
+      "color": 7412244,
+      "opacity": 0.10
+    },
+    {
+      "id": "simready_spraycan_proxy",
+      "shape": "cylinder",
+      "position": [1.65, 1.2, 0.848],
+      "scale": [0.065, 0.22, 0.065],
+      "rotation_euler_rad": [1.5707963268, 0.0, 0.0],
+      "color": 15158332,
+      "opacity": 1.0
+    },
+    {
+      "id": "marked_tray_base_proxy",
+      "shape": "box",
+      "position": [2.12, 1.22, 0.763],
+      "scale": [0.4, 0.32, 0.03],
+      "color": 14073,
+      "opacity": 0.82
+    },
+    {
+      "id": "franka_base_proxy",
+      "shape": "cylinder",
+      "position": [1.9086943, 0.45, 0.19],
+      "scale": [0.14, 0.36, 0.14],
+      "rotation_euler_rad": [1.5707963268, 0.0, 0.0],
+      "color": 14540253,
+      "opacity": 0.78
+    },
+    {
+      "id": "franka_link_proxy_1",
+      "shape": "box",
+      "position": [1.9086943, 0.67, 0.55],
+      "scale": [0.07, 0.42, 0.07],
+      "rotation_euler_rad": [0.75, 0.0, 0.0],
+      "color": 15658734,
+      "opacity": 0.72
+    },
+    {
+      "id": "franka_link_proxy_2",
+      "shape": "box",
+      "position": [1.9086943, 0.96, 0.78],
+      "scale": [0.065, 0.36, 0.065],
+      "rotation_euler_rad": [1.1, 0.0, 0.0],
+      "color": 15658734,
+      "opacity": 0.72
+    },
+    {
+      "id": "franka_hand_proxy",
+      "shape": "box",
+      "position": [1.9086943, 1.15, 0.84],
+      "scale": [0.1, 0.055, 0.055],
+      "color": 2236962,
+      "opacity": 0.82
+    },
+    {
+      "id": "franka_left_finger_proxy",
+      "shape": "box",
+      "position": [1.865, 1.205, 0.82],
+      "scale": [0.018, 0.1, 0.018],
+      "color": 2236962,
+      "opacity": 0.9
+    },
+    {
+      "id": "franka_right_finger_proxy",
+      "shape": "box",
+      "position": [1.952, 1.205, 0.82],
+      "scale": [0.018, 0.1, 0.018],
+      "color": 2236962,
+      "opacity": 0.9
+    },
+    {
+      "id": "franka_wrist_camera_mount_proxy",
+      "shape": "box",
+      "position": [1.8286943, 1.1, 1.06],
+      "scale": [0.045, 0.04, 0.03],
+      "color": 16763904,
+      "opacity": 0.95
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "schema_version": "policy_ranking_warehouse_policy_cohort.v2",
+  "status": "frozen_pre_learned_execution",
+  "amendment_basis": "The v1 learned cohort is entirely DROID joint-velocity. Its frozen scripted positive failed in the local dynamics bridge even after source-attributable gripper, 15 Hz outer-loop, 1 kHz inner-loop, and impedance/gravity-compensation corrections. Before any learned policy outcome was observed, the transfer cohort was amended to the four public OpenPI PolaRiS DROID joint-position checkpoints whose absolute-action output transform is explicitly intended to support simulation.",
+  "preserved_v1": "warehouse_policy_cohort.json",
+  "frozen_before_learned_policy_outcomes": true,
+  "task_instruction": "Pick up the can and place it inside the marked tray.",
+  "embodiment": "DROID-compatible Franka Panda",
+  "openpi_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+  "checkpoint_inventory": {
+    "artifact": "openpi_polaris_checkpoint_inventory.json",
+    "inventory_sha256": "492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+    "file_sha256": "df3a335daeff5ac556e0370a9bf3003397a5b7acbe568e7d474b8c99ce63e774",
+    "includes_gcs_object_generations": true
+  },
+  "action_contract": {
+    "space": "absolute_joint_position_plus_gripper_position",
+    "dimensions": 8,
+    "arm_units": "radians",
+    "gripper_semantics": "0=open, 1=closed",
+    "policy_horizons": [10, 15],
+    "executed_open_loop_horizon": 8,
+    "max_episode_action_steps": 600,
+    "outer_control_hz": 15,
+    "source_transform": "RLDSDroidDataConfig converts absolute joint actions to deltas for training and applies AbsoluteActions to the first seven dimensions on policy output"
+  },
+  "primary_cohort": [
+    {
+      "policy_id": "pi05_droid_jointpos_polaris",
+      "checkpoint": "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris",
+      "checkpoint_object_count": 27,
+      "checkpoint_size_bytes": 12434530837,
+      "public_object_manifest_sha256": "1e9e5a53c6bb4cebbbfc23903249126ce5fc0a7ad421c3212e4a4497ff6857d5",
+      "generation_manifest_sha256": "385e9e318d92062e60e2d055296bb90b1ee8db0e0ab5233442382a7a861f81d6",
+      "action_horizon": 15
+    },
+    {
+      "policy_id": "pi0_fast_droid_jointpos_polaris",
+      "checkpoint": "gs://openpi-assets/checkpoints/polaris/pi0_fast_droid_jointpos_polaris",
+      "checkpoint_object_count": 36,
+      "checkpoint_size_bytes": 10843569155,
+      "public_object_manifest_sha256": "4f6bc8271938d85a72c89cd76b6cc2e80a153c41ba6bb124302ce318e8b74154",
+      "generation_manifest_sha256": "b7ce96876c44f96387c7e4b58811d92e507b65ac79ecd8aa786e1c76c91b9d01",
+      "action_horizon": 10
+    },
+    {
+      "policy_id": "pi0_droid_jointpos_polaris",
+      "checkpoint": "gs://openpi-assets/checkpoints/polaris/pi0_droid_jointpos_polaris",
+      "checkpoint_object_count": 54,
+      "checkpoint_size_bytes": 11991708493,
+      "public_object_manifest_sha256": "0cf2fb2b7583a65fdd7722af743ce0b4f7915fd53b91fd1719e50d0bbdac69b6",
+      "generation_manifest_sha256": "cf76d6e1b05931f27e7656763c9ca8d428beb54d14b6437828ddc44473b3f58b",
+      "action_horizon": 10
+    },
+    {
+      "policy_id": "pi0_droid_jointpos_100k_polaris",
+      "checkpoint": "gs://openpi-assets/checkpoints/polaris/pi0_droid_jointpos_100k_polaris",
+      "checkpoint_object_count": 49,
+      "checkpoint_size_bytes": 12016372812,
+      "public_object_manifest_sha256": "c096fad8b7659625ddd9847af89e218bae73db3d3aab86d1c43e49d84531bcb0",
+      "generation_manifest_sha256": "3415882629acb03cbd494d34d59cfef29b7024fc05de39187261f3172e7de70c",
+      "action_horizon": 10
+    }
+  ],
+  "primary_cohort_total_checkpoint_bytes": 47286181297,
+  "negative_control": {
+    "policy_id": "stationary_joint_position_negative_control",
+    "definition": "Repeat the current seven joint positions and current gripper position in every action row.",
+    "required_expected_behavior": "No task progress and no success."
+  },
+  "scene_feasibility_control": {
+    "policy_id": "scripted_ik_joint_position_positive_control",
+    "required_expected_behavior": "Complete the frozen can-to-tray task through the same observation, chunk, controller, and deterministic predicate seam.",
+    "result_manifest_sha256": "b55de4d0b037aaaef7a5412aa0f424000ab00226cc1ac57ef94b928cbf4ffbed",
+    "result": "passed"
+  },
+  "evaluator_frozen_across_policies": true,
+  "policy_specific_evaluator_changes_allowed": false,
+  "adapter_selection_rule": "Action adapter is selected from attributable checkpoint metadata before inference; unknown or mismatched action space abstains.",
+  "claim_boundary": "This cohort is a prospective simulator/captured-site transfer cohort. It is not benchmark-matched calibration evidence and does not prove physical or site-specific success.",
+  "execution_blockers": [
+    "no learned checkpoint has been downloaded, loaded, or executed",
+    "checkpoint objects contain no explicit checkpoint-specific license field; use remains internal research with no redistribution",
+    "dynamic captured-3DGS and MuJoCo depth compositing is not yet executed",
+    "paid GPU admission and teardown evidence do not yet exist"
+  ]
+}

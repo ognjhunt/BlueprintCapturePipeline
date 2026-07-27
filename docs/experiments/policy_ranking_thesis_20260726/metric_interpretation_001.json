@@ -1,0 +1,27 @@
+{
+  "schema_version": "policy_ranking_metric_interpretation.v1",
+  "recorded_before_any_pilot_label_join": true,
+  "calibration_labels_opened": false,
+  "heldout_predictions_started": false,
+  "heldout_labels_opened": false,
+  "protocol_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
+  "registered_requirement": "Selective ranking improves when low-confidence cases are abstained.",
+  "implementation_interpretation": {
+    "primary_selective_metric": "session_pairwise_policy_ranking_accuracy",
+    "coverage_denominator": "all informative within-session policy pairs whose frozen binary outcomes differ",
+    "pair_is_ranked_only_if": [
+      "both episode judgments pass action-following threshold",
+      "both episode judgments pass temporal-coherence threshold",
+      "both episode judgments pass selective judge-confidence threshold",
+      "neither episode has an explicit abstention or critical contradiction",
+      "absolute predicted success-probability difference is at least 0.20"
+    ],
+    "minimum_selective_pair_coverage": 0.25,
+    "minimum_selective_pairwise_accuracy_gain": 0.05,
+    "episode_binary_classification_metrics": "reported as secondary diagnostics only"
+  },
+  "reason": "The first implementation incorrectly wired the abstention gate to episode binary classification rather than policy ranking. No benchmark labels were joined and no prediction changed before this correction.",
+  "threshold_changed": false,
+  "prediction_changed": false,
+  "outcome_optimization": false
+}

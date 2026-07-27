@@ -1,0 +1,43 @@
+{
+  "schema_version": "policy_ranking_label_unseal_ledger.v1",
+  "partition": "calibration",
+  "unsealed_at": "2026-07-26T11:56:00-0500",
+  "predictions_completed_before_unseal": true,
+  "prediction_integrity_check": "pass",
+  "protocol_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
+  "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
+  "canonical_inventory_sha256": "cf71587997868182275a8d482abe5aecb4315b6fdda3fc7b7436cd0f8a34e9e7",
+  "canonical_run_sha256": "2d2ca8dd825fb49b27a4e65a75ecf82ed764b444d0726436566221b68f9b004b",
+  "run_file_sha256": "40125739f72fdb5917470704628796c27be936b23844d15002b1e73f9279363c",
+  "report_file_sha256": "e485937135c2ab37bafe414e0c49d37c44bd513bf783b4293877e59224e4a9ca",
+  "report_canonical_sha256": "5fd537c924fd04e2b60c99e90734a9d624592443e81d404ac4a525c10a0188c2",
+  "pre_unseal_arm_freeze_file_sha256": "b4e1715f28a62a6c6a2aea4e7598c201dc24b8aec670a93cbf56e2485e7be435",
+  "metadata_sources": [
+    {"session_id": "d25151dd-e1c7-4851-ab78-9ccdfdd94e50", "sha256": "aad756965cc2b9bc4918c6f16bf5e17e86a31bd8c9dcc1114560a0ebd85a3885"},
+    {"session_id": "70d36427-d166-4475-82ff-4de60431f2b0", "sha256": "1430ee6ff34f2954cacd08f0da0e4193de4225232914aa92c9caa8db9b78b867"},
+    {"session_id": "f3ee5084-5290-4ac0-a007-a4f4fa7b47e4", "sha256": "40fe5b4755827e3063434daa3a39ce9245a6f9f71f25e927eec5f65338314e32"},
+    {"session_id": "4f05ca12-ded4-43b0-83bd-6a35ed4ba120", "sha256": "dacbd08862c177e3f06a269568e1f4c5d49ae91adbdeda23d9c111345e5b8cb8"},
+    {"session_id": "739165f0-2b54-4776-91b8-1530a4148feb", "sha256": "7fceeb464c7ff3ce19838b98f39e46c9b4116c40bda5d0959530ca2a78559699"},
+    {"session_id": "69f9098b-86c9-419e-9c4b-75f8ae7f7525", "sha256": "18c13f0df5e77d9eaefec062584755efc034ed26c0030cdd9370741065c3d0f6"},
+    {"session_id": "3cb05d31-18ce-4154-897d-bec852521e5b", "sha256": "aa36ed8e2b357cb3117a7b291a45fb9d08281320667ca4c14a07763edef19843"}
+  ],
+  "pii_copied_to_report": false,
+  "heldout_labels_opened": false,
+  "post_unseal_changes_forbidden": [
+    "evaluator arms",
+    "judge prompt or model",
+    "thresholds",
+    "label basis",
+    "partitions",
+    "decision rule"
+  ],
+  "calibration_summary": {
+    "primary_pairwise_accuracy": 0.672566371681416,
+    "primary_bootstrap_ci95": [0.5483870967741935, 0.7777777777777778],
+    "cheap_baseline_pairwise_accuracy": 0.6592920353982301,
+    "preference_pairwise_accuracy": 0.4880952380952381,
+    "action_following_pass_rate": 0.10204081632653061,
+    "selective_pair_coverage": 0.008849557522123894,
+    "all_registered_gates_passed": false
+  }
+}

@@ -70,6 +70,7 @@ from .validation import (
 )
 from .stance_cameras import (
     DEFAULT_STANCE_CAMERA_IDS,
+    link_mounted_camera_spec,
     stance_task_cameras,
     to_splat_render_specs,
 )
@@ -104,6 +105,7 @@ __all__ = [
     "stance_task_cameras",
     "to_splat_render_specs",
     "DEFAULT_STANCE_CAMERA_IDS",
+    "link_mounted_camera_spec",
     "resolve_target_by_instance",
     "MultiViewPerceptionSceneSpatialIndex",
     "fuse_scene_objects",

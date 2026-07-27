@@ -59,6 +59,10 @@ from .g1_microwave_finetune_provider_job import (
     run_finetune_job as run_g1_microwave_finetune_job,
 )
 from .paid_resource_admission import require_paid_resource_admission
+from .openpi_policy_ranking_gpu_admission import (
+    PROBE_KIND as OPENPI_POLICY_RANKING_PROBE_KIND,
+)
+from .openpi_policy_ranking_runpod import run_openpi_policy_ranking_campaign
 from .single_g1_kitchen_episode_runpod import (
     PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
     run_single_episode,
@@ -497,6 +501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             SINGLE_KITCHEN_EPISODE_PROBE_KIND,
             SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
             G1_MICROWAVE_FINETUNE_PROBE_KIND,
+            OPENPI_POLICY_RANKING_PROBE_KIND,
         ),
         default="strict-policy-smoke",
     )
@@ -510,6 +515,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--provider-output-get-url-file")
     gpu.add_argument("--provider-bootstrap-url-file")
     gpu.add_argument("--finetune-provider-bundle")
+    gpu.add_argument("--openpi-input-bundle-receipt")
+    gpu.add_argument("--openpi-input-secret-url-file")
+    gpu.add_argument("--openpi-output-secret-put-url-file")
+    gpu.add_argument("--openpi-output-secret-get-url-file")
+    gpu.add_argument(
+        "--openpi-provider",
+        choices=("vast", "runpod"),
+        default="vast",
+        help="Policy-ranking GPU provider; Vast is the frozen default.",
+    )
+    gpu.add_argument("--openpi-hard-ttl-seconds", type=int, default=14_400)
+    gpu.add_argument("--openpi-max-spend-usd", type=float, default=3.0)
     gpu.add_argument("--finetune-object-store-stage-dir")
     gpu.add_argument("--finetune-checkpoint-object-store-stage-dir")
     gpu.add_argument(
@@ -735,6 +752,89 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == OPENPI_POLICY_RANKING_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "openpi_input_bundle_receipt",
+                    "openpi_input_secret_url_file",
+                    "openpi_output_secret_put_url_file",
+                    "expected_source_commit",
+                )
+                if not getattr(args, name, None)
+            ]
+            if args.execute:
+                missing.extend(
+                    name
+                    for name in (
+                        "campaign_budget_ledger",
+                        "campaign_initial_spent_usd",
+                        "campaign_initial_used_gpu_seconds",
+                        "openpi_output_secret_get_url_file",
+                    )
+                    if getattr(args, name, None) is None
+                )
+            if missing:
+                result = {
+                    "status": "blocked",
+                    "blockers": [
+                        "openpi_policy_ranking_required_arguments_missing:"
+                        + ",".join(sorted(set(missing)))
+                    ],
+                    "provider_mutations_performed": 0,
+                }
+                write_json(Path(args.admission_out), result)
+            else:
+                source_blockers, checkout_commit = _source_checkout_blockers(
+                    args.expected_source_commit or ""
+                )
+                if source_blockers:
+                    result = {
+                        "status": "blocked",
+                        "blockers": source_blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.admission_out), result)
+                else:
+                    result = run_openpi_policy_ranking_campaign(
+                        release_evidence=args.release_evidence,
+                        input_bundle_receipt=args.openpi_input_bundle_receipt,
+                        preflight_bundle=args.preflight_bundle,
+                        admission_out=args.admission_out,
+                        bound_request_out=args.bound_request_out,
+                        adapter_output=args.adapter_output,
+                        input_secret_url_file=args.openpi_input_secret_url_file,
+                        output_secret_put_url_file=(
+                            args.openpi_output_secret_put_url_file
+                        ),
+                        pod_name=args.pod_name,
+                        expected_source_commit=checkout_commit,
+                        execute=args.execute,
+                        hard_ttl_seconds=args.openpi_hard_ttl_seconds,
+                        max_spend_usd=args.openpi_max_spend_usd,
+                        campaign_budget_ledger=args.campaign_budget_ledger,
+                        campaign_initial_spent_usd=(
+                            args.campaign_initial_spent_usd
+                        ),
+                        campaign_initial_used_gpu_seconds=(
+                            args.campaign_initial_used_gpu_seconds
+                        ),
+                        campaign_total_spend_cap_usd=(
+                            args.campaign_total_spend_cap_usd
+                        ),
+                        campaign_wall_cap_seconds=(
+                            args.campaign_wall_cap_seconds
+                            if args.campaign_wall_cap_seconds is not None
+                            else 36_000
+                        ),
+                        output_secret_get_url_file=(
+                            args.openpi_output_secret_get_url_file
+                        ),
+                        provider_name=args.openpi_provider,
+                    )
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == G1_MICROWAVE_FINETUNE_PROBE_KIND:
             missing = [
                 name

@@ -992,6 +992,105 @@ def test_watchdog_closes_pod_record_and_returns_lane_owner(
     assert retried["campaign_budget_settlement"]["status"] == "settled"
 
 
+def test_watchdog_closes_openpi_compute_lane_and_settles_budget(
+    tmp_path, monkeypatch
+) -> None:
+    prefix = "blueprint-groot-oscar-canary-openpi-ranking-"
+    pending_path = tmp_path / "openpi-pending.json"
+    pending_path.write_text(
+        json.dumps(
+            {
+                "status": "open",
+                "provider": "runpod",
+                "lane": "openpi_policy_ranking_gpu_canary",
+                "resource_kind": "compute_instance",
+                "resource_name": prefix + "test",
+                "instance_id": "pod-openpi",
+            }
+        ),
+        encoding="utf-8",
+    )
+    lease_path = tmp_path / "openpi-lane.lease.json"
+    lease_path.write_text(
+        json.dumps(
+            {
+                "provider": "runpod",
+                "lane": "openpi_policy_ranking_gpu_canary",
+                "owner_pid": os.getpid(),
+                "retained_teardown_owner_pid": os.getpid(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    ledger_path = tmp_path / "openpi-campaign-budget.json"
+    ledger = ProductionGpuCampaignBudget(
+        ledger_path,
+        initial_spent_usd=0.0,
+        initial_used_gpu_seconds=0,
+        combined_gpu_wall_cap_seconds=1_000,
+    )
+    reservation = ledger.reserve(
+        reservation_id="openpi-watchdog-test",
+        gpu_seconds=100,
+        max_hourly_rate_usd=0.44,
+    )
+    receipt = {
+        "lease_path": str(lease_path),
+        "owner_pid": os.getpid(),
+        "provider_lane_release_mode": "watchdog_direct_compute",
+        "pod_pending_teardown_record": str(pending_path),
+        "pod_id": "pod-openpi",
+        "pod_name_prefix": prefix,
+        "campaign_kind": "openpi_policy_ranking",
+        "campaign_budget": {
+            "status": "reserved",
+            "ledger_path": str(ledger_path),
+            "reservation_id": "openpi-watchdog-test",
+            "reserved_at_epoch": 9_999_999_900.0,
+            "reservation": reservation,
+            "identity": {
+                "initial_spent_usd": 0.0,
+                "initial_used_gpu_seconds": 0,
+                "total_spend_cap_usd": 20.0,
+                "combined_gpu_wall_cap_seconds": 1_000,
+            },
+        },
+    }
+    receipt_path = tmp_path / "provider_lane_handoff_receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    os.chmod(receipt_path, 0o600)
+    monkeypatch.setattr(watchdog_module, "load_pending_teardowns", lambda: [])
+    monkeypatch.setattr(
+        "blueprint_pipeline.paid_lane_guard.close_pending_teardown",
+        lambda path, evidence: {"status": "closed", "path": path, "evidence": evidence},
+    )
+
+    class EmptyProvider:
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            assert name_prefix == prefix
+            return {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "resources": [],
+            }
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=10_000_000_000.0,
+        provider_factory=lambda _name: EmptyProvider(),
+        clock=lambda: 10_000_000_000.0,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["control_plane_terminal"] is True
+    assert result["provider_lane_terminal_release"]["status"] == "released"
+    assert not lease_path.exists()
+    assert result["campaign_budget_settlement"]["status"] == "settled"
+    assert result["campaign_budget_settlement"]["charged_gpu_seconds"] == 100
+
+
 def test_watchdog_accepts_persistent_carrier_runner_pending_lane(
     tmp_path, monkeypatch
 ) -> None:

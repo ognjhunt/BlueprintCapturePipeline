@@ -1,0 +1,50 @@
+{
+  "schema_version": "policy_ranking_physical_execution_time_lower_bound.v1",
+  "basis": "Attributable RoboArena proprio_and_actions.npz action row counts divided by the frozen DROID 15 Hz control frequency.",
+  "control_frequency_hz": 15.0,
+  "partitions": {
+    "pilot": {
+      "episode_count": 49,
+      "action_steps": 15276,
+      "control_time_seconds": 1018.4,
+      "control_time_minutes": 16.973333333333333,
+      "diagnostic_sha256": "0dd6778a2dfb2724c6a021755d4efe7c6da4d5e58461723c17e1f6413ba54ed0"
+    },
+    "calibration": {
+      "episode_count": 49,
+      "action_steps": 14652,
+      "control_time_seconds": 976.8,
+      "control_time_minutes": 16.28,
+      "diagnostic_sha256": "dcbc8f383797caaf6ec92fd26c502b40c417b9c3cc542deecd7f22169ffa04f1"
+    },
+    "heldout": {
+      "episode_count": 343,
+      "action_steps": 99302,
+      "control_time_seconds": 6620.133333333333,
+      "control_time_minutes": 110.33555555555554,
+      "diagnostic_sha256": "d82e1b4e8e54929d0cbfe7ea3c8bb73a00de4bb07e4e156bd180416477584c0e"
+    }
+  },
+  "total": {
+    "episode_count": 441,
+    "action_steps": 129230,
+    "control_time_seconds": 8615.333333333334,
+    "control_time_minutes": 143.5888888888889,
+    "control_time_hours": 2.3931481481481484
+  },
+  "excluded_from_lower_bound": [
+    "robot and scene setup",
+    "reset between episodes",
+    "operator labor",
+    "safety checks",
+    "hardware acquisition or scheduling",
+    "failed or repeated episodes",
+    "benchmark administration"
+  ],
+  "claim_boundary": {
+    "measured_physical_execution_cost_usd": false,
+    "blueprint_incurred_external_benchmark_cost": false,
+    "full_physical_evaluation_duration": false,
+    "interpretation": "A mechanically attributable lower bound on action execution time, not the total time or monetary cost of physical evaluation."
+  }
+}

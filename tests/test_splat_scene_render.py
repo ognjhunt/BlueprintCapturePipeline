@@ -30,6 +30,14 @@ def test_blocked_when_unsupported_suffix(tmp_path: Path) -> None:
     assert "splat_source_missing_or_unsupported" in m["blockers"]
 
 
+def test_blocked_when_graphics_backend_is_unknown(tmp_path: Path) -> None:
+    src = tmp_path / "scene.ply"
+    src.write_bytes(b"placeholder")
+    m = render_splat_scene(src, tmp_path / "out", graphics_backend="cloud_magic")
+    assert m["status"] == "blocked"
+    assert m["blockers"] == ["unsupported_graphics_backend"]
+
+
 def test_blocked_when_cli_missing(tmp_path: Path) -> None:
     # valid-looking .ply source but repo_root has no splat-transform CLI installed
     src = tmp_path / "scene.ply"

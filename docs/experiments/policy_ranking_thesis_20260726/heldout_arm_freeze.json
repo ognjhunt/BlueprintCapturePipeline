@@ -1,0 +1,43 @@
+{
+  "schema_version": "policy_ranking_heldout_arm_freeze.v1",
+  "recorded_at": "2026-07-26T11:44:04-0500",
+  "protocol_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
+  "timing": {
+    "pilot_labels_opened": true,
+    "calibration_predictions_completed": true,
+    "calibration_labels_opened": false,
+    "heldout_predictions_started": false,
+    "heldout_labels_opened": false
+  },
+  "admitted_arms": [
+    {
+      "arm_id": "frozen_temporal_32_frame_progress_judge_v1",
+      "role": "primary_wam_temporal_ranker",
+      "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
+      "already_present_in_frozen_inventories": true
+    },
+    {
+      "arm_id": "frozen_first_last_frame_progress_judge_v1",
+      "role": "strongest_frozen_cheap_endpoint_baseline",
+      "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
+      "already_present_in_frozen_inventories": true
+    }
+  ],
+  "not_admitted": [
+    {
+      "arm_id": "skeleton_to_generated_arm_silhouette_gate",
+      "reason": "No frozen segmentation, correspondence, or validation implementation exists; naming an unvalidated diagnostic would not create credible evidence."
+    },
+    {
+      "arm_id": "ctrl_world_droid_comparator",
+      "reason": "The released interface expects normalized seven-dimensional Cartesian EEF input and the exact RoboArena action/state adapter has not passed fail-closed validation."
+    },
+    {
+      "arm_id": "post_pilot_endpoint_weighted_variant",
+      "reason": "The registered first/last-frame arm already captures the endpoint hypothesis; another weighting after pilot outcomes would add researcher degrees of freedom without a disjoint holdout."
+    }
+  ],
+  "freeze_rule": "No additional evaluator arm may be scored on these heldout sessions after their labels are opened. A future arm requires a new frozen disjoint benchmark split or new benchmark snapshot.",
+  "predictions_or_thresholds_changed": false,
+  "decision_rule_changed": false
+}

@@ -1,0 +1,50 @@
+{
+  "schema_version": "captured_site_policy_observation_cameras.v1",
+  "scene_id": "interiorgs_0787_841244_franka_can_to_tray_v1",
+  "observation_contract": {
+    "policy_family": "OpenPI DROID",
+    "native_policy_resolution": [224, 224],
+    "review_render_resolution": [1536, 1536],
+    "source_splat_count": 630898,
+    "source_is_decimated": false
+  },
+  "cameras": [
+    {
+      "id": "droid_external_primary",
+      "kind": "fixed_external",
+      "spec": {
+        "pos": [2.18, 0.48, 1.52],
+        "target": [1.93, 1.24, 0.80],
+        "fov": 50.0,
+        "up": [0.0, 0.0, 1.0]
+      }
+    },
+    {
+      "id": "droid_wrist_primary_initial",
+      "kind": "robot_link_mounted_initial_pose",
+      "parent_link": "franka_hand_proxy",
+      "parent_link_world_translation_m": [1.9086943, 1.0, 0.95],
+      "mount_translation_m": [0.0, -0.14, 0.25],
+      "mount_forward_parent": [0.0213057, 0.39, -0.39],
+      "look_distance_m": 0.5521425506,
+      "dynamic_requirement": "recompute from the live franka_hand transform on every simulator frame",
+      "spec": {
+        "pos": [1.9086943, 0.86, 1.20],
+        "target": [1.93, 1.25, 0.81],
+        "fov": 76.0,
+        "up": [0.0, 0.0, 1.0]
+      }
+    }
+  ],
+  "selection": {
+    "candidate_set": "interiorgs_0787_render_cameras_v4_candidates.json",
+    "selection_basis": [
+      "native square policy aspect ratio",
+      "simultaneous visibility of can, tray, gripper, and captured support surface",
+      "less robot self-occlusion than the previous wrist camera",
+      "more captured-scene context than the previous external camera"
+    ],
+    "selected_before_any_captured_site_policy_outcome": true
+  },
+  "claim_boundary": "static policy_observation_registration_only_not_dynamic_compositing_policy_execution_or_site_specific_success"
+}

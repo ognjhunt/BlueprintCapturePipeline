@@ -1,7 +1,7 @@
 {
   "schema_version": "controlled_usd_policy_ranking_scene.v1",
   "status": "ready",
-  "scene_id": "nvidia_warehouse_franka_can_to_tray_control_v1",
+  "scene_id": "nvidia_warehouse_franka_can_to_tray_control_v2",
   "environment": {
     "representation": "usd",
     "source": "https://huggingface.co/datasets/nvidia/PhysicalAI-SimReady-Warehouse-01",
@@ -10,17 +10,56 @@
     "sha256": "4e01e55f055689ff0cd669f33c6c305f73add8903547eaf3ef070d515cb2ec8a",
     "size_bytes": 27933,
     "license": "CC-BY-4.0",
-    "materialization_status": "root_lfs_pointer_indexed_full_dependency_archive_not_downloaded",
+    "materialization_status": "selected_sorting_area_workcell_materialized_full_warehouse_not_downloaded",
     "full_dataset_size_bytes": 15000000000,
-    "runtime_scope": "one_empty_reachable_workcell_only",
-    "whole_warehouse_runtime_forbidden": true
+    "runtime_scope": "one_box_picking_table_workcell_only",
+    "whole_warehouse_runtime_forbidden": true,
+    "selected_workcell": {
+      "sorting_sublayer_path": "SubLayers/sorting_area_physics.usd",
+      "sorting_sublayer_sha256": "331d05475875ab18613e8c7112a92f0bede3b6d3bafd082633eea37b0483c398",
+      "sorting_area_instance_paths": [
+        "/World/Sorting_Area/SM_CratePacking_Table_A1_02",
+        "/World/Sorting_Area/SM_CratePacking_Table_A1_03"
+      ],
+      "assembly_path": "Props/assembly/SM_CratePacking_Table_A1/SM_CratePacking_Table_A1_physics.usd",
+      "assembly_sha256": "2173941e43b672206983ced927ea2f56f82247e1fc4a43c0a3727205f5c0c9aa",
+      "table_path": "Props/general/SM_HeavyDutyPackingTable_C02_01/SM_HeavyDutyPackingTable_C02_01_physics.usd",
+      "table_sha256": "7c7348b37d7be04eafabcaf20f1f5a05c7a9c0633bc1ba7048ff4fae2ba005c5",
+      "required_background_dependency_closure_resolved": true,
+      "full_assembly_optional_clutter_dependency_closure_resolved": false,
+      "omitted_optional_clutter_used_for_task_or_scoring": false,
+      "materialized_subset_file_count": 34,
+      "materialized_subset_size_bytes": 198666960,
+      "materialized_subset_manifest_sha256": "895d1114fc1d90f2be1baabb7dfee70bfb343f8cbaa241b8afaa001188fc07cd",
+      "selection_frozen_before_learned_policy_outcomes": true,
+      "robot_pov_background": {
+        "render_resolution": [
+          224,
+          224
+        ],
+        "renderer": "usdrecord_metal",
+        "camera_contract": "same_frozen_external_camera_as_mujoco_interaction_layer",
+        "background_png_sha256": "6ea57b8f01e9cda36c63f0c6493d7407eaefcec2a332fa4dba8383555f489a13",
+        "background_png_size_bytes": 13360,
+        "derived_workcell_stage_sha256": "0105ebeced712b8ef5d99a10b9b410f644481cc37f63ce9877c30a0f309e230b",
+        "source_material_fallback_warning": true
+      }
+    },
+    "execution_backend": "nvidia_usd_visual_workcell_plus_frozen_mujoco_interaction_layer",
+    "isaac_physics_claimed": false
   },
   "interactive_assets": [
     {
       "asset_id": "nvidia_simready_spraycan_a01",
       "role": "task_object",
       "sha256": "fe34476927334e5cb6cba9b90cfa3b442e46580af8150bda1ae867827b3c40a2",
-      "dependency_tree_sha256": "1b6c75702518b24171b424c189adcb516b14b03ef60986288d9e56d5b4f16ce2"
+      "dependency_tree_sha256": "1b6c75702518b24171b424c189adcb516b14b03ef60986288d9e56d5b4f16ce2",
+      "runtime_collision_representation": "frozen_mujoco_rigid_cylinder_proxy",
+      "unresolved_optional_omniverse_material_references": [
+        "physics_metal.usda",
+        "physics_plastic.usda",
+        "OmniPBR.mdl"
+      ]
     },
     {
       "asset_id": "blueprint_marked_tray_v1",
@@ -37,7 +76,9 @@
     "profile_id": "franka_droid_fixed_base_v1",
     "visual_kinematic_source_revision": "71f066ad0be9cd271f7ed58c030243ef157af9f4",
     "visual_kinematic_tree_sha256": "3142d8e707b36ad61bd5e242a32f2406321f14eb05be5833cde442123d067d6f",
-    "action_interface": "DROID-compatible Cartesian delta end-effector plus gripper"
+    "action_interface": "OpenPI PolaRiS DROID absolute joint position plus gripper position",
+    "action_dimensions": 8,
+    "action_adapter_frozen": true
   },
   "task_semantics": {
     "instruction": "Pick up the spray can and place it inside the marked tray.",
@@ -51,27 +92,43 @@
     "policy_specific_scoring_changes": false,
     "physical_answer_key": false
   },
+  "scene_feasibility_control": {
+    "controller": "scripted_ik_joint_position_positive_control",
+    "uses_learned_policy": false,
+    "must_run_before_learned_policy_scoring": true,
+    "must_pass_all_frozen_success_predicates": true,
+    "failure_disposition": "block_learned_policy_ranking_and_repair_scene_or_task_contract_without_inspecting_learned_policy_outcomes",
+    "interpretation_if_oracle_passes_and_all_learned_policies_fail": "sim_visual_domain_gap_confound_or_policy_sim_transfer_failure; do not call this physical policy incompetence and do not retune the scene after observing policy identities",
+    "claim_boundary": "This proves only that the simulated task, controller path, contacts, and deterministic predicates are achievable."
+  },
   "candidate_policy_preflight": {
     "minimum_policy_count": 4,
-    "preferred_same_family_ladder": "Floppy Bagel checkpoints if runnable weights become attributable",
-    "fallback_candidates": [
-      "pi0_droid",
-      "pi0_fast_droid",
-      "paligemma_fast_droid",
-      "paligemma_fast_specialist_droid"
+    "frozen_cohort_artifact": "warehouse_policy_cohort_v2_joint_position.json",
+    "learned_candidates": [
+      "pi05_droid_jointpos_polaris",
+      "pi0_fast_droid_jointpos_polaris",
+      "pi0_droid_jointpos_polaris",
+      "pi0_droid_jointpos_100k_polaris"
     ],
-    "weights_and_exact_adapters_verified": false,
+    "nonlearned_negative_control": "stationary_joint_position_negative_control",
+    "checkpoint_inventory_artifact": "openpi_polaris_checkpoint_inventory.json",
+    "checkpoint_inventory_sha256": "492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+    "weights_and_exact_adapters_verified": true,
     "live_policy_rollouts_executed": false
   },
   "claim_boundary": {
-    "controlled_scene_execution_completed": false,
+    "controlled_scene_execution_completed": true,
     "simulator_is_physical_answer_key": false,
     "physical_robot_operated": false,
-    "purpose": "diagnose WAM_simulator_evaluator_disagreement_before_captured_site_transfer"
+    "purpose": "controlled_visual_domain_bridge_before_captured_site_transfer",
+    "nvidia_usd_assets_used": true,
+    "isaac_physics_execution_completed": false,
+    "prospective_policy_ranking_completed": false,
+    "positive_and_negative_control_report": "nvidia_warehouse_dynamic_hybrid_control.json"
   },
   "result_type": "controlled_simulation_diagnostic",
   "independent_physical_ranking_answer_key": false,
   "site_specific_physical_accuracy_proven": false,
   "blockers": [],
-  "bundle_sha256": "274f68e9c219915906c5f01d11b09d0f440419b9a1be3ef964ca8047fd3007aa"
+  "bundle_sha256": "65ac09a279c50a27c352910c01600ccd2789b6c714ba570dcc2fa436f2ba9056"
 }

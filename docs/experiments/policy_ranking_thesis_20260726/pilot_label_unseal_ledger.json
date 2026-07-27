@@ -1,6 +1,6 @@
 {
   "schema_version": "policy_ranking_label_unseal_ledger.v1",
-  "protocol_sha256": "fadd4e3b701d6c51f4df7deb275d17668f501334a17bb948e0c6860f6665ad1d",
+  "protocol_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
   "entries": [
     {
       "partition": "pilot",
@@ -16,9 +16,64 @@
       "gate_or_threshold_changed_after_exposure": false,
       "eligible_for_heldout_evidence": false,
       "notes": "This is a permitted pilot unseal, not a calibration or held-out unseal. The source label values are intentionally omitted from this ledger."
+    },
+    {
+      "partition": "pilot",
+      "scope": "all_seven_frozen_pilot_sessions",
+      "opened_at": "2026-07-26T11:27:03-0500",
+      "opened_by": "Codex experiment operator",
+      "reason": "registered aggregate pilot evaluation after 98 of 98 label-blind predictions passed completeness and leakage checks",
+      "prediction_run_sha256": "65eae42270071573c0616a997f1c7332d0aeaeda8bb3b4b5f89c6d9231857c94",
+      "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
+      "metadata_sources": [
+        {"session_id": "cb3a637a-bea7-45f2-84dc-50fda57dd912", "metadata_sha256": "9aef39b239368b74e471d0a962bdd7816b80a9700a337a659e4a0b1036e5509b"},
+        {"session_id": "ea52540c-3f2d-45ff-80c1-ac44cdd4d054", "metadata_sha256": "c9f03ab5fab9cd5280501607e4007e33d54eb60d65882db238459550675ccba8"},
+        {"session_id": "7ccd5be8-c1d6-4917-871d-905015915744", "metadata_sha256": "163305fab3080c922b1ea502f4e0d007856da2184cf6a554fb27e5989eb0d36f"},
+        {"session_id": "d2ebd2f2-a807-4be5-a72f-e7ed624659d4", "metadata_sha256": "20a834948b2b9c058e2932e1ff3e8c58b70e7774d3cebfa3a95cabb312f7bdfd"},
+        {"session_id": "f80985e2-fda2-40c8-9a1c-e84e26693ceb", "metadata_sha256": "1037b68958806d167f971b8c9965b931f9abaa954c07aa1be6a7fb0db5fb0b12"},
+        {"session_id": "f6e9020f-8abf-43e7-b6fc-9af024909f0d", "metadata_sha256": "0fed96fb2bf7889f9a1b4f5252a28a5c90a3040eb8e7da5d729c302e80707f11"},
+        {"session_id": "dd029360-b954-4bfd-b154-401fb9f4d592", "metadata_sha256": "9170d9697859bde52bce42e1113c5e68c35160e061f54d591122c0d283c58a90"}
+      ],
+      "pii_present_in_sources": true,
+      "pii_copied_to_experiment_artifacts": false,
+      "labels_copied_to_evaluator_requests": false,
+      "calibration_or_heldout_labels_seen": false,
+      "threshold_changed_after_exposure": false,
+      "label_basis_amendment": "All three preregistered label sources are now reported separately; binary success remains visible, partial success is a deterministic tie-break, and preference is a separate contradiction metric.",
+      "report_sha256": "3f4f2faf83cbd3b89cf17638a84c5b175583c2e30fe0d1819eb466c3425031fc",
+      "eligible_for_heldout_evidence": false
+    },
+    {
+      "partition": "calibration",
+      "scope": "all_seven_frozen_calibration_sessions",
+      "opened_at": "2026-07-26T11:38:43-0500",
+      "opened_by": "Codex experiment operator",
+      "reason": "registered calibration evaluation after 98 of 98 label-blind predictions passed completeness and leakage checks",
+      "prediction_run_sha256": "40125739f72fdb5917470704628796c27be936b23844d15002b1e73f9279363c",
+      "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
+      "metadata_sources": [
+        {"session_id": "d25151dd-e1c7-4851-ab78-9ccdfdd94e50", "metadata_sha256": "aad756965cc2b9bc4918c6f16bf5e17e86a31bd8c9dcc1114560a0ebd85a3885"},
+        {"session_id": "70d36427-d166-4475-82ff-4de60431f2b0", "metadata_sha256": "1430ee6ff34f2954cacd08f0da0e4193de4225232914aa92c9caa8db9b78b867"},
+        {"session_id": "f3ee5084-5290-4ac0-a007-a4f4fa7b47e4", "metadata_sha256": "40fe5b4755827e3063434daa3a39ce9245a6f9f71f25e927eec5f65338314e32"},
+        {"session_id": "4f05ca12-ded4-43b0-83bd-6a35ed4ba120", "metadata_sha256": "dacbd08862c177e3f06a269568e1f4c5d49ae91adbdeda23d9c111345e5b8cb8"},
+        {"session_id": "739165f0-2b54-4776-91b8-1530a4148feb", "metadata_sha256": "7fceeb464c7ff3ce19838b98f39e46c9b4116c40bda5d0959530ca2a78559699"},
+        {"session_id": "69f9098b-86c9-419e-9c4b-75f8ae7f7525", "metadata_sha256": "18c13f0df5e77d9eaefec062584755efc034ed26c0030cdd9370741065c3d0f6"},
+        {"session_id": "3cb05d31-18ce-4154-897d-bec852521e5b", "metadata_sha256": "aa36ed8e2b357cb3117a7b291a45fb9d08281320667ca4c14a07763edef19843"}
+      ],
+      "pii_present_in_sources": true,
+      "pii_copied_to_experiment_artifacts": false,
+      "labels_copied_to_evaluator_requests": false,
+      "pilot_labels_previously_seen": true,
+      "calibration_labels_opened": true,
+      "heldout_labels_opened": false,
+      "threshold_changed_after_exposure": false,
+      "label_basis_amendment": "label_basis_amendment_001.json was recorded after pilot unseal and before calibration unseal",
+      "report_sha256": "e485937135c2ab37bafe414e0c49d37c44bd513bf783b4293877e59224e4a9ca",
+      "eligible_for_calibration_decision": true,
+      "eligible_for_final_heldout_claim": false
     }
   ],
-  "calibration_partition_unsealed": false,
+  "calibration_partition_unsealed": true,
   "heldout_partition_unsealed": false,
   "unlogged_label_access_detected": false,
   "claim_boundary": "The disclosed pilot exposure cannot support held-out evidence and cannot be used to change frozen gates."

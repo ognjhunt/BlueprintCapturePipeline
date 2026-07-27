@@ -1,0 +1,73 @@
+{
+  "schema_version": "franka_droid_closed_loop_control_report.v1",
+  "status": "failed_positive_control_gate",
+  "runner": {
+    "source_sha256": "bf98764150a89bd33d5e61fe8c6757a4c1cb8be0399e0b3d19624e855f52b92c",
+    "test_source_sha256": "add453d1bd4064f9166821139bdde460f4855ccd0734f5ac42ad380710b13ddd",
+    "simulator": "MuJoCo 3.9.0",
+    "observation_contract": "two live uint8 224x224 RGB views, seven joint positions, one gripper position, and the frozen task prompt",
+    "action_contract": "10x8 OpenPI DROID chunk with the first eight rows executed at 15 Hz",
+    "camera_execution": "fixed external plus hand-transform-derived wrist view recomputed before every policy query"
+  },
+  "frozen_controls": {
+    "scripted_positive": {
+      "policy_id": "scripted_ik_positive_control",
+      "status": "completed",
+      "contract_valid": true,
+      "action_steps_executed": 168,
+      "policy_query_count": 21,
+      "lift_delta_m": 0.0013325984048450784,
+      "contained_in_tray_interior": false,
+      "final_linear_speed_m_s": 0.1083791890878061,
+      "task_success": false,
+      "manifest_sha256": "cee43aed9db9d8ef047b9c6c1edbb224c019e023d512012150405b72306c3749",
+      "file_sha256": "7f0d40fa53d26caecbb3a5ca06ee3c0884e8416b7264778269fa90f922d9138b"
+    },
+    "zero_negative": {
+      "policy_id": "zero_action_negative_control",
+      "status": "completed",
+      "contract_valid": true,
+      "action_steps_executed": 160,
+      "policy_query_count": 20,
+      "lift_delta_m": 0.0003649767983121416,
+      "contained_in_tray_interior": false,
+      "final_linear_speed_m_s": 0.00030127312169148313,
+      "task_success": false,
+      "manifest_sha256": "c165828d1d19bd4fc2a13c896be8d73e8bf62743296914ee39bc6006c3d1b812",
+      "file_sha256": "69dac851dc6bbc5d0f8aea0337005c66f57ae1648b6150159b12f80bb4940116"
+    }
+  },
+  "gates": {
+    "negative_control_rejected": true,
+    "scripted_positive_control_passed": false,
+    "learned_policy_spend_admitted": false,
+    "warehouse_closed_loop_admitted": false,
+    "captured_site_closed_loop_admitted": false
+  },
+  "development_history": {
+    "scripted_iterations_preserved": 17,
+    "eligible_as_frozen_policy_results": false,
+    "all_task_success_false": true,
+    "all_final_containment_false": true,
+    "maximum_observed_lift_delta_m": 0.004794318898725808,
+    "reason_not_eligible": "These runs changed control staging, waypoint height, or tracking assumptions after observing failures and are retained only as engineering diagnostics. They cannot be selected as policy-ranking evidence."
+  },
+  "contradiction": {
+    "continuous_scripted_oracle_passed": true,
+    "continuous_scripted_oracle_lift_delta_m": 0.10122197328775875,
+    "chunked_droid_scripted_control_passed": false,
+    "interpretation": "The scene and articulated robot are feasible, but the current eight-action 15 Hz DROID-to-MuJoCo low-level translation does not preserve the working grasp through lift. Camera validity and action-shape validity therefore do not establish controller fidelity."
+  },
+  "decision": {
+    "action": "stop_before_learned_policy_gpu_spend",
+    "required_resolution": "Integrate and attribute a faithful public DROID low-level controller or otherwise demonstrate that the unchanged scripted positive control passes the same frozen observation/action seam before any learned-policy ranking is accepted."
+  },
+  "claim_boundary": {
+    "learned_policy_executed": false,
+    "wam_executed": false,
+    "nvidia_warehouse_executed": false,
+    "captured_3dgs_composited": false,
+    "physical_robot_executed": false,
+    "policy_ranking_proven": false
+  }
+}

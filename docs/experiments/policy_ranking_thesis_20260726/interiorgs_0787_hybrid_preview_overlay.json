@@ -1,0 +1,66 @@
+{
+  "schema_version": "hybrid_3dgs_preview_overlay.v1",
+  "claim_boundary": "visual_registration_review_only_not_usd_loading_physics_or_policy_execution",
+  "items": [
+    {
+      "id": "table_74_local_surface_proxy",
+      "shape": "box",
+      "position": [1.9086943, 1.2457356, 0.748],
+      "scale": [1.43993, 0.52, 0.02],
+      "color": 7412244,
+      "opacity": 0.20
+    },
+    {
+      "id": "simready_spraycan_proxy",
+      "shape": "cylinder",
+      "position": [1.65, 1.20, 0.848],
+      "scale": [0.065, 0.22, 0.065],
+      "rotation_euler_rad": [1.5707963268, 0.0, 0.0],
+      "color": 15158332,
+      "opacity": 1.0
+    },
+    {
+      "id": "marked_tray_base_proxy",
+      "shape": "box",
+      "position": [2.12, 1.22, 0.763],
+      "scale": [0.40, 0.32, 0.03],
+      "color": 14073,
+      "opacity": 0.92
+    },
+    {
+      "id": "franka_base_proxy",
+      "shape": "cylinder",
+      "position": [1.9086943, 0.45, 0.19],
+      "scale": [0.16, 0.38, 0.16],
+      "rotation_euler_rad": [1.5707963268, 0.0, 0.0],
+      "color": 14540253,
+      "opacity": 0.95
+    },
+    {
+      "id": "franka_link_proxy_1",
+      "shape": "box",
+      "position": [1.9086943, 0.67, 0.55],
+      "scale": [0.10, 0.46, 0.10],
+      "rotation_euler_rad": [0.75, 0.0, 0.0],
+      "color": 15658734,
+      "opacity": 0.95
+    },
+    {
+      "id": "franka_link_proxy_2",
+      "shape": "box",
+      "position": [1.9086943, 0.96, 0.78],
+      "scale": [0.09, 0.40, 0.09],
+      "rotation_euler_rad": [1.10, 0.0, 0.0],
+      "color": 15658734,
+      "opacity": 0.95
+    },
+    {
+      "id": "franka_gripper_proxy",
+      "shape": "box",
+      "position": [1.9086943, 1.15, 0.84],
+      "scale": [0.13, 0.10, 0.10],
+      "color": 2236962,
+      "opacity": 0.95
+    }
+  ]
+}

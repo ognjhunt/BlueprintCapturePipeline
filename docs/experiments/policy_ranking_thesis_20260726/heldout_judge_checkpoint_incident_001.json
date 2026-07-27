@@ -1,0 +1,33 @@
+{
+  "schema_version": "policy_ranking_operational_incident.v1",
+  "incident_id": "heldout_checkpoint_overwrite_001",
+  "occurred_before_label_unseal": true,
+  "benchmark_labels_seen": false,
+  "metric_or_threshold_changed": false,
+  "evaluator_request_changed": false,
+  "prior_provider_run": {
+    "status": "blocked_by_provider_rate_limit",
+    "request_count": 686,
+    "accepted_judgment_count": 121,
+    "semantic_failure_count": 0,
+    "rate_limit_blocker_count": 565,
+    "estimated_cost_usd_conservative": 3.6246275,
+    "wall_time_seconds": 3115.9156444580294,
+    "canonical_run_sha256": "26af01424e6f997ba9193edc7202230b60ee0a1ad2b92ad64ed69cd88f380595"
+  },
+  "incident": {
+    "cause": "A resume command was launched from a shell that had not loaded .env.local. The runner's missing-credential fail-closed branch replaced the resumable output path with a zero-row blocker artifact.",
+    "lost_artifact": "the local copies of 121 accepted judgments",
+    "provider_responses_retrievable": false,
+    "reason_not_retrievable": "Responses were sent with store=false and no separate checkpoint backup existed.",
+    "labels_or_pii_exposed": false
+  },
+  "disposition": {
+    "rerun_exact_frozen_requests": true,
+    "duplicate_provider_cost_retained_in_total_economics": true,
+    "lower_concurrency_only": true,
+    "heldout_labels_remain_sealed": true,
+    "code_guard_added": "Matching nonempty checkpoints are no longer overwritten by missing-gate or missing-credential preflight failures.",
+    "incident_can_be_removed_from_evidence": false
+  }
+}

@@ -45,6 +45,10 @@ from .groot_oscar_infrastructure_admission import (
     build_live_machine_capability_evidence,
     validate_carrier_image_archive,
 )
+from .image_build_result_verification import (
+    validate_remote_carrier_result,
+    validate_remote_openpi_result,
+)
 from .groot_oscar_model_cache_wheelhouse import (
     _wheel_compatible,
     plan_model_cache_wheelhouse,
@@ -54,6 +58,12 @@ from .groot_oscar_remote_build_results import (
     validate_remote_build_results,
 )
 from .paid_resource_admission import require_paid_resource_admission
+from .openpi_policy_ranking_remote_build_packet import (
+    BUILD_SCRIPT_NAME as OPENPI_BUILD_SCRIPT,
+    PACKET_DIRNAME as OPENPI_PACKET_DIRECTORY,
+    PACKET_KIND as OPENPI_PACKET_KIND,
+    validate_openpi_policy_ranking_archive,
+)
 
 SCHEMA_VERSION = "groot_oscar_digitalocean_builder_run.v1"
 WATCHDOG_SCHEMA_VERSION = "groot_oscar_digitalocean_builder_watchdog.v1"
@@ -70,8 +80,16 @@ MODEL_CACHE_RESULT_FILES = (
 )
 CARRIER_PACKET_DIRECTORY = "groot_oscar_carrier_remote_build"
 CARRIER_BUILD_SCRIPT = "remote_build_groot_oscar_carrier.sh"
-CARRIER_RESULT_NAME = "groot_oscar_carrier_remote_build_result.json"
 DETACHED_CPU_BUILD_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_CPU_BUILD_SUPERVISOR"
+IMAGE_PACKET_KINDS = frozenset({"thin_release", "carrier_image", OPENPI_PACKET_KIND})
+
+
+def _image_packet_layout(packet_kind: str) -> tuple[str, str]:
+    if packet_kind == "carrier_image":
+        return CARRIER_PACKET_DIRECTORY, CARRIER_BUILD_SCRIPT
+    if packet_kind == OPENPI_PACKET_KIND:
+        return OPENPI_PACKET_DIRECTORY, OPENPI_BUILD_SCRIPT
+    return "groot_oscar_thin_remote_build", "remote_build_groot_oscar_thin_images.sh"
 
 
 def _safe_archive_member(name: str) -> bool:
@@ -473,6 +491,8 @@ def verify_packet_tarball(packet: Mapping[str, Any]) -> dict[str, Any]:
             blockers.extend(_validate_model_cache_archive(path, packet))
         elif packet.get("packet_kind") == "carrier_image":
             blockers.extend(validate_carrier_image_archive(packet))
+        elif packet.get("packet_kind") == OPENPI_PACKET_KIND:
+            blockers.extend(validate_openpi_policy_ranking_archive(packet))
     return {
         "schema_version": "groot_oscar_builder_packet_tarball_verification.v1",
         "status": "verified" if not blockers else "blocked",
@@ -480,52 +500,6 @@ def verify_packet_tarball(packet: Mapping[str, Any]) -> dict[str, Any]:
         "tarball_path": str(path),
         "declared_sha256": declared or None,
         "observed_sha256": observed or None,
-        "raw_secret_values_recorded": False,
-    }
-
-
-def validate_remote_carrier_result(
-    results_dir: Path, *, packet: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Bind the carrier build receipt to the exact packet and registry digest."""
-
-    blockers: list[str] = []
-    path = results_dir / CARRIER_RESULT_NAME
-    payload = _load_object(path) if path.is_file() else {}
-    resolved = str(payload.get("resolved_digest_ref") or "")
-    expected_tag = str(packet.get("carrier_image_ref") or "")
-    expected_base = str(packet.get("carrier_base_image_ref") or "")
-    expected_dockerfile = str(packet.get("carrier_dockerfile_sha256") or "")
-    if payload.get("schema_version") != "groot_oscar_carrier_remote_build_result.v1":
-        blockers.append("carrier_remote_build_result_schema_invalid")
-    if payload.get("status") != "completed" or payload.get("blockers") not in ([], ()):
-        blockers.append("carrier_remote_build_not_completed")
-    if payload.get("image_ref") != expected_tag:
-        blockers.append("carrier_remote_build_image_ref_mismatch")
-    if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", resolved):
-        blockers.append("carrier_remote_build_digest_ref_invalid")
-    else:
-        expected_repository = expected_tag.split("@", 1)[0]
-        if ":" in expected_repository.rsplit("/", 1)[-1]:
-            expected_repository = expected_repository.rsplit(":", 1)[0]
-        resolved_repository = resolved.split("@", 1)[0]
-        if resolved_repository != expected_repository:
-            blockers.append("carrier_remote_build_digest_repository_mismatch")
-    if payload.get("base_image_ref") != expected_base:
-        blockers.append("carrier_remote_build_base_ref_mismatch")
-    if payload.get("dockerfile_sha256") != expected_dockerfile:
-        blockers.append("carrier_remote_build_dockerfile_sha256_mismatch")
-    if payload.get("source_commit") != packet.get("source_commit"):
-        blockers.append("carrier_remote_build_source_commit_mismatch")
-    if payload.get("platform") != "linux/amd64":
-        blockers.append("carrier_remote_build_platform_invalid")
-    if payload.get("raw_secret_values_recorded") is not False:
-        blockers.append("carrier_remote_build_secret_boundary_invalid")
-    return {
-        "schema_version": "groot_oscar_carrier_remote_build_verification.v1",
-        "status": "verified" if not blockers else "blocked",
-        "blockers": sorted(set(blockers)),
-        "resolved_digest_ref": resolved or None,
         "raw_secret_values_recorded": False,
     }
 
@@ -878,11 +852,11 @@ def build_cloud_init(
         raise ValueError("launch_bound_host_key_material_missing")
     if shutdown_minutes <= 0 or shutdown_minutes > 120:
         raise ValueError("shutdown_minutes_must_be_between_1_and_120")
-    if packet_kind not in {"thin_release", "carrier_image", "model_cache_s3"}:
+    if packet_kind not in {*IMAGE_PACKET_KINDS, "model_cache_s3"}:
         raise ValueError("builder_packet_kind_unsupported")
     if runtime_bundle_requested and packet_kind != "model_cache_s3":
         raise ValueError("runtime_bundle_requires_model_cache_packet")
-    if packet_kind in {"thin_release", "carrier_image"}:
+    if packet_kind in IMAGE_PACKET_KINDS:
         package_lines = (
             "  - ca-certificates\n  - curl\n  - git\n  - jq\n  - python3\n"
             "  - docker.io\n  - docker-buildx"
@@ -1311,7 +1285,7 @@ def run_builder(
         return result
     try:
         _read_secret(login_private_key)
-        if packet_kind in {"thin_release", "carrier_image"}:
+        if packet_kind in IMAGE_PACKET_KINDS:
             _read_private_secret(docker_username_file)
             _read_private_secret(docker_password_file)
         else:
@@ -1335,6 +1309,8 @@ def run_builder(
         name = f"blueprint-groot-oscar-cache-{str(packet['allocation_nonce'])[:16]}"
     elif packet_kind == "carrier_image":
         name = f"blueprint-groot-oscar-carrier-{str(packet['source_commit'])[:8]}"
+    elif packet_kind == OPENPI_PACKET_KIND:
+        name = f"blueprint-openpi-ranking-{str(packet['source_commit'])[:8]}"
     else:
         name = f"blueprint-groot-oscar-thin-{str(packet['source_commit'])[:8]}"
     user_data = build_cloud_init(
@@ -1590,7 +1566,7 @@ def run_builder(
         transfers: list[tuple[Path, str]] = [
             (packet_tarball, f"/root/blueprint-build/{packet_tarball.name}")
         ]
-        if packet_kind in {"thin_release", "carrier_image"}:
+        if packet_kind in IMAGE_PACKET_KINDS:
             transfers.extend(
                 [
                     (docker_username_file.expanduser(), "/root/blueprint-build/docker_username"),
@@ -1668,17 +1644,8 @@ def run_builder(
             else:
                 local_capability_cleanup_verified = not capability_path.exists()
         remote_tarball = "/root/blueprint-build/" + packet_tarball.name
-        if packet_kind in {"thin_release", "carrier_image"}:
-            packet_directory = (
-                CARRIER_PACKET_DIRECTORY
-                if packet_kind == "carrier_image"
-                else "groot_oscar_thin_remote_build"
-            )
-            build_script = (
-                CARRIER_BUILD_SCRIPT
-                if packet_kind == "carrier_image"
-                else "remote_build_groot_oscar_thin_images.sh"
-            )
+        if packet_kind in IMAGE_PACKET_KINDS:
+            packet_directory, build_script = _image_packet_layout(packet_kind)
             remote_command = " && ".join(
                 [
                     "set -euo pipefail",
@@ -1728,12 +1695,8 @@ def run_builder(
         build_exit = completed.returncode
         results_dir = output / "remote_results"
         ensure_dir(results_dir)
-        if packet_kind in {"thin_release", "carrier_image"}:
-            packet_directory = (
-                CARRIER_PACKET_DIRECTORY
-                if packet_kind == "carrier_image"
-                else "groot_oscar_thin_remote_build"
-            )
+        if packet_kind in IMAGE_PACKET_KINDS:
+            packet_directory, _build_script = _image_packet_layout(packet_kind)
             subprocess.run(
                 [
                     "scp",
@@ -1746,6 +1709,9 @@ def run_builder(
             if packet_kind == "carrier_image":
                 result_verification = validate_remote_carrier_result(results_dir, packet=packet)
                 verification_name = "remote_carrier_build_result_verification.json"
+            elif packet_kind == OPENPI_PACKET_KIND:
+                result_verification = validate_remote_openpi_result(results_dir, packet=packet)
+                verification_name = "remote_openpi_build_result_verification.json"
             else:
                 result_verification = validate_remote_build_results(results_dir)
                 verification_name = "remote_build_results_verification.json"
@@ -1882,7 +1848,11 @@ def run_builder(
                         else (
                             "remote_carrier_image_build_failed"
                             if packet_kind == "carrier_image"
-                            else "remote_thin_image_build_failed"
+                            else (
+                                "remote_openpi_policy_ranking_image_build_failed"
+                                if packet_kind == OPENPI_PACKET_KIND
+                                else "remote_thin_image_build_failed"
+                            )
                         )
                     )
                 ]
@@ -1921,8 +1891,7 @@ def run_builder(
         "maximum_compute_spend_usd": teardown["maximum_compute_spend_usd"],
         "raw_secret_values_recorded": False,
         "claim_boundary": {
-            "image_build_is_not_model_cache_verification": packet_kind
-            in {"thin_release", "carrier_image"},
+            "image_build_is_not_model_cache_verification": packet_kind in IMAGE_PACKET_KINDS,
             "image_build_is_not_runpod_startup": True,
             "image_build_is_not_task_success": True,
         },

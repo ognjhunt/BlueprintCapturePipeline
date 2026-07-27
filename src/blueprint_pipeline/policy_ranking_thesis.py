@@ -25,7 +25,7 @@ import yaml
 from .common import write_json
 
 
-PREREGISTRATION_SCHEMA = "policy_ranking_thesis_preregistration.v1"
+PREREGISTRATION_SCHEMA = "policy_ranking_thesis_preregistration.v2"
 ROLLOUT_INDEX_SCHEMA = "frozen_wam_rollout_index.v1"
 JUDGE_RESULT_SCHEMA = "policy_ranking_episode_judgment.v1"
 CALIBRATION_REPORT_SCHEMA = "policy_ranking_frozen_calibration_report.v1"
@@ -115,7 +115,7 @@ def build_preregistration(
 
     protocol: dict[str, Any] = {
         "schema_version": PREREGISTRATION_SCHEMA,
-        "protocol_id": "blueprint_franka_roboarena_oscar_v1",
+        "protocol_id": "blueprint_franka_roboarena_oscar_v2",
         "frozen": True,
         "split_salt": SPLIT_SALT,
         "hypotheses": {
@@ -145,6 +145,11 @@ def build_preregistration(
             "released_rollout_count": 441,
             "paper_pool_claim": 455,
             "unresolved_count_contradiction": 14,
+            "released_subset_selection_process": "not_documented",
+            "selection_bias_caveat": (
+                "The 441 released rollouts are an author-provided subset of the paper's "
+                "claimed 455; representativeness cannot be assumed."
+            ),
             "generated_half": "left_half_only",
             "third_party_physical_half_forbidden_to_evaluator": True,
         },
@@ -159,6 +164,57 @@ def build_preregistration(
             "full_temporal_method": "frozen_temporal_32_frame_progress_judge_v1",
             "cheap_baseline_method": "frozen_first_last_frame_progress_judge_v1",
             "no_benchmark_labels_in_request": True,
+            "provider_configuration": {
+                "model_snapshot": "gpt-5-2025-08-07",
+                "reasoning_effort": "high",
+                "max_output_tokens_including_reasoning": 8192,
+                "temperature": "not_requested_model_default",
+                "top_p": "not_requested_model_default",
+                "seed": "not_supported_by_this_responses_configuration",
+                "image_detail": "low",
+                "strict_json_schema": True,
+                "store": False,
+            },
+            "retry_rule": {
+                "maximum_exact_attempts_per_request": 2,
+                "configuration_change_between_attempts_forbidden": True,
+                "accept_first_valid_response_only": True,
+                "all_attempt_usage_preserved": True,
+                "exhausted_request_result": "explicit_abstention_and_inconclusive_if_required_matrix_incomplete",
+            },
+        },
+        "power_analysis": {
+            "artifact": "power_analysis.json",
+            "analysis_unit": "heldout_session_cluster",
+            "heldout_session_count": 49,
+            "within_session_pairs_treated_as_independent": False,
+            "one_sided_alpha": 0.05,
+            "target_power": 0.80,
+            "null_accuracy": 0.50,
+            "conservative_minimum_detectable_accuracy": 0.6776,
+            "exact_binomial_reference_minimum_accuracy": 0.6783,
+            "sample_size_basis": "all_released_complete_sessions_remaining_after_pilot_and_calibration",
+            "small_effect_or_wide_interval_disposition": "inconclusive",
+            "adjacent_pairs_exempt_from_decision_rule": False,
+        },
+        "experimental_lanes": {
+            "lane_a_frozen_benchmark": {
+                "rollout_mode": "author_generated_open_loop_action_replay",
+                "answer_key": "independent_frozen_roboarena_real_policy_outcomes",
+            },
+            "lane_b_controlled_bridge": {
+                "required_before_lane_c_claim": True,
+                "scene": "nvidia_physicalai_simready_warehouse_01",
+                "rollout_mode": "blueprint_operated_closed_loop_policy_in_the_loop",
+                "evaluator": "deterministic_object_state_predicates_plus_frozen_visual_consistency_check",
+                "independent_physical_answer_key": False,
+                "claim": "closed_loop_execution_and_internal_simulator_outcome_bridge_only",
+            },
+            "lane_c_captured_site": {
+                "rollout_mode": "blueprint_operated_closed_loop_policy_in_the_loop",
+                "claim": "prospective_externally_calibrated_ranking_only",
+            },
+            "lane_a_does_not_validate_lane_b_or_c_closed_loop_behavior": True,
         },
         "thresholds": {
             "episode_judge_confidence_min": 0.65,
@@ -211,6 +267,7 @@ def build_preregistration(
                 "full_temporal_pairwise_accuracy_gt_strongest_frozen_cheap_baseline",
                 "selective_accuracy_gain_gte_0_05_at_coverage_gte_0_25",
                 "heldout_action_following_pass_rate_gte_0_80",
+                "blueprint_operated_closed_loop_warehouse_bridge_passes_frozen_deterministic_predicates_without_policy_specific_scoring",
                 "identical_evaluator_digest_used_for_unseen_3dgs_transfer",
                 "hybrid_scene_keeps_3dgs_visual_source_and_local_interaction_assets_separate",
                 "prospective_transfer_ranks_at_least_four_policies_without_policy_specific_scoring",
@@ -223,6 +280,7 @@ def build_preregistration(
                 "heldout_action_following_pass_rate_lt_0_80",
                 "data_leakage_detected",
                 "transfer_requires_policy_specific_evaluator_changes",
+                "closed_loop_bridge_requires_policy_specific_tuning_or_cannot_execute",
                 "cost_advantage_eliminated",
             ],
             "inconclusive_if_any_required_component_unmeasured": True,
@@ -233,6 +291,8 @@ def build_preregistration(
             "captured_site_physical_success_proven": False,
             "captured_site_policy_ordering_proven": False,
             "blueprint_operated_physical_robot": False,
+            "open_loop_calibration_proves_blueprint_closed_loop_wam_behavior": False,
+            "warehouse_deterministic_predicates_are_independent_physical_truth": False,
         },
     }
     protocol["protocol_sha256"] = canonical_sha256(protocol)
@@ -362,6 +422,8 @@ def validate_judgment(row: Mapping[str, Any], protocol: Mapping[str, Any]) -> li
         protocol["evaluator"]["cheap_baseline_method"],
     }:
         blockers.append("method")
+    if str(row.get("policy_id") or "") not in set(protocol["policies"]):
+        blockers.append("policy_id")
     for field in (
         "success_probability",
         "judge_confidence",
@@ -377,6 +439,8 @@ def validate_judgment(row: Mapping[str, Any], protocol: Mapping[str, Any]) -> li
         blockers.append("benchmark_label_leakage")
     if row.get("third_party_physical_pixels_seen") is not False:
         blockers.append("physical_half_leakage")
+    if not isinstance(row.get("abstained"), bool):
+        blockers.append("abstained")
     return blockers
 
 
@@ -447,10 +511,21 @@ def _percentile(values: Sequence[float], fraction: float) -> float | None:
     return ordered[low] * (high - position) + ordered[high] * (position - low)
 
 
-def _benchmark_outcomes(metadata_path: Path) -> dict[str, dict[str, float]]:
+def _benchmark_session_labels(
+    metadata_path: Path,
+) -> tuple[dict[str, dict[str, float]], str | None]:
     payload = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
     outcomes: dict[str, dict[str, float]] = {}
-    for row in payload.get("policies", []):
+    raw_policies = payload.get("policies", [])
+    slot_to_policy: dict[str, str] = {}
+    if isinstance(raw_policies, Mapping):
+        policy_rows = raw_policies.values()
+        for slot, row in raw_policies.items():
+            if isinstance(row, Mapping):
+                slot_to_policy[str(slot)] = str(row.get("policy_name") or "")
+    else:
+        policy_rows = raw_policies
+    for row in policy_rows:
         if not isinstance(row, Mapping):
             continue
         policy_id = str(row.get("policy_name") or "")
@@ -459,7 +534,17 @@ def _benchmark_outcomes(metadata_path: Path) -> dict[str, dict[str, float]]:
                 "binary_success": float(bool(row.get("binary_success"))),
                 "partial_success": float(row.get("partial_success") or 0.0),
             }
-    return outcomes
+    raw_preference = str(payload.get("preference") or "")
+    preferred_policy = slot_to_policy.get(raw_preference, raw_preference)
+    if preferred_policy not in outcomes:
+        preferred_policy = None
+    return outcomes, preferred_policy
+
+
+def _benchmark_outcomes(metadata_path: Path) -> dict[str, dict[str, float]]:
+    """Compatibility wrapper that returns only PII-free per-policy outcomes."""
+
+    return _benchmark_session_labels(metadata_path)[0]
 
 
 def _episode_rows(
@@ -497,12 +582,18 @@ def evaluate_frozen_calibration(
     protocol: Mapping[str, Any],
     roboarena_root: str | Path,
     partition: str = "heldout",
+    expected_evaluator_digest: str | None = None,
 ) -> dict[str, Any]:
     """Join frozen predictions to labels and compute preregistered metrics."""
 
     if partition not in {"pilot", "calibration", "heldout"}:
         raise ValueError("invalid_partition")
     rows, blockers = _episode_rows(judgments, protocol, partition)
+    evaluator_digests = sorted({str(row["evaluator_digest"]) for row in rows})
+    if len(evaluator_digests) != 1:
+        blockers.append(f"evaluator_digest_count:{len(evaluator_digests)}")
+    if expected_evaluator_digest is not None and evaluator_digests != [expected_evaluator_digest]:
+        blockers.append("evaluator_digest_mismatch")
     methods = (
         protocol["evaluator"]["full_temporal_method"],
         protocol["evaluator"]["cheap_baseline_method"],
@@ -510,10 +601,13 @@ def evaluate_frozen_calibration(
     expected = len(protocol["partitions"][partition]) * len(protocol["policies"])
     root = Path(roboarena_root).resolve()
     labels: dict[str, dict[str, dict[str, float]]] = {}
+    preferred_policies: dict[str, str | None] = {}
     for session_id in protocol["partitions"][partition]:
-        labels[session_id] = _benchmark_outcomes(
+        outcomes, preferred = _benchmark_session_labels(
             root / "evaluation_sessions" / session_id / "metadata.yaml"
         )
+        labels[session_id] = outcomes
+        preferred_policies[session_id] = preferred
 
     by_method: dict[str, dict[str, Any]] = {}
     for method in methods:
@@ -522,9 +616,11 @@ def evaluate_frozen_calibration(
             blockers.append(f"{method}:expected_{expected}:got_{len(selected)}")
         predicted_by_policy: dict[str, list[float]] = defaultdict(list)
         actual_by_policy: dict[str, list[float]] = defaultdict(list)
+        partial_by_policy: dict[str, list[float]] = defaultdict(list)
         brier_terms: list[float] = []
         correctness: list[float] = []
         selective_correctness: list[float] = []
+        selective_predicted_by_policy: dict[str, list[float]] = defaultdict(list)
         action_passes: list[float] = []
         false_success = false_failure = actual_failure = actual_success = 0
         thresholds = protocol["thresholds"]
@@ -537,6 +633,7 @@ def evaluate_frozen_calibration(
             actual = outcome["binary_success"]
             predicted_by_policy[row["policy_id"]].append(probability)
             actual_by_policy[row["policy_id"]].append(actual)
+            partial_by_policy[row["policy_id"]].append(outcome["partial_success"])
             brier_terms.append((probability - actual) ** 2)
             predicted_class = float(probability >= 0.5)
             correctness.append(float(predicted_class == actual))
@@ -553,9 +650,11 @@ def evaluate_frozen_calibration(
                 >= thresholds["selective_judge_confidence_min"]
                 and abs(probability - 0.5) >= thresholds["pair_score_margin_min"] / 2
                 and not bool(row.get("critical_contradiction"))
+                and not bool(row["abstained"])
             )
             if selective:
                 selective_correctness.append(float(predicted_class == actual))
+                selective_predicted_by_policy[row["policy_id"]].append(probability)
             if actual == 0:
                 actual_failure += 1
                 false_success += int(predicted_class == 1)
@@ -569,22 +668,75 @@ def evaluate_frozen_calibration(
         actual_means = {
             policy: sum(values) / len(values) for policy, values in actual_by_policy.items()
         }
+        partial_means = {
+            policy: sum(values) / len(values) for policy, values in partial_by_policy.items()
+        }
+        # Binary success is primary; mean partial progress breaks binary-rate ties.
+        # Multiplying by n+1 guarantees one binary-success count dominates any
+        # possible partial-progress difference on an n-session partition.
+        lexicographic_actual = {
+            policy: actual_means[policy] * (len(protocol["partitions"][partition]) + 1)
+            + partial_means.get(policy, 0.0)
+            for policy in actual_means
+        }
         session_ids = list(protocol["partitions"][partition])
         rng = random.Random(20260726)
-        bootstrap_accuracy: list[float] = []
+        label_bases = ("binary_success", "binary_then_partial", "preference_winner_vs_rest")
+        bootstrap_accuracy: dict[str, list[float]] = {basis: [] for basis in label_bases}
+        bootstrap_selective_accuracy: dict[str, list[float]] = {
+            basis: [] for basis in label_bases
+        }
         lookup = {(row["session_id"], row["policy_id"]): row for row in selected}
-        replicates = int(thresholds["bootstrap_replicates"])
-        for _ in range(replicates):
-            sample = [rng.choice(session_ids) for _ in session_ids]
-            right = total = 0
+
+        def episode_is_selective(row: Mapping[str, Any]) -> bool:
+            return bool(
+                float(row["action_following_confidence"])
+                >= thresholds["action_following_confidence_min"]
+                and float(row["temporal_coherence_confidence"])
+                >= thresholds["temporal_coherence_confidence_min"]
+                and float(row["judge_confidence"])
+                >= thresholds["selective_judge_confidence_min"]
+                and not bool(row.get("critical_contradiction"))
+                and not bool(row["abstained"])
+            )
+
+        def pairwise_stats(
+            sample: Sequence[str], *, selective_only: bool, label_basis: str
+        ) -> tuple[float | None, int, int]:
+            right = 0.0
+            evaluated = 0
+            informative = 0
             for session_id in sample:
                 session_labels = labels.get(session_id, {})
                 for index, left_policy in enumerate(protocol["policies"]):
                     for right_policy in protocol["policies"][index + 1 :]:
                         left_label = session_labels.get(left_policy, {}).get("binary_success")
                         right_label = session_labels.get(right_policy, {}).get("binary_success")
-                        if left_label is None or right_label is None or left_label == right_label:
+                        if left_label is None or right_label is None:
                             continue
+                        label_delta: float | None
+                        if label_basis == "binary_success":
+                            label_delta = left_label - right_label
+                        elif label_basis == "binary_then_partial":
+                            label_delta = left_label - right_label
+                            if label_delta == 0:
+                                label_delta = (
+                                    session_labels[left_policy]["partial_success"]
+                                    - session_labels[right_policy]["partial_success"]
+                                )
+                        elif label_basis == "preference_winner_vs_rest":
+                            preferred = preferred_policies.get(session_id)
+                            if left_policy == preferred and right_policy != preferred:
+                                label_delta = 1.0
+                            elif right_policy == preferred and left_policy != preferred:
+                                label_delta = -1.0
+                            else:
+                                label_delta = None
+                        else:  # pragma: no cover - locally fixed callers
+                            raise ValueError(f"unknown_label_basis:{label_basis}")
+                        if label_delta is None or label_delta == 0:
+                            continue
+                        informative += 1
                         left_row = lookup.get((session_id, left_policy))
                         right_row = lookup.get((session_id, right_policy))
                         if left_row is None or right_row is None:
@@ -592,24 +744,109 @@ def evaluate_frozen_calibration(
                         delta = float(left_row["success_probability"]) - float(
                             right_row["success_probability"]
                         )
-                        if delta == 0:
+                        if selective_only and (
+                            not episode_is_selective(left_row)
+                            or not episode_is_selective(right_row)
+                            or abs(delta) < thresholds["pair_score_margin_min"]
+                        ):
                             continue
-                        total += 1
-                        right += int(delta * (left_label - right_label) > 0)
-            if total:
-                bootstrap_accuracy.append(right / total)
+                        evaluated += 1
+                        if delta == 0:
+                            right += 0.5
+                        else:
+                            right += float(delta * label_delta > 0)
+            return (right / evaluated if evaluated else None, evaluated, informative)
+
+        pairwise_by_basis: dict[str, dict[str, Any]] = {}
+        for basis in label_bases:
+            observed, _, informative = pairwise_stats(
+                session_ids, selective_only=False, label_basis=basis
+            )
+            selective_observed, selective_count, _ = pairwise_stats(
+                session_ids, selective_only=True, label_basis=basis
+            )
+            coverage = selective_count / informative if informative else 0.0
+            pairwise_by_basis[basis] = {
+                "accuracy": observed,
+                "informative_pair_count": informative,
+                "selective_pair_count": selective_count,
+                "selective_accuracy": selective_observed,
+                "selective_coverage": coverage,
+                "selective_accuracy_gain": (
+                    selective_observed - observed
+                    if selective_observed is not None and observed is not None
+                    else None
+                ),
+            }
+        replicates = int(thresholds["bootstrap_replicates"])
+        for _ in range(replicates):
+            sample = [rng.choice(session_ids) for _ in session_ids]
+            for basis in label_bases:
+                replicate_accuracy, _, _ = pairwise_stats(
+                    sample, selective_only=False, label_basis=basis
+                )
+                if replicate_accuracy is not None:
+                    bootstrap_accuracy[basis].append(replicate_accuracy)
+                replicate_selective, _, _ = pairwise_stats(
+                    sample, selective_only=True, label_basis=basis
+                )
+                if replicate_selective is not None:
+                    bootstrap_selective_accuracy[basis].append(replicate_selective)
+        for basis in label_bases:
+            pairwise_by_basis[basis]["bootstrap_ci95"] = [
+                _percentile(bootstrap_accuracy[basis], 0.025),
+                _percentile(bootstrap_accuracy[basis], 0.975),
+            ]
+            pairwise_by_basis[basis]["bootstrap_valid_replicates"] = len(
+                bootstrap_accuracy[basis]
+            )
+            pairwise_by_basis[basis]["selective_bootstrap_ci95"] = [
+                _percentile(bootstrap_selective_accuracy[basis], 0.025),
+                _percentile(bootstrap_selective_accuracy[basis], 0.975),
+            ]
+            pairwise_by_basis[basis]["selective_bootstrap_valid_replicates"] = len(
+                bootstrap_selective_accuracy[basis]
+            )
+        primary_pairwise = pairwise_by_basis["binary_then_partial"]
         accuracy = sum(correctness) / len(correctness) if correctness else None
         selective_accuracy = (
             sum(selective_correctness) / len(selective_correctness)
             if selective_correctness
             else None
         )
+        selective_predicted_means = {
+            policy: sum(values) / len(values)
+            for policy, values in selective_predicted_by_policy.items()
+        }
+        predicted_top = max(predicted_means, key=predicted_means.get) if predicted_means else None
+        benchmark_top = (
+            max(lexicographic_actual, key=lexicographic_actual.get)
+            if lexicographic_actual
+            else None
+        )
+        top_policy_regret = (
+            actual_means[benchmark_top] - actual_means[predicted_top]
+            if predicted_top in actual_means and benchmark_top in actual_means
+            else None
+        )
         by_method[method] = {
             "episode_count": len(selected),
             "predicted_policy_success": predicted_means,
+            "selective_predicted_policy_success": selective_predicted_means,
+            "selective_policy_episode_count": {
+                policy: len(selective_predicted_by_policy.get(policy, []))
+                for policy in protocol["policies"]
+            },
             "benchmark_policy_success": actual_means,
+            "benchmark_policy_partial_success": partial_means,
             "spearman": _spearman(predicted_means, actual_means),
             "kendall_tau_b": _kendall_tau_b(predicted_means, actual_means),
+            "spearman_binary_then_partial": _spearman(
+                predicted_means, lexicographic_actual
+            ),
+            "kendall_tau_b_binary_then_partial": _kendall_tau_b(
+                predicted_means, lexicographic_actual
+            ),
             "episode_accuracy": accuracy,
             "brier_score": sum(brier_terms) / len(brier_terms) if brier_terms else None,
             "selective_accuracy": selective_accuracy,
@@ -622,18 +859,29 @@ def evaluate_frozen_calibration(
             "action_following_pass_rate": (
                 sum(action_passes) / len(action_passes) if action_passes else None
             ),
+            "abstention_rate": (
+                1.0 - len(selective_correctness) / len(correctness) if correctness else None
+            ),
             "false_success_rate": false_success / actual_failure if actual_failure else None,
             "false_failure_rate": false_failure / actual_success if actual_success else None,
             "session_pairwise_accuracy_bootstrap_ci95": [
-                _percentile(bootstrap_accuracy, 0.025),
-                _percentile(bootstrap_accuracy, 0.975),
+                *primary_pairwise["bootstrap_ci95"],
             ],
-            "top_policy": max(predicted_means, key=predicted_means.get)
-            if predicted_means
-            else None,
-            "benchmark_top_policy": max(actual_means, key=actual_means.get)
-            if actual_means
-            else None,
+            "session_pairwise_accuracy": primary_pairwise["accuracy"],
+            "informative_session_pair_count": primary_pairwise["informative_pair_count"],
+            "selective_session_pair_count": primary_pairwise["selective_pair_count"],
+            "selective_session_pairwise_accuracy": primary_pairwise["selective_accuracy"],
+            "selective_session_pairwise_coverage": primary_pairwise["selective_coverage"],
+            "selective_session_pairwise_accuracy_gain": primary_pairwise[
+                "selective_accuracy_gain"
+            ],
+            "selective_session_pairwise_accuracy_bootstrap_ci95": [
+                *primary_pairwise["selective_bootstrap_ci95"],
+            ],
+            "pairwise_by_label_basis": pairwise_by_basis,
+            "top_policy": predicted_top,
+            "benchmark_top_policy": benchmark_top,
+            "top_policy_regret": top_policy_regret,
         }
 
     full = by_method.get(methods[0], {})
@@ -646,14 +894,14 @@ def evaluate_frozen_calibration(
         ),
         "positive_kendall": bool((full.get("kendall_tau_b") or 0.0) > 0.0),
         "beats_cheap_baseline": bool(
-            full.get("episode_accuracy") is not None
-            and baseline.get("episode_accuracy") is not None
-            and full["episode_accuracy"] > baseline["episode_accuracy"]
+            full.get("session_pairwise_accuracy") is not None
+            and baseline.get("session_pairwise_accuracy") is not None
+            and full["session_pairwise_accuracy"] > baseline["session_pairwise_accuracy"]
         ),
         "abstention_improves": bool(
-            (full.get("selective_coverage") or 0.0)
+            (full.get("selective_session_pairwise_coverage") or 0.0)
             >= protocol["thresholds"]["minimum_selective_coverage"]
-            and (full.get("selective_accuracy_gain") or -1.0)
+            and (full.get("selective_session_pairwise_accuracy_gain") or -1.0)
             >= protocol["thresholds"]["minimum_selective_accuracy_gain"]
         ),
         "action_following": bool((full.get("action_following_pass_rate") or 0.0) >= 0.80),
@@ -663,6 +911,7 @@ def evaluate_frozen_calibration(
         "status": "blocked" if blockers else "completed",
         "partition": partition,
         "protocol_sha256": protocol.get("protocol_sha256"),
+        "evaluator_digest": evaluator_digests[0] if len(evaluator_digests) == 1 else None,
         "benchmark_outcomes_unsealed_after_predictions": True,
         "methods": by_method,
         "gates": gates,
@@ -795,6 +1044,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     evaluate.add_argument("--roboarena-root", required=True)
     evaluate.add_argument("--protocol", required=True)
     evaluate.add_argument("--partition", default="heldout")
+    evaluate.add_argument("--expected-evaluator-digest")
     evaluate.add_argument("--output", required=True)
     hybrid = sub.add_parser("hybrid-bundle")
     hybrid.add_argument("--spec", required=True)
@@ -820,6 +1070,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             protocol=_read_json(args.protocol),
             roboarena_root=args.roboarena_root,
             partition=args.partition,
+            expected_evaluator_digest=args.expected_evaluator_digest,
         )
     elif args.command == "hybrid-bundle":
         result = build_hybrid_scene_bundle(_read_json(args.spec))

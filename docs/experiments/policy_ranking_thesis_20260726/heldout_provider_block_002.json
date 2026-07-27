@@ -1,0 +1,31 @@
+{
+  "schema_version": "policy_ranking_provider_block.v1",
+  "attempt_id": "heldout_exact_rerun_002",
+  "status": "blocked_by_provider_rate_limit",
+  "frozen_request_identity": {
+    "inventory_sha256": "1455f074779d1b5a3c000c9dd6fc63ba2fa979933e0aa1c43643ecfd9682158f",
+    "model": "gpt-5-2025-08-07",
+    "prompt_sha256": "095f2cf31b42eb9aef165c7d1665063807abe0e7023faf7bfe198f1936497ae4",
+    "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
+    "request_count": 686,
+    "store": false
+  },
+  "result": {
+    "accepted_judgment_count": 0,
+    "semantic_failure_count": 0,
+    "rate_limit_blocker_count": 686,
+    "wall_time_seconds": 2199.171838582959,
+    "estimated_cost_usd_conservative": 0.0,
+    "run_sha256": "23e1eabcb8e50200905f78f9fb5b5cfb032c854a45c40411a8726942a23a1041",
+    "artifact_file_sha256": "3b43d4c945484e72cb24aa68c3a9e060b5a3e80560557912b7d79145cab197e4"
+  },
+  "integrity": {
+    "heldout_labels_remained_sealed": true,
+    "threshold_or_metric_changed": false,
+    "request_or_prompt_changed": false,
+    "lower_concurrency_only": true,
+    "raw_credentials_written": false,
+    "physical_video_or_pii_uploaded": false
+  },
+  "disposition": "no_heldout_metric_or_ranking_claim_allowed"
+}

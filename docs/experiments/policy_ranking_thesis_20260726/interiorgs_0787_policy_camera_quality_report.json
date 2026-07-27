@@ -1,0 +1,75 @@
+{
+  "schema_version": "captured_site_policy_camera_quality_report.v1",
+  "scene_id": "interiorgs_0787_841244_franka_can_to_tray_v1",
+  "status": "passed_for_static_policy_observation_registration",
+  "trigger": "user_review_found_the_previous_4_by_3_scene_and_robot_pov_insufficiently_clear",
+  "render": {
+    "renderer": "Spark reference 3DGS renderer",
+    "graphics_backend": "local_apple_metal",
+    "cloud_gpu_used": false,
+    "source_splat_count": 630898,
+    "render_splat_count": 630898,
+    "source_decimated": false,
+    "candidate_resolution": [1024, 1024],
+    "review_resolution": [1536, 1536],
+    "policy_resolution": [224, 224],
+    "candidate_count": 8,
+    "candidate_render_wall_time_seconds": 17.950294292,
+    "selected_pair_render_wall_time_seconds": 8.771368125,
+    "provider_cost_usd": 0.0
+  },
+  "frozen_inputs": {
+    "source_compressed_ply_sha256": "9a0c451e57edf3623a77026937757efb09e6a1fc33de1f67699a6b076354ccf6",
+    "policy_camera_contract_sha256": "f4a2a6c02de426922b4d52290ec758f06f41e5381871acc724ab9c186c800c0e",
+    "render_camera_set_sha256": "37a5b9f4884610da6dcbf49b54b638a870eda541f3bf8dc40e3e798ae68ed538",
+    "overlay_sha256": "92f5a778d9bb175692da86a3cd2af0e97370a4663e91761207bfb3149572126b",
+    "candidate_camera_set_sha256": "23506e65dd4b73f103e4e773ddb49d9ae466b70443118f2bf902e944e65ca0d4"
+  },
+  "selected_views": [
+    {
+      "id": "droid_external_primary",
+      "review_png_sha256": "5a0133f2e7d4fb2e7c9e048dec737b702c22f3adf19a383094b6db77bb76972f",
+      "policy_224_png_sha256": "b4ede1a4cc57db1e51e6e9811c0692f83694fb14ebfc8b480dac9775b4086967",
+      "policy_224_bytes": 76038,
+      "red_can_pixel_fraction_at_224": 0.013752,
+      "blue_tray_pixel_fraction_at_224": 0.108658,
+      "mean_edge_energy_at_224": 14.9126,
+      "visual_gate": "pass",
+      "reason": "high centered square view keeps the captured support surface, can, tray, gripper, and arm visible while reducing robot domination and preserving room context"
+    },
+    {
+      "id": "droid_wrist_primary_initial",
+      "review_png_sha256": "8c48168fb9fecda9cad1d0c6a72fb9a40c7f02a6480e7f07e9e1323f19f962c0",
+      "policy_224_png_sha256": "aa0d55abba14a6066b325847bd9b14ad0817eb8a9412f0eca0d631d2100eea22",
+      "policy_224_bytes": 54653,
+      "red_can_pixel_fraction_at_224": 0.027483,
+      "blue_tray_pixel_fraction_at_224": 0.11926,
+      "mean_edge_energy_at_224": 10.7035,
+      "visual_gate": "pass",
+      "reason": "raised link-derived square view exposes both task endpoints and the gripper with less self-occlusion while retaining the captured tabletop"
+    }
+  ],
+  "selection_controls": {
+    "candidate_set_rendered_before_selection": true,
+    "selected_before_any_captured_site_policy_outcome": true,
+    "policy_specific_evaluator_tuning": false,
+    "native_policy_aspect_ratio_used": true,
+    "exact_policy_resolution_artifacts_generated": true
+  },
+  "remaining_limitations": [
+    "the Franka is still a static registration proxy rather than the final textured visual asset",
+    "the wrist camera is frozen at the initial preview pose and must be recomputed from the live hand transform during execution",
+    "the 3DGS visual layer is not yet depth-composited with live simulator geometry",
+    "static clarity does not prove action following, task success, ranking fidelity, or physical performance"
+  ],
+  "proof_boundary": {
+    "captured_3dgs_displayed": true,
+    "native_square_policy_views_rendered": true,
+    "exact_224_policy_inputs_materialized": true,
+    "task_layers_registered_visually": true,
+    "dynamic_link_tracking_executed_in_captured_site": false,
+    "franka_visual_asset_rendered": false,
+    "physics_or_policy_execution_proven": false,
+    "captured_site_ranking_proven": false
+  }
+}

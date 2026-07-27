@@ -3,7 +3,7 @@
 // frames the eval's 6 camera IDs to the splat's real bounding box, and writes per-camera PNGs.
 //
 // Usage:
-//   node render_splat.mjs --splat <file> --out <dir> [--cameras <json>] [--width N --height N] [--bg 0xRRGGBB]
+//   node render_splat.mjs --splat <file> --out <dir> [--cameras <json>] [--width N --height N] [--bg 0xRRGGBB] [--graphics-backend swiftshader|metal]
 //
 // --cameras json (optional): [{ "id": "...", "spec": { "pos":[x,y,z], "target":[x,y,z], "fov":N, "up":[x,y,z] } }, ...]
 // If omitted, six framed views are derived from the splat bounds (overhead/third_person/head_pov/torso/wrist/task_focus).
@@ -34,6 +34,12 @@ const loadTimeoutMs = parseInt(arg("load-timeout-ms", "180000"), 10);
 const warmupMs = parseInt(arg("warmup-ms", "2000"), 10);
 const settleFrames = parseInt(arg("settle-frames", "6"), 10);
 const settleMs = parseInt(arg("settle-ms", "100"), 10);
+const graphicsBackend = String(arg("graphics-backend", "swiftshader")).toLowerCase();
+
+if (!["swiftshader", "metal"].includes(graphicsBackend)) {
+  console.error(`unsupported --graphics-backend: ${graphicsBackend}`);
+  process.exit(2);
+}
 
 if (!splatPath || !outDir) {
   console.error("usage: node render_splat.mjs --splat <file> --out <dir> [--cameras <json>] [--width N --height N]");
@@ -124,13 +130,18 @@ async function main() {
   const port = server.address().port;
   const base = `http://127.0.0.1:${port}`;
 
+  const graphicsArgs = graphicsBackend === "metal"
+    ? ["--use-gl=angle", "--use-angle=metal", "--ignore-gpu-blocklist"]
+    : [
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--ignore-gpu-blocklist",
+        "--enable-unsafe-swiftshader",
+      ];
   const browser = await chromium.launch({
     headless: true,
     args: [
-      "--use-gl=angle",
-      "--use-angle=swiftshader",
-      "--ignore-gpu-blocklist",
-      "--enable-unsafe-swiftshader",
+      ...graphicsArgs,
       "--disable-dev-shm-usage",
     ],
   });
@@ -141,7 +152,15 @@ async function main() {
     if (m.type() === "error") pageErrors.push("console.error: " + m.text());
   });
 
-  let result = { status: "blocked", bounds: null, cameras: [], overlay: null, blockers, page_errors: pageErrors };
+  let result = {
+    status: "blocked",
+    graphics_backend: graphicsBackend,
+    bounds: null,
+    cameras: [],
+    overlay: null,
+    blockers,
+    page_errors: pageErrors,
+  };
   try {
     await page.goto(`${base}/harness.html`, { waitUntil: "load", timeout: 60000 });
     await page.waitForFunction("window.__sparkReady===true", { timeout: 60000 });

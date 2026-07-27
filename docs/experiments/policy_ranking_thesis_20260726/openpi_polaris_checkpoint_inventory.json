@@ -1,0 +1,1553 @@
+{
+  "schema_version": "openpi_checkpoint_inventory.v1",
+  "status": "frozen",
+  "queried_at_utc": "2026-07-26T20:01:59.463003+00:00",
+  "source": "https://storage.googleapis.com/storage/v1/b/openpi-assets/o",
+  "cohort_path": "docs/experiments/policy_ranking_thesis_20260726/warehouse_policy_cohort_v2_joint_position.json",
+  "openpi_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+  "entries": [
+    {
+      "policy_id": "pi05_droid_jointpos_polaris",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris",
+      "object_count": 27,
+      "size_bytes": 12434530837,
+      "legacy_object_manifest_sha256": "1e9e5a53c6bb4cebbbfc23903249126ce5fc0a7ad421c3212e4a4497ff6857d5",
+      "generation_manifest_sha256": "385e9e318d92062e60e2d055296bb90b1ee8db0e0ab5233442382a7a861f81d6",
+      "objects": [
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/_CHECKPOINT_METADATA",
+          "size": "327",
+          "md5Hash": "dmtkz/CxJyxRKNSurBFqZQ==",
+          "crc32c": "SW5iCw==",
+          "generation": "1765645489960106",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:50.018Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/assets/droid/norm_stats.json",
+          "size": "4540",
+          "md5Hash": "OFFWtClbLv18NC1QY7zjIQ==",
+          "crc32c": "8nZVBA==",
+          "generation": "1765645489993104",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:50.052Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/_METADATA",
+          "size": "23500",
+          "md5Hash": "43DVBjGOYWNNsnNfolWKJw==",
+          "crc32c": "/9A9+Q==",
+          "generation": "1765645490020237",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:50.085Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/_sharding",
+          "size": "15092",
+          "md5Hash": "oMX+6jC8bcx4ZrFTKPKLHw==",
+          "crc32c": "Wpp3sw==",
+          "generation": "1765645490018926",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:50.079Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/array_metadatas/process_0",
+          "size": "9076",
+          "md5Hash": "z4cMFfUYC9/PFm2n1yr4iA==",
+          "crc32c": "Chkx7g==",
+          "generation": "1765645490003254",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:50.061Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/d/426c7bac39f6f037cbed95f536602dff",
+          "size": "15704",
+          "md5Hash": "xmC1jeu8sKr73TKiFAoV2g==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645490050791",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:50.113Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/manifest.ocdbt",
+          "size": "118",
+          "md5Hash": "jYpfLEjpivONRAnsPIUQaw==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645490009467",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:50.067Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/05e0df2ad5fd0ae3453dd13a22eeed73",
+          "size": "124250418",
+          "md5Hash": "hjlKRAfL3akignjtExzmNw==",
+          "crc32c": "qXn73g==",
+          "generation": "1765645491156305",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:51.219Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/0f52caa2f182d0a63dbf558e2e64d1e6",
+          "size": "488941302",
+          "md5Hash": "ind2S6HLiXMIQriUCtjPtQ==",
+          "crc32c": "T0Ze5Q==",
+          "generation": "1765645494195848",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:54.273Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/0fc36287ae5c868f4e69e961751db00e",
+          "size": "544308878",
+          "md5Hash": "hm3VGB2HATEa5tmLmxfKAw==",
+          "crc32c": "xn+RfA==",
+          "generation": "1765645497020355",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:57.105Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/1ce00586fa7b9d759ef2f0c4e1449388",
+          "size": "217",
+          "md5Hash": "a5h1sI5a53tFF3yrVar/jQ==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645490091329",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:50.153Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/2c1d5caab07473856a395364f31e7f52",
+          "size": "2149343256",
+          "md5Hash": "eOcIl/EahgAACVENii5rsA==",
+          "crc32c": "aZxyaA==",
+          "generation": "1765645507152808",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:05:07.250Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/346e76508e7aeb15cd98b3fff7c4e86f",
+          "size": "2238964217",
+          "md5Hash": "A4R82SMFb2TBXMA79QUbzA==",
+          "crc32c": "sxYIkg==",
+          "generation": "1765645508286457",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:05:08.379Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/4c15b234b278b6baaa842c366e3b9a95",
+          "size": "559861116",
+          "md5Hash": "31UGL6TlI+tnU5PUQXigIA==",
+          "crc32c": "lvB6Ng==",
+          "generation": "1765645496910145",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:56.985Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/4f02c7303315c2ee33b1c95d7c2ffae6",
+          "size": "1119489074",
+          "md5Hash": "P878nqX//bKUqsAV/su2Tw==",
+          "crc32c": "vvU/Fg==",
+          "generation": "1765645503629399",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:05:03.712Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/5c6fdb99c1f0f8e9410362d64aae197c",
+          "size": "755697081",
+          "md5Hash": "o7CrnIElIqylJcuWlp6txA==",
+          "crc32c": "sdX5AQ==",
+          "generation": "1765645500537520",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:05:00.621Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/6465bb823f0bb20e3ae263542d351d61",
+          "size": "559856073",
+          "md5Hash": "O19IaEPUK69zn/RQHgLnEg==",
+          "crc32c": "waF8PA==",
+          "generation": "1765645499214840",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:59.292Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/759f95e75b26639081693a04c223ed22",
+          "size": "488809314",
+          "md5Hash": "8IrpkLpKH2d2I70C6gK9jQ==",
+          "crc32c": "jVEp+A==",
+          "generation": "1765645498438074",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:58.514Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/7762d6a085080abde33e2f92d544f50b",
+          "size": "1119483079",
+          "md5Hash": "b1rFyAysEjhSoWoMFa6csQ==",
+          "crc32c": "Q2zukA==",
+          "generation": "1765645502909243",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:05:03.011Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/866f74eeac817161ed2d7e21ffb882a5",
+          "size": "488895905",
+          "md5Hash": "77lSuiGvYkW7X8teHCr3sA==",
+          "crc32c": "mHLXhw==",
+          "generation": "1765645494178771",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:54.249Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/94b53d951c49f5e0c71413c0431a9185",
+          "size": "182163009",
+          "md5Hash": "gzNVffKCrb2Qth3rnRQrTQ==",
+          "crc32c": "vsKPLA==",
+          "generation": "1765645492486978",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:52.555Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/a0aee5851efafe6ae6e8dd29673af22c",
+          "size": "559857111",
+          "md5Hash": "sfVYkzll/8OkDc8JHIwyvg==",
+          "crc32c": "OAMlcw==",
+          "generation": "1765645494549795",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:54.635Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/be6bc2b343fe3000d396561f90102313",
+          "size": "1092",
+          "md5Hash": "etd2kbRTzJwQzpmQy/CuNA==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645490121352",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:50.179Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/c4bdffc9f5ca87e118bc3f06acc66dea",
+          "size": "5836855",
+          "md5Hash": "853ipdhh2/JpS1bzfWmxtA==",
+          "crc32c": "86zOjg==",
+          "generation": "1765645490267474",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:50.332Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/e5d96823efba40e8a2742dd76fbff1b5",
+          "size": "488842030",
+          "md5Hash": "Ro1iXIAXSmr56W2R8jCRxQ==",
+          "crc32c": "EtitnQ==",
+          "generation": "1765645493150595",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:53.218Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/d/e838d29d76d75f1424900637c921ba22",
+          "size": "559862313",
+          "md5Hash": "hiSVmYbbMraNitm72HfCjg==",
+          "crc32c": "DTIXcg==",
+          "generation": "1765645493791191",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:53.868Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi05_droid_jointpos_polaris/params/ocdbt.process_0/manifest.ocdbt",
+          "size": "140",
+          "md5Hash": "prUVAsC8VCSUgBF8Ht/iww==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645490081110",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:04:50.147Z"
+        }
+      ]
+    },
+    {
+      "policy_id": "pi0_fast_droid_jointpos_polaris",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/polaris/pi0_fast_droid_jointpos_polaris",
+      "object_count": 36,
+      "size_bytes": 10843569155,
+      "legacy_object_manifest_sha256": "4f6bc8271938d85a72c89cd76b6cc2e80a153c41ba6bb124302ce318e8b74154",
+      "generation_manifest_sha256": "b7ce96876c44f96387c7e4b58811d92e507b65ac79ecd8aa786e1c76c91b9d01",
+      "objects": [
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/_CHECKPOINT_METADATA",
+          "size": "327",
+          "md5Hash": "T7CgNBhReSKWfUyew12Yig==",
+          "crc32c": "nnpIlg==",
+          "generation": "1765645752840825",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:12.898Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/assets/droid/norm_stats.json",
+          "size": "2045",
+          "md5Hash": "MdD9cTBYIHblvwYc+BfzrA==",
+          "crc32c": "IqD8IA==",
+          "generation": "1765645752885282",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:12.946Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/_METADATA",
+          "size": "15821",
+          "md5Hash": "VaTj2dH/Yz551OMXq/VdTg==",
+          "crc32c": "jei9zg==",
+          "generation": "1765645752884930",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:12.955Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/_sharding",
+          "size": "9765",
+          "md5Hash": "eV1UF2QEHlahCIRXwamTWg==",
+          "crc32c": "qvD4wg==",
+          "generation": "1765645752872435",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:12.932Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/array_metadatas/process_0",
+          "size": "5946",
+          "md5Hash": "zhG+ahzuTYoGOCOIl+GRQw==",
+          "crc32c": "NgLCbw==",
+          "generation": "1765645752879934",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:12.938Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/d/5b7268a6f9a05bf1cb8e177dbb9f6bf8",
+          "size": "2797",
+          "md5Hash": "gf0WrU0Go6UH7gqic6ivSw==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645752902091",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:12.966Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/manifest.ocdbt",
+          "size": "118",
+          "md5Hash": "1yMLErHKVDXTpNsdISYf1g==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645752883713",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:12.951Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/0602765c6981dd7ba18975202eb5d80b",
+          "size": "217",
+          "md5Hash": "a5h1sI5a53tFF3yrVar/jQ==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645752904638",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:12.971Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/0dbcc6ba68b8fe664965d1eb9da8a960",
+          "size": "124200749",
+          "md5Hash": "ddEthuONYqLVsYteH3DdsA==",
+          "crc32c": "4dXhEQ==",
+          "generation": "1765645754167259",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:14.234Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/10973941ebc78ff4200a485d0ac200a5",
+          "size": "489280800",
+          "md5Hash": "r0scvOXopQAZcno/CpLpLA==",
+          "crc32c": "PH6FeQ==",
+          "generation": "1765645759105146",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:19.186Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/10e7036a641e310b56ca8a5dabfb5a11",
+          "size": "70127596",
+          "md5Hash": "ukavaMNbzezh0c7UHAjG6g==",
+          "crc32c": "lold+Q==",
+          "generation": "1765645754376909",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:14.436Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/157e06a95e8c5d5cd844f39ce1e09145",
+          "size": "489363840",
+          "md5Hash": "kP4+NldMvBsOOqmbKSJNtg==",
+          "crc32c": "RzIg1A==",
+          "generation": "1765645758867660",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:18.936Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/20ce81e2f5fcff3402f104427ab9f4ce",
+          "size": "124205208",
+          "md5Hash": "jGWp3CMZSF+qRHSiIpYmmA==",
+          "crc32c": "sQ3hTg==",
+          "generation": "1765645755389236",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:15.448Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/249c101c57181ae6c8fb3ea8e72ce311",
+          "size": "1119297901",
+          "md5Hash": "+K5Nk7QWuo43vD63IebJVg==",
+          "crc32c": "MqNnzQ==",
+          "generation": "1765645762592373",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:22.684Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/297fe1db2321dd18c2cc6037bed4269e",
+          "size": "124260407",
+          "md5Hash": "R4B4njhYS+4LLiV48o29cA==",
+          "crc32c": "fqMm4Q==",
+          "generation": "1765645754351024",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:14.419Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/2be95e5eb6ebc8526bb5a4ddf0e1b185",
+          "size": "5339",
+          "md5Hash": "+YaUt1WplkWcvQ+nPxaVkA==",
+          "crc32c": "S8QDZA==",
+          "generation": "1765645752927664",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:12.987Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/37cfcce1623169c74e5efb71443881b0",
+          "size": "1119299105",
+          "md5Hash": "2LuF5Y07lKI5Kgbb5evEYg==",
+          "crc32c": "wgbHAw==",
+          "generation": "1765645759523029",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:19.621Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/46d3a630321dd987801b7037d4b2d0c1",
+          "size": "100711",
+          "md5Hash": "otktWAqmwBrgKVlh1lRDbg==",
+          "crc32c": "kOAPvQ==",
+          "generation": "1765645752988511",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:13.053Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/535e8884bbca29fc810dd20263eec478",
+          "size": "559739762",
+          "md5Hash": "1HIi3cKh7WoF0VugYe8Q5Q==",
+          "crc32c": "RHI/zA==",
+          "generation": "1765645757106889",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:17.188Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/5f4b2b1a8f207e754d9cebaf38dee99e",
+          "size": "1119471684",
+          "md5Hash": "A0IDy/0ykXglBoq0xkia2A==",
+          "crc32c": "EI/HjQ==",
+          "generation": "1765645763142049",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:23.275Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/674da914b5f1fc45272d207059f5a5cd",
+          "size": "220495063",
+          "md5Hash": "gVsKiruOUkVM6SJEzR4cEA==",
+          "crc32c": "X6pmNA==",
+          "generation": "1765645756509858",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:16.579Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/7d4a9510d09966564d93efb2436181d2",
+          "size": "2238597690",
+          "md5Hash": "UyJP65k/0eXnf4JSNeHDXw==",
+          "crc32c": "LvqrMQ==",
+          "generation": "1765645768625302",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:28.732Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/87e5704ceb75cf8db04091feaf5806ce",
+          "size": "124202493",
+          "md5Hash": "680ww79PSsl+XaD3OGYmGQ==",
+          "crc32c": "VDEfdg==",
+          "generation": "1765645755318089",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:15.387Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/aea870bdfd1634fcb0aec290aed3cb37",
+          "size": "103266795",
+          "md5Hash": "sBuSi+gri2eVIkK/HVy1ng==",
+          "crc32c": "tbV8eg==",
+          "generation": "1765645754949880",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:15.017Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/c4e4022fef313696bbcc714c25e2acf5",
+          "size": "260689203",
+          "md5Hash": "zJvCmNnlr3SGUnVtfqyL6A==",
+          "crc32c": "CEbyZQ==",
+          "generation": "1765645757429235",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:17.504Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/c7b71ffba4f1144a1dad541184b3bdbc",
+          "size": "257245211",
+          "md5Hash": "ehTYW3xc9PSPYS4MBOGZ3Q==",
+          "crc32c": "b3Uj2A==",
+          "generation": "1765645757278816",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:17.353Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/ccc14c5f528f36a9df52d7c903d3e7a5",
+          "size": "489504056",
+          "md5Hash": "TOFOvFThJGiuYRcK4JQJkg==",
+          "crc32c": "aK/Nzw==",
+          "generation": "1765645759022985",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:19.101Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/cd5be6d751d555df47e40a52ce7e72df",
+          "size": "264294054",
+          "md5Hash": "gPsEIUNqMpDOlZQByjxO7A==",
+          "crc32c": "I0iU4g==",
+          "generation": "1765645757566510",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:17.639Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/d30f10e9d1180efbeb28f21c93012628",
+          "size": "559738351",
+          "md5Hash": "fhD4tOloKn50YRQu8XfbZg==",
+          "crc32c": "jEclgA==",
+          "generation": "1765645759441237",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:19.510Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/d6dd631fa04977b668e49b791d2a53cf",
+          "size": "124240006",
+          "md5Hash": "qNCGLu45VwXYTA/PqmOOtQ==",
+          "crc32c": "sKlW0Q==",
+          "generation": "1765645755047643",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:15.109Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/da6024169acbb060b1430923c27b2128",
+          "size": "489435806",
+          "md5Hash": "ht8N/YBmJTLqyMVec9Sapg==",
+          "crc32c": "K5dIgw==",
+          "generation": "1765645757275294",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:17.345Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/df8faf2b4e1c188ba8e421ed2a484d00",
+          "size": "97489844",
+          "md5Hash": "oNnbdZliqSyKqqIFK4xvVA==",
+          "crc32c": "U5+8tw==",
+          "generation": "1765645754871755",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:14.939Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/ebf1f098c589e0d4c0e92a0a18836e14",
+          "size": "277810",
+          "md5Hash": "97su3hd4yCKNTFTc4FdLtg==",
+          "crc32c": "EAFFxA==",
+          "generation": "1765645753042965",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:13.101Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/ec5fc7bfe935da33e01ba1aab06c1506",
+          "size": "124199709",
+          "md5Hash": "hesIw0oy6Z2BDedv5uEkSw==",
+          "crc32c": "yUyfyg==",
+          "generation": "1765645755103978",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:15.171Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/d/fca4ffb12918ad783320b8998ee8f943",
+          "size": "150502283",
+          "md5Hash": "6C1G6ZGF1CjnydOK9g1aaw==",
+          "crc32c": "g4kHOg==",
+          "generation": "1765645753877292",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:13.944Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/params/ocdbt.process_0/manifest.ocdbt",
+          "size": "643",
+          "md5Hash": "hKgLvImXVYma8c+xA/NRKA==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645752900635",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:09:12.966Z"
+        }
+      ]
+    },
+    {
+      "policy_id": "pi0_droid_jointpos_polaris",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/polaris/pi0_droid_jointpos_polaris",
+      "object_count": 54,
+      "size_bytes": 11991708493,
+      "legacy_object_manifest_sha256": "0cf2fb2b7583a65fdd7722af743ce0b4f7915fd53b91fd1719e50d0bbdac69b6",
+      "generation_manifest_sha256": "cf76d6e1b05931f27e7656763c9ca8d428beb54d14b6437828ddc44473b3f58b",
+      "objects": [
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/_CHECKPOINT_METADATA",
+          "size": "327",
+          "md5Hash": "+fmv73HveIvU6pWzQW3y2Q==",
+          "crc32c": "EBi0gg==",
+          "generation": "1765645705372882",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.431Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/assets/droid/norm_stats.json",
+          "size": "2418",
+          "md5Hash": "eQncS9WtSx8jj/GZTPSdug==",
+          "crc32c": "wGvvmQ==",
+          "generation": "1765645705384011",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.448Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/_METADATA",
+          "size": "22574",
+          "md5Hash": "ITFpwe6lQ11j8CDTTP+Wpg==",
+          "crc32c": "bJsRfg==",
+          "generation": "1765645705402110",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.465Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/_sharding",
+          "size": "14707",
+          "md5Hash": "4+AFkKmlXm5mVVRhhcvyxg==",
+          "crc32c": "bDnRDA==",
+          "generation": "1765645705400813",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.461Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/array_metadatas/process_0",
+          "size": "8805",
+          "md5Hash": "0ULAqGV0NAfTb1TeGNygcA==",
+          "crc32c": "Gk3AEA==",
+          "generation": "1765645705395462",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.456Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/d/0fca8e829055ff2b634743a5f3b364da",
+          "size": "20320",
+          "md5Hash": "4EMnuVw2IEmigymgIQaPvg==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645705479253",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.537Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/manifest.ocdbt",
+          "size": "120",
+          "md5Hash": "MwTD4wFxbrwyuXWY0A/18Q==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645705392376",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.454Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/097a5dbd7743164e86418d78cbb5ad24",
+          "size": "978818480",
+          "md5Hash": "CAxqZwvdiLZJ6uMHzmjMQw==",
+          "crc32c": "c7CFkg==",
+          "generation": "1765645712693582",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:32.776Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/0abc6418812940c4f6be322a93f28adf",
+          "size": "2234224713",
+          "md5Hash": "hs9EzMCxNQ3wxpODC0i7Jg==",
+          "crc32c": "XvDyhQ==",
+          "generation": "1765645719929293",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:40.054Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/0bc308c97d7ac295fb4432800a6e0bd8",
+          "size": "17491156",
+          "md5Hash": "SMjoeAsP9M9zpHfhABJI/w==",
+          "crc32c": "K1e7wg==",
+          "generation": "1765645705999858",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:26.065Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/106f1093d9cde6da521b0382bc7ae61a",
+          "size": "6844810",
+          "md5Hash": "6PsF5FHykT7DT4gQRTh2aA==",
+          "crc32c": "DIWopQ==",
+          "generation": "1765645705735550",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.800Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/158072e4e3fd07733c21b914e1c784ae",
+          "size": "250865042",
+          "md5Hash": "Mn10SyJPK+UUICX7DtBvIA==",
+          "crc32c": "lNbrqQ==",
+          "generation": "1765645708558306",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:28.629Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/26271e9924f6b5b13d363ab886777d33",
+          "size": "1117120530",
+          "md5Hash": "r87UfcDKGEZNUvEukgUC7w==",
+          "crc32c": "0jsj/w==",
+          "generation": "1765645713187308",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:33.267Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/2a09286fde596f2f716be8796427c761",
+          "size": "248162939",
+          "md5Hash": "7ysdrHsGeJTyaOeVQEmHUQ==",
+          "crc32c": "OBPsIA==",
+          "generation": "1765645708700996",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:28.773Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/349223df6fed4dda36b0d6526d9a05d8",
+          "size": "33183562",
+          "md5Hash": "U4u5kyD3mxiBRdKzMn6d+g==",
+          "crc32c": "Gnvvqg==",
+          "generation": "1765645706088892",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:26.153Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/37857a2650d9e17eb0579040d0477814",
+          "size": "19854",
+          "md5Hash": "wfII/71MnUAYBZcxwTpHEA==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645705508291",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.567Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/3983a65f96816c512ed8849527875863",
+          "size": "69919257",
+          "md5Hash": "cKTzV6RPlAIS08RuJ7CvSA==",
+          "crc32c": "3ZoTWw==",
+          "generation": "1765645706634543",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:26.695Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/439be6f379944a00501a56258f3a7531",
+          "size": "1117131250",
+          "md5Hash": "liUJvAET0OudqCosXgsfvA==",
+          "crc32c": "/AAxrg==",
+          "generation": "1765645713323914",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:33.408Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/4704314321f3ce49ad4b211cd3f061d3",
+          "size": "558652176",
+          "md5Hash": "OLHnb8MDjTvWvQG4WaHkhg==",
+          "crc32c": "AG39yA==",
+          "generation": "1765645710323136",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:30.401Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/47a50631db894b0f8a37817fc49f042a",
+          "size": "124125296",
+          "md5Hash": "wiVvk7HjkG+KChwMWOP0BQ==",
+          "crc32c": "jWMxtw==",
+          "generation": "1765645707792536",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.856Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/4893d757facbb46f3d47104788aabf06",
+          "size": "69913440",
+          "md5Hash": "/0dmUxGUjEtoObdt06COdg==",
+          "crc32c": "p3H+bg==",
+          "generation": "1765645706939912",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.007Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/59092104dcd184375c9fd201cf274d8b",
+          "size": "139753527",
+          "md5Hash": "IUJYZiNK1gFWxdkGssaQIw==",
+          "crc32c": "CWYrFQ==",
+          "generation": "1765645707901624",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.971Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/5c233f9f71dcea4133fb4a93b0322d0c",
+          "size": "124130780",
+          "md5Hash": "ZuHyXxgYAycr01Yj+xuxPw==",
+          "crc32c": "lzqaXQ==",
+          "generation": "1765645707762449",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.832Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/5e6fe6d8af1e9da36faa820159702b6b",
+          "size": "139607010",
+          "md5Hash": "eW0CpfLlb23lWmKCZ+uJVA==",
+          "crc32c": "Ihg4Ug==",
+          "generation": "1765645707873082",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.942Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/62fcc28a95b21d9e4bfe3e76c553b64e",
+          "size": "69858998",
+          "md5Hash": "OwlvpYLf8iKyC+gaD8vz9A==",
+          "crc32c": "mUp+dw==",
+          "generation": "1765645707036193",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.104Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/6c50aa50f1f74b893c523f8ebad8ddb9",
+          "size": "69884798",
+          "md5Hash": "LKDz/QZf//gqJO6Z/oVTkA==",
+          "crc32c": "CN8trQ==",
+          "generation": "1765645707301756",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.361Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/6cc5a32e6e2fb2e1936a7e0afc625b38",
+          "size": "69822452",
+          "md5Hash": "Qm/ZDFvtbXGL7tW3EcpJ2w==",
+          "crc32c": "qWHRRQ==",
+          "generation": "1765645707330457",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.392Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/71b7c49386ca1d325d07cbd8e311269e",
+          "size": "139607601",
+          "md5Hash": "gWW0SFPPR5Qk8GLVZQ/JPg==",
+          "crc32c": "gkJceA==",
+          "generation": "1765645707813105",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.874Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/73561ded03c82d1290da4e3dff53c01d",
+          "size": "124084247",
+          "md5Hash": "IkNE6GfRPD0AQyHnuC3gsg==",
+          "crc32c": "aTlstQ==",
+          "generation": "1765645707712219",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.780Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/78ed73dd39437020a109fe014a7497bf",
+          "size": "34925295",
+          "md5Hash": "5rkkJKjNJdoXBlaSNlPaPg==",
+          "crc32c": "zC9leA==",
+          "generation": "1765645706015656",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:26.074Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/7d65c665159e392dfef1bd515ef258a0",
+          "size": "34926512",
+          "md5Hash": "IU0LGQIyUIRwYiWDKRp9QQ==",
+          "crc32c": "eFUuqA==",
+          "generation": "1765645706163708",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:26.229Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/7ea52fc4942db0701b8e7ca981c5d2f5",
+          "size": "1077",
+          "md5Hash": "Th9FV13gWhYuCXUOF7H3iQ==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645705537952",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.596Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/83e3f15203a2dd6f1b18cee52030de01",
+          "size": "328944788",
+          "md5Hash": "T4tcGPqVefnki40+mWYU0w==",
+          "crc32c": "RsbTyg==",
+          "generation": "1765645708497104",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:28.570Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/8dee6d28a66b17a9b54cad0b27ee610a",
+          "size": "20082",
+          "md5Hash": "tDIFIf2mgDvDmDW8IrMiJA==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645705546103",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.613Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/8f0140f2db3d7c0885f4090b4fd4fc7a",
+          "size": "139608218",
+          "md5Hash": "6c71Mi0yL1nPzT2keg03DA==",
+          "crc32c": "/D/gbA==",
+          "generation": "1765645707894471",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.958Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/9217b1ddb8dceb3b3c6d3766da1fc965",
+          "size": "1117278878",
+          "md5Hash": "P1fZ+eksOTrMwU5cw8S9hw==",
+          "crc32c": "ThmxvQ==",
+          "generation": "1765645715819671",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:35.926Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/93f0ce33a6bff3a86d9da19ec3d2617f",
+          "size": "33184937",
+          "md5Hash": "EJsjD0ZsP2zbWcMukZDuCg==",
+          "crc32c": "Y5FD7Q==",
+          "generation": "1765645706396512",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:26.454Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/9ba4f27b4fadcdbb140138c27889ac24",
+          "size": "558650641",
+          "md5Hash": "yWBhlYuQbd4RZ0v2iBY80w==",
+          "crc32c": "aAEdMg==",
+          "generation": "1765645710998071",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:31.077Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/9e0ebac2988b370e1a9e3a60799d1e0d",
+          "size": "69915478",
+          "md5Hash": "Hk6nw/Az4ucByvzxUPFNnQ==",
+          "crc32c": "yaTvVg==",
+          "generation": "1765645707877657",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.936Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/a29ed32ebd6b0a211ca17a163b854a85",
+          "size": "978658764",
+          "md5Hash": "3HvXHC0uiJmZGBf5Ohwvcw==",
+          "crc32c": "RzBd4A==",
+          "generation": "1765645711847975",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:31.937Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/a2f510a59635fc52f52b11ac06567975",
+          "size": "124129134",
+          "md5Hash": "73aIonDXM08HMQHyb3wmWQ==",
+          "crc32c": "QyiP9g==",
+          "generation": "1765645707341933",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.409Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/b4459a39e41a63c95623f531355d3ddf",
+          "size": "69915400",
+          "md5Hash": "oGYjd4QdY9dau0MATA4eDw==",
+          "crc32c": "4sjaKg==",
+          "generation": "1765645706839916",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:26.901Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/b541c76548c9ea45f909dfd9ba2cef1a",
+          "size": "217",
+          "md5Hash": "a5h1sI5a53tFF3yrVar/jQ==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645705608644",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.668Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/baa4f9720457b0c4ec3e2ac156f82a8e",
+          "size": "139736269",
+          "md5Hash": "aT4/vQbxIiJgbaEjpNm5qQ==",
+          "crc32c": "EN4bWA==",
+          "generation": "1765645707502710",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.572Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/c08ae1fbebc2ea8868f832c896f9aea9",
+          "size": "124088073",
+          "md5Hash": "nNuM+qrZwDZvi4jyUfpqLQ==",
+          "crc32c": "p9aiKQ==",
+          "generation": "1765645707102553",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.164Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/c4192c47eaf1c2b0a86dc3a71a7c34f7",
+          "size": "96019824",
+          "md5Hash": "o0sbB6S5E1Eyw4m9h4S+1Q==",
+          "crc32c": "x3z34Q==",
+          "generation": "1765645706896755",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:26.956Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/c79390e17f3ce12b180788edecec3498",
+          "size": "5644",
+          "md5Hash": "9DkMj2RY64k0760ztZwcsA==",
+          "crc32c": "QI1SoA==",
+          "generation": "1765645705644323",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.709Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/c9909c2ea2ee90d67bcd3f22a62ee41c",
+          "size": "19041",
+          "md5Hash": "TO8hbYXWW86w0Fb/tzqlng==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645705641140",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.699Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/d2a8cab551360c5aae35f6d87bcc4db8",
+          "size": "124125131",
+          "md5Hash": "QNT4CHZSZiTKqgJKt1xDYA==",
+          "crc32c": "tvjuBg==",
+          "generation": "1765645707674340",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.745Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/dadd52cdc38e920fa27498504f94e87f",
+          "size": "69872618",
+          "md5Hash": "bp9UVL7EVDG1WTNiABqV5g==",
+          "crc32c": "da3UaQ==",
+          "generation": "1765645706963173",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.033Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/e1322e60719ee8a1af315c41ce046f27",
+          "size": "34914902",
+          "md5Hash": "yZ0eMd9P2t+SeQSOBEEFFQ==",
+          "crc32c": "XFG9iA==",
+          "generation": "1765645706549496",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:26.607Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/e64be86975948a4fdfb0cc8de448fd18",
+          "size": "69861859",
+          "md5Hash": "i50DWzm4IWaJhD/lkuRDmA==",
+          "crc32c": "EHLGaw==",
+          "generation": "1765645706966801",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.027Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/d/f3d0ffab4cae744b791a4d4107d6f7e7",
+          "size": "139613793",
+          "md5Hash": "iwa+1g4mdMVqDTkjqc13cw==",
+          "crc32c": "wQWiPQ==",
+          "generation": "1765645707439247",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:27.509Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_polaris/params/ocdbt.process_0/manifest.ocdbt",
+          "size": "729",
+          "md5Hash": "mq3SzKgAZ/Ie/ML0Vjp3oA==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645705480631",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:08:25.545Z"
+        }
+      ]
+    },
+    {
+      "policy_id": "pi0_droid_jointpos_100k_polaris",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/polaris/pi0_droid_jointpos_100k_polaris",
+      "object_count": 49,
+      "size_bytes": 12016372812,
+      "legacy_object_manifest_sha256": "c096fad8b7659625ddd9847af89e218bae73db3d3aab86d1c43e49d84531bcb0",
+      "generation_manifest_sha256": "3415882629acb03cbd494d34d59cfef29b7024fc05de39187261f3172e7de70c",
+      "objects": [
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/_CHECKPOINT_METADATA",
+          "size": "327",
+          "md5Hash": "LWt336nIViVUSRIel/VKMg==",
+          "crc32c": "t0RGVg==",
+          "generation": "1765645655222766",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.283Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/assets/droid/norm_stats.json",
+          "size": "2418",
+          "md5Hash": "eQncS9WtSx8jj/GZTPSdug==",
+          "crc32c": "wGvvmQ==",
+          "generation": "1765645655196249",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.261Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/_METADATA",
+          "size": "22574",
+          "md5Hash": "ITFpwe6lQ11j8CDTTP+Wpg==",
+          "crc32c": "bJsRfg==",
+          "generation": "1765645655193042",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.254Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/_sharding",
+          "size": "14707",
+          "md5Hash": "4+AFkKmlXm5mVVRhhcvyxg==",
+          "crc32c": "bDnRDA==",
+          "generation": "1765645655195363",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.258Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/array_metadatas/process_0",
+          "size": "8805",
+          "md5Hash": "0ULAqGV0NAfTb1TeGNygcA==",
+          "crc32c": "Gk3AEA==",
+          "generation": "1765645655222868",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.287Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/d/917713565935dba48f052036a5ed1526",
+          "size": "24026",
+          "md5Hash": "z8PsYE+cC4K89DDbogdokQ==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645655237617",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.309Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/manifest.ocdbt",
+          "size": "120",
+          "md5Hash": "sZV4k22BB+bZ/B2tMyJYDQ==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645655218504",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.277Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/000c1e53cd62de1a32dea3015e9bfda8",
+          "size": "139841679",
+          "md5Hash": "2TZfUxGLfB/+WQhwU0p24g==",
+          "crc32c": "AMgYhQ==",
+          "generation": "1765645656329327",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:36.396Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/005c1105d503156682a53ab28142bb8e",
+          "size": "5645",
+          "md5Hash": "STK2x16Y6f4lUCAhwgc8Bw==",
+          "crc32c": "2FVC5w==",
+          "generation": "1765645655226715",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.296Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/0749f029be02145b7f76e4207bdea74b",
+          "size": "70079388",
+          "md5Hash": "mM1pCb/7GpBivLRmGeKjyA==",
+          "crc32c": "vOmUBg==",
+          "generation": "1765645656438936",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:36.499Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/0e8a506a3bf3c513341031ceb6d75a65",
+          "size": "248491236",
+          "md5Hash": "9+/OkHWiZrXJ8I8zM1yE/g==",
+          "crc32c": "cyKpjQ==",
+          "generation": "1765645657872455",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:37.938Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/1103a5398ca92dfa1627e362e1e0c7d1",
+          "size": "70036663",
+          "md5Hash": "Pqw74ZUBGtqqycEodcqZVQ==",
+          "crc32c": "kJaNyQ==",
+          "generation": "1765645656694929",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:36.763Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/1599d80d5206ec6a74b42dd9550691ce",
+          "size": "33262168",
+          "md5Hash": "sjI/QE894L8lcdYSdlmQ+g==",
+          "crc32c": "mEF31Q==",
+          "generation": "1765645656212570",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:36.271Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/1f052e9e1ed8790e8204ff9862ca5bb2",
+          "size": "279656466",
+          "md5Hash": "Li2Q0peY+fNOT3oKcu6l5A==",
+          "crc32c": "FwdqKg==",
+          "generation": "1765645658050177",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:38.120Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/21dee01f21c1b575269072feed95b0e2",
+          "size": "23745",
+          "md5Hash": "71xaMY9LFbE59d0WGmFbgQ==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645655216386",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.283Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/2a8647fedaf6f40244983d44ffbe1952",
+          "size": "194178635",
+          "md5Hash": "RsolyC3FW5OZ3Oak619IkQ==",
+          "crc32c": "Cjt79Q==",
+          "generation": "1765645657621202",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:37.689Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/2b91bb887d62f783dac891d6f27eaf0f",
+          "size": "139840023",
+          "md5Hash": "d9z3Kd02OzMwMxeRMShX0g==",
+          "crc32c": "m0D4/g==",
+          "generation": "1765645657353636",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:37.421Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/2d44f1aa232251110873918db1657d4b",
+          "size": "70069758",
+          "md5Hash": "3EACiiUCo8NaW4wyMvX4WQ==",
+          "crc32c": "Ti4Mvw==",
+          "generation": "1765645656706009",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:36.768Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/2f596966d74d2d7561f1953a20bfa790",
+          "size": "489433621",
+          "md5Hash": "EySV4kyd7LWVDRpq67POKA==",
+          "crc32c": "KMWcZg==",
+          "generation": "1765645659186500",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:39.265Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/37f7a1596953927954b7f5c7d8fc53c5",
+          "size": "69963701",
+          "md5Hash": "ZuKtH7riBsCphg9go3dRPg==",
+          "crc32c": "MNyHyg==",
+          "generation": "1765645656988603",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:37.047Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/3e0dfe80a0ab561f306c2d99874bc1bb",
+          "size": "356288955",
+          "md5Hash": "dTUJWew3hgqY+fUoKett0Q==",
+          "crc32c": "KqVxEQ==",
+          "generation": "1765645659217199",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:39.294Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/47e9e32f8ccff24f79dbd8f078447df0",
+          "size": "124224510",
+          "md5Hash": "siV/P7cqRKUNddaEGpYwOQ==",
+          "crc32c": "Tt192g==",
+          "generation": "1765645657563300",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:37.622Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/50b5c2e929e4bc80fc054db51ef419eb",
+          "size": "69974903",
+          "md5Hash": "iOy1yJTOTlw5lMm6/Mlb4g==",
+          "crc32c": "wtaz/A==",
+          "generation": "1765645656980917",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:37.040Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/59cbef1e15b2f754b2860057c0282988",
+          "size": "560199308",
+          "md5Hash": "afPA79SIMZbCtmGt2zU1uQ==",
+          "crc32c": "K0/Zyw==",
+          "generation": "1765645660462582",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:40.543Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/690cb63bd2782e077afda45e09996984",
+          "size": "70054057",
+          "md5Hash": "3sQygzE/yilnvd4pwz4z/A==",
+          "crc32c": "0pI5+Q==",
+          "generation": "1765645656440685",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:36.506Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/6fd6f33d49cc6146de4c3349ad19399c",
+          "size": "124290377",
+          "md5Hash": "lm5LIgxhK17zpjms41+GoA==",
+          "crc32c": "H74C7A==",
+          "generation": "1765645656943978",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:37.013Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/7dd9c50bcfd16110cc3d37ad8be11711",
+          "size": "217",
+          "md5Hash": "a5h1sI5a53tFF3yrVar/jQ==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645655325191",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.390Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/8d89e6d81a46ddd01771e9ba32fb59af",
+          "size": "70062887",
+          "md5Hash": "LBE/eaL9PWaVFD2IwXMueg==",
+          "crc32c": "Nv8c0Q==",
+          "generation": "1765645656576931",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:36.635Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/8e3f3bfd90161fe846c5fcbf41aa9cfe",
+          "size": "978579234",
+          "md5Hash": "1zBJfmtzkI3djekvLsujWQ==",
+          "crc32c": "F9lQNQ==",
+          "generation": "1765645663322034",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:43.404Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/9298dea75a460fe1ced2bbbd2114b96c",
+          "size": "33266714",
+          "md5Hash": "4tXvgU2t41/M3QTPSF2NxA==",
+          "crc32c": "OucXgw==",
+          "generation": "1765645655673532",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.743Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/9307356738f8efdceee9e0782c87f0a6",
+          "size": "34992143",
+          "md5Hash": "AMPosncd4Olso5F0CRvnaA==",
+          "crc32c": "wvBHZQ==",
+          "generation": "1765645656248948",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:36.315Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/967d9d54469de12e8a632f48d645551b",
+          "size": "1120295896",
+          "md5Hash": "PhfSJsOKcpMbse5r8jMOIA==",
+          "crc32c": "SmeEoQ==",
+          "generation": "1765645664091252",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:44.166Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/99de8d56e5a95c20cc21cfe80c8c9f17",
+          "size": "1120307695",
+          "md5Hash": "i3tcIGNKAX8hBIpFshVcPA==",
+          "crc32c": "R+DHLA==",
+          "generation": "1765645663897297",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:43.987Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/9d77ed4f8bc3c6a259512a1c4a3c68eb",
+          "size": "124282090",
+          "md5Hash": "nGtOjZ1/uMXVXf5XkNCvcw==",
+          "crc32c": "rwHQzw==",
+          "generation": "1765645657255035",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:37.315Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/9dd4e0a20bb0ed223178502db30b0a79",
+          "size": "70075373",
+          "md5Hash": "AL3vwGp2MQnjza3yDlVz9g==",
+          "crc32c": "c3lafQ==",
+          "generation": "1765645656290363",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:36.349Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/a28b4b0b4c912703d5b017fd232e0320",
+          "size": "338030898",
+          "md5Hash": "4WlgWQloOH61Exq7CmRnOQ==",
+          "crc32c": "BB3LzQ==",
+          "generation": "1765645659273118",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:39.346Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/af94f53ba52a662d1a2520d07d5d2fd7",
+          "size": "560196698",
+          "md5Hash": "8uUQIoQE4/xKet6ZNg8xxA==",
+          "crc32c": "2qnpmA==",
+          "generation": "1765645660484801",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:40.564Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/b2f9ebef43e8847cf8dfb72484664917",
+          "size": "17532713",
+          "md5Hash": "nNFmn2sAZvH7tQYJ85zmgg==",
+          "crc32c": "efudUA==",
+          "generation": "1765645655796441",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.862Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/c62aca4175266e39decfcc505bd9a837",
+          "size": "560197167",
+          "md5Hash": "ihy4qhwsXpwLbQ48DhFEKg==",
+          "crc32c": "3kCvnA==",
+          "generation": "1765645660509468",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:40.576Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/c933aed269046c2ea9020ac83a4379db",
+          "size": "1077",
+          "md5Hash": "Th9FV13gWhYuCXUOF7H3iQ==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645655341823",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.399Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/d6cee47dd0217831fb25f9808eb145ee",
+          "size": "489497079",
+          "md5Hash": "ulUXMRp/Q7JTK8co5uSGpA==",
+          "crc32c": "tEs9VA==",
+          "generation": "1765645659381111",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:39.448Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/d9f2e07efe744f3af8bb970619b8d6b5",
+          "size": "34992294",
+          "md5Hash": "4ORuY//LYeaF1L/LOJA1jA==",
+          "crc32c": "4sLHOw==",
+          "generation": "1765645656131450",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:36.196Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/dece036755a3aacc2b21406004143e8b",
+          "size": "248495637",
+          "md5Hash": "CBnmhYjQZvOBPDVIPa6keQ==",
+          "crc32c": "l825Sg==",
+          "generation": "1765645658020186",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:38.092Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/dfd8e6059830bce2f9c92813b88c78dd",
+          "size": "223977905",
+          "md5Hash": "yNuC2z1BgRyBMnLjLmDhxA==",
+          "crc32c": "60Sk8w==",
+          "generation": "1765645657888514",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:37.957Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/e5dc56b4dd5a3a8e7c5a2bfb27f77649",
+          "size": "560199885",
+          "md5Hash": "7SUoji4GGemJAJkDTWArcw==",
+          "crc32c": "vnh43A==",
+          "generation": "1765645660041468",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:40.128Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/f5d516549ae18909e015d08071f8850e",
+          "size": "2240569051",
+          "md5Hash": "pHY/Man65YHyeEdjksDAbA==",
+          "crc32c": "RjUGyg==",
+          "generation": "1765645670272273",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:50.355Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/f80bd664de6a2485bf96882a99b2cab4",
+          "size": "10857642",
+          "md5Hash": "C/A7NPICTdNbcFfOnnJCWQ==",
+          "crc32c": "ImM+aQ==",
+          "generation": "1765645655668430",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.727Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/d/fbd826d61c12c29f57871bc737f8eacf",
+          "size": "69974188",
+          "md5Hash": "R5Xz5b3C7FJ91ujlBrbsng==",
+          "crc32c": "JmLdKw==",
+          "generation": "1765645656235765",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:36.303Z"
+        },
+        {
+          "name": "checkpoints/polaris/pi0_droid_jointpos_100k_polaris/params/ocdbt.process_0/manifest.ocdbt",
+          "size": "514",
+          "md5Hash": "2CzqMC2vp4G/8MKhOP5N7Q==",
+          "crc32c": "SGdLxw==",
+          "generation": "1765645655245461",
+          "metageneration": "1",
+          "updated": "2025-12-13T17:07:35.310Z"
+        }
+      ]
+    }
+  ],
+  "blockers": [],
+  "claim_boundary": {
+    "public_object_identity_frozen": true,
+    "checkpoint_downloaded": false,
+    "checkpoint_loaded": false,
+    "learned_policy_executed": false,
+    "checkpoint_license_resolved": false
+  },
+  "inventory_sha256": "492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063"
+}

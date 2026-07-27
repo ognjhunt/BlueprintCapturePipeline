@@ -1,0 +1,77 @@
+{
+  "schema_version": "policy_ranking_controlled_usd_hybrid_control.v1",
+  "status": "positive_and_negative_controls_passed",
+  "scene_id": "nvidia_warehouse_franka_can_to_tray_control_v2",
+  "source": {
+    "dataset": "nvidia/PhysicalAI-SimReady-Warehouse-01",
+    "revision": "c7fe115cb79c7ddbd0532630d7768b5736b0ecc4",
+    "root_usd_sha256": "4e01e55f055689ff0cd669f33c6c305f73add8903547eaf3ef070d515cb2ec8a",
+    "sorting_sublayer_sha256": "331d05475875ab18613e8c7112a92f0bede3b6d3bafd082633eea37b0483c398",
+    "selected_assembly": "Props/assembly/SM_CratePacking_Table_A1/SM_CratePacking_Table_A1_physics.usd",
+    "selected_assembly_sha256": "2173941e43b672206983ced927ea2f56f82247e1fc4a43c0a3727205f5c0c9aa",
+    "selected_table_sha256": "7c7348b37d7be04eafabcaf20f1f5a05c7a9c0633bc1ba7048ff4fae2ba005c5",
+    "license": "CC-BY-4.0"
+  },
+  "background": {
+    "representation": "camera_bound_selected_nvidia_usd_workcell_render",
+    "resolution": [224, 224],
+    "renderer": "usdrecord_metal",
+    "png_sha256": "6ea57b8f01e9cda36c63f0c6493d7407eaefcec2a332fa4dba8383555f489a13",
+    "png_size_bytes": 13360,
+    "camera_contract": "same frozen external camera used by the live MuJoCo interaction layer",
+    "full_warehouse_rendered": false,
+    "optional_static_clutter_dependencies_omitted": true,
+    "source_material_fallback_warning": true
+  },
+  "dynamic_composition": {
+    "external_observation": "frozen_nvidia_usd_background_plus_live_mujoco_robot_task_segmentation",
+    "wrist_observation": "live_link_mounted_mujoco_camera",
+    "live_interaction_geometries": ["franka_panda", "spraycan_proxy", "tray"],
+    "excluded_geometry": "mujoco_floor",
+    "physics_backend": "MuJoCo 3.9.0 local_interaction_sidecar_only",
+    "isaac_physics_executed": false,
+    "physical_answer_key": false
+  },
+  "positive_control": {
+    "policy_id": "scripted_ik_joint_position_positive_control",
+    "artifact": "private_evidence/nvidia_warehouse_positive_control/franka_droid_closed_loop.json",
+    "file_sha256": "2c8c603f39b5fcec56e572cf4ce283a7334c3946c9694808e8be696e7086ff5d",
+    "manifest_sha256": "1d5028eb51894e126f205a5fbe6f38c20fcff6d86cfc933369499c329b6e97f2",
+    "action_steps": 168,
+    "policy_queries": 21,
+    "lift_delta_m": 0.10954349744557258,
+    "contained_in_tray": true,
+    "final_linear_speed_m_s": 0.0000553282504546175,
+    "dynamic_interaction_pixel_count_min": 5897,
+    "dynamic_interaction_pixel_count_max": 6732,
+    "task_success": true
+  },
+  "negative_control": {
+    "policy_id": "stationary_joint_position_negative_control",
+    "artifact": "private_evidence/nvidia_warehouse_negative_control/franka_droid_closed_loop.json",
+    "file_sha256": "b88d9c3fc919549e5159093c6ac025a949c3e1ee96bbcbce57aee2925a0dda63",
+    "manifest_sha256": "35be8be23b38eefd97e2061ab42386da8ac8dea3ffdf7b515ab687e0845e7576",
+    "action_steps": 160,
+    "policy_queries": 20,
+    "lift_delta_m": 0.0011468296884048906,
+    "contained_in_tray": false,
+    "dynamic_interaction_pixel_count_min": 5785,
+    "dynamic_interaction_pixel_count_max": 6137,
+    "task_success": false
+  },
+  "admission": {
+    "controlled_visual_domain_execution_passed": true,
+    "learned_policy_execution_admitted": true,
+    "learned_policy_execution_completed": false,
+    "prospective_warehouse_ranking_completed": false,
+    "paid_gpu_execution_completed": false
+  },
+  "claim_boundary": {
+    "proves_nvidia_usd_visual_workcell_ingestion": true,
+    "proves_frozen_dynamic_observation_and_local_task_feasibility": true,
+    "proves_isaac_physics_execution": false,
+    "proves_policy_ranking": false,
+    "proves_physical_success": false,
+    "physical_robot_operated": false
+  }
+}

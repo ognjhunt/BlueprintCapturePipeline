@@ -1,0 +1,74 @@
+[
+  {
+    "id": "external_center_high_square",
+    "spec": {
+      "pos": [2.18, 0.48, 1.52],
+      "target": [1.93, 1.24, 0.80],
+      "fov": 50.0,
+      "up": [0.0, 0.0, 1.0]
+    }
+  },
+  {
+    "id": "external_right_task_square",
+    "spec": {
+      "pos": [2.70, 0.68, 1.42],
+      "target": [1.93, 1.24, 0.80],
+      "fov": 47.0,
+      "up": [0.0, 0.0, 1.0]
+    }
+  },
+  {
+    "id": "external_right_high_square",
+    "spec": {
+      "pos": [2.66, 0.50, 1.58],
+      "target": [1.94, 1.25, 0.78],
+      "fov": 50.0,
+      "up": [0.0, 0.0, 1.0]
+    }
+  },
+  {
+    "id": "external_left_task_square",
+    "spec": {
+      "pos": [1.18, 0.68, 1.42],
+      "target": [1.93, 1.24, 0.80],
+      "fov": 47.0,
+      "up": [0.0, 0.0, 1.0]
+    }
+  },
+  {
+    "id": "wrist_high_square",
+    "spec": {
+      "pos": [1.9086943, 0.86, 1.20],
+      "target": [1.93, 1.25, 0.81],
+      "fov": 76.0,
+      "up": [0.0, 0.0, 1.0]
+    }
+  },
+  {
+    "id": "wrist_right_offset_square",
+    "spec": {
+      "pos": [1.9986943, 0.89, 1.18],
+      "target": [1.93, 1.24, 0.80],
+      "fov": 76.0,
+      "up": [0.0, 0.0, 1.0]
+    }
+  },
+  {
+    "id": "wrist_high_context_square",
+    "spec": {
+      "pos": [1.9086943, 0.80, 1.27],
+      "target": [1.93, 1.25, 0.80],
+      "fov": 72.0,
+      "up": [0.0, 0.0, 1.0]
+    }
+  },
+  {
+    "id": "shoulder_task_square",
+    "spec": {
+      "pos": [2.08, 0.70, 1.38],
+      "target": [1.93, 1.25, 0.79],
+      "fov": 62.0,
+      "up": [0.0, 0.0, 1.0]
+    }
+  }
+]
