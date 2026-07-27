@@ -2,7 +2,7 @@
   "schema_version": "policy_ranking_successor_cosmos_bundle_receipt.v1",
   "experiment_id": "policy_ranking_successor_experiment_20260727",
   "status": "built",
-  "bundle_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-successor/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
+  "bundle_path": "docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
   "bundle_sha256": "f733fdddf9ef3780d303d5672c2c30c767807c43e87b4d9f5fc6dd860256c873",
   "bundle_size_bytes": 294148,
   "public_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
