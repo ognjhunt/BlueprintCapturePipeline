@@ -76,7 +76,11 @@ def test_campaign_keeps_variant_metadata_outside_hashed_episode(
     monkeypatch.setattr(
         job_module,
         "aggregate_policy_rankings",
-        lambda episodes: {"status": "completed", "policy_count": len(episodes)},
+        lambda episodes: {
+            "status": "completed",
+            "policy_count": len(episodes),
+            "total_ranking_emitted": True,
+        },
     )
     result = job_module.run_openpi_policy_ranking_gpu_campaign(
         cohort_path=cohort,
@@ -118,3 +122,39 @@ def test_campaign_keeps_variant_metadata_outside_hashed_episode(
         "captured_3dgs",
         "controlled_nvidia_usd",
     }
+
+    def blocked_episode(**_kwargs):
+        return {"manifest_sha256": "f" * 64, "status": "blocked"}
+
+    monkeypatch.setattr(job_module, "run_franka_droid_closed_loop", blocked_episode)
+    blocked = job_module.run_openpi_policy_ranking_gpu_campaign(
+        cohort_path=cohort,
+        checkpoint_inventory_path=inventory,
+        captured_site_background_path=background,
+        menagerie_root=menagerie,
+        output_dir=tmp_path / "blocked-output",
+        policy_ids=("p1", "p2", "p3", "p4"),
+        scene_backgrounds=(
+            {
+                "scene_id": "captured",
+                "scene_kind": "captured_3dgs",
+                "background_path": background,
+            },
+            {
+                "scene_id": "warehouse",
+                "scene_kind": "controlled_nvidia_usd",
+                "background_path": warehouse_background,
+            },
+        ),
+        checkpoint_downloader=lambda _uri: checkpoint,
+        policy_loader=lambda _spec, _checkpoint: object(),
+    )
+    assert blocked["status"] == "blocked"
+    assert blocked["rankings"] == {}
+    assert all(row["status"] == "blocked" for row in blocked["policy_runs"])
+    assert blocked["claim_boundary"]["learned_policy_simulator_execution"] is False
+    assert blocked["claim_boundary"]["prospective_captured_site_ranking"] is False
+    assert (
+        blocked["claim_boundary"]["prospective_controlled_warehouse_ranking"]
+        is False
+    )

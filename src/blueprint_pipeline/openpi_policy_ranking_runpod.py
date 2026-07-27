@@ -619,7 +619,11 @@ def build_openpi_policy_ranking_provider_request(
                 "gpu_count": 1,
                 "container_disk_in_gb": int(preflight["container_disk_bytes"])
                 // 1024**3,
-                "volume_in_gb": 0,
+                # OpenPI stores the four frozen checkpoints under /workspace.
+                # RunPod mounts this requested ephemeral volume at that path;
+                # 80 GiB safely exceeds the 47.3 GB checkpoint cohort.  Vast
+                # uses the admitted 100 GiB container disk and no volume.
+                "volume_in_gb": 80 if provider_name == "runpod" else 0,
                 "min_vcpu_count": 4,
                 "min_memory_in_gb": 24,
             },

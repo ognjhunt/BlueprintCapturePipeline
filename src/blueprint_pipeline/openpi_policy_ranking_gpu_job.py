@@ -228,6 +228,7 @@ def run_openpi_policy_ranking_gpu_campaign(
                 )
                 episode_records: list[dict[str, Any]] = []
                 scene_runs: list[dict[str, Any]] = []
+                episode_blockers: list[str] = []
                 for scene in normalized_scenes:
                     scene_id = scene["scene_id"]
                     episodes: list[dict[str, Any]] = []
@@ -262,6 +263,12 @@ def run_openpi_policy_ranking_gpu_campaign(
                         }
                         scene_episode_records.append(record)
                         episode_records.append(record)
+                        if episode.get("status") != "completed":
+                            episode_blockers.append(
+                                "policy_episode_not_completed:"
+                                f"{policy_id}:{scene_id}:{variant_id}:"
+                                f"{episode.get('status') or 'missing'}"
+                            )
                     episodes_by_scene[scene_id][policy_id] = episodes
                     scene_runs.append(
                         {
@@ -272,7 +279,7 @@ def run_openpi_policy_ranking_gpu_campaign(
                     )
                 run_summary.update(
                     {
-                        "status": "completed",
+                        "status": "blocked" if episode_blockers else "completed",
                         "checkpoint_dir": str(checkpoint),
                         "local_checkpoint_verification": local_verification,
                         "episode_manifest_sha256s": [
@@ -280,8 +287,10 @@ def run_openpi_policy_ranking_gpu_campaign(
                         ],
                         "episode_records": episode_records,
                         "scene_runs": scene_runs,
+                        "blockers": episode_blockers,
                     }
                 )
+                blockers.extend(episode_blockers)
             except Exception as exc:  # noqa: BLE001 - policy failure is experimental evidence
                 reason = f"policy_campaign_failed:{policy_id}:{type(exc).__name__}:{exc}"
                 blockers.append(reason)
@@ -350,11 +359,12 @@ def run_openpi_policy_ranking_gpu_campaign(
         "claim_boundary": {
             "learned_policy_simulator_execution": bool(not blockers and policy_runs),
             "prospective_captured_site_ranking": bool(
-                ranking and ranking.get("status") == "completed"
+                ranking and ranking.get("total_ranking_emitted") is True
             ),
             "prospective_controlled_warehouse_ranking": any(
                 scene["scene_kind"] == "controlled_nvidia_usd"
-                and rankings.get(scene["scene_id"], {}).get("status") == "completed"
+                and rankings.get(scene["scene_id"], {}).get("total_ranking_emitted")
+                is True
                 for scene in normalized_scenes
             ),
             "warehouse_ranking_is_independent_physical_answer_key": False,

@@ -62,7 +62,8 @@ class DroidPolicyClient(Protocol):
 
     policy_id: str
 
-    def infer(self, observation: Mapping[str, Any]) -> Any: ...
+    def infer(self, observation: Mapping[str, Any]) -> Any:
+        raise NotImplementedError
 
 
 class ZeroDroidPolicyClient:
@@ -245,6 +246,68 @@ def _camera_from_spec(spec: Mapping[str, Any], mujoco: Any, np: Any) -> Any:
     return camera
 
 
+def _camera_rotation_from_spec(spec: Mapping[str, Any], np: Any) -> Any:
+    """Return the full camera-to-world rotation, including optical-axis roll.
+
+    MuJoCo cameras look down local ``-Z`` with local ``+Y`` as image up.  The
+    columns below therefore bind local right, up, and back to the world-frame
+    forward/up vectors carried by ``link_mounted_camera_spec``.
+    """
+
+    eye = np.asarray(spec["pos"], dtype=float)
+    target = np.asarray(spec["target"], dtype=float)
+    supplied_up = np.asarray(spec["up"], dtype=float)
+    forward = target - eye
+    forward_norm = float(np.linalg.norm(forward))
+    up_norm = float(np.linalg.norm(supplied_up))
+    if (
+        forward_norm <= 1e-6
+        or up_norm <= 1e-6
+        or not math.isfinite(forward_norm)
+        or not math.isfinite(up_norm)
+    ):
+        raise ValueError("camera_forward_or_up_invalid")
+    forward = forward / forward_norm
+    supplied_up = supplied_up / up_norm
+    right = np.cross(forward, supplied_up)
+    right_norm = float(np.linalg.norm(right))
+    if right_norm <= 1e-6 or not math.isfinite(right_norm):
+        raise ValueError("camera_forward_and_up_collinear")
+    right = right / right_norm
+    up = np.cross(right, forward)
+    rotation = np.column_stack((right, up, -forward))
+    if not np.all(np.isfinite(rotation)) or float(np.linalg.det(rotation)) <= 0.0:
+        raise ValueError("camera_rotation_invalid")
+    return rotation
+
+
+def _render_link_mounted_observation(
+    renderer: Any,
+    model: Any,
+    data: Any,
+    spec: Mapping[str, Any],
+    *,
+    camera_id: int,
+    camera_mocap_id: int,
+    mujoco: Any,
+    np: Any,
+) -> Any:
+    """Render from a mocap-mounted fixed camera with the complete link pose."""
+
+    rotation = _camera_rotation_from_spec(spec, np)
+    quaternion = np.empty(4, dtype=float)
+    mujoco.mju_mat2Quat(quaternion, np.asarray(rotation, dtype=float).reshape(-1))
+    data.mocap_pos[camera_mocap_id] = np.asarray(spec["pos"], dtype=float)
+    data.mocap_quat[camera_mocap_id] = quaternion
+    model.cam_fovy[camera_id] = float(spec.get("fov", 60.0))
+    mujoco.mj_forward(model, data)
+    renderer.update_scene(data, camera=camera_id)
+    image = renderer.render().copy()
+    if image.shape != (224, 224, 3) or image.dtype != np.uint8:
+        raise RuntimeError("mujoco_renderer_did_not_produce_uint8_224_square")
+    return image
+
+
 def _render_observation(renderer: Any, model: Any, data: Any, spec: Mapping[str, Any], mujoco: Any, np: Any) -> Any:
     model.vis.global_.fovy = float(spec.get("fov", 60.0))
     renderer.update_scene(data, camera=_camera_from_spec(spec, mujoco, np))
@@ -386,9 +449,19 @@ def prepare_franka_droid_runtime(*, menagerie_root: str | Path, output_dir: str 
         "site": mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "gripper"),
         "hand": mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "hand"),
         "can": mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "spraycan"),
+        "wrist_camera": mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_CAMERA, "blueprint_wrist_camera"
+        ),
+        "wrist_camera_body": mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, "blueprint_wrist_camera_mocap"
+        ),
     }
     if min(ids.values()) < 0:
         raise RuntimeError("required_franka_or_can_body_missing")
+    wrist_camera_mocap = int(model.body_mocapid[ids["wrist_camera_body"]])
+    if wrist_camera_mocap < 0:
+        raise RuntimeError("wrist_camera_mocap_binding_missing")
+    ids["wrist_camera_mocap"] = wrist_camera_mocap
     targets = _joint_targets(model, data, mujoco, np, ids["site"])
     return {
         "mujoco": mujoco,
@@ -512,7 +585,16 @@ def run_franka_droid_closed_loop(
                     mujoco,
                     np,
                 )
-            wrist = _render_observation(renderer, model, data, wrist_spec, mujoco, np)
+            wrist = _render_link_mounted_observation(
+                renderer,
+                model,
+                data,
+                wrist_spec,
+                camera_id=int(ids["wrist_camera"]),
+                camera_mocap_id=int(ids["wrist_camera_mocap"]),
+                mujoco=mujoco,
+                np=np,
+            )
             observation = {
                 "observation/exterior_image_1_left": external,
                 "observation/wrist_image_left": wrist,

@@ -37,6 +37,9 @@ def _scene_xml() -> str:
     return """<mujoco model="franka can tray feasibility">
   <include file="mjx_scene.xml"/>
   <worldbody>
+    <body name="blueprint_wrist_camera_mocap" mocap="true">
+      <camera name="blueprint_wrist_camera" fovy="82"/>
+    </body>
     <body name="spraycan" pos="0.5 0.075 0.09">
       <freejoint/>
       <geom name="spraycan_geom" type="cylinder" size="0.03 0.09" mass="0.25"

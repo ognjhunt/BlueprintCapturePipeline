@@ -7,6 +7,7 @@ from blueprint_pipeline.franka_droid_closed_loop import (
     StationaryDroidJointPositionClient,
     ZeroDroidPolicyClient,
     _camera_from_spec,
+    _camera_rotation_from_spec,
     _composite_mujoco_interaction,
     _enable_panda_gravity_compensation,
     _extract_action_chunk,
@@ -130,6 +131,24 @@ def test_free_camera_conversion_has_finite_pose() -> None:
     assert camera.distance == pytest.approx(np.sqrt(3.0))
     assert np.isfinite(camera.azimuth)
     assert np.isfinite(camera.elevation)
+
+
+def test_link_camera_rotation_preserves_optical_axis_roll() -> None:
+    base = {
+        "pos": [0.0, 0.0, 0.0],
+        "target": [0.0, 0.0, -1.0],
+        "up": [0.0, 1.0, 0.0],
+    }
+    rolled = {**base, "up": [1.0, 0.0, 0.0]}
+    base_rotation = _camera_rotation_from_spec(base, np)
+    rolled_rotation = _camera_rotation_from_spec(rolled, np)
+
+    assert np.allclose(base_rotation[:, 2], [0.0, 0.0, 1.0])
+    assert np.allclose(base_rotation[:, 1], base["up"])
+    assert np.allclose(rolled_rotation[:, 1], rolled["up"])
+    assert not np.allclose(base_rotation, rolled_rotation)
+    assert np.linalg.det(base_rotation) == pytest.approx(1.0)
+    assert np.linalg.det(rolled_rotation) == pytest.approx(1.0)
 
 
 def test_gravity_compensation_is_scoped_to_panda_bodies() -> None:

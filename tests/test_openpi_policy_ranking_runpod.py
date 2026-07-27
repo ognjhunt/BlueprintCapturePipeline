@@ -223,6 +223,7 @@ def test_openpi_request_shape_is_redacted_and_one_gpu(tmp_path: Path) -> None:
     body = result["runpod_request"]["on_demand_pod"]["body"]
     assert body["gpuCount"] == 1
     assert body["containerDiskInGb"] == 100
+    assert body["volumeInGb"] == 80
     assert body["dockerEntrypoint"][-2:] == [
         "blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap",
         "run",
