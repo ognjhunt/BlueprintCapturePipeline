@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline import safe_outbound_http
+from blueprint_pipeline import vast_compute_capability as vcc
 from blueprint_pipeline.paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
@@ -1910,6 +1911,13 @@ class VastRenderProvider(GpuRenderProvider):
         req = _mapping(request)
         max_rate = _positive_float(req.get("max_hourly_rate_usd")) or 5.0
         min_ram = _positive_int(req.get("min_gpu_ram_mb")) or 0
+        min_compute_cap = _positive_int(req.get("min_compute_cap")) or 0
+        max_compute_cap_value = req.get("max_compute_cap")
+        max_compute_cap = (
+            int(max_compute_cap_value)
+            if type(max_compute_cap_value) is int and max_compute_cap_value >= 0
+            else vcc.resolve_max_compute_cap()
+        )
         min_reliability = _positive_float(req.get("min_reliability")) or 0.0
         require_known_driver = (
             req.get("require_known_supported_isaac_driver") is True
@@ -1917,6 +1925,8 @@ class VastRenderProvider(GpuRenderProvider):
         require_avx = req.get("require_avx") is True
         require_direct_port = req.get("require_direct_port") is True
         preferred_gpu_keywords = _string_list(req.get("preferred_gpu_keywords"))
+        prefer_isaac_rt = req.get("prefer_isaac_rt") is True
+        gpu_selection_policy = req.get("gpu_selection_policy")
         search_payload = _mapping(req.get("search_payload")) or _search_payload(
             limit=100,
             max_hourly_rate=max_rate,
@@ -1966,11 +1976,15 @@ class VastRenderProvider(GpuRenderProvider):
         selection_kwargs = {
             "max_hourly_rate": max_rate,
             "min_gpu_ram_mb": min_ram,
+            "min_compute_cap": min_compute_cap,
+            "max_compute_cap": max_compute_cap,
             "require_avx": require_avx,
             "require_known_supported_isaac_driver": require_known_driver,
             "min_reliability": min_reliability,
             "require_direct_port": require_direct_port,
             "preferred_gpu_keywords": preferred_gpu_keywords,
+            "prefer_isaac_rt": prefer_isaac_rt,
+            "gpu_selection_policy": gpu_selection_policy,
         }
         selected = _select_offer(offers, **selection_kwargs)
         viable: list[dict[str, Any]] = []
@@ -1996,6 +2010,32 @@ class VastRenderProvider(GpuRenderProvider):
                 float(row.get("hourly_rate_usd") or math.inf),
             )
         )
+        selection_policy_manifest: dict[str, Any] = {
+            "max_hourly_rate_usd": max_rate,
+            "min_gpu_ram_mb": min_ram,
+            "min_reliability": min_reliability,
+            "require_avx": require_avx,
+            "require_known_supported_isaac_driver": require_known_driver,
+            "require_direct_port": require_direct_port,
+            "preferred_gpu_keywords": preferred_gpu_keywords,
+        }
+        if any(
+            key in req
+            for key in (
+                "min_compute_cap",
+                "max_compute_cap",
+                "prefer_isaac_rt",
+                "gpu_selection_policy",
+            )
+        ):
+            selection_policy_manifest.update(
+                {
+                    "min_compute_cap": min_compute_cap,
+                    "max_compute_cap": max_compute_cap,
+                    "prefer_isaac_rt": prefer_isaac_rt,
+                    "gpu_selection_policy": gpu_selection_policy,
+                }
+            )
         return {
             "status": "available" if selected else "blocked",
             "provider": self.name,
@@ -2004,15 +2044,7 @@ class VastRenderProvider(GpuRenderProvider):
             "offer_count": len(offers),
             "viable_gpu_types": viable,
             "selected_offer": viable[0] if viable else None,
-            "selection_policy": {
-                "max_hourly_rate_usd": max_rate,
-                "min_gpu_ram_mb": min_ram,
-                "min_reliability": min_reliability,
-                "require_avx": require_avx,
-                "require_known_supported_isaac_driver": require_known_driver,
-                "require_direct_port": require_direct_port,
-                "preferred_gpu_keywords": preferred_gpu_keywords,
-            },
+            "selection_policy": selection_policy_manifest,
             "reservation_proven": False,
             "capacity_confidence": "advisory" if selected else "unavailable",
             "authoritative_capacity_source": "provider_create_response",

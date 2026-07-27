@@ -36,6 +36,7 @@ from .vast_probe_guards import (
     target_spend_guard as build_target_spend_guard,
 )
 from .oscar_official_release import OFFICIAL_OSCAR_WAM_IMAGE_REF
+from .paid_resource_admission import PaidResourceAdmissionGrant
 
 
 VAST_WAM_AUTHORIZED_RUNNER_SCHEMA_VERSION = "vast_wam_authorized_runner.v1"
@@ -95,6 +96,15 @@ def run_vast_wam_authorized_runner(
     vast_launch_mode: str = DEFAULT_WAM_VAST_LAUNCH_MODE,
     vast_template_hash_id: str | None = None,
     use_vast_template_image: bool = False,
+    disk_gb: int = 80,
+    min_gpu_ram_mb: int | None = None,
+    min_compute_cap: int | None = None,
+    max_compute_cap: int | None = None,
+    min_reliability: float | None = None,
+    preferred_gpu_keywords: Sequence[str] = (),
+    prefer_isaac_rt: bool = False,
+    gpu_selection_policy: str | Mapping[str, Any] | None = None,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
@@ -235,7 +245,15 @@ def run_vast_wam_authorized_runner(
                 vast_template_hash_id=vast_template_hash_id,
                 use_vast_template_image=use_vast_template_image,
                 require_known_supported_isaac_driver=False,
-                disk_gb=80,
+                disk_gb=disk_gb,
+                min_gpu_ram_mb=min_gpu_ram_mb,
+                min_compute_cap=min_compute_cap,
+                max_compute_cap=max_compute_cap,
+                min_reliability=min_reliability,
+                preferred_gpu_keywords=preferred_gpu_keywords,
+                prefer_isaac_rt=prefer_isaac_rt,
+                gpu_selection_policy=gpu_selection_policy,
+                paid_resource_admission_grant=paid_resource_admission_grant,
             )
             if adapter_result.get("status") != "completed":
                 blockers.extend(str(item) for item in adapter_result.get("blockers") or [])
@@ -287,6 +305,16 @@ def run_vast_wam_authorized_runner(
         "max_live_minutes": max_live_minutes,
         "session_max_live_minutes": session_max_live_minutes,
         "startup_timeout_seconds": startup_timeout_seconds,
+        "hardware_constraints": {
+            "disk_gb": disk_gb,
+            "min_gpu_ram_mb": min_gpu_ram_mb,
+            "min_compute_cap": min_compute_cap,
+            "max_compute_cap": max_compute_cap,
+            "min_reliability": min_reliability,
+            "preferred_gpu_keywords": list(preferred_gpu_keywords),
+            "prefer_isaac_rt": prefer_isaac_rt,
+            "gpu_selection_policy_present": gpu_selection_policy is not None,
+        },
         "staging_verification_guard": staging_verification_guard,
         "public_staging_verification_status": public_staging_verification.get("status"),
         "public_staging_verification_path": str(

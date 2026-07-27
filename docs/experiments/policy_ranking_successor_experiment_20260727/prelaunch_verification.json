@@ -1,0 +1,48 @@
+{
+  "schema_version": "policy_ranking_successor_prelaunch_verification.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "verified_at": "2026-07-27T11:22:52-0500",
+  "full_pytest": {
+    "command": "python -m pytest -q",
+    "passed": 5280,
+    "deselected": 1642,
+    "failed": 0,
+    "elapsed_seconds": 854.08,
+    "status": "passed"
+  },
+  "focused_successor_tests": {
+    "modules": [
+      "tests/test_policy_ranking_successor_cosmos.py",
+      "tests/test_policy_ranking_successor_gpu_admission.py"
+    ],
+    "passed": 22,
+    "failed": 0,
+    "status": "passed"
+  },
+  "provider_and_allocator_regressions": {
+    "passed": 167,
+    "failed": 0,
+    "status": "passed"
+  },
+  "lint": "passed",
+  "python_compile": "passed",
+  "dependency_exports": "passed",
+  "git_diff_check": "passed",
+  "secret_scan": "passed",
+  "protocol_sha256_reverified": "0bdbb41e38c45cbac14351eb0f25479b6b4ee9ef13e4f7584cc50431037e8158",
+  "provider_mutations_performed": 0,
+  "provider_inventory_active": 0,
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  }
+}

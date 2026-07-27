@@ -63,6 +63,10 @@ from .openpi_policy_ranking_gpu_admission import (
     PROBE_KIND as OPENPI_POLICY_RANKING_PROBE_KIND,
 )
 from .openpi_policy_ranking_runpod import run_openpi_policy_ranking_campaign
+from .policy_ranking_successor_gpu_admission import (
+    PROBE_KIND as POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
+    run_successor_gpu_lane,
+)
 from .single_g1_kitchen_episode_runpod import (
     PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
     run_single_episode,
@@ -502,6 +506,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
             G1_MICROWAVE_FINETUNE_PROBE_KIND,
             OPENPI_POLICY_RANKING_PROBE_KIND,
+            POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
         ),
         default="strict-policy-smoke",
     )
@@ -527,6 +532,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--openpi-hard-ttl-seconds", type=int, default=14_400)
     gpu.add_argument("--openpi-max-spend-usd", type=float, default=3.0)
+    gpu.add_argument("--successor-public-base-url")
+    gpu.add_argument("--successor-token-file")
+    gpu.add_argument("--successor-secret-env-file")
+    gpu.add_argument("--successor-output-path")
+    gpu.add_argument("--successor-session-budget-ledger")
     gpu.add_argument("--finetune-object-store-stage-dir")
     gpu.add_argument("--finetune-checkpoint-object-store-stage-dir")
     gpu.add_argument(
@@ -752,6 +762,75 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "provider_launch_request",
+                    "release_evidence",
+                    "model_cache_evidence",
+                    "preflight_bundle",
+                    "episode_bundle",
+                    "admission_out",
+                    "bound_request_out",
+                    "adapter_output",
+                    "pod_name",
+                    "expected_source_commit",
+                )
+                if not getattr(args, name, None)
+            ]
+            if args.execute:
+                missing.extend(
+                    name
+                    for name in (
+                        "successor_public_base_url",
+                        "successor_session_budget_ledger",
+                    )
+                    if not getattr(args, name, None)
+                )
+            if missing:
+                result = {
+                    "status": "blocked",
+                    "blockers": [
+                        "policy_ranking_successor_required_arguments_missing:"
+                        + ",".join(sorted(set(missing)))
+                    ],
+                    "provider_mutations_performed": 0,
+                }
+                write_json(Path(args.admission_out), result)
+            else:
+                source_blockers, checkout_commit = _source_checkout_blockers(
+                    args.expected_source_commit or ""
+                )
+                if source_blockers:
+                    result = {
+                        "status": "blocked",
+                        "blockers": source_blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.admission_out), result)
+                else:
+                    result = run_successor_gpu_lane(
+                        authorization_path=args.provider_launch_request,
+                        environment_path=args.release_evidence,
+                        smoke_inventory_path=args.model_cache_evidence,
+                        provider_preflight_path=args.preflight_bundle,
+                        provider_bundle_path=args.episode_bundle,
+                        admission_out=args.admission_out,
+                        bound_request_out=args.bound_request_out,
+                        adapter_output=args.adapter_output,
+                        job_dir=args.pod_name,
+                        public_base_url=args.successor_public_base_url,
+                        token_file=args.successor_token_file,
+                        secret_env_file=args.successor_secret_env_file,
+                        output_path=args.successor_output_path,
+                        session_budget_ledger=args.successor_session_budget_ledger,
+                        expected_source_commit=checkout_commit,
+                        execute=args.execute,
+                    )
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == OPENPI_POLICY_RANKING_PROBE_KIND:
             missing = [
                 name

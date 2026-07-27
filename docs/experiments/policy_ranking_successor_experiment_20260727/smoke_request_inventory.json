@@ -1,0 +1,44 @@
+{
+  "schema_version": "policy_ranking_successor_smoke_request_inventory.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "status": "frozen_before_paid_execution",
+  "inventory_sha256": "6d4b0c5838ecfa8b6f466ac1d4176b3728db414ba004104e73cc5a9617a606a7",
+  "initial_observation_sha256": "8843f0fc9c68914dfb62222c961db19b37a5f155e602ff4a545eea1dcf42636d",
+  "task_instruction": "A robot manipulates an object.",
+  "shuffle_seed": 20260727,
+  "action_hashes": {
+    "recorded": "450b89cbbc6b7502ebbb2eb9ec5ae74851b6438b2481ac0394437c08ea910635",
+    "zero": "4c17e29917f2a23a5e308d097075dc6209777abc93f039f3b86676167fdbefa8",
+    "shuffled": "ce5e1779931951d8baff4470543a767b35cba5e18bf6a0d881c30ab712794834",
+    "reversed": "d3c85c197a63ce01cabfa692e43e8a599f5173118326ad48a1e844aaaa23f378",
+    "policy_swapped": "6ba19aedfcf8adba5a357222d992cd7420f699b8ff54a36760015d9fc39b0c81"
+  },
+  "requests": [
+    {"request_id": "3794d261df8239b8f08ae965430bb9f4ca88f9124a0ab63c3c88e3a14f31f788", "condition": "recorded", "seed": 0, "action_sha256": "450b89cbbc6b7502ebbb2eb9ec5ae74851b6438b2481ac0394437c08ea910635"},
+    {"request_id": "a3cab7a1a9b48160fa650e10f7b7d51972e29cbe7ed6a87a9234be11ed0603e7", "condition": "recorded", "seed": 1, "action_sha256": "450b89cbbc6b7502ebbb2eb9ec5ae74851b6438b2481ac0394437c08ea910635"},
+    {"request_id": "0e4db0296a4b0f217c8102439465fa503ebacb401c23394d7d767068bd7eaa1a", "condition": "zero", "seed": 0, "action_sha256": "4c17e29917f2a23a5e308d097075dc6209777abc93f039f3b86676167fdbefa8"},
+    {"request_id": "a03025de4dcde4490a70b70b2612c456319e2b83052e90ef7f8bd7e01f211c25", "condition": "zero", "seed": 1, "action_sha256": "4c17e29917f2a23a5e308d097075dc6209777abc93f039f3b86676167fdbefa8"},
+    {"request_id": "0bbe2be61c6c1ae6dcf376c27b3431eba2b011e05925eed82325b66ed3835e6b", "condition": "shuffled", "seed": 0, "action_sha256": "ce5e1779931951d8baff4470543a767b35cba5e18bf6a0d881c30ab712794834"},
+    {"request_id": "440e5392b1a3c123abba7bdf3b229eb2563c1923052af75c98a50fc97692bd36", "condition": "shuffled", "seed": 1, "action_sha256": "ce5e1779931951d8baff4470543a767b35cba5e18bf6a0d881c30ab712794834"},
+    {"request_id": "4b90d30e3d3782c34236e57749e4670a8d61333e50cbccac0c6cf74cfe162b55", "condition": "reversed", "seed": 0, "action_sha256": "d3c85c197a63ce01cabfa692e43e8a599f5173118326ad48a1e844aaaa23f378"},
+    {"request_id": "2fa9658acf72e290ab2edbaa7908190aff2837e33dea234c0d668d51e0f0cad8", "condition": "reversed", "seed": 1, "action_sha256": "d3c85c197a63ce01cabfa692e43e8a599f5173118326ad48a1e844aaaa23f378"},
+    {"request_id": "6ccad93cde51422370e1dc99fa7b207d476e3c174eea0537561bf9d288dd90d6", "condition": "policy_swapped", "seed": 0, "action_sha256": "6ba19aedfcf8adba5a357222d992cd7420f699b8ff54a36760015d9fc39b0c81"},
+    {"request_id": "f69bd2df1a98b075cb10943711df7983a475ab096c88f5c45d83211c77592ef6", "condition": "policy_swapped", "seed": 1, "action_sha256": "6ba19aedfcf8adba5a357222d992cd7420f699b8ff54a36760015d9fc39b0c81"}
+  ],
+  "request_count": 10,
+  "policy_names_or_performance_metadata_in_wam_requests": false,
+  "accepted_first_valid_only": true,
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  }
+}

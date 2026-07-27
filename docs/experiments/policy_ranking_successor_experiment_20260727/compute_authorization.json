@@ -1,0 +1,33 @@
+{
+  "schema_version": "policy_ranking_successor_compute_authorization.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "authorized_at": "2026-07-27T11:03:41-0500",
+  "authorization_source": "explicit_user_authorization_in_current_codex_thread",
+  "paid_mutation_authorized": true,
+  "authorized_compute_cap_usd": 3.25,
+  "scope": "one Vast RTX PRO 6000 Blackwell exact-stack compatibility preflight followed only on pass by the frozen ten-rollout Cosmos3-Nano smoke canary",
+  "hard_ttl_seconds": 10800,
+  "one_resource_limit": true,
+  "independent_teardown_watchdog": true,
+  "watchdog_armed_before_allocation": true,
+  "automatic_spend_cutoff": true,
+  "teardown_required": true,
+  "provider_zero_verification_required": true,
+  "physical_robot_endpoint_access_allowed": false,
+  "h100_fallback_authorized": false,
+  "expanded_wam_qualification_authorized": false,
+  "api_or_vlm_budget_changed": false,
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  }
+}

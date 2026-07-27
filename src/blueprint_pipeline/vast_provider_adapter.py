@@ -1909,8 +1909,15 @@ def _blueprint_bundle_preflight(
         "provider_runtime/run_wam_provider_runtime.sh",
         "provider_runtime/wam_provider_runtime_manifest.json",
         "provider_runtime/wam_rollout_input_manifest.json",
+    }
+    wam_legacy_input_entries = {
         "provider_runtime/oscar_input/first_frame.png",
         "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
+    }
+    wam_cosmos3_input_entries = {
+        "provider_runtime/cosmos3_input/initial_observation.png",
+        "provider_runtime/cosmos3_input/smoke_request_inventory.json",
+        "provider_runtime/cosmos3_input/action_streams.json",
     }
     unitree_unifolm_required_entries = {
         "provider_runtime/unitree_unifolm_provider_runner.py",
@@ -2040,6 +2047,11 @@ def _blueprint_bundle_preflight(
             missing_entries = sorted(required_entries - set(zip_entries))
             if missing_entries:
                 blockers.append("provider_runtime_bundle_required_entries_missing")
+            if provider_bundle_kind == "wam" and not (
+                wam_legacy_input_entries.issubset(zip_entries)
+                or wam_cosmos3_input_entries.issubset(zip_entries)
+            ):
+                blockers.append("provider_runtime_bundle_wam_input_contract_missing")
             if zip_testzip_result is not None:
                 blockers.append("provider_runtime_bundle_zip_integrity_failed")
             if json_member_parse_errors:
@@ -2091,7 +2103,7 @@ def _blueprint_bundle_preflight(
                     )
                     runner_has_required_runtime = (
                         "wam_runtime_result.json" in runner_text
-                        and "OSCAR-2B" in runner_text
+                        and ("OSCAR-2B" in runner_text or "Cosmos3-Nano" in runner_text)
                         and "action_conditioned_video_rollout_generated" in runner_text
                     )
                     missing_runtime_blocker = "provider_runner_missing_wam_runtime_contract"

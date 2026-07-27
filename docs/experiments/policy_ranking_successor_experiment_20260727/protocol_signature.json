@@ -1,0 +1,21 @@
+{
+  "schema_version": "policy_ranking_successor_protocol_signature.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "protocol_path": "preregistered_protocol.json",
+  "algorithm": "sha256",
+  "protocol_sha256": "0bdbb41e38c45cbac14351eb0f25479b6b4ee9ef13e4f7584cc50431037e8158",
+  "signed_before_paid_execution": true,
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "schema_version": "policy_ranking_successor_dataset_split_manifest.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "calibration": {
+    "source": "NVIDIA/cosmos checked-in DROID LeRobot example",
+    "repository_revision": "bebca76311266941d06c5f5572fb601184ba24fa",
+    "license_boundary": "OpenMDW-1.1 source example; no private or customer data",
+    "episodes": 1,
+    "frames": 722,
+    "fps": 15,
+    "robot_type": "panda",
+    "camera_resolution": [360, 640, 3],
+    "camera_order": [
+      "wrist_image_left",
+      "exterior_image_1_left",
+      "exterior_image_2_left"
+    ],
+    "source_hashes": {
+      "meta/info.json": "64e39f3dbedbd5ffade567007093d92d1827fcdb68c5d9d573ff3e80eef23cf6",
+      "data/chunk-000/file-000.parquet": "56e3defd9e75a101a7b812ad7ae263dde8ec5699b6b47db51ba6954f81be2593",
+      "meta/episodes/chunk-000/file-000.parquet": "23f8e342bec24cf1af5fc4c5f58d8b51097ce09c2aaaafe6d467328af6dc016e",
+      "meta/tasks.parquet": "ee2c7ec4f086cf2025b9a1d169bf6ba1857fed2579604c8859b49741f5eb29d6",
+      "wrist_video": "e9d641240f9efc344924c31715a44be1f66207f667dd63c292bbd943dfa816d0",
+      "exterior_1_video": "6aac49551ff9b9fc7b8e9899df4fc050f5cd31164ed4ee3c014f332bcef3b9f1",
+      "exterior_2_video": "34f6e5dae8591809324f1df9bf166c6e304bd2cbdad643595a991f641cbb4fd7"
+    },
+    "first_chunk_local_preprocessing": {
+      "source_rows": "frames_0_through_16_and_gripper_actions_0_through_15",
+      "action_sha256": "450b89cbbc6b7502ebbb2eb9ec5ae74851b6438b2481ac0394437c08ea910635",
+      "timestamp_validation": "passed",
+      "maximum_step_error_seconds": 9.71445146547012e-17,
+      "bit_identical_to_pinned_upstream_scipy_conversion": true
+    },
+    "outcome_labels_accessed": false,
+    "calibration_only": true
+  },
+  "smoke_inventory_status": "frozen",
+  "smoke_inventory_blockers": [],
+  "smoke_initial_observation": {
+    "materialization_recipe": "decode frame 0 from each pinned video; wrist full-width top; bilinear half-size exterior_1 bottom-left and exterior_2 bottom-right; PNG RGB",
+    "shape": [540, 640, 3],
+    "png_size_bytes": 281438,
+    "sha256": "8843f0fc9c68914dfb62222c961db19b37a5f155e602ff4a545eea1dcf42636d",
+    "task_instruction": "A robot manipulates an object.",
+    "task_instruction_reason": "The checked-in sample task field is blank delimiters; use the official notebook fallback rather than inventing an outcome label."
+  },
+  "alternate_candidate_policy": {
+    "policy_id_not_exposed_to_wam": "frozen_scripted_translate_then_grip_baseline",
+    "definition": "16 framewise actions: +0.001 meter x translation, identity rot6d, gripper 1 for frames 0-7 then 0 for frames 8-15",
+    "action_sha256": "6ba19aedfcf8adba5a357222d992cd7420f699b8ff54a36760015d9fc39b0c81",
+    "independent_outcomes_used": false,
+    "role": "within_session_alternate_candidate_policy_action_trajectory"
+  },
+  "qualification": {
+    "status": "not_selected",
+    "must_be_disjoint_from_calibration": true,
+    "session_cluster_is_independent_unit": true
+  },
+  "benchmark": {
+    "status": "not_selected",
+    "new_disjoint_snapshot_required": true,
+    "experiment_1_or_2_heldout_reuse": false,
+    "outcomes_sealed": true
+  },
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  }
+}
