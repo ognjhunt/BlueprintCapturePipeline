@@ -733,6 +733,15 @@ def run_inventory_v2(
                 return
             started_at = utc_now()
             started = time.monotonic()
+            store.mark_provider_call_started(
+                request=request,
+                claim_id=claim_id,
+                arm_id=arm_id,
+                attempt_type="scientific_request",
+                provider="openai",
+                model_snapshot=MODEL,
+                started_at=started_at,
+            )
             try:
                 judgment, _ = _score_one(client, request)
                 usage = judgment.get("usage") or {}

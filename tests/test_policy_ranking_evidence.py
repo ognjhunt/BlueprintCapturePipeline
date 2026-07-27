@@ -116,6 +116,15 @@ def test_kill_and_resume_reclaims_expired_unaccepted_request(tmp_path: Path) -> 
         lease_seconds=0,
     )
     assert first_claim
+    store.mark_provider_call_started(
+        request=_request(),
+        claim_id=first_claim,
+        arm_id="temporal",
+        attempt_type="scientific_request",
+        provider="test",
+        model_snapshot="m",
+        started_at=utc_now(),
+    )
     resumed = _store(root)
     second_claim = resumed.claim(
         _request(),
@@ -128,6 +137,7 @@ def test_kill_and_resume_reclaims_expired_unaccepted_request(tmp_path: Path) -> 
     assert second_claim and second_claim != first_claim
     _accept(resumed, _request(), claim=second_claim)
     assert resumed.rebuild()["accepted_request_count"] == 1
+    assert any(event["event_type"] == "provider_call_started" for event in resumed.events())
 
 
 def test_missing_credential_and_gate_preserve_nonempty_evidence(

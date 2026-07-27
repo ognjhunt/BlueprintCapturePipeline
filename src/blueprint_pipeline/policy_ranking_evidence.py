@@ -377,6 +377,50 @@ class EvidenceStore:
         self.rebuild()
         return event
 
+    def mark_provider_call_started(
+        self,
+        *,
+        request: Mapping[str, Any],
+        claim_id: str,
+        arm_id: str,
+        attempt_type: str,
+        provider: str,
+        model_snapshot: str,
+        started_at: str,
+    ) -> dict[str, Any]:
+        request_id = str(request["request_id"])
+        with self._locked():
+            state = self.state()
+            if request_id in state["accepted"]:
+                raise EvidenceError(f"provider_call_after_acceptance:{request_id}")
+            claim = state["claims"].get(request_id)
+            if not claim or claim["payload"].get("claim_id") != claim_id:
+                raise EvidenceError(f"claim_mismatch:{request_id}")
+            event = self._append_locked(
+                "provider_call_started",
+                {
+                    "request_id": request_id,
+                    "deterministic_input_hash": request.get("deterministic_input_hash")
+                    or canonical_sha256(dict(request)),
+                    "session_id": request.get("session_id"),
+                    "policy_id": request.get("policy_id"),
+                    "task_id": request.get("task_id") or request.get("task_instruction"),
+                    "arm_id": arm_id,
+                    "attempt_type": attempt_type,
+                    "provider": provider,
+                    "provider_called": True,
+                    "model_snapshot": model_snapshot,
+                    "configuration_hash": self.configuration_sha256,
+                    "claim_id": claim_id,
+                    "request_start_timestamp": started_at,
+                    "consumed_infrastructure_retry": False,
+                    "consumed_scientific_response": False,
+                    "accepted_first_valid": False,
+                },
+            )
+        self.rebuild()
+        return event
+
     def record_preflight_failure(self, blocker: str, *, provider: str) -> dict[str, Any]:
         return self.append(
             "preflight_failed",
