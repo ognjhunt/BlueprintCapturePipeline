@@ -2259,7 +2259,7 @@ class VastRenderProvider(GpuRenderProvider):
                 "raw_provider_response_recorded": False,
             }
         if status in {404, 410} or (
-            status == 200 and response.get("instances", {}) in (None, False)
+            status == 200 and response.get("instances", {}) is None
         ):
             return {
                 "status": "absent",
