@@ -92,6 +92,17 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
         "AUTHORIZATION_CONSUMPTION_ROOT",
         tmp_path / "authority-consumption",
     )
+    budget = tmp_path / "budget.json"
+    budget.write_text(
+        json.dumps(
+            {
+                "attempts": [
+                    {"actual_live_runtime_seconds_observed_by_adapter": 97.485577}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     preflight = _load("vast_compute_preflight.json")
     result = admission.run_successor_gpu_lane(
         authorization_path=EXPERIMENT / "compute_authorization.json",
@@ -110,7 +121,7 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
         token_file=tmp_path / "token",
         secret_env_file=tmp_path / "urls.env",
         output_path=tmp_path / "output.zip",
-        session_budget_ledger=tmp_path / "budget.json",
+        session_budget_ledger=budget,
         expected_source_commit="c" * 40,
         execute=True,
         observed_now_epoch=float(preflight["observed_at_epoch"]) + 1,
@@ -121,11 +132,15 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     assert captured["hard_cap_usd"] == 6.0
     assert captured["target_spend_usd"] == 3.25
     assert captured["max_live_minutes"] == 180
+    assert captured["session_max_live_minutes"] == 182
     assert captured["disk_gb"] == 250
     assert captured["min_gpu_ram_mb"] == 95_000
     assert captured["max_compute_cap"] == 0
     assert captured["gpu_selection_policy"]["allowed_gpu_keywords"] == ("RTX PRO 6000",)
     assert captured["require_independent_watchdog"] is True
+    written_admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
+    assert written_admission["session_live_limit"]["prior_live_runtime_minutes_ceiling"] == 2
+    assert written_admission["session_budget_preflight"]["status"] == "passed"
 
     second = admission.run_successor_gpu_lane(
         authorization_path=EXPERIMENT / "compute_authorization.json",
@@ -144,7 +159,7 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
         token_file=tmp_path / "token",
         secret_env_file=tmp_path / "urls.env",
         output_path=tmp_path / "output-second.zip",
-        session_budget_ledger=tmp_path / "budget-second.json",
+        session_budget_ledger=budget,
         expected_source_commit="c" * 40,
         execute=True,
         observed_now_epoch=float(preflight["observed_at_epoch"]) + 1,
@@ -164,6 +179,8 @@ def test_successor_lane_checks_provider_env_before_consuming_authorization(
     )
     monkeypatch.delenv("BLUEPRINT_ALLOW_VAST_API_CALLS", raising=False)
     monkeypatch.delenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", raising=False)
+    budget = tmp_path / "budget.json"
+    budget.write_text('{"attempts": []}', encoding="utf-8")
 
     result = admission.run_successor_gpu_lane(
         authorization_path=EXPERIMENT / "compute_authorization.json",
@@ -182,7 +199,7 @@ def test_successor_lane_checks_provider_env_before_consuming_authorization(
         token_file=tmp_path / "token",
         secret_env_file=tmp_path / "urls.env",
         output_path=tmp_path / "output.zip",
-        session_budget_ledger=tmp_path / "budget.json",
+        session_budget_ledger=budget,
         expected_source_commit="f" * 40,
         execute=True,
         observed_now_epoch=float(_load("vast_compute_preflight.json")["observed_at_epoch"]) + 1,
@@ -195,6 +212,90 @@ def test_successor_lane_checks_provider_env_before_consuming_authorization(
         "missing_env_BLUEPRINT_ALLOW_VAST_API_CALLS",
         "missing_env_BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
     ]
+    assert not consumption_root.exists()
+
+
+def test_successor_lane_checks_session_budget_before_consuming_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    consumption_root = tmp_path / "authority-consumption"
+    monkeypatch.setattr(admission, "AUTHORIZATION_CONSUMPTION_ROOT", consumption_root)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
+    monkeypatch.setattr(
+        admission,
+        "run_vast_wam_authorized_runner",
+        lambda **_kwargs: pytest.fail("runner must not start after a failed budget preflight"),
+    )
+    budget = tmp_path / "budget.json"
+    budget.write_text("{bad json", encoding="utf-8")
+
+    result = admission.run_successor_gpu_lane(
+        authorization_path=EXPERIMENT / "compute_authorization.json",
+        environment_path=EXPERIMENT / "environment_and_source_manifest.json",
+        smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
+        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
+        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
+        provider_bundle_receipt_path=(
+            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
+        ),
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "adapter.json",
+        job_dir=tmp_path / "job",
+        public_base_url="https://example.test",
+        token_file=tmp_path / "token",
+        secret_env_file=tmp_path / "urls.env",
+        output_path=tmp_path / "output.zip",
+        session_budget_ledger=budget,
+        expected_source_commit="f" * 40,
+        execute=True,
+        observed_now_epoch=float(_load("vast_compute_preflight.json")["observed_at_epoch"]) + 1,
+    )
+
+    assert result["status"] == "blocked"
+    assert "session_budget_ledger_parse_failed" in result["blockers"]
+    assert not consumption_root.exists()
+
+
+def test_successor_lane_requires_existing_session_budget_before_execute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    consumption_root = tmp_path / "authority-consumption"
+    monkeypatch.setattr(admission, "AUTHORIZATION_CONSUMPTION_ROOT", consumption_root)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
+    monkeypatch.setattr(
+        admission,
+        "run_vast_wam_authorized_runner",
+        lambda **_kwargs: pytest.fail("runner must not start without a session ledger"),
+    )
+
+    result = admission.run_successor_gpu_lane(
+        authorization_path=EXPERIMENT / "compute_authorization.json",
+        environment_path=EXPERIMENT / "environment_and_source_manifest.json",
+        smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
+        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
+        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
+        provider_bundle_receipt_path=(
+            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
+        ),
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "adapter.json",
+        job_dir=tmp_path / "job",
+        public_base_url="https://example.test",
+        token_file=tmp_path / "token",
+        secret_env_file=tmp_path / "urls.env",
+        output_path=tmp_path / "output.zip",
+        session_budget_ledger=tmp_path / "missing-budget.json",
+        expected_source_commit="f" * 40,
+        execute=True,
+        observed_now_epoch=float(_load("vast_compute_preflight.json")["observed_at_epoch"]) + 1,
+    )
+
+    assert result["status"] == "blocked"
+    assert "successor_session_budget_ledger_missing" in result["blockers"]
     assert not consumption_root.exists()
 
 
@@ -262,6 +363,7 @@ def test_successor_lane_writes_blocked_artifacts_for_unreadable_input(
 
     assert result["status"] == "blocked"
     assert "successor_environment_unreadable" in result["blockers"]
+    assert "successor_session_budget_ledger_missing" in result["blockers"]
     assert admission_out.is_file()
     assert bound_out.is_file()
     assert adapter_out.is_file()

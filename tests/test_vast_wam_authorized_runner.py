@@ -358,6 +358,7 @@ def test_vast_wam_runner_arms_watchdog_before_adapter_and_closes_after_teardown(
         order.append("close")
         assert kwargs["instance_ids"] == [123]
         assert kwargs["provider_teardown_completed"] is True
+        assert kwargs["provider_allocation_impossible"] is False
         return {"status": "provider_terminal", "provider_absence_confirmed": True}
 
     monkeypatch.setattr(runner, "arm_independent_vast_watchdog", fake_arm)
@@ -382,6 +383,60 @@ def test_vast_wam_runner_arms_watchdog_before_adapter_and_closes_after_teardown(
     assert result["status"] == "completed"
     assert result["independent_watchdog_handoff"]["status"] == "armed"
     assert result["independent_watchdog_close"]["status"] == "provider_terminal"
+
+
+def test_vast_wam_runner_cancels_watchdog_after_explicit_precreate_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "bundle.zip"
+    _write_minimal_bundle(bundle)
+    handle = SimpleNamespace(
+        pod_name_prefix="blueprint-groot-oscar-canary-vast-wam-test-",
+        started_instance_id_path=tmp_path / "watchdog" / "started_vast_instance_id.txt",
+    )
+    monkeypatch.setattr(
+        runner,
+        "arm_independent_vast_watchdog",
+        lambda **_kwargs: ({"status": "armed", "blockers": []}, handle),
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_vast_provider_adapter",
+        lambda **_kwargs: {
+            "status": "blocked",
+            "reason": "vast_session_budget_guard_blocked",
+            "blockers": ["requested_live_runtime_would_exceed_session_limit"],
+            "vast_instance_ids": [],
+            "continuing_spend_from_this_run": False,
+            "provider_create_attempted": False,
+        },
+    )
+
+    def fake_close(**kwargs: Any) -> dict[str, Any]:
+        assert kwargs["instance_ids"] == []
+        assert kwargs["provider_allocation_impossible"] is True
+        return {"status": "cancelled_no_allocation"}
+
+    monkeypatch.setattr(runner, "close_independent_vast_watchdog", fake_close)
+    monkeypatch.setattr(runner, "verify_public_staging_urls", _passed_public_staging)
+
+    result = runner.run_vast_wam_authorized_runner(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        public_base_url="https://example.trycloudflare.com",
+        token_file=tmp_path / "token",
+        secret_env_file=tmp_path / "urls.env",
+        session_budget_ledger=tmp_path / "budget.json",
+        allow_paid_vast_launch=True,
+        allow_target_spend_overrun=True,
+        require_independent_watchdog=True,
+        generated_at="2026-07-27T00:00:00+00:00",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["independent_watchdog_close"]["status"] == "cancelled_no_allocation"
+    assert "independent_vast_watchdog_not_terminal" not in result["blockers"]
 
 
 def test_vast_wam_runner_blocks_before_adapter_when_watchdog_does_not_arm(

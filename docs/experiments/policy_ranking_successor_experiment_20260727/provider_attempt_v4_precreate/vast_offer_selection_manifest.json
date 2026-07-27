@@ -1,0 +1,18 @@
+{
+  "schema_version": "vast_offer_selection_manifest.v1",
+  "generated_at": "2026-07-27T20:31:39.023592+00:00",
+  "status": "blocked",
+  "offer_search_performed": false,
+  "selected_offer": null,
+  "machine_avoidlist_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v4/vast_machine_avoidlist.json",
+  "excluded_machine_ids": [],
+  "session_budget_guard_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v4/vast_session_budget_guard.json",
+  "blueprint_bundle_preflight_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v4/vast_blueprint_bundle_preflight.json",
+  "blueprint_bundle_preflight_blockers": [],
+  "isaac_image_startup_preflight_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v4/vast_isaac_image_startup_preflight.json",
+  "isaac_image_startup_preflight_blockers": [],
+  "blockers": [
+    "requested_live_runtime_would_exceed_session_limit"
+  ],
+  "raw_secret_values_recorded": false
+}

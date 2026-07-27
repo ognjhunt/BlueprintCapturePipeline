@@ -1,0 +1,22 @@
+{
+  "schema_version": "vast_startup_probe_manifest.v1",
+  "generated_at": "2026-07-27T20:31:39.023592+00:00",
+  "status": "blocked",
+  "blockers": [
+    "vast_heartbeat_not_run"
+  ],
+  "heartbeat_completed": false,
+  "startup_probe_proven": false,
+  "isaac_sim_does_not_make_spz_or_3dgs_physical": true,
+  "direct_splat_collision_proven": false,
+  "collider_source_if_used": "metadata_derived_collider_proxy_required",
+  "splat_visuals_if_used": "splat_rendered_visual_evidence_synchronized_with_isaac_state",
+  "real_wam_vla_runtime_proven": false,
+  "generated_world_rank_fidelity_result_proven": false,
+  "generated_world_policy_evaluation_scope_proven": false,
+  "dexterous_hand_policy_proven": false,
+  "controller_grade_execution_proven": false,
+  "official_policy_execution_proven": false,
+  "rank_fidelity_result_proven": false,
+  "public_claim_upgrade_allowed": false
+}

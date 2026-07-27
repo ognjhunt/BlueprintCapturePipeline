@@ -1,0 +1,270 @@
+{
+  "schema_version": "policy_ranking_successor_provider_attempt_manifest.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "attempt_id": "vast_blackwell_v4_precreate",
+  "generated_at": "2026-07-27T15:51:56-0500",
+  "status": "closed_code_failure",
+  "classification": "code_failure",
+  "provider_allocation_count": 0,
+  "scientific_rollout_count": 0,
+  "estimated_compute_cost_usd": 0.0,
+  "provider_zero_confirmed": true,
+  "failure": "requested_live_runtime_would_exceed_session_limit_before_offer_search",
+  "publication_transform_policy": "Personal absolute paths and local secret-file paths were replaced with literal redaction markers; source-live and published hashes retain the transformation provenance.",
+  "artifacts": [
+    {
+      "path": "adapter_v4_execute.json",
+      "published_sha256": "c5e10aa8873de2b9d0505bc4afe6f625b00e2d1180cddc7e3e55f6cf98e03d1a",
+      "size_bytes": 5717,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "9f81b37ce25dc9bc7a562f7d084dccbbf7db21182156ab561791a5f24b18a236",
+      "publish_transform": "personal_and_secret_paths_redacted"
+    },
+    {
+      "path": "bound_request_v4_execute.json",
+      "published_sha256": "4b95f1b445fdeffa4a5010099c36f7c91482f4a86fae2e353b79282dd443e206",
+      "size_bytes": 1379,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "4b95f1b445fdeffa4a5010099c36f7c91482f4a86fae2e353b79282dd443e206",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "gpu_admission_v4_execute.json",
+      "published_sha256": "477123e3105e72fc4b86e97e68f3fe8d5de7e4f0fe1d58d7853e5cf667bc2590",
+      "size_bytes": 2778,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "477123e3105e72fc4b86e97e68f3fe8d5de7e4f0fe1d58d7853e5cf667bc2590",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json",
+      "published_sha256": "7f2c33852176718ec7c6cbb08fa5d56f8bf6b912b4bce98837ac5d41df9d7532",
+      "size_bytes": 627,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "7f2c33852176718ec7c6cbb08fa5d56f8bf6b912b4bce98837ac5d41df9d7532",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "independent_vast_watchdog/manual_zero_allocation_cancellation.json",
+      "published_sha256": "a45682a7a4ccc522bf5e22810d6e68410207308cc1b23943d63c433b4db0e1f3",
+      "size_bytes": 984,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "a45682a7a4ccc522bf5e22810d6e68410207308cc1b23943d63c433b4db0e1f3",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "independent_vast_watchdog/watchdog.log",
+      "published_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "provider_worker_endpoint_manifest.json",
+      "published_sha256": "d47e88513adfa799e6a4c3fb8ccc516d8903cb586260058c21f05f64d554b5a5",
+      "size_bytes": 2714,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "d47e88513adfa799e6a4c3fb8ccc516d8903cb586260058c21f05f64d554b5a5",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_blueprint_bundle_preflight.json",
+      "published_sha256": "5292abe221a48af1d3934d0accd8db77dd7fef9f2da5521774751d51e2b76e0e",
+      "size_bytes": 1852,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "8f0e1a3eb3a0f1808da42dbbdfb3b680b237f806987434ff9e67ae1fa302f4b1",
+      "publish_transform": "personal_and_secret_paths_redacted"
+    },
+    {
+      "path": "vast_budget_ledger.json",
+      "published_sha256": "add1678a34f50d88595ac2f6ba961c308b13b3b39e2b07d202ee3a38d4acd007",
+      "size_bytes": 647,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "add1678a34f50d88595ac2f6ba961c308b13b3b39e2b07d202ee3a38d4acd007",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_bundle_staging_manifest.json",
+      "published_sha256": "b7484ff150a7955370dd7da24444b31698d79d84aebae93cbe4c5ccbd701dfc0",
+      "size_bytes": 2393,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "dc9082c7ed664e8129cbfa785eec2d1e15e27804be15b695f6ca678b2fc86549",
+      "publish_transform": "personal_and_secret_paths_redacted"
+    },
+    {
+      "path": "vast_bundle_staging_self_test.json",
+      "published_sha256": "af111934320fd3252870021c0777924f76b30cc8348a1157201fd7135e2acb95",
+      "size_bytes": 1543,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "673834ff84bc0dadf3522cccadd4012fa0adcdb17114f0d94b595161b489d994",
+      "publish_transform": "personal_and_secret_paths_redacted"
+    },
+    {
+      "path": "vast_compute_preflight_v4_live.json",
+      "published_sha256": "36faffdea2c70edfd27699feb0b1398fd679fe97dba5b7ae9a1a3c4876ff0ea7",
+      "size_bytes": 2409,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "36faffdea2c70edfd27699feb0b1398fd679fe97dba5b7ae9a1a3c4876ff0ea7",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_final_validation.json",
+      "published_sha256": "7fb3f55fff97b4dba6f5d388d1cf81b36eb6288e2e064e2c082aa63282fc8a45",
+      "size_bytes": 2310,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "7fb3f55fff97b4dba6f5d388d1cf81b36eb6288e2e064e2c082aa63282fc8a45",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_gpu_sanity_report.json",
+      "published_sha256": "f52a29b158961b6c21efbc3bd213a18d73549ca6e7d4edc1f44cee624715aac3",
+      "size_bytes": 870,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "f52a29b158961b6c21efbc3bd213a18d73549ca6e7d4edc1f44cee624715aac3",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_independent_watchdog_handoff.json",
+      "published_sha256": "39f685d6dadcc57d610de5ffcb464c12d3bb9e7dfc6737a1ad16e68934ee4046",
+      "size_bytes": 329,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "39f685d6dadcc57d610de5ffcb464c12d3bb9e7dfc6737a1ad16e68934ee4046",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_isaac_image_startup_preflight.json",
+      "published_sha256": "1cb04601eaf0905e17a606244aff72ae3e24be917a4c43f7f48c654ebb6b8f35",
+      "size_bytes": 849,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "1cb04601eaf0905e17a606244aff72ae3e24be917a4c43f7f48c654ebb6b8f35",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_isaac_smoke_result.json",
+      "published_sha256": "fbefc111d9e581a48a7c6a16739a109046aeaade420fb819d0f9823eb92c43f7",
+      "size_bytes": 883,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "fbefc111d9e581a48a7c6a16739a109046aeaade420fb819d0f9823eb92c43f7",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_offer_selection_manifest.json",
+      "published_sha256": "6f52850be2b2479713b6315d7a404df1c84c8be747137399918b7301198b0de3",
+      "size_bytes": 991,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "6f52850be2b2479713b6315d7a404df1c84c8be747137399918b7301198b0de3",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_provider_adapter_result.json",
+      "published_sha256": "a7c5ded38f3ccf05e168a166353e03a524c9fc0edd19f6314287ed37e3318d19",
+      "size_bytes": 11323,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "afbfef0c020a6b0fd89260263a45cf4a9c17ec5c9ed3f57aec6cc25cbb8e0fb7",
+      "publish_transform": "personal_and_secret_paths_redacted"
+    },
+    {
+      "path": "vast_provider_command_result.json",
+      "published_sha256": "7d674ed3d02578f402ca5de270f45fe73029263d4b0d610feeea5d06d769ce06",
+      "size_bytes": 927,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "7d674ed3d02578f402ca5de270f45fe73029263d4b0d610feeea5d06d769ce06",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_provider_plan.json",
+      "published_sha256": "d0df9fc099cba8c5ba7e1bbacefa23dedb994f0cd55e98b951f7d1d63fd6f699",
+      "size_bytes": 3111,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "48cfe251c8d0bcb58b65d1db6a18e813c54919657378379e4b846a1d002ea9a1",
+      "publish_transform": "personal_and_secret_paths_redacted"
+    },
+    {
+      "path": "vast_public_staging_verification.json",
+      "published_sha256": "ad9740f3f6ff4abef32f95ee0009558c0b4aabf3bceec7e16be4971bdd5c813f",
+      "size_bytes": 3765,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "3b796cb94e4a3cfb9db872fa31324f833d97fbfd0bbad8889b9a1e3268c3b018",
+      "publish_transform": "personal_and_secret_paths_redacted"
+    },
+    {
+      "path": "vast_runtime_discovery.json",
+      "published_sha256": "4f48c07703d7ec480ec7779e58ffec2ffaae16d5e1cc7a89bdad6212634ca9b6",
+      "size_bytes": 2963,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "4f48c07703d7ec480ec7779e58ffec2ffaae16d5e1cc7a89bdad6212634ca9b6",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_runtime_phase_log.jsonl",
+      "published_sha256": "bd0ed0ebae4830c115281921744d996164f3b55ed9ce5d5056fef4f29f21ecdd",
+      "size_bytes": 4274,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "bd0ed0ebae4830c115281921744d996164f3b55ed9ce5d5056fef4f29f21ecdd",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_session_budget_guard.json",
+      "published_sha256": "63699d9202f2edfbba9532b54f9545ba582914fec8dda6361d0880cb0dd9778b",
+      "size_bytes": 762,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "63699d9202f2edfbba9532b54f9545ba582914fec8dda6361d0880cb0dd9778b",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_startup_probe_manifest.json",
+      "published_sha256": "e2355c5169970e7ba257fdd3f0a7d5af864be0409e432074828f95e2a458d55f",
+      "size_bytes": 878,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "e2355c5169970e7ba257fdd3f0a7d5af864be0409e432074828f95e2a458d55f",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_teardown_manifest.json",
+      "published_sha256": "ca41b24ec7ff6d773ed4e0fbaa48c04b0648428f195ce11f431c51831e9b987c",
+      "size_bytes": 356,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "ca41b24ec7ff6d773ed4e0fbaa48c04b0648428f195ce11f431c51831e9b987c",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_video_smoke_result.json",
+      "published_sha256": "71aa78e161592ee3fad034b5706f963459b7dd9ab158f902be64f806e4a24cc4",
+      "size_bytes": 1066,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "71aa78e161592ee3fad034b5706f963459b7dd9ab158f902be64f806e4a24cc4",
+      "publish_transform": "byte_identical"
+    },
+    {
+      "path": "vast_wam_authorized_runner_manifest.json",
+      "published_sha256": "fb55473f5a9a78d8e27418d87409233d8ba0e8580f76bed6c58cd6646eb25d67",
+      "size_bytes": 5427,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "28e183a2b176453a41db2fa960bf425b8fffaa14f21c70d322b3a55138494afb",
+      "publish_transform": "personal_and_secret_paths_redacted"
+    },
+    {
+      "path": "vast_wam_staging_self_test_output.zip",
+      "published_sha256": "8739c76e681f900923b900c9df0ef75cf421d39cabb54650c4b9ad19b6a76d85",
+      "size_bytes": 22,
+      "source_live_artifact_present": true,
+      "source_live_sha256": "8739c76e681f900923b900c9df0ef75cf421d39cabb54650c4b9ad19b6a76d85",
+      "publish_transform": "byte_identical"
+    }
+  ],
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "simulator_outcomes": false,
+    "ranking_fidelity": false,
+    "captured_site_portability": false,
+    "warehouse_portability": false,
+    "economic_comparison": false,
+    "physical_performance": false
+  },
+  "raw_secret_values_recorded": false
+}

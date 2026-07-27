@@ -1,0 +1,15 @@
+{
+  "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+  "status": "armed",
+  "independent_process": true,
+  "pid": 1623,
+  "armed_at": "2026-07-27T20:31:38.915091+00:00",
+  "deadline_epoch": 1785195098.79481,
+  "provider": "vast",
+  "pod_name_prefix": "blueprint-groot-oscar-canary-vast-wam-20260727t203127419668000-",
+  "watchdog_out_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v4/independent_vast_watchdog",
+  "provider_mutation_trigger": "hard_deadline_only",
+  "pre_deadline_provider_mutation_allowed": false,
+  "provider_mutations_performed": 0,
+  "raw_secret_values_recorded": false
+}

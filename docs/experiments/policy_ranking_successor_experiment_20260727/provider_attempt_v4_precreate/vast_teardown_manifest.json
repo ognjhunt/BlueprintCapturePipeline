@@ -1,0 +1,9 @@
+{
+  "schema_version": "vast_teardown_manifest.v1",
+  "generated_at": "2026-07-27T20:31:39.023592+00:00",
+  "status": "not_required_session_budget_blocked",
+  "vast_instance_ids": [],
+  "teardown_actions_performed": [],
+  "continuing_spend_from_this_run": false,
+  "zero_continuing_spend_scope": "session budget guard blocked before Vast API offer search"
+}

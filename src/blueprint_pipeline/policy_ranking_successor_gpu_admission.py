@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .common import write_json
+from .common import utc_now_iso, write_json
 from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     PaidResourceAdmissionBlocked,
@@ -44,6 +44,10 @@ from .vast_provider_adapter import (
     VAST_INSTANCE_LAUNCH_GATE_ENV,
     _env_truthy as _vast_env_truthy,
 )
+from .vast_session_budget_contract import (
+    build_vast_session_budget_guard,
+    successor_session_live_limit_minutes,
+)
 
 
 PROBE_KIND = "policy-ranking-successor-cosmos"
@@ -61,8 +65,11 @@ DISK_GB = 250
 MIN_GPU_RAM_MB = 95_000
 MIN_RELIABILITY = 0.98
 MAX_PREFLIGHT_AGE_SECONDS = 900
-AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v4"
+AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v5"
 PREDECESSOR_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v3"
+REPLACED_ZERO_SPEND_AUTHORIZATION_ID = (
+    "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v4"
+)
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 EXPECTED_BUNDLE_SHA256 = "481870aa449f8d5c7bfb2cc4403cc4145f7e82d256c5281259ff626d6c880e21"
 EXPECTED_BUNDLE_SIZE_BYTES = 294_167
@@ -323,6 +330,13 @@ def build_successor_gpu_admission(
         authorization_blockers.append("successor_compute_authorization_single_use_invalid")
     if authorization.get("infrastructure_retry_of") != PREDECESSOR_AUTHORIZATION_ID:
         authorization_blockers.append("successor_compute_authorization_retry_predecessor_invalid")
+    if (
+        authorization.get("pre_provider_zero_spend_replacement_of")
+        != REPLACED_ZERO_SPEND_AUTHORIZATION_ID
+    ):
+        authorization_blockers.append(
+            "successor_compute_authorization_zero_spend_replacement_invalid"
+        )
     if authorization.get("predecessor_provider_allocations") != 1:
         authorization_blockers.append(
             "successor_compute_authorization_retry_allocation_count_invalid"
@@ -336,7 +350,7 @@ def build_successor_gpu_admission(
     if (
         authorization.get("infrastructure_retry_limit") != 1
         or authorization.get("paid_infrastructure_retry_index") != 1
-        or authorization.get("pre_provider_zero_spend_authorization_replacements") != 2
+        or authorization.get("pre_provider_zero_spend_authorization_replacements") != 3
     ):
         authorization_blockers.append("successor_compute_authorization_retry_contract_invalid")
     if authorization.get("paid_mutation_authorized") is not True:
@@ -526,6 +540,45 @@ def run_successor_gpu_lane(
         receipt=bundle_receipt,
         smoke_inventory=smoke_inventory,
     )
+    requested_live_minutes = HARD_TTL_SECONDS // 60
+    session_limit: dict[str, Any] = {
+        "schema_version": "vast_successor_session_live_limit.v1",
+        "status": "blocked",
+        "blockers": ["successor_session_budget_ledger_missing"],
+        "session_max_live_runtime_minutes": requested_live_minutes,
+        "raw_secret_values_recorded": False,
+    }
+    session_guard: dict[str, Any] = {
+        "schema_version": "vast_session_budget_guard.v1",
+        "status": "blocked",
+        "blockers": ["successor_session_budget_ledger_missing"],
+        "raw_secret_values_recorded": False,
+    }
+    if session_budget_ledger is not None:
+        budget_path = Path(session_budget_ledger).expanduser().resolve()
+        session_limit = successor_session_live_limit_minutes(
+            budget_path=budget_path,
+            requested_max_live_minutes=requested_live_minutes,
+        )
+        session_guard = build_vast_session_budget_guard(
+            generated_at=utc_now_iso(),
+            budget_path=budget_path,
+            session_max_live_minutes=int(session_limit["session_max_live_runtime_minutes"]),
+            requested_max_live_minutes=requested_live_minutes,
+            target_spend_usd=TARGET_SPEND_USD,
+            hard_cap_usd=MAX_COMPUTE_CAP_USD,
+            max_hourly_rate=MAX_HOURLY_RATE_USD,
+        )
+        write_json(
+            Path(job_dir).expanduser().resolve() / "vast_session_budget_guard.json",
+            session_guard,
+        )
+        if not budget_path.is_file():
+            input_blockers.append("successor_session_budget_ledger_missing")
+        input_blockers.extend(str(item) for item in session_limit.get("blockers") or [])
+        input_blockers.extend(str(item) for item in session_guard.get("blockers") or [])
+    else:
+        input_blockers.append("successor_session_budget_ledger_missing")
     admission = build_successor_gpu_admission(
         authorization=authorization,
         environment=environment,
@@ -536,6 +589,11 @@ def run_successor_gpu_lane(
         execute=execute,
         observed_now_epoch=observed_now_epoch,
         initial_blockers=input_blockers,
+    )
+    admission["session_live_limit"] = session_limit
+    admission["session_budget_preflight"] = session_guard
+    admission["manifest_sha256"] = canonical_sha256(
+        {key: value for key, value in admission.items() if key != "manifest_sha256"}
     )
     write_json(Path(admission_out), admission)
     bound = {
@@ -550,6 +608,8 @@ def run_successor_gpu_lane(
         "smoke_inventory_sha256": canonical_sha256(smoke_inventory),
         "selected_offer_id": _mapping(admission.get("selected_offer")).get("ask_contract_id"),
         "limits": admission["limits"],
+        "session_live_limit": session_limit,
+        "session_budget_preflight": session_guard,
         "blockers": admission["blockers"],
         "provider_mutations_performed": 0,
     }
@@ -636,8 +696,8 @@ def run_successor_gpu_lane(
         max_hourly_rate=MAX_HOURLY_RATE_USD,
         target_spend_usd=TARGET_SPEND_USD,
         hard_cap_usd=MAX_COMPUTE_CAP_USD,
-        max_live_minutes=HARD_TTL_SECONDS // 60,
-        session_max_live_minutes=HARD_TTL_SECONDS // 60,
+        max_live_minutes=requested_live_minutes,
+        session_max_live_minutes=int(session_limit["session_max_live_runtime_minutes"]),
         startup_timeout_seconds=3600,
         public_image=PUBLIC_IMAGE,
         disk_gb=DISK_GB,
