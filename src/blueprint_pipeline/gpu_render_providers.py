@@ -2258,7 +2258,9 @@ class VastRenderProvider(GpuRenderProvider):
                 "api_confirmed": False,
                 "raw_provider_response_recorded": False,
             }
-        if status in {404, 410}:
+        if status in {404, 410} or (
+            status == 200 and response.get("instances", {}) is None
+        ):
             return {
                 "status": "absent",
                 "provider": self.name,
@@ -2269,10 +2271,8 @@ class VastRenderProvider(GpuRenderProvider):
                 "raw_provider_response_recorded": False,
             }
         nested_instance = _mapping(response.get("instances"))
-        # A show-instance response commonly wraps one instance mapping under
-        # ``instances`` and that mapping can itself contain nested mappings
-        # such as ``env``. Prefer its identity/status keys over interpreting
-        # those nested values as a mapping keyed by instance id.
+        # Prefer a wrapped instance's identity/status keys over interpreting
+        # its nested values as a mapping keyed by instance id.
         rows = (
             [nested_instance]
             if nested_instance

@@ -1697,6 +1697,31 @@ def test_vast_inspect_is_get_only_sanitized_and_404_proves_absence(
     assert absent["api_confirmed"] is True
     assert "must-not-surface" not in json.dumps(absent)
 
+    def explicit_empty_api_json(**_kwargs):
+        return 200, {"instances": None}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json",
+        explicit_empty_api_json,
+    )
+    explicit_empty = VastRenderProvider().inspect("123")
+    assert explicit_empty["status"] == "absent"
+    assert explicit_empty["http"] == 200
+    assert explicit_empty["provider_absence_confirmed"] is True
+    assert explicit_empty["api_confirmed"] is True
+    assert explicit_empty["raw_provider_response_recorded"] is False
+
+    def false_envelope_api_json(**_kwargs):
+        return 200, {"instances": False}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json",
+        false_envelope_api_json,
+    )
+    false_envelope = VastRenderProvider().inspect("123")
+    assert false_envelope["status"] == "unavailable"
+    assert false_envelope["api_confirmed"] is False
+
 
 def test_vast_ssh_host_key_enrollment_tofu_pins_attempt_local_artifacts(
     monkeypatch: pytest.MonkeyPatch,

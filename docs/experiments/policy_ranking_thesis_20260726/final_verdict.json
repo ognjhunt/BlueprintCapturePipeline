@@ -1,0 +1,120 @@
+{
+  "schema_version": "blueprint_policy_ranking_thesis_final_verdict.v1",
+  "verdict": "inconclusive",
+  "decision_rule": "frozen_protocol_v2_with_preserved_v1_decision_thresholds",
+  "protocol_v2_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
+  "disposition_basis": {
+    "required_heldout_matrix_complete": false,
+    "protocol_inconclusive_if_any_required_component_unmeasured": true,
+    "retry_exhaustion_disposition": "explicit_abstention_and_inconclusive_if_required_matrix_incomplete",
+    "calibration_failure_is_not_heldout_falsification": true
+  },
+  "benchmark_calibration": {
+    "status": "failed_registered_calibration_gate_set",
+    "session_pairwise_accuracy": 0.672566371681416,
+    "session_pairwise_accuracy_bootstrap_ci95": [
+      0.5483870967741935,
+      0.7777777777777778
+    ],
+    "kendall_tau_b_binary_then_partial": 0.3333333333333333,
+    "selective_session_pairwise_accuracy_gain": 0.327433628318584,
+    "selective_session_pairwise_coverage": 0.008849557522123894,
+    "required_selective_coverage": 0.25,
+    "action_following_pass_rate": 0.10204081632653061,
+    "required_action_following_pass_rate": 0.8,
+    "top_policy_correct": true,
+    "heldout_metric_available": false,
+    "benchmark_component_passed": false
+  },
+  "heldout_benchmark": {
+    "status": "unmeasured_after_frozen_retries_exhausted",
+    "metric_available": false,
+    "labels_remained_sealed": true,
+    "final_disposition": "inconclusive",
+    "third_exact_attempt_allowed_by_frozen_protocol": false,
+    "new_evaluator_arms_allowed": false
+  },
+  "pipeline_identity_reconciliation": {
+    "lane_a_rollout_stack": "independently_released_oscar_wam_rollouts_plus_frozen_gpt_progress_evaluator",
+    "lane_b_rollout_stack": "openpi_policy_in_mujoco_plus_deterministic_object_state_scorer_and_warehouse_visual_background",
+    "lane_c_rollout_stack": "openpi_policy_in_mujoco_plus_lane_b_deterministic_scorer_and_interiorgs_visual_background",
+    "lane_b_deterministic_predicates_explicitly_admitted_by_protocol_v2": true,
+    "lane_a_wam_executed_in_transfer": false,
+    "lane_a_evaluator_digest_reused_in_lane_c": false,
+    "benchmark_policy_cohort_reused_in_transfer": false,
+    "same_policy_adapter_simulator_scorer_and_aggregator_used_across_lanes_b_and_c": true,
+    "registered_wam_evaluator_transfer_condition_measured": false
+  },
+  "captured_site_transfer": {
+    "status": "sim_transfer_executed_and_abstained_wam_transfer_unmeasured",
+    "policy_count": 4,
+    "scene_count": 2,
+    "variant_count_per_scene": 3,
+    "episode_count": 24,
+    "contract_valid_episode_count": 24,
+    "nonzero_lift_episode_count": 20,
+    "nonzero_transport_episode_count": 0,
+    "containment_episode_count": 0,
+    "stable_episode_count": 5,
+    "interiorgs_total_ranking_emitted": false,
+    "warehouse_total_ranking_emitted": false,
+    "interiorgs_ordered_pairs": [
+      [
+        "pi0_fast_droid_jointpos_polaris",
+        "pi0_droid_jointpos_100k_polaris"
+      ]
+    ],
+    "warehouse_ordered_pairs": [
+      [
+        "pi05_droid_jointpos_polaris",
+        "pi0_fast_droid_jointpos_polaris"
+      ]
+    ],
+    "abstention_followed_frozen_rule": true,
+    "abstention_correctness_proven": false,
+    "transfer_resolution_power_analyzed": false,
+    "site_specific_physical_success_proven": false
+  },
+  "execution_evidence": {
+    "source_commit": "b28b847cd8e261e31f4ef3654785d99ee63c47e1",
+    "image_digest": "sha256:f8f4dc01704b9051f564262b43238666f3fb915c6d145f0345fb21f1f7bf0e40",
+    "input_bundle_sha256": "521405298ef5dd0aadda901760252355e2420f37c5bbf93683344cf25d688d43",
+    "output_archive_sha256": "2dd36776ec7bf648af66915895b8f7c5b968d6e0cffe4ed88dc4cf922ecdb4c4",
+    "output_validation_sha256": "b751b80f5eb1a3b238d75a0a835bc9545b03726349e842660b44b10929632e55",
+    "control_plane_recovery_sha256": "f76955b100ddf9d6c7bdbd966aee82bc5375e908ae78a78488df81d27548a7e9",
+    "gpu_device": "NVIDIA RTX 6000 Ada Generation",
+    "gpu_runtime_seconds": 991,
+    "gpu_conservative_cost_usd": 0.206458,
+    "exact_instance_absent": true,
+    "provider_prefix_inventory_zero": true,
+    "provider_global_inventory_zero": true,
+    "control_plane_terminal": true
+  },
+  "economic_result": {
+    "exact_main_builder_seconds": 1319.3090460300446,
+    "exact_main_builder_maximum_compute_spend_usd": 0.061080344083840984,
+    "builder_plus_gpu_serial_seconds": 2310.3090460300446,
+    "builder_plus_gpu_spend_usd": 0.267538344083841,
+    "substantial_speed_advantage_proven": false,
+    "cheaper_than_physical_proven": false,
+    "physical_monetary_cost_measured": false
+  },
+  "evidence_locations": {
+    "benchmark_report": "calibration_report.json",
+    "frozen_protocol": "preregistered_protocol.json",
+    "gpu_archive_storage": "private_goal_evidence_store",
+    "gpu_archive_committed_to_git": false,
+    "interiorgs_observations_redistributed": false
+  },
+  "unresolved_limitations": [
+    "heldout_benchmark_predictions_unavailable_after_provider_rate_limits",
+    "fast_action_tokenizer_remote_code_revision_not_pinned_in_runtime_log",
+    "no_site_specific_physical_outcome_labels",
+    "no_full_3dgs_depth_occlusion_or_captured_collision_geometry",
+    "wrist_observations_strongly_self_occluded",
+    "policy_task_visual_domain_or_action_semantics_mismatch_possible",
+    "lane_a_wam_and_evaluator_identity_not_reused_in_transfer",
+    "three_variant_range_separation_resolution_uncalibrated"
+  ],
+  "physical_robot_operated_by_blueprint": false
+}

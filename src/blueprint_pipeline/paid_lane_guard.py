@@ -427,7 +427,13 @@ def provider_state_from_inspect(inspect_result: Mapping[str, Any]) -> dict[str, 
         http_code = int(http)
     except (TypeError, ValueError):
         http_code = 0
-    if http_code in (404, 410):
+    explicit_absence = bool(
+        http_code == 200
+        and result.get("status") == "absent"
+        and result.get("provider_absence_confirmed") is True
+        and result.get("api_confirmed") is True
+    )
+    if http_code in (404, 410) or explicit_absence:
         return {"provider_status": "not_found", "api_confirmed": True, "http": http_code}
     if str(result.get("status") or "") == "observed" and http_code == 200:
         desired = str(result.get("desiredStatus") or "").strip().lower()

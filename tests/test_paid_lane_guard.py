@@ -263,6 +263,26 @@ class TestProviderStateFromInspect:
         assert state["provider_status"] == "not_found"
         assert state["api_confirmed"] is True
 
+    def test_explicit_http_200_absence_is_api_confirmed_not_found(self) -> None:
+        state = provider_state_from_inspect(
+            {
+                "status": "absent",
+                "http": 200,
+                "provider_absence_confirmed": True,
+                "api_confirmed": True,
+            }
+        )
+        assert state == {
+            "provider_status": "not_found",
+            "api_confirmed": True,
+            "http": 200,
+        }
+
+    def test_unconfirmed_http_200_absence_fails_closed(self) -> None:
+        state = provider_state_from_inspect({"status": "absent", "http": 200})
+        assert state["provider_status"] == ""
+        assert state["api_confirmed"] is False
+
     def test_observed_pod_reports_desired_status(self) -> None:
         state = provider_state_from_inspect(_observed("EXITED"))
         assert state["provider_status"] == "exited"
