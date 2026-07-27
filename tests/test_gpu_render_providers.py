@@ -1527,6 +1527,13 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
             "require_avx": True,
             "require_known_supported_isaac_driver": True,
             "preferred_gpu_keywords": ["L40S"],
+            "min_compute_cap": 0,
+            "max_compute_cap": 0,
+            "prefer_isaac_rt": False,
+            "gpu_selection_policy": {
+                "allowed_gpu_keywords": ["L40S"],
+                "denied_gpu_keywords": [],
+            },
         }
     )
 
@@ -1550,6 +1557,13 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
         "require_known_supported_isaac_driver": True,
         "require_direct_port": False,
         "preferred_gpu_keywords": ["L40S"],
+        "min_compute_cap": 0,
+        "max_compute_cap": 0,
+        "prefer_isaac_rt": False,
+        "gpu_selection_policy": {
+            "allowed_gpu_keywords": ["L40S"],
+            "denied_gpu_keywords": [],
+        },
     }
     serialized = json.dumps(result)
     assert "vast-secret" not in serialized
