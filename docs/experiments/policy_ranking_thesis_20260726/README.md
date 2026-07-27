@@ -8,8 +8,10 @@ calibration did not pass the registered selective-abstention or action-following
 gates. The required held-out benchmark matrix remained unmeasured after both
 frozen provider attempts were exhausted, so the preregistered decision rule
 requires an inconclusive disposition rather than a definitive falsification.
-See `final_verdict.md` and `final_verdict.json` for the decision and claim
-boundaries.
+The transfer GPU campaign used OpenPI policies in MuJoCo with deterministic
+object-state scoring; it did not reuse the Lane A OSCAR/GPT evaluator stack.
+See `final_verdict.md` and `final_verdict.json` for the cross-lane identity
+reconciliation, decision, and claim boundaries.
 
 ## Claim under test
 
@@ -18,7 +20,7 @@ Given a captured real-site representation, a real robot task, and multiple candi
 The protocol keeps two results separate:
 
 1. **Frozen benchmark calibration** compares a fixed WAM/evaluator against previously collected independent RoboArena real-policy outcomes.
-2. **Captured-site transfer** retains a previously unseen 3DGS site as its visual source, adds only local task/robot interaction layers, and emits a prospective externally calibrated ranking. It cannot prove physical success at that site without site-specific outcomes.
+2. **Captured-site transfer** retains a previously unseen 3DGS site as its visual source and adds only local task/robot interaction layers. In the executed campaign, the Warehouse and InteriorGS lanes shared an OpenPI/MuJoCo/deterministic-scoring stack, but did not reuse Lane A's WAM/evaluator identity. The result is therefore prospective sim execution and abstention, not proof that the frozen benchmark stack transferred or that any policy succeeds physically at the site.
 
 ## Current embodiment and task
 
@@ -66,6 +68,7 @@ The initially proposed Floppy Bagel checkpoint ladder was rejected before scorin
 - Before any learned-policy outcome, froze a v2 transfer cohort of four public OpenPI PolaRiS DROID joint-position checkpoints totaling 47,286,181,297 bytes. OpenPI's source converts their absolute joint actions to deltas for training and restores absolute actions at output specifically to support simulation. The new joint-position positive passed the same deterministic task predicates with 0.10949 m lift, containment, and 0.00038 m/s final speed; the stationary negative was correctly rejected. This admitted only the joint-position learned-policy lane. The later exact-main campaign downloaded, verified, loaded, and executed all four checkpoints without changing this cohort.
 - Replaced the static arm overlay with a dynamic hybrid compositor: the frozen captured-site 3DGS derivative remains the background while live MuJoCo segmentation supplies the actual articulated Panda, can, and tray at every external-camera frame; the wrist camera is rendered live from the hand transform. The stationary control failed as expected, while the absolute-joint positive completed 168 steps with 0.10949 m lift, containment, 0.00038 m/s final speed, and 5,895--6,731 dynamic foreground pixels. The background used for the private GPU lane is an explicitly decimated 300,000-splat derivative, not the full 630,898-splat source.
 - Froze the captured-site score before learned execution. Per episode it combines lift progress, then gated transport, containment, and stability; a policy is ordered above another only when its three-variant minimum is strictly greater than the other's maximum. Overlap forces abstention. A secondary visual judge cannot override deterministic state and any contradiction forces abstention.
+- The three-variant exact min/max rule was frozen before learned outcomes but has no transfer-specific power or target-coverage analysis. The campaign proves that the rule abstained according to its contract; without independent site labels, it does not prove abstention correctness or usefulness.
 - Implemented a one-shot GPU worker for exactly four learned policies, two separately labeled scene lanes, and three frozen variants per scene. Each 47.3 GB checkpoint is downloaded, verified, and loaded once before its Warehouse and InteriorGS episodes; rankings and claim boundaries remain separate. The worker requires a JAX GPU, clears caches between policies, and never exposes a physical-robot endpoint. A local CPU attempt failed closed at `jax_gpu_device_not_present` before checkpoint download.
 - Built and round-trip verified a private 104,716-byte v2 GPU input bundle containing only the 224x224 InteriorGS-derived and NVIDIA-USD-derived backgrounds plus their rights/hash manifest; no raw 3DGS or full warehouse asset is included. Signed input/output URLs are forwarded only through secret-named environment variables and are excluded from persisted provider artifacts.
 - Added provider-neutral OpenPI paid admission with Vast as the frozen default and RunPod as an explicit fallback. A live read-only Vast probe on 2026-07-26 verified zero global billable resources and qualifying 45+ GB offers, including an advisory A40 around $0.28/hour. Admission reserves the frozen $0.75/hour ceiling instead of trusting that transient offer. This performed zero mutations and is not a reservation.
@@ -92,6 +95,11 @@ The initially proposed Floppy Bagel checkpoint ladder was rejected before scorin
 ## Closed experiment
 
 The v2 pilot and calibration judge calls and their partition-scoped label joins are complete. Both stayed below their $9.00 per-run caps, used `store=false`, and persisted all predictions before their respective label joins. The first pilot join failed closed on the label shape; that diagnostic remains preserved, and the attributable label-basis amendment was recorded before calibration unseal. Neither pilot nor calibration passes the complete registered gate set. Held-out attempt 001 lost its partial rows after a no-key preflight; exact attempt 002 was rate-limited on all 686 requests. Held-out labels remain sealed. No held-out claim may proceed without a complete, preserved one-digest prediction matrix under the frozen arms and decision rules.
+
+The frozen two-attempt allowance is exhausted, and the held-out arm set is
+closed. A provider-reset rerun, an added evaluator arm, or a transfer campaign
+that actually reuses the WAM/evaluator stack must be a new preregistered
+experiment. It may build on these artifacts but may not overwrite this result.
 
 The captured-site campaign is no longer awaiting GPU execution. Its abstention
 and failed task predicates are terminal evidence for this frozen experiment.

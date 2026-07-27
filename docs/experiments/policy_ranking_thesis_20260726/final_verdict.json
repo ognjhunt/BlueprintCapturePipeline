@@ -30,10 +30,23 @@
     "status": "unmeasured_after_frozen_retries_exhausted",
     "metric_available": false,
     "labels_remained_sealed": true,
-    "final_disposition": "inconclusive"
+    "final_disposition": "inconclusive",
+    "third_exact_attempt_allowed_by_frozen_protocol": false,
+    "new_evaluator_arms_allowed": false
+  },
+  "pipeline_identity_reconciliation": {
+    "lane_a_rollout_stack": "independently_released_oscar_wam_rollouts_plus_frozen_gpt_progress_evaluator",
+    "lane_b_rollout_stack": "openpi_policy_in_mujoco_plus_deterministic_object_state_scorer_and_warehouse_visual_background",
+    "lane_c_rollout_stack": "openpi_policy_in_mujoco_plus_lane_b_deterministic_scorer_and_interiorgs_visual_background",
+    "lane_b_deterministic_predicates_explicitly_admitted_by_protocol_v2": true,
+    "lane_a_wam_executed_in_transfer": false,
+    "lane_a_evaluator_digest_reused_in_lane_c": false,
+    "benchmark_policy_cohort_reused_in_transfer": false,
+    "same_policy_adapter_simulator_scorer_and_aggregator_used_across_lanes_b_and_c": true,
+    "registered_wam_evaluator_transfer_condition_measured": false
   },
   "captured_site_transfer": {
-    "status": "executed_and_abstained",
+    "status": "sim_transfer_executed_and_abstained_wam_transfer_unmeasured",
     "policy_count": 4,
     "scene_count": 2,
     "variant_count_per_scene": 3,
@@ -57,6 +70,9 @@
         "pi0_fast_droid_jointpos_polaris"
       ]
     ],
+    "abstention_followed_frozen_rule": true,
+    "abstention_correctness_proven": false,
+    "transfer_resolution_power_analyzed": false,
     "site_specific_physical_success_proven": false
   },
   "execution_evidence": {
@@ -96,7 +112,9 @@
     "no_site_specific_physical_outcome_labels",
     "no_full_3dgs_depth_occlusion_or_captured_collision_geometry",
     "wrist_observations_strongly_self_occluded",
-    "policy_task_domain_mismatch_possible"
+    "policy_task_visual_domain_or_action_semantics_mismatch_possible",
+    "lane_a_wam_and_evaluator_identity_not_reused_in_transfer",
+    "three_variant_range_separation_resolution_uncalibrated"
   ],
   "physical_robot_operated_by_blueprint": false
 }
