@@ -537,6 +537,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--successor-secret-env-file")
     gpu.add_argument("--successor-output-path")
     gpu.add_argument("--successor-session-budget-ledger")
+    gpu.add_argument("--successor-bundle-receipt")
     gpu.add_argument("--finetune-object-store-stage-dir")
     gpu.add_argument("--finetune-checkpoint-object-store-stage-dir")
     gpu.add_argument(
@@ -771,6 +772,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "model_cache_evidence",
                     "preflight_bundle",
                     "episode_bundle",
+                    "successor_bundle_receipt",
                     "admission_out",
                     "bound_request_out",
                     "adapter_output",
@@ -816,6 +818,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         smoke_inventory_path=args.model_cache_evidence,
                         provider_preflight_path=args.preflight_bundle,
                         provider_bundle_path=args.episode_bundle,
+                        provider_bundle_receipt_path=args.successor_bundle_receipt,
                         admission_out=args.admission_out,
                         bound_request_out=args.bound_request_out,
                         adapter_output=args.adapter_output,

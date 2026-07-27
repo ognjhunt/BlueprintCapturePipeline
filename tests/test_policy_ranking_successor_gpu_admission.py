@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +21,16 @@ def _load(name: str) -> dict[str, Any]:
     return json.loads((EXPERIMENT / name).read_text(encoding="utf-8"))
 
 
-def test_frozen_successor_bundle_passes_integrity_inspection() -> None:
-    result = admission.inspect_successor_bundle(
-        EXPERIMENT / "cosmos3_successor_provider_bundle.zip"
+def _inspect_bundle(path: Path | None = None) -> dict[str, Any]:
+    return admission.inspect_successor_bundle(
+        path or EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
+        receipt=_load("cosmos3_successor_provider_bundle_receipt.json"),
+        smoke_inventory=_load("smoke_request_inventory.json"),
     )
+
+
+def test_frozen_successor_bundle_passes_integrity_inspection() -> None:
+    result = _inspect_bundle()
 
     assert result["status"] == "passed"
     assert result["blockers"] == []
@@ -37,9 +45,7 @@ def test_successor_gpu_admission_requires_explicit_authorization() -> None:
         environment=_load("environment_and_source_manifest.json"),
         smoke_inventory=_load("smoke_request_inventory.json"),
         provider_preflight=_load("vast_compute_preflight.json"),
-        bundle_inspection=admission.inspect_successor_bundle(
-            EXPERIMENT / "cosmos3_successor_provider_bundle.zip"
-        ),
+        bundle_inspection=_inspect_bundle(),
         expected_source_commit="a" * 40,
         execute=False,
     )
@@ -56,9 +62,7 @@ def test_successor_gpu_admission_accepts_only_frozen_rtx_envelope() -> None:
         environment=_load("environment_and_source_manifest.json"),
         smoke_inventory=_load("smoke_request_inventory.json"),
         provider_preflight=preflight,
-        bundle_inspection=admission.inspect_successor_bundle(
-            EXPERIMENT / "cosmos3_successor_provider_bundle.zip"
-        ),
+        bundle_inspection=_inspect_bundle(),
         expected_source_commit="b" * 40,
         execute=True,
         observed_now_epoch=float(preflight["observed_at_epoch"]) + 1,
@@ -81,6 +85,11 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
         return {"status": "completed", "blockers": []}
 
     monkeypatch.setattr(admission, "run_vast_wam_authorized_runner", fake_runner)
+    monkeypatch.setattr(
+        admission,
+        "AUTHORIZATION_CONSUMPTION_ROOT",
+        tmp_path / "authority-consumption",
+    )
     preflight = _load("vast_compute_preflight.json")
     result = admission.run_successor_gpu_lane(
         authorization_path=EXPERIMENT / "compute_authorization.json",
@@ -88,6 +97,9 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
         provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
         provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
+        provider_bundle_receipt_path=(
+            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
+        ),
         admission_out=tmp_path / "admission.json",
         bound_request_out=tmp_path / "bound.json",
         adapter_output=tmp_path / "adapter.json",
@@ -112,6 +124,80 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     assert captured["gpu_selection_policy"]["allowed_gpu_keywords"] == (
         "RTX PRO 6000",
     )
+
+    second = admission.run_successor_gpu_lane(
+        authorization_path=EXPERIMENT / "compute_authorization.json",
+        environment_path=EXPERIMENT / "environment_and_source_manifest.json",
+        smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
+        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
+        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
+        provider_bundle_receipt_path=(
+            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
+        ),
+        admission_out=tmp_path / "admission-second.json",
+        bound_request_out=tmp_path / "bound-second.json",
+        adapter_output=tmp_path / "adapter-second.json",
+        job_dir=tmp_path / "job-second",
+        public_base_url="https://example.test",
+        token_file=tmp_path / "token",
+        secret_env_file=tmp_path / "urls.env",
+        output_path=tmp_path / "output-second.zip",
+        session_budget_ledger=tmp_path / "budget-second.json",
+        expected_source_commit="c" * 40,
+        execute=True,
+        observed_now_epoch=float(preflight["observed_at_epoch"]) + 1,
+    )
+    assert second["status"] == "blocked"
+    assert second["blockers"] == ["successor_compute_authorization_already_consumed"]
+
+
+def test_successor_bundle_is_bound_to_receipt_and_embedded_inputs(
+    tmp_path: Path,
+) -> None:
+    altered = tmp_path / "altered.zip"
+    shutil.copyfile(EXPERIMENT / "cosmos3_successor_provider_bundle.zip", altered)
+    with zipfile.ZipFile(altered, "a") as archive:
+        archive.writestr("provider_runtime/unregistered_marker.txt", "changed")
+
+    result = _inspect_bundle(altered)
+
+    assert result["status"] == "blocked"
+    assert "successor_cosmos_provider_bundle_receipt_hash_mismatch" in result["blockers"]
+
+
+def test_successor_lane_writes_blocked_artifacts_for_unreadable_input(
+    tmp_path: Path,
+) -> None:
+    admission_out = tmp_path / "admission.json"
+    bound_out = tmp_path / "bound.json"
+    adapter_out = tmp_path / "adapter.json"
+    result = admission.run_successor_gpu_lane(
+        authorization_path=EXPERIMENT / "compute_authorization.json",
+        environment_path=tmp_path / "missing-environment.json",
+        smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
+        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
+        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
+        provider_bundle_receipt_path=(
+            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
+        ),
+        admission_out=admission_out,
+        bound_request_out=bound_out,
+        adapter_output=adapter_out,
+        job_dir=tmp_path / "job",
+        public_base_url=None,
+        token_file=None,
+        secret_env_file=None,
+        output_path=None,
+        session_budget_ledger=None,
+        expected_source_commit="e" * 40,
+        execute=False,
+    )
+
+    assert result["status"] == "blocked"
+    assert "successor_environment_unreadable" in result["blockers"]
+    assert admission_out.is_file()
+    assert bound_out.is_file()
+    assert adapter_out.is_file()
 
 
 def test_paid_resource_allocator_dispatches_successor_lane_only_through_probe_kind(
@@ -146,6 +232,8 @@ def test_paid_resource_allocator_dispatches_successor_lane_only_through_probe_ki
             "preflight.json",
             "--episode-bundle",
             "bundle.zip",
+            "--successor-bundle-receipt",
+            "receipt.json",
             "--admission-out",
             str(tmp_path / "admission.json"),
             "--bound-request-out",
@@ -163,4 +251,5 @@ def test_paid_resource_allocator_dispatches_successor_lane_only_through_probe_ki
     assert json.loads(capsys.readouterr().out) == {"success": True}
     assert captured["execute"] is False
     assert captured["provider_bundle_path"] == "bundle.zip"
+    assert captured["provider_bundle_receipt_path"] == "receipt.json"
     assert captured["expected_source_commit"] == "d" * 40

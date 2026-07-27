@@ -425,7 +425,7 @@ def run() -> dict[str, Any]:
                             )
                         break
                     raise RuntimeError(f"generated_media_invalid:{request_id}")
-                except BaseException as exc:  # noqa: BLE001
+                except Exception as exc:
                     retryable = _classify_retryable(exc)
                     journal.append(
                         {
@@ -476,7 +476,7 @@ def run() -> dict[str, Any]:
         }
         write_json(result_path, result)
         return result
-    except BaseException as exc:  # noqa: BLE001
+    except Exception as exc:
         result = {
             "schema_version": "policy_ranking_successor_cosmos_runtime.v1",
             "experiment_id": EXPERIMENT_ID,

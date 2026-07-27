@@ -8,11 +8,14 @@ before the already-frozen ten-rollout smoke matrix is allowed to continue.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
+import re
 import time
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +55,25 @@ DISK_GB = 250
 MIN_GPU_RAM_MB = 95_000
 MIN_RELIABILITY = 0.98
 MAX_PREFLIGHT_AGE_SECONDS = 900
+AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-3p25-v1"
+AUTHORIZATION_CONSUMPTION_ROOT = (
+    Path.home() / ".blueprint-spend-authority" / "consumed"
+)
+EXPECTED_BUNDLE_SHA256 = (
+    "26d28cba2cbecaa9ab1373e9192b2f84e952f3313bea190ea08661d4cd14dcad"
+)
+EXPECTED_BUNDLE_SIZE_BYTES = 294_165
+EXPECTED_EMBEDDED_INPUT_HASHES = {
+    "initial_observation_sha256": (
+        "8843f0fc9c68914dfb62222c961db19b37a5f155e602ff4a545eea1dcf42636d"
+    ),
+    "smoke_inventory_sha256": (
+        "c925d168c166ec7bf53ed9252a33a937416a3f6fa9ecad8a01d0e201920a07aa"
+    ),
+    "action_streams_sha256": (
+        "9ece91bb2a2e50165bf21c6fa62afd25831281ade80607d7a6987e29e4f80c58"
+    ),
+}
 RTX_ALLOWED_KEYWORDS = ("RTX PRO 6000",)
 RTX_SELECTION_POLICY: Mapping[str, Any] = {
     "policy_id": "policy_ranking_successor_rtx_pro_6000_blackwell_preflight",
@@ -88,8 +110,6 @@ def _read_json(path: str | Path) -> dict[str, Any]:
 
 
 def _sha256_file(path: Path) -> str:
-    import hashlib
-
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -97,11 +117,17 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def inspect_successor_bundle(path: str | Path) -> dict[str, Any]:
+def inspect_successor_bundle(
+    path: str | Path,
+    *,
+    receipt: Mapping[str, Any] | None = None,
+    smoke_inventory: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     resolved = Path(path).expanduser().resolve()
     blockers: list[str] = []
     names: set[str] = set()
     manifest: Mapping[str, Any] = {}
+    embedded_hashes: dict[str, str] = {}
     if not resolved.is_file():
         blockers.append("successor_cosmos_provider_bundle_missing")
     else:
@@ -118,7 +144,34 @@ def inspect_successor_bundle(path: str | Path) -> dict[str, Any]:
                         ).decode("utf-8")
                     )
                     manifest = _mapping(manifest_value)
-        except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
+                embedded_hashes = {
+                    "initial_observation_sha256": hashlib.sha256(
+                        archive.read(
+                            "provider_runtime/cosmos3_input/initial_observation.png"
+                        )
+                    ).hexdigest(),
+                    "smoke_inventory_sha256": canonical_sha256(
+                        json.loads(
+                            archive.read(
+                                "provider_runtime/cosmos3_input/smoke_request_inventory.json"
+                            ).decode("utf-8")
+                        )
+                    ),
+                    "action_streams_sha256": canonical_sha256(
+                        json.loads(
+                            archive.read(
+                                "provider_runtime/cosmos3_input/action_streams.json"
+                            ).decode("utf-8")
+                        )
+                    ),
+                }
+        except (
+            OSError,
+            KeyError,
+            ValueError,
+            zipfile.BadZipFile,
+            json.JSONDecodeError,
+        ):
             blockers.append("successor_cosmos_provider_bundle_unreadable")
     missing = sorted(REQUIRED_BUNDLE_ENTRIES - names)
     if missing:
@@ -131,14 +184,39 @@ def inspect_successor_bundle(path: str | Path) -> dict[str, Any]:
         blockers.append("successor_cosmos_provider_bundle_checkpoint_mismatch")
     if manifest.get("public_image") != PUBLIC_IMAGE:
         blockers.append("successor_cosmos_provider_bundle_image_mismatch")
+    receipt_value = _mapping(receipt)
+    bundle_sha256 = _sha256_file(resolved) if resolved.is_file() else None
+    bundle_size_bytes = resolved.stat().st_size if resolved.is_file() else 0
+    if receipt_value.get("schema_version") != (
+        "policy_ranking_successor_cosmos_bundle_receipt.v1"
+    ):
+        blockers.append("successor_cosmos_provider_bundle_receipt_invalid")
+    if receipt_value.get("experiment_id") != EXPERIMENT_ID:
+        blockers.append("successor_cosmos_provider_bundle_receipt_experiment_mismatch")
+    if receipt_value.get("bundle_sha256") != bundle_sha256:
+        blockers.append("successor_cosmos_provider_bundle_receipt_hash_mismatch")
+    if receipt_value.get("bundle_size_bytes") != bundle_size_bytes:
+        blockers.append("successor_cosmos_provider_bundle_receipt_size_mismatch")
+    if bundle_sha256 != EXPECTED_BUNDLE_SHA256:
+        blockers.append("successor_cosmos_provider_bundle_frozen_hash_mismatch")
+    if bundle_size_bytes != EXPECTED_BUNDLE_SIZE_BYTES:
+        blockers.append("successor_cosmos_provider_bundle_frozen_size_mismatch")
+    for key, expected in EXPECTED_EMBEDDED_INPUT_HASHES.items():
+        if embedded_hashes.get(key) != expected or receipt_value.get(key) != expected:
+            blockers.append(f"successor_cosmos_provider_bundle_receipt_{key}_mismatch")
+    if smoke_inventory is not None and receipt_value.get(
+        "smoke_inventory_sha256"
+    ) != canonical_sha256(smoke_inventory):
+        blockers.append("successor_cosmos_external_smoke_inventory_hash_mismatch")
     return {
         "status": "passed" if not blockers else "blocked",
         "blockers": sorted(set(blockers)),
         "bundle_path": str(resolved),
-        "bundle_sha256": _sha256_file(resolved) if resolved.is_file() else None,
-        "bundle_size_bytes": resolved.stat().st_size if resolved.is_file() else 0,
+        "bundle_sha256": bundle_sha256,
+        "bundle_size_bytes": bundle_size_bytes,
         "required_entry_count": len(REQUIRED_BUNDLE_ENTRIES),
         "manifest": dict(manifest),
+        "embedded_input_hashes": embedded_hashes,
     }
 
 
@@ -152,8 +230,9 @@ def build_successor_gpu_admission(
     expected_source_commit: str,
     execute: bool,
     observed_now_epoch: float | None = None,
+    initial_blockers: Sequence[str] = (),
 ) -> dict[str, Any]:
-    blockers: list[str] = []
+    blockers = list(initial_blockers)
     checkpoint = _mapping(environment.get("checkpoint"))
     upstream = _mapping(environment.get("upstream_source"))
     cosmos = _mapping(upstream.get("cosmos"))
@@ -226,6 +305,14 @@ def build_successor_gpu_admission(
         authorization_blockers.append("successor_compute_authorization_schema_invalid")
     if authorization.get("experiment_id") != EXPERIMENT_ID:
         authorization_blockers.append("successor_compute_authorization_experiment_mismatch")
+    if authorization.get("authorization_id") != AUTHORIZATION_ID:
+        authorization_blockers.append("successor_compute_authorization_id_invalid")
+    if authorization.get("maximum_provider_allocations") != 1:
+        authorization_blockers.append(
+            "successor_compute_authorization_allocation_limit_invalid"
+        )
+    if authorization.get("single_use_consumption_required") is not True:
+        authorization_blockers.append("successor_compute_authorization_single_use_invalid")
     if authorization.get("paid_mutation_authorized") is not True:
         authorization_blockers.append("successor_compute_not_explicitly_authorized")
     try:
@@ -302,6 +389,79 @@ def build_successor_gpu_admission(
     return result
 
 
+def _consume_authorization_once(
+    authorization: Mapping[str, Any], *, expected_source_commit: str
+) -> dict[str, Any]:
+    authorization_id = str(authorization.get("authorization_id") or "")
+    if authorization_id != AUTHORIZATION_ID or not re.fullmatch(
+        r"[a-z0-9][a-z0-9-]{15,127}", authorization_id
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["successor_compute_authorization_id_invalid"],
+        }
+    root = AUTHORIZATION_CONSUMPTION_ROOT
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root_mode = root.stat().st_mode
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": ["successor_authorization_consumption_root_unavailable"],
+        }
+    if root_mode & 0o077:
+        return {
+            "status": "blocked",
+            "blockers": ["successor_authorization_consumption_root_insecure"],
+        }
+    record_path = root / f"{authorization_id}.json"
+    record = {
+        "schema_version": "policy_ranking_successor_authorization_consumption.v1",
+        "authorization_id": authorization_id,
+        "authorization_sha256": canonical_sha256(authorization),
+        "experiment_id": EXPERIMENT_ID,
+        "source_commit": expected_source_commit,
+        "consumed_at_epoch": time.time(),
+        "maximum_provider_allocations": 1,
+    }
+    try:
+        descriptor = os.open(
+            record_path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+    except FileExistsError:
+        return {
+            "status": "blocked",
+            "blockers": ["successor_compute_authorization_already_consumed"],
+            "authorization_id": authorization_id,
+        }
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": ["successor_authorization_consumption_write_failed"],
+            "authorization_id": authorization_id,
+        }
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": ["successor_authorization_consumption_write_failed"],
+            "authorization_id": authorization_id,
+        }
+    return {
+        "status": "consumed",
+        "authorization_id": authorization_id,
+        "consumption_record_sha256": _sha256_file(record_path),
+        "record_location_disclosed": False,
+    }
+
+
 def run_successor_gpu_lane(
     *,
     authorization_path: str | Path,
@@ -309,6 +469,7 @@ def run_successor_gpu_lane(
     smoke_inventory_path: str | Path,
     provider_preflight_path: str | Path,
     provider_bundle_path: str | Path,
+    provider_bundle_receipt_path: str | Path,
     admission_out: str | Path,
     bound_request_out: str | Path,
     adapter_output: str | Path,
@@ -322,14 +483,25 @@ def run_successor_gpu_lane(
     execute: bool,
     observed_now_epoch: float | None = None,
 ) -> dict[str, Any]:
-    try:
-        authorization = _read_json(authorization_path)
-    except (OSError, ValueError, json.JSONDecodeError):
-        authorization = {}
-    environment = _read_json(environment_path)
-    smoke_inventory = _read_json(smoke_inventory_path)
-    provider_preflight = _read_json(provider_preflight_path)
-    bundle = inspect_successor_bundle(provider_bundle_path)
+    input_blockers: list[str] = []
+
+    def load_input(label: str, path: str | Path) -> dict[str, Any]:
+        try:
+            return _read_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            input_blockers.append(f"successor_{label}_unreadable")
+            return {}
+
+    authorization = load_input("authorization", authorization_path)
+    environment = load_input("environment", environment_path)
+    smoke_inventory = load_input("smoke_inventory", smoke_inventory_path)
+    provider_preflight = load_input("provider_preflight", provider_preflight_path)
+    bundle_receipt = load_input("bundle_receipt", provider_bundle_receipt_path)
+    bundle = inspect_successor_bundle(
+        provider_bundle_path,
+        receipt=bundle_receipt,
+        smoke_inventory=smoke_inventory,
+    )
     admission = build_successor_gpu_admission(
         authorization=authorization,
         environment=environment,
@@ -339,6 +511,7 @@ def run_successor_gpu_lane(
         expected_source_commit=expected_source_commit,
         execute=execute,
         observed_now_epoch=observed_now_epoch,
+        initial_blockers=input_blockers,
     )
     write_json(Path(admission_out), admission)
     bound = {
@@ -390,6 +563,30 @@ def run_successor_gpu_lane(
         }
         write_json(Path(adapter_output), result)
         return result
+    consumption = _consume_authorization_once(
+        authorization,
+        expected_source_commit=expected_source_commit,
+    )
+    if consumption["status"] != "consumed":
+        result = {
+            "status": "blocked",
+            "reason": "single_use_compute_authorization_blocked",
+            "blockers": consumption.get("blockers") or [],
+            "authorization_consumption": consumption,
+            "provider_mutations_performed": 0,
+        }
+        write_json(Path(adapter_output), result)
+        return result
+    admission["authorization_consumption"] = consumption
+    admission["manifest_sha256"] = canonical_sha256(
+        {key: value for key, value in admission.items() if key != "manifest_sha256"}
+    )
+    write_json(Path(admission_out), admission)
+    bound["authorization_consumption"] = consumption
+    bound["manifest_sha256"] = canonical_sha256(
+        {key: value for key, value in bound.items() if key != "manifest_sha256"}
+    )
+    write_json(Path(bound_request_out), bound)
     result = run_vast_wam_authorized_runner(
         job_dir=job_dir,
         bundle_path=provider_bundle_path,
@@ -416,6 +613,7 @@ def run_successor_gpu_lane(
         gpu_selection_policy=RTX_SELECTION_POLICY,
         paid_resource_admission_grant=grant,
     )
+    result["authorization_consumption"] = consumption
     write_json(Path(adapter_output), result)
     return result
 
