@@ -85,8 +85,8 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
         return {"status": "completed", "blockers": []}
 
     monkeypatch.setattr(admission, "run_vast_wam_authorized_runner", fake_runner)
-    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
-    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", " YES ")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "1")
     monkeypatch.setattr(
         admission,
         "AUTHORIZATION_CONSUMPTION_ROOT",

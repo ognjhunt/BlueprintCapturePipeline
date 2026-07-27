@@ -38,7 +38,11 @@ from .policy_ranking_successor_cosmos import (
     validate_smoke_inventory_manifest,
 )
 from .vast_wam_authorized_runner import run_vast_wam_authorized_runner
-from .vast_provider_adapter import VAST_API_GATE_ENV, VAST_INSTANCE_LAUNCH_GATE_ENV
+from .vast_provider_adapter import (
+    VAST_API_GATE_ENV,
+    VAST_INSTANCE_LAUNCH_GATE_ENV,
+    _env_truthy as _vast_env_truthy,
+)
 
 
 PROBE_KIND = "policy-ranking-successor-cosmos"
@@ -586,7 +590,7 @@ def run_successor_gpu_lane(
     launch_gate_blockers = [
         f"missing_env_{name}"
         for name in (VAST_API_GATE_ENV, VAST_INSTANCE_LAUNCH_GATE_ENV)
-        if os.environ.get(name) != "true"
+        if not _vast_env_truthy(name)
     ]
     if launch_gate_blockers:
         result = {
