@@ -1,9 +1,39 @@
 {
   "schema_version": "policy_ranking_successor_provider_incident_ledger.v1",
   "experiment_id": "policy_ranking_successor_experiment_20260727",
-  "status": "no_paid_provider_attempts_yet",
-  "incidents": [],
-  "infrastructure_retry_count": 0,
+  "status": "zero_spend_infrastructure_retry_authorized",
+  "incidents": [
+    {
+      "incident_id": "successor-vast-pre-provider-gate-001",
+      "observed_at": "2026-07-27T12:35:50-0500",
+      "classification": "code_failure",
+      "failure_stage": "pre_provider_environment_gate",
+      "blockers": [
+        "missing_env_BLUEPRINT_ALLOW_VAST_API_CALLS",
+        "missing_env_BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"
+      ],
+      "source_commit": "5adb2cefc5f85acfdd346055b39fc853a536373d",
+      "authorization_id_consumed": "policy-ranking-successor-cosmos-smoke-20260727-cap-3p25-v1",
+      "provider_api_mutation_reached": false,
+      "provider_allocation_created": false,
+      "compute_spend_usd": 0.0,
+      "api_vlm_spend_usd": 0.0,
+      "provider_zero_verified": true,
+      "provider_zero_observed_at_epoch": 1785173765.720938,
+      "scientific_output_consumed": false,
+      "retry_kind": "bounded_zero_spend_infrastructure_retry",
+      "retry_authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v2",
+      "cumulative_compute_cap_usd": 6.0,
+      "additional_compute_authority_usd": 2.75,
+      "local_evidence_sha256": {
+        "vast_provider_adapter_result": "5888a6435bf058aac88e50f7c151277a3f02e9e4b3564f0d272a23a9ea99dfc4",
+        "vast_wam_authorized_runner_manifest": "839205979b4654b1a3667537bb10e37af5004651368e4900648c4e404490355d",
+        "gpu_admission_execute": "855c767c9d2363cf28fab5c4a2d8869abda0129f294acf5952a6f4c2c0cb5072",
+        "vast_session_cost_summary": "98f3075413c8bb37c7c42c56d6a1e0f993c1d0fd4e92a63dd0eb62028d02fcdc"
+      }
+    }
+  ],
+  "infrastructure_retry_count": 1,
   "scientific_retry_count": 0,
   "provider_mutations_performed": 0,
   "claims": {

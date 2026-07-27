@@ -50,8 +50,8 @@
     "maximum_gpu_rate_usd_per_hour": 1.05,
     "hard_ttl_hours": 3.0,
     "maximum_gpu_time_charge_usd": 3.15,
-    "authorized_compute_cap_usd": 3.25,
-    "headroom_usd": 0.1,
+    "authorized_compute_cap_usd": 6.0,
+    "headroom_usd": 2.85,
     "offer_price_can_change_before_create": true,
     "create_must_fail_closed_above_maximum_rate": true
   },
