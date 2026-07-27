@@ -1,0 +1,283 @@
+{
+  "schema_version": "policy_ranking_thesis_experiment_2_preregistration.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "frozen_at_local_date": "2026-07-27",
+  "source_commit": "1cebc0a77eb12f72f375e5794289a04154259a64",
+  "historical_experiment": {
+    "path": "docs/experiments/policy_ranking_thesis_20260726",
+    "verdict": "inconclusive",
+    "immutable": true,
+    "protocol_sha256": "8ed8a7b4da73120b1806147a9b2de8b88bc76eaf1bbe2e582a1080212552b13c",
+    "heldout_labels_opened": false,
+    "frozen_attempts_exhausted": true,
+    "experiment_2_is_not_a_retroactive_completion": true
+  },
+  "thesis": "Given a captured real-site representation, a real robot task, and multiple candidate robot policies, Blueprint can predict a useful ordering of those policies substantially faster and more cheaply than exhaustively evaluating every policy physically, while abstaining when its prediction is not trustworthy.",
+  "embodiment": "DROID-compatible Franka Panda",
+  "policies": [
+    "paligemma_binning_droid",
+    "paligemma_diffusion_droid",
+    "paligemma_fast_droid",
+    "paligemma_fast_specialist_droid",
+    "paligemma_vq_droid",
+    "pi0_droid",
+    "pi0_fast_droid"
+  ],
+  "evaluator": {
+    "profile": "roboworld_progress_v1",
+    "independent_of_wam_and_candidate_policies": true,
+    "input": "task_instruction_plus_32_uniform_frames_from_generated_half_only",
+    "output_schema": "policy_ranking_episode_judgment.v1",
+    "full_temporal_method": "frozen_temporal_32_frame_progress_judge_v1",
+    "cheap_baseline_method": "frozen_first_last_frame_progress_judge_v1",
+    "no_benchmark_labels_in_request": true,
+    "provider_configuration": {
+      "model_snapshot": "gpt-5-2025-08-07",
+      "reasoning_effort": "high",
+      "max_output_tokens_including_reasoning": 8192,
+      "temperature": "not_requested_model_default",
+      "top_p": "not_requested_model_default",
+      "seed": "not_supported_by_this_responses_configuration",
+      "image_detail": "low",
+      "strict_json_schema": true,
+      "store": false
+    },
+    "retry_rule": {
+      "maximum_exact_attempts_per_request": 2,
+      "configuration_change_between_attempts_forbidden": true,
+      "accept_first_valid_response_only": true,
+      "all_attempt_usage_preserved": true,
+      "exhausted_request_result": "explicit_abstention_and_inconclusive_if_required_matrix_incomplete"
+    }
+  },
+  "thresholds": {
+    "episode_judge_confidence_min": 0.65,
+    "selective_judge_confidence_min": 0.8,
+    "action_following_confidence_min": 0.7,
+    "temporal_coherence_confidence_min": 0.7,
+    "pair_score_margin_min": 0.2,
+    "bootstrap_replicates": 10000,
+    "confidence_level": 0.95,
+    "minimum_selective_coverage": 0.25,
+    "minimum_selective_accuracy_gain": 0.05
+  },
+  "benchmark": {
+    "dataset": "RoboArena/DataDump_07-17-2026",
+    "revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "wam_rollouts": "zywu2115/OSCAR_policy_rollout",
+    "wam_rollout_revision": "db5edfaef285c15d0a41d5115177a983c08b4f5f",
+    "independent_session_cluster_count": 49,
+    "policies": [
+      "paligemma_binning_droid",
+      "paligemma_diffusion_droid",
+      "paligemma_fast_droid",
+      "paligemma_fast_specialist_droid",
+      "paligemma_vq_droid",
+      "pi0_droid",
+      "pi0_fast_droid"
+    ],
+    "label_basis": "binary_then_partial",
+    "labels_sealed_until_complete_prediction_freeze": true,
+    "physical_pixels_excluded_from_provider": true
+  },
+  "partitions": {
+    "pilot": [
+      "cb3a637a-bea7-45f2-84dc-50fda57dd912",
+      "ea52540c-3f2d-45ff-80c1-ac44cdd4d054",
+      "7ccd5be8-c1d6-4917-871d-905015915744",
+      "d2ebd2f2-a807-4be5-a72f-e7ed624659d4",
+      "f80985e2-fda2-40c8-9a1c-e84e26693ceb",
+      "f6e9020f-8abf-43e7-b6fc-9af024909f0d",
+      "dd029360-b954-4bfd-b154-401fb9f4d592"
+    ],
+    "calibration": [
+      "d25151dd-e1c7-4851-ab78-9ccdfdd94e50",
+      "70d36427-d166-4475-82ff-4de60431f2b0",
+      "f3ee5084-5290-4ac0-a007-a4f4fa7b47e4",
+      "4f05ca12-ded4-43b0-83bd-6a35ed4ba120",
+      "739165f0-2b54-4776-91b8-1530a4148feb",
+      "69f9098b-86c9-419e-9c4b-75f8ae7f7525",
+      "3cb05d31-18ce-4154-897d-bec852521e5b"
+    ],
+    "heldout": [
+      "ccb15e04-ae1e-490c-be0e-2d90cbd1976b",
+      "7ac4ded2-7c0b-42d8-a328-00b50c974f20",
+      "c3efabdc-9788-49e2-99ad-97b62f2b9e69",
+      "ccf37ac0-28e7-41cf-bae0-f47350351f7d",
+      "f03d81b4-71b8-46be-8367-afd9bb3ad950",
+      "7894acc5-a9a6-44f5-aa3f-775d92526595",
+      "f5d9ce11-f550-43e6-ae06-531f91cfbb37",
+      "db1d1cb7-8aa5-42b5-93fe-0b6ceb14a623",
+      "75f2f013-65dc-4827-aab8-dc21caaa5f5a",
+      "fcb8f0dd-ccc6-4d5e-9352-0b0a9f6c6f3f",
+      "dad9837d-d036-4a71-8377-e66a415e3fec",
+      "755f0be9-8a74-441c-8aae-79e2381c84f8",
+      "3dbfbe39-1081-4185-b6bb-e1d558ef72e9",
+      "3db50a62-5b1f-42b5-ae4b-def1835ecf89",
+      "fa4842c0-c42c-450d-864a-39302db16720",
+      "e8dc673d-c7b1-415a-94e3-2b238588caed",
+      "f09b4035-2d49-4641-a78d-b99c0894b807",
+      "c076f615-d098-4733-9711-a7dc1dc8e064",
+      "df7e3cec-fbdf-4ae9-89a3-2c4c93dd7b11",
+      "733d7c10-e31c-472c-86cc-29c30828f188",
+      "66c43fa7-1902-4f3a-9a34-83147d14b1a8",
+      "f8653232-d815-44b0-bb41-84beb7dcbf93",
+      "fb50d71b-c015-4e6c-9fb4-3a8133c738f2",
+      "fff333cb-b6aa-4bb1-815a-be4506907c6b",
+      "81a85b7c-3fa8-4476-b464-597b9229ea8b",
+      "7eb1ac2d-a631-4187-9480-f15b688e079c",
+      "3ce0e6ff-f0e9-4a16-991f-c85f4defc92b",
+      "65fc04ef-d595-44bf-9bc5-f736f2ab43e5",
+      "e79a09f0-4c02-4a75-8129-ec57b65ed471",
+      "dd7d4d2e-7b59-4032-9d0a-b1218fa668ba",
+      "c5f102be-b950-4df2-b057-2f50083743f8",
+      "d5b37770-d7f8-4f56-bde8-5ec4b81f5ecc",
+      "433ca5cd-4cc1-4b81-a65f-51d08d84a7bf",
+      "6e5f337d-853d-4f0e-a3fa-cc3b7f230d73",
+      "d49dcce7-3510-482d-ba06-0cbccb0b1d79",
+      "f7d2dba0-971c-41d9-9d44-28c7b44ef57b",
+      "6f4b9736-58ec-4adf-b2ac-40c2bab03e28",
+      "c3d4f82d-cf43-4d6c-83df-70405087178a",
+      "ef97c98d-18fa-4bd4-a35b-6cda1ba64e8c",
+      "7f924418-7d2a-43ba-a3d6-024065acbc9a",
+      "d185ddd4-a856-4217-85df-e73686cdbefa",
+      "c350b0ad-2de2-48b2-bdde-a98569596c61",
+      "c4a07785-34a4-4e66-b9f1-7225123075de",
+      "45c5df4a-1bdd-437c-83ad-3ae2485e0e03",
+      "70cf47f5-38b0-4c00-9870-fcc790900e1a",
+      "e0b4e16c-a195-4ba0-96a5-77f718caa814",
+      "d9fa7b45-9aa3-4c0b-959d-4af301a1a5f7",
+      "4ba7c1e8-39f4-4e74-8eb4-c5580711f90e",
+      "bc405b62-52ac-4141-9289-1119e3eac709"
+    ]
+  },
+  "arm_freeze": {
+    "heldout_ranking_arms": [
+      "frozen_temporal_32_frame_progress_judge_v1",
+      "frozen_first_last_frame_progress_judge_v1"
+    ],
+    "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
+    "model_snapshot": "gpt-5-2025-08-07",
+    "prompt_sha256": "095f2cf31b42eb9aef165c7d1665063807abe0e7023faf7bfe198f1936497ae4",
+    "sampling_contract": {
+      "model_snapshot": "gpt-5-2025-08-07",
+      "reasoning_effort": "high",
+      "max_output_tokens_including_reasoning": 8192,
+      "temperature": "not_requested_model_default",
+      "top_p": "not_requested_model_default",
+      "seed": "not_supported_by_this_responses_configuration",
+      "image_detail": "low",
+      "strict_json_schema": true,
+      "store": false
+    },
+    "new_heldout_ranking_arms_forbidden": true,
+    "label_free_causal_diagnostics_are_not_ranking_arms": true
+  },
+  "causal_conditioning": {
+    "analysis_unit": "session_cluster",
+    "channels": [
+      "full_generated",
+      "overlay_region",
+      "overlay_masked_residual"
+    ],
+    "placebos": [
+      "zero_actions",
+      "shuffled_action_order",
+      "temporally_reversed_actions",
+      "circularly_shifted_actions",
+      "within_session_swapped_policy_actions"
+    ],
+    "policy_name_in_provider_prompt": false,
+    "session_identity_in_provider_prompt": false,
+    "identical_imagery_policy_label_leakage_prevented_by_request_deduplication": true,
+    "meaningful_correlation_margin": 0.05,
+    "minimum_original_correlation": 0.1,
+    "minimum_validity_pass_rate": 0.8,
+    "bootstrap_replicates": 10000,
+    "claim_boundary": "Temporal alignment can falsify action following, but cannot by itself prove counterfactual WAM causality because alternate actions are not regenerated."
+  },
+  "ranking_gates": {
+    "primary_pairwise_accuracy_clustered_bootstrap_lower95_gt": 0.5,
+    "minimum_detectable_pairwise_accuracy_at_80pct_power": 0.6783,
+    "kendall_tau_b_gt": 0.0,
+    "kendall_permutation_one_sided_alpha": 0.05,
+    "correct_top_policy_required": true,
+    "selective_pairwise_coverage_min": 0.25,
+    "selective_pairwise_accuracy_lower95_min": 0.6,
+    "temporal_minus_endpoint_pairwise_accuracy_min": 0.05,
+    "overlay_masked_action_alignment_lower95_gt": 0.05,
+    "action_following_validity_pass_rate_lower95_min": 0.8,
+    "uncertainty_error_association_required": true,
+    "complete_risk_coverage_curve_required": true
+  },
+  "retry_semantics": {
+    "valid_response_accepted_exactly_once": true,
+    "completed_request_never_resampled": true,
+    "infrastructure_retries_per_request": 1,
+    "invalid_structured_response_consumes_scientific_response": true,
+    "provider_failure_without_usable_output_consumes_infrastructure_retry": true,
+    "systemic_rejection_stop_after_consecutive_failures": 5,
+    "resume_idempotent": true
+  },
+  "spend": {
+    "total_usd_max": 50.0,
+    "model_vision_api_usd_max": 30.0,
+    "gpu_build_serving_usd_max": 15.0,
+    "storage_contingency_usd_max": 5.0,
+    "physical_robotics_usd_max": 0.0,
+    "openai_replication_projected_usd": 22.0,
+    "openai_replication_hard_stop_usd": 29.0
+  },
+  "stop_conditions": {
+    "futility": "If the complete heldout benchmark fails either ranking utility, causal conditioning, or useful abstention gates, overall support is impossible and no new GPU transfer campaign is admitted.",
+    "provider": "Stop on five consecutive systemic rejections before any accepted response.",
+    "rights": "Fail closed on unattributable action semantics or data rights.",
+    "spend": "Stop before any category or total ceiling can be exceeded."
+  },
+  "captured_site_transfer": {
+    "historical_input_only": true,
+    "historical_experiment_outcomes_known_before_experiment_2": true,
+    "historical_result_cannot_be_reclassified_as_new_blinded_evidence": true,
+    "scene": "InteriorGS 0787_841244",
+    "room_remained_3dgs": true,
+    "local_interaction_layers_only": true,
+    "new_gpu_campaign_admitted_only_if_frozen_benchmark_all_gates_pass": true,
+    "site_specific_physical_accuracy_claimed": false
+  },
+  "economic_rule": {
+    "physical_control_time_lower_bound_is_not_full_physical_cost": true,
+    "physical_monetary_cost_unmeasured": true,
+    "thesis_supported_forbidden_without_attributable_time_and_cost_comparison": true
+  },
+  "label_access": {
+    "pilot_opened_historically": true,
+    "calibration_opened_historically": true,
+    "heldout_opened": false,
+    "automated_file_hashing_is_not_outcome_inspection": true,
+    "unseal_once_after_prediction_and_cost_freeze": true
+  },
+  "component_verdict_values": [
+    "supported",
+    "not_supported",
+    "inconclusive"
+  ],
+  "overall_verdict_values": [
+    "thesis_supported",
+    "thesis_not_supported",
+    "inconclusive"
+  ],
+  "overall_verdict_rules": {
+    "thesis_supported": "Both components pass, causal conditioning survives controls, abstention is useful, and attributable time and cost advantages are measured.",
+    "thesis_not_supported": "A sufficiently powered heldout result fails ranking versus chance/endpoint, causal action signal, captured transfer, or useful risk-coverage.",
+    "inconclusive": "Required evidence is incomplete, underpowered, provenance-limited, or contradictory within authorized scope."
+  },
+  "claim_boundaries": {
+    "blueprint_physical_robot_operation": false,
+    "simulator_is_physical": false,
+    "generated_video_is_ranking_fidelity": false,
+    "wam_is_answer_key": false,
+    "captured_site_physical_success_proven": false,
+    "deployment_or_safety_readiness_proven": false
+  },
+  "protocol_sha256": "a8f7ec31a61073fabe55a375c2a60fb0400d8c48336a319395d4914c952569b7"
+}

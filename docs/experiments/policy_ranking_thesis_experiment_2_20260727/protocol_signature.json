@@ -1,0 +1,11 @@
+{
+  "schema_version": "policy_ranking_protocol_signature.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "source_commit": "1cebc0a77eb12f72f375e5794289a04154259a64",
+  "protocol_canonical_sha256": "a8f7ec31a61073fabe55a375c2a60fb0400d8c48336a319395d4914c952569b7",
+  "protocol_file_sha256": "76028fe4be4c90d004efa4566bbe90f0bacae32d3594b7f817fd6bd7f7cde320",
+  "signed_by": "deterministic_sha256_freeze",
+  "heldout_predictions_started": false,
+  "heldout_labels_opened": false,
+  "signature_sha256": "6013f3f30b8d7f846e606da5daff05d1e6c2245c64f1b3cfa057ddfb075f3cbf"
+}

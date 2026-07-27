@@ -1,0 +1,28 @@
+{
+  "schema_version": "policy_ranking_experiment_2_arm_freeze.v1",
+  "experiment_id": "policy_ranking_thesis_experiment_2_20260727",
+  "protocol_sha256": "a8f7ec31a61073fabe55a375c2a60fb0400d8c48336a319395d4914c952569b7",
+  "heldout_ranking_arms": [
+    "frozen_temporal_32_frame_progress_judge_v1",
+    "frozen_first_last_frame_progress_judge_v1"
+  ],
+  "evaluator_digest": "3c282af98cd968a32fa130fc0d717b7aa4d471f50ff5b7b204e2cff508671314",
+  "model_snapshot": "gpt-5-2025-08-07",
+  "prompt_sha256": "095f2cf31b42eb9aef165c7d1665063807abe0e7023faf7bfe198f1936497ae4",
+  "sampling_contract": {
+    "model_snapshot": "gpt-5-2025-08-07",
+    "reasoning_effort": "high",
+    "max_output_tokens_including_reasoning": 8192,
+    "temperature": "not_requested_model_default",
+    "top_p": "not_requested_model_default",
+    "seed": "not_supported_by_this_responses_configuration",
+    "image_detail": "low",
+    "strict_json_schema": true,
+    "store": false
+  },
+  "new_heldout_ranking_arms_forbidden": true,
+  "label_free_causal_diagnostics_are_not_ranking_arms": true,
+  "heldout_predictions_started": false,
+  "heldout_labels_opened": false,
+  "freeze_sha256": "17b3fc987d627ac466b7bc92a6e66b627f2c294a6cbb355d737467164567cbd3"
+}
