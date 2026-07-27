@@ -1,0 +1,23 @@
+{
+  "schema_version": "policy_ranking_experiment_2_warehouse_report.v1",
+  "status": "historical_input_only_no_new_execution",
+  "new_gpu_campaign_admitted": false,
+  "reason": "The preregistered held-out causal-conditioning gates failed, triggering the Experiment-2 futility rule before any new GPU allocation.",
+  "historical_source": {
+    "experiment": "policy_ranking_thesis_20260726",
+    "final_verdict_sha256": "d6bb11b4bcd1c25794e770280a9b4dcf311fbf8d0fcdd05940a7069f2b934a0c",
+    "policy_count": 4,
+    "variant_count": 3,
+    "episode_count": 12,
+    "contract_valid_episode_count": 12,
+    "transport_episode_count": 0,
+    "containment_episode_count": 0,
+    "total_ranking_emitted": false,
+    "ordered_pair_count": 1
+  },
+  "stack_identity": "OpenPI PolaRiS joint-position policies plus MuJoCo object-state predicates and NVIDIA warehouse visual background",
+  "same_as_frozen_benchmark_stack": false,
+  "component_use": "Historical controlled-hybrid evidence and a stop-rule input only; not reclassified as new blinded Experiment-2 evidence.",
+  "proves": "historical simulator execution and contract-compliant abstention",
+  "does_not_prove": "OSCAR/GPT stack transfer, independent physical ranking, captured-site ranking fidelity, or physical success"
+}

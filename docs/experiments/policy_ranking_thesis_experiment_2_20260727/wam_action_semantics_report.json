@@ -1,0 +1,59 @@
+{
+  "schema_version": "policy_ranking_experiment_2_wam_action_semantics.v1",
+  "status": "failed_closed",
+  "embodiment": "DROID-compatible Franka Panda with Robotiq 2F-85",
+  "policy_cohort": {
+    "policy_count": 7,
+    "roboarena_action_space_for_every_policy": "joint_velocity",
+    "recorded_npz_action_dimension": 8,
+    "arm_action_dimensions_used_by_diagnostic": 7
+  },
+  "oscar_conditioning": {
+    "representation": "2D kinematic skeleton overlay",
+    "documented_source": "recorded robot state: seven joint angles, end-effector pose, and normalized gripper openness",
+    "kinematics": "URDF forward kinematics followed by recorded camera projection",
+    "documented_demo_output_frequency_hz": 15.0,
+    "important_boundary": "The public demo documents conditioning derived from realized proprioceptive state, not a qualified counterfactual adapter that maps each candidate policy command directly into a captured site's WAM rollout."
+  },
+  "required_semantics": {
+    "coordinate_frame": "joint space for the first seven arm channels; exact actuator frame convention not documented in the snapshot",
+    "absolute_or_relative": "velocity/differential according to RoboArena global metadata",
+    "cartesian_or_joint": "joint",
+    "position_or_velocity": "velocity",
+    "normalization": "unattributable from the frozen public snapshot",
+    "gripper_convention": "eighth action channel present but polarity and scaling unattributable from the frozen public snapshot",
+    "action_frequency": "15 Hz is documented for the OSCAR rendering demo and prior DROID bridge evidence; exact synchronization of every released policy trace to every released WAM video is not independently documented",
+    "horizon": "varies by released trace; exact generation chunk contract is not documented with the rollout dataset",
+    "camera_convention": "recorded base-to-camera world-to-camera transform and pinhole intrinsics in the public rendering demo",
+    "proprioception_fields": [
+      "cartesian_position[6]",
+      "joint_position[7]",
+      "gripper_position[1]",
+      "action[8]"
+    ],
+    "chunk_continuity": "not independently attributable",
+    "checkpoint_identity": "OSCAR-2B model revision c9781ffa7dd8556d862d7d9f338a2ea008a58ca6; released rollouts revision db5edfaef285c15d0a41d5115177a983c08b4f5f",
+    "license_and_usage": "OSCAR code Apache-2.0; rollout dataset has no explicit license metadata, so media remain internal research evidence only"
+  },
+  "source_evidence": [
+    {
+      "path": "oscar-public/demo/README.md",
+      "sha256": "43f3c35c71fe44bb364cdcfb8ff472a685e8d217f4cf35586910f19022b9ced7"
+    },
+    {
+      "path": "oscar-public/demo/render_skeleton.py",
+      "sha256": "4cfd5a28dce18fed8972a20dd2131b3ee90bf4b3071797af46aed4a7b1042491"
+    },
+    {
+      "path": "RoboArena_DataDump_07-17-2026/global_metadata.yaml",
+      "sha256": "72729672b792720556c7aea3bcbbb3d2e905c95bc4428e7f943750357f961bee"
+    },
+    {
+      "path": "RoboArena_DataDump_07-17-2026/README.md",
+      "sha256": "dcb052be353f3703c17b65ab7c211fb5611c1a95e0c5149076ffbeb61f2b41f4"
+    }
+  ],
+  "adjudication": "The public artifacts are sufficient for a label-free temporal contradiction test, but not for a qualified counterfactual policy-to-WAM adapter on a new captured site. The adapter therefore fails closed for captured-site causal transfer.",
+  "proves": "action/proprioception provenance audit",
+  "does_not_prove": "counterfactual action following, task success, policy ranking, captured-site transfer, or physical performance"
+}
