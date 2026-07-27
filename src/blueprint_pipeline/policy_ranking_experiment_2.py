@@ -53,6 +53,9 @@ def build_protocol(previous: dict[str, Any], *, source_commit: str) -> dict[str,
             "every policy physically, while abstaining when its prediction is not trustworthy."
         ),
         "embodiment": "DROID-compatible Franka Panda",
+        "policies": previous["policies"],
+        "evaluator": previous["evaluator"],
+        "thresholds": previous["thresholds"],
         "benchmark": {
             "dataset": "RoboArena/DataDump_07-17-2026",
             "revision": previous["benchmark"]["revision"],
@@ -304,6 +307,59 @@ def freeze(repo: Path, output: Path, *, oscar_root: Path, roboarena_root: Path) 
     write_json(
         output / "dataset_and_split_manifest.json", _identity_hash(dataset, "manifest_sha256")
     )
+    signature = {
+        "schema_version": "policy_ranking_protocol_signature.v1",
+        "experiment_id": EXPERIMENT_ID,
+        "source_commit": source_commit,
+        "protocol_canonical_sha256": protocol["protocol_sha256"],
+        "protocol_file_sha256": file_sha256(output / "preregistered_protocol.json"),
+        "signed_by": "deterministic_sha256_freeze",
+        "heldout_predictions_started": False,
+        "heldout_labels_opened": False,
+    }
+    write_json(output / "protocol_signature.json", _identity_hash(signature, "signature_sha256"))
+    label_ledger = {
+        "schema_version": "policy_ranking_experiment_2_label_access_ledger.v1",
+        "experiment_id": EXPERIMENT_ID,
+        "historical_pilot_labels_opened": True,
+        "historical_calibration_labels_opened": True,
+        "heldout_labels_opened": False,
+        "heldout_metadata_parsed_or_displayed": False,
+        "heldout_files_touched_only_by_git_checkout_lfs_and_sha256": True,
+        "heldout_outcome_join_count": 0,
+        "unseal_allowed_only_after_complete_prediction_cost_and_manifest_freeze": True,
+    }
+    write_json(output / "label_access_ledger.json", _identity_hash(label_ledger, "ledger_sha256"))
+    arm_freeze = {
+        "schema_version": "policy_ranking_experiment_2_arm_freeze.v1",
+        "experiment_id": EXPERIMENT_ID,
+        "protocol_sha256": protocol["protocol_sha256"],
+        **protocol["arm_freeze"],
+        "heldout_predictions_started": False,
+        "heldout_labels_opened": False,
+    }
+    write_json(output / "arm_freeze_manifest.json", _identity_hash(arm_freeze, "freeze_sha256"))
+    previous_power = json.loads((repo / PREVIOUS_DIR / "power_analysis.json").read_text())
+    power = {
+        "schema_version": "policy_ranking_experiment_2_power_analysis.v1",
+        "experiment_id": EXPERIMENT_ID,
+        "ranking": previous_power,
+        "causal_alignment": {
+            "analysis_unit": "heldout_session_cluster",
+            "session_cluster_count": 49,
+            "target_power": 0.8,
+            "one_sided_alpha": 0.05,
+            "meaningful_margin": 0.05,
+            "power_reestimate_from_label_free_development_alignment_allowed": True,
+            "heldout_outcome_labels_used": False,
+            "decision": (
+                "If the development-estimated session SD makes 49 clusters unable to detect "
+                "the 0.05 alignment margin at 80% power, the causal component is inconclusive "
+                "and bulk provider spend is stopped before unseal."
+            ),
+        },
+    }
+    write_json(output / "power_analysis.json", _identity_hash(power, "analysis_sha256"))
 
 
 def main(argv: list[str] | None = None) -> int:
