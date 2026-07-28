@@ -89,6 +89,8 @@ def _upload_video(client: Any, receipt: Mapping[str, Any]) -> tuple[Any, dict[st
         "local_sha256": receipt["output_sha256"],
         "local_size_bytes": receipt["output_size_bytes"],
         "provider_file_name": str(active.name),
+        "provider_file_uri": str(getattr(active, "uri", "") or ""),
+        "provider_mime_type": str(getattr(active, "mime_type", "") or "video/mp4"),
         "provider_file_state": str(getattr(active, "state", "")),
         "physical_ground_truth_pixels_uploaded": False,
     }
