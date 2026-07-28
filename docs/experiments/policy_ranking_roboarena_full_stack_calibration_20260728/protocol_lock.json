@@ -1,0 +1,28 @@
+{
+  "schema_version": "policy_ranking_roboarena_full_stack_calibration_lock.v1",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "status": "preregistered_local_contract_only",
+  "protocol_module": "blueprint_pipeline.policy_ranking_roboarena_calibration",
+  "protocol_schema_version": "policy_ranking_roboarena_full_stack_calibration.v1",
+  "protocol_sha256": "eab9e7868bcc7cbd774c940c781e8c3a8faac3270cbc942f1248966ba037f683",
+  "frozen_endpoint_gates": {
+    "policy_count_minimum": 7,
+    "spearman_rho_minimum": 0.70,
+    "kendall_tau_b_minimum": 0.50,
+    "pairwise_accuracy_minimum": 0.70,
+    "pairwise_accuracy_clustered_ci95_lower_minimum": 0.50,
+    "true_top_policy_in_predicted_top_two": true,
+    "selective_coverage_minimum": 0.50,
+    "selective_pairwise_accuracy_minimum": 0.75,
+    "abstention_risk_monotonic_nonincreasing": true,
+    "all_gates_required": true
+  },
+  "phase_order": [
+    "A_public_known_answer_reproduction",
+    "B_independent_closed_loop_confirmation",
+    "C_captured_site_transfer"
+  ],
+  "paid_execution_admitted": false,
+  "provider_resources_created": false,
+  "claim_boundary": "Protocol and local validation only; no new scientific result."
+}
