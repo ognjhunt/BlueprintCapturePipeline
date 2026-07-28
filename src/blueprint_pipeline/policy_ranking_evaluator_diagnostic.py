@@ -498,6 +498,20 @@ def bradley_terry_scores(
             wins[b] += 0.5
     if usable == 0 or len(policies) != POLICY_COUNT:
         raise DiagnosticContractError("insufficient_usable_connected_results")
+    adjacency = {policy: set() for policy in policies}
+    for first, second in games:
+        adjacency[first].add(second)
+        adjacency[second].add(first)
+    visited: set[str] = set()
+    pending = [next(iter(policies))]
+    while pending:
+        policy = pending.pop()
+        if policy in visited:
+            continue
+        visited.add(policy)
+        pending.extend(adjacency[policy] - visited)
+    if visited != policies:
+        raise DiagnosticContractError("insufficient_usable_connected_results")
 
     strength = {policy: 1.0 for policy in policies}
     for _ in range(10_000):

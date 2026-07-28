@@ -110,6 +110,25 @@ def test_partial_matrix_cannot_receive_ranking_credit(tmp_path: Path) -> None:
         analyze_pair_results(inventory, [], arm_id="test")
 
 
+def test_disconnected_non_abstained_graph_cannot_receive_ranking_credit(
+    tmp_path: Path,
+) -> None:
+    inventory = build_pair_inventory(_source_inventory(tmp_path))
+    results = []
+    first_component = {"policy-0", "policy-1", "policy-2"}
+    for pair in inventory["pairs"]:
+        policies = {
+            pair["episode_a"]["policy_id_internal_only"],
+            pair["episode_b"]["policy_id_internal_only"],
+        }
+        same_component = policies <= first_component or not (
+            policies & first_component
+        )
+        results.append(_result(pair, "tie" if same_component else "abstain"))
+    with pytest.raises(DiagnosticContractError, match="connected"):
+        analyze_pair_results(inventory, results, arm_id="test")
+
+
 def test_native_video_materialization_fails_closed_on_unfrozen_crop_audit(
     tmp_path: Path,
 ) -> None:

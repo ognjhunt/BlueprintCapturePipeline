@@ -46,6 +46,14 @@ class GeminiBatchDiagnosticError(ValueError):
     """The Gemini Batch job or result set is invalid."""
 
 
+def _delete_uploaded_file_best_effort(client: Any, uploaded: Any) -> bool:
+    try:
+        client.files.delete(name=uploaded.name)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def _job_state(job: Any) -> str:
     state = getattr(job, "state", "")
     return str(getattr(state, "name", state) or "")
@@ -138,10 +146,7 @@ def submit_pilot(
         )
     except Exception:
         for uploaded in uploaded_by_id.values():
-            try:
-                client.files.delete(name=uploaded.name)
-            except Exception:
-                pass
+            _delete_uploaded_file_best_effort(client, uploaded)
         raise
     receipt: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,

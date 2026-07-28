@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .common import utc_now_iso, write_json
+from .common import write_json
 from .gpu_render_providers import get_render_provider
 from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
@@ -43,6 +43,7 @@ PREFLIGHT_SCHEMA = "policy_ranking_cosmos_reasoner_vast_preflight.v1"
 ADMISSION_SCHEMA = "policy_ranking_cosmos_reasoner_gpu_admission.v1"
 AUTHORIZATION_ID = "policy-ranking-cosmos-reasoner-pilot-20260728-allocation-1"
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
+EXTERNAL_AUTHORIZATION_ROOT = Path.home() / ".blueprint-spend-authority" / "authorizations"
 MAX_HOURLY_RATE_USD = 2.50
 TARGET_SPEND_USD = 4.54
 HARD_CAP_USD = 5.00
@@ -72,45 +73,27 @@ def _read_json(path: str | Path) -> dict[str, Any]:
     return dict(value)
 
 
-def build_authorization_record(*, source_commit: str) -> dict[str, Any]:
-    record: dict[str, Any] = {
-        "schema_version": AUTHORIZATION_SCHEMA,
-        "authorization_id": AUTHORIZATION_ID,
-        "experiment_id": EXPERIMENT_ID,
-        "source_commit": source_commit,
-        "paid_mutation_authorized": True,
-        "authorized_by": "workspace_user",
-        "authorization_evidence": [
-            "I authorize vast / gpu usage for this experiment/goal",
-            "use that api key",
-        ],
-        "authorized_compute_cap_usd": HARD_CAP_USD,
-        "reasoner_arm_total_cap_usd": ARM_CAP_USD,
-        "maximum_provider_allocations": 1,
-        "single_use_consumption_required": True,
-        "one_resource_limit": True,
-        "maximum_concurrent_gpus": 1,
-        "hard_ttl_seconds": HARD_TTL_SECONDS,
-        "independent_teardown_watchdog": True,
-        "watchdog_armed_before_allocation": True,
-        "automatic_spend_cutoff": True,
-        "teardown_required": True,
-        "provider_zero_verification_required": True,
-        "physical_robot_endpoint_access_allowed": False,
-        "task_security_exception": {
-            "existing_vast_key_use_explicitly_authorized": True,
-            "rotation_metadata_present": False,
-            "rotation_metadata_missing_acknowledged": True,
-            "provider_side_rotation_event_claimed": False,
-            "key_exposure_evidence_found": False,
-            "live_authenticated_validation_required": True,
-            "secret_file_mode_required": "0600",
-        },
-        "claim_boundary": "paid_compute_authority_only_not_scientific_validity",
-        "created_at": utc_now_iso(),
-        "secret_value_recorded": False,
+def load_external_authorization(path: str | Path) -> dict[str, Any]:
+    """Load, but never mint, a user-provisioned task authorization artifact."""
+
+    resolved = Path(path).expanduser().resolve()
+    authority_root = EXTERNAL_AUTHORIZATION_ROOT.expanduser().resolve()
+    if not resolved.is_relative_to(authority_root):
+        raise ValueError("cosmos_reasoner_authorization_not_in_external_authority_root")
+    stat_result = resolved.stat()
+    if stat_result.st_mode & 0o777 != 0o600:
+        raise ValueError("cosmos_reasoner_authorization_file_mode_invalid")
+    if hasattr(os, "getuid") and stat_result.st_uid != os.getuid():
+        raise ValueError("cosmos_reasoner_authorization_file_owner_invalid")
+    record = _read_json(resolved)
+    recorded_digest = record.get("authorization_sha256")
+    digest_payload = {
+        key: value for key, value in record.items() if key != "authorization_sha256"
     }
-    record["authorization_sha256"] = canonical_sha256(record)
+    if recorded_digest != canonical_sha256(digest_payload):
+        raise ValueError("cosmos_reasoner_authorization_digest_invalid")
+    record["external_authorization_file_verified_runtime"] = True
+    record["external_authorization_file_path_runtime"] = str(resolved)
     return record
 
 
@@ -182,7 +165,12 @@ def collect_vast_preflight(*, name_prefix: str) -> dict[str, Any]:
     return result
 
 
-def inspect_bundle(bundle_path: str | Path, receipt: Mapping[str, Any]) -> dict[str, Any]:
+def inspect_bundle(
+    bundle_path: str | Path,
+    receipt: Mapping[str, Any],
+    *,
+    expected_source_commit: str | None = None,
+) -> dict[str, Any]:
     path = Path(bundle_path).expanduser().resolve()
     blockers: list[str] = []
     entries: list[str] = []
@@ -239,6 +227,15 @@ def inspect_bundle(bundle_path: str | Path, receipt: Mapping[str, Any]) -> dict[
         blockers.append("cosmos_reasoner_model_identity_mismatch")
     if input_manifest.get("pair_count") != 7 or input_manifest.get("claim_class") != "post_unseal_diagnostic_only":
         blockers.append("cosmos_reasoner_input_manifest_invalid")
+    runtime_source = str(runtime_manifest.get("source_commit") or "").strip().lower()
+    receipt_source = str(receipt.get("source_commit") or "").strip().lower()
+    if runtime_source != receipt_source:
+        blockers.append("cosmos_reasoner_bundle_source_commit_internally_inconsistent")
+    expected_source = str(expected_source_commit or "").strip().lower()
+    if expected_source and (
+        runtime_source != expected_source or receipt_source != expected_source
+    ):
+        blockers.append("cosmos_reasoner_bundle_source_commit_mismatch")
     return {
         "status": "passed" if not blockers else "blocked",
         "blockers": sorted(set(blockers)),
@@ -246,6 +243,8 @@ def inspect_bundle(bundle_path: str | Path, receipt: Mapping[str, Any]) -> dict[
         "bundle_size_bytes": path.stat().st_size if path.is_file() else 0,
         "zip_member_count": len(entries),
         "runtime_manifest": runtime_manifest,
+        "source_commit": runtime_source or None,
+        "receipt_source_commit": receipt_source or None,
         "input_manifest_sha256": input_manifest.get("manifest_sha256"),
     }
 
@@ -263,6 +262,12 @@ def build_admission(
         blockers.append("cosmos_reasoner_authorization_identity_invalid")
     if authorization.get("paid_mutation_authorized") is not True or authorization.get("maximum_provider_allocations") != 1:
         blockers.append("cosmos_reasoner_paid_authorization_invalid")
+    if not (
+        authorization.get("authorization_origin")
+        == "external_workspace_user_task_authority"
+        and authorization.get("external_authorization_file_verified_runtime") is True
+    ):
+        blockers.append("cosmos_reasoner_external_authorization_not_verified")
     if authorization.get("authorized_compute_cap_usd") != HARD_CAP_USD or authorization.get("hard_ttl_seconds") != HARD_TTL_SECONDS:
         blockers.append("cosmos_reasoner_authorization_limits_invalid")
     security = _mapping(authorization.get("task_security_exception"))
@@ -301,6 +306,8 @@ def build_admission(
         blockers.append("cosmos_reasoner_expected_source_commit_invalid")
     if authorization.get("source_commit") != source:
         blockers.append("cosmos_reasoner_authorization_source_commit_mismatch")
+    if bundle.get("source_commit") != source or bundle.get("receipt_source_commit") != source:
+        blockers.append("cosmos_reasoner_bundle_source_commit_mismatch")
     shared = build_paid_lane_admission(resource_class="vast_provider_adapter", blockers=blockers)
     result: dict[str, Any] = {
         "schema_version": ADMISSION_SCHEMA,
@@ -388,10 +395,24 @@ def run_gpu_lane(
     output_path: str | Path | None = None,
     session_budget_ledger: str | Path | None = None,
 ) -> dict[str, Any]:
-    authorization = _read_json(authorization_path)
+    try:
+        authorization = load_external_authorization(authorization_path)
+    except (OSError, ValueError) as exc:
+        result = {
+            "status": "blocked",
+            "blockers": [str(exc)],
+            "provider_mutations_performed": 0,
+        }
+        write_json(Path(admission_out), result)
+        write_json(Path(adapter_output), result)
+        return result
     preflight = _read_json(preflight_path)
     receipt = _read_json(bundle_receipt_path)
-    bundle = inspect_bundle(bundle_path, receipt)
+    bundle = inspect_bundle(
+        bundle_path,
+        receipt,
+        expected_source_commit=expected_source_commit,
+    )
     admission = build_admission(
         authorization=authorization,
         preflight=preflight,
@@ -508,17 +529,11 @@ def run_gpu_lane(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    authorization = commands.add_parser("authorization")
-    authorization.add_argument("--source-commit", required=True)
-    authorization.add_argument("--output", required=True)
     preflight = commands.add_parser("preflight")
     preflight.add_argument("--name-prefix", default="blueprint-roboarena-cosmos-reasoner-")
     preflight.add_argument("--output", required=True)
     args = parser.parse_args(argv)
-    if args.command == "authorization":
-        result = build_authorization_record(source_commit=args.source_commit)
-    else:
-        result = collect_vast_preflight(name_prefix=args.name_prefix)
+    result = collect_vast_preflight(name_prefix=args.name_prefix)
     write_json(Path(args.output), result)
     print(json.dumps({key: value for key, value in result.items() if key not in {"capacity_snapshot", "billable_inventory", "attempt_billable_inventory"}}))
     return 0 if result.get("status", "verified") in {"verified", "admitted"} else 2

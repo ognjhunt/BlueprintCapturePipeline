@@ -96,10 +96,11 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         candidate = "\n".join(lines).strip()
     try:
         parsed = json.loads(candidate)
-        if isinstance(parsed, Mapping):
-            return dict(parsed)
     except json.JSONDecodeError:
-        pass
+        # Reasoner responses may prefix a valid object with analysis or fences.
+        parsed = None
+    if isinstance(parsed, Mapping):
+        return dict(parsed)
     decoder = json.JSONDecoder()
     valid: list[dict[str, Any]] = []
     for index, char in enumerate(candidate):
@@ -288,8 +289,14 @@ def run() -> int:
             except Exception:  # noqa: BLE001
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(
+                        {
+                            "pair_id": None,
+                            "error_type": "ReasonerProcessCleanupError",
+                            "error": f"{type(exc).__name__}:{str(exc)[:400]}",
+                        }
+                    )
     _write_json(output_dir / "pair_results.json", {"results": results, "errors": errors})
     runtime = {
         "schema_version": "policy_ranking_cosmos_reasoner_runtime.v1",
