@@ -36,7 +36,8 @@ MODEL_ARM_IDS = {
     GPT5_MODEL: "gpt5_oscar_comparability",
     GPT54_MINI_MODEL: "gpt54_mini_challenger",
 }
-MAX_OUTPUT_TOKENS = 1000
+MAX_OUTPUT_TOKENS = 3000
+MODEL_REASONING_EFFORT = {GPT5_MODEL: "high", GPT54_MINI_MODEL: "medium"}
 
 
 class OpenAIDiagnosticError(ValueError):
@@ -89,7 +90,7 @@ def build_response_body(pair: Mapping[str, Any], *, model: str) -> dict[str, Any
     content.extend(_image_content(frame) for frame in pair["episode_b"]["frames"])
     return {
         "model": model,
-        "reasoning": {"effort": "high"},
+        "reasoning": {"effort": MODEL_REASONING_EFFORT[model]},
         "input": [{"role": "user", "content": content}],
         "text": {
             "format": {

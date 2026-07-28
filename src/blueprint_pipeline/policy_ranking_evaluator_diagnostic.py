@@ -21,7 +21,7 @@ from .common import write_json
 from .policy_ranking_roboarena_calibration import canonical_sha256, file_sha256
 
 
-SCHEMA_VERSION = "policy_ranking_evaluator_diagnostic.v1"
+SCHEMA_VERSION = "policy_ranking_evaluator_diagnostic.v2"
 PAIR_INVENTORY_SCHEMA_VERSION = "policy_ranking_pair_inventory.v1"
 PAIR_RESULT_SCHEMA_VERSION = "policy_ranking_pair_result.v1"
 PAIR_ANALYSIS_SCHEMA_VERSION = "policy_ranking_pair_analysis.v1"
@@ -187,6 +187,7 @@ def diagnostic_protocol() -> dict[str, Any]:
             "physical_ground_truth_pixels_in_provider_payload": False,
             "ties": "half_win_each_in_bradley_terry",
             "abstentions": "retained_and_excluded_from_fit",
+            "max_output_tokens_including_reasoning": 3000,
         },
         "arms": [
             {
@@ -204,7 +205,7 @@ def diagnostic_protocol() -> dict[str, Any]:
                 "provider": "openai",
                 "model": GPT54_MINI_MODEL,
                 "media": "32_generated_only_frames_per_episode_64_per_pair",
-                "reasoning_effort": "high",
+                "reasoning_effort": "medium",
                 "transport": "batch_api_sequential_shards",
                 "diagnostic_role": "newer_lower_cost_openai_challenger",
                 "full_matrix_cap_usd": 4.75,
@@ -281,7 +282,9 @@ def diagnostic_protocol() -> dict[str, Any]:
             "threshold_tuning_forbidden": True,
         },
         "paid_execution_admitted": False,
-        "provider_called": False,
+        "evaluator_provider_called": False,
+        "provider_metadata_lookup_called": True,
+        "provider_metadata_lookup_scope": "Gemini_model_get_no_generation_no_media",
     }
     protocol["protocol_sha256"] = canonical_sha256(protocol)
     return protocol

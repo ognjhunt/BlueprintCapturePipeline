@@ -27,7 +27,7 @@ from .policy_ranking_roboarena_calibration import canonical_sha256, file_sha256
 GATE_ENV = "BLUEPRINT_ALLOW_ROBOARENA_DIAGNOSTIC_GEMINI"
 INPUT_USD_PER_MILLION = 1.5
 OUTPUT_USD_PER_MILLION = 7.5
-MAX_OUTPUT_TOKENS = 1000
+MAX_OUTPUT_TOKENS = 3000
 
 
 class GeminiDiagnosticError(ValueError):

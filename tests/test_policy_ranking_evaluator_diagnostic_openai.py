@@ -59,7 +59,7 @@ def test_body_sends_64_images_but_no_policy_identity(tmp_path: Path) -> None:
     text = json.dumps(body)
     assert "secret-a" not in text
     assert "secret-b" not in text
-    assert body["reasoning"] == {"effort": "high"}
+    assert body["reasoning"] == {"effort": "medium"}
     assert body["store"] is False
 
 
