@@ -861,24 +861,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     freeze_parser = commands.add_parser("freeze")
-    freeze_parser.add_argument("--inventory", required=True)
-    freeze_parser.add_argument("--run", required=True)
-    freeze_parser.add_argument("--output", required=True)
+    freeze_parser.add_argument("--inventory", required=True, type=Path)
+    freeze_parser.add_argument("--run", required=True, type=Path)
+    freeze_parser.add_argument("--output", required=True, type=Path)
     unseal_parser = commands.add_parser("unseal")
-    unseal_parser.add_argument("--frozen", required=True)
+    unseal_parser.add_argument("--frozen", required=True, type=Path)
     unseal_parser.add_argument("--expected-sha256", required=True)
-    unseal_parser.add_argument("--roboarena-root", required=True)
+    unseal_parser.add_argument("--roboarena-root", required=True, type=Path)
     unseal_parser.add_argument("--dataset-revision", required=True)
-    unseal_parser.add_argument("--output", required=True)
+    unseal_parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     if args.command == "freeze":
         artifact = freeze_predictions(
-            json.loads(Path(args.inventory).read_text(encoding="utf-8")),
-            json.loads(Path(args.run).read_text(encoding="utf-8")),
+            json.loads(args.inventory.read_text(encoding="utf-8")),
+            json.loads(args.run.read_text(encoding="utf-8")),
         )
     else:
         artifact = unseal_and_analyze(
-            json.loads(Path(args.frozen).read_text(encoding="utf-8")),
+            json.loads(args.frozen.read_text(encoding="utf-8")),
             expected_frozen_predictions_sha256=args.expected_sha256,
             roboarena_root=args.roboarena_root,
             dataset_revision=args.dataset_revision,

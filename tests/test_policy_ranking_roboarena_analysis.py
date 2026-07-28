@@ -10,6 +10,7 @@ from blueprint_pipeline.policy_ranking_roboarena_analysis import (
     analysis_contract,
     analysis_contract_v3,
     freeze_predictions,
+    main,
     unseal_and_analyze,
 )
 from blueprint_pipeline.policy_ranking_roboarena_calibration import canonical_sha256
@@ -154,6 +155,31 @@ def test_freeze_requires_exact_valid_complete_result_set() -> None:
     blocked = freeze_predictions(inventory, changed)
     assert blocked["status"] == "blocked"
     assert any(item.startswith("result_digest_invalid:") for item in blocked["blockers"])
+
+
+def test_freeze_cli_writes_to_path(tmp_path: Path) -> None:
+    inventory, run = _matrix()
+    inventory_path = tmp_path / "inventory.json"
+    run_path = tmp_path / "run.json"
+    output_path = tmp_path / "frozen.json"
+    inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    run_path.write_text(json.dumps(run), encoding="utf-8")
+
+    assert (
+        main(
+            [
+                "freeze",
+                "--inventory",
+                str(inventory_path),
+                "--run",
+                str(run_path),
+                "--output",
+                str(output_path),
+            ]
+        )
+        == 0
+    )
+    assert json.loads(output_path.read_text(encoding="utf-8"))["status"] == "frozen"
 
 
 def test_unseal_refuses_wrong_prediction_digest_without_reading_labels(tmp_path: Path) -> None:
