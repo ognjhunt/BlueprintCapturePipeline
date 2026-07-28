@@ -1,6 +1,6 @@
 # Cosmos3 successor follow-up — 2026-07-28
 
-Status: `preregistered_offline_no_paid_execution`
+Status: `allocation_1_infrastructure_failure_provider_zero_retry_2_authorized`
 
 This is a new experiment namespace. The closed
 `policy_ranking_successor_experiment_20260727` namespace and its exact
@@ -43,3 +43,20 @@ limit and hard TTL; only the earlier cumulative `$6` ceiling was superseded.
 No evaluator call, benchmark-label unseal, captured-site generation, or paid
 provider mutation is admitted until the causal WAM gate and its declared power
 requirements pass.
+
+## Allocation history
+
+Allocation 1 consumed USD 0.178545 over 632.915481 seconds, never loaded the
+Cosmos server, and produced zero scientific rollouts. The provider was still
+pulling the sealed image when the generic 600-second no-log heartbeat expired,
+despite this lane admitting an 18-minute cold pull. Teardown, independent
+watchdog closure, and a fresh provider API inventory of zero live instances
+were verified. This is an infrastructure incident with no scientific
+interpretation.
+
+`compute_authorization_allocation_2.json` is the active single-use retry
+authorization. It remains under the same per-allocation USD 6 hard cap,
+one-resource limit, 180-minute TTL, watchdog, teardown, and provider-zero
+requirements. `runtime_retry_signature.json` binds the incident record, retry
+authorization, and timeout repair without altering the frozen scientific
+inputs or evaluator methodology.

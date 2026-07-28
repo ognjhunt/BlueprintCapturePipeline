@@ -76,7 +76,7 @@ def test_successor_gpu_admission_requires_explicit_authorization() -> None:
 def test_successor_gpu_admission_accepts_only_frozen_rtx_envelope() -> None:
     preflight = _load("vast_compute_preflight.json")
     result = admission.build_successor_gpu_admission(
-        authorization=_load("compute_authorization.json"),
+        authorization=_load("compute_authorization_allocation_2.json"),
         environment=_load("environment_and_source_manifest.json"),
         smoke_inventory=_load("smoke_request_inventory.json"),
         provider_preflight=preflight,
@@ -131,7 +131,7 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     preflight = _load("vast_compute_preflight.json")
     monkeypatch.setattr(admission.time, "time", lambda: float(preflight["observed_at_epoch"]) + 1)
     result = admission.run_successor_gpu_lane(
-        authorization_path=EXPERIMENT / "compute_authorization.json",
+        authorization_path=EXPERIMENT / "compute_authorization_allocation_2.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
         provider_preflight_path=_preflight_path(tmp_path),
@@ -168,7 +168,7 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     assert written_admission["session_budget_preflight"]["status"] == "passed"
 
     second = admission.run_successor_gpu_lane(
-        authorization_path=EXPERIMENT / "compute_authorization.json",
+        authorization_path=EXPERIMENT / "compute_authorization_allocation_2.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
         provider_preflight_path=_preflight_path(tmp_path),
@@ -213,7 +213,7 @@ def test_successor_lane_does_not_consume_authorization_when_staging_blocks(
     preflight = _load("vast_compute_preflight.json")
 
     result = admission.run_successor_gpu_lane(
-        authorization_path=EXPERIMENT / "compute_authorization.json",
+        authorization_path=EXPERIMENT / "compute_authorization_allocation_2.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
         provider_preflight_path=_preflight_path(tmp_path),
@@ -267,7 +267,7 @@ def test_successor_lane_rechecks_preflight_age_before_consumption(
     )
 
     result = admission.run_successor_gpu_lane(
-        authorization_path=EXPERIMENT / "compute_authorization.json",
+        authorization_path=EXPERIMENT / "compute_authorization_allocation_2.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
         provider_preflight_path=_preflight_path(tmp_path),
@@ -307,7 +307,7 @@ def test_authorization_publish_failure_leaves_no_consumed_record(
     )
 
     result = admission._consume_authorization_once(
-        _load("compute_authorization.json"),
+        _load("compute_authorization_allocation_2.json"),
         expected_source_commit="f" * 40,
     )
 
@@ -331,7 +331,7 @@ def test_successor_lane_checks_provider_env_before_consuming_authorization(
     budget.write_text('{"attempts": []}', encoding="utf-8")
 
     result = admission.run_successor_gpu_lane(
-        authorization_path=EXPERIMENT / "compute_authorization.json",
+        authorization_path=EXPERIMENT / "compute_authorization_allocation_2.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
         provider_preflight_path=_preflight_path(tmp_path),
@@ -377,7 +377,7 @@ def test_successor_lane_checks_session_budget_before_consuming_authorization(
     budget.write_text("{bad json", encoding="utf-8")
 
     result = admission.run_successor_gpu_lane(
-        authorization_path=EXPERIMENT / "compute_authorization.json",
+        authorization_path=EXPERIMENT / "compute_authorization_allocation_2.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
         provider_preflight_path=_preflight_path(tmp_path),
@@ -416,7 +416,7 @@ def test_successor_lane_requires_existing_session_budget_before_execute(
     )
 
     result = admission.run_successor_gpu_lane(
-        authorization_path=EXPERIMENT / "compute_authorization.json",
+        authorization_path=EXPERIMENT / "compute_authorization_allocation_2.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
         provider_preflight_path=_preflight_path(tmp_path),
@@ -482,7 +482,7 @@ def test_successor_lane_writes_blocked_artifacts_for_unreadable_input(
     bound_out = tmp_path / "bound.json"
     adapter_out = tmp_path / "adapter.json"
     result = admission.run_successor_gpu_lane(
-        authorization_path=EXPERIMENT / "compute_authorization.json",
+        authorization_path=EXPERIMENT / "compute_authorization_allocation_2.json",
         environment_path=tmp_path / "missing-environment.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
         provider_preflight_path=_preflight_path(tmp_path),

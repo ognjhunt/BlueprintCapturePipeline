@@ -1119,6 +1119,45 @@ def test_request_logs_records_api_url_error_without_raising(
     assert (tmp_path / "onstart.log").read_text(encoding="utf-8") == ""
 
 
+def test_wam_cold_pull_extends_heartbeat_no_progress_to_admitted_minimum() -> None:
+    assert (
+        vpa._cold_pull_aware_heartbeat_no_progress_seconds(
+            configured_seconds=600,
+            provider_bundle_kind="wam",
+            allow_cold_image_pull=True,
+            min_cold_image_pull_live_minutes=18,
+            startup_timeout_seconds=3600,
+            max_live_minutes=180,
+        )
+        == 1080
+    )
+
+
+def test_cold_pull_heartbeat_extension_never_exceeds_startup_window() -> None:
+    assert (
+        vpa._cold_pull_aware_heartbeat_no_progress_seconds(
+            configured_seconds=300,
+            provider_bundle_kind="wam",
+            allow_cold_image_pull=True,
+            min_cold_image_pull_live_minutes=18,
+            startup_timeout_seconds=900,
+            max_live_minutes=180,
+        )
+        == 900
+    )
+    assert (
+        vpa._cold_pull_aware_heartbeat_no_progress_seconds(
+            configured_seconds=600,
+            provider_bundle_kind="isaac",
+            allow_cold_image_pull=True,
+            min_cold_image_pull_live_minutes=18,
+            startup_timeout_seconds=3600,
+            max_live_minutes=180,
+        )
+        == 600
+    )
+
+
 def test_request_logs_breaks_on_no_progress_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -66,7 +66,8 @@ DISK_GB = 250
 MIN_GPU_RAM_MB = 95_000
 MIN_RELIABILITY = 0.98
 MAX_PREFLIGHT_AGE_SECONDS = 900
-AUTHORIZATION_ID = "policy-ranking-cosmos3-followup-20260728-allocation-1"
+AUTHORIZATION_ID = "policy-ranking-cosmos3-followup-20260728-allocation-2"
+AUTHORIZATION_ALLOCATION_INDEX = 2
 GOAL_COST_AUTHORIZATION_SHA256 = (
     "7f2ebe7ae1d176f9eea6b97a2b2f0ce235e7c5ff6af0ddd3baaef9000ab92cc0"
 )
@@ -343,7 +344,7 @@ def build_successor_gpu_admission(
         authorization_blockers.append("successor_compute_authorization_allocation_limit_invalid")
     if authorization.get("single_use_consumption_required") is not True:
         authorization_blockers.append("successor_compute_authorization_single_use_invalid")
-    if authorization.get("allocation_index") != 1:
+    if authorization.get("allocation_index") != AUTHORIZATION_ALLOCATION_INDEX:
         authorization_blockers.append("successor_compute_authorization_allocation_index_invalid")
     if authorization.get("goal_cost_authorization_amendment_sha256") != (
         GOAL_COST_AUTHORIZATION_SHA256
