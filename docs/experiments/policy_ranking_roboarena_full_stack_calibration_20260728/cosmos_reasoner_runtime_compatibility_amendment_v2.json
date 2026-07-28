@@ -42,7 +42,9 @@
     "model_license": "OpenMDW-1.1",
     "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
     "runtime_observed_vllm_version": "0.25.0",
-    "runtime_license": "Apache-2.0"
+    "runtime_license": "Apache-2.0",
+    "provider_runtime_runner_sha256": "53034363aea2b6c79361d5a4b8e8972239dacb98d94371512edd872053e09738",
+    "provider_runtime_entrypoint_sha256": "c37823b2c7bc5358d534164fed9ac9785bc78f0946e9a0e6e9bdba79b536a2af"
   },
   "changed_fields": [
     {
@@ -60,7 +62,7 @@
     {
       "field": "bundle_and_admission_validation",
       "former": "model_revision_and_image_only",
-      "new": "model_revision_image_native_architecture_model_config_sha_no_hf_override_and_all_manifest_digests",
+      "new": "model_revision_image_native_architecture_model_config_sha_exact_runner_and_entrypoint_digests_and_all_manifest_digests",
       "reason": "Make the repair apply fail-closed to all future Reasoner bundles, not only this retry."
     },
     {
@@ -95,5 +97,5 @@
     "v4_failure_retained_and_counted_in_cost_and_reliability": true
   },
   "scientific_legitimacy": "No model judgment or physical outcome influenced this repair. The retry changes only a demonstrably incompatible server architecture override and strengthens prospective compatibility validation; it does not change inputs, prompts, scoring, thresholds, or claim ceilings.",
-  "amendment_sha256": "9a1b459599b692ff951eaef1e86efe1b38a3a862d8007f41c4471f7533b862a2"
+  "amendment_sha256": "ae10006cb17bcc58080a60b495755a53dd35fe64c2480a1559f2424546a550a1"
 }

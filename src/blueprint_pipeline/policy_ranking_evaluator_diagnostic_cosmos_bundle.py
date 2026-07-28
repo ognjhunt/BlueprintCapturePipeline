@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -65,6 +66,13 @@ if [ ! -f "$OUTPUT_DIR/evaluator_runtime_result.json" ]; then
 fi
 exit "$runner_rc"
 """
+
+PROVIDER_RUNTIME_RUNNER_SHA256 = hashlib.sha256(
+    Path(__file__)
+    .with_name("policy_ranking_evaluator_diagnostic_cosmos_provider_runtime.py")
+    .read_bytes()
+).hexdigest()
+RUN_SCRIPT_SHA256 = hashlib.sha256(RUN_SCRIPT.encode()).hexdigest()
 
 
 def _read_mapping(path: str | Path) -> dict[str, Any]:
@@ -179,6 +187,8 @@ def build_cosmos_reasoner_bundle(
         "native_reasoner_architecture": NATIVE_REASONER_ARCHITECTURE,
         "model_config_sha256": MODEL_CONFIG_SHA256,
         "reasoner_architecture_override": None,
+        "provider_runtime_runner_sha256": PROVIDER_RUNTIME_RUNNER_SHA256,
+        "provider_runtime_entrypoint_sha256": RUN_SCRIPT_SHA256,
         "media_io_kwargs": {"video": {"num_frames": 32}},
         "max_model_len": 131072,
         "tensor_parallel_size": 1,
@@ -237,6 +247,8 @@ def build_cosmos_reasoner_bundle(
         "model_revision": COSMOS_REVISION,
         "native_reasoner_architecture": NATIVE_REASONER_ARCHITECTURE,
         "model_config_sha256": MODEL_CONFIG_SHA256,
+        "provider_runtime_runner_sha256": PROVIDER_RUNTIME_RUNNER_SHA256,
+        "provider_runtime_entrypoint_sha256": RUN_SCRIPT_SHA256,
         "public_image": PUBLIC_IMAGE,
         "offset": offset,
         "pair_count": count,

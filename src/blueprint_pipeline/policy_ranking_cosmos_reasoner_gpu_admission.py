@@ -25,8 +25,10 @@ from .policy_ranking_evaluator_diagnostic import COSMOS_MODEL, COSMOS_REVISION
 from .policy_ranking_evaluator_diagnostic_cosmos_bundle import (
     MODEL_CONFIG_SHA256,
     NATIVE_REASONER_ARCHITECTURE,
+    PROVIDER_RUNTIME_RUNNER_SHA256,
     PUBLIC_IMAGE,
     RECEIPT_SCHEMA_VERSION,
+    RUN_SCRIPT_SHA256,
 )
 from .policy_ranking_roboarena_calibration import canonical_sha256, file_sha256
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
@@ -201,6 +203,8 @@ def inspect_bundle(
     input_manifest: dict[str, Any] = {}
     entrypoint_text = ""
     runner_text = ""
+    entrypoint_sha256 = ""
+    runner_sha256 = ""
     if not path.is_file():
         blockers.append("cosmos_reasoner_bundle_missing")
     else:
@@ -213,12 +217,16 @@ def inspect_bundle(
                 if missing:
                     blockers.append("cosmos_reasoner_bundle_entries_missing")
                 if not missing:
-                    entrypoint_text = archive.read(
+                    entrypoint_bytes = archive.read(
                         "provider_runtime/run_evaluator_provider_runtime.sh"
-                    ).decode("utf-8")
-                    runner_text = archive.read(
+                    )
+                    runner_bytes = archive.read(
                         "provider_runtime/evaluator_provider_runtime_runner.py"
-                    ).decode("utf-8")
+                    )
+                    entrypoint_sha256 = hashlib.sha256(entrypoint_bytes).hexdigest()
+                    runner_sha256 = hashlib.sha256(runner_bytes).hexdigest()
+                    entrypoint_text = entrypoint_bytes.decode("utf-8")
+                    runner_text = runner_bytes.decode("utf-8")
                     runtime_manifest = json.loads(
                         archive.read(
                             "provider_runtime/evaluator_provider_runtime_manifest.json"
@@ -272,6 +280,15 @@ def inspect_bundle(
     if "--hf-overrides" in runner_text:
         blockers.append("cosmos_reasoner_unsupported_architecture_override_present")
     if not (
+        runner_sha256 == PROVIDER_RUNTIME_RUNNER_SHA256
+        and entrypoint_sha256 == RUN_SCRIPT_SHA256
+        and runtime_manifest.get("provider_runtime_runner_sha256") == PROVIDER_RUNTIME_RUNNER_SHA256
+        and runtime_manifest.get("provider_runtime_entrypoint_sha256") == RUN_SCRIPT_SHA256
+        and receipt.get("provider_runtime_runner_sha256") == PROVIDER_RUNTIME_RUNNER_SHA256
+        and receipt.get("provider_runtime_entrypoint_sha256") == RUN_SCRIPT_SHA256
+    ):
+        blockers.append("cosmos_reasoner_provider_runtime_digest_invalid")
+    if not (
         receipt.get("native_reasoner_architecture") == NATIVE_REASONER_ARCHITECTURE
         and receipt.get("model_config_sha256") == MODEL_CONFIG_SHA256
     ):
@@ -298,6 +315,8 @@ def inspect_bundle(
         "source_commit": runtime_source or None,
         "receipt_source_commit": receipt_source or None,
         "input_manifest_sha256": input_manifest.get("manifest_sha256"),
+        "provider_runtime_runner_sha256": runner_sha256 or None,
+        "provider_runtime_entrypoint_sha256": entrypoint_sha256 or None,
     }
 
 

@@ -25,8 +25,11 @@ from blueprint_pipeline.policy_ranking_evaluator_diagnostic import (
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic_cosmos_bundle import (
     MODEL_CONFIG_SHA256,
     NATIVE_REASONER_ARCHITECTURE,
+    PROVIDER_RUNTIME_RUNNER_SHA256,
     PUBLIC_IMAGE,
     RECEIPT_SCHEMA_VERSION,
+    RUN_SCRIPT,
+    RUN_SCRIPT_SHA256,
 )
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic_cosmos_provider_runtime import (
     _extract_json_object,
@@ -60,17 +63,11 @@ def _payload() -> dict:
 
 def _bundle(tmp_path):
     path = tmp_path / "pilot.zip"
-    runner = f"""
-evaluator_runtime_result.json
-nvidia/Cosmos3-Nano
-post_unseal_diagnostic_only
-{NATIVE_REASONER_ARCHITECTURE}
-"""
-    entrypoint = """
-write_missing_result() { :; }
-evaluator_runner_process_exited_without_runtime_result
-blocked_evaluator_process_exited_without_result
-"""
+    runner = (
+        Path(__file__).parents[1]
+        / "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_cosmos_provider_runtime.py"
+    ).read_text(encoding="utf-8")
+    entrypoint = RUN_SCRIPT
     runtime = {
         "model": COSMOS_MODEL,
         "model_revision": COSMOS_REVISION,
@@ -79,6 +76,8 @@ blocked_evaluator_process_exited_without_result
         "native_reasoner_architecture": NATIVE_REASONER_ARCHITECTURE,
         "model_config_sha256": MODEL_CONFIG_SHA256,
         "reasoner_architecture_override": None,
+        "provider_runtime_runner_sha256": PROVIDER_RUNTIME_RUNNER_SHA256,
+        "provider_runtime_entrypoint_sha256": RUN_SCRIPT_SHA256,
         "source_commit": COMMIT,
     }
     runtime["manifest_sha256"] = canonical_sha256(runtime)
@@ -100,6 +99,8 @@ blocked_evaluator_process_exited_without_result
         "public_image": PUBLIC_IMAGE,
         "native_reasoner_architecture": NATIVE_REASONER_ARCHITECTURE,
         "model_config_sha256": MODEL_CONFIG_SHA256,
+        "provider_runtime_runner_sha256": PROVIDER_RUNTIME_RUNNER_SHA256,
+        "provider_runtime_entrypoint_sha256": RUN_SCRIPT_SHA256,
     }
     receipt["receipt_sha256"] = canonical_sha256(receipt)
     return path, receipt
@@ -200,6 +201,25 @@ def test_reasoner_bundle_rejects_obsolete_architecture_override(tmp_path):
     inspection = inspect_bundle(bundle_path, receipt, expected_source_commit=COMMIT)
     assert inspection["status"] == "blocked"
     assert "cosmos_reasoner_native_architecture_contract_invalid" in inspection["blockers"]
+
+
+def test_reasoner_bundle_rejects_modified_runtime_even_without_literal_override(tmp_path):
+    bundle_path, receipt = _bundle(tmp_path)
+    with zipfile.ZipFile(bundle_path, "a") as archive:
+        runner = archive.read("provider_runtime/evaluator_provider_runtime_runner.py").decode(
+            "utf-8"
+        )
+        archive.writestr(
+            "provider_runtime/evaluator_provider_runtime_runner.py",
+            runner + "\n# dynamically constructed architecture option\n",
+        )
+    receipt["bundle_sha256"] = file_sha256(bundle_path)
+    receipt["receipt_sha256"] = canonical_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    )
+    inspection = inspect_bundle(bundle_path, receipt, expected_source_commit=COMMIT)
+    assert inspection["status"] == "blocked"
+    assert "cosmos_reasoner_provider_runtime_digest_invalid" in inspection["blockers"]
 
 
 def test_reasoner_session_window_stays_below_frozen_target_spend():
