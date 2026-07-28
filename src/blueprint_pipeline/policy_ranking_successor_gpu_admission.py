@@ -66,9 +66,9 @@ DISK_GB = 250
 MIN_GPU_RAM_MB = 95_000
 MIN_RELIABILITY = 0.98
 MAX_PREFLIGHT_AGE_SECONDS = 900
-AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v6"
+AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v7"
 PREDECESSOR_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v5"
-REPLACED_ZERO_SPEND_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v4"
+REPLACED_ZERO_SPEND_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v6"
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 EXPECTED_BUNDLE_SHA256 = "79e25e21290a826479cd675b5363c3787f4925b094ae53514e493370e1935948"
 EXPECTED_BUNDLE_SIZE_BYTES = 301_170
@@ -362,7 +362,7 @@ def build_successor_gpu_admission(
     if (
         authorization.get("infrastructure_retry_limit") != 2
         or authorization.get("paid_infrastructure_retry_index") != 2
-        or authorization.get("pre_provider_zero_spend_authorization_replacements") != 3
+        or authorization.get("pre_provider_zero_spend_authorization_replacements") != 4
     ):
         authorization_blockers.append("successor_compute_authorization_retry_contract_invalid")
     if authorization.get("paid_mutation_authorized") is not True:

@@ -201,9 +201,50 @@
         "vast_session_cost_summary": "a597c6353a0b25b429f6030a941562b25317708ac6d928c06940e8c18a802a1a",
         "provider_runtime_output": "a4721dcb0482b07df3feb14748bd1a881cc1d1b65d72b7655fa27eba750b5345"
       }
+    },
+    {
+      "incident_id": "successor-vast-public-staging-dns-zero-spend-006",
+      "observed_at": "2026-07-27T19:21:37-0500",
+      "classification": "public_staging_dns_failure",
+      "failure_stage": "pre_provider_public_staging_verification",
+      "blockers": [
+        "provider_bundle_url_unreachable",
+        "provider_output_put_not_checked",
+        "public_staging_verification_failed"
+      ],
+      "failure_mechanism": "The v6 single-use authorization was consumed before the allocator's internal public-staging verification. The previously verified ephemeral Cloudflare quick-tunnel hostname then stopped resolving, so 37 bundle probes failed with DNS gaierror before offer search, allocation, CUDA, model load, or generation.",
+      "source_commit": "b70a77182e8af353166fa08aa7b436ec3096388f",
+      "launcher_entrypoint": "python -m blueprint_pipeline.paid_resource_allocator",
+      "authorization_id_consumed": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v6",
+      "provider_api_mutation_reached": false,
+      "provider_offer_search_reached": false,
+      "provider_create_reached": false,
+      "provider_allocation_created": false,
+      "compute_spend_usd_estimated": 0.0,
+      "api_vlm_spend_usd": 0.0,
+      "cumulative_compute_spend_usd_estimated": 0.050839,
+      "provider_teardown_verified": true,
+      "provider_zero_verified": true,
+      "scientific_output_consumed": false,
+      "scientific_rollout_count": 0,
+      "unchanged_paid_retry_forbidden": true,
+      "causal_changes_before_retry": [
+        "rotate the expired ephemeral quick-tunnel hostname",
+        "require fresh DNS resolution plus three consecutive authenticated bundle and output probes immediately before allocator execution"
+      ],
+      "retry_kind": "pre_provider_zero_spend_authorization_replacement",
+      "retry_authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v7",
+      "cumulative_compute_cap_usd": 6.0,
+      "additional_compute_authority_usd": 0.0,
+      "local_evidence_sha256": {
+        "vast_public_staging_verification": "636f13a944a3a71a58c2574846f5e363aa8e0bc553430cb5b7bed364cd7aa8be",
+        "vast_wam_authorized_runner_manifest": "4f9717dc12fcb854bc39af62c3c750c0ce56e88a8fc27d7801ce1e04bb7921ce",
+        "authorization_consumption_record": "694afc23235f28ef8ae7069fe0bdef273f5e5e72cf53b4179e779ca08967fd97",
+        "provider_zero_inventory": "a58d5510de1dc0d518f5fc2d2e83e38bf14efec357156d7e677c5322ad642327"
+      }
     }
   ],
-  "infrastructure_retry_count": 5,
+  "infrastructure_retry_count": 6,
   "scientific_retry_count": 0,
   "provider_mutations_performed": 4,
   "claims": {
