@@ -1,5 +1,9 @@
 # City Launch Autonomy Harness Plan
 
+Cross-repo paths in this plan use the conventional `$HOME/workspace/<repo>`
+layout; resolve them against wherever the sibling repos are checked out in your
+environment (see the sibling-checkout convention in `AGENTS.md`).
+
 ## Goal
 
 Build a launch harness that can take a city and budget, delegate all repo-safe and service-safe work to agents, and continue without founder intervention until it reaches a real external blocker. The harness must never convert plans, mocks, contract tests, or generated artifacts into launch proof.

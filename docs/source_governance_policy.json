@@ -103,7 +103,7 @@
     "src/blueprint_pipeline/runpod_wam_teardown.py": [
       "tests/test_runpod_wam_teardown.py"
     ],
-    "src/blueprint_pipeline/qualification.py": [
+    "src/blueprint_pipeline/site_package_orchestrator.py": [
       "tests/test_qualification_alpha.py"
     ],
     "src/blueprint_pipeline/retrieval_index_stage.py": [
@@ -212,7 +212,7 @@
     "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5783,
     "src/blueprint_pipeline/policy_autoresearch.py": 2563,
     "src/blueprint_pipeline/post_training_data_package.py": 6713,
-    "src/blueprint_pipeline/qualification.py": 5560,
+    "src/blueprint_pipeline/site_package_orchestrator.py": 5572,
     "src/blueprint_pipeline/retrieval_index_stage.py": 2215,
     "src/blueprint_pipeline/robot_eval_dataset.py": 4959,
     "src/blueprint_pipeline/robot_eval_execution.py": 6252,

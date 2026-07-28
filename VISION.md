@@ -70,7 +70,7 @@ rungs; we earn each one with the data the previous rung produces.
 **What it is (shipping today).** Blueprint's **Task Evaluation Runs**: take a real captured site, a
 task suite, a robot profile, and success/cycle-time/intervention thresholds, and return an
 **evidence-backed ranking** of which policy is most likely to hit them — *before* anyone spends field
-time. This is the current PMF wedge (see the [Commercial Wedge Overlay](PLATFORM_CONTEXT.md)).
+time. This is the current PMF wedge (see the [Commercial Wedge Overlay](PLATFORM_CONTEXT.md#commercial-wedge-overlay)).
 
 **Why it is credible, not hand-waving — the two papers our case rests on.** Evaluating a policy
 inside a *generated world* can now predict its real-world ranking, and as of June 2026 two results
@@ -91,15 +91,21 @@ make the case concrete:
   kinematic-skeleton conditioning for cross-embodiment) — reports **Pearson r = 0.852 /
   Spearman ρ = 0.750** against the real **RoboArena** ranking across 7 generalist policies (65
   sessions, 1,365 pairwise comparisons), and argues explicitly for "a future where robot policies can
-  be **purely evaluated in virtual generated worlds**." OSCAR sits behind Blueprint's swappable
+  be **purely evaluated in virtual generated worlds**." Two honesty caveats travel with that quote:
+  OSCAR's published validation is **open-loop only** — no chained closed-loop durability result was
+  published — and exposure-bias collapse in long chained generation is a named open problem in the
+  2026 literature, so the "purely virtual evaluation" future is the paper's argued direction, not its
+  demonstrated result. OSCAR sits behind Blueprint's swappable
   world-model adapter (see [`WORLD_MODEL_STRATEGY_CONTEXT.md`](WORLD_MODEL_STRATEGY_CONTEXT.md)).
 
 Earlier work corroborates the direction (SIMPLER r ≈ 0.924; AutoEval r ≈ 0.942 while cutting human
 supervision >99%). **SC3-Eval reports an overall closed-loop Pearson correlation of `0.929` across
 seven policies under its published protocol. This is not a Blueprint measurement; Blueprint has
 not measured equivalent rank fidelity.** Ranking is the honest, defensible unit; the honest caveat
-is that SC3-Eval's in-distribution 0.98 becomes ~0.85–0.87 cross-embodiment / OOD — precisely the
-gap rung 3b has to close.
+is that SC3-Eval's in-distribution 0.98 becomes ~0.85–0.87 cross-embodiment / OOD — and on the OOD
+online split its Pearson edge over its own Cosmos-Predict2.5 baseline is a statistical wash
+(0.870 vs 0.871; it keeps only an MMRV edge, 0.171 vs 0.195). The consistency recipe's advantage is
+largely an in-distribution result today — precisely the gap rung 3b has to close.
 
 **Proof boundary (non-negotiable).** We sell **rank fidelity and predicted success on captured
 tasks** — an estimate. We do **not** sell a guaranteed field outcome, an off-scope validation, or a
@@ -262,7 +268,7 @@ competitor without our capture footprint can buy.
 
 | Bet | Current evidence | What must become true |
 |-----|------------------|------------------------|
-| World models get good enough to predict physical outcomes | **SC3-Eval r=0.984 in-dist / OSCAR r=0.852 RoboArena** (generated-world eval); Cosmos/Genie/Marble usable for augmentation *today* | Close the OOD/cross-embodiment gap (0.85–0.87 → ~0.95); action-conditioned, long-horizon, physically-accurate prediction — years out |
+| World models get good enough to predict physical outcomes | **SC3-Eval r=0.984 in-dist (OOD ≈ its Predict2.5 baseline) / OSCAR r=0.852 RoboArena, open-loop-validated only**; Cosmos/Genie/Marble usable for augmentation *today* | Close the OOD/cross-embodiment gap (0.85–0.87 → ~0.95); action-conditioned, long-horizon, physically-accurate prediction with published chained closed-loop durability — years out |
 | Synthetic + site data gets good enough for post-training | GR00T-Dreams, 780k-traj/11h, DreamGen ~10× | Sim-to-real transfer strong enough to sell improvement, not just data |
 | Real-site diversity is the durable data moat | Data-scaling-law: generalization ∝ environment diversity | We out-capture competitors on breadth *and* provenance quality |
 | A neutral eval standard can become a required gate | Ratings/UL/MLPerf precedents | We get embedded in procurement/insurance/pilot decisions before a rival |
@@ -282,14 +288,18 @@ ranking is valuable even if world models plateau.
 
 <!-- SHARED_VISION_END -->
 
-## Evidence base (selected, verified 2026-07-03)
+## Evidence base (selected, verified 2026-07-03; refreshed 2026-07-28)
 
 Figures below were gathered by first-party web research and passed an adversarial fact-check;
 corrections from that check are already reflected above. Confidence and known caveats noted.
+The 2026-07-28 refresh folds in the in-repo research pass
+[`docs/policy_and_wam_benchmark_research_2026-07-26.md`](docs/policy_and_wam_benchmark_research_2026-07-26.md)
+(OSCAR open-loop-only validation, exposure-bias collapse in chained generation, and
+baseline-checkpoint provenance findings).
 
 **Generated-world policy evaluation — the scientific core of the wedge (rungs 1 & 3b)**
-- **SC3-Eval** — *Evaluating Robot Foundation Models via Self-Consistent Video Generation* (NVIDIA · Physical Intelligence · U Toronto/Vector · Stanford · UC Berkeley; Tseng et al., Jun 2026). Video world model → closed-loop evaluator via forward-inverse dynamics + cross-view + test-time consistency. **Pearson r = 0.984 (MMRV 0.022) in-distribution, 0.929 overall headline, 0.870 OOD**; 7 VLA policies; 381h real table-bussing; 2.3s/24-frame chunk on GB200. Beats Ctrl-World / IRASim / Cosmos-Predict2.5. *These are SC3-Eval paper results, not Blueprint measurements; Blueprint has not measured equivalent rank fidelity. The consistency family is an evaluator recipe Blueprint prepares behind an external-scorer boundary.* https://arxiv.org/html/2606.18610v3 · project page https://weichengtseng.github.io/sc3-eval/
-- **OSCAR** — *Omni-Embodiment Action-Conditioned World Model for Robotics* (Peking University · NVIDIA/Michigan; Wu & Gao, Jun 2026). Cosmos-Predict2.5-2B fine-tuned on a single GH200 with 2D kinematic-skeleton cross-embodiment conditioning. **RoboArena virtual-vs-real: Pearson r = 0.852 / Spearman ρ = 0.750 / MMRV 0.571**, 7 generalist DROID policies, 65 sessions, 1,365 pairwise comparisons; 180,657 curated episodes across 4 robot + 2 human embodiments. Goal: "robot policies … purely evaluated in virtual generated worlds." Sits behind Blueprint's swappable world-model adapter. https://arxiv.org/html/2606.04463v2
+- **SC3-Eval** — *Evaluating Robot Foundation Models via Self-Consistent Video Generation* (NVIDIA · Physical Intelligence · U Toronto/Vector · Stanford · UC Berkeley; Tseng et al., Jun 2026). Video world model → closed-loop evaluator via forward-inverse dynamics + cross-view + test-time consistency. **Pearson r = 0.984 (MMRV 0.022) in-distribution, 0.929 overall headline, 0.870 OOD**; 7 VLA policies; 381h real table-bussing; 2.3s/24-frame chunk on GB200. Beats Ctrl-World / IRASim overall; against its own Cosmos-Predict2.5 baseline it wins in-distribution (0.984/0.022 vs 0.897/0.090) but the **OOD online split is a Pearson wash (0.870 vs 0.871), keeping only an MMRV edge (0.171 vs 0.195)** — the consistency recipe's advantage is largely in-distribution today, and OOD is the axis rung 3b's bet lives on. Published scope is one table-bussing scene, 12 object categories, three camera views, seven policy checkpoints, ≤20-second rollouts. *These are SC3-Eval paper results, not Blueprint measurements; Blueprint has not measured equivalent rank fidelity. The consistency family is an evaluator recipe Blueprint prepares behind an external-scorer boundary.* https://arxiv.org/html/2606.18610v3 · project page https://weichengtseng.github.io/sc3-eval/
+- **OSCAR** — *Omni-Embodiment Action-Conditioned World Model for Robotics* (Peking University · NVIDIA/Michigan; Wu & Gao, Jun 2026). Cosmos-Predict2.5-2B fine-tuned on a single GH200 with 2D kinematic-skeleton cross-embodiment conditioning. **RoboArena virtual-vs-real: Pearson r = 0.852 / Spearman ρ = 0.750 / MMRV 0.571**, 7 generalist DROID policies, 65 sessions, 1,365 pairwise comparisons; 180,657 curated episodes across 4 robot + 2 human embodiments. Goal: "robot policies … purely evaluated in virtual generated worlds." **Caveat (in-repo research, 2026-07-26): the paper's validation is open-loop only — no chained closed-loop durability was published — and the 2026 literature names exposure-bias collapse in long chained generation as the open failure mode; the goal quote is argued direction, not demonstrated result.** Sits behind Blueprint's swappable world-model adapter. https://arxiv.org/html/2606.04463v2
 
 **Market & deployment**
 - Goldman Sachs: 2035 humanoid TAM raised ~6× to **$38B**, ~1.4M units; BoM fell **~40%** 2023→2024. https://www.goldmansachs.com/insights/articles/the-global-market-for-robots-could-reach-38-billion-by-2035
@@ -331,4 +341,5 @@ figures beyond the ~40% one-year drop are lower-confidence.*
 ---
 
 *Maintained as a shared cross-repo doctrine. Edit the shared block in one place and mirror to all
-three repos. Last updated 2026-07-03.*
+three repos. Last updated 2026-07-28 (shared block edited in `BlueprintCapturePipeline`; mirror to
+`BlueprintCapture` and `Blueprint-WebApp` pending).*

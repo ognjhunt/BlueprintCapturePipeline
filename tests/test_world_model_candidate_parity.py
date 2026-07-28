@@ -12,7 +12,7 @@ from blueprint_pipeline.alpha_readiness import build_alpha_readiness_summary
 from blueprint_pipeline.capture_bridge import CaptureDescriptor
 from blueprint_pipeline.local_capture import LocalCaptureContext
 from blueprint_pipeline.materialization import materialize_capture_bundle
-from blueprint_pipeline.qualification import _should_run_default_geometry_stage
+from blueprint_pipeline.site_package_orchestrator import _should_run_default_geometry_stage
 
 
 def _rehash_raw_bundle(raw_root: Path) -> None:

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import blueprint_pipeline.alpha_readiness as alpha
 import blueprint_pipeline.consent_takedown as ct
-import blueprint_pipeline.qualification as qualification
+import blueprint_pipeline.site_package_orchestrator as qualification
 
 
 def _min_capture(tmp_path: Path, *, revoked: bool = False) -> Path:
