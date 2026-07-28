@@ -51,7 +51,7 @@ Today, the strongest near-term value comes from:
 2. turning those captures into site/task/scenario/eval artifacts for robot evaluation
 3. preserving strong rights, privacy, and provenance metadata around those assets
 4. giving robot teams clear buyer surfaces for Task Evaluation Runs before expensive pilots
-5. running the WAM/simulator evaluator engine that produces those rankings, and Policy Improvement Runs that turn a failed or borderline eval into a better candidate with auditable before/after evidence
+5. running the WAM/simulator evaluator engine that produces those rankings, and Policy Improvement Runs — bounded, evidence-gated attempts to turn a failed or borderline eval into a better candidate, with auditable before/after evidence and explicit no-promotion outcomes
 6. packaging curated robot POV clips, labels, generated/model-derived variations, failure cases, and export manifests into Post-Training Data Packages
 7. using qualification / readiness outputs only when they materially improve trust, pricing, commercialization, or deployment decisions
 

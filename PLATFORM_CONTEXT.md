@@ -20,7 +20,7 @@ The center of gravity is:
 - broad real-world capture coverage
 - strong capture quality and provenance
 - Task Evaluation Runs for robot teams
-- Policy Improvement Runs that turn a failed or borderline site eval into a better policy candidate with auditable before/after evidence
+- Policy Improvement Runs — bounded, evidence-gated attempts to turn a failed or borderline site eval into a better policy candidate, with auditable before/after evidence; a run can complete without promoting a candidate, and improvement claims stay conditional on the evidence gates
 - Post-Training Data Packages with curated robot POV clips, labels, generated/model-derived variations, failure cases, task metadata, QA notes, and export manifests
 - hosted access for request-scoped review
 - rights, privacy, and commercialization controls
@@ -64,7 +64,7 @@ Optional at capture time is not the same as unimportant at adoption time. The lo
 
 1. primary product: capture supply and real-site coverage
 2. buyer product: Task Evaluation Runs
-3. buyer product: Policy Improvement Runs (managed policy lift with auditable before/after evidence, one step above the baseline eval)
+3. buyer product: Policy Improvement Runs (a bounded, evidence-gated improvement attempt one step above the baseline eval; before/after evidence is auditable and no-promotion outcomes are explicit)
 4. buyer product: Post-Training Data Packages
 5. support layer: hosted review, generated/model-derived data, simulation, editing, augmentation, and world-model compatibility artifacts
 6. downstream support: validation, deeper benchmarking, managed tuning, licensing, and deployment support
@@ -74,10 +74,13 @@ Optional at capture time is not the same as unimportant at adoption time. The lo
 The current PMF wedge is the Task Evaluation Run: a real captured site, a task
 suite, a robot profile, and explicit success / cycle-time / intervention
 thresholds, returning an evidence-backed policy ranking before field time is
-spent. Policy Improvement Runs sit one step above the wedge — they turn a failed
-or borderline eval into a better policy candidate with auditable before/after
-evidence. Post-Training Data Packages package the site, scenario, label,
-generated-variation, and failure-case data that the wedge produces.
+spent. Policy Improvement Runs sit one step above the wedge — a bounded,
+evidence-gated attempt to turn a failed or borderline eval into a better policy
+candidate, with auditable before/after evidence; a run can complete without a
+promoted candidate, and the improved-candidate claim is only made when the
+evidence gates support it. Post-Training Data Packages package the site,
+scenario, label, generated-variation, and failure-case data that the wedge
+produces.
 
 Wedge claims stay inside the proof boundary: rank fidelity and predicted success
 on captured tasks are estimates, never guaranteed field outcomes, and generated
