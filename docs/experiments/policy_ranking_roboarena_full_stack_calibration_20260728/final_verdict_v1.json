@@ -1,0 +1,52 @@
+{
+  "schema_version": "policy_ranking_roboarena_terminal_verdict.v1",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "overall_verdict": "inconclusive",
+  "decision_basis": "The frozen GPT-5 mini known-answer reproduction failed the registered calibration gates, while Gemini 3.6 Flash produced promising post-unseal diagnostic ranking. No valid corrected native-Cosmos qualification, disjoint closed-loop Phase B, independently anchored captured-site transfer, or qualified end-to-end digital-versus-physical economics comparison was completed. Missing and diagnostic-only evidence cannot be combined into support or treated as a powered falsification of the full replaceable Blueprint thesis.",
+  "components": {
+    "cosmos_wam_qualification": {
+      "verdict": "inconclusive",
+      "qualified": false,
+      "basis": "The historical native Cosmos screen was underpowered and confounded. The corrected Reasoner evaluator pilots were evaluator diagnostics rather than WAM qualification and produced no valid Reasoner ranking matrix. No corrected native Cosmos WAM causal screen passed the registered placebo, seed-robustness, scene-masked, rollout-depth, and collapse gates."
+    },
+    "frozen_benchmark_calibration": {
+      "verdict": "not_supported_for_frozen_gpt5_mini_phase_a_stack",
+      "registered_gates_passed": false,
+      "basis": "The complete 63-session, seven-policy, 441-episode GPT-5 mini known-answer reproduction achieved Spearman 0.357143, Kendall tau-b 0.238095, policy pairwise accuracy 0.619048, selective coverage 0.050182, and selective pairwise accuracy 0.600000. The promising Gemini result is post-unseal diagnostic evidence and had zero abstentions."
+    },
+    "captured_site_transfer": {
+      "verdict": "inconclusive",
+      "measured": false,
+      "basis": "Phase C was not admitted and no independently attributable physical outcomes existed for the same captured site, task, embodiment, and candidate policies."
+    },
+    "economics_and_speed": {
+      "verdict": "inconclusive",
+      "qualified_comparison_completed": false,
+      "basis": "Digital evaluator and GPU costs were measured, but no end-to-end WAM ranking passed all usefulness and abstention gates. Published comparison-video duration supplies only a playback lower bound; robot setup, resets, failures, labor, parallelism, and monetary cost were not independently anchored."
+    }
+  },
+  "phase_a": {
+    "result": "failed_registered_gates",
+    "claim_ceiling": "non_independent_known_answer_reproduction_only",
+    "session_count": 63,
+    "policy_count": 7,
+    "episode_count": 441
+  },
+  "phase_b": {
+    "design_achieved": "availability_audit_only",
+    "executed": false,
+    "highest_available_fallback": "reuse_of_previously_inspected_sessions_for_sensitivity_only",
+    "fallback_executed": false,
+    "claim_ceiling": "no_independent_confirmation_causal_qualification_or_rank_fidelity_credit"
+  },
+  "phase_c": {
+    "executed": false,
+    "claim_ceiling": "not_measured"
+  },
+  "historical_evidence_immutability": {
+    "oscar_experiment_2_verdict": "thesis_not_supported",
+    "cosmos3_followup_verdict": "inconclusive",
+    "rewritten": false
+  },
+  "cheapest_scientifically_valid_next_experiment": "Freeze the already-implemented evaluator and reliability contracts, then run them once on a genuinely new disjoint labeled RoboArena/DROID snapshot with at least the prospectively powered independent session count and runnable frozen policies. Do not spend on another exposed-snapshot judge diagnostic or another short Reasoner pilot."
+}

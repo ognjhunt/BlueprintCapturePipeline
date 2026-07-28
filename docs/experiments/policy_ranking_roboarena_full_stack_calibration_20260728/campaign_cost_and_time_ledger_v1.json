@@ -1,0 +1,98 @@
+{
+  "schema_version": "policy_ranking_roboarena_campaign_cost_time.v1",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "currency": "USD",
+  "cost_semantics": "Conservative attributable estimates from frozen usage and provider ledgers; provider invoice settlement was not available.",
+  "api": {
+    "phase_a_gpt5_mini_canary_and_failed_transport_reserve": 0.14738525,
+    "phase_a_gpt5_mini_441_episode_matrix": 2.53707425,
+    "gpt5_pair_canary": 0.0355075,
+    "gpt54_mini_pair_canary": 0.020871,
+    "gpt5_seven_pair_batch_pilot": 0.155020125,
+    "gpt54_mini_zero_work_batch_pilots": 0.0,
+    "gemini36_flash_pair_canary": 0.014919,
+    "gemini36_flash_failed_seven_pair_batch_pilot": 0.05985525,
+    "gemini36_flash_valid_seven_pair_batch_pilot": 0.05747775,
+    "gemini36_flash_441_pair_matrix": 3.14775225,
+    "conservative_total": 6.175862375
+  },
+  "gpu": {
+    "cosmos_reasoner_v4_estimated": 0.1845,
+    "cosmos_reasoner_v5_estimated": 0.375435,
+    "cosmos_reasoner_v6_estimated": 0.173639,
+    "estimated_total": 0.733574,
+    "actual_invoice_cost_available": false
+  },
+  "storage_and_transfer": {
+    "attributable_charge_available": false,
+    "temporary_provider_media_deleted": true,
+    "intentionally_retained_local_evidence": true,
+    "note": "No storage or transfer invoice line was available; this category is not silently treated as proven zero."
+  },
+  "known_conservative_provider_total_excluding_unavailable_storage_transfer": 6.909436375,
+  "caps": {
+    "openai_evaluator_api": 25.0,
+    "gpu_compute": 50.0,
+    "storage_and_transfer": 10.0,
+    "campaign_total": 100.0,
+    "maximum_concurrent_gpus": 1,
+    "known_api_cost_under_category_cap": true,
+    "known_gpu_cost_under_category_cap": true,
+    "storage_and_transfer_cap_exceeded": null,
+    "category_cap_exceeded": null,
+    "overall_cap_exceeded": null,
+    "unknown_reason": "Storage and transfer invoice evidence was unavailable."
+  },
+  "completed_matrix_unit_economics": {
+    "phase_a_gpt5_mini": {
+      "matrix_only_cost": 2.53707425,
+      "arm_cost_including_canary_and_reserve": 2.6844595,
+      "matrix_only_cost_per_episode": 0.00575300283446712,
+      "arm_cost_per_policy": 0.3834942142857143,
+      "matrix_wall_seconds": 2001.047457832843,
+      "usefulness_and_abstention_gates_passed": false
+    },
+    "gemini36_flash": {
+      "matrix_only_cost": 3.14775225,
+      "arm_cost_including_canary_and_pilots": 3.28000425,
+      "matrix_only_cost_per_pair": 0.007137760204081633,
+      "arm_cost_per_policy": 0.4685720357142857,
+      "observed_submission_to_local_collection_seconds": 1514.0,
+      "timing_semantics": "Local wall-clock upper bound from submission artifact to collection artifact, not provider-side compute latency.",
+      "rank_metrics_promising": true,
+      "calibrated_abstention_established": false
+    }
+  },
+  "reasoner_v6_timing": {
+    "provider_live_seconds": 275.456,
+    "reasoner_runtime_seconds": 55.0148,
+    "model_loaded": false,
+    "valid_scientific_rows": 0
+  },
+  "published_physical_anchor": {
+    "source": "441 frozen RoboArena compare_overlay_vs_gt videos",
+    "summed_comparison_video_seconds": 12873.6,
+    "summed_comparison_video_hours": 3.576,
+    "mean_video_seconds": 29.191836734693876,
+    "what_it_supports": "A sequential published-footage playback lower bound only.",
+    "excluded_or_unknown": [
+      "robot setup",
+      "resets",
+      "failed attempts",
+      "operator and safety labor",
+      "robot rental and depreciation",
+      "parallelism",
+      "site preparation",
+      "physical evaluation monetary cost"
+    ]
+  },
+  "comparison": {
+    "qualified_end_to_end_digital_ranking_completed": false,
+    "physical_monetary_baseline_available": false,
+    "speed_ratio_claimed": false,
+    "cost_ratio_claimed": false,
+    "break_even_policy_count": null,
+    "abstention_related_avoided_spend": 0.0,
+    "interpretation": "Low request cost and faster evaluator wall time do not establish the thesis because WAM generation, policy calls, reliable abstention, and a defensible physical baseline were not all present in one completed useful ranking."
+  }
+}
