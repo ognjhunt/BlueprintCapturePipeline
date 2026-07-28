@@ -1,0 +1,18 @@
+{
+  "schema_version": "policy_ranking_successor_personal_path_sanitization.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "transformation": "Replace user-specific absolute workspace and secret-file locations with workspace://exact-main and secret-file:// logical locations. No scientific, provider, timing, cost, identity, status, hash-of-input, or hash-of-output field was changed.",
+  "files": [
+    {"path": "provider_job/vast_blueprint_bundle_preflight.json", "source_sha256": "c7c89eb17f354c77ed68f5d251cc77d13415921d675583c63c96984ffe90d47d", "sanitized_sha256": "5d6009784084ff6b81fd914a0499cb3be84ed4fbfa919cf72aadb79f9488bdda"},
+    {"path": "provider_job/vast_bundle_staging_manifest.json", "source_sha256": "2afc0eccb69827a5ee76ef142efd4a4061cfb541b73b51d2426090c57b557140", "sanitized_sha256": "a7c9ccb019749f80655e99f0e085b18fd555554833436aeb48a3e36cb159e96c"},
+    {"path": "provider_job/vast_bundle_staging_self_test.json", "source_sha256": "f7f5f8525423b29833805235f389d54358c53b45a5ffab27907f4f7c31a37e85", "sanitized_sha256": "fe247e8a10bcf2306af62e2b4fffa1bd1d212401832e04e7dbcc7b22ceb1602c"},
+    {"path": "provider_job/vast_launch_lock_manifest.json", "source_sha256": "897c0d6e9a7a709f2ff1adeba0b683bcaa44104318e4e10e9243b31d007071d8", "sanitized_sha256": "83d098fb49da7caf3ef967f2a492b9193e86d95f06bc11abdc6f36b24e533771"},
+    {"path": "provider_job/vast_provider_adapter_result.json", "source_sha256": "a92d1799fff4cf1ddbb7e281088d0fd843f78584949955780e62c24aa2c05ded", "sanitized_sha256": "e3b24790960e1fab87d500fa19779a949fd88ad080e8e2facc56c7baeb3e2dae"},
+    {"path": "provider_job/vast_provider_command_result.json", "source_sha256": "fefed5ae0929af067622a535c49e463d55629513dab8b0aabb375dd135b581b9", "sanitized_sha256": "79d7b7765f4c9ee205d6ffb2d7acb17cc52791ea73e23754fd93a1b6c6eff400"},
+    {"path": "provider_job/vast_provider_plan.json", "source_sha256": "96a36a44ef0d9fbe837adcd463e24b15b6aa29acf426ab1c0610fe08fd730177", "sanitized_sha256": "3d7322209d5fe3b2b47e0b3441dda56851b1886c5f922ef86e7117b21a90053d"},
+    {"path": "provider_job/vast_public_staging_verification.json", "source_sha256": "38d0aafcc8af26e7507e057f35afc403ecd2ea4b281d13cc28abcf28f7ce1c15", "sanitized_sha256": "c06d195c2b85b3be57eadaf3a3f50f6e4b94f441d9878f20d208dd8a1413130e"},
+    {"path": "provider_job/vast_wam_authorized_runner_manifest.json", "source_sha256": "b2481e1b77103d23c1bb4004a73c78af46c46caa6363c61ef4cd281d9b81fb74", "sanitized_sha256": "2cd4a6c9dfe5696c2dc895e486b89e64089023cf1b6eaa600921c195480076a9"}
+  ],
+  "original_runtime_output_zip_unchanged": true,
+  "original_runtime_output_zip_sha256": "23d7a9782015ffa08669f3bd8f9e823a096faa96be31196451167f5823ba914a"
+}

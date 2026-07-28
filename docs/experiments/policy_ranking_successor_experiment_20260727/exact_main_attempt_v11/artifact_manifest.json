@@ -7,7 +7,7 @@
     {"path": "runtime_output.zip", "sha256": "23d7a9782015ffa08669f3bd8f9e823a096faa96be31196451167f5823ba914a"},
     {"path": "final_provider_inventory.json", "sha256": "b126f8d0688fb8cf35368893d5b16fafaf4b93a2f8b3b79921c7bb543ec17624"},
     {"path": "first_mid_last.png", "sha256": "c4722923c2af51f7998360005dfb12a2d91ae736c7458eefa902768777a0189e"},
-    {"path": "provider_job/vast_provider_command_result.json", "sha256": "fefed5ae0929af067622a535c49e463d55629513dab8b0aabb375dd135b581b9"},
+    {"path": "provider_job/vast_provider_command_result.json", "sha256": "79d7b7765f4c9ee205d6ffb2d7acb17cc52791ea73e23754fd93a1b6c6eff400"},
     {"path": "provider_job/vast_budget_ledger.json", "sha256": "a04d17c1a76f2558bdde096439280f409d9d574a7b8eb1b64abbc8f846749c19"},
     {"path": "provider_job/vast_teardown_manifest.json", "sha256": "a7271f08f8d3b84d3e8e7bc29b7055a654452c61b631e56462833733c1113361"},
     {"path": "provider_job/retained_gpu_session_manifest.json", "sha256": "cc78d444e36953d1fe07efa0e222d87d9ebdc82a2ecb664fe9470405e69931c1"},
