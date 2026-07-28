@@ -48,6 +48,34 @@ from blueprint_pipeline.policy_ranking_roboarena_calibration import (
 
 
 COMMIT = "a" * 40
+EXPERIMENT_DOCS = (
+    Path(__file__).parents[1]
+    / "docs/experiments/policy_ranking_roboarena_disjoint_reasoner_successor_20260728"
+)
+
+
+def test_reasoner_successor_frozen_contract_matches_runtime_and_digests():
+    protocol = json.loads(
+        (EXPERIMENT_DOCS / "reasoner_schema_canary_protocol_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    split = json.loads(
+        (EXPERIMENT_DOCS / "disjoint_session_candidate_split_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert protocol["runtime"]["native_architecture"] == NATIVE_REASONER_ARCHITECTURE
+    for payload, digest_field in (
+        (protocol, "protocol_sha256"),
+        (split, "manifest_sha256"),
+    ):
+        recorded = payload[digest_field]
+        canonical_payload = {
+            key: value for key, value in payload.items() if key != digest_field
+        }
+        assert recorded == canonical_sha256(canonical_payload)
 
 
 def _payload() -> dict:

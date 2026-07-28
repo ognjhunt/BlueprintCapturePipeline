@@ -28,7 +28,7 @@
     "evaluator_arm": "cosmos3_nano_reasoner",
     "model": "nvidia/Cosmos3-Nano",
     "model_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
-    "native_architecture": "CosmosForConditionalGeneration",
+    "native_architecture": "Cosmos3ForConditionalGeneration",
     "public_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
     "temperature": 0,
     "seed": 0,
@@ -77,5 +77,5 @@
     "new_versioned_evidence_namespace_required": true,
     "no_threshold_or_prompt_tuning_after_output": true
   },
-  "protocol_sha256": "91ee2649b06f66a9ce4385704d8d8efc479ce7d24a75854d9e2adae600552f3c"
+  "protocol_sha256": "7d742760268c0324d06232912924b13cd9ff79e67f524818dbc1f0806f47d1f1"
 }
