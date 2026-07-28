@@ -1,0 +1,29 @@
+{
+  "schema_version": "policy_ranking_cosmos3_goal_cost_authorization_amendment.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "authorized_at": "2026-07-27T23:01:43-0500",
+  "authorization_source": "user_in_current_persistent_goal",
+  "authorization_text": "i authorize all costs for this goal",
+  "supersedes_prior_cumulative_compute_ceiling_usd": 6.0,
+  "goal_scoped_cost_ceiling": "not_limited_by_prior_six_dollar_cap",
+  "scope": "costs_required_to_reach_the_existing_terminal_scientific_and_publication_goal",
+  "controls_retained": {
+    "canonical_paid_resource_allocator_only": true,
+    "single_use_admission_per_allocation": true,
+    "maximum_live_gpus": 1,
+    "live_rate_bound_ttl": true,
+    "independent_watchdog_before_create": true,
+    "per_allocation_maximum_spend_required": true,
+    "invoice_reconciliation": true,
+    "terminal_teardown": true,
+    "provider_zero": true
+  },
+  "authorization_does_not_change": [
+    "scientific_gates",
+    "evaluator_independence",
+    "sealed_outcome_protocol",
+    "claim_boundaries",
+    "one_task_and_one_session_requirement"
+  ],
+  "status": "accepted_before_paid_followup_execution"
+}

@@ -48,12 +48,54 @@ def test_retention_requires_healthy_host_and_armed_watchdog() -> None:
         instance_ids=[456],
         startup_probe={"status": "completed", "startup_probe_proven": True},
         gpu_sanity={"status": "completed", "gpu_sanity_proven": True},
-        video_smoke={"status": "blocked"},
+        video_smoke={
+            "status": "blocked",
+            "cosmos_server_loaded": True,
+            "cosmos_runtime_status": "blocked",
+        },
         observed_now_epoch=1_000.0,
     )
 
     assert decision["status"] == "retained_owned"
     assert decision["blockers"] == []
+
+
+def test_retention_reads_loaded_nonterminal_cosmos_evidence_from_output_zip(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "runtime-output.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(
+            "cosmos_server_retention.json",
+            json.dumps(
+                {
+                    "status": "retained_loaded",
+                    "process_alive": True,
+                    "server_remained_loaded": True,
+                }
+            ),
+        )
+        archive.writestr("wam_runtime_result.json", json.dumps({"status": "blocked"}))
+
+    decision = vpa._retention_decision(
+        requested=True,
+        watchdog_handoff={
+            "status": "armed",
+            "independent_process": True,
+            "watchdog_armed_before_allocation": True,
+            "watchdog_pid": 123,
+            "watchdog_deadline_epoch": 2_000.0,
+        },
+        instance_ids=[456],
+        startup_probe={"status": "completed", "startup_probe_proven": True},
+        gpu_sanity={"status": "completed", "gpu_sanity_proven": True},
+        video_smoke={"provider_runtime_output_zip_path": str(archive_path)},
+        observed_now_epoch=1_000.0,
+    )
+
+    assert decision["status"] == "retained_owned"
+    assert decision["cosmos_server_loaded"] is True
+    assert decision["cosmos_runtime_status"] == "blocked"
 
 
 @pytest.mark.parametrize(
@@ -63,7 +105,7 @@ def test_retention_requires_healthy_host_and_armed_watchdog() -> None:
             {},
             {"status": "completed", "startup_probe_proven": True},
             {"status": "completed", "gpu_sanity_proven": True},
-            {"status": "blocked"},
+            {"status": "blocked", "cosmos_server_loaded": True, "cosmos_runtime_status": "blocked"},
             "retention_independent_watchdog_not_armed",
         ),
         (
@@ -75,7 +117,7 @@ def test_retention_requires_healthy_host_and_armed_watchdog() -> None:
             },
             {},
             {"status": "completed", "gpu_sanity_proven": True},
-            {"status": "blocked"},
+            {"status": "blocked", "cosmos_server_loaded": True, "cosmos_runtime_status": "blocked"},
             "retention_container_health_not_proven",
         ),
         (
@@ -87,7 +129,7 @@ def test_retention_requires_healthy_host_and_armed_watchdog() -> None:
             },
             {"status": "completed", "startup_probe_proven": True},
             {},
-            {"status": "blocked"},
+            {"status": "blocked", "cosmos_server_loaded": True, "cosmos_runtime_status": "blocked"},
             "retention_gpu_health_not_proven",
         ),
         (
@@ -99,7 +141,11 @@ def test_retention_requires_healthy_host_and_armed_watchdog() -> None:
             },
             {"status": "completed", "startup_probe_proven": True},
             {"status": "completed", "gpu_sanity_proven": True},
-            {"status": "completed"},
+            {
+                "status": "completed",
+                "cosmos_server_loaded": True,
+                "cosmos_runtime_status": "completed",
+            },
             "retention_not_needed_after_terminal_bundle_success",
         ),
     ],

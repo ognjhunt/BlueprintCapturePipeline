@@ -1,0 +1,21 @@
+{
+  "schema_version": "policy_ranking_cosmos_causal_screen_metric_freeze.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "status": "frozen_before_paid_output",
+  "scene_motion": "dense_farneback_flow_minus_spatial_median_global_flow",
+  "action_signal": "translation_norm_plus_rot6d_identity_deviation_plus_gripper_transition",
+  "same_seed_scene_control": "each_active_condition_against_zero_action_video",
+  "temporal_correlation_minimum": 0.1,
+  "excess_over_strongest_placebo_minimum": 0.05,
+  "same_seed_scene_difference_minimum": 0.01,
+  "active_conditions": ["recorded", "shuffled", "reversed", "policy_swapped"],
+  "placebo_pool": "the_other_three_active_frozen_action_traces",
+  "seed_robustness": "every_active_condition_must_pass_at_both_frozen_seeds",
+  "camera_motion_control": "subtract_spatial_median_flow_before_scene_motion_aggregation",
+  "independent_session_count": 1,
+  "minimum_independent_sessions_for_all_pass_lower95_at_least_0_8": 17,
+  "confirmatory_power_sufficient": false,
+  "one_session_outcome": "inconclusive_even_if_all_descriptive_gates_pass",
+  "benchmark_labels_accessed": false,
+  "evaluator_accessed": false
+}

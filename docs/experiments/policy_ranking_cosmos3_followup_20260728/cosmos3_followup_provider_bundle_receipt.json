@@ -1,0 +1,33 @@
+{
+  "schema_version": "policy_ranking_successor_cosmos_bundle_receipt.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "status": "built",
+  "bundle_path": "docs/experiments/policy_ranking_cosmos3_followup_20260728/cosmos3_followup_provider_bundle.zip",
+  "bundle_sha256": "79c6a299ca0b27b44cbadbe0c6dbcd1c692b2ec51e4921ca99e5cbcc4fb6edbf",
+  "bundle_size_bytes": 301388,
+  "public_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+  "checkpoint_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+  "initial_observation_sha256": "ed17ad901b3f1779d5282e328bafaac1be8e42a2407c668e188f6e24261cc23b",
+  "smoke_inventory_sha256": "1e1a6eb0be7d31067ad91e871430e3f87523b64e414ae8cccad52dbf52b58f0f",
+  "action_streams_sha256": "1deafb10863b46895354ac274dcbe7243e1ab199e80d73f9b921f2a967b6e3e2",
+  "source_file_hashes": {
+    "data/chunk-000/file-000.parquet": "56e3defd9e75a101a7b812ad7ae263dde8ec5699b6b47db51ba6954f81be2593",
+    "meta/info.json": "64e39f3dbedbd5ffade567007093d92d1827fcdb68c5d9d573ff3e80eef23cf6",
+    "meta/episodes/chunk-000/file-000.parquet": "23f8e342bec24cf1af5fc4c5f58d8b51097ce09c2aaaafe6d467328af6dc016e",
+    "meta/tasks.parquet": "ee2c7ec4f086cf2025b9a1d169bf6ba1857fed2579604c8859b49741f5eb29d6",
+    "videos/observation.image.wrist_image_left/chunk-000/file-000.mp4": "e9d641240f9efc344924c31715a44be1f66207f667dd63c292bbd943dfa816d0",
+    "videos/observation.image.exterior_image_1_left/chunk-000/file-000.mp4": "6aac49551ff9b9fc7b8e9899df4fc050f5cd31164ed4ee3c014f332bcef3b9f1",
+    "videos/observation.image.exterior_image_2_left/chunk-000/file-000.mp4": "34f6e5dae8591809324f1df9bf166c6e304bd2cbdad643595a991f641cbb4fd7"
+  },
+  "provider_mutations_performed": 0,
+  "paid_resources_used": false,
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "ranking_fidelity": false,
+    "physical_performance": false
+  }
+}
