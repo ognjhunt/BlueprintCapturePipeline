@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any
 from .common import write_json
 from .policy_ranking_evaluator_diagnostic import PAIR_RESULT_SCHEMA_VERSION
 from .policy_ranking_evaluator_diagnostic_openai import (
+    GATE_ENV,
     MODEL_ARM_IDS,
     MODEL_PRICES_STANDARD,
     _secure_file,
@@ -100,6 +102,8 @@ def submit_shard(
     rotation_attestation_file: str | Path,
     receipt_path: str | Path,
 ) -> dict[str, Any]:
+    if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
+        raise OpenAIBatchDiagnosticError(f"missing_env_{GATE_ENV}")
     payload = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
     if canonical_sha256(payload) != manifest.get("manifest_sha256"):
         raise OpenAIBatchDiagnosticError("batch_manifest_digest_invalid")
