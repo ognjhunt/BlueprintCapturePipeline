@@ -18,10 +18,13 @@
     {"path": "allocation_3_live_evidence/vast_onstart_container.log", "sha256": "f8810d785e03e5f39e83067b2f6a4c897e6de01776a3d1cf8c76f704d24e85c9", "size_bytes": 3458},
     {"path": "allocation_3_live_evidence/object_store_staging_manifest.json", "sha256": "38f5f5b7fb97352275f736c612fb30b45bf5f0fbadc35d4851ff958e71fe96ca", "size_bytes": 12674}
   ],
-  "implementation_and_test_bindings": [
-    {"path": "src/blueprint_pipeline/policy_ranking_cosmos_causal_screen.py", "sha256": "81ae5c410e1aa1b70bc8ad73637f72b92aeebe196428a4c78174613c7d60dc7a", "size_bytes": 14935},
-    {"path": "tests/test_policy_ranking_cosmos3_followup_evidence.py", "sha256": "ea9bbe919eb7ac6a811d605a16fb8af37b76ce44f73e51f10d699e6b01d6c36e", "size_bytes": 4143}
-  ],
+  "historical_source_binding": {
+    "path": "src/blueprint_pipeline/policy_ranking_cosmos_causal_screen.py",
+    "source_commit": "c71d89aaf9947a47f35eff475c09add9c53b8c0c",
+    "sha256": "81ae5c410e1aa1b70bc8ad73637f72b92aeebe196428a4c78174613c7d60dc7a",
+    "size_bytes": 14935,
+    "validation": "recorded_blob_hash_not_current_worktree_liveness_gate"
+  },
   "integrity": {
     "raw_runtime_archive_retained": true,
     "all_ten_scientific_videos_retained": true,

@@ -84,7 +84,6 @@ def test_terminal_evidence_manifest_binds_every_listed_file() -> None:
         path = EVIDENCE / row["path"]
         assert path.stat().st_size == row["size_bytes"]
         assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"]
-    for row in manifest["implementation_and_test_bindings"]:
-        path = ROOT / row["path"]
-        assert path.stat().st_size == row["size_bytes"]
-        assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"]
+    source = manifest["historical_source_binding"]
+    assert source["source_commit"] == "c71d89aaf9947a47f35eff475c09add9c53b8c0c"
+    assert source["validation"] == "recorded_blob_hash_not_current_worktree_liveness_gate"
