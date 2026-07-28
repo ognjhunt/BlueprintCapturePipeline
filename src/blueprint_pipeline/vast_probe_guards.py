@@ -157,3 +157,25 @@ def bounded_container_missing_retry_attempts(
 
     window = min(max(1, int(max_wait_seconds)), max(60, int(max_missing_seconds)))
     return max(1, int(window / max(1, int(retry_interval_seconds))))
+
+
+def cold_pull_aware_heartbeat_no_progress_seconds(
+    *,
+    configured_seconds: int,
+    provider_bundle_kind: str,
+    allow_cold_image_pull: bool,
+    min_cold_image_pull_live_minutes: int,
+    startup_timeout_seconds: int,
+    max_live_minutes: int,
+) -> int:
+    """Keep the heartbeat window consistent with an admitted WAM cold pull."""
+
+    resolved = max(0, int(configured_seconds))
+    if provider_bundle_kind != "wam" or not allow_cold_image_pull:
+        return resolved
+    admitted_cold_pull_seconds = min(
+        max(0, int(min_cold_image_pull_live_minutes)) * 60,
+        max(0, int(startup_timeout_seconds)),
+        max(0, int(max_live_minutes)) * 60,
+    )
+    return max(resolved, admitted_cold_pull_seconds)
