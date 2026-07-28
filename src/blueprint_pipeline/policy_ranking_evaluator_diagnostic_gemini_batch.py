@@ -220,6 +220,7 @@ def collect_pilot(
         raise GeminiBatchDiagnosticError("batch_inline_response_count_invalid")
     results: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    all_usage: list[dict[str, Any]] = []
     for pair_id, inline in zip(receipt["pair_ids"], responses, strict=True):
         response = getattr(inline, "response", None)
         error = getattr(inline, "error", None)
@@ -231,8 +232,24 @@ def collect_pilot(
                 }
             )
             continue
-        structured = json.loads(str(response.text or ""))
-        _validate_payload(structured)
+        raw_text = str(response.text or "")
+        usage = _response_usage(response)
+        all_usage.append(usage)
+        try:
+            structured = json.loads(raw_text)
+            _validate_payload(structured)
+        except Exception as exc:
+            errors.append(
+                {
+                    "pair_id": pair_id,
+                    "error_type": type(exc).__name__,
+                    "error_code": "structured_output_invalid",
+                    "response_id": str(getattr(response, "response_id", "") or ""),
+                    "raw_response_text": raw_text,
+                    "usage": usage,
+                }
+            )
+            continue
         result: dict[str, Any] = {
             "schema_version": PAIR_RESULT_SCHEMA_VERSION,
             "pair_id": pair_id,
@@ -241,7 +258,7 @@ def collect_pilot(
             "model": GEMINI_MODEL,
             "response_id": str(getattr(response, "response_id", "") or ""),
             "structured_response": structured,
-            "usage": _response_usage(response),
+            "usage": usage,
             "transport": "gemini_batch_api_native_video",
             "policy_identity_sent_to_provider": False,
             "physical_outcome_sent_to_provider": False,
@@ -267,7 +284,7 @@ def collect_pilot(
         "result_count": len(results),
         "error_count": len(errors),
         "estimated_batch_cost_usd": sum(
-            row["usage"]["projected_batch_cost_same_usage_usd"] for row in results
+            usage["projected_batch_cost_same_usage_usd"] for usage in all_usage
         ),
         "results": results,
         "errors": errors,
