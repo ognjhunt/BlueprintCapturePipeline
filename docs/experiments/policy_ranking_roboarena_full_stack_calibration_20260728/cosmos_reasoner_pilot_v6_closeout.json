@@ -1,0 +1,68 @@
+{
+  "schema_version": "policy_ranking_cosmos_reasoner_pilot_closeout.v1",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "closed_at": "2026-07-28T16:22:53-0500",
+  "evidence_namespace": "cosmos3_reasoner_pilot_v6",
+  "source_commit": "e0cf403c746b94ee1bf8500a572a5001ed6cec7a",
+  "status": "technically_blocked_before_model_load",
+  "claim_class": "post_unseal_diagnostic_only",
+  "independent_confirmation_credit": false,
+  "phase_b_admission_credit": false,
+  "provider_called": true,
+  "provider": {
+    "instance_id": 46141847,
+    "gpu": "H100 SXM",
+    "machine_id": 26460,
+    "driver_version": "555.58.02",
+    "provider_reported_cuda_max_good": 12.5,
+    "hourly_rate_usd": 2.2693333333333334,
+    "observed_live_runtime_seconds": 275.45595875009894,
+    "estimated_cost_usd": 0.173639,
+    "actual_cost_usd": null,
+    "actual_cost_source": "not_available_from_instance_probe_api"
+  },
+  "runtime_result": {
+    "result_count": 0,
+    "error_count": 1,
+    "model_load_seconds": 0.0,
+    "total_reasoner_runtime_seconds": 55.014840602874756,
+    "failure_class": "container_cuda_runtime_host_driver_incompatibility",
+    "root_error": "cudaGetDeviceCount returned CUDA error 803: system has unsupported display driver / CUDA driver combination",
+    "scientific_pair_outputs_accepted": false,
+    "rejected_raw_outputs_reinterpreted": false
+  },
+  "comparison_to_last_technically_loaded_attempt": {
+    "attempt": "cosmos3_reasoner_pilot_v5",
+    "driver_version": "570.211.01",
+    "provider_reported_cuda_max_good": 12.8,
+    "model_loaded": true,
+    "note": "This comparison identifies a directly observed host/image compatibility difference. It does not establish that driver version alone explains every provider-runtime outcome."
+  },
+  "immutable_artifacts": {
+    "provider_output_zip_sha256": "a9eea32eac3c6052a1b39dcbe92bab9bde9c144968288f7e9c37c5ba8697656b",
+    "evaluator_runtime_result_sha256": "da37b8d5c4cb90eeee98dacc3bde83cb86ed599c1192033e659167dfba582b0b",
+    "pair_results_sha256": "5d0369fcf06dc4f4629a3ab59a4062fb659c559638578928d0e8a0804a60b0d7",
+    "reasoner_server_log_sha256": "75c2b8f3bf06a81895d0ec6312e6eb0de5da42cc255c11970c41435a076b5a03",
+    "teardown_manifest_sha256": "ee959be50beb653c3684ac2af99f40e9c8e9c2dd44b113e6546f5b017c3b21b1",
+    "budget_ledger_sha256": "4c3ac40275862322691b410f4f440a879d9ae9e0484f17c2f7df7ddbb78337e3",
+    "post_terminal_inventory_sha256": "f6f265aaa919a43c4b13aad2dbfdcbe0dc703e78832c35f90b56a2c1147e092e"
+  },
+  "provider_zero": {
+    "authenticated_inventory_empty": true,
+    "task_instance_destroyed": true,
+    "watchdog_stopped": true,
+    "staging_server_stopped": true,
+    "tunnel_stopped": true,
+    "task_scoped_staging_secrets_removed": true,
+    "continuing_hourly_burn_usd": 0,
+    "provider_zero_does_not_prove_invoice_settlement_or_scientific_validity": true
+  },
+  "durable_remediation": {
+    "scope": "canonical Vast provider adapter for all future paid provider bundles",
+    "change": "Run container-local cudaGetDeviceCount before downloading or executing a provider bundle, fail GPU sanity and skip the bundle when host and container CUDA are incompatible.",
+    "threshold_or_prompt_changed": false,
+    "outcome_labels_used": false,
+    "reasoner_preferences_used": false,
+    "paid_retry_authorized_by_this_closeout": false
+  }
+}

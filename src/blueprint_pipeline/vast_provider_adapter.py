@@ -75,6 +75,10 @@ from .vast_session_budget_contract import (
     attempt_runtime_seconds as _attempt_runtime_seconds,
     build_vast_session_budget_guard,
 )
+from .vast_cuda_runtime_probe import (
+    build_gpu_sanity_report,
+    cuda_runtime_probe_shell_fragment,
+)
 from .wam_provider_output import (
     inspect_provider_runtime_output_zip,
     probe_mp4_video,
@@ -2818,8 +2822,11 @@ def _probe_shell_script(
         "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader; smi=$?; "
         "if [ $smi -eq 0 ]; then echo BLUEPRINT_VAST_GPU_SANITY_OK; "
         "else echo BLUEPRINT_VAST_GPU_SANITY_BLOCKED:$smi; fi; "
-        'echo BLUEPRINT_VAST_DF_START; df -h "$WORK_DIR"; '
     )
+    # nvidia-smi proves NVML visibility, not compatibility between the host
+    # driver and this container's CUDA runtime. Paid bundles require both.
+    script += cuda_runtime_probe_shell_fragment(required=enable_blueprint_bundle)
+    script += 'echo BLUEPRINT_VAST_DF_START; df -h "$WORK_DIR"; '
     if enable_isaac_smoke:
         script += (
             "ISAAC_PY=''; "
@@ -2839,7 +2846,10 @@ def _probe_shell_script(
             "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED; "
             'BUNDLE_URL="${BLUEPRINT_EVAL_MANIFEST_URI:-}"; '
             'OUTPUT_PUT_URL="${BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL:-}"; '
-            'if [ -z "$BUNDLE_URL" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:bundle_url_missing; '
+            'if [ "${cuda_runtime_rc:-1}" -ne 0 ]; then '
+            "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:cuda_runtime_incompatible; "
+            "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
+            'elif [ -z "$BUNDLE_URL" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:bundle_url_missing; '
             'elif [ -z "$OUTPUT_PUT_URL" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_put_url_missing; '
             "else "
         )
@@ -2896,7 +2906,7 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
-                "fi; fi; fi; fi; "
+                "fi; fi; fi; "
             )
         elif provider_bundle_kind == "unitree_unifolm":
             script += (
@@ -5421,39 +5431,28 @@ def run_vast_provider_adapter(
             resolved_job_dir, "vast_gpu_sanity_started", "running", instance_id=instance_id
         )
         gpu_text = heartbeat_text
-        nvidia_visible = "BLUEPRINT_VAST_GPU_SANITY_OK" in gpu_text and "NVIDIA-SMI" not in gpu_text
-        gpu_ok = "BLUEPRINT_VAST_GPU_SANITY_OK" in gpu_text and not re.search(
-            r"nvidia-smi: command not found|failed because it couldn't communicate",
-            gpu_text,
-            flags=re.IGNORECASE,
+        cuda_runtime_required = enable_blueprint_bundle
+        gpu_report, gpu_sanity = build_gpu_sanity_report(
+            schema_version=VAST_GPU_SANITY_SCHEMA_VERSION,
+            generated_at=generated_at,
+            instance_id=instance_id,
+            selected_offer=_offer_artifact_summary(selected_offer),
+            log_text=gpu_text,
+            require_cuda_runtime=cuda_runtime_required,
+            launch_mode=launch_mode,
+            disk_gb=resolved_disk_gb,
+            container_log_result=onstart_logs,
+            truth_boundaries=_truth_boundaries(),
         )
-        gpu_report = {
-            "schema_version": VAST_GPU_SANITY_SCHEMA_VERSION,
-            "generated_at": generated_at,
-            "status": "completed" if gpu_ok else "blocked",
-            "instance_id": instance_id,
-            "selected_offer": _offer_artifact_summary(selected_offer),
-            "nvidia_smi_visible": gpu_ok,
-            "gpu_sanity_proven": gpu_ok,
-            "driver_cuda_visibility_checked": True,
-            "disk_space_checked": True,
-            "network_egress_checked": True,
-            "bundle_download_ability_checked": False,
-            "launch_mode_used": launch_mode,
-            "disk_gb": resolved_disk_gb,
-            "container_log_result": onstart_logs,
-            "blockers": [] if gpu_ok else ["vast_gpu_sanity_output_missing_or_nvidia_smi_failed"],
-            "proof_boundary": "GPU sanity proves provider GPU visibility only, not simulator execution.",
-            **_truth_boundaries(),
-        }
-        gpu_report["nvidia_smi_marker_absent_from_error"] = nvidia_visible
+        gpu_ok = bool(gpu_sanity["gpu_ok"])
+        gpu_blockers = list(gpu_sanity["blockers"])
         write_json(resolved_job_dir / "vast_gpu_sanity_report.json", gpu_report)
         _append_phase(
             resolved_job_dir,
             "vast_gpu_sanity_completed_or_blocked",
             "completed" if gpu_ok else "blocked",
-            blockers=[] if gpu_ok else ["vast_gpu_sanity_output_missing_or_nvidia_smi_failed"],
-            proof_effect="vast_gpu_nvidia_smi_completed" if gpu_ok else "none",
+            blockers=gpu_blockers,
+            proof_effect="vast_gpu_cuda_runtime_completed" if gpu_ok else "none",
             instance_id=instance_id,
         )
 
