@@ -21,7 +21,7 @@ from .common import write_json
 from .policy_ranking_roboarena_calibration import canonical_sha256, file_sha256
 
 
-SCHEMA_VERSION = "policy_ranking_evaluator_diagnostic.v2"
+SCHEMA_VERSION = "policy_ranking_evaluator_diagnostic.v3"
 PAIR_INVENTORY_SCHEMA_VERSION = "policy_ranking_pair_inventory.v1"
 PAIR_RESULT_SCHEMA_VERSION = "policy_ranking_pair_result.v1"
 PAIR_ANALYSIS_SCHEMA_VERSION = "policy_ranking_pair_analysis.v1"
@@ -187,7 +187,7 @@ def diagnostic_protocol() -> dict[str, Any]:
             "physical_ground_truth_pixels_in_provider_payload": False,
             "ties": "half_win_each_in_bradley_terry",
             "abstentions": "retained_and_excluded_from_fit",
-            "max_output_tokens_including_reasoning": 3000,
+            "default_max_output_tokens_including_reasoning": 3000,
         },
         "arms": [
             {
@@ -196,6 +196,7 @@ def diagnostic_protocol() -> dict[str, Any]:
                 "model": GPT5_MODEL,
                 "media": "32_generated_only_frames_per_episode_64_per_pair",
                 "reasoning_effort": "high",
+                "max_output_tokens_including_reasoning": 4000,
                 "transport": "batch_api_sequential_shards",
                 "diagnostic_role": "paper_comparability_anchor",
                 "full_matrix_cap_usd": 8.75,
@@ -206,6 +207,7 @@ def diagnostic_protocol() -> dict[str, Any]:
                 "model": GPT54_MINI_MODEL,
                 "media": "32_generated_only_frames_per_episode_64_per_pair",
                 "reasoning_effort": "medium",
+                "max_output_tokens_including_reasoning": 3000,
                 "transport": "batch_api_sequential_shards",
                 "diagnostic_role": "newer_lower_cost_openai_challenger",
                 "full_matrix_cap_usd": 4.75,
@@ -236,6 +238,20 @@ def diagnostic_protocol() -> dict[str, Any]:
             "one_schema_transport_canary_per_arm": True,
             "small_label_free_transport_batch_after_canary": True,
             "full_matrix_requires_measured_projected_cost_within_arm_cap": True,
+            "seven_pair_cost_projection": {
+                "sample_size": 7,
+                "per_request_upper_estimate": (
+                    "max(single_canary_batch_equivalent_cost, pilot_max_cost, "
+                    "pilot_mean_cost_plus_1.943_times_sample_standard_error)"
+                ),
+                "matrix_projection": "per_request_upper_estimate_times_441",
+                "arm_admission": "matrix_projection_lte_frozen_arm_cap",
+                "campaign_admission": (
+                    "prior_phase_a_plus_all_realized_diagnostic_api_costs_plus_all_"
+                    "remaining_admitted_matrix_projections_lte_25_usd"
+                ),
+                "ambiguous_duplicate_requests": "count_conservatively_until_billing_resolved",
+            },
             "partial_matrix_ranking_credit": False,
             "scientifically_unfavorable_outputs_are_not_a_stop_reason": True,
             "stop_reasons": [

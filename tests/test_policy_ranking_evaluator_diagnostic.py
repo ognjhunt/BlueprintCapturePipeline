@@ -72,6 +72,9 @@ def test_protocol_freezes_four_diagnostic_only_arms_and_existing_caps() -> None:
     assert protocol["comparison_graph"]["total_edges"] == 441
     assert protocol["comparison_graph"]["complete_graph_total_edges"] == 1323
     assert protocol["cost_caps_usd"]["combined_evaluator_api_including_prior_phase_a"] == 25
+    assert protocol["arms"][0]["max_output_tokens_including_reasoning"] == 4000
+    assert protocol["arms"][1]["max_output_tokens_including_reasoning"] == 3000
+    assert protocol["admission_and_stopping"]["seven_pair_cost_projection"]["sample_size"] == 7
 
 
 def test_cycle_inventory_includes_every_episode_twice_without_labels(tmp_path: Path) -> None:

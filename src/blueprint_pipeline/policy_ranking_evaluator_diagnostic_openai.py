@@ -36,7 +36,7 @@ MODEL_ARM_IDS = {
     GPT5_MODEL: "gpt5_oscar_comparability",
     GPT54_MINI_MODEL: "gpt54_mini_challenger",
 }
-MAX_OUTPUT_TOKENS = 3000
+MODEL_MAX_OUTPUT_TOKENS = {GPT5_MODEL: 4000, GPT54_MINI_MODEL: 3000}
 MODEL_REASONING_EFFORT = {GPT5_MODEL: "high", GPT54_MINI_MODEL: "medium"}
 
 
@@ -100,7 +100,7 @@ def build_response_body(pair: Mapping[str, Any], *, model: str) -> dict[str, Any
                 "schema": PAIR_OUTPUT_SCHEMA,
             }
         },
-        "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "max_output_tokens": MODEL_MAX_OUTPUT_TOKENS[model],
         "store": False,
     }
 
@@ -141,9 +141,19 @@ def _validate_payload(payload: Mapping[str, Any]) -> None:
 def score_canary(client: Any, pair: Mapping[str, Any], *, model: str) -> dict[str, Any]:
     started = time.monotonic()
     body = build_response_body(pair, model=model)
+    request_identity = canonical_sha256(
+        {
+            "model": model,
+            "pair_id": pair["pair_id"],
+            "reasoning_effort": MODEL_REASONING_EFFORT[model],
+            "max_output_tokens": MODEL_MAX_OUTPUT_TOKENS[model],
+            "prompt_sha256": canonical_sha256(PAIR_PROMPT),
+            "schema_sha256": canonical_sha256(PAIR_OUTPUT_SCHEMA),
+        }
+    )
     response = client.responses.create(
         **body,
-        extra_headers={"Idempotency-Key": f"diag-canary-{model}-{pair['pair_id']}"},
+        extra_headers={"Idempotency-Key": f"diag-canary-{request_identity}"},
     )
     if getattr(response, "status", None) != "completed" or not getattr(response, "id", None):
         details = getattr(response, "incomplete_details", None)

@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic import (
+    GPT5_MODEL,
     GPT54_MINI_MODEL,
     PAIR_OUTPUT_SCHEMA,
 )
@@ -60,7 +61,12 @@ def test_body_sends_64_images_but_no_policy_identity(tmp_path: Path) -> None:
     assert "secret-a" not in text
     assert "secret-b" not in text
     assert body["reasoning"] == {"effort": "medium"}
+    assert body["max_output_tokens"] == 3000
     assert body["store"] is False
+
+    full_body = build_response_body(_pair(tmp_path), model=GPT5_MODEL)
+    assert full_body["reasoning"] == {"effort": "high"}
+    assert full_body["max_output_tokens"] == 4000
 
 
 def test_canary_records_usage_and_redaction(tmp_path: Path) -> None:
