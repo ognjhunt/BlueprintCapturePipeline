@@ -1,4 +1,4 @@
-"""Fail-closed paid Vast admission for the Cosmos3 Reasoner diagnostic pilot."""
+"""Fail-closed paid Vast admission for a Cosmos3 Reasoner schema canary."""
 
 from __future__ import annotations
 
@@ -45,26 +45,29 @@ from .vast_wam_authorized_runner import run_vast_wam_authorized_runner
 
 
 PROBE_KIND = "policy-ranking-cosmos-reasoner"
-EXPERIMENT_ID = "policy_ranking_roboarena_full_stack_calibration_20260728"
-AUTHORIZATION_SCHEMA = "policy_ranking_cosmos_reasoner_compute_authorization.v1"
-PREFLIGHT_SCHEMA = "policy_ranking_cosmos_reasoner_vast_preflight.v1"
-ADMISSION_SCHEMA = "policy_ranking_cosmos_reasoner_gpu_admission.v1"
-AUTHORIZATION_ID_PREFIX = "policy-ranking-cosmos-reasoner-pilot-20260728-allocation-"
+EXPERIMENT_ID = "policy_ranking_roboarena_disjoint_reasoner_successor_20260728"
+AUTHORIZATION_SCHEMA = "policy_ranking_cosmos_reasoner_compute_authorization.v2"
+PREFLIGHT_SCHEMA = "policy_ranking_cosmos_reasoner_vast_preflight.v2"
+ADMISSION_SCHEMA = "policy_ranking_cosmos_reasoner_gpu_admission.v2"
+AUTHORIZATION_ID_PREFIX = "policy-ranking-cosmos-reasoner-successor-20260728-allocation-"
 AUTHORIZATION_ID = f"{AUTHORIZATION_ID_PREFIX}1"
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 EXTERNAL_AUTHORIZATION_ROOT = Path.home() / ".blueprint-spend-authority" / "authorizations"
 MAX_HOURLY_RATE_USD = 2.50
-TARGET_SPEND_USD = 4.54
-HARD_CAP_USD = 5.00
-ARM_CAP_USD = 15.00
-HARD_TTL_SECONDS = 7_200
+TARGET_SPEND_USD = 1.50
+HARD_CAP_USD = 2.00
+ARM_CAP_USD = 2.00
+HARD_TTL_SECONDS = 2_400
 MAX_AUTHORIZED_ALLOCATIONS_FOR_ARM = int(ARM_CAP_USD // HARD_CAP_USD)
 TARGET_MAX_LIVE_MINUTES = math.floor(TARGET_SPEND_USD / MAX_HOURLY_RATE_USD * 60)
 MAX_PREFLIGHT_AGE_SECONDS = 900
 DISK_GB = 200
 MIN_GPU_RAM_MB = 80_000
 MIN_RELIABILITY = 0.98
+MIN_CUDA_MAX_GOOD = 12.8
 GPU_KEYWORDS = ("H100",)
+EXPECTED_PAIR_COUNT = 1
+RUN_PURPOSE = "structured_output_canary_only"
 EXPECTED_ENTRIES = {
     "provider_runtime/evaluator_provider_runtime_runner.py",
     "provider_runtime/run_evaluator_provider_runtime.sh",
@@ -130,6 +133,7 @@ def collect_vast_preflight(*, name_prefix: str) -> dict[str, Any]:
         "max_hourly_rate_usd": MAX_HOURLY_RATE_USD,
         "min_gpu_ram_mb": MIN_GPU_RAM_MB,
         "min_reliability": MIN_RELIABILITY,
+        "min_cuda_max_good": MIN_CUDA_MAX_GOOD,
         "require_avx": True,
         "require_known_supported_isaac_driver": False,
         "require_direct_port": False,
@@ -147,6 +151,7 @@ def collect_vast_preflight(*, name_prefix: str) -> dict[str, Any]:
         and int(row.get("gpu_ram_mb") or 0) >= MIN_GPU_RAM_MB
         and 0 < float(row.get("hourly_rate_usd") or 0) <= MAX_HOURLY_RATE_USD
         and float(row.get("reliability") or 0) >= MIN_RELIABILITY
+        and float(row.get("cuda_max_good") or 0) >= MIN_CUDA_MAX_GOOD
     ]
     viable.sort(key=lambda row: (float(row["hourly_rate_usd"]), -float(row["reliability"])))
     selected = viable[0] if viable else {}
@@ -164,7 +169,7 @@ def collect_vast_preflight(*, name_prefix: str) -> dict[str, Any]:
     if not inventory_zero:
         blockers.append("cosmos_reasoner_vast_inventory_not_zero")
     if not selected:
-        blockers.append("cosmos_reasoner_single_h100_offer_unavailable")
+        blockers.append("cosmos_reasoner_compatible_single_h100_offer_unavailable")
     result: dict[str, Any] = {
         "schema_version": PREFLIGHT_SCHEMA,
         "status": "verified" if not blockers else "blocked",
@@ -176,6 +181,7 @@ def collect_vast_preflight(*, name_prefix: str) -> dict[str, Any]:
         "provider_inventory_verified_zero": inventory_zero,
         "selected_offer": selected or None,
         "capacity_request": request,
+        "minimum_cuda_max_good": MIN_CUDA_MAX_GOOD,
         "capacity_snapshot": capacity,
         "attempt_billable_inventory": attempt_inventory,
         "billable_inventory": inventory,
@@ -258,8 +264,10 @@ def inspect_bundle(
         blockers.append("cosmos_reasoner_bundle_receipt_digest_invalid")
     if receipt.get("bundle_sha256") != bundle_sha:
         blockers.append("cosmos_reasoner_bundle_receipt_hash_mismatch")
-    if receipt.get("pair_count") != 7:
-        blockers.append("cosmos_reasoner_pilot_pair_count_not_seven")
+    if receipt.get("pair_count") != EXPECTED_PAIR_COUNT:
+        blockers.append("cosmos_reasoner_canary_pair_count_not_one")
+    if receipt.get("run_purpose") != RUN_PURPOSE:
+        blockers.append("cosmos_reasoner_canary_purpose_invalid")
     if (
         runtime_manifest.get("model") != COSMOS_MODEL
         or runtime_manifest.get("model_revision") != COSMOS_REVISION
@@ -298,8 +306,9 @@ def inspect_bundle(
     ):
         blockers.append("cosmos_reasoner_receipt_native_architecture_invalid")
     if (
-        input_manifest.get("pair_count") != 7
+        input_manifest.get("pair_count") != EXPECTED_PAIR_COUNT
         or input_manifest.get("claim_class") != "post_unseal_diagnostic_only"
+        or input_manifest.get("run_purpose") != RUN_PURPOSE
     ):
         blockers.append("cosmos_reasoner_input_manifest_invalid")
     expected_schema_sha256 = canonical_sha256(PAIR_OUTPUT_SCHEMA)
@@ -325,6 +334,8 @@ def inspect_bundle(
         "source_commit": runtime_source or None,
         "receipt_source_commit": receipt_source or None,
         "input_manifest_sha256": input_manifest.get("manifest_sha256"),
+        "pair_count": input_manifest.get("pair_count"),
+        "run_purpose": input_manifest.get("run_purpose"),
         "provider_runtime_runner_sha256": runner_sha256 or None,
         "provider_runtime_entrypoint_sha256": entrypoint_sha256 or None,
     }
@@ -343,9 +354,13 @@ def build_admission(
         authorization.get("authorization_id")
     ):
         blockers.append("cosmos_reasoner_authorization_identity_invalid")
+    if authorization.get("experiment_id") != EXPERIMENT_ID:
+        blockers.append("cosmos_reasoner_authorization_experiment_mismatch")
     if (
         authorization.get("paid_mutation_authorized") is not True
         or authorization.get("maximum_provider_allocations") != 1
+        or authorization.get("authorized_pair_count") != EXPECTED_PAIR_COUNT
+        or authorization.get("run_purpose") != RUN_PURPOSE
     ):
         blockers.append("cosmos_reasoner_paid_authorization_invalid")
     if not (
@@ -355,6 +370,7 @@ def build_admission(
         blockers.append("cosmos_reasoner_external_authorization_not_verified")
     if (
         authorization.get("authorized_compute_cap_usd") != HARD_CAP_USD
+        or authorization.get("reasoner_arm_total_cap_usd") != ARM_CAP_USD
         or authorization.get("hard_ttl_seconds") != HARD_TTL_SECONDS
     ):
         blockers.append("cosmos_reasoner_authorization_limits_invalid")
@@ -381,14 +397,17 @@ def build_admission(
         price = float(offer.get("hourly_rate_usd") or 0)
         ram = int(offer.get("gpu_ram_mb") or 0)
         reliability = float(offer.get("reliability") or 0)
+        cuda_max_good = float(offer.get("cuda_max_good") or 0)
     except (TypeError, ValueError):
-        price, ram, reliability = 0.0, 0, 0.0
+        price, ram, reliability, cuda_max_good = 0.0, 0, 0.0, 0.0
     if (
         not 0 < price <= MAX_HOURLY_RATE_USD
         or ram < MIN_GPU_RAM_MB
         or reliability < MIN_RELIABILITY
     ):
         blockers.append("cosmos_reasoner_selected_offer_limits_invalid")
+    if cuda_max_good < MIN_CUDA_MAX_GOOD:
+        blockers.append("cosmos_reasoner_selected_offer_cuda_incompatible")
     observed = preflight.get("observed_at_epoch")
     if type(observed) not in {int, float} or not math.isfinite(float(observed)):
         blockers.append("cosmos_reasoner_preflight_timestamp_invalid")
@@ -417,6 +436,8 @@ def build_admission(
         "model": COSMOS_MODEL,
         "model_revision": COSMOS_REVISION,
         "bundle_sha256": bundle.get("bundle_sha256"),
+        "pair_count": bundle.get("pair_count"),
+        "run_purpose": bundle.get("run_purpose"),
         "selected_offer": offer,
         "limits": {
             "max_hourly_rate_usd": MAX_HOURLY_RATE_USD,
@@ -431,7 +452,7 @@ def build_admission(
         "task_security_exception": security,
         "shared_paid_lane_admission": shared,
         "provider_mutations_performed": 0,
-        "claim_boundary": "pilot_transport_and_cost_only_not_ranking_or_confirmation",
+        "claim_boundary": "single_schema_canary_only_not_ranking_or_confirmation",
     }
     result["manifest_sha256"] = canonical_sha256(result)
     return result
@@ -536,6 +557,8 @@ def run_gpu_lane(
         "provider_bundle_kind": "evaluator",
         "public_image": PUBLIC_IMAGE,
         "bundle_sha256": bundle.get("bundle_sha256"),
+        "pair_count": bundle.get("pair_count"),
+        "run_purpose": bundle.get("run_purpose"),
         "selected_offer": admission.get("selected_offer"),
         "limits": admission.get("limits"),
         "blockers": admission.get("blockers"),
@@ -622,9 +645,10 @@ def run_gpu_lane(
         min_reliability=MIN_RELIABILITY,
         preferred_gpu_keywords=GPU_KEYWORDS,
         gpu_selection_policy={
-            "policy_id": "cosmos_reasoner_h100_only_v1",
+            "policy_id": "cosmos_reasoner_h100_cuda128_canary_v2",
             "allowed_gpu_keywords": list(GPU_KEYWORDS),
             "denied_gpu_keywords": [],
+            "minimum_cuda_max_good": MIN_CUDA_MAX_GOOD,
         },
         require_independent_watchdog=True,
         retain_instance_on_runtime_failure=True,

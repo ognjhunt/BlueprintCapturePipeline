@@ -1,0 +1,81 @@
+{
+  "schema_version": "policy_ranking_disjoint_session_candidate_split.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "frozen_at": "2026-07-28T18:16:19-0500",
+  "status": "label_sealed_same_snapshot_candidate_not_phase_b_admitted",
+  "dataset": {
+    "id": "RoboArena/DataDump_07-17-2026",
+    "revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "license": "mit",
+    "local_session_directory_count": 3883
+  },
+  "exclusion": {
+    "phase_a_inventory_path": "external_evidence_root/phase_a_evaluator_inventory_v4.json",
+    "phase_a_inventory_file_sha256": "6b32f0e8b7798b1782e3c42c8e14e1501ae36fcd288d8b09aae5cee4d8a6b6ba",
+    "exposed_session_count": 63,
+    "unexposed_session_count": 3820,
+    "session_overlap_allowed": false
+  },
+  "required_policy_ids": [
+    "paligemma_binning_droid",
+    "paligemma_diffusion_droid",
+    "paligemma_fast_droid",
+    "paligemma_fast_specialist_droid",
+    "paligemma_vq_droid",
+    "pi0_droid",
+    "pi0_fast_droid"
+  ],
+  "selection": {
+    "independent_unit": "session",
+    "eligible_complete_seven_policy_session_count": 536,
+    "rule": "lexicographically_first_17_session_ids_after_excluding_all_63_phase_a_sessions_and_requiring_all_seven_policy_directories",
+    "selection_inputs": "directory_names_only",
+    "metadata_yaml_opened": false,
+    "npz_opened": false,
+    "video_opened": false,
+    "outcome_labels_accessed": false,
+    "selected_session_count": 17,
+    "session_ids": [
+      "005387dc-76ab-405e-b363-b2182a075b5c",
+      "005c2566-4598-4daf-b3b0-651db8547ff6",
+      "00d2b265-f7fd-409d-8b09-3112db0046d2",
+      "00e1796c-c4d0-4017-8925-93d763f90f72",
+      "0104e304-97be-4f8b-a0af-064a27dcf596",
+      "017ea417-3191-4f51-a81d-64519d969829",
+      "018316ac-98d8-4d40-b973-cc6704e4ff70",
+      "01ae643f-594c-4725-a257-f8e5b262dc26",
+      "02448d6d-4891-4395-82ae-7bf5f74f1225",
+      "02eb3b54-13e4-432e-9cf6-d3a4c1fff651",
+      "02f67afc-8eb7-429b-ba93-c021fd5f709a",
+      "02fab778-79b2-4a64-a325-91d1e21dc1df",
+      "03919d42-23d1-4dd7-b03c-e066de78103d",
+      "03d8876b-761b-4476-a226-1aa03a13ffdd",
+      "03dd60d7-a3c7-4cdc-9ad3-dbf7e293b574",
+      "054e0a5e-47e5-439c-a462-9c9984d20eec",
+      "05a417df-0ea1-4e50-8eec-c900b6494747"
+    ]
+  },
+  "power": {
+    "historical_target_independent_sessions": 17,
+    "selected_sessions": 17,
+    "power_not_yet_established": true,
+    "reason": "Media completeness, valid physical labels, policy-action compatibility, and usable independent outcomes have not yet been unsealed and validated."
+  },
+  "claim_ceiling": {
+    "same_published_snapshot": true,
+    "new_snapshot": false,
+    "disjoint_session_confirmation_possible_if_all_gates_pass": true,
+    "independent_new_snapshot_confirmation_proven": false,
+    "replayed_trace_only_result": "open_loop_replay_qualification_only",
+    "live_closed_loop_phase_b_proven": false
+  },
+  "admission_blockers": [
+    "media_and_lfs_materialization_not_validated",
+    "physical_outcome_schema_not_unsealed_or_validated",
+    "runnable_seven_policy_endpoint_contract_not_established",
+    "cosmos_16x10_action_adapter_not_established",
+    "phase_a_all_gates_did_not_pass",
+    "same_snapshot_claim_ceiling_requires_explicit_treatment"
+  ],
+  "manifest_sha256": "07ea11d12f01d1518aa9ddf8e2ea1ce3b56ca340007d2d2654e2acf0e71f1fe0"
+}

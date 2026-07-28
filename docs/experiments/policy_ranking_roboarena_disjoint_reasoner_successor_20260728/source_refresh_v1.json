@@ -1,0 +1,27 @@
+{
+  "schema_version": "policy_ranking_successor_source_refresh.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "refreshed_at": "2026-07-28T18:16:19-0500",
+  "prior_complete_freeze_path": "../policy_ranking_roboarena_full_stack_calibration_20260728/source_revision_license_freeze_v2.json",
+  "prior_complete_freeze_file_sha256": "d853d63403e96620ecd6452f076958138b904765b7bde782cc345e14415dbca8",
+  "live_primary_checks": [
+    {"name": "OSCAR_public_code", "url": "https://github.com/wuzy2115/oscar-public", "observed_head": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb", "pinned_revision_unchanged": true},
+    {"name": "RoboArena_public_code", "url": "https://github.com/robo-arena/roboarena", "observed_head": "a07f93db004e2357aee931069a7011d7e52774ed", "pinned_revision_unchanged": true},
+    {"name": "DROID_dataset_code", "url": "https://github.com/droid-dataset/droid", "observed_head": "33ae6a67274f36d2e29525b86f23a56616ef43a7", "pinned_revision_unchanged": true},
+    {"name": "DROID_policy_learning", "url": "https://github.com/droid-dataset/droid_policy_learning", "observed_head": "9a29c832b4c81bf38401111f5e4cdddaca217581", "pinned_revision_unchanged": true},
+    {"name": "NVIDIA_Cosmos", "url": "https://github.com/NVIDIA/cosmos", "observed_head": "bebca76311266941d06c5f5572fb601184ba24fa", "pinned_revision_unchanged": true},
+    {"name": "vLLM_Omni", "url": "https://github.com/vllm-project/vllm-omni", "observed_head": "0feb92bdfa7aada993d79f89f26c999c81cbe937", "pinned_image_source_revision": "9c1b7504b178afcf541867c1a2d30db48c69cda8", "head_advanced_since_prior_freeze": true},
+    {"name": "RoboArena_DataDump_07_17_2026", "url": "https://huggingface.co/datasets/RoboArena/DataDump_07-17-2026", "observed_revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc", "pinned_revision_unchanged": true},
+    {"name": "Cosmos3_Nano", "url": "https://huggingface.co/nvidia/Cosmos3-Nano", "observed_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa", "pinned_revision_unchanged": true}
+  ],
+  "paper_method_sources": {
+    "OSCAR_RoboArena_RoboWorld_SC3_Eval_DROID": "retained_by_sha256_from_prior_complete_freeze",
+    "unpublished_implementation_rule": "Blueprint implementations remain described as inspired_by where exact official code is unavailable"
+  },
+  "execution_binding": {
+    "moving_heads_used": false,
+    "pinned_image_and_model_used": true,
+    "source_commit_must_be_exact_merged_main_at_execution": true
+  },
+  "claim_boundary": "Source refresh only; it does not establish runtime compatibility, ranking, WAM qualification, captured-site transfer, or economics."
+}

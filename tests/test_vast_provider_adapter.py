@@ -2663,6 +2663,45 @@ def test_vast_adapter_wam_selection_can_prefer_workstation_gpu_over_isaac_rt_poo
     assert selected["machine_id"] == 222
 
 
+def test_vast_adapter_inline_policy_rejects_offer_below_cuda_floor() -> None:
+    selected = _select_offer(
+        [
+            {
+                "id": 1,
+                "ask_contract_id": 1,
+                "gpu_name": "H100 SXM",
+                "gpu_ram_mb": 81_559,
+                "dph_total": 1.70,
+                "driver_version": "555.58.02",
+                "cuda_max_good": 12.5,
+                "machine_id": 111,
+            },
+            {
+                "id": 2,
+                "ask_contract_id": 2,
+                "gpu_name": "H100 NVL",
+                "gpu_ram_mb": 94_000,
+                "dph_total": 2.00,
+                "driver_version": "590.48.01",
+                "cuda_max_good": 13.1,
+                "machine_id": 222,
+            },
+        ],
+        max_hourly_rate=2.50,
+        min_gpu_ram_mb=80_000,
+        prefer_isaac_rt=False,
+        gpu_selection_policy={
+            "policy_id": "reasoner_cuda_floor",
+            "allowed_gpu_keywords": ["H100"],
+            "minimum_cuda_max_good": 12.8,
+        },
+    )
+
+    assert selected is not None
+    assert selected["ask_contract_id"] == 2
+    assert selected["cuda_max_good"] == 13.1
+
+
 def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
     tmp_path: Path,
     monkeypatch,
