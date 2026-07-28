@@ -5,7 +5,7 @@
   "updated_at": "2026-07-10T13:13:27+00:00",
   "source_audit": "docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md",
   "source_audit_sha256": "sha256:0d700a385fb77c36b60b24321f2354b6177fe5886ba7cf768d321cf43c22a864",
-  "evidence_mapping_sha256": "sha256:a6d647b4a66aebad22f663e97d21a68999d76a83aa5bb69318ad50b0345259b5",
+  "evidence_mapping_sha256": "sha256:5edb2016c1c26f094901b6a1abd87d1e181b462a23040e74a04c69a1b0f42ad7",
   "authoritative_for_current_status": true,
   "status_definitions": {
     "open": "No complete, current exit-criteria proof is recorded.",
@@ -1899,8 +1899,8 @@
           "evidence_artifacts": [
             {
               "artifact_id": "DATA-06-AC-01-EV-01",
-              "path": "src/blueprint_pipeline/qualification.py",
-              "sha256": "sha256:ea03dac918ef32a93daf1b55076abbd5a833b4a666dc4309c212bbe3afedc636",
+              "path": "src/blueprint_pipeline/site_package_orchestrator.py",
+              "sha256": "sha256:a9a2070a6bea0163c67534e95d1e27444c87261cd277eb79fcead8562b25b928",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -1932,7 +1932,7 @@
             {
               "artifact_id": "DATA-06-AC-01-EV-03",
               "path": "tests/test_qualification_alpha.py",
-              "sha256": "sha256:b2a4aeb4b329be6136db210f65ac32171b48c296ce5b19a7ef7c441ab25ef7dc",
+              "sha256": "sha256:1e5e51fd003a1b739695eebe6a0268756ea9ca51cb7244d92c52b45dada733eb",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -7196,7 +7196,7 @@
             {
               "artifact_id": "REL-14-AC-01-EV-01",
               "path": "docs/source_governance_policy.json",
-              "sha256": "sha256:44b02a0583558a8ae3990ce1e4ac0c41ac275f0272d52e9ed8bd6fd142a97562",
+              "sha256": "sha256:46a9efed185d8c772c2ffd426b8bb9f8f8af4c76636d3f52146745424abaf99c",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",

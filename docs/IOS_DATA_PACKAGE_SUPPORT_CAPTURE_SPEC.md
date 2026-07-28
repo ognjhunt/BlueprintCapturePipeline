@@ -4,10 +4,7 @@
 
 This document explains, in one place, what Blueprint is building, how the current iPhone capture path works today, why that capture path can support Seoul World Model style generated assets, and what minimum contract changes are required to make Blueprint iPhone captures usable for real-site robot evaluation runs and Post-Training Data Packages.
 
-This is written as a handoff document for a new agent or engineer. It assumes no prior context beyond access to:
-
-- `$HOME/workspace/BlueprintCapture`
-- `$HOME/workspace/BlueprintCapturePipeline`
+This is written as a handoff document for a new agent or engineer. It assumes no prior context beyond access to the `BlueprintCapture` and `BlueprintCapturePipeline` checkouts. Cross-repo paths in this document use the conventional `$HOME/workspace/<repo>` layout; resolve them against wherever the sibling repos are checked out in your environment (see the sibling-checkout convention in `AGENTS.md`).
 
 The emphasis is iOS only for now.
 
@@ -152,7 +149,7 @@ Important code references:
 
 - raw bundle materialization into descriptor in `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/materialization.py:660`
 - current local scene-memory candidate inference in `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/materialization.py:767`
-- scene-memory readiness logic in `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/qualification.py:831`
+- scene-memory readiness logic in `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/site_package_orchestrator.py` (formerly `qualification.py:831`)
 - evaluation-prep canonical `site_world_spec.json` generation in `$HOME/workspace/BlueprintCapturePipeline/src/blueprint_pipeline/evaluation_prep_stage.py`
 
 ## Why This Is Already Close To An SWM-Like Setup

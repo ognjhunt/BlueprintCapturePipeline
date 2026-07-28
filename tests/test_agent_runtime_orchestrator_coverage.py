@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from blueprint_pipeline import qualification as qual
+from blueprint_pipeline import site_package_orchestrator as qual
 from blueprint_pipeline.agent_runtime import orchestrator as orch
 
 

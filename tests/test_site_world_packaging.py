@@ -10,7 +10,7 @@ from blueprint_pipeline.capture_orchestrator import PipelineConfig, run_capture_
 from blueprint_pipeline.evaluation_prep_stage import _build_launchable_export_bundle, run_evaluation_prep_stage
 from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import build_capture_bundle_records, materialize_capture_bundle
-from blueprint_pipeline.qualification import _presentation_bundle_status, _presentation_primary_asset
+from blueprint_pipeline.site_package_orchestrator import _presentation_bundle_status, _presentation_primary_asset
 
 
 _PACKAGING_UPSTREAM_IDS = {
@@ -446,8 +446,8 @@ def test_site_world_packaging_emits_launchable_bundle(monkeypatch, tmp_path: Pat
     monkeypatch.setenv("BLUEPRINT_ALLOW_LEGACY_SIMREADY_EVAL_PREP", "true")
     monkeypatch.setenv("BLUEPRINT_ALLOW_LEGACY_MARBLE_EVAL_PREP", "true")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
-    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
-    monkeypatch.setattr("blueprint_pipeline.qualification.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
 
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
@@ -778,8 +778,8 @@ def test_site_world_packaging_carries_geometry_conditioning(monkeypatch, tmp_pat
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
-    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
-    monkeypatch.setattr("blueprint_pipeline.qualification.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
 
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
@@ -824,8 +824,8 @@ def test_site_world_packaging_surfaces_runtime_missing_blockers(monkeypatch, tmp
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {missing_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("SITE_WORLD_RUNTIME_SERVICE_URL", "http://runtime.test")
-    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
-    monkeypatch.setattr("blueprint_pipeline.qualification.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
 
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,
@@ -896,8 +896,8 @@ def test_site_world_packaging_preserves_vertical_capture_orientation(monkeypatch
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {sam3_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("SITE_WORLD_RUNTIME_SERVICE_URL", "http://runtime.test")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
-    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
-    monkeypatch.setattr("blueprint_pipeline.qualification.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess", lambda **_kwargs: _successful_privacy_processing())
 
     run_capture_pipeline(
         descriptor_gcs_uri=descriptor_uri,

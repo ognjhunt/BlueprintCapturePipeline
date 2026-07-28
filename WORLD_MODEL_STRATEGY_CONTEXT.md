@@ -11,7 +11,7 @@ Blueprint's durable moat should be:
 
 1. capture supply and real-site coverage
 2. rights-safe, provenance-safe, privacy-safe data pipelines
-3. Task Evaluation Runs and Post-Training Data Packages grounded in real captured sites
+3. Task Evaluation Runs, Policy Improvement Runs, and Post-Training Data Packages grounded in real captured sites
 4. buyer, licensing, and ops product surfaces around those runs and packages
 5. a compounding capture -> package -> buyer usage -> more capture flywheel
 
@@ -26,8 +26,8 @@ Blueprint is capture-first and real-site robot-evaluation/data-package first.
 That means:
 
 - real capture supply is the entry point
-- Task Evaluation Runs and Post-Training Data Packages are the primary sellable outputs
-- world models, site-world internals, generated media, simulation outputs, editing/augmentation assets, and model-derived artifacts are support substrates inside packages, not the primary public offer
+- Task Evaluation Runs, Policy Improvement Runs, and Post-Training Data Packages are the primary sellable outputs
+- world models and simulators are load-bearing internal engines for evaluation and data generation — first-class machinery behind replaceable adapters, not peripheral extras — while world-model internals, generated media, simulation outputs, editing/augmentation assets, and model-derived artifacts remain support substrates inside packages rather than the primary public offer
 - qualification / readiness can exist as optional trust layers, especially for high-stakes buyers, commercialization decisions, or deployment review
 - those trust layers should support the product, not define the company
 
@@ -51,8 +51,9 @@ Today, the strongest near-term value comes from:
 2. turning those captures into site/task/scenario/eval artifacts for robot evaluation
 3. preserving strong rights, privacy, and provenance metadata around those assets
 4. giving robot teams clear buyer surfaces for Task Evaluation Runs before expensive pilots
-5. packaging curated robot POV clips, labels, generated/model-derived variations, failure cases, and export manifests into Post-Training Data Packages
-6. using qualification / readiness outputs only when they materially improve trust, pricing, commercialization, or deployment decisions
+5. running the WAM/simulator evaluator engine that produces those rankings, and Policy Improvement Runs — bounded, evidence-gated attempts to turn a failed or borderline eval into a better candidate, with auditable before/after evidence and explicit no-promotion outcomes
+6. packaging curated robot POV clips, labels, generated/model-derived variations, failure cases, and export manifests into Post-Training Data Packages
+7. using qualification / readiness outputs only when they materially improve trust, pricing, commercialization, or deployment decisions
 
 Native SWM-like interaction remains an important direction, but it is not the only thing customers need in order for the product to be valuable now.
 
@@ -77,7 +78,7 @@ These should be treated as long-lived platform contracts:
 - hosted-session and runtime session contracts
 - buyer attachment, licensing, and sync contracts
 - truth labeling in UI and APIs
-- Task Evaluation Run and Post-Training Data Package contracts
+- Task Evaluation Run, Policy Improvement Run, and Post-Training Data Package contracts
 
 Qualification / readiness outputs should stay compatible where they exist, but they should be treated as optional support contracts rather than the only source of product value.
 
@@ -109,7 +110,7 @@ Blueprint's moat should come from assets that get stronger when models commoditi
 - better real-site capture coverage
 - better capture quality and provenance
 - better rights / privacy / commercialization handling
-- better Task Evaluation Runs and Post-Training Data Packages
+- better Task Evaluation Runs, Policy Improvement Runs, and Post-Training Data Packages
 - better buyer UX and operational surfaces
 - better feedback loops from real buyer usage on real sites
 
@@ -120,21 +121,30 @@ If world models become easier to buy, proprietary real-site capture and product 
 The company should be able to say:
 
 - we do not depend on owning the single best world model
-- we are the best system for turning real sites into robot evaluation runs and post-training data packages
+- we are the best system for turning real sites into robot evaluation runs, policy improvement runs, and post-training data packages
 - we can use world models, hosted experiences, trust, review, and readiness layers when they help, without making unsupported qualification or world models the center of the company
 
 ## Build Priorities Right Now
 
 For the current stage, prioritize:
 
-1. capture quality and coverage
-2. packaging captures into strong site/task/scenario/eval artifacts
-3. Task Evaluation Runs, Post-Training Data Packages, hosted access, and buyer usability
-4. rights / privacy / provenance rigor
-5. stable product contracts that survive backend swaps
-6. generated/model-derived data, world-model, simulation, and readiness support for the cases that need them
+1. capture quality and coverage — the moat and the entry point
+2. the evaluation engine that converts captures into sellable results: WAM/simulator evaluator lanes behind replaceable adapters, the benchmark protocol, policy ranking, and Policy Improvement Runs — this is the current engineering center of mass, and that is intentional (it is rung-1 execution in `VISION.md` terms)
+3. packaging captures into strong site/task/scenario/eval artifacts
+4. Task Evaluation Runs, Policy Improvement Runs, Post-Training Data Packages, hosted access, and buyer usability
+5. rights / privacy / provenance rigor
+6. stable product contracts that survive backend swaps
+7. generated/model-derived data, world-model, simulation, and readiness support for the cases that need them
 
-Do not spend disproportionate time pushing qualification/readiness or world-model access into the lead product story when the main commercial value comes from capture supply, Task Evaluation Runs, and Post-Training Data Packages.
+"Capture-first" names the moat, the entry point, and the truth hierarchy — it is
+not a claim that most engineering effort sits in capture code at every moment.
+Building the evaluation engine on top of captured sites is how the capture-first
+strategy is executed, not a departure from it. What stays out of bounds: making
+any single world model the public product story, letting evaluator convenience
+weaken capture/provenance truth, or letting engine work starve capture supply
+and package quality so long that the moat stops growing.
+
+Do not spend disproportionate time pushing qualification/readiness or world-model access into the lead product story when the main commercial value comes from capture supply, Task Evaluation Runs, Policy Improvement Runs, and Post-Training Data Packages.
 
 ## Data Priority
 
@@ -160,7 +170,7 @@ Future model quality and package quality will depend heavily on data quality and
 Each repo should optimize for the same posture:
 
 - `BlueprintCapture`: capture the richest, cleanest, most reusable real-site evidence possible
-- `BlueprintCapturePipeline`: turn that evidence into Task Evaluation Run artifacts, Post-Training Data Package artifacts, hosted-session artifacts, generated/model-derived support assets, and optional trust layers without coupling the platform to one backend
+- `BlueprintCapturePipeline`: turn that evidence into Task Evaluation Run artifacts, Policy Improvement Run artifacts, Post-Training Data Package artifacts, hosted-session artifacts, generated/model-derived support assets, and optional trust layers without coupling the platform to one backend
 - `Blueprint-WebApp`: sell, deliver, and operate those runs and packages through clear buyer and ops surfaces
 
 ## Non-Goal

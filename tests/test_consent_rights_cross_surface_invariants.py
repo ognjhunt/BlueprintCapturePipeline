@@ -18,7 +18,7 @@ import pytest
 
 from blueprint_pipeline import materialization
 from blueprint_pipeline import post_training_data_package as ptdp
-from blueprint_pipeline import qualification
+from blueprint_pipeline import site_package_orchestrator as qualification
 from blueprint_pipeline.consent_normalization import (
     CONSENT_ACTIVE_STATUSES,
     CONSENT_REVOKED_STATUSES,

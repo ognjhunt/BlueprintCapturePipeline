@@ -1,5 +1,41 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-28
+
+### User-Facing
+
+- Aligned doctrine, entry docs, and evidence claims after a twelve-item
+  conflict audit: `AGENTS.md` is now the canonical agent-agnostic working
+  guide (Claude, Codex, and human engineers) with a sibling-checkout path
+  convention replacing literal `$HOME/workspace` paths; `CLAUDE.md` is a thin
+  harness summary; `VISION.md` joined the documented read order; the README
+  header now describes both active lanes (site/package and robot-evaluation
+  engine) and disambiguates legacy Cosmos-Predict2.5 from the preferred
+  `cosmos3_wam` candidate.
+- Recognized Policy Improvement Runs as a first-class buyer product across
+  `PLATFORM_CONTEXT.md` and `WORLD_MODEL_STRATEGY_CONTEXT.md`, added the
+  Commercial Wedge Overlay section that `VISION.md` references, resolved the
+  site-operator optional-vs-rung-2 tension as a lifecycle-stage distinction,
+  and blessed the evaluation-engine build focus as rung-1 execution of the
+  capture-first strategy.
+- Tightened `VISION.md` evidence claims: SC3-Eval's OOD Pearson is a wash
+  against its Cosmos-Predict2.5 baseline (0.870 vs 0.871, MMRV edge only),
+  OSCAR's published validation is open-loop only with chained-generation
+  exposure-bias collapse named as the open failure mode, and the evidence base
+  now folds in `docs/policy_and_wam_benchmark_research_2026-07-26.md`.
+- Added `docs/DOCTRINE_PRECEDENCE.md`: the resolution order when documentation
+  disagrees, for agents and humans.
+
+### Internal
+
+- Renamed `src/blueprint_pipeline/qualification.py` to
+  `src/blueprint_pipeline/site_package_orchestrator.py`: the module is the core
+  capture->package orchestration spine, and the legacy name contradicted the
+  doctrine that readiness/review outputs are optional support layers.
+  `blueprint_pipeline.qualification` remains a deprecated import alias pinned
+  by `tests/test_qualification_alias_contract.py`; artifact contracts such as
+  `pipeline/qualification_summary.json` are unchanged.
+
 ## 2026-07-26
 
 ### User-Facing

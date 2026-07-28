@@ -216,7 +216,7 @@ def _stub_sync(monkeypatch, sync_calls: list[dict[str, object]]) -> None:  # typ
             "evaluation_readiness": kwargs.get("evaluation_readiness"),
         }
 
-    monkeypatch.setattr("blueprint_pipeline.qualification.sync_webapp_pipeline_attachment", _sync)
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.sync_webapp_pipeline_attachment", _sync)
     monkeypatch.setattr("blueprint_pipeline.alpha_readiness.sync_webapp_pipeline_attachment", _sync)
 
 
@@ -853,9 +853,9 @@ def test_iphone_alpha_readiness_is_go_and_sync_refreshes_after_evaluation_prep(m
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
-    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _write_privacy_outputs(capture_root, depth_source="arkit", include_depth_manifests=False),
     )
 
@@ -997,9 +997,9 @@ def test_iphone_video_only_alpha_readiness_is_go_when_geometry_is_ready(monkeypa
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
-    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _write_privacy_outputs(capture_root, depth_source="depth_anything", include_depth_manifests=True),
     )
 
@@ -1069,9 +1069,9 @@ def test_iphone_alpha_readiness_is_no_go_when_runtime_url_missing(monkeypatch, t
     monkeypatch.setenv("OBJECT_INDEX_YOLO_WORLD_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_GROUNDING_DINO_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
     monkeypatch.setenv("OBJECT_INDEX_SAM3_COMMAND", f"python3 {success_backend} {{INPUT_JSON}} {{OUTPUT_JSON}}")
-    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _write_privacy_outputs(capture_root, depth_source="arkit", include_depth_manifests=False),
     )
 
@@ -1112,9 +1112,9 @@ def test_meta_glasses_alpha_readiness_is_internal_until_operator_evidence(monkey
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
-    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _write_privacy_outputs(capture_root, depth_source="depth_anything", include_depth_manifests=True),
     )
 
@@ -1169,9 +1169,9 @@ def test_android_alpha_readiness_is_internal_until_operator_evidence(monkeypatch
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_UI_BASE_URL", "https://demo.example/internal")
     monkeypatch.setenv("BLUEPRINT_PRESENTATION_DEMO_PUBLIC_UI_BASE_URL", "https://demo.example/public")
     monkeypatch.setattr("blueprint_pipeline.evaluation_prep_stage.SiteWorldRuntimeServiceClient", _HealthyRuntimeClient)
-    monkeypatch.setattr("blueprint_pipeline.qualification.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
+    monkeypatch.setattr("blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review", lambda **_kwargs: _successful_capture_review())
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _write_privacy_outputs(capture_root, depth_source="depth_anything", include_depth_manifests=True),
     )
 

@@ -579,7 +579,7 @@ gs://bucket/
 | `src/blueprint_pipeline/retrieval_index_stage.py` | New stage (to create) |
 | `src/blueprint_pipeline/capture_orchestrator.py` | Add `retrieval_index` lane |
 | `src/blueprint_pipeline/materialization.py` | `world_model_candidate` already canonical after Phase 1 |
-| `src/blueprint_pipeline/qualification.py` | Reads `world_model_candidate` — no changes needed |
+| `src/blueprint_pipeline/site_package_orchestrator.py` (formerly `qualification.py`) | Reads `world_model_candidate` — no changes needed |
 | `cloud/extract-frames/src/index.ts` | Existing 5fps extraction pattern to reference for FFmpeg args |
 | `BlueprintCapture/BlueprintCapture/VideoCaptureManager.swift:61` | `ARFrameLogEntry` fields (tracking_state, sharpness_score) used for frame quality filtering |
 
