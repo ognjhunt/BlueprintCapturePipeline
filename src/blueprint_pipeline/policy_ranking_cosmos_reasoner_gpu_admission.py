@@ -23,6 +23,8 @@ from .paid_resource_admission import (
 )
 from .policy_ranking_evaluator_diagnostic import COSMOS_MODEL, COSMOS_REVISION
 from .policy_ranking_evaluator_diagnostic_cosmos_bundle import (
+    MODEL_CONFIG_SHA256,
+    NATIVE_REASONER_ARCHITECTURE,
     PUBLIC_IMAGE,
     RECEIPT_SCHEMA_VERSION,
 )
@@ -41,7 +43,8 @@ EXPERIMENT_ID = "policy_ranking_roboarena_full_stack_calibration_20260728"
 AUTHORIZATION_SCHEMA = "policy_ranking_cosmos_reasoner_compute_authorization.v1"
 PREFLIGHT_SCHEMA = "policy_ranking_cosmos_reasoner_vast_preflight.v1"
 ADMISSION_SCHEMA = "policy_ranking_cosmos_reasoner_gpu_admission.v1"
-AUTHORIZATION_ID = "policy-ranking-cosmos-reasoner-pilot-20260728-allocation-1"
+AUTHORIZATION_ID_PREFIX = "policy-ranking-cosmos-reasoner-pilot-20260728-allocation-"
+AUTHORIZATION_ID = f"{AUTHORIZATION_ID_PREFIX}1"
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 EXTERNAL_AUTHORIZATION_ROOT = Path.home() / ".blueprint-spend-authority" / "authorizations"
 MAX_HOURLY_RATE_USD = 2.50
@@ -49,9 +52,7 @@ TARGET_SPEND_USD = 4.54
 HARD_CAP_USD = 5.00
 ARM_CAP_USD = 15.00
 HARD_TTL_SECONDS = 7_200
-TARGET_MAX_LIVE_MINUTES = math.floor(
-    TARGET_SPEND_USD / MAX_HOURLY_RATE_USD * 60
-)
+TARGET_MAX_LIVE_MINUTES = math.floor(TARGET_SPEND_USD / MAX_HOURLY_RATE_USD * 60)
 MAX_PREFLIGHT_AGE_SECONDS = 900
 DISK_GB = 200
 MIN_GPU_RAM_MB = 80_000
@@ -76,6 +77,19 @@ def _read_json(path: str | Path) -> dict[str, Any]:
     return dict(value)
 
 
+def _digest_matches(value: Mapping[str, Any], field: str) -> bool:
+    recorded = value.get(field)
+    payload = {key: item for key, item in value.items() if key != field}
+    return isinstance(recorded, str) and recorded == canonical_sha256(payload)
+
+
+def _valid_authorization_id(value: Any) -> bool:
+    if not isinstance(value, str) or not value.startswith(AUTHORIZATION_ID_PREFIX):
+        return False
+    suffix = value.removeprefix(AUTHORIZATION_ID_PREFIX)
+    return suffix.isascii() and suffix.isdigit() and str(int(suffix)) == suffix and int(suffix) > 0
+
+
 def load_external_authorization(path: str | Path) -> dict[str, Any]:
     """Load, but never mint, a user-provisioned task authorization artifact."""
 
@@ -90,9 +104,7 @@ def load_external_authorization(path: str | Path) -> dict[str, Any]:
         raise ValueError("cosmos_reasoner_authorization_file_owner_invalid")
     record = _read_json(resolved)
     recorded_digest = record.get("authorization_sha256")
-    digest_payload = {
-        key: value for key, value in record.items() if key != "authorization_sha256"
-    }
+    digest_payload = {key: value for key, value in record.items() if key != "authorization_sha256"}
     if recorded_digest != canonical_sha256(digest_payload):
         raise ValueError("cosmos_reasoner_authorization_digest_invalid")
     record["external_authorization_file_verified_runtime"] = True
@@ -126,7 +138,9 @@ def collect_vast_preflight(*, name_prefix: str) -> dict[str, Any]:
     ]
     viable.sort(key=lambda row: (float(row["hourly_rate_usd"]), -float(row["reliability"])))
     selected = viable[0] if viable else {}
-    inventory_zero = bool(inventory.get("api_confirmed") is True and inventory.get("live_resource_count") == 0)
+    inventory_zero = bool(
+        inventory.get("api_confirmed") is True and inventory.get("live_resource_count") == 0
+    )
     api_verified = bool(
         capacity.get("status") == "available"
         and inventory.get("api_confirmed") is True
@@ -222,22 +236,51 @@ def inspect_bundle(
     bundle_sha = file_sha256(path) if path.is_file() else None
     if receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
         blockers.append("cosmos_reasoner_bundle_receipt_schema_invalid")
+    if not _digest_matches(receipt, "receipt_sha256"):
+        blockers.append("cosmos_reasoner_bundle_receipt_digest_invalid")
     if receipt.get("bundle_sha256") != bundle_sha:
         blockers.append("cosmos_reasoner_bundle_receipt_hash_mismatch")
     if receipt.get("pair_count") != 7:
         blockers.append("cosmos_reasoner_pilot_pair_count_not_seven")
-    if runtime_manifest.get("model") != COSMOS_MODEL or runtime_manifest.get("model_revision") != COSMOS_REVISION:
+    if (
+        runtime_manifest.get("model") != COSMOS_MODEL
+        or runtime_manifest.get("model_revision") != COSMOS_REVISION
+    ):
         blockers.append("cosmos_reasoner_model_identity_mismatch")
-    if input_manifest.get("pair_count") != 7 or input_manifest.get("claim_class") != "post_unseal_diagnostic_only":
+    if not _digest_matches(runtime_manifest, "manifest_sha256"):
+        blockers.append("cosmos_reasoner_runtime_manifest_digest_invalid")
+    if not _digest_matches(input_manifest, "manifest_sha256"):
+        blockers.append("cosmos_reasoner_input_manifest_digest_invalid")
+    if not (
+        runtime_manifest.get("public_image") == PUBLIC_IMAGE
+        and receipt.get("public_image") == PUBLIC_IMAGE
+    ):
+        blockers.append("cosmos_reasoner_runtime_image_identity_mismatch")
+    if not (
+        runtime_manifest.get("reasoner_architecture_mode") == "native_frozen_model_config"
+        and runtime_manifest.get("native_reasoner_architecture") == NATIVE_REASONER_ARCHITECTURE
+        and runtime_manifest.get("model_config_sha256") == MODEL_CONFIG_SHA256
+        and runtime_manifest.get("reasoner_architecture_override") is None
+    ):
+        blockers.append("cosmos_reasoner_native_architecture_contract_invalid")
+    if "--hf-overrides" in runner_text:
+        blockers.append("cosmos_reasoner_unsupported_architecture_override_present")
+    if not (
+        receipt.get("native_reasoner_architecture") == NATIVE_REASONER_ARCHITECTURE
+        and receipt.get("model_config_sha256") == MODEL_CONFIG_SHA256
+    ):
+        blockers.append("cosmos_reasoner_receipt_native_architecture_invalid")
+    if (
+        input_manifest.get("pair_count") != 7
+        or input_manifest.get("claim_class") != "post_unseal_diagnostic_only"
+    ):
         blockers.append("cosmos_reasoner_input_manifest_invalid")
     runtime_source = str(runtime_manifest.get("source_commit") or "").strip().lower()
     receipt_source = str(receipt.get("source_commit") or "").strip().lower()
     if runtime_source != receipt_source:
         blockers.append("cosmos_reasoner_bundle_source_commit_internally_inconsistent")
     expected_source = str(expected_source_commit or "").strip().lower()
-    if expected_source and (
-        runtime_source != expected_source or receipt_source != expected_source
-    ):
+    if expected_source and (runtime_source != expected_source or receipt_source != expected_source):
         blockers.append("cosmos_reasoner_bundle_source_commit_mismatch")
     return {
         "status": "passed" if not blockers else "blocked",
@@ -261,17 +304,24 @@ def build_admission(
     execute: bool,
 ) -> dict[str, Any]:
     blockers: list[str] = []
-    if authorization.get("schema_version") != AUTHORIZATION_SCHEMA or authorization.get("authorization_id") != AUTHORIZATION_ID:
+    if authorization.get("schema_version") != AUTHORIZATION_SCHEMA or not _valid_authorization_id(
+        authorization.get("authorization_id")
+    ):
         blockers.append("cosmos_reasoner_authorization_identity_invalid")
-    if authorization.get("paid_mutation_authorized") is not True or authorization.get("maximum_provider_allocations") != 1:
+    if (
+        authorization.get("paid_mutation_authorized") is not True
+        or authorization.get("maximum_provider_allocations") != 1
+    ):
         blockers.append("cosmos_reasoner_paid_authorization_invalid")
     if not (
-        authorization.get("authorization_origin")
-        == "external_workspace_user_task_authority"
+        authorization.get("authorization_origin") == "external_workspace_user_task_authority"
         and authorization.get("external_authorization_file_verified_runtime") is True
     ):
         blockers.append("cosmos_reasoner_external_authorization_not_verified")
-    if authorization.get("authorized_compute_cap_usd") != HARD_CAP_USD or authorization.get("hard_ttl_seconds") != HARD_TTL_SECONDS:
+    if (
+        authorization.get("authorized_compute_cap_usd") != HARD_CAP_USD
+        or authorization.get("hard_ttl_seconds") != HARD_TTL_SECONDS
+    ):
         blockers.append("cosmos_reasoner_authorization_limits_invalid")
     security = _mapping(authorization.get("task_security_exception"))
     if not (
@@ -284,7 +334,10 @@ def build_admission(
         blockers.append("cosmos_reasoner_vast_security_exception_invalid")
     if preflight.get("schema_version") != PREFLIGHT_SCHEMA or preflight.get("status") != "verified":
         blockers.append("cosmos_reasoner_vast_preflight_invalid")
-    if preflight.get("provider_inventory_verified_zero") is not True or preflight.get("provider_mutations_performed") != 0:
+    if (
+        preflight.get("provider_inventory_verified_zero") is not True
+        or preflight.get("provider_mutations_performed") != 0
+    ):
         blockers.append("cosmos_reasoner_vast_preflight_boundary_invalid")
     offer = _mapping(preflight.get("selected_offer"))
     if "H100" not in str(offer.get("gpu_name") or "").upper():
@@ -295,7 +348,11 @@ def build_admission(
         reliability = float(offer.get("reliability") or 0)
     except (TypeError, ValueError):
         price, ram, reliability = 0.0, 0, 0.0
-    if not 0 < price <= MAX_HOURLY_RATE_USD or ram < MIN_GPU_RAM_MB or reliability < MIN_RELIABILITY:
+    if (
+        not 0 < price <= MAX_HOURLY_RATE_USD
+        or ram < MIN_GPU_RAM_MB
+        or reliability < MIN_RELIABILITY
+    ):
         blockers.append("cosmos_reasoner_selected_offer_limits_invalid")
     observed = preflight.get("observed_at_epoch")
     if type(observed) not in {int, float} or not math.isfinite(float(observed)):
@@ -319,6 +376,7 @@ def build_admission(
         "experiment_id": EXPERIMENT_ID,
         "execute_requested": execute,
         "source_commit": source,
+        "authorization_id": authorization.get("authorization_id"),
         "blockers": sorted(set(blockers)),
         "public_image": PUBLIC_IMAGE,
         "model": COSMOS_MODEL,
@@ -344,21 +402,28 @@ def build_admission(
 
 
 def _consume_once(authorization: Mapping[str, Any], source_commit: str) -> dict[str, Any]:
+    authorization_id = authorization.get("authorization_id")
+    if not _valid_authorization_id(authorization_id):
+        return {
+            "status": "blocked",
+            "blockers": ["cosmos_reasoner_authorization_identity_invalid"],
+        }
+    assert isinstance(authorization_id, str)
     root = AUTHORIZATION_CONSUMPTION_ROOT
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if root.stat().st_mode & 0o077:
         return {"status": "blocked", "blockers": ["authorization_consumption_root_insecure"]}
-    path = root / f"{AUTHORIZATION_ID}.json"
+    path = root / f"{authorization_id}.json"
     record = {
         "schema_version": "policy_ranking_cosmos_reasoner_authorization_consumption.v1",
-        "authorization_id": AUTHORIZATION_ID,
+        "authorization_id": authorization_id,
         "authorization_sha256": canonical_sha256(authorization),
         "source_commit": source_commit,
         "consumed_at_epoch": time.time(),
         "maximum_provider_allocations": 1,
     }
     raw = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    temporary = root / f".{AUTHORIZATION_ID}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+    temporary = root / f".{authorization_id}.{os.getpid()}.{time.monotonic_ns()}.tmp"
     try:
         descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(descriptor, "wb") as handle:
@@ -372,7 +437,7 @@ def _consume_once(authorization: Mapping[str, Any], source_commit: str) -> dict[
         temporary.unlink(missing_ok=True)
     return {
         "status": "consumed",
-        "authorization_id": AUTHORIZATION_ID,
+        "authorization_id": authorization_id,
         "consumption_record_sha256": hashlib.sha256(raw).hexdigest(),
         "record_location_disclosed": False,
     }
@@ -457,7 +522,11 @@ def run_gpu_lane(
             expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
         )
     except PaidResourceAdmissionBlocked as exc:
-        result = {"status": "blocked", "blockers": [*admission["blockers"], *exc.blockers], "provider_mutations_performed": 0}
+        result = {
+            "status": "blocked",
+            "blockers": [*admission["blockers"], *exc.blockers],
+            "provider_mutations_performed": 0,
+        }
         write_json(Path(adapter_output), result)
         return result
     gate_blockers = [
@@ -466,7 +535,12 @@ def run_gpu_lane(
         if not _vast_env_truthy(name)
     ]
     if gate_blockers:
-        result = {"status": "blocked", "blockers": gate_blockers, "authorization_consumed": False, "provider_mutations_performed": 0}
+        result = {
+            "status": "blocked",
+            "blockers": gate_blockers,
+            "authorization_consumed": False,
+            "provider_mutations_performed": 0,
+        }
         write_json(Path(adapter_output), result)
         return result
     consumption: dict[str, Any] = {"status": "not_consumed"}
@@ -474,8 +548,14 @@ def run_gpu_lane(
     def consume_before_mutation() -> Mapping[str, Any]:
         nonlocal consumption
         observed = preflight.get("observed_at_epoch")
-        if type(observed) not in {int, float} or not 0 <= time.time() - float(observed) <= MAX_PREFLIGHT_AGE_SECONDS:
-            consumption = {"status": "blocked", "blockers": ["cosmos_reasoner_preflight_stale_at_mutation"]}
+        if (
+            type(observed) not in {int, float}
+            or not 0 <= time.time() - float(observed) <= MAX_PREFLIGHT_AGE_SECONDS
+        ):
+            consumption = {
+                "status": "blocked",
+                "blockers": ["cosmos_reasoner_preflight_stale_at_mutation"],
+            }
         else:
             consumption = _consume_once(authorization, expected_source_commit)
         return consumption
@@ -539,7 +619,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     result = collect_vast_preflight(name_prefix=args.name_prefix)
     write_json(Path(args.output), result)
-    print(json.dumps({key: value for key, value in result.items() if key not in {"capacity_snapshot", "billable_inventory", "attempt_billable_inventory"}}))
+    print(
+        json.dumps(
+            {
+                key: value
+                for key, value in result.items()
+                if key
+                not in {"capacity_snapshot", "billable_inventory", "attempt_billable_inventory"}
+            }
+        )
+    )
     return 0 if result.get("status", "verified") in {"verified", "admitted"} else 2
 
 

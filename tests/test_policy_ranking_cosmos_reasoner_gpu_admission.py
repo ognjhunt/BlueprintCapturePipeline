@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 import zipfile
+from pathlib import Path
 
 from blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission import (
     ADMISSION_SCHEMA,
     AUTHORIZATION_ID,
+    AUTHORIZATION_ID_PREFIX,
     MAX_HOURLY_RATE_USD,
     PREFLIGHT_SCHEMA,
     TARGET_MAX_LIVE_MINUTES,
     TARGET_SPEND_USD,
     build_admission,
+    _consume_once,
     inspect_bundle,
     load_external_authorization,
 )
@@ -19,11 +22,14 @@ from blueprint_pipeline.policy_ranking_evaluator_diagnostic import (
     COSMOS_REVISION,
 )
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic_cosmos_bundle import (
+    MODEL_CONFIG_SHA256,
+    NATIVE_REASONER_ARCHITECTURE,
     PUBLIC_IMAGE,
     RECEIPT_SCHEMA_VERSION,
 )
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic_cosmos_provider_runtime import (
     _extract_json_object,
+    _reasoner_server_command,
     _validate_payload,
 )
 from blueprint_pipeline.policy_ranking_roboarena_calibration import (
@@ -53,10 +59,11 @@ def _payload() -> dict:
 
 def _bundle(tmp_path):
     path = tmp_path / "pilot.zip"
-    runner = """
+    runner = f"""
 evaluator_runtime_result.json
 nvidia/Cosmos3-Nano
 post_unseal_diagnostic_only
+{NATIVE_REASONER_ARCHITECTURE}
 """
     entrypoint = """
 write_missing_result() { :; }
@@ -67,9 +74,15 @@ blocked_evaluator_process_exited_without_result
         "model": COSMOS_MODEL,
         "model_revision": COSMOS_REVISION,
         "public_image": PUBLIC_IMAGE,
+        "reasoner_architecture_mode": "native_frozen_model_config",
+        "native_reasoner_architecture": NATIVE_REASONER_ARCHITECTURE,
+        "model_config_sha256": MODEL_CONFIG_SHA256,
+        "reasoner_architecture_override": None,
         "source_commit": COMMIT,
     }
+    runtime["manifest_sha256"] = canonical_sha256(runtime)
     inputs = {"pair_count": 7, "claim_class": "post_unseal_diagnostic_only"}
+    inputs["manifest_sha256"] = canonical_sha256(inputs)
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("provider_runtime/evaluator_provider_runtime_runner.py", runner)
         archive.writestr("provider_runtime/run_evaluator_provider_runtime.sh", entrypoint)
@@ -77,28 +90,32 @@ blocked_evaluator_process_exited_without_result
             "provider_runtime/evaluator_provider_runtime_manifest.json",
             json.dumps(runtime),
         )
-        archive.writestr(
-            "provider_runtime/evaluator_input_manifest.json", json.dumps(inputs)
-        )
+        archive.writestr("provider_runtime/evaluator_input_manifest.json", json.dumps(inputs))
     receipt = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "bundle_sha256": file_sha256(path),
         "pair_count": 7,
         "source_commit": COMMIT,
+        "public_image": PUBLIC_IMAGE,
+        "native_reasoner_architecture": NATIVE_REASONER_ARCHITECTURE,
+        "model_config_sha256": MODEL_CONFIG_SHA256,
     }
+    receipt["receipt_sha256"] = canonical_sha256(receipt)
     return path, receipt
 
 
-def _external_authorization(tmp_path, monkeypatch, *, source_commit=COMMIT):
+def _external_authorization(
+    tmp_path, monkeypatch, *, source_commit=COMMIT, authorization_id=AUTHORIZATION_ID
+):
     authority_root = tmp_path / "external-authorizations"
-    authority_root.mkdir(mode=0o700)
+    authority_root.mkdir(mode=0o700, exist_ok=True)
     monkeypatch.setattr(
         "blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission.EXTERNAL_AUTHORIZATION_ROOT",
         authority_root,
     )
     record = {
         "schema_version": "policy_ranking_cosmos_reasoner_compute_authorization.v1",
-        "authorization_id": AUTHORIZATION_ID,
+        "authorization_id": authorization_id,
         "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
         "source_commit": source_commit,
         "authorization_origin": "external_workspace_user_task_authority",
@@ -144,6 +161,46 @@ def test_reasoner_payload_extracts_after_reasoning_prefix():
     assert _validate_payload(_extract_json_object(text)) == _payload()
 
 
+def test_reasoner_server_uses_frozen_native_architecture_without_override(tmp_path):
+    command = _reasoner_server_command(tmp_path)
+    assert command[:4] == ["vllm", "serve", COSMOS_MODEL, "--revision"]
+    assert "--hf-overrides" not in command
+    assert "Cosmos3ReasonerForConditionalGeneration" not in command
+
+
+def test_reasoner_runtime_compatibility_amendment_digest_is_frozen():
+    path = (
+        Path(__file__).parents[1]
+        / "docs/experiments/policy_ranking_roboarena_full_stack_calibration_20260728"
+        / "cosmos_reasoner_runtime_compatibility_amendment_v2.json"
+    )
+    amendment = json.loads(path.read_text(encoding="utf-8"))
+    recorded = amendment.pop("amendment_sha256")
+    assert recorded == canonical_sha256(amendment)
+
+
+def test_reasoner_bundle_rejects_obsolete_architecture_override(tmp_path):
+    bundle_path, receipt = _bundle(tmp_path)
+    with zipfile.ZipFile(bundle_path, "a") as archive:
+        runtime = json.loads(
+            archive.read("provider_runtime/evaluator_provider_runtime_manifest.json").decode(
+                "utf-8"
+            )
+        )
+        runtime["reasoner_architecture_override"] = "Cosmos3ReasonerForConditionalGeneration"
+        archive.writestr(
+            "provider_runtime/evaluator_provider_runtime_manifest.json",
+            json.dumps(runtime),
+        )
+    receipt["bundle_sha256"] = file_sha256(bundle_path)
+    receipt["receipt_sha256"] = canonical_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    )
+    inspection = inspect_bundle(bundle_path, receipt, expected_source_commit=COMMIT)
+    assert inspection["status"] == "blocked"
+    assert "cosmos_reasoner_native_architecture_contract_invalid" in inspection["blockers"]
+
+
 def test_reasoner_session_window_stays_below_frozen_target_spend():
     projected = TARGET_MAX_LIVE_MINUTES / 60 * MAX_HOURLY_RATE_USD
     next_minute = (TARGET_MAX_LIVE_MINUTES + 1) / 60 * MAX_HOURLY_RATE_USD
@@ -153,9 +210,7 @@ def test_reasoner_session_window_stays_below_frozen_target_spend():
 
 def test_reasoner_bundle_and_security_exception_admit_dry_run(tmp_path, monkeypatch):
     bundle_path, receipt = _bundle(tmp_path)
-    inspection = inspect_bundle(
-        bundle_path, receipt, expected_source_commit=COMMIT
-    )
+    inspection = inspect_bundle(bundle_path, receipt, expected_source_commit=COMMIT)
     assert inspection["status"] == "passed"
     authorization = _external_authorization(tmp_path, monkeypatch)
     assert authorization["authorization_id"] == AUTHORIZATION_ID
@@ -175,20 +230,68 @@ def test_reasoner_bundle_and_security_exception_admit_dry_run(tmp_path, monkeypa
     assert admission["blockers"] == []
 
 
-def test_reasoner_admission_rejects_unacknowledged_rotation_metadata(
-    tmp_path, monkeypatch
-):
+def test_reasoner_admission_accepts_fresh_positive_allocation_sequence(tmp_path, monkeypatch):
     bundle_path, receipt = _bundle(tmp_path)
-    authorization = _external_authorization(tmp_path, monkeypatch)
-    authorization["task_security_exception"][
-        "rotation_metadata_missing_acknowledged"
-    ] = False
+    authorization_id = f"{AUTHORIZATION_ID_PREFIX}2"
+    authorization = _external_authorization(
+        tmp_path, monkeypatch, authorization_id=authorization_id
+    )
     admission = build_admission(
         authorization=authorization,
         preflight=_preflight(1_000.0),
-        bundle=inspect_bundle(
-            bundle_path, receipt, expected_source_commit=COMMIT
-        ),
+        bundle=inspect_bundle(bundle_path, receipt, expected_source_commit=COMMIT),
+        expected_source_commit=COMMIT,
+        execute=False,
+    )
+    assert admission["status"] == "admitted"
+    assert admission["authorization_id"] == authorization_id
+
+
+def test_reasoner_admission_rejects_nonpositive_or_unsafe_allocation_identity(
+    tmp_path, monkeypatch
+):
+    bundle_path, receipt = _bundle(tmp_path)
+    for authorization_id in (
+        f"{AUTHORIZATION_ID_PREFIX}0",
+        f"{AUTHORIZATION_ID_PREFIX}01",
+        f"{AUTHORIZATION_ID_PREFIX}../2",
+    ):
+        authorization = _external_authorization(
+            tmp_path,
+            monkeypatch,
+            authorization_id=authorization_id,
+        )
+        admission = build_admission(
+            authorization=authorization,
+            preflight=_preflight(1_000.0),
+            bundle=inspect_bundle(bundle_path, receipt, expected_source_commit=COMMIT),
+            expected_source_commit=COMMIT,
+            execute=False,
+        )
+        assert "cosmos_reasoner_authorization_identity_invalid" in admission["blockers"]
+
+
+def test_reasoner_authorization_consumption_is_unique_per_allocation(tmp_path, monkeypatch):
+    root = tmp_path / "consumed"
+    monkeypatch.setattr(
+        "blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission.AUTHORIZATION_CONSUMPTION_ROOT",
+        root,
+    )
+    first = {"authorization_id": f"{AUTHORIZATION_ID_PREFIX}1"}
+    second = {"authorization_id": f"{AUTHORIZATION_ID_PREFIX}2"}
+    assert _consume_once(first, COMMIT)["status"] == "consumed"
+    assert _consume_once(first, COMMIT)["status"] == "blocked"
+    assert _consume_once(second, COMMIT)["status"] == "consumed"
+
+
+def test_reasoner_admission_rejects_unacknowledged_rotation_metadata(tmp_path, monkeypatch):
+    bundle_path, receipt = _bundle(tmp_path)
+    authorization = _external_authorization(tmp_path, monkeypatch)
+    authorization["task_security_exception"]["rotation_metadata_missing_acknowledged"] = False
+    admission = build_admission(
+        authorization=authorization,
+        preflight=_preflight(1_000.0),
+        bundle=inspect_bundle(bundle_path, receipt, expected_source_commit=COMMIT),
         expected_source_commit=COMMIT,
         execute=False,
     )
@@ -198,8 +301,6 @@ def test_reasoner_admission_rejects_unacknowledged_rotation_metadata(
 
 def test_reasoner_bundle_rejects_stale_source_commit(tmp_path):
     bundle_path, receipt = _bundle(tmp_path)
-    inspection = inspect_bundle(
-        bundle_path, receipt, expected_source_commit="b" * 40
-    )
+    inspection = inspect_bundle(bundle_path, receipt, expected_source_commit="b" * 40)
     assert inspection["status"] == "blocked"
     assert "cosmos_reasoner_bundle_source_commit_mismatch" in inspection["blockers"]

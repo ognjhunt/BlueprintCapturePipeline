@@ -145,6 +145,17 @@ leaderboard.
 Cosmos Reasoner GPU execution is prospectively bound by
 `cosmos_reasoner_gpu_execution_amendment_v1.json`, digest
 `a6d7fc52a0bfb5a077b3bedc8a70ee6ebb1a8c75f0cd5dc313aec4b2ead94b78`.
+
+The first paid Reasoner attempt is preserved as `cosmos3_reasoner_pilot_v4` in
+the external evidence store. It failed before model loading or any pair result
+because the runtime forced an unsupported architecture override. The
+prospective, runtime-only supersession is
+`cosmos_reasoner_runtime_compatibility_amendment_v2.json`. It retains the same
+videos, pair selection, prompt, schema, decoding, budgets, and diagnostic-only
+claim ceiling, while requiring the frozen model revision's native
+`Cosmos3ForConditionalGeneration` architecture and rejecting future bundles
+that reintroduce `--hf-overrides`. Its deterministic digest is
+`00e710e907c18f8c814879b9d64cc9a87257ff0174e9c503d46c18abf5dbd139`.
 It uses an evaluator-only provider bundle, one H100, a seven-pair canary, and a
 two-hour/USD 5 pilot cutoff. A full matrix requires 7/7 valid pilot rows, a
 frozen throughput projection that fits the USD 15 Reasoner-arm cap, and a new

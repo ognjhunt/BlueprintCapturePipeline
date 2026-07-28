@@ -25,6 +25,8 @@ PUBLIC_IMAGE = (
     "docker.io/vllm/vllm-omni:cosmos3@"
     "sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587"
 )
+NATIVE_REASONER_ARCHITECTURE = "Cosmos3ForConditionalGeneration"
+MODEL_CONFIG_SHA256 = "c32f2468a54542c21946bc8eab6172b911dcec9a7193a94c023ea2d4073bcda6"
 
 RUN_SCRIPT = """#!/usr/bin/env bash
 set -u
@@ -72,7 +74,14 @@ def _read_mapping(path: str | Path) -> dict[str, Any]:
     return dict(value)
 
 
-def _zip_write(archive: zipfile.ZipFile, name: str, data: bytes, *, executable: bool = False, stored: bool = False) -> None:
+def _zip_write(
+    archive: zipfile.ZipFile,
+    name: str,
+    data: bytes,
+    *,
+    executable: bool = False,
+    stored: bool = False,
+) -> None:
     info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
     info.external_attr = ((0o755 if executable else 0o644) & 0xFFFF) << 16
@@ -166,7 +175,10 @@ def build_cosmos_reasoner_bundle(
         "surface": "reasoner_only_vllm",
         "public_image": PUBLIC_IMAGE,
         "precision": "bf16",
-        "reasoner_architecture_override": "Cosmos3ReasonerForConditionalGeneration",
+        "reasoner_architecture_mode": "native_frozen_model_config",
+        "native_reasoner_architecture": NATIVE_REASONER_ARCHITECTURE,
+        "model_config_sha256": MODEL_CONFIG_SHA256,
+        "reasoner_architecture_override": None,
         "media_io_kwargs": {"video": {"num_frames": 32}},
         "max_model_len": 131072,
         "tensor_parallel_size": 1,
@@ -176,14 +188,26 @@ def build_cosmos_reasoner_bundle(
         "generated_video_or_policy_endpoint_invoked": False,
     }
     runtime_manifest["manifest_sha256"] = canonical_sha256(runtime_manifest)
-    runner = Path(__file__).with_name(
-        "policy_ranking_evaluator_diagnostic_cosmos_provider_runtime.py"
-    ).read_bytes()
+    runner = (
+        Path(__file__)
+        .with_name("policy_ranking_evaluator_diagnostic_cosmos_provider_runtime.py")
+        .read_bytes()
+    )
     output = Path(output_bundle).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", allowZip64=True) as archive:
-        _zip_write(archive, "provider_runtime/evaluator_provider_runtime_runner.py", runner, executable=True)
-        _zip_write(archive, "provider_runtime/run_evaluator_provider_runtime.sh", RUN_SCRIPT.encode(), executable=True)
+        _zip_write(
+            archive,
+            "provider_runtime/evaluator_provider_runtime_runner.py",
+            runner,
+            executable=True,
+        )
+        _zip_write(
+            archive,
+            "provider_runtime/run_evaluator_provider_runtime.sh",
+            RUN_SCRIPT.encode(),
+            executable=True,
+        )
         _zip_write(
             archive,
             "provider_runtime/evaluator_provider_runtime_manifest.json",
@@ -211,6 +235,8 @@ def build_cosmos_reasoner_bundle(
         "source_commit": source,
         "model": COSMOS_MODEL,
         "model_revision": COSMOS_REVISION,
+        "native_reasoner_architecture": NATIVE_REASONER_ARCHITECTURE,
+        "model_config_sha256": MODEL_CONFIG_SHA256,
         "public_image": PUBLIC_IMAGE,
         "offset": offset,
         "pair_count": count,
