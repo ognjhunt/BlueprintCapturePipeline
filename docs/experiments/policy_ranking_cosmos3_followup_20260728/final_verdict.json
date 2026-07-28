@@ -1,0 +1,124 @@
+{
+  "schema_version": "blueprint_policy_ranking_cosmos3_followup_final_verdict.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "primary_thesis": "Given a captured real-site representation, a real robot task, and multiple candidate robot policies, Blueprint can predict a useful ordering of those policies substantially faster and more cheaply than exhaustively evaluating every policy physically, while abstaining when its prediction is not trustworthy.",
+  "components": {
+    "cosmos_wam_qualification": {
+      "verdict": "inconclusive",
+      "status": "one_session_screen_failed_confirmatory_gate_not_admitted",
+      "basis": "The pinned nvidia/Cosmos3-Nano runtime completed the frozen five-condition by two-seed matrix and produced ten valid, nonduplicate videos. All eight active-condition comparisons showed a nonidentical scene response against the same-seed zero-action video, but only one of eight active condition/seed rows rejected its strongest placebo action trace. Directional temporal placebo rejection and seed robustness failed; every active condition failed at one or both seeds. The preregistration defines one DROID session as underpowered for general qualification even when its descriptive screen fails, so the component remains inconclusive and receives no causal credit."
+    },
+    "frozen_benchmark_calibration": {
+      "verdict": "inconclusive",
+      "status": "not_run_ineligible",
+      "basis": "The independent GPT-5 mini evaluator was not called because the powered Cosmos causal gate did not pass. No new disjoint benchmark arm was selected, outcome labels remained sealed, policy identity remained hidden, and no pairwise accuracy, Kendall statistic, risk-coverage curve, or calibrated abstention result exists for Cosmos."
+    },
+    "captured_site_transfer": {
+      "verdict": "inconclusive",
+      "status": "not_run_ineligible",
+      "basis": "The prerequisite causal and benchmark gates did not pass, so no prospective captured-site Cosmos arm, site-specific policy ranking, calibrated site abstention, or physical outcome comparison was executed. The input was the frozen public DROID calibration observation, not a new Blueprint customer-site transfer claim."
+    },
+    "economics_and_speed": {
+      "verdict": "inconclusive",
+      "status": "campaign_cost_and_runtime_measured_comparative_claim_unavailable",
+      "basis": "The three follow-up allocations used 1542.915983 provider-observed live seconds and an estimated USD 0.412259. The successful allocation cost an estimated USD 0.097141, loaded the model in 145.029729 seconds, and completed the twelve-request runtime in 184.509450 seconds. No evaluator-qualified policy ranking completed and no attributable exhaustive physical-evaluation monetary or full wall-clock baseline exists, so substantially faster or cheaper is not established."
+    }
+  },
+  "overall_verdict": "inconclusive",
+  "overall_decision_rule": "The successor produced genuine Cosmos media but failed the preregistered one-session causal screen and therefore could not enter the powered causal, evaluator, disjoint benchmark, or captured-site arms. The one-session protocol expressly cannot falsify general WAM qualification, while the missing downstream arms cannot support the thesis. The correct bounded overall verdict is inconclusive.",
+  "causal_screen": {
+    "scientific_matrix_request_count": 10,
+    "scientific_matrix_valid_response_count": 10,
+    "output_duplicate_hash_count": 0,
+    "active_condition_seed_rows": 8,
+    "same_seed_scene_response_pass_count": 8,
+    "temporal_placebo_rejection_pass_count": 1,
+    "temporal_placebo_rejection_total": 8,
+    "seed_robust_conditions_pass_count": 0,
+    "seed_robust_conditions_total": 4,
+    "nonidentical_scene_response": true,
+    "directional_temporal_placebo_rejection": false,
+    "seed_robustness": false,
+    "screen_passed": false,
+    "independent_session_count": 1,
+    "minimum_independent_sessions_for_all_pass_validity_lower95_gte_0_8": 17,
+    "confirmatory_power_sufficient": false,
+    "powered_causal_gate_passed": false,
+    "causal_credit_awarded": false
+  },
+  "ranking_and_abstention": {
+    "evaluator": "gpt-5-mini-2025-08-07_not_called",
+    "evaluator_request_count": 0,
+    "benchmark_labels_unsealed": false,
+    "policy_identity_seen": false,
+    "pairwise_ranking_accuracy": null,
+    "kendall_tau_b": null,
+    "top_policy_correct": null,
+    "selective_coverage": 0.0,
+    "abstention_result": "upstream_gate_abstention",
+    "abstention_correctness_calibrated": false
+  },
+  "historical_oscar_baseline": {
+    "retained": true,
+    "serially_chained_with_cosmos": false,
+    "fresh_oscar_arm_run": false,
+    "historical_experiment": "policy_ranking_thesis_experiment_2_20260727",
+    "historical_overall_verdict": "thesis_not_supported",
+    "historical_frozen_benchmark_calibration": "not_supported",
+    "historical_captured_site_transfer": "not_supported",
+    "claim_boundary": "Historical OSCAR evidence is a distinct baseline under a different frozen stack and does not upgrade or downgrade the Cosmos component verdicts."
+  },
+  "evaluator_methodology": {
+    "frozen_but_not_executed": true,
+    "task_progress": "roboworld_inspired_fixed_external_view_progress_and_success",
+    "artifact_detection": "wrist_view_only",
+    "success_stability": "adjacent_frames_required",
+    "reliability": "sc3_derived_counterfactual_temporal_calibration_uncertainty_and_abstention",
+    "wam_or_policy_self_grading_allowed": false
+  },
+  "economics": {
+    "allocation_count": 3,
+    "allocation_1_estimated_cost_usd": 0.178545,
+    "allocation_2_estimated_cost_usd": 0.136573,
+    "allocation_3_estimated_cost_usd": 0.097141,
+    "followup_total_estimated_cost_usd": 0.412259,
+    "followup_total_provider_observed_live_seconds": 1542.915983,
+    "successful_allocation_live_seconds": 348.931164,
+    "successful_runtime_seconds": 184.50944961979985,
+    "model_load_seconds": 145.02972857654095,
+    "post_load_twelve_request_seconds_derived": 39.479721043258905,
+    "post_load_mean_seconds_per_request_derived": 3.289976753604909,
+    "evaluator_spend_usd": 0.0,
+    "object_store_task_objects_remaining": 0,
+    "provider_invoice_settled_for_followup": false,
+    "physical_evaluation_baseline_time": null,
+    "physical_evaluation_baseline_cost_usd": null,
+    "substantially_faster_proven": false,
+    "substantially_cheaper_proven": false
+  },
+  "execution_identity": {
+    "exact_main_source_commit_at_run": "c71d89aaf9947a47f35eff475c09add9c53b8c0c",
+    "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "checkpoint": "nvidia/Cosmos3-Nano",
+    "checkpoint_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "pipeline_class": "Cosmos3OmniDiffusersPipeline",
+    "vllm_omni_source_revision": "9c1b7504b178afcf541867c1a2d30db48c69cda8",
+    "runtime_bundle_sha256": "0e938e1674ff2efc043363ab9b7e2724ae2f9bc264e289895d7759a9eb8173fd",
+    "runtime_output_sha256": "c9d1b7ac9c978e48f83643b59bc4fec90c1770ef4d1864da06ffbc19f59c2a6e",
+    "causal_screen_file_sha256": "66b321711c87c8eab40b9982638d71ab5db25d984eb335cdfab1096033dd6901",
+    "causal_screen_report_sha256": "e1a88a52477471aac1d8ed0bb5876fe7f1defbfa0af0c8fcfd65ff338009a5f0",
+    "initial_observation_sha256": "ed17ad901b3f1779d5282e328bafaac1be8e42a2407c668e188f6e24261cc23b"
+  },
+  "provider_zero": {
+    "vast_live_instance_count": 0,
+    "vast_inventory_query_succeeded": true,
+    "digitalocean_task_prefix_object_count": 0,
+    "digitalocean_exact_bundle_get_http_status_after_delete": 404,
+    "digitalocean_exact_output_get_http_status_after_delete": 404,
+    "persistent_evaluator_resource_created": false,
+    "continuing_task_spend_detected": false,
+    "proven": true
+  },
+  "physical_robot_operated_funded_or_controlled_by_blueprint": false,
+  "scope": "This verdict applies to the pinned Cosmos3-Nano checkpoint, frozen public DROID observation and action controls, two frozen seeds, label-blind causal screen, and preregistered admission rules. It is not a universal claim about future Cosmos checkpoints, fine-tuned WAMs, other action representations, tasks, sites, or robots."
+}

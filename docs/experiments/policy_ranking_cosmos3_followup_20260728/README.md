@@ -1,6 +1,15 @@
 # Cosmos3 successor follow-up — 2026-07-28
 
-Status: `allocation_2_transport_failure_provider_zero_retry_3_authorized`
+Status: `terminal_inconclusive_provider_zero`
+
+The protected follow-up is closed with overall verdict `inconclusive`. See
+`final_report.md`, `final_verdict.json`, and `provider_zero_evidence.json`.
+Allocation 3 completed the unchanged frozen Cosmos bundle and returned the full
+five-condition by two-seed matrix. The label-blind screen found nonidentical
+scene responses in 8/8 active rows, but only 1/8 rejected the strongest placebo
+action trace and 0/4 conditions were seed-robust. The powered gate did not pass,
+so Blueprint abstained before evaluator calls, outcome-label access, benchmark
+calibration, or captured-site work.
 
 This is a new experiment namespace. The closed
 `policy_ranking_successor_experiment_20260727` namespace and its exact
@@ -61,8 +70,10 @@ Cloudflare Quick Tunnel carrying the frozen bundle. It produced zero scientific
 rollouts. Teardown and a fresh provider API inventory of zero live instances
 were verified. This is a transport incident with no scientific interpretation.
 
-`compute_authorization_allocation_3.json` is the active single-use transport
-retry authorization. It keeps the frozen bundle unchanged and uses an
-independently preflighted alternate HTTPS reverse tunnel. The allocation remains
-under the same per-allocation USD 6 hard cap, one-resource limit, 180-minute TTL,
-watchdog, teardown, and provider-zero requirements.
+Allocation 3 consumed an estimated USD 0.097141 over 348.931164 seconds. The
+pinned model loaded in 145.029729 seconds and the twelve-request runtime closed
+in 184.509450 seconds. Ten scientific videos, two canaries, the request/response
+journal, causal report, and runtime identity are retained under
+`allocation_3_live_evidence/`. Vast instance 46084636 was destroyed; a fresh
+authenticated inventory returned zero live instances; both exact object-store
+objects were deleted and the full task prefix listed zero objects.

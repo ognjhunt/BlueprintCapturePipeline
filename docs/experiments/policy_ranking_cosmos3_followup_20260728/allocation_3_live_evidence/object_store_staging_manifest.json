@@ -1,0 +1,278 @@
+{
+  "schema_version": "wam_provider_object_store_staging.v1",
+  "generated_at": "2026-07-28T06:54:17.826371+00:00",
+  "status": "completed",
+  "job_dir": "<redacted-task-tmp>/object_store_allocation_3_final",
+  "bundle_path": "<redacted-user-home>/workspace/BlueprintCapturePipeline-cosmos3-launch-20260728/docs/experiments/policy_ranking_cosmos3_followup_20260728/cosmos3_followup_provider_bundle.zip",
+  "bundle_present": true,
+  "bundle_size_bytes": 301649,
+  "object_store": {
+    "access_key_id": {
+      "label": "object_store_access_key_id",
+      "source": "default_secret_file",
+      "selected_file": {
+        "path_redacted": true,
+        "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+        "present": true,
+        "mode": "0o600",
+        "mode_is_0600": true,
+        "raw_secret_values_recorded": false,
+        "path_source": "default_secret_file",
+        "label": "object_store_access_key_id",
+        "source": "default_secret_file",
+        "value_present": true
+      },
+      "configured": true,
+      "candidate_files": [
+        {
+          "path_redacted": true,
+          "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+          "present": true,
+          "mode": "0o600",
+          "mode_is_0600": true,
+          "raw_secret_values_recorded": false,
+          "path_source": "default_secret_file",
+          "label": "object_store_access_key_id",
+          "source": "default_secret_file",
+          "value_present": true
+        }
+      ],
+      "raw_secret_values_recorded": false
+    },
+    "secret_access_key": {
+      "label": "object_store_secret_access_key",
+      "source": "default_secret_file",
+      "selected_file": {
+        "path_redacted": true,
+        "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+        "present": true,
+        "mode": "0o600",
+        "mode_is_0600": true,
+        "raw_secret_values_recorded": false,
+        "path_source": "default_secret_file",
+        "label": "object_store_secret_access_key",
+        "source": "default_secret_file",
+        "value_present": true
+      },
+      "configured": true,
+      "candidate_files": [
+        {
+          "path_redacted": true,
+          "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+          "present": true,
+          "mode": "0o600",
+          "mode_is_0600": true,
+          "raw_secret_values_recorded": false,
+          "path_source": "default_secret_file",
+          "label": "object_store_secret_access_key",
+          "source": "default_secret_file",
+          "value_present": true
+        }
+      ],
+      "raw_secret_values_recorded": false
+    },
+    "endpoint_url": {
+      "label": "object_store_endpoint_url",
+      "source": "default_secret_file",
+      "selected_file": {
+        "path_redacted": true,
+        "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+        "present": true,
+        "mode": "0o600",
+        "mode_is_0600": true,
+        "raw_secret_values_recorded": false,
+        "path_source": "default_secret_file",
+        "label": "object_store_endpoint_url",
+        "source": "default_secret_file",
+        "value_present": true
+      },
+      "configured": true,
+      "candidate_files": [
+        {
+          "path_redacted": true,
+          "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+          "present": true,
+          "mode": "0o600",
+          "mode_is_0600": true,
+          "raw_secret_values_recorded": false,
+          "path_source": "default_secret_file",
+          "label": "object_store_endpoint_url",
+          "source": "default_secret_file",
+          "value_present": true
+        }
+      ],
+      "raw_secret_values_recorded": false
+    },
+    "bucket": {
+      "label": "object_store_bucket",
+      "source": "default_secret_file",
+      "selected_file": {
+        "path_redacted": true,
+        "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+        "present": true,
+        "mode": "0o600",
+        "mode_is_0600": true,
+        "raw_secret_values_recorded": false,
+        "path_source": "default_secret_file",
+        "label": "object_store_bucket",
+        "source": "default_secret_file",
+        "value_present": true
+      },
+      "configured": true,
+      "candidate_files": [
+        {
+          "path_redacted": true,
+          "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+          "present": true,
+          "mode": "0o600",
+          "mode_is_0600": true,
+          "raw_secret_values_recorded": false,
+          "path_source": "default_secret_file",
+          "label": "object_store_bucket",
+          "source": "default_secret_file",
+          "value_present": true
+        }
+      ],
+      "raw_secret_values_recorded": false
+    },
+    "region": {
+      "label": "object_store_region",
+      "source": "default_secret_file",
+      "selected_file": {
+        "path_redacted": true,
+        "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+        "present": true,
+        "mode": "0o600",
+        "mode_is_0600": true,
+        "raw_secret_values_recorded": false,
+        "path_source": "default_secret_file",
+        "label": "object_store_region",
+        "source": "default_secret_file",
+        "value_present": true
+      },
+      "configured": true,
+      "candidate_files": [
+        {
+          "path_redacted": true,
+          "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+          "present": true,
+          "mode": "0o600",
+          "mode_is_0600": true,
+          "raw_secret_values_recorded": false,
+          "path_source": "default_secret_file",
+          "label": "object_store_region",
+          "source": "default_secret_file",
+          "value_present": true
+        }
+      ],
+      "raw_secret_values_recorded": false
+    },
+    "key_prefix": "blueprint/codex/policy-ranking-cosmos3-followup-20260728/allocation-3-final",
+    "expiration_seconds": 43200,
+    "expires_at": "2026-07-28T18:54:17.826371Z",
+    "expiry_warning": false
+  },
+  "presigned_url_expiry": {
+    "generated_at": "2026-07-28T06:54:17.826371+00:00",
+    "expires_at": "2026-07-28T18:54:17.826371Z",
+    "expiration_seconds": 43200,
+    "expiry_warning": false,
+    "raw_url_values_recorded": false
+  },
+  "upload_detail": {
+    "status": "completed",
+    "bucket_configured": true,
+    "endpoint_configured": true,
+    "region": "sfo3",
+    "bundle_key": "blueprint/codex/policy-ranking-cosmos3-followup-20260728/allocation-3-final/tmp_blueprint-cosmos3-followup-live.bSVo8p_object_store_allocation_3_final/cosmos3_followup_provider_bundle.zip",
+    "output_key": "blueprint/codex/policy-ranking-cosmos3-followup-20260728/allocation-3-final/tmp_blueprint-cosmos3-followup-live.bSVo8p_object_store_allocation_3_final/runpod_provider_runtime_output_53a1a201fd35dfe4b1bdb5150d1680dc.zip",
+    "bundle_size_bytes": 301649,
+    "raw_secret_values_recorded": false
+  },
+  "signed_output_round_trip": {
+    "schema_version": "wam_signed_output_round_trip.v1",
+    "status": "passed",
+    "sentinel_key_sha256": "06680ba147d8e5f42a91275fc8996cbed90aea2bd6c807ef0822e05dcb0a9145",
+    "sentinel_sha256": "d51317f98634e8782bcd91cda69a70515221785cd65a6e01ea167c629bca74a8",
+    "sentinel_size_bytes": 133,
+    "put": {
+      "status": "passed",
+      "http_status_code": 200,
+      "sentinel_size_bytes": 133
+    },
+    "get": {
+      "status": "passed",
+      "http_status_code": 200,
+      "received_size_bytes": 133,
+      "received_sha256": "d51317f98634e8782bcd91cda69a70515221785cd65a6e01ea167c629bca74a8",
+      "exact_bytes_and_sha256": true
+    },
+    "cleanup": {
+      "status": "passed",
+      "absence_confirmed": true,
+      "http_status_code": 404,
+      "raw_secret_values_recorded": false,
+      "delete_http_status_code": 204
+    },
+    "actual_output_key_was_not_used": true,
+    "blockers": [],
+    "raw_signed_urls_recorded": false,
+    "raw_secret_values_recorded": false
+  },
+  "fresh_output_key_absence": {
+    "status": "passed",
+    "absence_confirmed": true,
+    "http_status_code": 404,
+    "raw_secret_values_recorded": false
+  },
+  "output_key_run_unique": true,
+  "output_url_object_binding_sha256": "70e35d969377d66384c80050666e1b8b0bbeb6ebbe87400e33ad23c6a5a535b4",
+  "bundle_key": "blueprint/codex/policy-ranking-cosmos3-followup-20260728/allocation-3-final/tmp_blueprint-cosmos3-followup-live.bSVo8p_object_store_allocation_3_final/cosmos3_followup_provider_bundle.zip",
+  "output_key": "blueprint/codex/policy-ranking-cosmos3-followup-20260728/allocation-3-final/tmp_blueprint-cosmos3-followup-live.bSVo8p_object_store_allocation_3_final/runpod_provider_runtime_output_53a1a201fd35dfe4b1bdb5150d1680dc.zip",
+  "provider_bundle_url_file": {
+    "label": "provider_bundle_url",
+    "path": "<redacted-task-tmp>/object_store_allocation_3_final/provider_bundle_url.txt",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "size_bytes": 546,
+    "mtime_ns": 1785221659404492307,
+    "value_present": true,
+    "raw_secret_values_recorded": false
+  },
+  "provider_output_put_url_file": {
+    "label": "provider_output_put_url",
+    "path": "<redacted-task-tmp>/object_store_allocation_3_final/provider_output_put_url.txt",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "size_bytes": 543,
+    "mtime_ns": 1785221659404825976,
+    "value_present": true,
+    "raw_secret_values_recorded": false
+  },
+  "provider_output_get_url_file": {
+    "label": "provider_output_get_url",
+    "path": "<redacted-task-tmp>/object_store_allocation_3_final/provider_output_get_url.txt",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "size_bytes": 528,
+    "mtime_ns": 1785221659405091477,
+    "value_present": true,
+    "raw_secret_values_recorded": false
+  },
+  "provider_bundle_url_redacted": "https://sfo3.digitaloceanspaces.com/blueprint/blueprint/codex/policy-ranking-cosmos3-followup-20260728/allocation-3-final/tmp_blueprint-cosmos3-followup-live.bSVo8p_object_store_allocation_3_final/cosmos3_followup_provider_bundle.zip?REDACTED_QUERY",
+  "provider_output_put_url_redacted": "https://sfo3.digitaloceanspaces.com/blueprint/blueprint/codex/policy-ranking-cosmos3-followup-20260728/allocation-3-final/tmp_blueprint-cosmos3-followup-live.bSVo8p_object_store_allocation_3_final/runpod_provider_runtime_output_53a1a201fd35dfe4b1bdb5150d1680dc.zip?REDACTED_QUERY",
+  "provider_output_get_url_redacted": "https://sfo3.digitaloceanspaces.com/blueprint/blueprint/codex/policy-ranking-cosmos3-followup-20260728/allocation-3-final/tmp_blueprint-cosmos3-followup-live.bSVo8p_object_store_allocation_3_final/runpod_provider_runtime_output_53a1a201fd35dfe4b1bdb5150d1680dc.zip?REDACTED_QUERY",
+  "runpod_create_command_template": "python -m blueprint_pipeline.runpod_wam_async_runner create --job-dir <redacted-task-tmp>/object_store_allocation_3_final --bundle-path <redacted-user-home>/workspace/BlueprintCapturePipeline-cosmos3-launch-20260728/docs/experiments/policy_ranking_cosmos3_followup_20260728/cosmos3_followup_provider_bundle.zip --provider-bundle-url-file <redacted-task-tmp>/object_store_allocation_3_final/provider_bundle_url.txt --provider-output-put-url-file <redacted-task-tmp>/object_store_allocation_3_final/provider_output_put_url.txt --provider-output-get-url-file <redacted-task-tmp>/object_store_allocation_3_final/provider_output_get_url.txt --allow-paid-runpod-launch",
+  "vast_create_command_template": "python -m blueprint_pipeline.vast_wam_async_runner create --job-dir <redacted-task-tmp>/object_store_allocation_3_final --bundle-path <redacted-user-home>/workspace/BlueprintCapturePipeline-cosmos3-launch-20260728/docs/experiments/policy_ranking_cosmos3_followup_20260728/cosmos3_followup_provider_bundle.zip --provider-bundle-url-file <redacted-task-tmp>/object_store_allocation_3_final/provider_bundle_url.txt --provider-output-put-url-file <redacted-task-tmp>/object_store_allocation_3_final/provider_output_put_url.txt --provider-output-get-url-file <redacted-task-tmp>/object_store_allocation_3_final/provider_output_get_url.txt --allow-paid-vast-launch",
+  "blockers": [],
+  "raw_secret_values_recorded": false,
+  "secret_hashes_recorded": false,
+  "secret_artifact_policy": {
+    "local_secret_file_paths_recorded": false,
+    "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+    "publishable_release_artifacts_must_not_include_local_secret_paths": true
+  }
+}
