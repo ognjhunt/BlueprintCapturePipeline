@@ -21,6 +21,7 @@ from blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission import (
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic import (
     COSMOS_MODEL,
     COSMOS_REVISION,
+    PAIR_OUTPUT_SCHEMA,
 )
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic_cosmos_bundle import (
     MODEL_CONFIG_SHA256,
@@ -33,7 +34,9 @@ from blueprint_pipeline.policy_ranking_evaluator_diagnostic_cosmos_bundle import
 )
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic_cosmos_provider_runtime import (
     _extract_json_object,
+    _request_payload,
     _reasoner_server_command,
+    _validated_output_schema,
     _validate_payload,
 )
 from blueprint_pipeline.policy_ranking_roboarena_calibration import (
@@ -163,6 +166,43 @@ def test_reasoner_payload_extracts_after_reasoning_prefix():
     assert _validate_payload(_extract_json_object(text)) == _payload()
 
 
+def test_reasoner_request_enforces_registered_json_schema(tmp_path):
+    row = {
+        "episode_a_video": "a.mp4",
+        "episode_b_video": "b.mp4",
+        "prompt": "judge",
+        "task_instruction": "put the bowl on the plate",
+    }
+    request = _request_payload(row, tmp_path, COSMOS_MODEL, PAIR_OUTPUT_SCHEMA)
+    assert request["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "blueprint_robot_episode_pair_judgment",
+            "schema": PAIR_OUTPUT_SCHEMA,
+        },
+    }
+    prompt = request["messages"][0]["content"][-1]["text"]
+    assert "Required JSON schema:" in prompt
+    assert all(key in prompt for key in PAIR_OUTPUT_SCHEMA["required"])
+
+
+def test_reasoner_runtime_rejects_schema_drift_before_provider_request():
+    manifest = {
+        "output_schema": PAIR_OUTPUT_SCHEMA,
+        "output_schema_sha256": canonical_sha256(PAIR_OUTPUT_SCHEMA),
+    }
+    assert _validated_output_schema(manifest) == PAIR_OUTPUT_SCHEMA
+    modified = json.loads(json.dumps(manifest))
+    modified["output_schema"]["required"].remove("uncertainty")
+    modified["output_schema_sha256"] = canonical_sha256(modified["output_schema"])
+    try:
+        _validated_output_schema(modified)
+    except ValueError as exc:
+        assert str(exc) == "output_schema_digest_invalid"
+    else:
+        raise AssertionError("schema drift must fail closed")
+
+
 def test_reasoner_server_uses_frozen_native_architecture_without_override(tmp_path):
     command = _reasoner_server_command(tmp_path)
     assert command[:4] == ["vllm", "serve", COSMOS_MODEL, "--revision"]
@@ -175,6 +215,17 @@ def test_reasoner_runtime_compatibility_amendment_digest_is_frozen():
         Path(__file__).parents[1]
         / "docs/experiments/policy_ranking_roboarena_full_stack_calibration_20260728"
         / "cosmos_reasoner_runtime_compatibility_amendment_v2.json"
+    )
+    amendment = json.loads(path.read_text(encoding="utf-8"))
+    recorded = amendment.pop("amendment_sha256")
+    assert recorded == canonical_sha256(amendment)
+
+
+def test_reasoner_structured_output_amendment_digest_is_frozen():
+    path = (
+        Path(__file__).parents[1]
+        / "docs/experiments/policy_ranking_roboarena_full_stack_calibration_20260728"
+        / "cosmos_reasoner_structured_output_amendment_v3.json"
     )
     amendment = json.loads(path.read_text(encoding="utf-8"))
     recorded = amendment.pop("amendment_sha256")

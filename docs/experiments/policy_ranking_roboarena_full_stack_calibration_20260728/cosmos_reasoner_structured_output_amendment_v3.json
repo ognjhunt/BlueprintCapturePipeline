@@ -1,0 +1,108 @@
+{
+  "schema_version": "policy_ranking_cosmos_reasoner_structured_output_amendment.v3",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "registered_at": "2026-07-28T15:43:50-0500",
+  "registered_before_retry_provider_call": true,
+  "retry_paid_execution_admitted": false,
+  "retry_provider_called": false,
+  "prior_amendment": {
+    "path": "cosmos_reasoner_runtime_compatibility_amendment_v2.json",
+    "amendment_sha256": "ae10006cb17bcc58080a60b495755a53dd35fe64c2480a1559f2424546a550a1",
+    "status": "superseded_for_retry_structured_output_transport_only",
+    "native_architecture_and_all_scientific_claim_boundaries_retained": true
+  },
+  "triggering_attempt": {
+    "evidence_namespace": "cosmos3_reasoner_pilot_v5",
+    "source_commit": "0dc176ad55d58a32d154552948d26ee4cfa2775e",
+    "status": "blocked_after_model_load_and_seven_http_200_responses",
+    "provider_called": true,
+    "result_count": 0,
+    "error_count": 7,
+    "model_load_seconds": 365.0292319711298,
+    "total_wall_seconds": 387.237265586853,
+    "estimated_gpu_cost_usd": 0.375435,
+    "provider_output_zip_sha256": "5dacd4f98add8621d4122ea033b9afa8625f2b8240a23a12fbfb8f7d4f56d8f6",
+    "evaluator_runtime_result_sha256": "33ee5b1e1cfbd14a396e805c0c807cb4f9e120bd983c1f4e0620dd71fbaad2f9",
+    "pair_results_sha256": "c336b1b4ee4cc0b763f7fca5f08bbb9c9c5e36810d3f5ce4daec17d581c85186",
+    "reasoner_server_log_sha256": "84ca84531c8a6c2147a4d83e85753be1ecf4a7a476bbbb9ef70c8217f0f00f20",
+    "post_terminal_inventory_sha256": "9966abcd016a6d8dc232399516fecc6b66226ad60d25023e33bf31932f50a920",
+    "provider_zero_verified": true,
+    "continuing_hourly_burn": false,
+    "failure": "The provider runner validated the registered eleven-field schema after generation but did not send that schema in the vLLM request. All seven responses used different keys and were correctly rejected as structured_output_keys_invalid.",
+    "scientific_pair_outputs_accepted": false,
+    "rejected_raw_outputs_reinterpreted": false
+  },
+  "primary_source_freeze": {
+    "vllm_repository": "https://github.com/vllm-project/vllm",
+    "vllm_revision": "702f4814fe54fabff350d43cb753ae3e47c0c276",
+    "vllm_version": "0.25.0",
+    "vllm_license": "Apache-2.0",
+    "structured_outputs_url": "https://docs.vllm.ai/en/v0.25.0/features/structured_outputs/",
+    "structured_outputs_page_sha256": "300b756d47a5e823912479d826223a1235b7f92a218e267e365048b99206c0d2",
+    "chat_protocol_url": "https://docs.vllm.ai/en/v0.25.0/api/vllm/entrypoints/openai/chat_completion/protocol/",
+    "chat_protocol_page_sha256": "7e1f44dd27b954022d6889330db1ae5d51602cd462b1991f5d8ea8b5c4338a02",
+    "documented_response_format": "json_schema",
+    "documented_reasoner_structured_output_support": true,
+    "documented_prompt_schema_recommendation": true
+  },
+  "changed_fields": [
+    {
+      "field": "provider_request.response_format",
+      "former": null,
+      "new": "json_schema_with_registered_pair_output_schema",
+      "reason": "Use vLLM's documented structured-output transport instead of relying on an undefined phrase in the prompt."
+    },
+    {
+      "field": "provider_request.prompt_schema_context",
+      "former": "return_only_the_registered_json_object_without_schema_definition",
+      "new": "append_canonical_registered_json_schema",
+      "reason": "The pinned vLLM documentation recommends identifying the schema and field population in the prompt for better results."
+    },
+    {
+      "field": "input_manifest.output_schema",
+      "former": null,
+      "new": "exact_registered_schema_plus_sha256_cc1bb974e6313543cc9de63789bd50b4e996feac0d834d71ae8312e8ca50d750",
+      "reason": "Bind the provider-visible schema to the same schema used by Blueprint's post-generation validator."
+    },
+    {
+      "field": "provider_runtime.schema_admission",
+      "former": "post_generation_validation_only",
+      "new": "fail_closed_pre_request_schema_digest_and_key_validation_plus_post_generation_value_validation",
+      "reason": "Prevent future runs from spending on a missing, modified, or drifted structured-output contract."
+    }
+  ],
+  "unchanged_scientific_contract": {
+    "pair_selection": "same_first_seven_label_free_cycle_pairs",
+    "videos": "same_fourteen_complete_generated_only_mp4_inputs",
+    "sampled_frames_per_episode": 32,
+    "pair_judging_instructions": "unchanged",
+    "structured_output_fields_and_constraints": "unchanged",
+    "structured_output_schema_sha256": "cc1bb974e6313543cc9de63789bd50b4e996feac0d834d71ae8312e8ca50d750",
+    "temperature": 0,
+    "seed": 0,
+    "max_output_tokens": 4096,
+    "claim_class": "post_unseal_diagnostic_only",
+    "independent_confirmation_credit": false,
+    "phase_b_admission_credit": false,
+    "outcome_labels_used_to_select_fix": false,
+    "rejected_reasoner_preferences_used_to_select_fix": false
+  },
+  "future_run_contract": {
+    "applies_to_all_future_cosmos_reasoner_evaluator_runs": true,
+    "provider_visible_schema_must_match_post_generation_validator": true,
+    "schema_digest_mismatch_blocks_before_provider_request": true,
+    "new_versioned_namespace_required": true,
+    "new_exact_main_source_binding_required": true,
+    "new_single_use_external_authorization_required": true,
+    "same_gpu_and_campaign_caps_apply": true,
+    "maximum_concurrent_gpus": 1,
+    "teardown_and_provider_zero_required": true,
+    "v4_and_v5_failures_retained_in_cost_and_reliability": true
+  },
+  "prospective_runtime_binding": {
+    "provider_runtime_runner_sha256": "798d13311a5a406a8c9be61dc5abac77ae797df4a58ae2e74630e829e462e57d",
+    "provider_runtime_entrypoint_sha256": "c37823b2c7bc5358d534164fed9ac9785bc78f0946e9a0e6e9bdba79b536a2af"
+  },
+  "scientific_legitimacy": "The repair addresses a directly observed transport-contract mismatch before any accepted Cosmos judgment existed. It does not change inputs, evaluator meaning, scoring, thresholds, labels, or claim ceilings; rejected raw preferences remain rejected.",
+  "amendment_sha256": "38b15fbc5bace6e69629622ea1ca2d61ccb0202971143192506d700befc3ca36"
+}

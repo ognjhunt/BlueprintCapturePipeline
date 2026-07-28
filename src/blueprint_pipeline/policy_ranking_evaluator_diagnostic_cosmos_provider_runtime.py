@@ -7,6 +7,7 @@ All results are post-unseal diagnostics and receive no confirmatory credit.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -37,6 +38,9 @@ EXPECTED_KEYS = {
     "artifact_flags_b",
     "abstention_factors",
 }
+EXPECTED_OUTPUT_SCHEMA_SHA256 = (
+    "cc1bb974e6313543cc9de63789bd50b4e996feac0d834d71ae8312e8ca50d750"
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -52,6 +56,41 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
         json.dumps(dict(value), indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="utf-8",
     )
+
+
+def _canonical_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _validated_output_schema(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    schema = manifest.get("output_schema")
+    if not isinstance(schema, Mapping):
+        raise ValueError("output_schema_missing")
+    schema = dict(schema)
+    digest = _canonical_sha256(schema)
+    if digest != EXPECTED_OUTPUT_SCHEMA_SHA256:
+        raise ValueError("output_schema_digest_invalid")
+    if manifest.get("output_schema_sha256") != digest:
+        raise ValueError("output_schema_manifest_digest_invalid")
+    if schema.get("type") != "object" or schema.get("additionalProperties") is not False:
+        raise ValueError("output_schema_object_contract_invalid")
+    required = schema.get("required")
+    properties = schema.get("properties")
+    if (
+        not isinstance(required, list)
+        or set(required) != EXPECTED_KEYS
+        or not isinstance(properties, Mapping)
+        or set(properties) != EXPECTED_KEYS
+    ):
+        raise ValueError("output_schema_keys_invalid")
+    return schema
 
 
 def _http_json(
@@ -169,7 +208,10 @@ def _message_content(response: Mapping[str, Any]) -> str:
 
 
 def _request_payload(
-    row: Mapping[str, Any], bundle_root: Path, served_model: str
+    row: Mapping[str, Any],
+    bundle_root: Path,
+    served_model: str,
+    output_schema: Mapping[str, Any],
 ) -> dict[str, Any]:
     video_a = (bundle_root / str(row["episode_a_video"])).resolve().as_uri()
     video_b = (bundle_root / str(row["episode_b_video"])).resolve().as_uri()
@@ -185,6 +227,8 @@ def _request_payload(
             },
             sort_keys=True,
         )
+        + "\nRequired JSON schema:\n"
+        + json.dumps(dict(output_schema), sort_keys=True, separators=(",", ":"))
     )
     return {
         "model": served_model,
@@ -203,6 +247,13 @@ def _request_payload(
         "max_tokens": 4096,
         "temperature": 0,
         "seed": 0,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "blueprint_robot_episode_pair_judgment",
+                "schema": dict(output_schema),
+            },
+        },
     }
 
 
@@ -244,6 +295,7 @@ def run() -> int:
     bundle_root = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_BUNDLE_DIR"]).resolve()
     output_dir = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_OUTPUT_DIR"]).resolve()
     manifest = _read_json(Path(os.environ["BLUEPRINT_EVALUATOR_INPUT"]).resolve())
+    output_schema = _validated_output_schema(manifest)
     output_dir.mkdir(parents=True, exist_ok=True)
     server_log_path = output_dir / "reasoner_server.log"
     command = _reasoner_server_command(bundle_root)
@@ -272,7 +324,7 @@ def run() -> int:
                     response = _http_json(
                         "POST",
                         f"http://127.0.0.1:{PORT}/v1/chat/completions",
-                        _request_payload(row, bundle_root, served_model),
+                        _request_payload(row, bundle_root, served_model, output_schema),
                         timeout=1800,
                     )
                     usage = dict(response.get("usage") or {})
