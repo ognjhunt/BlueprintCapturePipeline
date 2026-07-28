@@ -68,6 +68,10 @@ from .policy_ranking_successor_gpu_admission import (
     PROBE_KIND as POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
     run_successor_gpu_lane,
 )
+from .policy_ranking_cosmos_reasoner_gpu_admission import (
+    PROBE_KIND as POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
+    run_gpu_lane as run_cosmos_reasoner_gpu_lane,
+)
 from .policy_ranking_successor_retained_session import refresh_retained_session
 from .single_g1_kitchen_episode_runpod import (
     PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
@@ -507,6 +511,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             G1_MICROWAVE_FINETUNE_PROBE_KIND,
             OPENPI_POLICY_RANKING_PROBE_KIND,
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
+            POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
         ),
         default="strict-policy-smoke",
     )
@@ -538,6 +543,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--successor-output-path")
     gpu.add_argument("--successor-session-budget-ledger")
     gpu.add_argument("--successor-bundle-receipt")
+    gpu.add_argument("--reasoner-bundle-receipt")
+    gpu.add_argument("--reasoner-public-base-url")
+    gpu.add_argument("--reasoner-token-file")
+    gpu.add_argument("--reasoner-secret-env-file")
+    gpu.add_argument("--reasoner-output-path")
+    gpu.add_argument("--reasoner-session-budget-ledger")
     gpu.add_argument(
         "--successor-action",
         choices=("launch", "refresh"),
@@ -774,6 +785,79 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == POLICY_RANKING_COSMOS_REASONER_PROBE_KIND:
+            required = (
+                "provider_launch_request",
+                "preflight_bundle",
+                "episode_bundle",
+                "reasoner_bundle_receipt",
+                "admission_out",
+                "bound_request_out",
+                "adapter_output",
+                "pod_name",
+                "expected_source_commit",
+            )
+            missing = [name for name in required if not getattr(args, name, None)]
+            if args.execute and not args.reasoner_session_budget_ledger:
+                missing.append("reasoner_session_budget_ledger")
+            if args.execute and not args.reasoner_public_base_url and not all(
+                getattr(args, name, None)
+                for name in (
+                    "provider_bundle_url_file",
+                    "provider_output_put_url_file",
+                    "provider_output_get_url_file",
+                )
+            ):
+                missing.append("reasoner_staging_transport")
+            if missing:
+                result = {
+                    "status": "blocked",
+                    "blockers": [
+                        "policy_ranking_cosmos_reasoner_required_arguments_missing:"
+                        + ",".join(sorted(set(missing)))
+                    ],
+                    "provider_mutations_performed": 0,
+                }
+                write_json(Path(args.admission_out), result)
+            else:
+                source_blockers, checkout_commit = _source_checkout_blockers(
+                    args.expected_source_commit or ""
+                )
+                if source_blockers:
+                    result = {
+                        "status": "blocked",
+                        "blockers": source_blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.admission_out), result)
+                else:
+                    result = run_cosmos_reasoner_gpu_lane(
+                        authorization_path=args.provider_launch_request,
+                        preflight_path=args.preflight_bundle,
+                        bundle_path=args.episode_bundle,
+                        bundle_receipt_path=args.reasoner_bundle_receipt,
+                        admission_out=args.admission_out,
+                        bound_request_out=args.bound_request_out,
+                        adapter_output=args.adapter_output,
+                        job_dir=args.pod_name,
+                        expected_source_commit=checkout_commit,
+                        execute=args.execute,
+                        public_base_url=args.reasoner_public_base_url,
+                        token_file=args.reasoner_token_file,
+                        secret_env_file=args.reasoner_secret_env_file,
+                        provider_bundle_url_file=args.provider_bundle_url_file,
+                        provider_output_put_url_file=args.provider_output_put_url_file,
+                        provider_output_get_url_file=args.provider_output_get_url_file,
+                        output_path=args.reasoner_output_path,
+                        session_budget_ledger=args.reasoner_session_budget_ledger,
+                    )
+            success = result.get("status") in {
+                "dry_run_ready",
+                "completed",
+                "retained_owned",
+            }
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND:
             if args.successor_action == "refresh":
                 missing = [

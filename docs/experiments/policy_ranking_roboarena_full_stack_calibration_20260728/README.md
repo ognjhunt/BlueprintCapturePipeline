@@ -133,3 +133,22 @@ experiment. Invoice-attributable API cost is not yet available, so the ledger
 conservatively reserves USD 0.10 against the USD 25 API cap. GPU spend remains
 USD 0 and authenticated compute-provider inventory was zero at the Phase 0
 audit.
+
+## Post-unseal evaluator comparison continuation
+
+The four-arm evaluator comparison remains diagnostic only: this public snapshot
+and its physical answer key were already unsealed. Full GPT-5, GPT-5.4 mini,
+Gemini 3.6 Flash, and Cosmos3-Nano Reasoner therefore cannot admit Phase B or
+receive independent-confirmation credit here, even if they recover the public
+leaderboard.
+
+Cosmos Reasoner GPU execution is prospectively bound by
+`cosmos_reasoner_gpu_execution_amendment_v1.json`, digest
+`a6d7fc52a0bfb5a077b3bedc8a70ee6ebb1a8c75f0cd5dc313aec4b2ead94b78`.
+It uses an evaluator-only provider bundle, one H100, a seven-pair canary, and a
+two-hour/USD 5 pilot cutoff. A full matrix requires 7/7 valid pilot rows, a
+frozen throughput projection that fits the USD 15 Reasoner-arm cap, and a new
+single-use authorization. The existing Vast credential is accepted only under
+the user's explicit task-scoped exception: live validity and mode 0600 are
+proven, missing rotation metadata remains disclosed, and no provider-side
+rotation event is claimed.

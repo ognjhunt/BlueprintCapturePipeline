@@ -17,6 +17,7 @@ VideoProbe = Callable[[Path], dict[str, Any]]
 RUNTIME_RESULT_FILENAMES = (
     "isaac_runtime_result.json",
     "wam_runtime_result.json",
+    "evaluator_runtime_result.json",
     "unitree_unifolm_policy_provider_output.json",
     "unitree_groot_n17_sonic_policy_provider_output.json",
     "unitree_groot_n17_sonic_wam_persistent_session_output.json",
@@ -191,6 +192,10 @@ def summarize_runtime_result(
         ),
         "subprocess_status": _string(subprocess_result.get("status")) or None,
         "task_success": task_success if isinstance(task_success, bool) else None,
+        "evaluator_result_count": runtime_result.get("result_count"),
+        "evaluator_error_count": runtime_result.get("error_count"),
+        "evaluator_model": _string(runtime_result.get("model")) or None,
+        "claim_class": _string(runtime_result.get("claim_class")) or None,
         "raw_secret_values_recorded": False,
     }
 
