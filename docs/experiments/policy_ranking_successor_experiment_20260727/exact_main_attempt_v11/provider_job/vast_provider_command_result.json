@@ -13,7 +13,7 @@
   "provider_runtime_output_zip_produced": true,
   "provider_runtime_output_zip_received": true,
   "provider_command_path_remote_proven": true,
-  "provider_bundle_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-successor-run-fd352/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
+  "provider_bundle_path": "workspace://exact-main/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
   "provider_bundle_kind": "wam",
   "provider_runtime_output_zip_path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
   "provider_bundle_fetch_url_present": true,

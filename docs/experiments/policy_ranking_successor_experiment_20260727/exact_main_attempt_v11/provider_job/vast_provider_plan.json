@@ -4,7 +4,7 @@
   "status": "ready_for_explicit_vast_probe",
   "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11",
   "previous_staged_job_dir": null,
-  "provider_bundle_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-successor-run-fd352/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
+  "provider_bundle_path": "workspace://exact-main/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
   "provider_bundle_kind": "wam",
   "provider_bundle_present": true,
   "budget": {
