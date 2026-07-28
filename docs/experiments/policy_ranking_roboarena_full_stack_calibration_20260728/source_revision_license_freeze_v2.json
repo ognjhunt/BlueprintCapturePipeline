@@ -1,0 +1,138 @@
+{
+  "schema_version": "policy_ranking_source_revision_license_freeze.v2",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "frozen_on": "2026-07-28",
+  "official_primary_sources_verified": true,
+  "sources": [
+    {
+      "name": "OSCAR public code",
+      "url": "https://github.com/wuzy2115/oscar-public",
+      "revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+      "license": "Apache-2.0",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "name": "OSCAR-2B model",
+      "url": "https://huggingface.co/zywu2115/OSCAR-2B",
+      "revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+      "license": "apache-2.0"
+    },
+    {
+      "name": "OSCAR policy rollouts",
+      "url": "https://huggingface.co/datasets/zywu2115/OSCAR_policy_rollout",
+      "revision": "db5edfaef285c15d0a41d5115177a983c08b4f5f",
+      "license": "not_declared_in_dataset_card",
+      "readme_sha256": "f94076393ecbfa0b9373241a701b068e76a4fc5d8cab542cda13de31f313b34e"
+    },
+    {
+      "name": "RoboArena public code",
+      "url": "https://github.com/robo-arena/roboarena",
+      "revision": "a07f93db004e2357aee931069a7011d7e52774ed",
+      "license": "MIT",
+      "license_sha256": "8b401583887dd041fee82fa3043fa5a58d1bb1ae19e86678fba7898f4c17858a"
+    },
+    {
+      "name": "RoboArena DataDump 07-17-2026",
+      "url": "https://huggingface.co/datasets/RoboArena/DataDump_07-17-2026",
+      "revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+      "license": "mit",
+      "readme_sha256": "dcb052be353f3703c17b65ab7c211fb5611c1a95e0c5149076ffbeb61f2b41f4"
+    },
+    {
+      "name": "DROID dataset code",
+      "url": "https://github.com/droid-dataset/droid",
+      "revision": "33ae6a67274f36d2e29525b86f23a56616ef43a7",
+      "license": "no_repository_license_file_found"
+    },
+    {
+      "name": "DROID policy learning code",
+      "url": "https://github.com/droid-dataset/droid_policy_learning",
+      "revision": "9a29c832b4c81bf38401111f5e4cdddaca217581",
+      "license": "MIT",
+      "license_sha256": "7cdbfab482b23a4d925d59ff169ab0bc5f8c97ceb0db79f9fd5bf46ef8aa1556"
+    },
+    {
+      "name": "Cosmos repository",
+      "url": "https://github.com/NVIDIA/Cosmos",
+      "revision": "bebca76311266941d06c5f5572fb601184ba24fa",
+      "license": "Apache-2.0",
+      "license_sha256": "2ab44b68365473c112f5092211a38f231cb23e50de68b75a13369adbd76a74df"
+    },
+    {
+      "name": "Cosmos framework pinned runtime",
+      "url": "https://github.com/NVIDIA/cosmos-framework",
+      "revision": "09f23119ea92c707207bba55565e7a09d16896a2",
+      "current_head_observed": "e7420de81ce87fdf6ce4604a9a0e16e070ebf1f5",
+      "license": "NVIDIA Open Model Development and Weight License 1.1",
+      "license_sha256": "6bd3fdb9356edb6e4c1f00ad9cd6639a1cf06ca0a415a5071fd70d68799209e6"
+    },
+    {
+      "name": "Cosmos3-Nano neutral forward-dynamics model",
+      "url": "https://huggingface.co/nvidia/Cosmos3-Nano",
+      "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+      "license": "other_NVIDIA_Open_Model_License"
+    },
+    {
+      "name": "Cosmos3-Nano-Policy-DROID",
+      "url": "https://huggingface.co/nvidia/Cosmos3-Nano-Policy-DROID",
+      "revision": "6706d7680581c255ff61e0f3bb49d90eac55c79e",
+      "use": "identity_only_forbidden_as_neutral_general_wam"
+    },
+    {
+      "name": "vLLM-Omni pinned source",
+      "url": "https://github.com/vllm-project/vllm-omni",
+      "revision": "9c1b7504b178afcf541867c1a2d30db48c69cda8",
+      "current_head_observed": "f775e8073219f30de1f359a9312b63ab91d90ef9",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587"
+    }
+  ],
+  "papers": [
+    {
+      "name": "OSCAR",
+      "url": "https://arxiv.org/pdf/2502.03878",
+      "pdf_sha256": "1af625d81ea3309ca0dd08112786535ceaf85af72b9f6de1a64c90dbaa89acfa"
+    },
+    {
+      "name": "RoboArena",
+      "url": "https://arxiv.org/pdf/2506.18123",
+      "pdf_sha256": "0f793633ba5767b6e93f01056dcd5c3357dabcaf70844cd0a157a364fa843698"
+    },
+    {
+      "name": "RoboWorld",
+      "url": "https://arxiv.org/pdf/2506.10887",
+      "pdf_sha256": "33d1e2d50b55d7521a2807459499adb7dec409ebd60caa966050cca88d9b0ca2",
+      "implementation_claim": "inspired_by",
+      "official_public_code_found": false
+    },
+    {
+      "name": "SC3-Eval",
+      "url": "https://arxiv.org/pdf/2506.06369",
+      "pdf_sha256": "cb5b4b34b9846651e2d18de5cf16bdf00c2377586313adab0311b1a0416e22cc",
+      "implementation_claim": "inspired_by",
+      "official_public_code_found": false
+    },
+    {
+      "name": "DROID",
+      "url": "https://arxiv.org/pdf/2403.12945",
+      "pdf_sha256": "9e40a9c934ce78ea315d2c05593d60f9e18edf6dcd3785cd66439518965c3b07"
+    }
+  ],
+  "action_contract_primary_file_sha256": {
+    "cosmos_action_conditioning_readme": "48df78f0531c6faa05c1435dcbcfc538163fbd8e94d5f59b5d9f2d1bd29e0ec2",
+    "cosmos_forward_dynamics_notebook": "a5219902c1780311f1b987ca4ed84f6a8d13f3f4866f11ddc6edfe2b6d44966d",
+    "cosmos_framework_droid_dataset": "19f58a2e1f1c4d24947ee8445cb78c65ff7a85fb58b91efef34ee3a10f22cb3b",
+    "cosmos_framework_droid_policy_config": "9a69f10f5f0fb2b165437eccf1e4374920f7ca1b2becb87da2f0d9b2dec73f01",
+    "vllm_omni_action_loader": "4164f5074ba48e49eb631db6b43e531521cb112242d6dfcafd63fe9e5000adec",
+    "vllm_omni_cosmos_pipeline": "8a70b5d446315d2f6281bfacb4c332dac17cf256f813cbd26c4e01a105d41f49"
+  },
+  "evaluator": {
+    "requested_model": "gpt-5-mini-2025-08-07",
+    "availability": "pending_canary_with_rotated_secure_credential",
+    "ordinary_chat_credential_rejected": true,
+    "credential_stored": false,
+    "provider_called": false
+  },
+  "claim_boundary": "Source identity freeze only. It does not prove action following, ranking, captured-site transfer, or economics. RoboWorld and SC3-Eval methods are described as inspired by because exact official implementation code was not found."
+}

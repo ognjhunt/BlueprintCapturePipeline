@@ -1,0 +1,33 @@
+{
+  "schema_version": "policy_ranking_roboarena_protocol_supersession.v1",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "recorded_at": "2026-07-28T08:13:32-0500",
+  "superseded_protocol": {
+    "schema_version": "policy_ranking_roboarena_full_stack_calibration.v1",
+    "protocol_sha256": "eab9e7868bcc7cbd774c940c781e8c3a8faac3270cbc942f1248966ba037f683",
+    "lock_path": "protocol_lock.json",
+    "lock_file_sha256": "c103e466ab1fa7aebcb9e745af10225417b36edddaf66e7b1e39e3c9c392edc0",
+    "source_commit": "e1603e1a6a1b689799da25df240e387494791493"
+  },
+  "reason": "The v1 closed-loop prefix was governed by executed_prefix_seconds=0.16. At 15 Hz this equals 2.4 actions and cannot be executed exactly. The defect was found before any provider call, outcome-label access, prediction, or paid execution in this experiment.",
+  "scientific_legitimacy": "The amendment repairs an internally impossible timing contract without using outcomes or model predictions. All endpoint thresholds remain unchanged except that the brittle literal monotonic-risk rule is replaced prospectively by the uncertainty-aware rule requested by the experiment owner.",
+  "changed_fields": [
+    "schema_version v1 to v2",
+    "executed_prefix_seconds removed as governing variable",
+    "executed_prefix_steps added as the positive-integer governing variable",
+    "executed_prefix_seconds_derived added and required to equal steps divided by 15",
+    "4, 8, and 16 step label-free pilot candidates and deterministic fallback selection added",
+    "pointwise monotonic abstention gate replaced by empirical plus isotonic session-clustered uncertainty-aware risk rule",
+    "collapse detection, retention, reliability penalty, and abstention categories added",
+    "temporally shifted action control added",
+    "parallel WAM arms and visible-skeleton versus scene-masked attribution made explicit",
+    "pinned DROID raw-action transformation and no-external-normalization result added",
+    "campaign cost and concurrency ceilings added"
+  ],
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "outcome_labels_accessed": false,
+  "predictions_generated": false,
+  "replacement_protocol_path": "protocol_lock_v2.json",
+  "replacement_protocol_sha256": "6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066"
+}

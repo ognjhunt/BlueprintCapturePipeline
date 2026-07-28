@@ -1,0 +1,38 @@
+{
+  "schema_version": "policy_ranking_roboarena_evaluator_contract.v2",
+  "model": "gpt-5-mini-2025-08-07",
+  "prompt": "You are Blueprint's independent, conservative evaluator of one complete generated robot episode. The 32 images are chronological audited crops containing only the generated OSCAR side; policy identity, benchmark outcomes, and physical ground-truth pixels are withheld. Build a task-specific ordered progress rubric, then score the full episode. Success requires visible task completion that remains stable across multiple adjacent sampled positions. A wrist or close view may reveal artifacts but cannot by itself establish success. Separate intended skeleton motion from scene consequences. Flag frozen futures, first-future-frame collapse, repeated loops, discontinuity, robot-skeleton divergence, object disappearance, scene corruption, out-of-view robot motion, or increasing uncertainty. Abstain when the pixels do not support a trustworthy progress judgment. Do not infer success from attractive motion, the task instruction, or provider completion. Return only the registered JSON schema.",
+  "prompt_sha256": "c346601eddf640f3d72aa22008c4f436528363dd6c3a9beadb7e3aeb60899254",
+  "frame_count": 32,
+  "image_detail": "low",
+  "reasoning_effort": "medium",
+  "max_output_tokens": 3000,
+  "store": false,
+  "method": "roboworld_inspired_full_episode_progress_v1",
+  "policy_identity_in_provider_payload": false,
+  "benchmark_outcomes_in_provider_payload": false,
+  "physical_ground_truth_pixels_in_provider_payload": false,
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "task_specific_rubric": {"type": "array", "minItems": 3, "maxItems": 6, "items": {"type": "string"}},
+      "progress_score_0_to_5": {"type": "integer", "minimum": 0, "maximum": 5},
+      "success_probability": {"type": "number", "minimum": 0, "maximum": 1},
+      "stable_success_confirmed": {"type": "boolean"},
+      "stable_success_frame_positions": {"type": "array", "maxItems": 8, "items": {"type": "integer", "minimum": 0, "maximum": 31}},
+      "success_evidence": {"type": "array", "maxItems": 4, "items": {"type": "string"}},
+      "failure_evidence": {"type": "array", "maxItems": 4, "items": {"type": "string"}},
+      "artifact_flags": {"type": "array", "uniqueItems": true, "items": {"type": "string", "enum": ["static_or_frozen_future", "first_future_frame_collapse", "repeated_frame_loop", "sudden_visual_discontinuity", "robot_skeleton_divergence", "object_disappearance", "scene_corruption", "robot_out_of_view", "uncertainty_increases_with_depth", "action_following_degrades_with_depth", "none"]}},
+      "temporal_consistency": {"type": "number", "minimum": 0, "maximum": 1},
+      "action_following_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+      "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+      "abstain": {"type": "boolean"},
+      "abstention_factors": {"type": "array", "maxItems": 6, "items": {"type": "string"}}
+    },
+    "required": ["task_specific_rubric", "progress_score_0_to_5", "success_probability", "stable_success_confirmed", "stable_success_frame_positions", "success_evidence", "failure_evidence", "artifact_flags", "temporal_consistency", "action_following_confidence", "uncertainty", "abstain", "abstention_factors"]
+  },
+  "evaluator_digest": "4fddb765781065e63dc520b6e7561f2e1a9ba12bb81e94701c44e63388dcf00e",
+  "provider_called": false,
+  "outcome_labels_accessed": false
+}

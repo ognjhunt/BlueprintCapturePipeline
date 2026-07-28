@@ -1,0 +1,59 @@
+{
+  "schema_version": "policy_ranking_roboarena_phase_a_inventory_preflight.v2",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "phase": "A_public_known_answer_reproduction",
+  "status": "ready_inventory_transport_blocked",
+  "claim_class": "reproduction_only_not_independent_confirmation",
+  "base_origin_main_commit": "4cf40d9e10b309e39a7f9fd01f42f56481de6243",
+  "preflight_source_commit": "e1603e1a6a1b689799da25df240e387494791493",
+  "protocol_sha256": "6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066",
+  "superseded_protocol_sha256": "eab9e7868bcc7cbd774c940c781e8c3a8faac3270cbc942f1248966ba037f683",
+  "inventory_schema_version": "policy_ranking_roboarena_phase_a_inventory.v2",
+  "inventory_sha256": "d77f85362134d2ea25d84ca7d5994dfc15ba753e551bd73e067b7069d7fe9a08",
+  "evaluator_digest": "aae1b5fe42de819eb23aa54976dbd6371fbf6111547fbbbbeb76ac88206f2073",
+  "sources": {
+    "oscar_policy_rollout_revision": "db5edfaef285c15d0a41d5115177a983c08b4f5f",
+    "roboarena_data_dump_revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc"
+  },
+  "matrix": {
+    "session_count": 63,
+    "policy_count": 7,
+    "full_episode_request_count": 441,
+    "all_full_episode_media_materialized": true,
+    "all_media_hashed": true,
+    "outcome_fields_loaded_into_inventory": false,
+    "blockers": []
+  },
+  "evaluator": {
+    "requested_model": "gpt-5-mini-2025-08-07",
+    "method": "roboworld_inspired_full_episode_progress_v1",
+    "sampled_frame_count": 32,
+    "frame_sampling_rule": "32_even_positions_with_replacement_for_sources_under_32_frames",
+    "candidate_generated_crop": "left_640_of_1280x480_source",
+    "crop_layout_audit_status": "pending_fail_closed_all_video_audit",
+    "policy_identity_in_provider_prompt": false,
+    "benchmark_outcomes_in_provider_prompt": false,
+    "third_party_physical_pixels_in_provider_prompt": false
+  },
+  "credential": {
+    "openai_api_key_present_in_process_environment": false,
+    "ordinary_chat_credential_rejected": true,
+    "replacement_rotation_proof_required": true,
+    "secure_key_destination_approved": false,
+    "credential_value_inspected": false,
+    "credential_stored": false
+  },
+  "provider_called": false,
+  "data_uploaded": false,
+  "paid_execution_admitted": false,
+  "measured_spend_usd": 0.0,
+  "authenticated_provider_inventory": {
+    "observed_at_utc": "2026-07-28T13:08:50Z",
+    "vast_live_instances": 0,
+    "runpod_live_pods": 0,
+    "digitalocean_live_droplets": 0,
+    "continuing_hourly_burn_usd": 0.0
+  },
+  "next_gate": "complete_crop_layout_audit_and_representative_visual_review_then_rotated_secure_evaluator_credential_then_fixed_transport_canary",
+  "claim_boundary": "Complete label-sealed local request matrix only; no evaluator, ranking, generalization, Cosmos qualification, site transfer, or economics result."
+}

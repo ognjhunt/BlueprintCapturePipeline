@@ -1,0 +1,29 @@
+{
+  "schema_version": "policy_ranking_roboarena_transport_amendment.v3",
+  "status": "prospective_unpaid_supersession",
+  "former_inventory_sha256": "dd1413c41db87ea499758aaa221322cc1b47bf9da4cbcfeba2fb35db4ce20b6f",
+  "former_inventory_file_sha256": "18a44796e1909ad7a1b74d43d7cd9aa2c03c724f79229130e43369e889a06e82",
+  "former_evaluator_digest": "4fddb765781065e63dc520b6e7561f2e1a9ba12bb81e94701c44e63388dcf00e",
+  "new_inventory_sha256": "7e04a9f9c877396778456698fcda121c09aa86fbae4d248d90b93bd4cf712915",
+  "new_inventory_file_sha256": "97055f496c2174cd2834fe9df8250e6d49409b5abddb13318e2bb36a8f8f5af7",
+  "new_evaluator_digest": "6b22136e8708223bd8b8213ca907632659d23949c7a196957af087ae2a197f57",
+  "reason": "Bind every provider request to its frozen request_id through the Idempotency-Key header so a crash between provider acceptance and local result persistence cannot duplicate a scientific row.",
+  "changed_fields": [
+    "evaluator.schema_version",
+    "evaluator.idempotency_header",
+    "evaluator.evaluator_digest",
+    "requests[*].evaluator_digest",
+    "requests[*].request_id",
+    "run.source_commit",
+    "schema_version"
+  ],
+  "prompt_changed": false,
+  "structured_output_schema_changed": false,
+  "sampling_changed": false,
+  "scientific_thresholds_changed": false,
+  "run_source_commit_required": true,
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "data_uploaded": false,
+  "outcome_labels_accessed": false
+}

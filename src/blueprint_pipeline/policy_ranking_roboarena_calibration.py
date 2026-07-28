@@ -21,14 +21,18 @@ import yaml
 
 
 EXPERIMENT_ID = "policy_ranking_roboarena_full_stack_calibration_20260728"
-SCHEMA_VERSION = "policy_ranking_roboarena_full_stack_calibration.v1"
+SCHEMA_VERSION = "policy_ranking_roboarena_full_stack_calibration.v2"
 ACTION_CONTROL_SCHEMA_VERSION = "droid_action_controls.v2"
 
 DROID_ACTION_DIM = 10
 DROID_ACTION_CHUNK = 16
 DROID_FREQUENCY_HZ = 15.0
 IDENTITY_ROT6D = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
-EXECUTED_PREFIX_SECONDS = 0.16
+SUPERSEDED_PROTOCOL_SHA256 = "eab9e7868bcc7cbd774c940c781e8c3a8faac3270cbc942f1248966ba037f683"
+PREFIX_PILOT_CANDIDATE_STEPS = (4, 8, 16)
+EXECUTED_PREFIX_STEPS = 16
+EXECUTED_PREFIX_SECONDS_DERIVED = EXECUTED_PREFIX_STEPS / DROID_FREQUENCY_HZ
+ABSTENTION_ADJACENT_RISK_TOLERANCE = 0.02
 PHASE_A_MODEL = "gpt-5-mini-2025-08-07"
 PHASE_A_FRAME_COUNT = 32
 
@@ -120,6 +124,7 @@ def build_action_controls_v2(
     *,
     gripper_hold_value: float,
     shuffle_seed: int,
+    temporal_shift_steps: int = 1,
 ) -> dict[str, Any]:
     """Build valid controls from two independently sourced candidate traces."""
 
@@ -134,12 +139,20 @@ def build_action_controls_v2(
     random.Random(int(shuffle_seed)).shuffle(order)
     if order in (list(range(DROID_ACTION_CHUNK)), list(reversed(range(DROID_ACTION_CHUNK)))):
         order = order[1:] + order[:1]
+    if isinstance(temporal_shift_steps, bool) or not isinstance(temporal_shift_steps, int):
+        raise CalibrationContractError("temporal_shift_steps_must_be_integer")
+    if not 0 < temporal_shift_steps < DROID_ACTION_CHUNK:
+        raise CalibrationContractError("temporal_shift_steps_outside_chunk")
 
     conditions = {
         "recorded": source["actions"],
         "no_motion": no_motion_action_chunk(gripper_hold_value=gripper_hold_value),
         "shuffled": [source["actions"][index] for index in order],
         "reversed": list(reversed(source["actions"])),
+        "temporally_shifted": (
+            source["actions"][temporal_shift_steps:]
+            + source["actions"][:temporal_shift_steps]
+        ),
         "policy_swapped": swapped["actions"],
     }
     hashes = {name: canonical_sha256(actions) for name, actions in conditions.items()}
@@ -153,6 +166,7 @@ def build_action_controls_v2(
         "policy_swapped_source_trace_id": swapped["source_trace_id"],
         "no_motion_rotation": "rot6d_identity",
         "no_motion_gripper": "explicit_hold_value",
+        "temporal_shift_steps": temporal_shift_steps,
         "synthetic_policy_swapped_forbidden": True,
     }
 
@@ -184,11 +198,23 @@ def preregistered_protocol() -> dict[str, Any]:
                 "purpose": "independent full-service qualification",
                 "admission": "phase_A_endpoint_gates_passed_and_new_disjoint_snapshot_available",
                 "inputs": "new disjoint sessions plus runnable frozen candidate-policy endpoints",
-                "wam_arms": ["oscar_wam", "cosmos3_wam_parallel_diagnostic"],
+                "wam_arms": [
+                    "oscar_skeleton_only",
+                    "oscar_wam",
+                    "cosmos3_nano_native_forward_dynamics",
+                    "cosmos3_oscar_skeleton_hybrid_optional_registered",
+                ],
                 "full_episode_required": True,
                 "policy_wam_receding_horizon": True,
-                "executed_prefix_seconds": EXECUTED_PREFIX_SECONDS,
-                "stop_conditions": ["task_terminal", "safety_abstention", "maximum_horizon"],
+                "executed_prefix_steps": EXECUTED_PREFIX_STEPS,
+                "executed_prefix_seconds_derived": EXECUTED_PREFIX_SECONDS_DERIVED,
+                "prefix_governing_variable": "executed_prefix_steps",
+                "stop_conditions": [
+                    "task_terminal",
+                    "safety_abstention",
+                    "collapse_abstention",
+                    "maximum_horizon",
+                ],
             },
             {
                 "phase": "C_captured_site_transfer",
@@ -240,6 +266,22 @@ def preregistered_protocol() -> dict[str, Any]:
                 "compatibility_backend",
             ],
             "scene_masked_and_visible_skeleton_scores_reported_separately": True,
+            "unpublished_methodology_labels": {
+                "roboworld": "inspired_by",
+                "sc3_eval": "inspired_by",
+            },
+        },
+        "prefix_selection": {
+            "candidate_steps": list(PREFIX_PILOT_CANDIDATE_STEPS),
+            "selected_steps": EXECUTED_PREFIX_STEPS,
+            "selected_seconds_derived": EXECUTED_PREFIX_SECONDS_DERIVED,
+            "selection_mode": "upstream_contract_fallback_empirical_pilot_unavailable_pre_provider",
+            "deterministic_rule": (
+                "Select the smallest candidate that exactly matches the published native "
+                "Cosmos DROID autoregressive chunk-advance contract; break ties toward fewer WAM calls."
+            ),
+            "cost_multipliers_per_16_executed_steps": {"4": 4.0, "8": 2.0, "16": 1.0},
+            "outcome_labels_used": False,
         },
         "endpoint_gates": {
             "policy_count_minimum": 7,
@@ -250,7 +292,18 @@ def preregistered_protocol() -> dict[str, Any]:
             "true_top_policy_in_predicted_top_two": True,
             "selective_coverage_minimum": 0.50,
             "selective_pairwise_accuracy_minimum": 0.75,
-            "abstention_risk_monotonic_nonincreasing": True,
+            "abstention_risk_rule": {
+                "full_empirical_curve_required": True,
+                "isotonic_smoothed_diagnostic_required": True,
+                "session_clustered_bootstrap_ci95_required": True,
+                "adjacent_risk_increase_tolerance": ABSTENTION_ADJACENT_RISK_TOLERANCE,
+                "ties_or_ci_level_noise_fail": False,
+                "material_supported_increase_fails": True,
+                "material_supported_increase_definition": (
+                    "adjacent empirical risk increase exceeds tolerance and its session-clustered "
+                    "bootstrap 95% confidence interval lower bound exceeds zero"
+                ),
+            },
             "all_gates_required": True,
         },
         "action_controls": {
@@ -259,8 +312,41 @@ def preregistered_protocol() -> dict[str, Any]:
             "no_motion_rotation_rot6d": list(IDENTITY_ROT6D),
             "no_motion_gripper": "explicit_observation_bound_hold_value",
             "policy_swapped": "real_distinct_candidate_policy_trace",
+            "temporally_shifted": "recorded_trace_cyclic_shift_where_valid",
             "literal_zero_rot6d_forbidden": True,
             "synthetic_constant_policy_swapped_forbidden": True,
+            "external_action_normalization": "none_for_pinned_droid_forward_dynamics_contract",
+            "model_width_padding": "zero_pad_after_raw_width_10_without_rescaling",
+        },
+        "collapse_handling": {
+            "retained_and_counted_against_reliability": True,
+            "may_trigger_safety_abstention_or_early_terminal": True,
+            "categories": [
+                "static_or_frozen_future_frames",
+                "first_future_frame_collapse",
+                "repeated_frame_loop",
+                "sudden_visual_discontinuity",
+                "robot_or_skeleton_divergence",
+                "object_disappearance_or_scene_corruption",
+                "out_of_view_robot_trajectory",
+                "uncertainty_increase_across_horizon",
+                "action_following_degradation_with_rollout_depth",
+            ],
+        },
+        "normalization_resolution": {
+            "selected_transform": "raw_droid_midtrain_actions_no_external_normalization",
+            "translation_units": "meters",
+            "rotation": "backward_framewise_rot6d_after_droid_to_opencv",
+            "gripper": "explicit_open_close_state_after_dataset_flip_when_configured",
+            "dose_response_required": False,
+            "basis": "pinned_upstream_droid_dataset_config_and_vllm_request_path",
+        },
+        "cost_caps_usd": {
+            "openai_evaluator_api": 25.0,
+            "gpu_compute": 50.0,
+            "storage_and_transfer": 10.0,
+            "total_campaign": 100.0,
+            "maximum_concurrent_gpus": 1,
         },
         "claim_boundaries": {
             "phase_A_can_prove": "Blueprint can reproduce a published known-answer result",
@@ -276,6 +362,10 @@ def preregistered_protocol() -> dict[str, Any]:
             "economics_and_speed",
         ],
         "overall_verdicts": ["thesis_supported", "thesis_not_supported", "inconclusive"],
+        "supersedes_protocol_sha256": SUPERSEDED_PROTOCOL_SHA256,
+        "paid_execution_admitted": False,
+        "provider_called": False,
+        "outcome_labels_accessed": False,
     }
     protocol["protocol_sha256"] = canonical_sha256(protocol)
     return protocol
@@ -308,7 +398,8 @@ def build_phase_a_inventory(
         "model": PHASE_A_MODEL,
         "method": "roboworld_inspired_full_episode_progress_v1",
         "frame_count": PHASE_A_FRAME_COUNT,
-        "generated_crop": "left_half_only_before_provider_transport",
+        "frame_sampling_rule": "32_even_positions_with_replacement_for_sources_under_32_frames",
+        "generated_crop": "candidate_left_half_requires_layout_audit_before_transport",
         "policy_identity_in_provider_prompt": False,
         "benchmark_outcomes_in_provider_prompt": False,
         "third_party_physical_pixels_in_provider_prompt": False,
@@ -385,7 +476,7 @@ def build_phase_a_inventory(
         blockers.append(f"request_count_expected_{expected_rows}_got_{len(rows)}")
 
     result: dict[str, Any] = {
-        "schema_version": "policy_ranking_roboarena_phase_a_inventory.v1",
+        "schema_version": "policy_ranking_roboarena_phase_a_inventory.v2",
         "experiment_id": EXPERIMENT_ID,
         "phase": "A_public_known_answer_reproduction",
         "claim_class": "reproduction_only_not_independent_confirmation",
@@ -437,14 +528,36 @@ def validate_preregistered_protocol(protocol: Mapping[str, Any]) -> dict[str, An
         raise CalibrationContractError("phase_order_invalid")
     if phases[0].get("full_episode_required") is not True:
         raise CalibrationContractError("known_answer_full_episode_not_required")
-    if phases[1].get("executed_prefix_seconds") != EXECUTED_PREFIX_SECONDS:
-        raise CalibrationContractError("closed_loop_prefix_not_0_16_seconds")
+    prefix_steps = phases[1].get("executed_prefix_steps")
+    if isinstance(prefix_steps, bool) or not isinstance(prefix_steps, int) or prefix_steps <= 0:
+        raise CalibrationContractError("closed_loop_prefix_steps_must_be_positive_integer")
+    if prefix_steps > DROID_ACTION_CHUNK:
+        raise CalibrationContractError("closed_loop_prefix_steps_exceed_action_chunk")
+    if "executed_prefix_seconds" in phases[1]:
+        raise CalibrationContractError("closed_loop_prefix_seconds_cannot_govern_v2")
+    derived = phases[1].get("executed_prefix_seconds_derived")
+    if not isinstance(derived, (int, float)) or not math.isclose(
+        float(derived), prefix_steps / DROID_FREQUENCY_HZ, rel_tol=0.0, abs_tol=1e-12
+    ):
+        raise CalibrationContractError("closed_loop_prefix_derived_duration_mismatch")
+    risk_rule = (candidate.get("endpoint_gates") or {}).get("abstention_risk_rule")
+    if not isinstance(risk_rule, Mapping):
+        raise CalibrationContractError("abstention_risk_rule_missing")
+    if risk_rule.get("adjacent_risk_increase_tolerance") != ABSTENTION_ADJACENT_RISK_TOLERANCE:
+        raise CalibrationContractError("abstention_risk_tolerance_mismatch")
+    collapse = candidate.get("collapse_handling")
+    if not isinstance(collapse, Mapping) or collapse.get("retained_and_counted_against_reliability") is not True:
+        raise CalibrationContractError("collapse_retention_not_required")
     return {
         "status": "passed",
         "protocol_sha256": supplied_digest,
         "serial_wam_chain_forbidden": True,
         "full_episode_positive_control_required": True,
         "captured_site_transfer_fail_closed": True,
+        "executed_prefix_steps": prefix_steps,
+        "executed_prefix_seconds_derived": float(derived),
+        "uncertainty_aware_risk_rule_required": True,
+        "collapse_retention_required": True,
     }
 
 

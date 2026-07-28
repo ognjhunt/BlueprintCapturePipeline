@@ -1,0 +1,21 @@
+{
+  "schema_version": "policy_ranking_roboarena_phase_a_sampling_amendment.v2",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "recorded_on": "2026-07-28",
+  "trigger": "The complete public matrix contains one valid materialized full-episode source with 25 frames at 10 FPS. Requiring 32 unique frames would exclude that episode, contrary to the frozen complete-matrix and failure-retention requirements.",
+  "affected_request_id": "11e131d922d968f9e2d2f87877b13a7bbaf70794ee3df833db75ed798101584a",
+  "source_video_sha256": "7abb810ca6d4ad7cec2494692cbeb5bebcd6a610576720cdc0353d4e77231be0",
+  "source_frame_count": 25,
+  "source_fps": 10.0,
+  "source_duration_seconds": 2.5,
+  "prospective_rule": "Always provide 32 evenly spaced sample positions. When a source contains fewer than 32 frames, preserve 32 positions with deterministic repeated frame indices rather than discarding the episode or inventing interpolated pixels.",
+  "reliability_accounting": "Record unique_sampled_frame_count, repeated_sample_count, and short_episode_source. The short source remains in the matrix and can increase evaluator uncertainty or abstention.",
+  "provider_called": false,
+  "data_uploaded": false,
+  "outcome_labels_accessed": false,
+  "predictions_generated": false,
+  "paid_execution_admitted": false,
+  "thresholds_changed": false,
+  "prompt_changed": false,
+  "scientific_legitimacy": "The source-format edge case was discovered by the required label-free pixel audit before any evaluator call or outcome unseal. The rule retains rather than removes an unfavorable or short example."
+}

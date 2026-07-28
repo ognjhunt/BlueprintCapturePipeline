@@ -1,0 +1,51 @@
+{
+  "schema_version": "policy_ranking_roboarena_droid_action_contract.v2",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "protocol_sha256": "6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066",
+  "shape": [16, 10],
+  "frequency_hz": 15.0,
+  "ordering": ["translation_xyz", "rotation_rot6d_two_columns", "gripper_open_close_state"],
+  "translation_units": "meters",
+  "rotation_semantics": "backward_framewise relative end-effector rotation encoded as continuous rot6d",
+  "coordinate_transform": "DROID Franka panda_link8 orientation postmultiplied by a 90 degree clockwise local Z rotation to OpenCV convention before relative-pose conversion",
+  "gripper_semantics": "dataset open-close state with 1 minus value applied only for dataset versions marked flipped; no-motion must use the observation-bound explicit hold state",
+  "temporal_alignment": "16 actions govern the 16 transitions following conditioning frame 0 and produce 17 total frames",
+  "normalization": {
+    "selected_external_transform": "none",
+    "evidence": [
+      "Pinned DROIDLeRobotDataset defaults action_normalization to None.",
+      "Pinned DROID policy post-training config explicitly sets action_normalization=None.",
+      "Pinned Cosmos forward-dynamics notebook instantiates DROIDLeRobotDataset without an override and sends robotics_sample action directly.",
+      "Pinned vLLM load_action_tensor converts to float32 and pad_action_to_dim adds model-width zero padding without rescaling."
+    ],
+    "bundled_quantile_stats_applied": false,
+    "dose_response_diagnostic_required": false,
+    "claim_boundary": "This resolves the pinned public raw DROID request path. It does not establish that every private training pipeline or future checkpoint uses identical preprocessing."
+  },
+  "model_width_padding": "zero padding after the 10 raw channels; padding is not an external action transform",
+  "required_controls": [
+    "recorded_or_live_frozen_candidate_policy",
+    "valid_no_motion_identity_rot6d_and_explicit_gripper_hold",
+    "shuffled_order",
+    "reversed_order",
+    "temporally_shifted_where_valid",
+    "real_distinct_policy_swapped_trace"
+  ],
+  "forbidden_controls": [
+    "literal_zero_rot6d",
+    "assumed_gripper_zero_hold",
+    "synthetic_constant_policy_swapped_trace",
+    "identical_action_tensor_for_policy_swap",
+    "unverified_action_scaling"
+  ],
+  "primary_source_files": [
+    {"name": "cosmos_action_readme", "sha256": "48df78f0531c6faa05c1435dcbcfc538163fbd8e94d5f59b5d9f2d1bd29e0ec2"},
+    {"name": "cosmos_fd_notebook", "sha256": "a5219902c1780311f1b987ca4ed84f6a8d13f3f4866f11ddc6edfe2b6d44966d"},
+    {"name": "framework_droid_dataset", "sha256": "19f58a2e1f1c4d24947ee8445cb78c65ff7a85fb58b91efef34ee3a10f22cb3b"},
+    {"name": "framework_droid_policy_config", "sha256": "9a69f10f5f0fb2b165437eccf1e4374920f7ca1b2becb87da2f0d9b2dec73f01"},
+    {"name": "vllm_action", "sha256": "4164f5074ba48e49eb631db6b43e531521cb112242d6dfcafd63fe9e5000adec"},
+    {"name": "vllm_pipeline", "sha256": "8a70b5d446315d2f6281bfacb4c332dac17cf256f813cbd26c4e01a105d41f49"}
+  ],
+  "outcome_labels_accessed": false,
+  "provider_called": false
+}
