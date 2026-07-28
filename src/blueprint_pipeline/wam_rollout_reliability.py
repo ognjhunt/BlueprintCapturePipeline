@@ -2,10 +2,12 @@
 
 Flow-based screen answering one question before any evaluator spend: does a
 generated rollout's visible motion agree with the commanded action stream in
-presence and timing? A rollout that fails is abstained from downstream
-judging — "abstaining when generated evidence is unreliable" at the evidence
-layer, in the spirit of SC3-Eval's action-consistency termination but without
-a learned inverse-dynamics model.
+presence and timing? A rollout that fails forces product-level abstention —
+"abstaining when generated evidence is unreliable" at the evidence layer, in
+the spirit of SC3-Eval's action-consistency termination but without a learned
+inverse-dynamics model. A preregistered diagnostic evaluator may still score a
+retained, technically valid failed rollout to measure how this gate relates to
+rank fidelity; that diagnostic score cannot erase the reliability failure.
 
 Scope limits, stated so callers do not over-claim:
 - No camera calibration is used, so image-space *direction* agreement is not
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, Sequence
 
 import numpy as np
 
@@ -36,7 +39,11 @@ FLAG_BLANK_FRAMES = "blank_frames"
 FLAG_STATIC_UNDER_COMMAND = "static_under_command"
 FLAG_MOTION_WITHOUT_COMMAND = "motion_without_command"
 FLAG_TIMING_DISAGREEMENT = "timing_disagreement"
+FLAG_TIMING_EVIDENCE_INSUFFICIENT = "timing_evidence_insufficient"
 FLAG_INVALID_ACTION_ROT6D = "invalid_action_rot6d"
+
+TIMING_SCOPE_WINDOW = "window"
+TIMING_SCOPE_SESSION = "session"
 
 
 @dataclass(frozen=True)
@@ -66,6 +73,7 @@ class RolloutReliabilityReport:
     motion_mean: float
     motion_max: float
     timing_correlation: float | None
+    timing_flag_scope: str
     spatial_std_mean: float
 
     def as_dict(self) -> dict:
@@ -80,7 +88,42 @@ class RolloutReliabilityReport:
             "motion_mean": self.motion_mean,
             "motion_max": self.motion_max,
             "timing_correlation": self.timing_correlation,
+            "timing_flag_scope": self.timing_flag_scope,
             "spatial_std_mean": self.spatial_std_mean,
+        }
+
+
+@dataclass(frozen=True)
+class SessionReliabilityThresholds:
+    """Prospective session-level timing rule; freeze explicitly per experiment."""
+
+    timing_correlation_min: float = 0.15
+    minimum_eligible_timing_windows: int = 3
+
+
+@dataclass(frozen=True)
+class SessionReliabilityReport:
+    session_id: str
+    n_windows: int
+    hard_failure_window_count: int
+    timing_eligible_window_count: int
+    timing_correlation_median: float | None
+    timing_correlation_values: tuple[float, ...]
+    flags: tuple[str, ...]
+    reliable: bool
+
+    def as_dict(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "n_windows": self.n_windows,
+            "hard_failure_window_count": self.hard_failure_window_count,
+            "timing_eligible_window_count": self.timing_eligible_window_count,
+            "timing_correlation_median": self.timing_correlation_median,
+            "timing_correlation_values": list(self.timing_correlation_values),
+            "flags": list(self.flags),
+            "reliable": self.reliable,
+            "timing_aggregation_unit": "session",
+            "timing_aggregation_statistic": "median_of_eligible_window_correlations",
         }
 
 
@@ -154,8 +197,17 @@ def assess_rollout_reliability(
     video_path: str | Path,
     actions: np.ndarray,
     thresholds: ReliabilityThresholds | None = None,
+    *,
+    timing_flag_scope: Literal["window", "session"] = TIMING_SCOPE_SESSION,
 ) -> RolloutReliabilityReport:
-    """Screen one generated rollout against its commanded action chunk."""
+    """Screen one generated rollout against its commanded action chunk.
+
+    Phase-B callers use the default ``session`` scope: correlation is recorded
+    here but cannot reject a single noisy window.  Historical reproduction of
+    the lab gate can request ``window`` explicitly.
+    """
+    if timing_flag_scope not in {TIMING_SCOPE_WINDOW, TIMING_SCOPE_SESSION}:
+        raise ValueError(f"unsupported_timing_flag_scope:{timing_flag_scope}")
     th = thresholds or ReliabilityThresholds()
     arr = np.asarray(actions, dtype=np.float64)
     energy = action_energy_series(arr)
@@ -197,7 +249,12 @@ def assess_rollout_reliability(
             and float(np.std(motion[:n])) > 0
         ):
             corr = float(np.corrcoef(energy[:n], motion[:n])[0, 1])
-            if commanded_active and corr < th.timing_correlation_min and FLAG_STATIC_UNDER_COMMAND not in flags:
+            if (
+                timing_flag_scope == TIMING_SCOPE_WINDOW
+                and commanded_active
+                and corr < th.timing_correlation_min
+                and FLAG_STATIC_UNDER_COMMAND not in flags
+            ):
                 flags.append(FLAG_TIMING_DISAGREEMENT)
 
     return RolloutReliabilityReport(
@@ -211,5 +268,57 @@ def assess_rollout_reliability(
         motion_mean=motion_mean,
         motion_max=motion_max,
         timing_correlation=corr,
+        timing_flag_scope=timing_flag_scope,
         spatial_std_mean=spatial_std,
+    )
+
+
+def assess_session_reliability(
+    session_id: str,
+    windows: Sequence[RolloutReliabilityReport],
+    thresholds: SessionReliabilityThresholds,
+) -> SessionReliabilityReport:
+    """Aggregate timing at the independent session unit.
+
+    Non-timing defects remain immediate hard failures. Timing correlation is
+    evaluated only from otherwise-valid windows, using a prospectively frozen
+    minimum count and median threshold. Insufficient timing evidence abstains.
+    """
+    if not session_id:
+        raise ValueError("session_id_required")
+    if thresholds.minimum_eligible_timing_windows <= 0:
+        raise ValueError("minimum_eligible_timing_windows_must_be_positive")
+    if not windows:
+        raise ValueError("session_windows_required")
+    if any(window.timing_flag_scope != TIMING_SCOPE_SESSION for window in windows):
+        raise ValueError("session_aggregation_requires_session_scoped_windows")
+
+    hard_flags: list[str] = []
+    hard_failure_windows = 0
+    correlations: list[float] = []
+    for window in windows:
+        window_hard_flags = [flag for flag in window.flags if flag != FLAG_TIMING_DISAGREEMENT]
+        if window_hard_flags:
+            hard_failure_windows += 1
+            hard_flags.extend(window_hard_flags)
+            continue
+        if window.timing_correlation is not None and np.isfinite(window.timing_correlation):
+            correlations.append(float(window.timing_correlation))
+
+    flags = list(dict.fromkeys(hard_flags))
+    median = float(np.median(correlations)) if correlations else None
+    if len(correlations) < thresholds.minimum_eligible_timing_windows:
+        flags.append(FLAG_TIMING_EVIDENCE_INSUFFICIENT)
+    elif median is not None and median < thresholds.timing_correlation_min:
+        flags.append(FLAG_TIMING_DISAGREEMENT)
+
+    return SessionReliabilityReport(
+        session_id=session_id,
+        n_windows=len(windows),
+        hard_failure_window_count=hard_failure_windows,
+        timing_eligible_window_count=len(correlations),
+        timing_correlation_median=median,
+        timing_correlation_values=tuple(correlations),
+        flags=tuple(flags),
+        reliable=not flags,
     )
