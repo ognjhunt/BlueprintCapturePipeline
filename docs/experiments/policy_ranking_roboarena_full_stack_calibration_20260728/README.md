@@ -167,3 +167,18 @@ single-use authorization. The existing Vast credential is accepted only under
 the user's explicit task-scoped exception: live validity and mode 0600 are
 proven, missing rotation metadata remains disclosed, and no provider-side
 rotation event is claimed.
+
+The exact-main v5 retry then loaded the pinned model and returned HTTP 200 for
+all seven pairs, but produced zero valid scientific rows. The runner checked an
+eleven-field schema after generation without transmitting that schema to vLLM;
+all seven differently shaped responses were therefore rejected. This is a
+transport-contract failure, not evaluator evidence, and the raw rejected
+preferences are not reinterpreted. The prospective v3 supersession is
+`cosmos_reasoner_structured_output_amendment_v3.json`. It binds vLLM's
+documented `json_schema` response format, the provider-visible prompt schema,
+the input manifest, and the post-generation validator to the same frozen schema
+digest, failing before any provider request on drift. It applies to every future
+Reasoner evaluator run and does not alter pair selection, field meanings,
+scoring, thresholds, or the diagnostic-only claim ceiling.
+Its deterministic amendment digest is
+`e07bcde4f12ee38edc42d0e41546cc63bc33d27f926605cdbba9f9e89161f163`.

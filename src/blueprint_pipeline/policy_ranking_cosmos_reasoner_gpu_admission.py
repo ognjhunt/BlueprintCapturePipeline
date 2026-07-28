@@ -21,7 +21,11 @@ from .paid_resource_admission import (
     build_paid_lane_admission,
     require_paid_resource_admission,
 )
-from .policy_ranking_evaluator_diagnostic import COSMOS_MODEL, COSMOS_REVISION
+from .policy_ranking_evaluator_diagnostic import (
+    COSMOS_MODEL,
+    COSMOS_REVISION,
+    PAIR_OUTPUT_SCHEMA,
+)
 from .policy_ranking_evaluator_diagnostic_cosmos_bundle import (
     MODEL_CONFIG_SHA256,
     NATIVE_REASONER_ARCHITECTURE,
@@ -298,6 +302,12 @@ def inspect_bundle(
         or input_manifest.get("claim_class") != "post_unseal_diagnostic_only"
     ):
         blockers.append("cosmos_reasoner_input_manifest_invalid")
+    expected_schema_sha256 = canonical_sha256(PAIR_OUTPUT_SCHEMA)
+    if not (
+        input_manifest.get("output_schema") == PAIR_OUTPUT_SCHEMA
+        and input_manifest.get("output_schema_sha256") == expected_schema_sha256
+    ):
+        blockers.append("cosmos_reasoner_output_schema_contract_invalid")
     runtime_source = str(runtime_manifest.get("source_commit") or "").strip().lower()
     receipt_source = str(receipt.get("source_commit") or "").strip().lower()
     if runtime_source != receipt_source:

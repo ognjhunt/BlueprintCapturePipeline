@@ -14,6 +14,7 @@ from .common import write_json
 from .policy_ranking_evaluator_diagnostic import (
     COSMOS_MODEL,
     COSMOS_REVISION,
+    PAIR_OUTPUT_SCHEMA,
     PAIR_PROMPT,
     diagnostic_protocol,
 )
@@ -171,6 +172,8 @@ def build_cosmos_reasoner_bundle(
         "pairs": runtime_pairs,
         "uniform_video_frames_per_episode": 32,
         "max_output_tokens": 4096,
+        "output_schema": PAIR_OUTPUT_SCHEMA,
+        "output_schema_sha256": canonical_sha256(PAIR_OUTPUT_SCHEMA),
         "policy_identity_present": False,
         "physical_outcome_present": False,
         "physical_ground_truth_pixels_present": False,
