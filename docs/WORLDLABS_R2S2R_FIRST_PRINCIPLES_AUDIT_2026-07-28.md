@@ -167,7 +167,7 @@ code today):
 | Provider-output evidence envelope | `evaluator_runtime_evidence.py` + `docs/EVALUATOR_RUNTIME_EVIDENCE_CONTRACT.md`; the admission rule "a declared completed result is never trusted as a substitute" (`docs/EVALUATOR_QUALIFICATION_WORKFLOW.md`) | An R2S2R-shaped rollout/privileged-state/contact-trace schema instance |
 | Provider qualification harness ("golden corpus") | `evaluator_qualification_workflow.py` (≥7 policy checkpoints, ≥4 sites, ≥20 matched trials/cell, frozen splits, teardown + billing reconciliation) and — the exact precedent — `docs/ROBOWORLD_EVALUATOR_INTEGRATION.md` with a frozen digest-pinned admission profile for an external evaluator backend | A `worldlabs_r2s2r` admission profile instance (a document + JSON profile, not new machinery) |
 | Rank-fidelity metrics (Pearson/Spearman/Kendall tau-b/MMRV/bootstrap CIs) | All implemented: `benchmark_uncertainty.py:30-34` (10,000-replicate hierarchical bootstrap), `decision_grade_ranking.py`, `robot_eval_calibration.py`, `docs/BLUEPRINT_BENCHMARK_PROTOCOL.md`; plus world-model-free control-arm rankers (`control_ranker.py`) the analysis never mentions | Nothing — except the *data* to compute them on (see §6.3) |
-| Physical-anchor ingestion | Provider-neutral `accepted_real_world_anchor.v1` schema declared across 8 modules with fixed join keys `(scenario_eval_run_id, policy_id, task_id, scenario_variation_instance_id)`; G1 capture kits (`g1_field_run_capture.py`, `g1_controlled_run_evidence.py`, `anchor_return_kit.py`) | **Operations, not schema**: `docs/external_anchor_candidate_registry_2026-07-20.json` records `blueprint_collects_real_world_task_outcomes: false`, `correlation_not_measured`, every candidate `blocked_candidate`. Kits are G1-specific, not robot-neutral. Closing this is already the repo's standing goal (`docs/goals/2026-07-02-sc3-eval-robot-policy-agnostic-service-plan.md` slices 2–3: human/owner-accepted anchors only, preregistered minimum-N, fail-closed `correlation_not_measured`) |
+| Physical-anchor ingestion | Provider-neutral `accepted_real_world_anchor.v1` schema declared across 8 modules with fixed join keys `(scenario_eval_run_id, policy_id, task_id, scenario_variation_instance_id)`; G1 capture producers (`g1_field_run_capture.py`, `g1_controlled_run_evidence.py`) plus a robot-neutral pre-populated return-kit intake (`anchor_return_kit.py`, documented as the generic bench return path in `docs/CUSTOMER_OUTPUT_CONTRACTS.md` §2) | **Operations, not schema**: `docs/external_anchor_candidate_registry_2026-07-20.json` records `blueprint_collects_real_world_task_outcomes: false`, `correlation_not_measured`, every candidate `blocked_candidate`. The capture producers are G1-specific; the return-kit intake is already robot-neutral. Closing this is already the repo's standing goal (`docs/goals/2026-07-02-sc3-eval-robot-policy-agnostic-service-plan.md` slices 2–3: human/owner-accepted anchors only, preregistered minimum-N, fail-closed `correlation_not_measured`) |
 | Simpler buyer product | `buyer_package_readout.py`, `buyer_claim_ceiling.py`, WebApp sync — already provider-opaque by design | Nothing structural |
 
 Conclusion (**inference**): the true incremental build for a real R2S2R
@@ -234,8 +234,9 @@ control.
 
 The source analysis lists physical-anchor ingestion seventh of eight builds.
 It should be first or second, and the work is operational (get real trials
-flowing through the existing `accepted_real_world_anchor.v1` schema; generalize
-the G1-specific kits), not schema design. This is not even a new priority: it
+flowing through the existing `accepted_real_world_anchor.v1` schema and the
+already-robot-neutral `anchor_return_kit.py` intake; generalize only the
+G1-specific capture producers), not schema design. This is not even a new priority: it
 is the repo's standing goal file
 (`docs/goals/2026-07-02-sc3-eval-robot-policy-agnostic-service-plan.md`), whose
 slices 2–3 (owner-accepted anchors, preregistered minimum-N, computed-only
@@ -313,8 +314,10 @@ before any provider access exists.
 The repo already concluded — before this announcement — that WAM-based ranking
 is not currently reliable and is sequenced second
 (`docs/policy_and_wam_benchmark_research_2026-07-26.md`: OSCAR validated
-open-loop only, r=0.750 on RoboArena; chained rollouts collapse; "policies
-first"). R2S2R corroborates that internal conclusion; it does not create it,
+open-loop only — Pearson r=0.852 / Spearman ρ=0.750 against the real RoboArena
+ranking per `VISION.md:89-98` and `README.md:1188-1191`; note that dated
+research snapshot mislabels the 0.750 Spearman value as Pearson — chained
+rollouts collapse; "policies first"). R2S2R corroborates that internal conclusion; it does not create it,
 and an unreleased third-party demo is not the trigger for deleting ~111k LOC of
 WAM lane plus ~127k LOC of GPU/provider infrastructure (together roughly 40-50%
 of `src/`). Some of that fleet also serves policy *hosting* (sealed customer
@@ -364,8 +367,10 @@ times. Nothing here writes speculative provider-integration code, consistent
 with house precedent.
 
 1. **Unblock physical-anchor collection** (operational). Get real matched
-   trials flowing through `accepted_real_world_anchor.v1`; generalize the
-   G1-only capture kits toward robot-neutral `physical_trial`-style intake.
+   trials flowing through `accepted_real_world_anchor.v1`, operating the
+   existing robot-neutral return-kit intake (`anchor_return_kit.py`); the only
+   generalization needed is the G1-only capture producers
+   (`g1_field_run_capture.py`, `g1_controlled_run_evidence.py`).
    This simultaneously (a) closes the current stack's unmeasured-rank-fidelity
    gap, (b) builds the instrument that qualifies any R2S2R provider, and
    (c) creates the negotiation asset. This is the standing goal file's
