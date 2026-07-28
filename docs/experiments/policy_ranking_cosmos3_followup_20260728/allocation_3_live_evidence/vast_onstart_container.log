@@ -1,0 +1,56 @@
+Tue Jul 28 06:57:03 UTC 2026
+Hit:1 http://security.ubuntu.com/ubuntu jammy-security InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu jammy InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu jammy-updates InRelease
+Hit:4 https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy InRelease
+Hit:5 http://archive.ubuntu.com/ubuntu jammy-backports InRelease
+Hit:6 https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64  InRelease
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+curl is already the newest version (7.81.0-1ubuntu1.25).
+less is already the newest version (590-1ubuntu0.22.04.3).
+locales is already the newest version (2.35-0ubuntu3.14).
+openssh-server is already the newest version (1:8.9p1-3ubuntu0.16).
+software-properties-common is already the newest version (0.99.22.9).
+sudo is already the newest version (1.9.9-1ubuntu2.6).
+tmux is already the newest version (3.2a-4ubuntu0.2).
+wget is already the newest version (1.21.2-2ubuntu1.4).
+0 upgraded, 0 newly installed, 0 to remove and 60 not upgraded.
+Reading package lists...
+Building dependency tree...
+Reading state information...
+git is already the newest version (1:2.34.1-1ubuntu1.17).
+rsync is already the newest version (3.2.7-0ubuntu0.22.04.7).
+0 upgraded, 0 newly installed, 0 to remove and 60 not upgraded.
+rm: cannot remove '/etc/forward_port2': No such file or directory
+BLUEPRINT_VAST_WORK_DIR:/workspace
+BLUEPRINT_VAST_ONSTART_STARTED
+Tue Jul 28 06:57:06 UTC 2026
+Server listening on 0.0.0.0 port 22.
+Server listening on :: port 22.
+Tue Jul 28 06:57:06 UTC 2026
+<!doctype html><html lang="en"><head><title>Example Domain</title><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href="https://iana.o
+BLUEPRINT_VAST_HEARTBEAT_OK
+NVIDIA RTX PRO 6000 Blackwell Workstation Edition, 590.48.01, 97887 MiB
+BLUEPRINT_VAST_GPU_SANITY_OK
+BLUEPRINT_VAST_DF_START
+Filesystem      Size  Used Avail Use% Mounted on
+overlay         250G   33M  250G   1% /
+BLUEPRINT_VAST_ISAAC_SMOKE_SKIPPED
+BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED
+Warning: Permanently added 'ssh9.vast.ai' (ED25519) to the list of known hosts.
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100  294k  100  294k    0     0   243k      0  0:00:01  0:00:01 --:--:--  244k
+BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED
+BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED
+INFO 07-28 06:57:22 [patch.py:252] NVFP4 W4A4 weight_scale NaN-clamp: installed.
+INFO 07-28 06:57:22 [patch.py:481] [cumem-cuda] CuMemAllocator._python_free_callback patched: asleep guard extended to all platforms.
+{"status": "completed"}
+BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:0
+BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:3697678
+BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK
+BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED
+BLUEPRINT_VAST_ONSTART_DONE

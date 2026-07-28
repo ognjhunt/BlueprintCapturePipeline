@@ -1,0 +1,235 @@
+{
+  "schema_version": "policy_ranking_cosmos_causal_screen.v1",
+  "status": "completed",
+  "role": "screening_not_confirmatory",
+  "thresholds_frozen_before_paid_output": {
+    "temporal_correlation_minimum": 0.1,
+    "excess_over_strongest_placebo_minimum": 0.05,
+    "same_seed_scene_difference_minimum": 0.01,
+    "minimum_independent_sessions": 17
+  },
+  "measurement": {
+    "scene_motion": "dense_farneback_flow_minus_spatial_median_global_flow",
+    "action_signal": "translation_norm_plus_rot6d_identity_deviation_plus_gripper_transition",
+    "same_seed_control": "each_active_condition_against_zero_action_video"
+  },
+  "rows": [
+    {
+      "condition": "recorded",
+      "seed": 0,
+      "request_id": "3e480e4f8a1e0d2e586c7c46313b1ab08c020ce5e188169f6ffa1b76428f4fa9",
+      "video_sha256": "b2397a5ba4ba7abb4fc795ef25bd355dace22a8de30a31aeadd65af16ff1d482",
+      "camera_compensated_motion_mean": 0.016318804817274213,
+      "own_action_temporal_correlation": 0.09455201196511391,
+      "placebo_action_correlations": {
+        "shuffled": 0.1549844520475427,
+        "reversed": -0.07736554021692434,
+        "policy_swapped": 0.3981463917352145
+      },
+      "strongest_placebo_correlation": 0.3981463917352145,
+      "excess_over_strongest_placebo": -0.30359437977010056,
+      "temporal_placebo_rejection_pass": false
+    },
+    {
+      "condition": "shuffled",
+      "seed": 0,
+      "request_id": "58dcb40a4783fe638511ca767ca220b076bfb7b1d6f8bfc8fef5c8a2cc9ad606",
+      "video_sha256": "ee6b53dafbf7fed4dc8b6c6398c1134e3d96b4d279105b1ccd31e2ba58825801",
+      "camera_compensated_motion_mean": 0.016141019761562347,
+      "own_action_temporal_correlation": -0.06431576610048693,
+      "placebo_action_correlations": {
+        "recorded": 0.013973678961136705,
+        "reversed": -0.0492219894413287,
+        "policy_swapped": 0.37070646718636097
+      },
+      "strongest_placebo_correlation": 0.37070646718636097,
+      "excess_over_strongest_placebo": -0.4350222332868479,
+      "temporal_placebo_rejection_pass": false
+    },
+    {
+      "condition": "reversed",
+      "seed": 0,
+      "request_id": "71b6ac10944480b93397ec5a05100988a1130df4240c90bfa9327834d5c3965b",
+      "video_sha256": "bfd25fecf8c5dadcf5cc56eb7b9e23bbc8221b50ef1aa950d1755dce5e1c9398",
+      "camera_compensated_motion_mean": 0.016468955553136766,
+      "own_action_temporal_correlation": -0.03001977433749545,
+      "placebo_action_correlations": {
+        "recorded": 0.03341036840919274,
+        "shuffled": -0.09932612784398887,
+        "policy_swapped": 0.41665851850029884
+      },
+      "strongest_placebo_correlation": 0.41665851850029884,
+      "excess_over_strongest_placebo": -0.4466782928377943,
+      "temporal_placebo_rejection_pass": false
+    },
+    {
+      "condition": "policy_swapped",
+      "seed": 0,
+      "request_id": "d8fc5e14bdccb15b2d2cfdd5e321d062d4701f74ec33dcda27b316917b7633e0",
+      "video_sha256": "16eb1b33d055ca72aece788d61bda7f4787e22b7034dff0b99fae08152eb0207",
+      "camera_compensated_motion_mean": 0.14622889790916815,
+      "own_action_temporal_correlation": 0.0411154244786852,
+      "placebo_action_correlations": {
+        "recorded": 0.8480057513257512,
+        "shuffled": 0.0542290281746328,
+        "reversed": -0.6902629822905996
+      },
+      "strongest_placebo_correlation": 0.8480057513257512,
+      "excess_over_strongest_placebo": -0.806890326847066,
+      "temporal_placebo_rejection_pass": false
+    },
+    {
+      "condition": "recorded",
+      "seed": 1,
+      "request_id": "3f768d6f777b1b5f2f3d647044ef573231c462a66a56638d2f2911aa982fb996",
+      "video_sha256": "9de1e6d57eaece71dbb56622af80366ce996d75ece97f1db8aba8b7fcf91c92d",
+      "camera_compensated_motion_mean": 0.019204471172997728,
+      "own_action_temporal_correlation": 0.3448341709980577,
+      "placebo_action_correlations": {
+        "shuffled": -0.01089205833163258,
+        "reversed": -0.24629585541733562,
+        "policy_swapped": 0.023629441481650755
+      },
+      "strongest_placebo_correlation": 0.023629441481650755,
+      "excess_over_strongest_placebo": 0.32120472951640694,
+      "temporal_placebo_rejection_pass": true
+    },
+    {
+      "condition": "shuffled",
+      "seed": 1,
+      "request_id": "40dc2b4b20d7cd6f083a71580551defc6eb243b01983bdcc58c9fcd34b076e8b",
+      "video_sha256": "b9d26c39c9c82829a8a713253367fda8623c7b643805247d0925a40909bccad9",
+      "camera_compensated_motion_mean": 0.01992094615707174,
+      "own_action_temporal_correlation": -0.06360429509366702,
+      "placebo_action_correlations": {
+        "recorded": 0.32967622310854355,
+        "reversed": -0.24034963156878708,
+        "policy_swapped": -0.08120314382156738
+      },
+      "strongest_placebo_correlation": 0.32967622310854355,
+      "excess_over_strongest_placebo": -0.39328051820221055,
+      "temporal_placebo_rejection_pass": false
+    },
+    {
+      "condition": "reversed",
+      "seed": 1,
+      "request_id": "bc2b696714150b62c42671144e7b0beb0c52dbad6c094f88505643baacc4815c",
+      "video_sha256": "067ffbee50b33ecd127d49bb235d724614d29f0e2d55aae4cf4c5f5aa3098cfa",
+      "camera_compensated_motion_mean": 0.01925618908717297,
+      "own_action_temporal_correlation": -0.3239242485041219,
+      "placebo_action_correlations": {
+        "recorded": 0.4002381572103268,
+        "shuffled": -0.04382301530799819,
+        "policy_swapped": -0.07360464789044437
+      },
+      "strongest_placebo_correlation": 0.4002381572103268,
+      "excess_over_strongest_placebo": -0.7241624057144487,
+      "temporal_placebo_rejection_pass": false
+    },
+    {
+      "condition": "policy_swapped",
+      "seed": 1,
+      "request_id": "d116fe4559ed45167df8c97394d263dad24c5aadcef7363fe2bf00b6392f9686",
+      "video_sha256": "0d9bf070d9c726e58e96c3b32f0d4d87cc29056a2f82dcde394b836b62f81214",
+      "camera_compensated_motion_mean": 0.16847408842295408,
+      "own_action_temporal_correlation": -0.09079874324395845,
+      "placebo_action_correlations": {
+        "recorded": 0.6406561984977304,
+        "shuffled": -0.022072406700123854,
+        "reversed": -0.8287398859495239
+      },
+      "strongest_placebo_correlation": 0.6406561984977304,
+      "excess_over_strongest_placebo": -0.7314549417416888,
+      "temporal_placebo_rejection_pass": false
+    }
+  ],
+  "same_seed_scene_rows": [
+    {
+      "condition": "recorded",
+      "seed": 0,
+      "against": "zero",
+      "mean_absolute_scene_difference": 0.051774393767118454,
+      "maximum_absolute_scene_difference": 0.08440161496400833,
+      "scene_response_pass": true
+    },
+    {
+      "condition": "shuffled",
+      "seed": 0,
+      "against": "zero",
+      "mean_absolute_scene_difference": 0.05177135393023491,
+      "maximum_absolute_scene_difference": 0.08438941836357117,
+      "scene_response_pass": true
+    },
+    {
+      "condition": "reversed",
+      "seed": 0,
+      "against": "zero",
+      "mean_absolute_scene_difference": 0.051759447902441025,
+      "maximum_absolute_scene_difference": 0.08437800407409668,
+      "scene_response_pass": true
+    },
+    {
+      "condition": "policy_swapped",
+      "seed": 0,
+      "against": "zero",
+      "mean_absolute_scene_difference": 0.0570802167057991,
+      "maximum_absolute_scene_difference": 0.10063622891902924,
+      "scene_response_pass": true
+    },
+    {
+      "condition": "recorded",
+      "seed": 1,
+      "against": "zero",
+      "mean_absolute_scene_difference": 0.04669349268078804,
+      "maximum_absolute_scene_difference": 0.06593738496303558,
+      "scene_response_pass": true
+    },
+    {
+      "condition": "shuffled",
+      "seed": 1,
+      "against": "zero",
+      "mean_absolute_scene_difference": 0.04669395461678505,
+      "maximum_absolute_scene_difference": 0.06593077629804611,
+      "scene_response_pass": true
+    },
+    {
+      "condition": "reversed",
+      "seed": 1,
+      "against": "zero",
+      "mean_absolute_scene_difference": 0.04667634889483452,
+      "maximum_absolute_scene_difference": 0.06595804542303085,
+      "scene_response_pass": true
+    },
+    {
+      "condition": "policy_swapped",
+      "seed": 1,
+      "against": "zero",
+      "mean_absolute_scene_difference": 0.04599190503358841,
+      "maximum_absolute_scene_difference": 0.07045163214206696,
+      "scene_response_pass": true
+    }
+  ],
+  "gates": {
+    "nonidentical_scene_response": true,
+    "directional_temporal_placebo_rejection": false,
+    "seed_robustness": false
+  },
+  "seed_robustness_by_condition": {
+    "recorded": false,
+    "shuffled": false,
+    "reversed": false,
+    "policy_swapped": false
+  },
+  "screen_passed": false,
+  "independent_session_count": 1,
+  "confirmatory_power_sufficient": false,
+  "powered_causal_gate_passed": false,
+  "cosmos_wam_qualification": "inconclusive",
+  "evaluator_eligible": false,
+  "benchmark_labels_seen": false,
+  "policy_identity_seen": false,
+  "task_success_scored": false,
+  "blockers": [],
+  "claim_boundary": "A one-session label-blind falsification screen cannot establish the frozen 95-percent causal-validity gates, even if every descriptive screen passes.",
+  "report_sha256": "e1a88a52477471aac1d8ed0bb5876fe7f1defbfa0af0c8fcfd65ff338009a5f0"
+}

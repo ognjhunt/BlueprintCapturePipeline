@@ -1,0 +1,39 @@
+{
+  "schema_version": "policy_ranking_cosmos3_followup_provider_zero.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "checked_at": "2026-07-28T02:09:24-0500",
+  "vast": {
+    "query": "authenticated GET /api/v0/instances/",
+    "response": [],
+    "global_live_instance_count": 0,
+    "global_inventory_zero": true,
+    "allocation_3_instance_id": 46084636,
+    "adapter_destroy_http_status": 200,
+    "watchdog_final_status": "provider_terminal",
+    "watchdog_process_present_after_close": false,
+    "continuing_spend_from_run": false
+  },
+  "digitalocean_spaces": {
+    "scope": "blueprint/codex/policy-ranking-cosmos3-followup-20260728/",
+    "task_prefix_object_count": 0,
+    "task_prefix_objects": [],
+    "allocation_3_bundle_object_deleted": true,
+    "allocation_3_output_object_deleted": true,
+    "exact_bundle_signed_get_http_status_after_delete": 404,
+    "exact_output_signed_get_http_status_after_delete": 404,
+    "local_signed_url_files_removed": true,
+    "continuing_task_object_storage_detected": false
+  },
+  "gcp_storage_attempt": {
+    "object_created": false,
+    "reason": "upload_rejected_before_object_creation_billing_account_disabled",
+    "continuing_task_spend_detected": false
+  },
+  "evaluator_providers": {
+    "gpt_5_mini_requests": 0,
+    "persistent_compute_resource_created": false,
+    "continuing_task_spend_detected": false
+  },
+  "provider_zero_proven": true,
+  "claim_boundary": "Fresh resource inventory and exact task-prefix absence prove no continuing task-scoped GPU or object-storage resource. Estimated execution cost is not a settled provider invoice, and provider-zero is not scientific ranking evidence."
+}
