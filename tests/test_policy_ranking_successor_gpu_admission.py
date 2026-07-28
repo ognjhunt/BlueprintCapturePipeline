@@ -86,6 +86,12 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
 
     def fake_runner(**kwargs: Any) -> dict[str, Any]:
         captured.update(kwargs)
+        consumption = kwargs["pre_provider_mutation_hook"]()
+        if consumption["status"] != "consumed":
+            return {
+                "status": "blocked",
+                "blockers": consumption.get("blockers") or [],
+            }
         return {"status": "completed", "blockers": []}
 
     monkeypatch.setattr(admission, "run_vast_wam_authorized_runner", fake_runner)
@@ -108,6 +114,7 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
         encoding="utf-8",
     )
     preflight = _load("vast_compute_preflight.json")
+    monkeypatch.setattr(admission.time, "time", lambda: float(preflight["observed_at_epoch"]) + 1)
     result = admission.run_successor_gpu_lane(
         authorization_path=EXPERIMENT / "compute_authorization.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
@@ -142,6 +149,7 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     assert captured["max_compute_cap"] == 0
     assert captured["gpu_selection_policy"]["allowed_gpu_keywords"] == ("RTX PRO 6000",)
     assert captured["require_independent_watchdog"] is True
+    assert result["authorization_consumption"]["status"] == "consumed"
     written_admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
     assert written_admission["session_live_limit"]["prior_live_runtime_minutes_ceiling"] == 2
     assert written_admission["session_budget_preflight"]["status"] == "passed"
@@ -170,6 +178,135 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     )
     assert second["status"] == "blocked"
     assert second["blockers"] == ["successor_compute_authorization_already_consumed"]
+
+
+def test_successor_lane_does_not_consume_authorization_when_staging_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    consumption_root = tmp_path / "authority-consumption"
+    monkeypatch.setattr(admission, "AUTHORIZATION_CONSUMPTION_ROOT", consumption_root)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
+
+    def fake_runner(**kwargs: Any) -> dict[str, Any]:
+        assert callable(kwargs["pre_provider_mutation_hook"])
+        return {
+            "status": "blocked",
+            "blockers": ["provider_bundle_fetch_url_unreachable"],
+            "provider_mutations_performed": 0,
+        }
+
+    monkeypatch.setattr(admission, "run_vast_wam_authorized_runner", fake_runner)
+    budget = tmp_path / "budget.json"
+    budget.write_text('{"attempts": []}', encoding="utf-8")
+    preflight = _load("vast_compute_preflight.json")
+
+    result = admission.run_successor_gpu_lane(
+        authorization_path=EXPERIMENT / "compute_authorization.json",
+        environment_path=EXPERIMENT / "environment_and_source_manifest.json",
+        smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
+        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
+        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
+        provider_bundle_receipt_path=(
+            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
+        ),
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "adapter.json",
+        job_dir=tmp_path / "job",
+        public_base_url="https://expired.example.test",
+        token_file=tmp_path / "token",
+        secret_env_file=tmp_path / "urls.env",
+        output_path=tmp_path / "output.zip",
+        session_budget_ledger=budget,
+        expected_source_commit="d" * 40,
+        execute=True,
+        observed_now_epoch=float(preflight["observed_at_epoch"]) + 1,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["authorization_consumption"]["status"] == "not_consumed"
+    assert result["blockers"] == ["provider_bundle_fetch_url_unreachable"]
+    assert not consumption_root.exists()
+
+
+def test_successor_lane_rechecks_preflight_age_before_consumption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    consumption_root = tmp_path / "authority-consumption"
+    monkeypatch.setattr(admission, "AUTHORIZATION_CONSUMPTION_ROOT", consumption_root)
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_API_CALLS", "true")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH", "true")
+
+    def fake_runner(**kwargs: Any) -> dict[str, Any]:
+        consumption = kwargs["pre_provider_mutation_hook"]()
+        return {
+            "status": "blocked",
+            "blockers": consumption.get("blockers") or [],
+            "provider_mutations_performed": 0,
+        }
+
+    monkeypatch.setattr(admission, "run_vast_wam_authorized_runner", fake_runner)
+    budget = tmp_path / "budget.json"
+    budget.write_text('{"attempts": []}', encoding="utf-8")
+    preflight = _load("vast_compute_preflight.json")
+    observed = float(preflight["observed_at_epoch"])
+    monkeypatch.setattr(
+        admission.time,
+        "time",
+        lambda: observed + admission.MAX_PREFLIGHT_AGE_SECONDS + 1,
+    )
+
+    result = admission.run_successor_gpu_lane(
+        authorization_path=EXPERIMENT / "compute_authorization.json",
+        environment_path=EXPERIMENT / "environment_and_source_manifest.json",
+        smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
+        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
+        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
+        provider_bundle_receipt_path=(
+            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
+        ),
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "adapter.json",
+        job_dir=tmp_path / "job",
+        public_base_url="https://example.test",
+        token_file=tmp_path / "token",
+        secret_env_file=tmp_path / "urls.env",
+        output_path=tmp_path / "output.zip",
+        session_budget_ledger=budget,
+        expected_source_commit="e" * 40,
+        execute=True,
+        observed_now_epoch=observed + 1,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["authorization_consumption"]["status"] == "blocked"
+    assert result["blockers"] == [
+        "successor_vast_preflight_stale_or_future_at_provider_mutation"
+    ]
+    assert not consumption_root.exists()
+
+
+def test_authorization_publish_failure_leaves_no_consumed_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    consumption_root = tmp_path / "authority-consumption"
+    monkeypatch.setattr(admission, "AUTHORIZATION_CONSUMPTION_ROOT", consumption_root)
+    monkeypatch.setattr(
+        admission.os,
+        "link",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("link failed")),
+    )
+
+    result = admission._consume_authorization_once(
+        _load("compute_authorization.json"),
+        expected_source_commit="f" * 40,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["successor_authorization_consumption_write_failed"]
+    assert list(consumption_root.iterdir()) == []
 
 
 def test_successor_lane_checks_provider_env_before_consuming_authorization(
