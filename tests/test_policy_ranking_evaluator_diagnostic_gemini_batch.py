@@ -5,8 +5,8 @@ import sys
 import types
 from pathlib import Path
 
-from blueprint_pipeline.policy_ranking_evaluator_diagnostic import PAIR_OUTPUT_SCHEMA
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic_gemini_batch import (
+    BATCH_RESPONSE_SCHEMA,
     _build_inline_request,
     collect_pilot,
 )
@@ -36,7 +36,8 @@ def test_gemini_batch_request_uses_two_videos_without_policy_identity() -> None:
     assert "secret-a" not in encoded
     assert "secret-b" not in encoded
     assert request["config"]["response_mime_type"] == "application/json"
-    assert request["config"]["response_schema"] == PAIR_OUTPUT_SCHEMA
+    assert request["config"]["response_schema"] == BATCH_RESPONSE_SCHEMA
+    assert "additionalProperties" not in request["config"]["response_schema"]
     assert "response_json_schema" not in request["config"]
 
 

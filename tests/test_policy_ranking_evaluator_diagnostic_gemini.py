@@ -3,8 +3,14 @@ from __future__ import annotations
 import json
 import types
 
+import pytest
+
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic import PAIR_OUTPUT_SCHEMA
-from blueprint_pipeline.policy_ranking_evaluator_diagnostic_gemini import score_canary
+from blueprint_pipeline.policy_ranking_evaluator_diagnostic_gemini import (
+    GeminiDiagnosticError,
+    _validate_payload,
+    score_canary,
+)
 
 
 def _payload() -> dict:
@@ -62,3 +68,10 @@ def test_gemini_canary_uses_native_videos_and_records_usage() -> None:
     assert result["usage"]["standard_cost_usd"] > 0
     assert result["policy_identity_sent_to_provider"] is False
     assert result["physical_ground_truth_pixels_sent_to_provider"] is False
+
+
+def test_gemini_payload_rejects_unregistered_extra_fields() -> None:
+    payload = _payload()
+    payload["explanation"] = "unregistered"
+    with pytest.raises(GeminiDiagnosticError, match="structured_fields_not_exact"):
+        _validate_payload(payload)

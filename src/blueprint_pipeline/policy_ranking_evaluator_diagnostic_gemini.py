@@ -118,6 +118,9 @@ def _response_usage(response: Any) -> dict[str, Any]:
 
 
 def _validate_payload(payload: Mapping[str, Any]) -> None:
+    expected = set(PAIR_OUTPUT_SCHEMA["required"])
+    if set(payload) != expected:
+        raise GeminiDiagnosticError("structured_fields_not_exact")
     for field in PAIR_OUTPUT_SCHEMA["required"]:
         if field not in payload:
             raise GeminiDiagnosticError(f"structured_field_missing:{field}")

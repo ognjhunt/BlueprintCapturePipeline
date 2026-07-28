@@ -31,6 +31,9 @@ from .policy_ranking_roboarena_calibration import canonical_sha256
 
 
 SCHEMA_VERSION = "policy_ranking_gemini_pair_batch.v1"
+BATCH_RESPONSE_SCHEMA = {
+    key: value for key, value in PAIR_OUTPUT_SCHEMA.items() if key != "additionalProperties"
+}
 TERMINAL_STATES = {
     "JOB_STATE_SUCCEEDED",
     "JOB_STATE_FAILED",
@@ -68,7 +71,7 @@ def _build_inline_request(
         metadata={"pair_id": str(pair["pair_id"])},
         config=types_module.GenerateContentConfig(
             response_mime_type="application/json",
-            response_schema=PAIR_OUTPUT_SCHEMA,
+            response_schema=BATCH_RESPONSE_SCHEMA,
             max_output_tokens=MAX_OUTPUT_TOKENS,
             thinking_config=types_module.ThinkingConfig(
                 thinking_level="MEDIUM", include_thoughts=False
