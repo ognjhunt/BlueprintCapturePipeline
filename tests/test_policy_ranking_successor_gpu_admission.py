@@ -94,6 +94,43 @@ def test_successor_gpu_admission_accepts_only_frozen_rtx_envelope() -> None:
     assert result["request_budget"]["total_initial_generation_request_count"] == 12
 
 
+def test_successor_gpu_admission_accepts_signed_allocation_3_retry() -> None:
+    preflight = _load("vast_compute_preflight.json")
+    result = admission.build_successor_gpu_admission(
+        authorization=_load("compute_authorization_allocation_3.json"),
+        environment=_load("environment_and_source_manifest.json"),
+        smoke_inventory=_load("smoke_request_inventory.json"),
+        provider_preflight=preflight,
+        bundle_inspection=_inspect_bundle(),
+        expected_source_commit="b" * 40,
+        execute=True,
+        observed_now_epoch=float(preflight["observed_at_epoch"]) + 1,
+    )
+
+    assert result["status"] == "admitted"
+    assert result["authorization"]["status"] == "accepted"
+    assert result["blockers"] == []
+
+
+def test_successor_gpu_admission_rejects_mismatched_retry_identity() -> None:
+    preflight = _load("vast_compute_preflight.json")
+    authorization = _load("compute_authorization_allocation_3.json")
+    authorization["allocation_index"] = 2
+    result = admission.build_successor_gpu_admission(
+        authorization=authorization,
+        environment=_load("environment_and_source_manifest.json"),
+        smoke_inventory=_load("smoke_request_inventory.json"),
+        provider_preflight=preflight,
+        bundle_inspection=_inspect_bundle(),
+        expected_source_commit="b" * 40,
+        execute=True,
+        observed_now_epoch=float(preflight["observed_at_epoch"]) + 1,
+    )
+
+    assert result["status"] == "blocked"
+    assert "successor_compute_authorization_id_invalid" in result["blockers"]
+
+
 def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
