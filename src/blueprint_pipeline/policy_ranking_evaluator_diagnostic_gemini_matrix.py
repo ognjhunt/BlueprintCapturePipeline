@@ -224,6 +224,7 @@ def submit_matrix_batch(
     *,
     api_key_file: str | Path,
     receipt_path: str | Path,
+    source_commit: str,
 ) -> dict[str, Any]:
     if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
         raise GeminiMatrixError(f"missing_env_{GATE_ENV}")
@@ -311,7 +312,8 @@ def submit_matrix_batch(
         "uploads": ledger["uploads"],
         "media_ledger_sha256": ledger["ledger_sha256"],
         "submitted_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "source_commit": ledger["source_commit"],
+        "media_staging_source_commit": ledger["source_commit"],
+        "submission_source_commit": source_commit,
         "provider_called": True,
         "data_uploaded": True,
         "policy_identity_sent_to_provider": False,
@@ -344,6 +346,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     submit.add_argument("--ledger", required=True)
     submit.add_argument("--api-key-file", required=True)
     submit.add_argument("--receipt", required=True)
+    submit.add_argument("--source-commit", required=True)
     args = parser.parse_args(argv)
     if args.command == "upload":
         result = upload_matrix_media(
@@ -366,6 +369,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.loads(Path(args.ledger).read_text(encoding="utf-8")),
             api_key_file=args.api_key_file,
             receipt_path=args.receipt,
+            source_commit=args.source_commit,
         )
     print(json.dumps({key: value for key, value in result.items() if key not in {"uploads", "deletions"}}))
     return (

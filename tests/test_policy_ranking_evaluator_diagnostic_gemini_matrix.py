@@ -58,6 +58,7 @@ def test_matrix_submission_is_idempotent_from_existing_valid_receipt(
         {},
         api_key_file=tmp_path / "unused",
         receipt_path=receipt,
+        source_commit="e" * 40,
     )
 
     assert result == previous
