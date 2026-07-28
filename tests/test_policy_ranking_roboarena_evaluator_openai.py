@@ -9,7 +9,9 @@ from blueprint_pipeline.policy_ranking_roboarena_evaluator_openai import (
     _score_one,
     GATE_ENV,
     evaluator_contract,
+    evaluator_contract_v3,
     run_evaluator_inventory,
+    supersede_schema_inventory_v4,
     supersede_transport_inventory_v3,
 )
 from blueprint_pipeline.policy_ranking_roboarena_calibration import canonical_sha256
@@ -23,6 +25,7 @@ def test_contract_freezes_mini_snapshot_and_label_blind_payload() -> None:
     assert contract["benchmark_outcomes_in_provider_payload"] is False
     assert contract["physical_ground_truth_pixels_in_provider_payload"] is False
     assert contract["idempotency_header"] == "request_id"
+    assert "uniqueItems" not in contract["output_schema"]["properties"]["artifact_flags"]
     amendment = json.loads(
         (
             Path(__file__).parents[1]
@@ -30,8 +33,17 @@ def test_contract_freezes_mini_snapshot_and_label_blind_payload() -> None:
             / "evaluator_transport_amendment_v3.json"
         ).read_text(encoding="utf-8")
     )
-    assert amendment["new_evaluator_digest"] == contract["evaluator_digest"]
+    assert amendment["new_evaluator_digest"] == evaluator_contract_v3()["evaluator_digest"]
     assert amendment["prompt_changed"] is False
+    schema_amendment = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/experiments/policy_ranking_roboarena_full_stack_calibration_20260728"
+            / "evaluator_schema_amendment_v4.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert schema_amendment["new_evaluator_digest"] == contract["evaluator_digest"]
+    assert schema_amendment["semantic_output_contract_changed"] is False
 
 
 def test_score_sends_only_registered_metadata_and_32_audited_images(tmp_path: Path) -> None:
@@ -154,6 +166,70 @@ def test_transport_v3_supersession_rebinds_idempotent_request_before_provider(
     assert "prior_inventory_provider_already_called" in blocked["blockers"]
 
 
+def test_schema_v4_supersession_requires_zero_row_failed_canary(tmp_path: Path) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"audited")
+    import hashlib
+
+    prior_v2 = {
+        "schema_version": "policy_ranking_roboarena_evaluator_inventory.v2",
+        "status": "ready",
+        "evaluator": {"evaluator_digest": "old-digest"},
+        "request_count": 1,
+        "requests": [
+            {
+                "request_id": "old-request-id",
+                "source_request_id": "source-id",
+                "cropped_output_sha256": "crop-digest",
+                "task_instruction": "move object",
+                "frames": [
+                    {
+                        "path": str(frame),
+                        "sha256": hashlib.sha256(frame.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        ],
+        "blockers": [],
+        "provider_called": False,
+        "data_uploaded": False,
+        "outcome_labels_accessed": False,
+    }
+    prior_v2["inventory_sha256"] = canonical_sha256(prior_v2)
+    prior_v3 = supersede_transport_inventory_v3(prior_v2, expected_request_count=1)
+    failed_run = {
+        "schema_version": "policy_ranking_roboarena_evaluator_run.v3",
+        "status": "blocked",
+        "inventory_sha256": prior_v3["inventory_sha256"],
+        "completed_request_count": 0,
+        "failures": [{"error_type": "BadRequestError"}],
+        "provider_called": True,
+        "outcome_labels_accessed": False,
+    }
+    failed_run["run_sha256"] = canonical_sha256(failed_run)
+    diagnostic = {
+        "diagnostic": "text_only_exact_model_and_structured_schema",
+        "status": "failed",
+        "experiment_pixels_uploaded": False,
+        "outcome_labels_accessed": False,
+        "error": {
+            "provider_error_code": "invalid_json_schema",
+            "provider_error_param": "text.format.schema",
+        },
+    }
+    amended = supersede_schema_inventory_v4(
+        prior_v3,
+        failed_run,
+        diagnostic,
+        schema_diagnostic_file_sha256="d" * 64,
+        expected_request_count=1,
+    )
+    assert amended["status"] == "ready"
+    assert amended["schema_version"].endswith(".v4")
+    assert amended["evaluator"] == evaluator_contract()
+    assert amended["schema_amendment"]["semantic_output_contract_changed"] is False
+
+
 def test_live_runner_exact_cap_and_digest_valid_resume_are_idempotent(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -187,7 +263,7 @@ def test_live_runner_exact_cap_and_digest_valid_resume_are_idempotent(
         "deterministic_safety_abstention_recommended": False,
     }
     inventory = {
-        "schema_version": "policy_ranking_roboarena_evaluator_inventory.v3",
+        "schema_version": "policy_ranking_roboarena_evaluator_inventory.v4",
         "status": "ready",
         "evaluator": contract,
         "request_count": 1,

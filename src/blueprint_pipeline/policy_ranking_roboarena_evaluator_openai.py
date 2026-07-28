@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import hashlib
 import importlib.metadata
 import json
@@ -75,7 +76,6 @@ OUTPUT_SCHEMA: dict[str, Any] = {
         },
         "artifact_flags": {
             "type": "array",
-            "uniqueItems": True,
             "items": {
                 "type": "string",
                 "enum": [
@@ -119,15 +119,17 @@ OUTPUT_SCHEMA: dict[str, Any] = {
         "abstention_factors",
     ],
 }
+OUTPUT_SCHEMA_V3 = copy.deepcopy(OUTPUT_SCHEMA)
+OUTPUT_SCHEMA_V3["properties"]["artifact_flags"]["uniqueItems"] = True
 
 
-def evaluator_contract() -> dict[str, Any]:
+def _evaluator_contract(*, schema_version: str, output_schema: Mapping[str, Any]) -> dict[str, Any]:
     contract = {
-        "schema_version": "policy_ranking_roboarena_evaluator_contract.v3",
+        "schema_version": schema_version,
         "model": MODEL,
         "prompt": PROMPT,
         "prompt_sha256": hashlib.sha256(PROMPT.encode("utf-8")).hexdigest(),
-        "output_schema": OUTPUT_SCHEMA,
+        "output_schema": dict(output_schema),
         "frame_count": 32,
         "image_detail": "low",
         "reasoning_effort": REASONING_EFFORT,
@@ -141,6 +143,22 @@ def evaluator_contract() -> dict[str, Any]:
     }
     contract["evaluator_digest"] = canonical_sha256(contract)
     return contract
+
+
+def evaluator_contract() -> dict[str, Any]:
+    return _evaluator_contract(
+        schema_version="policy_ranking_roboarena_evaluator_contract.v4",
+        output_schema=OUTPUT_SCHEMA,
+    )
+
+
+def evaluator_contract_v3() -> dict[str, Any]:
+    """Return the immutable failed-canary transport contract."""
+
+    return _evaluator_contract(
+        schema_version="policy_ranking_roboarena_evaluator_contract.v3",
+        output_schema=OUTPUT_SCHEMA_V3,
+    )
 
 
 def _secure_file(path: str | Path) -> Path:
@@ -271,7 +289,7 @@ def build_evaluator_inventory(
     if len(rows) != 441:
         blockers.append(f"evaluator_request_count_expected_441_got_{len(rows)}")
     result: dict[str, Any] = {
-        "schema_version": "policy_ranking_roboarena_evaluator_inventory.v2",
+        "schema_version": "policy_ranking_roboarena_evaluator_inventory.v4",
         "status": "ready" if not blockers else "blocked",
         "experiment_id": phase_a_inventory.get("experiment_id"),
         "protocol_sha256": phase_a_inventory.get("protocol_sha256"),
@@ -322,7 +340,7 @@ def supersede_transport_inventory_v3(
     if prior.get("outcome_labels_accessed") is not False:
         blockers.append("prior_inventory_outcomes_already_accessed")
 
-    contract = evaluator_contract()
+    contract = evaluator_contract_v3()
     former_evaluator_digest = str(prior.get("evaluator", {}).get("evaluator_digest") or "")
     if former_evaluator_digest == contract["evaluator_digest"]:
         blockers.append("prior_inventory_already_uses_transport_v3")
@@ -385,6 +403,138 @@ def supersede_transport_inventory_v3(
                 "schema_changed": False,
                 "sampling_changed": False,
                 "paid_execution_admitted": False,
+                "provider_called": False,
+                "outcome_labels_accessed": False,
+            },
+        }
+    )
+    result["inventory_sha256"] = canonical_sha256(result)
+    return result
+
+
+def supersede_schema_inventory_v4(
+    prior_inventory: Mapping[str, Any],
+    failed_run: Mapping[str, Any],
+    schema_diagnostic: Mapping[str, Any],
+    *,
+    schema_diagnostic_file_sha256: str,
+    expected_request_count: int = 441,
+) -> dict[str, Any]:
+    """Replace only the provider-invalid uniqueness keyword after a zero-row canary."""
+
+    blockers: list[str] = []
+    prior = dict(prior_inventory)
+    prior_sha = str(prior.get("inventory_sha256") or "")
+    if (
+        canonical_sha256({key: value for key, value in prior.items() if key != "inventory_sha256"})
+        != prior_sha
+    ):
+        blockers.append("prior_inventory_digest_invalid")
+    if (
+        prior.get("schema_version") != "policy_ranking_roboarena_evaluator_inventory.v3"
+        or prior.get("evaluator") != evaluator_contract_v3()
+    ):
+        blockers.append("prior_inventory_not_exact_v3_contract")
+
+    failed_run_sha = str(failed_run.get("run_sha256") or "")
+    if (
+        canonical_sha256({key: value for key, value in failed_run.items() if key != "run_sha256"})
+        != failed_run_sha
+    ):
+        blockers.append("failed_run_digest_invalid")
+    if (
+        failed_run.get("inventory_sha256") != prior_sha
+        or failed_run.get("status") != "blocked"
+        or failed_run.get("completed_request_count") != 0
+        or failed_run.get("provider_called") is not True
+        or failed_run.get("outcome_labels_accessed") is not False
+    ):
+        blockers.append("failed_run_not_zero_row_label_sealed_canary")
+    failures = list(failed_run.get("failures") or [])
+    if len(failures) != 1 or failures[0].get("error_type") != "BadRequestError":
+        blockers.append("failed_run_not_single_bad_request")
+
+    diagnostic_error = schema_diagnostic.get("error") or {}
+    if (
+        schema_diagnostic.get("status") != "failed"
+        or schema_diagnostic.get("diagnostic") != "text_only_exact_model_and_structured_schema"
+        or schema_diagnostic.get("experiment_pixels_uploaded") is not False
+        or schema_diagnostic.get("outcome_labels_accessed") is not False
+        or diagnostic_error.get("provider_error_code") != "invalid_json_schema"
+        or diagnostic_error.get("provider_error_param") != "text.format.schema"
+        or len(schema_diagnostic_file_sha256) != 64
+    ):
+        blockers.append("schema_diagnostic_not_exact_invalid_json_schema_evidence")
+
+    contract = evaluator_contract()
+    rows: list[dict[str, Any]] = []
+    for raw in prior.get("requests") or []:
+        row = dict(raw)
+        for frame in row.get("frames") or []:
+            path = Path(str(frame.get("path") or ""))
+            if not path.is_file() or file_sha256(path) != frame.get("sha256"):
+                blockers.append(f"audited_frame_missing_or_changed:{row.get('request_id')}")
+                break
+        row["evaluator_digest"] = contract["evaluator_digest"]
+        row["request_id"] = canonical_sha256(
+            {
+                "source_request_id": row["source_request_id"],
+                "cropped_output_sha256": row["cropped_output_sha256"],
+                "task_instruction": row["task_instruction"],
+                "evaluator_digest": contract["evaluator_digest"],
+            }
+        )
+        rows.append(row)
+    if len(rows) != expected_request_count:
+        blockers.append(
+            f"evaluator_request_count_expected_{expected_request_count}_got_{len(rows)}"
+        )
+    if len({str(row["request_id"]) for row in rows}) != len(rows):
+        blockers.append("schema_v4_request_ids_not_unique")
+
+    result = {
+        key: value
+        for key, value in prior.items()
+        if key
+        not in {"schema_version", "status", "evaluator", "requests", "blockers", "inventory_sha256"}
+    }
+    result.update(
+        {
+            "schema_version": "policy_ranking_roboarena_evaluator_inventory.v4",
+            "status": "ready" if not blockers else "blocked",
+            "evaluator": contract,
+            "request_count": len(rows),
+            "requests": rows,
+            "blockers": sorted(set(blockers)),
+            "provider_called": False,
+            "data_uploaded": False,
+            "outcome_labels_accessed": False,
+            "schema_amendment": {
+                "schema_version": "policy_ranking_roboarena_schema_amendment.v4",
+                "former_inventory_sha256": prior_sha,
+                "former_evaluator_digest": evaluator_contract_v3()["evaluator_digest"],
+                "failed_run_sha256": failed_run_sha,
+                "schema_diagnostic_file_sha256": schema_diagnostic_file_sha256,
+                "reason": (
+                    "The live strict-schema endpoint rejected uniqueItems at artifact_flags. "
+                    "Remove only that provider-invalid keyword and enforce the same uniqueness "
+                    "in the local response validator."
+                ),
+                "changed_fields": [
+                    "evaluator.schema_version",
+                    "evaluator.output_schema.properties.artifact_flags.uniqueItems",
+                    "evaluator.evaluator_digest",
+                    "requests[*].evaluator_digest",
+                    "requests[*].request_id",
+                    "schema_version",
+                ],
+                "prompt_changed": False,
+                "semantic_output_contract_changed": False,
+                "sampling_changed": False,
+                "scientific_thresholds_changed": False,
+                "local_duplicate_artifact_flag_rejection_required": True,
+                "former_completed_scientific_rows": 0,
+                "former_outcome_labels_accessed": False,
                 "provider_called": False,
                 "outcome_labels_accessed": False,
             },
@@ -474,13 +624,15 @@ def _score_one(client: Any, request: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise ValueError("stable_success_missing_adjacent_sample_positions")
     artifact_flags = set(payload["artifact_flags"])
+    if len(artifact_flags) != len(payload["artifact_flags"]):
+        raise ValueError("artifact_flags_must_be_unique")
     if "none" in artifact_flags and len(artifact_flags) > 1:
         raise ValueError("artifact_none_cannot_coexist_with_other_flags")
     if payload["abstain"] and not payload["abstention_factors"]:
         raise ValueError("evaluator_abstention_requires_factor")
     deterministic_abstain = bool(request.get("deterministic_safety_abstention_recommended"))
     result = {
-        "schema_version": "policy_ranking_roboarena_evaluator_result.v3",
+        "schema_version": "policy_ranking_roboarena_evaluator_result.v4",
         "request_id": request["request_id"],
         "source_request_id": request["source_request_id"],
         "session_id": request["session_id"],
@@ -518,7 +670,7 @@ def _valid_persisted_result(result: Mapping[str, Any], request: Mapping[str, Any
     payload = {key: value for key, value in result.items() if key != "result_sha256"}
     if canonical_sha256(payload) != recorded_sha:
         return False
-    if result.get("schema_version") != "policy_ranking_roboarena_evaluator_result.v3":
+    if result.get("schema_version") != "policy_ranking_roboarena_evaluator_result.v4":
         return False
     for field in (
         "request_id",
@@ -602,13 +754,13 @@ def run_evaluator_inventory(
             "provider_called": False,
         }
     if (
-        inventory.get("schema_version") != "policy_ranking_roboarena_evaluator_inventory.v3"
+        inventory.get("schema_version") != "policy_ranking_roboarena_evaluator_inventory.v4"
         or inventory.get("evaluator", {}).get("evaluator_digest")
         != evaluator_contract()["evaluator_digest"]
     ):
         return {
             "status": "blocked",
-            "blockers": ["evaluator_inventory_transport_contract_not_v3"],
+            "blockers": ["evaluator_inventory_transport_contract_not_v4"],
             "provider_called": False,
         }
     rotation = validate_rotation_attestation(rotation_attestation_file)
@@ -650,7 +802,7 @@ def run_evaluator_inventory(
             invalid_previous_run = True
     if invalid_previous_run:
         return {
-            "schema_version": "policy_ranking_roboarena_evaluator_run.v3",
+            "schema_version": "policy_ranking_roboarena_evaluator_run.v4",
             "status": "blocked",
             "inventory_sha256": inventory.get("inventory_sha256"),
             "blockers": ["existing_run_digest_or_inventory_binding_invalid"],
@@ -672,7 +824,7 @@ def run_evaluator_inventory(
                 resume_blockers.append(f"persisted_result_invalid:{request['request_id']}")
     if resume_blockers:
         result = {
-            "schema_version": "policy_ranking_roboarena_evaluator_run.v3",
+            "schema_version": "policy_ranking_roboarena_evaluator_run.v4",
             "status": "blocked",
             "inventory_sha256": inventory.get("inventory_sha256"),
             "selected_request_count": len(requests),
@@ -728,11 +880,20 @@ def run_evaluator_inventory(
                     completed.append(result)
                     spent += float(result["usage"]["estimated_cost_usd"])
                 except Exception as exc:  # pragma: no cover - live provider behavior
+                    body = getattr(exc, "body", {}) or {}
+                    if not isinstance(body, Mapping):
+                        body = {}
+                    nested = body.get("error") if isinstance(body.get("error"), Mapping) else {}
                     failures.append(
                         {
                             "request_id": request["request_id"],
                             "attempt_number": attempt_counts[str(request["request_id"])] + 1,
                             "error_type": type(exc).__name__,
+                            "http_status": getattr(exc, "status_code", None),
+                            "provider_request_id": str(getattr(exc, "request_id", "") or ""),
+                            "provider_error_type": body.get("type") or nested.get("type"),
+                            "provider_error_code": body.get("code") or nested.get("code"),
+                            "provider_error_param": body.get("param") or nested.get("param"),
                             "credential_or_exception_text_persisted": False,
                             "conservative_cost_usd": MAX_ESTIMATED_REQUEST_USD,
                         }
@@ -741,7 +902,7 @@ def run_evaluator_inventory(
                     spent += MAX_ESTIMATED_REQUEST_USD
     completed.sort(key=lambda row: str(row["request_id"]))
     result: dict[str, Any] = {
-        "schema_version": "policy_ranking_roboarena_evaluator_run.v3",
+        "schema_version": "policy_ranking_roboarena_evaluator_run.v4",
         "status": "completed" if len(completed) == len(requests) else "blocked",
         "inventory_sha256": inventory.get("inventory_sha256"),
         "selected_request_count": len(requests),
@@ -765,7 +926,7 @@ def run_evaluator_inventory(
             for request_id, count in attempt_counts.items()
             if count >= MAX_ATTEMPTS_PER_REQUEST and request_id not in completed_ids
         ),
-        "blockers": [],
+        "blockers": ([] if len(completed) == len(requests) else ["provider_results_incomplete"]),
     }
     result["run_sha256"] = canonical_sha256(result)
     write_json(run_path, result)
@@ -779,7 +940,9 @@ __all__ = [
     "PROMPT",
     "build_evaluator_inventory",
     "evaluator_contract",
+    "evaluator_contract_v3",
     "run_evaluator_inventory",
+    "supersede_schema_inventory_v4",
     "supersede_transport_inventory_v3",
     "validate_rotation_attestation",
 ]

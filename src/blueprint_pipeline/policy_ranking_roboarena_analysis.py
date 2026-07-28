@@ -31,8 +31,11 @@ BOOTSTRAP_REPLICATES = 2000
 BOOTSTRAP_SEED = 20260728
 RISK_COVERAGE_GRID = (0.50, 0.60, 0.70, 0.80, 0.90, 1.00)
 RISK_INCREASE_TOLERANCE = 0.02
-SUPERSEDED_ANALYSIS_CONTRACT_SHA256 = (
+SUPERSEDED_ANALYSIS_CONTRACT_V2_SHA256 = (
     "b470d3fa01166a111b5b7a5f9618ca68bcd56fd6140021c6c0f92a2a8fc207ac"
+)
+SUPERSEDED_ANALYSIS_CONTRACT_V3_SHA256 = (
+    "4a81ee0abde5f2a5a8fb064484338c42af369bab6b3a90906d30b0065228db2c"
 )
 
 # These episode-selectivity thresholds retain the corresponding strict values
@@ -58,8 +61,8 @@ GATES = {
 }
 
 
-def analysis_contract(*, protocol_sha256: str, evaluator_digest: str) -> dict[str, Any]:
-    """Return the prospective label-free analysis contract."""
+def analysis_contract_v3(*, protocol_sha256: str, evaluator_digest: str) -> dict[str, Any]:
+    """Return the immutable pre-canary analysis contract."""
 
     contract: dict[str, Any] = {
         "schema_version": "policy_ranking_roboarena_phase_a_analysis_lock.v3",
@@ -102,11 +105,31 @@ def analysis_contract(*, protocol_sha256: str, evaluator_digest: str) -> dict[st
             "session_clustered_bootstrap_seed": BOOTSTRAP_SEED,
         },
         "gates": dict(GATES),
-        "supersedes_analysis_contract_sha256": SUPERSEDED_ANALYSIS_CONTRACT_SHA256,
+        "supersedes_analysis_contract_sha256": SUPERSEDED_ANALYSIS_CONTRACT_V2_SHA256,
         "supersession_scope": "transport binding only; analysis rules unchanged",
         "provider_called": False,
         "outcome_labels_accessed": False,
     }
+    contract["analysis_contract_sha256"] = canonical_sha256(contract)
+    return contract
+
+
+def analysis_contract(*, protocol_sha256: str, evaluator_digest: str) -> dict[str, Any]:
+    """Return the v4 prospective contract after the zero-row schema fix."""
+
+    contract = analysis_contract_v3(
+        protocol_sha256=protocol_sha256, evaluator_digest=evaluator_digest
+    )
+    contract.pop("analysis_contract_sha256")
+    contract.update(
+        {
+            "schema_version": "policy_ranking_roboarena_phase_a_analysis_lock.v4",
+            "supersedes_analysis_contract_sha256": SUPERSEDED_ANALYSIS_CONTRACT_V3_SHA256,
+            "supersession_scope": (
+                "provider JSON-schema compatibility only; analysis rules unchanged"
+            ),
+        }
+    )
     contract["analysis_contract_sha256"] = canonical_sha256(contract)
     return contract
 
@@ -867,7 +890,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0 if artifact.get("status") in {"frozen", "completed"} else 2
 
 
-__all__ = ["analysis_contract", "freeze_predictions", "unseal_and_analyze"]
+__all__ = [
+    "analysis_contract",
+    "analysis_contract_v3",
+    "freeze_predictions",
+    "unseal_and_analyze",
+]
 
 
 if __name__ == "__main__":

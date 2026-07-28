@@ -1,0 +1,40 @@
+{
+  "schema_version": "policy_ranking_roboarena_transport_failure_report.v1",
+  "status": "diagnosed_implementation_defect_fixed_pre_retry",
+  "failed_canary": {
+    "source_commit": "ba13f8f650608f91348290773209cfe90142dbba",
+    "run_sha256": "b70311d7aaba21aa8a9e6cd10d68ea257c71c5d044ad9c54859132710d7d831b",
+    "selected_request_count": 1,
+    "completed_request_count": 0,
+    "error_type": "BadRequestError",
+    "provider_called": true,
+    "data_uploaded": true,
+    "outcome_labels_accessed": false,
+    "conservative_cost_reserve_usd": 0.05
+  },
+  "model_availability": {
+    "model": "gpt-5-mini-2025-08-07",
+    "available": true,
+    "owned_by": "system",
+    "estimated_cost_usd": 0.0
+  },
+  "schema_diagnostic": {
+    "artifact_file_sha256": "870ae8398a2ae5cf257631407143e6e85c9889791de6dd5a61d24005473d607b",
+    "experiment_pixels_uploaded": false,
+    "error_code": "invalid_json_schema",
+    "error_param": "text.format.schema",
+    "provider_rejected_keyword": "uniqueItems",
+    "conservative_cost_reserve_usd": 0.05
+  },
+  "same_idempotency_error_replay": {
+    "purpose": "ephemeral safe provider-message inspection",
+    "new_scientific_row": false,
+    "same_idempotency_key": true,
+    "additional_cost_assumed_usd": 0.0
+  },
+  "second_registered_diagnostic_skipped": true,
+  "second_registered_diagnostic_skip_reason": "The first diagnostic failed and its preregistered stop rule applied.",
+  "actual_invoice_cost_usd": "not_yet_attributable",
+  "cumulative_conservative_cost_reserve_usd": 0.1,
+  "claim_boundary": "Transport failure diagnosis only; zero evaluator rows and no ranking evidence."
+}

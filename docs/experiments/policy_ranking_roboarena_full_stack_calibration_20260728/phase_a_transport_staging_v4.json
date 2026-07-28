@@ -1,0 +1,49 @@
+{
+  "schema_version": "policy_ranking_roboarena_phase_a_transport_staging.v4",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "inventory_sha256": "3e110b66b986c5f241329598987d1a885a2ca9f61e54eaa00db71a3eb31387d2",
+  "evaluator_digest": "079bb46d34ba24d0741784f8df6b25be221081412c26ea998ee8ea40eccf7108",
+  "selection_rule": "frozen_evaluator_inventory_order",
+  "transport_canary": {
+    "max_requests": 1,
+    "max_cost_usd": 0.05,
+    "request_id": "35f19536b91b34f48bf9a32f863b049541a6ae0dfc46c7bd28b9edffff8e5457",
+    "deterministic_collapse_flags": []
+  },
+  "small_label_blind_batch": {
+    "cumulative_max_requests": 8,
+    "cumulative_max_cost_usd": 0.4,
+    "request_ids": [
+      "35f19536b91b34f48bf9a32f863b049541a6ae0dfc46c7bd28b9edffff8e5457",
+      "54d23e7ac6a22e4dc1fff3368da1f94318a975eb5d5cf7fb6f832ad1c983067a",
+      "9dc354a9846dc35bed4009f2ff706f4e22fa34afbaf9d3cb6bd828a43c2a55db",
+      "a3060389aca0ca2e79f3bfedb10f54e472c745890a5e0d72cfc51feccdfca387",
+      "d1d7511ddf320253f8ea55070e08f2672bedaaba07a6d1a4d8e535c04cfb24b5",
+      "572deb6456a3fcaf277ecf11be2f637d3445866797e0132d97250d8546c5e41b",
+      "33b5098b300a38404424d2658ad7af3372050ef10586b8bc6c6275e21c69c0ca",
+      "56a2c836e44898b4b10c8fa380817489e22618b6e02d5003b2051b26b6e66341"
+    ],
+    "contains_preregistered_static_episode": true
+  },
+  "complete_matrix": {
+    "cumulative_max_requests": 441,
+    "cumulative_max_cost_usd": 25.0,
+    "precall_conservative_bound_usd": 22.05,
+    "max_workers": 4,
+    "max_attempts_per_request": 2
+  },
+  "idempotency": {
+    "deterministic_request_ids": true,
+    "provider_idempotency_key_equals_request_id": true,
+    "resume_requires_exact_source_commit": true,
+    "one_accepted_result_path_per_request": true,
+    "resume_skips_digest_valid_accepted_results": true,
+    "failed_attempts_retained": true,
+    "retry_exhaustion_retained": true
+  },
+  "prior_v3_failure_retained": true,
+  "prior_v3_completed_scientific_rows": 0,
+  "provider_called": false,
+  "data_uploaded": false,
+  "outcome_labels_accessed": false
+}

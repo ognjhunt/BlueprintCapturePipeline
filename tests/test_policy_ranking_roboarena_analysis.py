@@ -8,6 +8,7 @@ import yaml
 
 from blueprint_pipeline.policy_ranking_roboarena_analysis import (
     analysis_contract,
+    analysis_contract_v3,
     freeze_predictions,
     unseal_and_analyze,
 )
@@ -124,9 +125,20 @@ def test_analysis_contract_freezes_inherited_strict_selectivity() -> None:
             / "phase_a_analysis_lock_v3.json"
         ).read_text(encoding="utf-8")
     )
-    assert artifact == analysis_contract(
+    assert artifact == analysis_contract_v3(
         protocol_sha256="6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066",
         evaluator_digest="6b22136e8708223bd8b8213ca907632659d23949c7a196957af087ae2a197f57",
+    )
+    v4_artifact = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/experiments/policy_ranking_roboarena_full_stack_calibration_20260728"
+            / "phase_a_analysis_lock_v4.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert v4_artifact == analysis_contract(
+        protocol_sha256="6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066",
+        evaluator_digest="079bb46d34ba24d0741784f8df6b25be221081412c26ea998ee8ea40eccf7108",
     )
 
 

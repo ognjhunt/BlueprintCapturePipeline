@@ -1,6 +1,6 @@
 # RoboArena/DROID whole-stack calibration — 2026-07-28
 
-Status: `phase_a_transport_ready_rotated_credential_validated_pre_provider`
+Status: `phase_a_v4_schema_fix_ready_for_retry_after_zero_row_v3_failure`
 
 This is a new experiment. It does not reopen or modify the sealed OSCAR
 Experiment 2 or Cosmos3 follow-up verdicts.
@@ -113,15 +113,23 @@ replaced through the task-scoped secure path; the replacement and its validated
 user rotation attestation remain outside the repository. The 441-request GPT-5
 mini inventory, prompt, strict schema, provider idempotency key, idempotent
 result paths, and USD 22.05 conservative pre-call bound are frozen. The unpaid
-v2 transport inventory is retained as superseded history; v3 changes only the
+v2 transport inventory is retained as superseded history; v3 changed only the
 transport binding and derived digests, not the prompt, schema, sampling, or
-scientific thresholds. The label-free prediction-freeze,
+scientific thresholds. The first v3 canary and a bounded text-only diagnostic
+were rejected before inference because strict structured outputs did not accept
+`uniqueItems`. They produced zero evaluator rows and accessed no outcomes. The
+v4 amendment removes only that provider-invalid keyword and enforces identical
+uniqueness locally; the prompt, semantic response contract, sampling, analysis,
+and scientific thresholds are unchanged. The label-free prediction-freeze,
 label-unseal, policy aggregation, exact-permutation uncertainty,
 session-clustered bootstrap, calibration, and risk/coverage rules are bound by
 analysis digest
-`4a81ee0abde5f2a5a8fb064484338c42af369bab6b3a90906d30b0065228db2c`.
-No provider call or data
-upload, new WAM generation, evaluator result, policy ranking, captured-site
+`2b965b64c6894372cbcfa5091baacaa63f3c2300c21822770931b64ff3bd10eb`.
+The v3 canary did call the provider and upload one generated-only episode; the
+diagnostic uploaded fixed synthetic text only. No provider request completed
+inference, and no evaluator result, new WAM generation, policy ranking, captured-site
 transfer, physical evaluation, or paid allocation has occurred in this
-experiment. Current measured spend is USD 0 and authenticated provider
-inventory was zero at the Phase 0 audit.
+experiment. Invoice-attributable API cost is not yet available, so the ledger
+conservatively reserves USD 0.10 against the USD 25 API cap. GPU spend remains
+USD 0 and authenticated compute-provider inventory was zero at the Phase 0
+audit.
