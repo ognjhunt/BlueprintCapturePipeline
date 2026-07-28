@@ -185,6 +185,9 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
         session_budget_ledger=budget,
         expected_source_commit="c" * 40,
         execute=True,
+        provider_bundle_url_file=tmp_path / "bundle-url",
+        provider_output_put_url_file=tmp_path / "output-put-url",
+        provider_output_get_url_file=tmp_path / "output-get-url",
         observed_now_epoch=float(preflight["observed_at_epoch"]) + 1,
     )
 
@@ -199,6 +202,9 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     assert captured["max_compute_cap"] == 0
     assert captured["gpu_selection_policy"]["allowed_gpu_keywords"] == ("RTX PRO 6000",)
     assert captured["require_independent_watchdog"] is True
+    assert captured["provider_bundle_url_file"] == tmp_path / "bundle-url"
+    assert captured["provider_output_put_url_file"] == tmp_path / "output-put-url"
+    assert captured["provider_output_get_url_file"] == tmp_path / "output-get-url"
     assert result["authorization_consumption"]["status"] == "consumed"
     written_admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
     assert written_admission["session_live_limit"]["prior_live_runtime_minutes_ceiling"] == 2
@@ -580,6 +586,12 @@ def test_paid_resource_allocator_dispatches_successor_lane_only_through_probe_ki
             "bundle.zip",
             "--successor-bundle-receipt",
             "receipt.json",
+            "--provider-bundle-url-file",
+            "bundle-url.txt",
+            "--provider-output-put-url-file",
+            "output-put-url.txt",
+            "--provider-output-get-url-file",
+            "output-get-url.txt",
             "--admission-out",
             str(tmp_path / "admission.json"),
             "--bound-request-out",
@@ -598,4 +610,7 @@ def test_paid_resource_allocator_dispatches_successor_lane_only_through_probe_ki
     assert captured["execute"] is False
     assert captured["provider_bundle_path"] == "bundle.zip"
     assert captured["provider_bundle_receipt_path"] == "receipt.json"
+    assert captured["provider_bundle_url_file"] == "bundle-url.txt"
+    assert captured["provider_output_put_url_file"] == "output-put-url.txt"
+    assert captured["provider_output_get_url_file"] == "output-get-url.txt"
     assert captured["expected_source_commit"] == "d" * 40

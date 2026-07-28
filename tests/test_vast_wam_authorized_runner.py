@@ -121,7 +121,8 @@ def test_vast_wam_authorized_runner_paid_path_delegates_wam_adapter(
     )
 
     assert result["status"] == "blocked"
-    assert result["paid_launch_attempted"] is True
+    assert result["blockers"] == ["simulated_wam_block"], result["blockers"]
+    assert result["paid_launch_attempted"] is True, result
     assert result["adapter_result_status"] == "blocked"
     assert result["public_staging_verification_status"] == "passed"
     assert captured["provider_bundle_kind"] == "wam"
@@ -133,6 +134,61 @@ def test_vast_wam_authorized_runner_paid_path_delegates_wam_adapter(
     assert captured["public_image"] == "pytorch/pytorch:test"
     assert "token=" in str(captured["provider_bundle_url"])
     assert "token=" in str(captured["provider_output_put_url"])
+
+
+def test_vast_wam_authorized_runner_accepts_direct_signed_url_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "bundle.zip"
+    _write_minimal_bundle(bundle)
+    budget = tmp_path / "vast_session_cost_summary.json"
+    budget.write_text(json.dumps({"estimated_cost_usd": 0.0}), encoding="utf-8")
+    urls = {
+        "provider_bundle_url": "https://objects.example/bundle.zip?get=secret",
+        "provider_output_put_url": "https://objects.example/output.zip?put=secret",
+        "provider_output_get_url": "https://objects.example/output.zip?get=secret",
+    }
+    url_files: dict[str, Path] = {}
+    for label, value in urls.items():
+        path = tmp_path / f"{label}.txt"
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o600)
+        url_files[label] = path
+    captured: dict[str, object] = {}
+
+    def fake_adapter(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return {"status": "blocked", "blockers": ["simulated_wam_block"]}
+
+    monkeypatch.setattr(runner, "run_vast_provider_adapter", fake_adapter)
+    monkeypatch.setattr(runner, "verify_public_staging_urls", _passed_public_staging)
+
+    result = runner.run_vast_wam_authorized_runner(
+        job_dir=tmp_path,
+        bundle_path=bundle,
+        provider_bundle_url_file=url_files["provider_bundle_url"],
+        provider_output_put_url_file=url_files["provider_output_put_url"],
+        provider_output_get_url_file=url_files["provider_output_get_url"],
+        token_file=tmp_path / "token",
+        secret_env_file=tmp_path / "urls.env",
+        session_budget_ledger=budget,
+        allow_paid_vast_launch=True,
+        max_live_minutes=1,
+        generated_at="2026-07-28T00:00:00+00:00",
+    )
+
+    assert result["blockers"] == ["simulated_wam_block"], result["blockers"]
+    assert result["paid_launch_attempted"] is True, result
+    assert result["transport_mode"] == "direct_signed_url_files"
+    assert captured["provider_bundle_url"] == urls["provider_bundle_url"]
+    assert captured["provider_output_put_url"] == urls["provider_output_put_url"]
+    assert captured["provider_output_get_url"] == urls["provider_output_get_url"]
+    serialized = (tmp_path / "vast_wam_authorized_runner_manifest.json").read_text(
+        encoding="utf-8"
+    )
+    assert "get=secret" not in serialized
+    assert "put=secret" not in serialized
 
 
 def test_vast_wam_authorized_runner_helper_and_blocker_edges(
@@ -174,7 +230,7 @@ def test_vast_wam_authorized_runner_helper_and_blocker_edges(
     assert {
         "staging_blocked",
         "local_staging_self_test_failed",
-        "public_base_url_missing_for_paid_vast_launch",
+        "public_staging_transport_missing_for_paid_vast_launch",
         "paid_vast_launch_requires_public_staging_urls",
     }.issubset(set(result["blockers"]))
     assert result["output_inspection"]["output_zip_present"] is True

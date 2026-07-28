@@ -40,6 +40,7 @@ from .vast_probe_guards import (
     staging_verification_guard as build_staging_verification_guard,
     target_spend_guard as build_target_spend_guard,
 )
+from .wam_async_runner_common import read_sensitive_url_file, redact_provider_url
 from .oscar_official_release import OFFICIAL_OSCAR_WAM_IMAGE_REF
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .policy_ranking_successor_retained_session import create_retained_session_manifest
@@ -82,6 +83,9 @@ def run_vast_wam_authorized_runner(
     public_base_url: str | None = None,
     token_file: str | Path | None = None,
     secret_env_file: str | Path | None = None,
+    provider_bundle_url_file: str | Path | None = None,
+    provider_output_put_url_file: str | Path | None = None,
+    provider_output_get_url_file: str | Path | None = None,
     output_path: str | Path | None = None,
     session_budget_ledger: str | Path | None = None,
     allow_paid_vast_launch: bool = False,
@@ -142,6 +146,14 @@ def run_vast_wam_authorized_runner(
         else _vast_session_budget_ledger_path()
     )
     ensure_dir(resolved_job_dir)
+    direct_transport_configured = any(
+        value is not None
+        for value in (
+            provider_bundle_url_file,
+            provider_output_put_url_file,
+            provider_output_get_url_file,
+        )
+    )
 
     token, token_status = _read_or_create_token(resolved_token_file)
     staging_manifest = prepare_vast_bundle_staging(
@@ -162,17 +174,45 @@ def run_vast_wam_authorized_runner(
     )
 
     blockers: list[str] = []
-    if staging_manifest.get("status") != "ready":
+    if staging_manifest.get("status") != "ready" and not direct_transport_configured:
         blockers.extend(str(item) for item in staging_manifest.get("blockers") or [])
     if self_test.get("status") != "passed":
         blockers.append("local_staging_self_test_failed")
     provider_bundle_url = ""
     provider_output_put_url = ""
-    if _string(public_base_url):
+    provider_output_get_url = ""
+    direct_url_files = {
+        "provider_bundle_url": provider_bundle_url_file,
+        "provider_output_put_url": provider_output_put_url_file,
+        "provider_output_get_url": provider_output_get_url_file,
+    }
+    direct_url_status: dict[str, dict[str, Any]] = {}
+    if direct_transport_configured:
+        direct_urls: dict[str, str] = {}
+        for label, path_value in direct_url_files.items():
+            value, metadata = read_sensitive_url_file(str(path_value or ""), label=label)
+            direct_url_status[label] = {
+                "configured": metadata.get("configured") is True,
+                "present": metadata.get("present") is True,
+                "mode_is_0600": metadata.get("mode_is_0600") is True,
+                "value_present": metadata.get("value_present") is True,
+                "raw_secret_values_recorded": False,
+            }
+            if not value:
+                blockers.append(f"{label}_missing")
+            elif not value.startswith("https://"):
+                blockers.append(f"{label}_not_https")
+            elif metadata.get("mode_is_0600") is not True:
+                blockers.append(f"{label}_file_permissions_not_0600")
+            direct_urls[label] = value
+        provider_bundle_url = direct_urls.get("provider_bundle_url", "")
+        provider_output_put_url = direct_urls.get("provider_output_put_url", "")
+        provider_output_get_url = direct_urls.get("provider_output_get_url", "")
+    elif _string(public_base_url):
         provider_bundle_url = _url_with_token(_string(public_base_url), BUNDLE_ROUTE, token)
         provider_output_put_url = _url_with_token(_string(public_base_url), OUTPUT_ROUTE, token)
     else:
-        blockers.append("public_base_url_missing_for_paid_vast_launch")
+        blockers.append("public_staging_transport_missing_for_paid_vast_launch")
     public_staging_verification: dict[str, Any] = {"status": "not_requested"}
     if (
         allow_paid_vast_launch
@@ -201,12 +241,21 @@ def run_vast_wam_authorized_runner(
                 for item in public_staging_verification.get("blockers")
                 or ["public_staging_url_stability_not_proven"]
             )
+    staging_guard_manifest = staging_manifest
+    if direct_transport_configured:
+        staging_guard_manifest = {
+            **staging_manifest,
+            "status": "ready",
+            "provider_fetchable_bundle_uri_ready": bool(provider_bundle_url),
+            "provider_output_callback_ready": bool(provider_output_put_url),
+            "blockers": [],
+        }
     staging_verification_guard = build_staging_verification_guard(
         verify_staging_urls=verify_staging_urls,
         allow_unverified_public_staging_for_paid_launch=(
             allow_unverified_public_staging_for_paid_launch
         ),
-        staging_manifest=staging_manifest,
+        staging_manifest=staging_guard_manifest,
         public_staging_verification=public_staging_verification,
     )
     if allow_paid_vast_launch:
@@ -257,6 +306,7 @@ def run_vast_wam_authorized_runner(
                     provider_bundle=resolved_bundle,
                     provider_bundle_url=provider_bundle_url,
                     provider_output_put_url=provider_output_put_url,
+                    provider_output_get_url=provider_output_get_url,
                     provider_runtime_output_zip=resolved_output,
                     enable_isaac_smoke=False,
                     enable_blueprint_bundle=True,
@@ -404,10 +454,22 @@ def run_vast_wam_authorized_runner(
         "token_file": token_status,
         "secret_env_file": str(resolved_secret_env_file),
         "public_base_url_present": bool(_string(public_base_url)),
-        "bundle_url_path": _redacted_path(BUNDLE_ROUTE),
-        "output_put_url_path": _redacted_path(OUTPUT_ROUTE),
+        "transport_mode": (
+            "direct_signed_url_files" if direct_transport_configured else "public_base_url"
+        ),
+        "direct_signed_url_files": direct_url_status,
+        "provider_bundle_url_redacted": redact_provider_url(provider_bundle_url),
+        "provider_output_put_url_redacted": redact_provider_url(provider_output_put_url),
+        "provider_output_get_url_redacted": redact_provider_url(provider_output_get_url),
+        "bundle_url_path": (
+            None if direct_transport_configured else _redacted_path(BUNDLE_ROUTE)
+        ),
+        "output_put_url_path": (
+            None if direct_transport_configured else _redacted_path(OUTPUT_ROUTE)
+        ),
         "local_staging_self_test_status": self_test.get("status"),
-        "staging_manifest_status": staging_manifest.get("status"),
+        "staging_manifest_status": staging_guard_manifest.get("status"),
+        "local_base_staging_manifest_status": staging_manifest.get("status"),
         "provider_bundle_kind": "wam",
         "public_image": public_image,
         "vast_launch_mode": vast_launch_mode,
@@ -472,6 +534,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--public-base-url")
     parser.add_argument("--token-file")
     parser.add_argument("--secret-env-file")
+    parser.add_argument("--provider-bundle-url-file")
+    parser.add_argument("--provider-output-put-url-file")
+    parser.add_argument("--provider-output-get-url-file")
     parser.add_argument("--output-path")
     parser.add_argument("--session-budget-ledger")
     parser.add_argument("--allow-paid-vast-launch", action="store_true")
@@ -508,6 +573,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         public_base_url=args.public_base_url,
         token_file=args.token_file,
         secret_env_file=args.secret_env_file,
+        provider_bundle_url_file=args.provider_bundle_url_file,
+        provider_output_put_url_file=args.provider_output_put_url_file,
+        provider_output_get_url_file=args.provider_output_get_url_file,
         output_path=args.output_path,
         session_budget_ledger=args.session_budget_ledger,
         allow_paid_vast_launch=args.allow_paid_vast_launch,

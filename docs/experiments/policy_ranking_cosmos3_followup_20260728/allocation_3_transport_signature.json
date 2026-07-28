@@ -1,0 +1,17 @@
+{
+  "schema_version": "policy_ranking_cosmos3_followup_allocation_transport_signature.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "authorization_id": "policy-ranking-cosmos3-followup-20260728-allocation-3",
+  "transport": "private_s3_compatible_object_store_with_expiring_signed_get_put_get_urls",
+  "files": {
+    "compute_authorization_allocation_3.json": "dad790e5b20fd7553feb94e917a7111e5fbb5798b9f7bcd256df56e80f6c7e0a",
+    "cosmos3_followup_provider_bundle.zip": "0e938e1674ff2efc043363ab9b7e2724ae2f9bc264e289895d7759a9eb8173fd",
+    "src/blueprint_pipeline/paid_resource_allocator.py": "3120a01d58c6765337329ca0f8bf6868adfaf89c2377a56f8420b00328581b04",
+    "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py": "74a6a4674f33e229c316154b2cda8e40bbf37bb6ba0e4f78f053aa861e2c93db",
+    "src/blueprint_pipeline/vast_wam_authorized_runner.py": "e44136492cd6374e1056e8725936df0503428e126ca5491adc01ef9bbc98e36a",
+    "src/blueprint_pipeline/wam_provider_object_store.py": "3a8e3ac7e76841fe578d858f3399d6ae9b0e600dac155427de25515e4a3fba3a",
+    "tests/test_policy_ranking_successor_gpu_admission.py": "7c6df06b4571c50e7df123613202b6162d3cbc87c5988d0e16d777c6c00c3d47",
+    "tests/test_vast_wam_authorized_runner.py": "8dc8b034fd6dcfd38a2c8e6edb055d064c6d69ac315954171fbd57fd082b44f0"
+  },
+  "claim_boundary": "This signature binds a transport-only extension that keeps paid allocation behind the shared allocator and admission seam; it does not alter the frozen scientific bundle or assert provider execution or scientific validity."
+}
