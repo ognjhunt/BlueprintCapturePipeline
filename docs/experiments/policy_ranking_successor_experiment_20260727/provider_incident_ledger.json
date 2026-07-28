@@ -230,7 +230,8 @@
       "unchanged_paid_retry_forbidden": true,
       "causal_changes_before_retry": [
         "rotate the expired ephemeral quick-tunnel hostname",
-        "require fresh DNS resolution plus three consecutive authenticated bundle and output probes immediately before allocator execution"
+        "require fresh DNS resolution plus three consecutive authenticated bundle and output probes immediately before allocator execution",
+        "defer single-use authorization consumption until staging, budget, inventory, and offer selection pass, immediately before provider create"
       ],
       "retry_kind": "pre_provider_zero_spend_authorization_replacement",
       "retry_authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v7",

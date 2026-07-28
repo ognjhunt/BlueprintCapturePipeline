@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .provider_bundle_staging_common import (
@@ -112,6 +112,7 @@ def run_vast_wam_authorized_runner(
     prefer_isaac_rt: bool = False,
     gpu_selection_policy: str | Mapping[str, Any] | None = None,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
+    pre_provider_mutation_hook: Callable[[], Mapping[str, Any]] | None = None,
     require_independent_watchdog: bool = False,
     retain_instance_on_runtime_failure: bool = False,
     retention_binding: Mapping[str, Any] | None = None,
@@ -290,6 +291,7 @@ def run_vast_wam_authorized_runner(
                     ),
                     retention_watchdog_handoff=watchdog_handoff,
                     paid_resource_admission_grant=paid_resource_admission_grant,
+                    pre_provider_mutation_hook=pre_provider_mutation_hook,
                 )
                 if watchdog_handle:
                     instance_ids = [

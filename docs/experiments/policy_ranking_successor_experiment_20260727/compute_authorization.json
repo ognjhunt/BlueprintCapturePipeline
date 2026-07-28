@@ -2,7 +2,7 @@
   "schema_version": "policy_ranking_successor_compute_authorization.v1",
   "experiment_id": "policy_ranking_successor_experiment_20260727",
   "authorized_at": "2026-07-27T19:23:30-0500",
-  "authorization_source": "zero-spend replacement under the user's explicit current-thread GPU authorization and unchanged USD 6 campaign ceiling: v6 was consumed before any provider mutation when an ephemeral Cloudflare quick-tunnel DNS record expired between independent verification and allocator verification; v7 preserves every spend, resource, watchdog, TTL, model, image, and scientific limit",
+  "authorization_source": "zero-spend replacement under the user's explicit current-thread GPU authorization and unchanged USD 6 campaign ceiling: v6 was consumed before any provider mutation when an ephemeral Cloudflare quick-tunnel DNS record expired between independent verification and allocator verification; v7 defers single-use consumption until staging and offer selection pass immediately before provider create, while preserving every spend, resource, watchdog, TTL, model, image, and scientific limit",
   "authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v7",
   "infrastructure_retry_of": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v5",
   "pre_provider_zero_spend_replacement_of": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v6",

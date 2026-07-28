@@ -6149,12 +6149,14 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     secret = _configure_live_gates(tmp_path, monkeypatch)
     wam_bundle = tmp_path / "wam.zip"
     _write_valid_wam_provider_bundle(wam_bundle)
+    mutation_order: list[str] = []
 
     def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
         assert kwargs["api_key"] == secret
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
             return 200, {"instances": []}
         if kwargs["method"] == "POST":
+            mutation_order.append("offer_search")
             return 200, {
                 "offers": [
                     {
@@ -6167,6 +6169,7 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
                 ]
             }
         if kwargs["method"] == "PUT" and kwargs["path"] == "/asks/808/":
+            mutation_order.append("provider_create")
             return 200, {"new_contract": 8081}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/8081/":
             return 200, {"instances": {"actual_status": "running", "cur_state": "running"}}
@@ -6175,6 +6178,22 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
         raise AssertionError(kwargs)
+
+    def consume_authorization() -> dict[str, object]:
+        mutation_order.append("authorization_consumed")
+        return {"status": "consumed", "blockers": []}
+
+    original_write_json = vpa.write_json
+
+    def reject_write_between_consumption_and_create(*args, **kwargs):  # type: ignore[no-untyped-def]
+        if (
+            "authorization_consumed" in mutation_order
+            and "provider_create" not in mutation_order
+        ):
+            raise AssertionError("fallible evidence write occurred after authorization consumption")
+        return original_write_json(*args, **kwargs)
+
+    monkeypatch.setattr(vpa, "write_json", reject_write_between_consumption_and_create)
 
     monkeypatch.setattr(vpa, "_api_json", fake_api_json)
     monkeypatch.setattr(
@@ -6203,12 +6222,16 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
         enable_isaac_smoke=False,
         enable_blueprint_bundle=True,
         provider_bundle_kind="wam",
+        pre_provider_mutation_hook=consume_authorization,
         poll_interval_seconds=0,
         startup_timeout_seconds=10,
         session_max_live_minutes=None,
     )
     assert wam["status"] == "blocked"
     assert wam["reason"] == "vast_blueprint_video_smoke_blocked"
+    assert mutation_order.index("offer_search") < mutation_order.index("authorization_consumed")
+    assert mutation_order.index("authorization_consumed") < mutation_order.index("provider_create")
+    assert wam["pre_provider_mutation_hook_result"]["status"] == "consumed"
     assert _read_json(tmp_path / "wam-live" / "vast_isaac_smoke_result.json")["status"] == "not_required"
 
     monkeypatch.setenv("NGC_API_KEY_FILE", str(tmp_path / "missing-ngc-key"))
