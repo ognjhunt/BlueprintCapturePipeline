@@ -1,0 +1,95 @@
+{
+  "schema_version": "policy_ranking_roboarena_external_evidence_manifest.v1",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "local_root_template": "$HOME/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728",
+  "upstream_bindings": {
+    "oscar_policy_rollouts": {
+      "url": "https://huggingface.co/datasets/zywu2115/OSCAR_policy_rollout",
+      "revision": "db5edfaef285c15d0a41d5115177a983c08b4f5f"
+    },
+    "roboarena_labels": {
+      "url": "https://huggingface.co/datasets/RoboArena/DataDump_07-17-2026",
+      "revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "phase_a_analysis_report_v4.json",
+      "sha256": "2364da4180c83761cbcb1a718eac33da9ffad73eaa0f38d233df8bdaa8958567",
+      "size_bytes": 33867
+    },
+    {
+      "path": "phase_a_frozen_predictions_v4.json",
+      "sha256": "79ba76d4672c4d36cd9bbbb8db1430c2a8da8601dc7a1b2ecb9065afb065c533",
+      "size_bytes": 555736
+    },
+    {
+      "path": "phase_a_label_unseal_ledger_v4.json",
+      "sha256": "6e6c114a3c050812dd26030af7981e4297c9c6d057cb53a5a6e7903dbb86ced8",
+      "size_bytes": 16880
+    },
+    {
+      "path": "phase_a_crop_layout_audit_manifest_v2.json",
+      "sha256": "2d8c1bff3285549789611f388ef06d69566cbf1a96bc2811b3c4933602b7f82a",
+      "size_bytes": 7365119,
+      "contains_per_video_hashes": 441
+    },
+    {
+      "path": "phase_a_collapse_audit_v1.json",
+      "sha256": "caf4aa039a4fb5f1395949929f09c8ba6ca0790bfdebeb711ad03c90f7cc81d4",
+      "size_bytes": 292686
+    },
+    {
+      "path": "phase_a_evaluator_run_v4/run.json",
+      "sha256": "2d4b2fc64c36f8d518e83cec1ab3a4719c7d96c4abf5496ddf6af89820cb798f",
+      "size_bytes": 1481252
+    },
+    {
+      "path": "gemini36_flash_full_matrix_v1/collection.json",
+      "sha256": "f8a222bbede6e796d40722eda2e5b5990fad1fe3dfa954f0f06ef3f9cdbdd0c5",
+      "size_bytes": 799413
+    },
+    {
+      "path": "gemini36_flash_full_matrix_v1/analysis.json",
+      "sha256": "2a1d73bfbac044704d1894d4d6fb4be84f271ecd78b3997b9f205f82af73a3e4",
+      "size_bytes": 4054
+    },
+    {
+      "path": "phase_b_availability_refresh_v1/availability_report.json",
+      "sha256": "e47a6c1d48685f0b838a3e1089d99c87d663764c01fcc4b65945e2f4a0fa3fc1",
+      "size_bytes": 4335
+    },
+    {
+      "path": "cosmos3_reasoner_pilot_v4/session_budget_ledger.json",
+      "sha256": "aa03d30f065c2e836ada24bfd2fad788b0a5e03db774d7963b861fcac5987c0e",
+      "size_bytes": 990
+    },
+    {
+      "path": "cosmos3_reasoner_pilot_v4/post_terminal_inventory.json",
+      "sha256": "f41d959fb9ec01c3d819a04932c9af261ef31f8e87b2f0e5bebf38be45b990bc",
+      "size_bytes": 10092
+    },
+    {
+      "path": "cosmos3_reasoner_pilot_v5/session_budget_ledger.json",
+      "sha256": "5d1817234020c3af90ab5bb4ad0ac70341ecee72cf9b03c037e2a540a35496a8",
+      "size_bytes": 993
+    },
+    {
+      "path": "cosmos3_reasoner_pilot_v5/post_terminal_inventory.json",
+      "sha256": "9966abcd016a6d8dc232399516fecc6b66226ad60d25023e33bf31932f50a920",
+      "size_bytes": 12254
+    },
+    {
+      "path": "cosmos3_reasoner_pilot_v6/session_budget_ledger.json",
+      "sha256": "be13411edd0f252fcef01a7be22d9657eacab00e33ee84af073ee23a4da207a5",
+      "size_bytes": 995
+    },
+    {
+      "path": "cosmos3_reasoner_pilot_v6/post_terminal_inventory.json",
+      "sha256": "f6f265aaa919a43c4b13aad2dbfdcbe0dc703e78832c35f90b56a2c1147e092e",
+      "size_bytes": 718
+    }
+  ],
+  "large_media_publication_policy": "Large raw media remains in the local evidence store. The upstream dataset revisions, crop-audit manifest digest, and 441 per-video hashes bind it without committing signed URLs or credentials.",
+  "credentials_or_signed_urls_in_manifest": false
+}

@@ -36,8 +36,12 @@
     "storage_and_transfer": 10.0,
     "campaign_total": 100.0,
     "maximum_concurrent_gpus": 1,
-    "category_cap_exceeded": false,
-    "overall_cap_exceeded": false
+    "known_api_cost_under_category_cap": true,
+    "known_gpu_cost_under_category_cap": true,
+    "storage_and_transfer_cap_exceeded": null,
+    "category_cap_exceeded": null,
+    "overall_cap_exceeded": null,
+    "unknown_reason": "Storage and transfer invoice evidence was unavailable."
   },
   "completed_matrix_unit_economics": {
     "phase_a_gpt5_mini": {

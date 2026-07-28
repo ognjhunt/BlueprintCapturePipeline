@@ -2,6 +2,7 @@
   "schema_version": "policy_ranking_roboarena_claim_evidence_matrix.v1",
   "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
   "overall_verdict": "inconclusive",
+  "external_evidence_content_binding": "external_evidence_manifest_v1.json",
   "claims": [
     {
       "component": "cosmos_wam_qualification",

@@ -2,6 +2,7 @@
   "schema_version": "policy_ranking_roboarena_review_gallery.v1",
   "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
   "local_evidence_root": "$HOME/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728",
+  "portable_content_binding": "external_evidence_manifest_v1.json",
   "phase_a_generated_only_contact_sheet": {
     "path": "$HOME/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728/phase_a_generated_crops_v2/review/representative_generated_crops.png",
     "sha256": "f7fedb1385bd00d9e1f14487861165003f3da21c609411c460d87f41995e108a",
@@ -13,7 +14,8 @@
   "full_oscar_media_root": {
     "path": "$HOME/workspace/policy-ranking-experiment-2-inputs/OSCAR_policy_rollout",
     "video_count": 441,
-    "immutable_per_video_hashes": "phase_a_crop_layout_audit_manifest_v2.json in the external evidence root",
+    "upstream_dataset_revision": "db5edfaef285c15d0a41d5115177a983c08b4f5f",
+    "immutable_per_video_hashes": "phase_a_crop_layout_audit_manifest_v2.json, itself bound by external_evidence_manifest_v1.json",
     "warning": "Each source compare video includes generated and physical halves. Only the audited generated crop was evaluator input."
   },
   "collapse_and_failure_index": {
