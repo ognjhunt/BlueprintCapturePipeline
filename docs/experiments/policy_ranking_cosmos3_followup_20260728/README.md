@@ -1,6 +1,6 @@
 # Cosmos3 successor follow-up — 2026-07-28
 
-Status: `allocation_1_infrastructure_failure_provider_zero_retry_2_authorized`
+Status: `allocation_2_transport_failure_provider_zero_retry_3_authorized`
 
 This is a new experiment namespace. The closed
 `policy_ranking_successor_experiment_20260727` namespace and its exact
@@ -54,9 +54,15 @@ watchdog closure, and a fresh provider API inventory of zero live instances
 were verified. This is an infrastructure incident with no scientific
 interpretation.
 
-`compute_authorization_allocation_2.json` is the active single-use retry
-authorization. It remains under the same per-allocation USD 6 hard cap,
-one-resource limit, 180-minute TTL, watchdog, teardown, and provider-zero
-requirements. `runtime_retry_signature.json` binds the incident record, retry
-authorization, and timeout repair without altering the frozen scientific
-inputs or evaluator methodology.
+Allocation 2 consumed USD 0.136573 over 561.069338 seconds. It reached a live
+container, passed RTX PRO 6000 GPU sanity, and then failed before Cosmos startup
+because the provider could not connect to the otherwise locally healthy
+Cloudflare Quick Tunnel carrying the frozen bundle. It produced zero scientific
+rollouts. Teardown and a fresh provider API inventory of zero live instances
+were verified. This is a transport incident with no scientific interpretation.
+
+`compute_authorization_allocation_3.json` is the active single-use transport
+retry authorization. It keeps the frozen bundle unchanged and uses an
+independently preflighted alternate HTTPS reverse tunnel. The allocation remains
+under the same per-allocation USD 6 hard cap, one-resource limit, 180-minute TTL,
+watchdog, teardown, and provider-zero requirements.

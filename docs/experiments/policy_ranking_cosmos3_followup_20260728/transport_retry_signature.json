@@ -1,0 +1,13 @@
+{
+  "schema_version": "policy_ranking_cosmos3_followup_transport_retry_signature.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "retry_authorization_id": "policy-ranking-cosmos3-followup-20260728-allocation-3",
+  "files": {
+    "compute_authorization_allocation_3.json": "dad790e5b20fd7553feb94e917a7111e5fbb5798b9f7bcd256df56e80f6c7e0a",
+    "allocation_2_infrastructure_incident.json": "6d36b7b82aae8492c81026690cf4966967869685b584eacf9db3151747aaa14d",
+    "cosmos3_followup_provider_bundle.zip": "0e938e1674ff2efc043363ab9b7e2724ae2f9bc264e289895d7759a9eb8173fd",
+    "evaluator_methodology_freeze.json": "cf99eb802d8ddf1dde71f84d57fd9253a48a5cc75cad6e8032661093b52d26b3",
+    "causal_screen_metric_freeze.json": "683e454ec480f00bd485e9a749cc01a3ad83e8f4d5ad924f6d44104d62c9865a"
+  },
+  "claim_boundary": "This signature binds the transport-only retry authorization and the unchanged scientific bundle and methods; it does not unseal outcomes or assert Cosmos, evaluator, ranking, transfer, economic, or physical-task evidence."
+}
