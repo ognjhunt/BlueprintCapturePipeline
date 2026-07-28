@@ -1,0 +1,40 @@
+{
+  "schema_version": "policy_ranking_roboarena_transport_failure_diagnostic_plan.v1",
+  "trigger": {
+    "run_sha256": "b70311d7aaba21aa8a9e6cd10d68ea257c71c5d044ad9c54859132710d7d831b",
+    "request_id": "07886508fda39c9d218a37c6510823f5482b9f6ae841b5f99d67529a1bdb57b8",
+    "error_type": "BadRequestError",
+    "completed_scientific_rows": 0
+  },
+  "model_availability_check": {
+    "model": "gpt-5-mini-2025-08-07",
+    "status": "available",
+    "owned_by": "system",
+    "experiment_pixels_uploaded": false,
+    "estimated_cost_usd": 0.0
+  },
+  "diagnostics": [
+    {
+      "order": 1,
+      "name": "text_only_exact_model_and_structured_schema",
+      "purpose": "Separate prompt schema and model parameters from image transport.",
+      "input": "fixed synthetic text only; no experiment pixels, policy identity, or labels",
+      "conservative_cost_reserve_usd": 0.05,
+      "stop_if_failed": true
+    },
+    {
+      "order": 2,
+      "name": "single_synthetic_image_transport",
+      "purpose": "Run only if diagnostic 1 passes; isolate data-URI image transport.",
+      "input": "one deterministic synthetic image; no experiment pixels, policy identity, or labels",
+      "conservative_cost_reserve_usd": 0.05,
+      "stop_if_failed": true
+    }
+  ],
+  "maximum_additional_conservative_reserve_usd": 0.1,
+  "campaign_api_cap_usd": 25.0,
+  "provider_called_before_plan": true,
+  "outcome_labels_accessed": false,
+  "threshold_or_prompt_tuning_forbidden": true,
+  "claim_boundary": "Bounded transport failure diagnosis only; cannot produce an evaluator, ranking, or thesis result."
+}
