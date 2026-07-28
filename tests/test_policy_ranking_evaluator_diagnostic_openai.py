@@ -86,3 +86,29 @@ def test_canary_records_usage_and_redaction(tmp_path: Path) -> None:
     assert result["usage"]["standard_cost_usd"] > 0
     assert result["policy_identity_sent_to_provider"] is False
     assert result["physical_ground_truth_pixels_sent_to_provider"] is False
+
+
+def test_incomplete_canary_is_retained_as_invalid_evidence(tmp_path: Path) -> None:
+    class Responses:
+        def create(self, **kwargs):
+            return types.SimpleNamespace(
+                id="resp-incomplete",
+                status="incomplete",
+                incomplete_details=types.SimpleNamespace(
+                    model_dump=lambda mode: {"reason": "max_output_tokens"}
+                ),
+                usage=types.SimpleNamespace(
+                    input_tokens=1000,
+                    output_tokens=3000,
+                    input_tokens_details=types.SimpleNamespace(cached_tokens=0),
+                ),
+            )
+
+    result = score_canary(
+        types.SimpleNamespace(responses=Responses()),
+        _pair(tmp_path),
+        model=GPT54_MINI_MODEL,
+    )
+    assert result["response_status"] == "incomplete"
+    assert result["incomplete_details"] == {"reason": "max_output_tokens"}
+    assert result["scientific_valid"] is False

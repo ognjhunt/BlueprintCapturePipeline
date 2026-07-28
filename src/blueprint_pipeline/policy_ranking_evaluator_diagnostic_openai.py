@@ -145,10 +145,29 @@ def score_canary(client: Any, pair: Mapping[str, Any], *, model: str) -> dict[st
         **body,
         extra_headers={"Idempotency-Key": f"diag-canary-{model}-{pair['pair_id']}"},
     )
-    if getattr(response, "status", None) != "completed" or not getattr(
-        response, "id", None
-    ):
-        raise OpenAIDiagnosticError("canary_response_not_completed")
+    if getattr(response, "status", None) != "completed" or not getattr(response, "id", None):
+        details = getattr(response, "incomplete_details", None)
+        if hasattr(details, "model_dump"):
+            details = details.model_dump(mode="json")
+        result = {
+            "schema_version": "policy_ranking_openai_pair_incomplete_canary.v1",
+            "pair_id": pair["pair_id"],
+            "arm_id": MODEL_ARM_IDS[model],
+            "provider": "openai",
+            "model": model,
+            "response_id": str(getattr(response, "id", "") or ""),
+            "response_status": str(getattr(response, "status", "") or ""),
+            "incomplete_details": details,
+            "usage": _usage(response, model=model),
+            "latency_seconds": time.monotonic() - started,
+            "transport": "synchronous_schema_canary_only",
+            "scientific_valid": False,
+            "policy_identity_sent_to_provider": False,
+            "physical_outcome_sent_to_provider": False,
+            "physical_ground_truth_pixels_sent_to_provider": False,
+        }
+        result["result_sha256"] = canonical_sha256(result)
+        return result
     payload = json.loads(str(getattr(response, "output_text", "")))
     _validate_payload(payload)
     usage = _usage(response, model=model)
@@ -202,7 +221,11 @@ def run_canary(
     )
     report: dict[str, Any] = {
         "schema_version": "policy_ranking_openai_pair_canary.v1",
-        "status": "passed" if projected_batch <= arm_cap else "blocked",
+        "status": (
+            "passed"
+            if result.get("response_status") == "completed" and projected_batch <= arm_cap
+            else "blocked"
+        ),
         "model": model,
         "arm_id": MODEL_ARM_IDS[model],
         "result": result,
