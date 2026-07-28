@@ -1,0 +1,324 @@
+{
+  "schema_version": "vast_provider_adapter_result.v1",
+  "generated_at": "2026-07-28T00:59:42.483663+00:00",
+  "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11",
+  "mode": "live-startup-probe",
+  "api_call_performed": true,
+  "vast_side_effects_may_have_occurred": true,
+  "provider_create_attempted": true,
+  "vast_instance_ids": [
+    46059888
+  ],
+  "vast_launch_mode": "ssh_direct",
+  "provider_bundle_kind": "wam",
+  "ngc_image_login_mode": "never",
+  "vast_template_hash_present": false,
+  "use_vast_template_image": false,
+  "allow_cold_isaac_image_pull": true,
+  "min_cold_isaac_pull_live_minutes": 18,
+  "disk_gb": 250,
+  "public_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+  "isaac_image": "nvcr.io/nvidia/isaac-sim:6.0.0",
+  "selected_container_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+  "require_known_supported_isaac_driver": false,
+  "provider_bundle_inline_transport_used": false,
+  "provider_bundle_inline_transport_reason": "provider_bundle_too_large_for_inline_env",
+  "provider_bundle_inline_transport_size_bytes": 301170,
+  "provider_bundle_inline_transport_base64_length": 401560,
+  "provider_bundle_inline_transport_sha256_present": false,
+  "machine_avoidlist_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_machine_avoidlist.json",
+  "excluded_machine_ids": [],
+  "allowed_machine_ids": [],
+  "machine_allowlist_active": false,
+  "min_gpu_ram_mb": 95000,
+  "min_compute_cap": 1200,
+  "max_compute_cap": 0,
+  "session_budget_ledger_path": "/private/tmp/policy-ranking-successor-live-20260727/vast_session_cost_summary.json",
+  "vast_launch_lock_path": "/Users/nijelhunt_1/.blueprint-secrets/vast_paid_launch.lock",
+  "vast_launch_lock_manifest_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_launch_lock_manifest.json",
+  "secret_values_in_artifact": false,
+  "raw_api_key_stored": false,
+  "vast_secret_file_status": {
+    "env_var": "VAST_API_KEY_FILE",
+    "path": "/Users/nijelhunt_1/.blueprint-secrets/vast_api_key",
+    "path_source": "env",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "raw_secret_value_recorded": false,
+    "secret_nonempty": true
+  },
+  "ngc_secret_file_status": {
+    "env_var": "NGC_API_KEY_FILE",
+    "path": "/Users/nijelhunt_1/.blueprint-secrets/ngc_api_key",
+    "path_source": "default_blueprint_secret_file_path",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "raw_secret_value_recorded": false,
+    "secret_nonempty": true
+  },
+  "docker_username_file_status": {
+    "env_var": "DOCKER_USERNAME_FILE",
+    "path": "/Users/nijelhunt_1/.blueprint-secrets/docker_username",
+    "path_source": "default_blueprint_secret_file_path",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "raw_secret_value_recorded": false,
+    "secret_nonempty": true
+  },
+  "docker_pat_file_status": {
+    "env_var": "DOCKER_PAT_FILE",
+    "path": "/Users/nijelhunt_1/.blueprint-secrets/docker_pat",
+    "path_source": "default_blueprint_secret_file_path",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "raw_secret_value_recorded": false,
+    "secret_nonempty": true
+  },
+  "hf_token_file_status": {
+    "env_var": "HF_TOKEN_FILE",
+    "path": "/Users/nijelhunt_1/.blueprint-secrets/huggingface_token",
+    "path_source": "default_blueprint_secret_file_path",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "raw_secret_value_recorded": false,
+    "secret_nonempty": true,
+    "accepted_env_vars": [
+      "HF_TOKEN_FILE",
+      "HUGGINGFACE_TOKEN_FILE",
+      "HUGGING_FACE_HUB_TOKEN_FILE",
+      "BLUEPRINT_HF_TOKEN_FILE"
+    ]
+  },
+  "isaac_sim_does_not_make_spz_or_3dgs_physical": true,
+  "direct_splat_collision_proven": false,
+  "collider_source_if_used": "metadata_derived_collider_proxy_required",
+  "splat_visuals_if_used": "splat_rendered_visual_evidence_synchronized_with_isaac_state",
+  "real_wam_vla_runtime_proven": false,
+  "generated_world_rank_fidelity_result_proven": false,
+  "generated_world_policy_evaluation_scope_proven": false,
+  "dexterous_hand_policy_proven": false,
+  "controller_grade_execution_proven": false,
+  "official_policy_execution_proven": false,
+  "rank_fidelity_result_proven": false,
+  "public_claim_upgrade_allowed": false,
+  "provider_worker_endpoint_manifest_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/provider_worker_endpoint_manifest.json",
+  "provider_worker_endpoint_manifest": {
+    "schema_version": "provider_worker_endpoint_manifest.v1",
+    "generated_at": "2026-07-28T00:59:42.696784+00:00",
+    "status": "endpoint_discovery_pending_provider_runtime",
+    "provider_worker_contract_schema_version": "provider_worker_contract.v1",
+    "provider": "vast",
+    "provider_mode": "live-startup-probe",
+    "job_id": "provider-job-v11",
+    "worker_invocation_grain": "direct_http_worker_after_provider_endpoint_discovery",
+    "direct_http_worker_endpoint_expected": true,
+    "direct_policy_infer_from_local_loop_allowed": false,
+    "reason": "vast_instance_must_report_reachable_worker_urls_before_local_loop_reuse",
+    "known_endpoint": {
+      "worker_url_present": false,
+      "worker_url_redacted": null,
+      "ready_url_present": false,
+      "ready_url_redacted": null,
+      "shutdown_url_present": false,
+      "shutdown_url_redacted": null,
+      "serverless_endpoint_id_present": false,
+      "serverless_endpoint_id_redacted": null,
+      "provider_instance_id_present": false,
+      "provider_instance_id_redacted": null
+    },
+    "http_contract": {
+      "healthz": {
+        "method": "GET",
+        "path": "/healthz"
+      },
+      "readyz": {
+        "method": "GET",
+        "path": "/readyz"
+      },
+      "infer": {
+        "method": "POST",
+        "path": "/infer"
+      },
+      "shutdown": {
+        "method": "POST",
+        "path": "/shutdown"
+      }
+    },
+    "consumer_env_contract": {
+      "worker_url_env": "BLUEPRINT_PROVIDER_POLICY_WORKER_URL",
+      "ready_url_env": "BLUEPRINT_PROVIDER_POLICY_WORKER_READY_URL",
+      "auth_token_file_env": "BLUEPRINT_PROVIDER_POLICY_WORKER_AUTH_TOKEN_FILE",
+      "policy_command_adapter": "blueprint-provider-worker-policy-command-adapter",
+      "session_runner": "blueprint-run-provider-worker-session"
+    },
+    "provider_runtime_must_write": [
+      "provider_worker_endpoint_manifest.json",
+      "worker_readyz_probe.json",
+      "provider_worker_session_run.json",
+      "provider_teardown_manifest.json"
+    ],
+    "provider_request_summary": {
+      "operation": "vast_provider_worker_startup_probe",
+      "command_configured": true,
+      "image_configured": true,
+      "manifest_uri_present": false
+    },
+    "blockers": [
+      "provider_worker_endpoint_not_discovered_yet"
+    ],
+    "raw_credentials_written_to_artifacts": false,
+    "secret_hashes_written_to_artifacts": false,
+    "claim_boundary": {
+      "endpoint_manifest_is_not_provider_allocation_proof": true,
+      "endpoint_manifest_is_not_worker_ready_proof": true,
+      "readyz_probe_required_before_customer_eval": true,
+      "shutdown_response_is_not_provider_teardown_or_cost_proof": true,
+      "generated_world_rank_fidelity_result_proven": false,
+      "generated_world_policy_evaluation_scope_proven": false,
+      "non_ranking_operational_claim_proven": false
+    }
+  },
+  "vast_launch_lock_status": "released",
+  "vast_launch_lock_acquired": true,
+  "vast_launch_lock_manifest": {
+    "schema_version": "vast_launch_lock_manifest.v1",
+    "generated_at": "2026-07-28T01:10:16.075031+00:00",
+    "status": "released",
+    "lock_path": "/Users/nijelhunt_1/.blueprint-secrets/vast_paid_launch.lock",
+    "lock_released": true,
+    "raw_secret_values_recorded": false
+  },
+  "prelaunch_inventory_guard_status": "passed",
+  "prelaunch_inventory_guard": {
+    "schema_version": "vast_prelaunch_inventory_guard.v1",
+    "generated_at": "2026-07-28T00:59:42.483663+00:00",
+    "status": "passed",
+    "api_endpoint_checked": "GET /api/v0/instances/",
+    "api_http_status_code": 200,
+    "active_instance_count": 0,
+    "active_instances": [],
+    "continuing_spend_detected_before_new_launch": false,
+    "query_error": null,
+    "query_attempt_count": 1,
+    "blockers": [],
+    "raw_secret_values_recorded": false
+  },
+  "status": "completed",
+  "reason": "vast_startup_probe_completed",
+  "blockers": [],
+  "session_budget_summary_path": "/private/tmp/policy-ranking-successor-live-20260727/vast_session_cost_summary.json",
+  "session_budget_summary": {
+    "schema_version": "vast_session_cost_summary.v4",
+    "generated_at": "2026-07-28T00:59:42.483663+00:00",
+    "status": "completed",
+    "parse_error_recovered": null,
+    "attempts": [
+      {
+        "generated_at": "2026-07-27T19:01:45.021622+00:00",
+        "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v3",
+        "status": "failed",
+        "reason": "vast_probe_failed",
+        "blockers": [
+          "vast_heartbeat_container_missing"
+        ],
+        "vast_instance_ids": [
+          46031731
+        ],
+        "selected_compute_hourly_rate_usd": 1.0162962962962963,
+        "selected_hourly_rate_usd": 1.1059259259259258,
+        "actual_live_runtime_seconds_observed_by_adapter": 97.48557691695169,
+        "estimated_cost_usd": 0.029948,
+        "continuing_spend_from_this_run": false,
+        "gpu_model_slug": "rtx_pro_6000_ws",
+        "machine_id": 141671,
+        "offer_id": 43983628
+      },
+      {
+        "generated_at": "2026-07-27T23:03:26.617582+00:00",
+        "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v6",
+        "status": "blocked",
+        "reason": "vast_blueprint_video_smoke_blocked",
+        "blockers": [
+          "mp4_count_below_expected_video_smoke_camera_count"
+        ],
+        "vast_instance_ids": [
+          46051923
+        ],
+        "selected_compute_hourly_rate_usd": 1.0066666666666666,
+        "selected_hourly_rate_usd": 1.2083333333333333,
+        "actual_live_runtime_seconds_observed_by_adapter": 62.240011624991894,
+        "estimated_cost_usd": 0.020891,
+        "continuing_spend_from_this_run": false,
+        "gpu_model_slug": "rtx_pro_6000_s",
+        "machine_id": 47131,
+        "offer_id": 36478238
+      },
+      {
+        "generated_at": "2026-07-28T00:59:42.483663+00:00",
+        "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11",
+        "status": "completed",
+        "reason": "vast_startup_probe_completed",
+        "blockers": [],
+        "vast_instance_ids": [
+          46059888
+        ],
+        "selected_hourly_rate_usd": 1.0037037037037038,
+        "actual_live_runtime_seconds_observed_by_adapter": 631.5513550001197,
+        "estimated_cost_usd": 0.176081,
+        "continuing_spend_from_this_run": false,
+        "gpu_model_slug": "rtx_pro_6000_ws",
+        "machine_id": 45503,
+        "offer_id": 36912713
+      }
+    ],
+    "attempt_count": 3,
+    "estimated_cost_usd": 0.22692,
+    "live_runtime_seconds": 791.276944,
+    "raw_secret_values_recorded": false
+  },
+  "estimated_cost_usd": 0.176081,
+  "continuing_spend_from_this_run": false,
+  "retained_owned": false,
+  "retention_decision": {
+    "schema_version": "vast_retained_instance_decision.v1",
+    "generated_at": "2026-07-28T01:10:15.532191+00:00",
+    "status": "teardown_required",
+    "requested": true,
+    "instance_ids": [
+      46059888
+    ],
+    "watchdog_pid": 36154,
+    "watchdog_deadline_epoch": 1785211182.372946,
+    "container_health_proven": true,
+    "gpu_health_proven": true,
+    "cosmos_server_loaded": false,
+    "blockers": [
+      "retention_not_needed_after_terminal_bundle_success"
+    ],
+    "raw_secret_values_recorded": false
+  },
+  "final_validation_status": "passed",
+  "artifacts": {
+    "vast_runtime_discovery": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_runtime_discovery.json",
+    "vast_provider_plan": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_provider_plan.json",
+    "vast_offer_selection_manifest": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_offer_selection_manifest.json",
+    "vast_budget_ledger": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_budget_ledger.json",
+    "vast_all_in_cost_binding": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_all_in_cost_binding.json",
+    "vast_runtime_phase_log": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_runtime_phase_log.jsonl",
+    "vast_startup_probe_manifest": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_startup_probe_manifest.json",
+    "vast_gpu_sanity_report": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_gpu_sanity_report.json",
+    "vast_isaac_smoke_result": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_isaac_smoke_result.json",
+    "vast_provider_command_result": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_provider_command_result.json",
+    "vast_video_smoke_result": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_video_smoke_result.json",
+    "vast_teardown_manifest": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_teardown_manifest.json",
+    "vast_retained_instance_decision": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_retained_instance_decision.json",
+    "vast_final_validation": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_final_validation.json",
+    "vast_launch_lock_manifest": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_launch_lock_manifest.json",
+    "vast_prelaunch_inventory_guard": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_prelaunch_inventory_guard.json"
+  }
+}

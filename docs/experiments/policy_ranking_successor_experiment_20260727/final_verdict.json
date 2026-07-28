@@ -1,0 +1,163 @@
+{
+  "schema_version": "blueprint_policy_ranking_successor_final_verdict.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "primary_thesis": "Given a captured real-site representation, a real robot task, and multiple candidate robot policies, Blueprint can predict a useful ordering of those policies substantially faster and more cheaply than exhaustively evaluating every policy physically, while abstaining when its prediction is not trustworthy.",
+  "components": {
+    "cosmos_wam_qualification": {
+      "verdict": "inconclusive",
+      "status": "failed_frozen_direct_canary",
+      "basis": "The exact Blackwell CUDA/BF16 gate and pinned Cosmos3 server load passed. One direct forward-dynamics request returned a decodable 17-frame H.264 clip, but it was 640x528 after a frozen 640x540 request and the frozen deterministic decoder classified it static. Zero qualification canaries were accepted, the same-process Blueprint wrapper was not run, and the paired causal matrix was not admitted."
+    },
+    "frozen_benchmark_calibration": {
+      "verdict": "inconclusive",
+      "status": "not_run_ineligible",
+      "basis": "The preregistered evaluator admission condition required supported Cosmos qualification. Because qualification failed, GPT-5 mini received no Cosmos rollouts, no new disjoint benchmark split was selected, benchmark outcomes remained sealed, and no ranking statistic can be computed."
+    },
+    "captured_site_transfer": {
+      "verdict": "inconclusive",
+      "status": "not_run_ineligible",
+      "basis": "No captured-site, 3DGS, egocentric-sim, or site-specific physical outcome arm was run. The only generated clip used the frozen public DROID calibration observation. No prospective site ranking or site abstention was emitted."
+    },
+    "economics_and_speed": {
+      "verdict": "inconclusive",
+      "status": "campaign_cost_measured_comparative_claim_unavailable",
+      "basis": "Provider spend and runtime were measured, but no valid per-policy WAM/evaluator arm completed and no source-supported physical-evaluation time or monetary baseline was available. Substantially faster or cheaper policy evaluation is therefore not established."
+    }
+  },
+  "overall_verdict": "inconclusive",
+  "overall_decision_rule": "The preregistered Cosmos qualification gate did not yield an accepted canary, leaving causal conditioning, ranking calibration, abstention reliability, and captured-site transfer unmeasured. This is insufficient to support the thesis and insufficient to falsify the full thesis with powered valid ranking evidence.",
+  "causal_conditioning": {
+    "status": "not_evaluated_after_qualification_failure",
+    "qualification_canaries_frozen": 2,
+    "qualification_canaries_valid": 0,
+    "scientific_matrix_requests_frozen": 10,
+    "scientific_matrix_responses_valid": 0,
+    "paired_counterfactual_outputs_available": false,
+    "action_conditioned_excess": null,
+    "action_conditioned_excess_ci95": null,
+    "single_diagnostic_clip_static": true,
+    "single_diagnostic_clip_temporal_absolute_difference_mean": 0.14205367863178253,
+    "single_diagnostic_clip_temporal_absolute_difference_max": 0.21817129850387573,
+    "causal_credit_awarded": false
+  },
+  "ranking_metrics": {
+    "status": "unavailable",
+    "pairwise_ranking_accuracy": null,
+    "pairwise_ranking_accuracy_ci95": null,
+    "kendall_tau_b": null,
+    "top_policy_correct": null,
+    "selective_coverage": 0.0,
+    "abstention_rate": null,
+    "action_following_reliability": null,
+    "evaluated_policy_task_count": 0,
+    "labels_unsealed": false
+  },
+  "captured_site_claim_boundary": {
+    "prospective_captured_site_transfer_executed": false,
+    "externally_calibrated_site_prediction_emitted": false,
+    "site_abstention_emitted": false,
+    "site_specific_physical_accuracy_proven": false,
+    "deployment_readiness_proven": false
+  },
+  "economics": {
+    "provider_attempt_count": 3,
+    "provider_total_live_runtime_seconds": 791.276944,
+    "provider_total_estimated_spend_usd": 0.22692,
+    "evaluator_api_spend_usd": 0.0,
+    "total_experiment_spend_usd": 0.22692,
+    "authorized_campaign_ceiling_usd": 6.0,
+    "remaining_ceiling_usd": 5.77308,
+    "final_attempt_hourly_rate_usd": 1.0037037037037038,
+    "final_attempt_live_runtime_seconds": 631.5513550001197,
+    "final_attempt_spend_usd": 0.176081,
+    "model_load_seconds": 335.1312821097672,
+    "direct_generation_and_validation_seconds_derived_upper_bound": 2.260755085386336,
+    "direct_generation_seconds_separately_persisted": false,
+    "wrapper_generation_seconds": null,
+    "per_arm_evaluation_seconds": null,
+    "image_pull_seconds_separately_persisted": false,
+    "checkpoint_download_seconds_separately_persisted": false,
+    "heavy_image_bytes_transferred_measured": false,
+    "checkpoint_bytes_transferred_measured": false,
+    "checkpoint_expected_total_file_bytes": 34986890326,
+    "runtime_bundle_bytes": 301170,
+    "runtime_output_bytes": 280346,
+    "retained_warm_iterations_completed": 0,
+    "cold_starts_avoided": 0,
+    "warm_marginal_cost_per_policy_task_usd": null,
+    "physical_evaluation_baseline_time": null,
+    "physical_evaluation_baseline_cost_usd": null,
+    "substantially_faster_proven": false,
+    "substantially_cheaper_proven": false
+  },
+  "execution_identity": {
+    "source_commit": "fd352e59bd1342b13ab3b83f45a52c6af23ff28b",
+    "source_pr": 209,
+    "source_pr_head": "287673073fe90ddf736a9aaff79de650454530ed",
+    "source_pr_required_checks_passed": true,
+    "head_equal_origin_main_at_run": true,
+    "local_main_ref_equal_origin_main_at_run": false,
+    "local_main_ref_at_run": "115e9caec0755aa2fa0c47b84c92ead6a85ea074",
+    "origin_main_at_run": "fd352e59bd1342b13ab3b83f45a52c6af23ff28b",
+    "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "checkpoint": "nvidia/Cosmos3-Nano",
+    "checkpoint_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "precision": "bfloat16",
+    "pipeline_class": "Cosmos3OmniDiffusersPipeline",
+    "vllm_version": "0.25.0",
+    "vllm_omni_version": "0.25.0rc2.dev62+g9c1b7504b",
+    "vllm_omni_revision": "9c1b7504b178afcf541867c1a2d30db48c69cda8",
+    "torch_version": "2.11.0+cu130",
+    "runtime_bundle_sha256": "79e25e21290a826479cd675b5363c3787f4925b094ae53514e493370e1935948",
+    "runtime_output_sha256": "23d7a9782015ffa08669f3bd8f9e823a096faa96be31196451167f5823ba914a",
+    "protocol_sha256": "0bdbb41e38c45cbac14351eb0f25479b6b4ee9ef13e4f7584cc50431037e8158",
+    "smoke_inventory_canonical_sha256": "c925d168c166ec7bf53ed9252a33a937416a3f6fa9ecad8a01d0e201920a07aa",
+    "initial_observation_sha256": "8843f0fc9c68914dfb62222c961db19b37a5f155e602ff4a545eea1dcf42636d",
+    "action_streams_canonical_sha256": "9ece91bb2a2e50165bf21c6fa62afd25831281ade80607d7a6987e29e4f80c58",
+    "direct_video_sha256": "75bbd8d19d4275fe4b360363a5c7fd79e3af0a4becce3a294a362e51350f2c2a",
+    "evaluator_identity": "gpt-5-mini-2025-08-07_not_called"
+  },
+  "gpu_identity": {
+    "provider": "vast",
+    "instance_id": 46059888,
+    "offer_id": 36912713,
+    "machine_id": 45503,
+    "product_name": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "uuid": "GPU-8c2ffae1-4668-6987-1251-3c09f0dda794",
+    "driver_version": "580.126.09",
+    "container_cuda_version": "13.0",
+    "compute_capability": [12, 0],
+    "bf16_cuda_matrix_operation_passed": true
+  },
+  "teardown": {
+    "adapter_destroy_http_status": 200,
+    "retained_session_terminal_state": "provider_absent",
+    "watchdog_armed_before_allocation": true,
+    "watchdog_pid": 36154,
+    "watchdog_final_status": "provider_terminal",
+    "fresh_inventory_generated_at": "2026-07-28T01:20:19.500882+00:00",
+    "fresh_inventory_live_instance_count": 0,
+    "fresh_inventory_burn_usd_per_hour": 0.0,
+    "fresh_vast_inventory_query_succeeded": true,
+    "provider_zero_proven": true
+  },
+  "unresolved_contradictions": [
+    "The runtime evidence says server PID 1273 remained alive and loaded, while the provider retention decision recorded cosmos_server_loaded=false and tore down the instance after the terminal bundle result.",
+    "The pinned action path accepts a 540-pixel request but floors its spatial latent height to 33 and returns 528 pixels.",
+    "The direct clip is structurally decodable but fails both the frozen exact-dimension contract and the independent frozen static-video check.",
+    "The exact-main run worktree matched origin/main, but the user's dirty primary local main ref remained behind and was not destructively changed."
+  ],
+  "cheapest_next_experiment": {
+    "scope": "new_preregistered_runtime_qualification_arm_not_a_retry_of_this_frozen_result",
+    "required_causal_changes": [
+      "Use a height divisible by the pinned spatial VAE factor or patch the pinned runtime to preserve the declared output size, with a new configuration hash and no retroactive pass credit.",
+      "Persist direct-generation timing and validation evidence even when validation fails.",
+      "Run one 30-step recorded-action canary and one zero-action control before expanding to the ten-arm matrix, with the same frozen motion and causal thresholds.",
+      "Repair retained-session handoff so the provider adapter recognizes the loaded server and can apply SHA-bound code-only refreshes without teardown."
+    ],
+    "additional_physical_robot_authority_required": false,
+    "new_paid_authorization_receipt_required": true,
+    "reason": "The v7 authorization was single-use and consumed. A changed follow-up is scientifically justified but must be separately preregistered and admitted."
+  },
+  "physical_robot_operated_funded_or_controlled_by_blueprint": false
+}

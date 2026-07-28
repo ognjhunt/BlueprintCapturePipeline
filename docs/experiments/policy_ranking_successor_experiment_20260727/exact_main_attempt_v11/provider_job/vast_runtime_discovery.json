@@ -1,0 +1,76 @@
+{
+  "schema_version": "vast_runtime_discovery.v1",
+  "generated_at": "2026-07-28T00:59:42.483663+00:00",
+  "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11",
+  "vast_docs_checked": true,
+  "docs_checked_at": "2026-07-28T00:59:42.483663+00:00",
+  "docs_sources": [
+    {
+      "label": "Vast create instance API",
+      "url": "https://docs.vast.ai/api-reference/instances/create-instance",
+      "notes": [
+        "create accepts an ask/offer id with PUT /api/v0/asks/{id}/",
+        "runtype args preserves image entrypoint",
+        "ssh/jupyter launch modes replace entrypoint and use onstart"
+      ]
+    },
+    {
+      "label": "Vast search offers API",
+      "url": "https://docs.vast.ai/api-reference/search/search-offers",
+      "notes": [
+        "search offers uses POST /api/v0/bundles/ with filter operators"
+      ]
+    },
+    {
+      "label": "Vast launch modes",
+      "url": "https://docs.vast.ai/guides/instances/connect/overview",
+      "notes": [
+        "launch modes are entrypoint, ssh, and jupyter"
+      ]
+    },
+    {
+      "label": "Isaac Sim 6.0 container installation",
+      "url": "https://docs.isaacsim.omniverse.nvidia.com/6.0.0/installation/install_container.html",
+      "notes": [
+        "Isaac container runs headless in Docker",
+        "ACCEPT_EULA=Y is required",
+        "larger persistent cache/disk mounts are recommended"
+      ]
+    },
+    {
+      "label": "Vast execute API",
+      "url": "https://docs.vast.ai/api-reference/instances/execute",
+      "notes": [
+        "execute queues a constrained command and returns a result_url"
+      ]
+    },
+    {
+      "label": "Vast destroy instance API",
+      "url": "https://docs.vast.ai/api-reference/instances/destroy-instance",
+      "notes": [
+        "destroy deletes the instance and stops continuing spend for it"
+      ]
+    }
+  ],
+  "api_surfaces": {
+    "search_offers": "POST /api/v0/bundles/",
+    "create_instance": "PUT /api/v0/asks/{id}/",
+    "show_instance": "GET /api/v0/instances/{id}/",
+    "execute_command": "PUT /api/v0/instances/command/{id}/",
+    "show_logs": "PUT /api/v0/instances/request_logs/{id}",
+    "destroy_instance": "DELETE /api/v0/instances/{id}/"
+  },
+  "launch_mode_notes": {
+    "entrypoint_args": "preserves image entrypoint and does not inject SSH/Jupyter",
+    "ssh_jupyter": "replaces image entrypoint; use onstart for startup commands",
+    "launch_mode_used_for_probe": "ssh_direct"
+  },
+  "disk_gb_requested_for_probe": 250,
+  "vastai_cli_probe": {
+    "present": true,
+    "path": "/opt/homebrew/Caskroom/miniforge/base/bin/vastai",
+    "returncode": 0,
+    "first_line": "usage: vastai [-h] [--url URL] [--retry RETRY] [--raw] [--explain] [--curl] [--api-key API_KEY] [--version] command ..."
+  },
+  "proof_boundary": "Runtime discovery only records current Vast API/CLI surfaces. It does not prove provider allocation, GPU visibility, Isaac execution, or generated-world rank fidelity."
+}

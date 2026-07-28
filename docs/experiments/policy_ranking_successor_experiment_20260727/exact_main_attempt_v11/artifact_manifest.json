@@ -1,0 +1,20 @@
+{
+  "schema_version": "policy_ranking_successor_exact_main_attempt_artifact_manifest.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "attempt": "exact_main_attempt_v11",
+  "source_commit": "fd352e59bd1342b13ab3b83f45a52c6af23ff28b",
+  "artifacts": [
+    {"path": "runtime_output.zip", "sha256": "23d7a9782015ffa08669f3bd8f9e823a096faa96be31196451167f5823ba914a"},
+    {"path": "final_provider_inventory.json", "sha256": "b126f8d0688fb8cf35368893d5b16fafaf4b93a2f8b3b79921c7bb543ec17624"},
+    {"path": "first_mid_last.png", "sha256": "c4722923c2af51f7998360005dfb12a2d91ae736c7458eefa902768777a0189e"},
+    {"path": "provider_job/vast_provider_command_result.json", "sha256": "fefed5ae0929af067622a535c49e463d55629513dab8b0aabb375dd135b581b9"},
+    {"path": "provider_job/vast_budget_ledger.json", "sha256": "a04d17c1a76f2558bdde096439280f409d9d574a7b8eb1b64abbc8f846749c19"},
+    {"path": "provider_job/vast_teardown_manifest.json", "sha256": "a7271f08f8d3b84d3e8e7bc29b7055a654452c61b631e56462833733c1113361"},
+    {"path": "provider_job/retained_gpu_session_manifest.json", "sha256": "cc78d444e36953d1fe07efa0e222d87d9ebdc82a2ecb664fe9470405e69931c1"},
+    {"path": "provider_job/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json", "sha256": "8507f17447a8ee9b3a9d94f314ea5144dff33fdcf7fa67d57d0da4f2d0ca87c0"},
+    {"path": "provider_job/vast_startup_probe_manifest.json", "sha256": "cc5d1781f68ae35e28a453cc43ae76e96f0e6dc96c55064ec34ee0425f15baa3"},
+    {"path": "provider_job/vast_all_in_cost_binding.json", "sha256": "796d0a7f587cbea8199a71152445420e3d58e47a9011b1f9995411be369977cb"},
+    {"path": "provider_job/vast_provider_runtime_output_videos/000_direct.mp4", "sha256": "75bbd8d19d4275fe4b360363a5c7fd79e3af0a4becce3a294a362e51350f2c2a"}
+  ],
+  "raw_secret_values_recorded": false
+}

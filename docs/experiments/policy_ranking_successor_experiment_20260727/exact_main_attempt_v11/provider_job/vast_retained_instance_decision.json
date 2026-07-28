@@ -1,0 +1,18 @@
+{
+  "schema_version": "vast_retained_instance_decision.v1",
+  "generated_at": "2026-07-28T01:10:15.532191+00:00",
+  "status": "teardown_required",
+  "requested": true,
+  "instance_ids": [
+    46059888
+  ],
+  "watchdog_pid": 36154,
+  "watchdog_deadline_epoch": 1785211182.372946,
+  "container_health_proven": true,
+  "gpu_health_proven": true,
+  "cosmos_server_loaded": false,
+  "blockers": [
+    "retention_not_needed_after_terminal_bundle_success"
+  ],
+  "raw_secret_values_recorded": false
+}

@@ -1,0 +1,50 @@
+{
+  "schema_version": "vast_video_smoke_result.v1",
+  "generated_at": "2026-07-28T00:59:42.483663+00:00",
+  "status": "completed",
+  "provider_bundle_kind": "wam",
+  "provider_runtime_output_zip_path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
+  "provider_runtime_output_zip_received": true,
+  "video_smoke_proven": true,
+  "expected_video_count": 1,
+  "mp4_count": 1,
+  "mp4_members": [
+    "canary/direct.mp4"
+  ],
+  "mp4_validation": {
+    "status": "completed",
+    "expected_video_count": 1,
+    "mp4_count": 1,
+    "validated_mp4_count": 1,
+    "blockers": [],
+    "files": [
+      {
+        "status": "completed",
+        "path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_provider_runtime_output_videos/000_direct.mp4",
+        "size_bytes": 278794,
+        "ffprobe_available": true,
+        "ffprobe_returncode": 0,
+        "duration_seconds": 1.133333,
+        "frame_count": 17,
+        "parse_error": null,
+        "stderr_preview": "",
+        "blockers": [],
+        "zip_member": "canary/direct.mp4"
+      }
+    ]
+  },
+  "blockers": [],
+  "proof_boundary": "Video smoke is proven only when the provider output zip contains the expected MP4 camera outputs and ffprobe confirms non-empty duration and frame counts.",
+  "isaac_sim_does_not_make_spz_or_3dgs_physical": true,
+  "direct_splat_collision_proven": false,
+  "collider_source_if_used": "metadata_derived_collider_proxy_required",
+  "splat_visuals_if_used": "splat_rendered_visual_evidence_synchronized_with_isaac_state",
+  "real_wam_vla_runtime_proven": false,
+  "generated_world_rank_fidelity_result_proven": false,
+  "generated_world_policy_evaluation_scope_proven": false,
+  "dexterous_hand_policy_proven": false,
+  "controller_grade_execution_proven": false,
+  "official_policy_execution_proven": false,
+  "rank_fidelity_result_proven": false,
+  "public_claim_upgrade_allowed": false
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": "vast_bundle_staging_self_test.v1",
+  "generated_at": "2026-07-28T00:59:31.251566+00:00",
+  "status": "passed",
+  "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11",
+  "bundle_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-successor-run-fd352/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
+  "output_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_wam_staging_self_test_output.zip",
+  "token_file": {
+    "path_redacted": true,
+    "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+    "present": true,
+    "mode": "0o600",
+    "mode_is_0600": true,
+    "token_recorded_in_manifest": false,
+    "path_source": "staging_token_file",
+    "created": false
+  },
+  "secret_artifact_policy": {
+    "local_secret_file_paths_recorded": false,
+    "path_disclosure_policy": "local_secret_file_paths_redacted_from_release_artifacts",
+    "publishable_release_artifacts_must_not_include_local_secret_paths": true
+  },
+  "local_base_url": "http://127.0.0.1:50041",
+  "provider_public_base_url_ready": false,
+  "provider_public_base_url_blocker": "public_tunnel_not_started",
+  "checks": [
+    {
+      "label": "health",
+      "http_status": 200
+    },
+    {
+      "label": "bundle_head",
+      "http_status": 200,
+      "content_length": 301170,
+      "content_type": "application/zip"
+    },
+    {
+      "label": "output_put",
+      "http_status": 200
+    }
+  ],
+  "blockers": [],
+  "raw_secret_values_recorded": false
+}

@@ -1,6 +1,6 @@
 # Policy-ranking successor experiment — 2026-07-27
 
-Status: `v4_precreate_code_failure_closed_v5_repair_pending`
+Status: `inconclusive_exact_main_campaign_closed_provider_zero`
 
 This is a new experiment. Experiment 1 and Experiment 2 remain immutable historical
 experiments; none of their prediction matrices, held-out partitions, outcomes, thresholds,
@@ -69,3 +69,29 @@ infrastructure failure only. It does not prove successful model runtime, generat
 causal validity, evaluator validity, simulator
 outcomes, ranking fidelity, captured-site portability, warehouse portability, economics versus
 physical evaluation, or physical performance.
+
+## Exact-main campaign closeout
+
+The final exact-main GPU attempt ran source commit
+`fd352e59bd1342b13ab3b83f45a52c6af23ff28b` after PR #209 merged and its
+required CI checks passed. Blackwell CUDA 13.0, compute capability `(12, 0)`,
+BF16 Torch execution, the pinned vLLM/vLLM-Omni imports, and the pinned
+`nvidia/Cosmos3-Nano` server all passed. Model load took 335.13 seconds.
+
+The first direct forward-dynamics request produced a nonempty, decodable
+17-frame H.264 clip. It did not pass the frozen canary: a `640x540` request
+returned `640x528`, and independent re-analysis classified the clip as static.
+The pinned vLLM-Omni source floors the 540-pixel action-video height by its
+16-pixel spatial VAE factor. The result remains a failure; no threshold or
+expected dimension was changed after inspection.
+
+The same-process Blueprint wrapper, ten-arm causal matrix, GPT-5 mini evaluator,
+disjoint benchmark ranking, and captured-site transfer were correctly not
+entered. No benchmark outcomes were unsealed. The campaign therefore closes as
+`inconclusive`, not as evidence of useful policy ranking and not as physical,
+simulator, or captured-site success.
+
+Three paid provider allocations used 791.277 seconds and an estimated USD
+0.226920. Evaluator spend was zero. The final authenticated provider inventory
+reported zero live instances and zero continuing hourly burn. See
+`final_verdict.json` and `exact_main_attempt_v11/artifact_manifest.json`.

@@ -1,0 +1,12 @@
+{
+  "schema_version": "vast_provider_output_download.v1",
+  "generated_at": "2026-07-28T01:10:15.311437+00:00",
+  "status": "skipped",
+  "provider_output_get_url_present": false,
+  "provider_upload_marker_seen": true,
+  "output_zip_path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
+  "raw_secret_values_recorded": false,
+  "reason": "provider_runtime_output_zip_already_present",
+  "output_zip_present_after_download": true,
+  "output_zip_size_bytes": 280346
+}

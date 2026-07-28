@@ -1,0 +1,11 @@
+{
+  "schema_version": "groot_oscar_runpod_canary_watchdog_cancel.v1",
+  "requested_at": "2026-07-28T01:10:16.091171+00:00",
+  "requested_by": "qualification_owner_teardown",
+  "provider": "vast",
+  "instance_id": "46059888",
+  "pod_name_prefix": "blueprint-groot-oscar-canary-vast-wam-20260728t005931251566000-",
+  "provider_absence_confirmed": true,
+  "provider_absence_evidence": "provider_api_exact_id_prefix_and_global_inventory",
+  "raw_secret_values_recorded": false
+}

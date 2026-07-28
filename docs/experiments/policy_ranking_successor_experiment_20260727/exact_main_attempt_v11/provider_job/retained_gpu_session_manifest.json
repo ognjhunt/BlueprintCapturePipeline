@@ -1,0 +1,29 @@
+{
+  "evidence": {
+    "destroy_request_completed": true,
+    "provider": "vast",
+    "provider_instance_id": 46059888
+  },
+  "journal_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/retained_gpu_session_lifecycle.jsonl",
+  "journal_tail_sha256": "497a04a467f5307052fee073383f757451adb63597a5f204bece6df63bf25702",
+  "schema_version": "blueprint.retained_gpu_session_lifecycle.v1",
+  "sequence": 8,
+  "state": "provider_absent",
+  "states": [
+    "allocated",
+    "container_starting",
+    "image_pulling",
+    "model_downloading",
+    "model_loading",
+    "healthy",
+    "retained_owned",
+    "refresh_in_progress",
+    "experiment_running",
+    "terminal_success",
+    "terminal_failure",
+    "teardown_requested",
+    "provider_absent"
+  ],
+  "terminal": true,
+  "updated_at": "2026-07-28T01:10:16.052517+00:00"
+}

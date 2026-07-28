@@ -1,0 +1,125 @@
+{
+  "schema_version": "vast_provider_command_result.v1",
+  "generated_at": "2026-07-28T00:59:42.483663+00:00",
+  "status": "completed",
+  "instance_id": 46059888,
+  "provider_bundle_started": true,
+  "provider_bundle_downloaded": true,
+  "provider_entrypoint_started": true,
+  "provider_entrypoint_exit_code": 2,
+  "provider_remote_blocked_markers": [],
+  "provider_completed_or_blocked_marker_seen": true,
+  "provider_output_upload_ok": true,
+  "provider_runtime_output_zip_produced": true,
+  "provider_runtime_output_zip_received": true,
+  "provider_command_path_remote_proven": true,
+  "provider_bundle_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-successor-run-fd352/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
+  "provider_bundle_kind": "wam",
+  "provider_runtime_output_zip_path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
+  "provider_bundle_fetch_url_present": true,
+  "provider_output_put_url_present": true,
+  "provider_output_get_url_present": false,
+  "provider_output_download_manifest": {
+    "schema_version": "vast_provider_output_download.v1",
+    "generated_at": "2026-07-28T01:10:15.311437+00:00",
+    "status": "skipped",
+    "provider_output_get_url_present": false,
+    "provider_upload_marker_seen": true,
+    "output_zip_path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
+    "raw_secret_values_recorded": false,
+    "reason": "provider_runtime_output_zip_already_present",
+    "output_zip_present_after_download": true,
+    "output_zip_size_bytes": 280346
+  },
+  "provider_runtime_output_zip_inspection": {
+    "status": "completed",
+    "zip_path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
+    "zip_present": true,
+    "zip_size_bytes": 280346,
+    "zip_member_count": 5,
+    "zip_members_preview": [
+      "blackwell_cuda_canary.json",
+      "canary/direct.mp4",
+      "cosmos_server_retention.json",
+      "immutable_request_journal.jsonl",
+      "wam_runtime_result.json"
+    ],
+    "runtime_result_present": true,
+    "runtime_result": {
+      "status": "blocked",
+      "blockers": [
+        "RuntimeError:direct_video_validation_failed"
+      ],
+      "action_conditioned_video_rollout_generated": false,
+      "generated_rollout_video_present": false,
+      "generated_rollout_video_filename": null,
+      "repeated_policy_calls_count": null,
+      "generated_next_observation_count": null,
+      "live_wam_generation_success_count": null,
+      "learned_wam_model_success_count": null,
+      "policy_observes_wam_generated_next_observation": null,
+      "provider_instance_reused_for_policy_and_wam_loop": null,
+      "checkpoint_status": null,
+      "cuda_probe_status": null,
+      "torch_cuda_available": null,
+      "cuda_device_count": null,
+      "subprocess_status": null,
+      "task_success": null,
+      "raw_secret_values_recorded": false
+    },
+    "runtime_result_status": "blocked",
+    "runtime_result_blockers": [
+      "RuntimeError:direct_video_validation_failed"
+    ],
+    "mp4_count": 1,
+    "mp4_members": [
+      "canary/direct.mp4"
+    ],
+    "video_smoke_expected_video_count": 1,
+    "video_smoke_proven": true,
+    "mp4_validation": {
+      "status": "completed",
+      "expected_video_count": 1,
+      "mp4_count": 1,
+      "validated_mp4_count": 1,
+      "blockers": [],
+      "files": [
+        {
+          "status": "completed",
+          "path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_provider_runtime_output_videos/000_direct.mp4",
+          "size_bytes": 278794,
+          "ffprobe_available": true,
+          "ffprobe_returncode": 0,
+          "duration_seconds": 1.133333,
+          "frame_count": 17,
+          "parse_error": null,
+          "stderr_preview": "",
+          "blockers": [],
+          "zip_member": "canary/direct.mp4"
+        }
+      ]
+    },
+    "json_parse_errors": []
+  },
+  "runtime_result_status": "blocked",
+  "runtime_result_blockers": [
+    "RuntimeError:direct_video_validation_failed"
+  ],
+  "blueprint_provider_bundle_execution_proven": true,
+  "video_smoke_proven": true,
+  "video_smoke_expected_video_count": 1,
+  "blockers": [],
+  "proof_boundary": "Provider bundle execution proves remote bundle download, entrypoint start, and output return only. A runtime result blocker still means controller-grade or official policy execution was not proven.",
+  "isaac_sim_does_not_make_spz_or_3dgs_physical": true,
+  "direct_splat_collision_proven": false,
+  "collider_source_if_used": "metadata_derived_collider_proxy_required",
+  "splat_visuals_if_used": "splat_rendered_visual_evidence_synchronized_with_isaac_state",
+  "real_wam_vla_runtime_proven": false,
+  "generated_world_rank_fidelity_result_proven": false,
+  "generated_world_policy_evaluation_scope_proven": false,
+  "dexterous_hand_policy_proven": false,
+  "controller_grade_execution_proven": false,
+  "official_policy_execution_proven": false,
+  "rank_fidelity_result_proven": false,
+  "public_claim_upgrade_allowed": false
+}

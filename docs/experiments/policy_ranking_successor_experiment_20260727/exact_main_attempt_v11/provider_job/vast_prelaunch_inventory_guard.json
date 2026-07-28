@@ -1,0 +1,14 @@
+{
+  "schema_version": "vast_prelaunch_inventory_guard.v1",
+  "generated_at": "2026-07-28T00:59:42.483663+00:00",
+  "status": "passed",
+  "api_endpoint_checked": "GET /api/v0/instances/",
+  "api_http_status_code": 200,
+  "active_instance_count": 0,
+  "active_instances": [],
+  "continuing_spend_detected_before_new_launch": false,
+  "query_error": null,
+  "query_attempt_count": 1,
+  "blockers": [],
+  "raw_secret_values_recorded": false
+}
