@@ -1,0 +1,14 @@
+{
+  "schema_version": "vast_live_attempt_preservation_manifest.v1",
+  "generated_at": "2026-07-28T00:59:42.483663+00:00",
+  "status": "completed",
+  "reason": "preserve_existing_live_attempt_before_new_vast_run",
+  "source_job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11",
+  "preserve_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/attempt_preserved_20260728T0059424836630000",
+  "copied_artifacts": [
+    "vast_session_budget_guard.json"
+  ],
+  "copy_errors": [],
+  "artifact_count": 1,
+  "raw_secret_values_recorded": false
+}

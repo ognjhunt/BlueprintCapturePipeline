@@ -1,0 +1,20 @@
+{
+  "schema_version": "vast_session_budget_guard.v1",
+  "generated_at": "2026-07-28T00:59:31.246233+00:00",
+  "status": "passed",
+  "budget_path": "/private/tmp/policy-ranking-successor-live-20260727/vast_session_cost_summary.json",
+  "budget_ledger_present": true,
+  "budget_parse_error": null,
+  "attempt_count": 2,
+  "prior_live_runtime_seconds": 159.725589,
+  "prior_live_runtime_minutes": 2.662093,
+  "requested_max_live_runtime_minutes": 180,
+  "session_max_live_runtime_minutes": 183,
+  "prior_estimated_cost_usd": 0.050839,
+  "projected_max_incremental_cost_usd": 3.15,
+  "target_spend_usd": 3.25,
+  "hard_cap_usd": 6.0,
+  "blockers": [],
+  "warnings": [],
+  "raw_secret_values_recorded": false
+}

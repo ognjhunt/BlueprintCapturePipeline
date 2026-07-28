@@ -1,0 +1,78 @@
+{
+  "schema_version": "gpu_spend_guard.v1",
+  "generated_at": "2026-07-28T01:20:19.500882+00:00",
+  "status": "passed",
+  "blockers": [],
+  "inventory_results": [
+    {
+      "provider": "runpod",
+      "status": "succeeded",
+      "required": false,
+      "credential_present": true,
+      "row_count": 0,
+      "blockers": []
+    },
+    {
+      "provider": "vast",
+      "status": "succeeded",
+      "required": true,
+      "credential_present": true,
+      "row_count": 0,
+      "blockers": []
+    },
+    {
+      "provider": "digitalocean",
+      "status": "succeeded",
+      "required": false,
+      "credential_present": true,
+      "row_count": 0,
+      "blockers": []
+    },
+    {
+      "provider": "gcp",
+      "status": "not_configured",
+      "required": false,
+      "credential_present": false,
+      "row_count": 0,
+      "blockers": []
+    },
+    {
+      "provider": "aws",
+      "status": "not_configured",
+      "required": false,
+      "credential_present": false,
+      "row_count": 0,
+      "blockers": []
+    }
+  ],
+  "billing_reconciliation": {
+    "status": "not_configured",
+    "required": false,
+    "blockers": []
+  },
+  "spend_admission_lock": null,
+  "live_instance_count": 0,
+  "total_burn_per_hour_usd": 0,
+  "max_boot_seconds": 480,
+  "max_booted_orphan_seconds": 14400,
+  "fleet_budget": {
+    "schema_version": "gpu_fleet_budget_guard.v1",
+    "status": "passed",
+    "live_instance_count": 0,
+    "total_burn_per_hour_usd": 0,
+    "max_live_instances": null,
+    "max_burn_usd_per_hour": null,
+    "daily_spend_usd": null,
+    "total_spend_usd": null,
+    "max_daily_spend_usd": null,
+    "max_total_spend_usd": null,
+    "blockers": [],
+    "claim_boundary": "Fleet budget status is a cost/allocation gate only. It is not provider runtime proof, task success, or artifact quality evidence."
+  },
+  "spend_ledger": null,
+  "reap_mode": false,
+  "instances": [],
+  "reap_candidate_ids": [],
+  "reap_results": [],
+  "claim_boundary": "This snapshot is billing/allocation state at one moment. It is not run success, artifact quality, or task evidence; booted-but-stalled pods are reported live and are only auto-reaped after the booted-orphan hard TTL."
+}

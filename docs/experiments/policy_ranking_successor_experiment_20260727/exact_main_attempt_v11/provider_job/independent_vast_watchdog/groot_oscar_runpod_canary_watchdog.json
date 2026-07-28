@@ -1,0 +1,93 @@
+{
+  "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+  "status": "provider_terminal",
+  "independent_process": true,
+  "pid": 36154,
+  "armed_at": "2026-07-28T00:59:42.478679+00:00",
+  "deadline_epoch": 1785211182.372946,
+  "provider": "vast",
+  "pod_name_prefix": "blueprint-groot-oscar-canary-vast-wam-20260728t005931251566000-",
+  "watchdog_out_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/independent_vast_watchdog",
+  "provider_mutation_trigger": "owner_teardown_cancel_request_after_provider_zero",
+  "pre_deadline_provider_mutation_allowed": false,
+  "provider_mutations_performed": 0,
+  "raw_secret_values_recorded": false,
+  "completed_at": "2026-07-28T01:10:24.340150+00:00",
+  "initial_inventory": {
+    "status": "observed",
+    "provider": "vast",
+    "name_prefix": "blueprint-groot-oscar-canary-vast-wam-20260728t005931251566000-",
+    "live_resource_count": 0,
+    "resources": [],
+    "api_confirmed": true,
+    "http": 200,
+    "raw_provider_response_recorded": false
+  },
+  "initial_global_inventory": {
+    "status": "observed",
+    "provider": "vast",
+    "name_prefix": "",
+    "live_resource_count": 0,
+    "resources": [],
+    "api_confirmed": true,
+    "http": 200,
+    "raw_provider_response_recorded": false
+  },
+  "terminations": [],
+  "final_inventory": {
+    "status": "observed",
+    "provider": "vast",
+    "name_prefix": "blueprint-groot-oscar-canary-vast-wam-20260728t005931251566000-",
+    "live_resource_count": 0,
+    "resources": [],
+    "api_confirmed": true,
+    "http": 200,
+    "raw_provider_response_recorded": false
+  },
+  "final_global_inventory": {
+    "status": "observed",
+    "provider": "vast",
+    "name_prefix": "",
+    "live_resource_count": 0,
+    "resources": [],
+    "api_confirmed": true,
+    "http": 200,
+    "raw_provider_response_recorded": false
+  },
+  "provider_absence_confirmed": true,
+  "teardown_error_type": null,
+  "recorded_vast_instance": {
+    "status": "recorded",
+    "required": true,
+    "path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/independent_vast_watchdog/started_vast_instance_id.txt",
+    "instance_id": "46059888",
+    "scope_confirmed": true,
+    "pod_name_prefix": "blueprint-groot-oscar-canary-vast-wam-20260728t005931251566000-"
+  },
+  "recorded_vast_instance_teardown": {
+    "status": "absent",
+    "instance_id": "46059888",
+    "provider_absence_confirmed": true,
+    "inspect_attempts": [
+      {
+        "status": "absent",
+        "provider": "vast",
+        "http": 200,
+        "instance_id": "46059888",
+        "api_confirmed": true,
+        "provider_absence_confirmed": true
+      },
+      {
+        "status": "absent",
+        "provider": "vast",
+        "http": 200,
+        "instance_id": "46059888",
+        "api_confirmed": true,
+        "provider_absence_confirmed": true
+      }
+    ],
+    "provider_mutations_performed": 0
+  },
+  "owner_teardown_cancel_requested": true,
+  "owner_teardown_cancel_request_valid": true
+}

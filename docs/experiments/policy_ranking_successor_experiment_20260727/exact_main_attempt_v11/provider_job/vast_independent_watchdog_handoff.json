@@ -1,0 +1,13 @@
+{
+  "schema_version": "vast_independent_watchdog_handoff.v1",
+  "generated_at": "2026-07-28T01:10:24.443593+00:00",
+  "status": "provider_terminal",
+  "watchdog_armed_before_allocation": true,
+  "instance_ids": [
+    46059888
+  ],
+  "provider_absence_confirmed": true,
+  "watchdog_process_exit_code": 0,
+  "provider_mutations_performed": 0,
+  "raw_secret_values_recorded": false
+}

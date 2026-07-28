@@ -1,0 +1,14 @@
+{
+  "schema_version": "vast_all_in_cost_binding.v1",
+  "generated_at": "2026-07-28T00:59:44.761687+00:00",
+  "instance_id": 46059888,
+  "disk_gb": 250,
+  "compute_hourly_rate_usd": 1.0037037037037038,
+  "storage_hourly_rate_usd": null,
+  "all_in_hourly_rate_usd": 1.0037037037037038,
+  "max_live_minutes": 180,
+  "projected_all_in_cost_usd": 3.0111111111111115,
+  "hard_cap_usd": 6.0,
+  "projected_all_in_cost_under_hard_cap": true,
+  "raw_secret_values_recorded": false
+}

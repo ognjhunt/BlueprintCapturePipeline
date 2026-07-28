@@ -1,0 +1,26 @@
+{
+  "schema_version": "policy_ranking_successor_upstream_dimension_diagnosis.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "classification": "pinned_vllm_omni_cosmos_action_latent_dimension_flooring",
+  "vllm_omni_repository": "https://github.com/vllm-project/vllm-omni",
+  "vllm_omni_revision": "9c1b7504b178afcf541867c1a2d30db48c69cda8",
+  "source_path": "vllm_omni/diffusion/models/cosmos3/pipeline_cosmos3.py",
+  "source_sha256": "8a70b5d446315d2f6281bfacb4c332dac17cf256f813cbd26c4e01a105d41f49",
+  "source_lines": [2276, 2306],
+  "observed_inputs": {
+    "requested_height": 540,
+    "requested_width": 640,
+    "vae_scale_factor_spatial": 16
+  },
+  "observed_computation": {
+    "height_latents": 33,
+    "width_latents": 40,
+    "decoded_height": 528,
+    "decoded_width": 640
+  },
+  "causal_basis": "The pinned action-video latent builder deletes its explicit height and width arguments, then uses integer floor division of the preprocessed video tensor dimensions by the spatial VAE factor. For a 540-pixel input height, 540 // 16 is 33 and the decoded output is 528 pixels high.",
+  "blueprint_request_serialized_size": "640x540",
+  "retroactive_gate_relaxation_performed": false,
+  "paid_retry_performed": false,
+  "claim_boundary": "This diagnosis explains the deterministic 540-to-528 structural mismatch. It does not explain or excuse the independent static-video failure and does not convert the failed canary into a pass."
+}

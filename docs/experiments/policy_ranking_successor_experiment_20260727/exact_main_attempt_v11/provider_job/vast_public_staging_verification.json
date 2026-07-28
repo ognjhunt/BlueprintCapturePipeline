@@ -1,0 +1,109 @@
+{
+  "schema_version": "vast_public_staging_verification.v1",
+  "generated_at": "2026-07-28T00:59:31.251566+00:00",
+  "completed_at": "2026-07-28T00:59:42.370688+00:00",
+  "status": "passed",
+  "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11",
+  "provider_bundle_url_redacted": "https://prot-preservation-saved-completion.trycloudflare.com/bundle.zip?REDACTED_QUERY",
+  "provider_output_put_url_redacted": "https://prot-preservation-saved-completion.trycloudflare.com/output.zip?REDACTED_QUERY",
+  "bundle_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-successor-run-fd352/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
+  "output_path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
+  "max_wait_seconds": 180,
+  "retry_interval_seconds": 5.0,
+  "timeout_seconds": 20.0,
+  "required_consecutive_successes": 3,
+  "require_bundle_fetch_probe": true,
+  "successful_attempt_count": 3,
+  "final_consecutive_success_count": 3,
+  "allow_output_put_probe": true,
+  "cleanup_output_probe": true,
+  "attempt_count": 3,
+  "attempts": [
+    {
+      "attempt": 1,
+      "checked_at": "2026-07-28T00:59:31.987303+00:00",
+      "bundle_probe": {
+        "status": "passed",
+        "method": "HEAD",
+        "http_status_code": 200,
+        "content_type": "application/zip",
+        "content_length": 301170,
+        "expected_content_length": 301170
+      },
+      "output_put_probe": {
+        "status": "passed",
+        "method": "PUT",
+        "http_status_code": 200,
+        "probe_bytes": 22,
+        "response_preview": "{\"bytes_written\": 22, \"ok\": true, \"output_path\": \"/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip\"}"
+      },
+      "output_probe_cleanup": {
+        "status": "removed",
+        "path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
+        "removed_bytes": 22
+      },
+      "passed": true,
+      "consecutive_successes_after_attempt": 1
+    },
+    {
+      "attempt": 2,
+      "checked_at": "2026-07-28T00:59:37.163427+00:00",
+      "bundle_probe": {
+        "status": "passed",
+        "method": "HEAD",
+        "http_status_code": 200,
+        "content_type": "application/zip",
+        "content_length": 301170,
+        "expected_content_length": 301170
+      },
+      "output_put_probe": {
+        "status": "passed",
+        "method": "PUT",
+        "http_status_code": 200,
+        "probe_bytes": 22,
+        "response_preview": "{\"bytes_written\": 22, \"ok\": true, \"output_path\": \"/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip\"}"
+      },
+      "output_probe_cleanup": {
+        "status": "removed",
+        "path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
+        "removed_bytes": 22
+      },
+      "passed": true,
+      "consecutive_successes_after_attempt": 2
+    },
+    {
+      "attempt": 3,
+      "checked_at": "2026-07-28T00:59:42.370661+00:00",
+      "bundle_probe": {
+        "status": "passed",
+        "method": "HEAD",
+        "http_status_code": 200,
+        "content_type": "application/zip",
+        "content_length": 301170,
+        "expected_content_length": 301170
+      },
+      "output_put_probe": {
+        "status": "passed",
+        "method": "PUT",
+        "http_status_code": 200,
+        "probe_bytes": 22,
+        "response_preview": "{\"bytes_written\": 22, \"ok\": true, \"output_path\": \"/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip\"}"
+      },
+      "output_probe_cleanup": {
+        "status": "removed",
+        "path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
+        "removed_bytes": 22
+      },
+      "passed": true,
+      "consecutive_successes_after_attempt": 3
+    }
+  ],
+  "blockers": [],
+  "warnings": [],
+  "output_probe_cleanup": {
+    "status": "removed",
+    "path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
+    "removed_bytes": 22
+  },
+  "raw_secret_values_recorded": false
+}

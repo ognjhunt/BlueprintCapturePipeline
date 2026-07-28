@@ -1,0 +1,29 @@
+{
+  "schema_version": "policy_ranking_successor_direct_video_diagnostic.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "status": "failed_frozen_direct_canary",
+  "source_video": "provider_job/vast_provider_runtime_output_videos/000_direct.mp4",
+  "source_video_sha256": "75bbd8d19d4275fe4b360363a5c7fd79e3af0a4becce3a294a362e51350f2c2a",
+  "size_bytes": 278794,
+  "codec": "h264",
+  "width": 640,
+  "height": 528,
+  "requested_width": 640,
+  "requested_height": 540,
+  "frame_count_declared": 17,
+  "frame_count_decoded": 17,
+  "fps": 15,
+  "duration_seconds": 1.133333,
+  "ffprobe_succeeded": true,
+  "blank_detected": false,
+  "static_detected": true,
+  "spatial_std_max": 75.71721649169922,
+  "temporal_absolute_difference_mean": 0.14205367863178253,
+  "temporal_absolute_difference_max": 0.21817129850387573,
+  "frozen_structural_blockers": [
+    "unexpected_video_dimensions:640x528"
+  ],
+  "counterfactual_action_following_credit": false,
+  "physical_success_credit": false,
+  "claim_boundary": "This is generated media from a calibration-only public DROID observation. It is not simulator success, captured-site transfer, or physical robot success. The clip failed the frozen direct-canary contract and is retained as negative evidence."
+}
