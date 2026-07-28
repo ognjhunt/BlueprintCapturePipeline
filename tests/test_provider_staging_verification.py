@@ -2,11 +2,47 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from blueprint_pipeline import provider_staging_verification as staging_verification
 from blueprint_pipeline.provider_staging_verification import (
+    get_bundle_url,
     head_bundle_url,
     put_output_probe,
     verify_provider_staging_urls,
 )
+
+
+def test_signed_get_bundle_probe_checks_exact_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = tmp_path / "bundle.zip"
+    bundle.write_bytes(b"exact-bundle")
+
+    class Response:
+        status = 200
+        headers = {"Content-Type": "application/zip"}
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _max_bytes: int) -> bytes:
+            return b"exact-bundle"
+
+    monkeypatch.setattr(staging_verification.urllib.request, "urlopen", lambda *_a, **_k: Response())
+
+    result = get_bundle_url(
+        bundle_url="https://objects.example/bundle.zip?signed=secret",
+        bundle_path=bundle,
+        timeout_seconds=1,
+    )
+
+    assert result["status"] == "passed"
+    assert result["method"] == "GET"
+    assert result["received_sha256"] == result["expected_sha256"]
 
 
 def test_provider_staging_url_probes_reject_non_http_transports(tmp_path: Path) -> None:

@@ -233,6 +233,7 @@ def run_vast_wam_authorized_runner(
             required_consecutive_successes=public_staging_required_consecutive_successes,
             allow_output_put_probe=allow_staging_output_put_probe,
             cleanup_output_probe=True,
+            bundle_probe_method=("GET" if direct_transport_configured else "HEAD"),
             generated_at=generated,
         )
         if public_staging_verification.get("status") != "passed":

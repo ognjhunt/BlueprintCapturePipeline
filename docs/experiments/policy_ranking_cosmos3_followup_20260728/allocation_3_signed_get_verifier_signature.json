@@ -1,0 +1,18 @@
+{
+  "schema_version": "policy_ranking_cosmos3_followup_signed_get_verifier_signature.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "authorization_id": "policy-ranking-cosmos3-followup-20260728-allocation-3",
+  "pre_mutation_attempt_authorization_consumed": false,
+  "pre_mutation_attempt_provider_resource_count": 0,
+  "files": {
+    "compute_authorization_allocation_3.json": "dad790e5b20fd7553feb94e917a7111e5fbb5798b9f7bcd256df56e80f6c7e0a",
+    "cosmos3_followup_provider_bundle.zip": "0e938e1674ff2efc043363ab9b7e2724ae2f9bc264e289895d7759a9eb8173fd",
+    "allocation_3_transport_signature.json": "0e459893177fc64ad56b46696467f25b671a1cbf191b4e7c8695d0010775046c",
+    "src/blueprint_pipeline/provider_staging_verification.py": "a78ff9daa2f8919ed07e9a7bbfb51c90e88720adabbc92f8e5dbc2c8e7c19309",
+    "src/blueprint_pipeline/vast_bundle_staging.py": "bee3fe65f3fa6771b9f8dc9908e98f8686686fa73076ef78354940c1094042ad",
+    "src/blueprint_pipeline/vast_wam_authorized_runner.py": "1b6629f38ed4250858655de7f31f416969aa8ffa5077927e4ea846f718ee94d0",
+    "tests/test_provider_staging_verification.py": "12b91d72c23c371412deaee06c1e7998a09a5ebf5bce7c0050587fea5ea154c4",
+    "tests/test_vast_wam_authorized_runner.py": "1d0906d8c9dc340ef84fd593e8698671798b5f56f714315b893dd9a2f97324d6"
+  },
+  "claim_boundary": "This signature binds a no-cost verifier repair for method-bound signed GET URLs. It records no provider allocation, Cosmos runtime, generated media, or scientific evidence."
+}

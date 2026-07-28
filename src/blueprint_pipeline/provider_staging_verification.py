@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 import urllib.error
 import urllib.request
@@ -76,6 +77,56 @@ def head_bundle_url(
         return {
             "status": "blocked",
             "method": "HEAD",
+            "blocker": "provider_bundle_fetch_url_unreachable",
+            **probe_exception(exc),
+        }
+
+
+def get_bundle_url(
+    *,
+    bundle_url: str,
+    bundle_path: Path | None,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Verify a method-bound signed GET URL against the exact local bundle."""
+
+    expected_size = bundle_path.stat().st_size if bundle_path and bundle_path.is_file() else None
+    max_bytes = expected_size + 1 if expected_size is not None else 64 * 1024 * 1024
+    try:
+        request = urllib.request.Request(validated_http_staging_url(bundle_url), method="GET")
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
+            status_code = int(getattr(response, "status", 200))
+            payload = response.read(max_bytes)
+            headers = dict(response.headers.items())
+        received_sha256 = hashlib.sha256(payload).hexdigest()
+        expected_sha256 = (
+            hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+            if bundle_path and bundle_path.is_file()
+            else None
+        )
+        probe = {
+            "status": "passed" if 200 <= status_code < 300 else "blocked",
+            "method": "GET",
+            "http_status_code": status_code,
+            "content_type": headers.get("Content-Type"),
+            "content_length": len(payload),
+            "expected_content_length": expected_size,
+            "received_sha256": received_sha256,
+            "expected_sha256": expected_sha256,
+        }
+        if not (200 <= status_code < 300):
+            probe["blocker"] = "provider_bundle_fetch_url_unreachable"
+        elif expected_size is not None and len(payload) != expected_size:
+            probe["status"] = "blocked"
+            probe["blocker"] = "provider_bundle_fetch_url_size_mismatch"
+        elif expected_sha256 is not None and received_sha256 != expected_sha256:
+            probe["status"] = "blocked"
+            probe["blocker"] = "provider_bundle_fetch_url_sha256_mismatch"
+        return probe
+    except Exception as exc:
+        return {
+            "status": "blocked",
+            "method": "GET",
             "blocker": "provider_bundle_fetch_url_unreachable",
             **probe_exception(exc),
         }

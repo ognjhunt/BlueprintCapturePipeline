@@ -35,6 +35,7 @@ from .provider_bundle_staging_common import (
 )
 from .provider_staging_verification import (
     cleanup_output_probe as _neutral_cleanup_output_probe,
+    get_bundle_url as _neutral_get_bundle_url,
     head_bundle_url as _neutral_head_bundle_url,
     probe_exception as _neutral_probe_exception,
     put_output_probe as _neutral_put_output_probe,
@@ -315,6 +316,19 @@ def _put_output_probe(
     )
 
 
+def _get_bundle_url(
+    *,
+    bundle_url: str,
+    bundle_path: Path | None,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    return _neutral_get_bundle_url(
+        bundle_url=bundle_url,
+        bundle_path=bundle_path,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def _cleanup_output_probe(
     *,
     output_path: Path | None,
@@ -342,6 +356,7 @@ def verify_public_staging_urls(
     allow_output_put_probe: bool = True,
     cleanup_output_probe: bool = True,
     require_bundle_fetch_probe: bool = True,
+    bundle_probe_method: str = "HEAD",
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     return verify_provider_staging_urls(
@@ -360,7 +375,9 @@ def verify_public_staging_urls(
         generated_at=generated_at,
         schema_version=VAST_PUBLIC_STAGING_VERIFICATION_SCHEMA_VERSION,
         manifest_filename="vast_public_staging_verification.json",
-        head_probe=_head_bundle_url,
+        head_probe=(
+            _get_bundle_url if bundle_probe_method.strip().upper() == "GET" else _head_bundle_url
+        ),
         output_probe=_put_output_probe,
         cleanup_probe=_cleanup_output_probe,
         monotonic=time.monotonic,
