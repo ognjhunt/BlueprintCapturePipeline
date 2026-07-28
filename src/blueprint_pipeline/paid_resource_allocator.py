@@ -856,14 +856,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not getattr(args, name, None)
             ]
             if args.execute:
-                missing.extend(
-                    name
+                if not args.successor_public_base_url and not all(
+                    getattr(args, name, None)
                     for name in (
-                        "successor_public_base_url",
-                        "successor_session_budget_ledger",
+                        "provider_bundle_url_file",
+                        "provider_output_put_url_file",
+                        "provider_output_get_url_file",
                     )
-                    if not getattr(args, name, None)
-                )
+                ):
+                    missing.append("successor_staging_transport")
+                if not args.successor_session_budget_ledger:
+                    missing.append("successor_session_budget_ledger")
             if missing:
                 result = {
                     "status": "blocked",
@@ -900,6 +903,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         public_base_url=args.successor_public_base_url,
                         token_file=args.successor_token_file,
                         secret_env_file=args.successor_secret_env_file,
+                        provider_bundle_url_file=args.provider_bundle_url_file,
+                        provider_output_put_url_file=args.provider_output_put_url_file,
+                        provider_output_get_url_file=args.provider_output_get_url_file,
                         output_path=args.successor_output_path,
                         session_budget_ledger=args.successor_session_budget_ledger,
                         expected_source_commit=checkout_commit,

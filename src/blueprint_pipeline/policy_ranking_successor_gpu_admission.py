@@ -552,6 +552,9 @@ def run_successor_gpu_lane(
     session_budget_ledger: str | Path | None,
     expected_source_commit: str,
     execute: bool,
+    provider_bundle_url_file: str | Path | None = None,
+    provider_output_put_url_file: str | Path | None = None,
+    provider_output_get_url_file: str | Path | None = None,
     observed_now_epoch: float | None = None,
 ) -> dict[str, Any]:
     input_blockers: list[str] = []
@@ -729,6 +732,9 @@ def run_successor_gpu_lane(
         public_base_url=public_base_url,
         token_file=token_file,
         secret_env_file=secret_env_file,
+        provider_bundle_url_file=provider_bundle_url_file,
+        provider_output_put_url_file=provider_output_put_url_file,
+        provider_output_get_url_file=provider_output_get_url_file,
         output_path=output_path,
         session_budget_ledger=session_budget_ledger,
         allow_paid_vast_launch=True,
