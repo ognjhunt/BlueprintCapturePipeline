@@ -118,7 +118,7 @@ def submit_shard(
     uploaded = client.files.create(
         file=jsonl,
         purpose="batch",
-        expires_after={"anchor": "created_at", "seconds": 86_400},
+        expires_after={"anchor": "created_at", "seconds": 172_800},
     )
     batch = client.batches.create(
         input_file_id=uploaded.id,
@@ -129,7 +129,7 @@ def submit_shard(
             "shard_id": manifest["shard_id"],
             "arm_id": manifest["arm_id"],
         },
-        output_expires_after={"anchor": "created_at", "seconds": 86_400},
+        output_expires_after={"anchor": "created_at", "seconds": 172_800},
     )
     receipt: dict[str, Any] = {
         "schema_version": "policy_ranking_openai_pair_batch_submission.v1",
@@ -198,12 +198,34 @@ def collect_shard(
     client = OpenAI(api_key=key.read_text(encoding="utf-8").strip())
     batch = client.batches.retrieve(str(receipt["batch_id"]))
     if batch.status != "completed":
+        errors = getattr(batch, "errors", None)
+        if hasattr(errors, "model_dump"):
+            errors = errors.model_dump(mode="json")
+        counts = getattr(batch, "request_counts", None)
+        if hasattr(counts, "model_dump"):
+            counts = counts.model_dump(mode="json")
+        usage = getattr(batch, "usage", None)
+        if hasattr(usage, "model_dump"):
+            usage = usage.model_dump(mode="json")
+        terminal = str(batch.status) in {"failed", "expired", "cancelled"}
+        input_deleted = False
+        if terminal:
+            try:
+                client.files.delete(str(receipt["input_file_id"]))
+                input_deleted = True
+            except Exception:
+                input_deleted = False
         report = {
             "schema_version": "policy_ranking_openai_pair_batch_collection.v1",
             "status": str(batch.status),
             "batch_id": batch.id,
             "shard_id": receipt["shard_id"],
             "completed": False,
+            "provider_errors": errors,
+            "request_counts": counts,
+            "usage": usage,
+            "terminal": terminal,
+            "input_file_deleted": input_deleted,
         }
         write_json(Path(output_path), report)
         return report

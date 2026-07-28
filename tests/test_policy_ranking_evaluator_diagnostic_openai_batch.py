@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic import GPT54_MINI_MODEL
-from blueprint_pipeline.policy_ranking_evaluator_diagnostic_openai_batch import prepare_shard
+from blueprint_pipeline.policy_ranking_evaluator_diagnostic_openai_batch import (
+    collect_shard,
+    prepare_shard,
+)
 from blueprint_pipeline.policy_ranking_roboarena_calibration import canonical_sha256
 
 
@@ -38,3 +43,45 @@ def test_prepare_batch_shard_contains_no_policy_identity(tmp_path: Path) -> None
     assert "secret-b" not in encoded
     assert line["custom_id"] == "pair-id"
     assert manifest["policy_identity_in_batch_body"] is False
+
+
+def test_collect_failed_batch_records_error_and_deletes_input(
+    tmp_path: Path, monkeypatch
+) -> None:
+    deleted: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *, api_key: str) -> None:
+            assert api_key == "test-key"
+            self.batches = SimpleNamespace(
+                retrieve=lambda batch_id: SimpleNamespace(
+                    id=batch_id,
+                    status="failed",
+                    errors={"data": [{"code": "invalid_request"}]},
+                    request_counts={"completed": 0, "failed": 0, "total": 0},
+                    usage={"input_tokens": 0, "output_tokens": 0},
+                )
+            )
+            self.files = SimpleNamespace(delete=lambda file_id: deleted.append(file_id))
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
+    key = tmp_path / "key"
+    key.write_text("test-key")
+    key.chmod(0o600)
+    report = collect_shard(
+        {
+            "batch_id": "batch-id",
+            "input_file_id": "file-id",
+            "shard_id": "shard-id",
+        },
+        {},
+        {},
+        api_key_file=key,
+        output_path=tmp_path / "collection.json",
+    )
+
+    assert report["status"] == "failed"
+    assert report["terminal"] is True
+    assert report["request_counts"]["total"] == 0
+    assert report["input_file_deleted"] is True
+    assert deleted == ["file-id"]
