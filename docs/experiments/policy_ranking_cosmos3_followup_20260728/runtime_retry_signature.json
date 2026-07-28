@@ -1,0 +1,14 @@
+{
+  "schema_version": "policy_ranking_cosmos3_followup_runtime_retry_signature.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "retry_authorization_id": "policy-ranking-cosmos3-followup-20260728-allocation-2",
+  "files": {
+    "compute_authorization_allocation_2.json": "b946bddd0936b6f64480128c750d849221c6fda3047b86e34c2c81e5b2c4d9ba",
+    "allocation_1_infrastructure_incident.json": "e946c6c66a257174dcc8712b6ed031ec05abc99f70f1aac754920e11b87293be",
+    "src/blueprint_pipeline/vast_provider_adapter.py": "86da267fead6027dc557a00d34977787458e79aa9909fb0651293770fb2388a7",
+    "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py": "58f4b02fbaf433df0738c2f3694f874e703643b8dfbe54a5d7466c65945d6729",
+    "tests/test_vast_provider_adapter.py": "c6c6b2744e1812888685ec07db97abefcb9f9382703c27a5aa96b1f51c225feb",
+    "tests/test_policy_ranking_successor_gpu_admission.py": "c7ea527483d9d79455badcddcf708541bb1cc550141eb99fc41e8f2e246c40dc"
+  },
+  "claim_boundary": "This signature binds the infrastructure retry authorization and cold-pull timeout repair; it does not modify or unseal the frozen scientific inputs, metrics, evaluator methodology, or outcomes."
+}

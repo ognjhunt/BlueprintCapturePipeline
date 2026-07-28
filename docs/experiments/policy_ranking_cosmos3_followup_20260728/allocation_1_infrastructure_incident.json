@@ -1,0 +1,30 @@
+{
+  "schema_version": "policy_ranking_cosmos3_followup_infrastructure_incident.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "authorization_id": "policy-ranking-cosmos3-followup-20260728-allocation-1",
+  "source_commit": "a00856dd24c5b6a002e7719f56316d883059ab40",
+  "provider": "vast",
+  "provider_instance_id": 46078257,
+  "status": "closed_provider_zero",
+  "classification": "cold_image_pull_heartbeat_timeout",
+  "blocker": "vast_heartbeat_no_log_progress_timeout",
+  "root_cause": "the generic 600-second no-log heartbeat was shorter than the explicitly admitted 18-minute cold image-pull window",
+  "estimated_cost_usd": 0.178545,
+  "live_runtime_seconds": 632.915481,
+  "cosmos_server_loaded": false,
+  "scientific_rollouts": 0,
+  "generated_media": false,
+  "scientific_interpretation_allowed": false,
+  "provider_teardown_verified": true,
+  "independent_watchdog_provider_absence_confirmed": true,
+  "fresh_provider_api_active_instance_count": 0,
+  "evidence_sha256": {
+    "authorized_runner": "e93e1658ea6c1b1f46b152b406529e97b828f35f708c4426523123b69aff1b85",
+    "provider_adapter": "82265d277eabe7f26962d947477cdcee74228aa3f8c1ea9588a993e7bca467be",
+    "final_validation": "75077afc5beab085c6ca29b319d3f082c6477c52b4bcdabec693fd0813af2d51",
+    "teardown_manifest": "d5ef5bd0f57358fb9685ac26fc0541a59be72b9f91aef64775b3682829733459",
+    "watchdog_close": "be51c010c0658d00dd968775720171bf087bc68f9c46a355080459ac4afdf153",
+    "session_budget_ledger": "4705205051f4bf8dcb437ee33b956972267c8dc416ea1f1a5cfb657123666941"
+  },
+  "claim_boundary": "This incident proves paid infrastructure startup failure, teardown, cost, and provider absence only; it is not Cosmos runtime, generated-media, causal-validity, evaluator, ranking, transfer, or physical-task evidence."
+}
