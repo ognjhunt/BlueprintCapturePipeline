@@ -64,6 +64,7 @@ from .vast_probe_guards import (
     DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
     VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
     bounded_container_missing_retry_attempts,
+    cold_pull_aware_heartbeat_no_progress_seconds,
 )
 from .vast_session_budget_contract import (
     attempt_estimated_cost as _attempt_estimated_cost,
@@ -3489,28 +3490,6 @@ def _request_logs_and_fetch(
     }
 
 
-def _cold_pull_aware_heartbeat_no_progress_seconds(
-    *,
-    configured_seconds: int,
-    provider_bundle_kind: str,
-    allow_cold_image_pull: bool,
-    min_cold_image_pull_live_minutes: int,
-    startup_timeout_seconds: int,
-    max_live_minutes: int,
-) -> int:
-    """Keep the heartbeat window consistent with an admitted cold image pull."""
-
-    resolved = max(0, int(configured_seconds))
-    if provider_bundle_kind != "wam" or not allow_cold_image_pull:
-        return resolved
-    admitted_cold_pull_seconds = min(
-        max(0, int(min_cold_image_pull_live_minutes)) * 60,
-        max(0, int(startup_timeout_seconds)),
-        max(0, int(max_live_minutes)) * 60,
-    )
-    return max(resolved, admitted_cold_pull_seconds)
-
-
 def _log_result_has_container_missing(log_result: Mapping[str, Any]) -> bool:
     attempts = log_result.get("log_poll_attempts")
     if not isinstance(attempts, Sequence) or isinstance(attempts, (str, bytes)):
@@ -5281,7 +5260,7 @@ def run_vast_provider_adapter(
             else heartbeat_no_progress_seconds
         )
         resolved_heartbeat_no_progress_seconds = (
-            _cold_pull_aware_heartbeat_no_progress_seconds(
+            cold_pull_aware_heartbeat_no_progress_seconds(
                 configured_seconds=resolved_heartbeat_no_progress_seconds,
                 provider_bundle_kind=provider_bundle_kind,
                 allow_cold_image_pull=allow_cold_isaac_image_pull,

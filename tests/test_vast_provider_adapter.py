@@ -1121,7 +1121,7 @@ def test_request_logs_records_api_url_error_without_raising(
 
 def test_wam_cold_pull_extends_heartbeat_no_progress_to_admitted_minimum() -> None:
     assert (
-        vpa._cold_pull_aware_heartbeat_no_progress_seconds(
+        vpa.cold_pull_aware_heartbeat_no_progress_seconds(
             configured_seconds=600,
             provider_bundle_kind="wam",
             allow_cold_image_pull=True,
@@ -1135,7 +1135,7 @@ def test_wam_cold_pull_extends_heartbeat_no_progress_to_admitted_minimum() -> No
 
 def test_cold_pull_heartbeat_extension_never_exceeds_startup_window() -> None:
     assert (
-        vpa._cold_pull_aware_heartbeat_no_progress_seconds(
+        vpa.cold_pull_aware_heartbeat_no_progress_seconds(
             configured_seconds=300,
             provider_bundle_kind="wam",
             allow_cold_image_pull=True,
@@ -1146,7 +1146,7 @@ def test_cold_pull_heartbeat_extension_never_exceeds_startup_window() -> None:
         == 900
     )
     assert (
-        vpa._cold_pull_aware_heartbeat_no_progress_seconds(
+        vpa.cold_pull_aware_heartbeat_no_progress_seconds(
             configured_seconds=600,
             provider_bundle_kind="isaac",
             allow_cold_image_pull=True,
