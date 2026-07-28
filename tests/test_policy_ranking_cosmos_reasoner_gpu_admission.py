@@ -6,7 +6,10 @@ import zipfile
 from blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission import (
     ADMISSION_SCHEMA,
     AUTHORIZATION_ID,
+    MAX_HOURLY_RATE_USD,
     PREFLIGHT_SCHEMA,
+    TARGET_MAX_LIVE_MINUTES,
+    TARGET_SPEND_USD,
     build_admission,
     inspect_bundle,
     load_external_authorization,
@@ -139,6 +142,13 @@ def _preflight(now: float) -> dict:
 def test_reasoner_payload_extracts_after_reasoning_prefix():
     text = "analysis omitted\n```json\n" + json.dumps(_payload()) + "\n```"
     assert _validate_payload(_extract_json_object(text)) == _payload()
+
+
+def test_reasoner_session_window_stays_below_frozen_target_spend():
+    projected = TARGET_MAX_LIVE_MINUTES / 60 * MAX_HOURLY_RATE_USD
+    next_minute = (TARGET_MAX_LIVE_MINUTES + 1) / 60 * MAX_HOURLY_RATE_USD
+    assert projected <= TARGET_SPEND_USD
+    assert next_minute > TARGET_SPEND_USD
 
 
 def test_reasoner_bundle_and_security_exception_admit_dry_run(tmp_path, monkeypatch):

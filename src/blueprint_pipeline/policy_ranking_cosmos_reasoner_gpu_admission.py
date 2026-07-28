@@ -49,6 +49,9 @@ TARGET_SPEND_USD = 4.54
 HARD_CAP_USD = 5.00
 ARM_CAP_USD = 15.00
 HARD_TTL_SECONDS = 7_200
+TARGET_MAX_LIVE_MINUTES = math.floor(
+    TARGET_SPEND_USD / MAX_HOURLY_RATE_USD * 60
+)
 MAX_PREFLIGHT_AGE_SECONDS = 900
 DISK_GB = 200
 MIN_GPU_RAM_MB = 80_000
@@ -328,6 +331,7 @@ def build_admission(
             "hard_cap_usd": HARD_CAP_USD,
             "reasoner_arm_cap_usd": ARM_CAP_USD,
             "hard_ttl_seconds": HARD_TTL_SECONDS,
+            "target_max_live_minutes": TARGET_MAX_LIVE_MINUTES,
             "maximum_concurrent_gpus": 1,
         },
         "task_security_exception": security,
@@ -491,8 +495,8 @@ def run_gpu_lane(
         max_hourly_rate=MAX_HOURLY_RATE_USD,
         target_spend_usd=TARGET_SPEND_USD,
         hard_cap_usd=HARD_CAP_USD,
-        max_live_minutes=HARD_TTL_SECONDS // 60,
-        session_max_live_minutes=HARD_TTL_SECONDS // 60,
+        max_live_minutes=TARGET_MAX_LIVE_MINUTES,
+        session_max_live_minutes=TARGET_MAX_LIVE_MINUTES,
         startup_timeout_seconds=3600,
         public_image=PUBLIC_IMAGE,
         disk_gb=DISK_GB,
