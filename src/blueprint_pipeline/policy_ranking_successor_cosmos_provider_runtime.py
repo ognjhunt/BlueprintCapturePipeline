@@ -15,6 +15,7 @@ import signal
 import shutil
 import subprocess
 import time
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -249,7 +250,7 @@ def _decode_video_metrics(
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height,nb_frames,r_frame_rate",
+            "stream=width,height,nb_frames,r_frame_rate:format=duration",
             "-of",
             "json",
             str(path),
@@ -302,6 +303,17 @@ def _decode_video_metrics(
     width = int(stream.get("width") or 0)
     height = int(stream.get("height") or 0)
     declared_frames = int(stream.get("nb_frames") or 0)
+    try:
+        frame_rate = float(Fraction(str(stream.get("r_frame_rate") or "0/1")))
+    except (ValueError, ZeroDivisionError):
+        frame_rate = 0.0
+    format_payload = probe_payload.get("format") if isinstance(probe_payload, dict) else None
+    try:
+        duration_seconds = float(
+            format_payload.get("duration") if isinstance(format_payload, dict) else 0.0
+        )
+    except (TypeError, ValueError):
+        duration_seconds = 0.0
     structural_blockers: list[str] = []
     if (width, height) != (expected_width, expected_height):
         structural_blockers.append(f"unexpected_video_dimensions:{width}x{height}")
@@ -309,6 +321,11 @@ def _decode_video_metrics(
         structural_blockers.append(
             f"unexpected_video_frame_count:declared={declared_frames}:decoded={len(frames)}"
         )
+    if not np.isclose(frame_rate, 15.0, rtol=0.0, atol=1e-6):
+        structural_blockers.append(f"unexpected_video_frame_rate:{frame_rate}")
+    expected_duration_seconds = 17.0 / 15.0
+    if not np.isclose(duration_seconds, expected_duration_seconds, rtol=0.0, atol=0.05):
+        structural_blockers.append(f"unexpected_video_duration:{duration_seconds}")
     blank = bool(float(frame_stds.max(initial=0.0)) < 2.0)
     static = bool(float(temporal.max(initial=0.0)) < 0.5)
     return {
@@ -320,6 +337,9 @@ def _decode_video_metrics(
         "motion_status": "failed" if blank or static else "passed",
         "blockers": structural_blockers,
         "frame_count_decoded": int(len(frames)),
+        "frame_rate": frame_rate,
+        "duration_seconds": duration_seconds,
+        "expected_duration_seconds": expected_duration_seconds,
         "mean_luma_min": float(frame_means.min(initial=0.0)),
         "mean_luma_max": float(frame_means.max(initial=0.0)),
         "spatial_std_max": float(frame_stds.max(initial=0.0)),
@@ -752,6 +772,7 @@ def run() -> dict[str, Any]:
             if canonical_sha256(action_stream["actions"]) != row["action_sha256"]:
                 raise ValueError(f"action_hash_mismatch:{request_id}")
             request_artifact = {
+                "experiment_id": EXPERIMENT_ID,
                 "request_id": request_id,
                 "condition": condition,
                 "seed": int(row["seed"]),

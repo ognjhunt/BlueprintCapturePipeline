@@ -50,7 +50,7 @@ def test_frozen_successor_bundle_passes_integrity_inspection() -> None:
     assert result["status"] == "passed"
     assert result["blockers"] == []
     assert result["bundle_sha256"] == (
-        "79c6a299ca0b27b44cbadbe0c6dbcd1c692b2ec51e4921ca99e5cbcc4fb6edbf"
+        "0e938e1674ff2efc043363ab9b7e2724ae2f9bc264e289895d7759a9eb8173fd"
     )
     assert result["manifest"]["qualification_canary_request_count"] == 2
     assert result["manifest"]["scientific_matrix_request_count"] == 10

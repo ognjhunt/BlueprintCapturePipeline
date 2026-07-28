@@ -20,7 +20,7 @@ import cv2  # type: ignore[import-not-found]
 import numpy as np
 
 from .common import write_json
-from .policy_ranking_successor_cosmos import canonical_sha256
+from .policy_ranking_successor_cosmos import canonical_sha256, validate_smoke_inventory_manifest
 from .policy_ranking_thesis import file_sha256
 
 
@@ -32,6 +32,7 @@ TEMPORAL_CORRELATION_MINIMUM = 0.10
 TEMPORAL_EXCESS_MARGIN = 0.05
 SAME_SEED_SCENE_DIFFERENCE_MINIMUM = 0.01
 MINIMUM_INDEPENDENT_SESSIONS = 17
+FOLLOWUP_EXPERIMENT_ID = "policy_ranking_cosmos3_followup_20260728"
 
 
 def _correlation(left: np.ndarray, right: np.ndarray) -> float:
@@ -105,23 +106,50 @@ def camera_compensated_motion(gray_frames: np.ndarray) -> np.ndarray:
 
 
 def build_causal_screen(
-    *, runtime_output_root: str | Path, action_streams: Mapping[str, Any]
+    *,
+    runtime_output_root: str | Path,
+    action_streams: Mapping[str, Any],
+    smoke_inventory: Mapping[str, Any],
 ) -> dict[str, Any]:
     root = Path(runtime_output_root).resolve()
     conditions = action_streams.get("conditions")
     blockers: list[str] = []
+    if action_streams.get("experiment_id") != FOLLOWUP_EXPERIMENT_ID:
+        blockers.append("action_streams_experiment_invalid")
+    if smoke_inventory.get("experiment_id") != FOLLOWUP_EXPERIMENT_ID:
+        blockers.append("smoke_inventory_experiment_invalid")
+    try:
+        validate_smoke_inventory_manifest(smoke_inventory)
+    except ValueError as exc:
+        blockers.append(f"smoke_inventory_invalid:{type(exc).__name__}")
+    inventory_rows = smoke_inventory.get("requests")
+    expected_by_id = {
+        str(row.get("request_id")): row
+        for row in inventory_rows
+        if isinstance(row, Mapping) and row.get("request_id")
+    } if isinstance(inventory_rows, Sequence) else {}
+    if len(expected_by_id) != 10:
+        blockers.append("smoke_inventory_request_matrix_invalid")
     if not isinstance(conditions, Mapping) or set(conditions) != set(CONDITIONS):
         blockers.append("action_conditions_invalid")
         conditions = {}
     action_signals: dict[str, np.ndarray] = {}
+    frozen_action_hashes = smoke_inventory.get("action_hashes")
     for condition in CONDITIONS:
         try:
             row = conditions[condition]
+            action_sha256 = canonical_sha256(row["actions"])
+            if not isinstance(frozen_action_hashes, Mapping) or (
+                row.get("action_sha256") != action_sha256
+                or frozen_action_hashes.get(condition) != action_sha256
+            ):
+                raise ValueError("action_hash_binding_invalid")
             action_signals[condition] = action_intensity(row["actions"])
         except (KeyError, TypeError, ValueError) as exc:
             blockers.append(f"action_signal_invalid:{condition}:{type(exc).__name__}")
 
     records: dict[tuple[str, int], dict[str, Any]] = {}
+    observed_request_ids: set[str] = set()
     responses_root = root / "responses"
     for response_path in sorted(responses_root.glob("*.json")):
         try:
@@ -129,20 +157,58 @@ def build_causal_screen(
             condition = str(response["condition"])
             seed = int(response["seed"])
             request_id = str(response["request_id"])
+            pair = (condition, seed)
+            if request_id in observed_request_ids:
+                raise ValueError("duplicate_request_id")
+            if pair in records:
+                raise ValueError("duplicate_condition_seed")
+            expected_row = expected_by_id.get(request_id)
+            if not isinstance(expected_row, Mapping):
+                raise ValueError("request_id_not_in_frozen_inventory")
+            expected_bindings = {
+                "experiment_id": FOLLOWUP_EXPERIMENT_ID,
+                "request_id": request_id,
+                "condition": str(expected_row.get("condition")),
+                "seed": int(expected_row.get("seed")),
+                "action_sha256": str(expected_row.get("action_sha256")),
+                "initial_observation_sha256": str(
+                    smoke_inventory.get("initial_observation_sha256")
+                ),
+                "task_instruction": str(smoke_inventory.get("task_instruction")),
+            }
+            if response_path.stem != request_id or any(
+                response.get(key) != value for key, value in expected_bindings.items()
+            ):
+                raise ValueError("response_frozen_binding_mismatch")
+            if response.get("accepted_first_valid") is not True:
+                raise ValueError("response_not_accepted_first_valid")
+            if response.get("generated_media_valid") is not True:
+                raise ValueError("response_generated_media_invalid")
             video_path = root / "videos" / f"{request_id}.mp4"
             color, gray = _decode_scene(video_path)
-            records[(condition, seed)] = {
+            video_sha256 = file_sha256(video_path)
+            provider_response = response.get("response")
+            if not isinstance(provider_response, Mapping) or (
+                provider_response.get("output_sha256") != video_sha256
+            ):
+                raise ValueError("response_video_hash_mismatch")
+            observed_request_ids.add(request_id)
+            records[pair] = {
                 "request_id": request_id,
                 "video_path": video_path,
-                "video_sha256": file_sha256(video_path),
+                "video_sha256": video_sha256,
                 "color": color,
                 "motion": camera_compensated_motion(gray),
             }
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            blockers.append(f"response_invalid:{response_path.name}:{type(exc).__name__}")
+            blockers.append(
+                f"response_invalid:{response_path.name}:{type(exc).__name__}:{str(exc)[:120]}"
+            )
     expected = {(condition, seed) for condition in CONDITIONS for seed in EXPECTED_SEEDS}
     if set(records) != expected:
         blockers.append(f"response_matrix_invalid:{len(records)}")
+    if observed_request_ids != set(expected_by_id):
+        blockers.append(f"response_request_inventory_mismatch:{len(observed_request_ids)}")
 
     rows: list[dict[str, Any]] = []
     same_seed_scene_rows: list[dict[str, Any]] = []
@@ -250,11 +316,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime-output-root", required=True)
     parser.add_argument("--action-streams", required=True)
+    parser.add_argument("--smoke-inventory", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     report = build_causal_screen(
         runtime_output_root=args.runtime_output_root,
         action_streams=json.loads(Path(args.action_streams).read_text(encoding="utf-8")),
+        smoke_inventory=json.loads(Path(args.smoke_inventory).read_text(encoding="utf-8")),
     )
     write_json(Path(args.output), report)
     return 0 if report["status"] == "completed" else 2

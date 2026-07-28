@@ -153,6 +153,38 @@ def test_static_video_can_pass_structural_canary_without_passing_motion(
     assert metrics["static_detected"] is True
 
 
+def test_wrong_frame_rate_and_duration_fail_structural_canary(tmp_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg unavailable")
+    video = tmp_path / "wrong-rate.mp4"
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=gray:s=640x544:r=12:d=1.416667",
+            "-frames:v",
+            "17",
+            "-pix_fmt",
+            "yuv420p",
+            str(video),
+        ],
+        check=False,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    metrics = runtime._decode_video_metrics(video)
+
+    assert metrics["structural_status"] == "blocked"
+    assert "unexpected_video_frame_rate:12.0" in metrics["blockers"]
+    assert any(item.startswith("unexpected_video_duration:") for item in metrics["blockers"])
+
+
 def test_wrapper_serializer_is_independent_of_direct_serializer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
