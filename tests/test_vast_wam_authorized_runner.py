@@ -162,7 +162,12 @@ def test_vast_wam_authorized_runner_accepts_direct_signed_url_files(
         return {"status": "blocked", "blockers": ["simulated_wam_block"]}
 
     monkeypatch.setattr(runner, "run_vast_provider_adapter", fake_adapter)
-    monkeypatch.setattr(runner, "verify_public_staging_urls", _passed_public_staging)
+
+    def passing_signed_staging(**kwargs: object) -> dict[str, object]:
+        assert kwargs["bundle_probe_method"] == "GET"
+        return _passed_public_staging()
+
+    monkeypatch.setattr(runner, "verify_public_staging_urls", passing_signed_staging)
 
     result = runner.run_vast_wam_authorized_runner(
         job_dir=tmp_path,
