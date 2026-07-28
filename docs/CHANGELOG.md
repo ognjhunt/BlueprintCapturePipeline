@@ -35,7 +35,53 @@
   `blueprint_pipeline.qualification` remains a deprecated import alias pinned
   by `tests/test_qualification_alias_contract.py`; artifact contracts such as
   `pipeline/qualification_summary.json` are unchanged.
+## 2026-07-27
 
+### User-Facing
+
+- Closed policy-ranking thesis Experiment 2 as `thesis_not_supported` for the
+  frozen OSCAR representation/evaluator and released DROID-compatible policy
+  cohort. The powered 49-session causal gate measured 0.039976 mean excess and
+  a 0.387755 clustered-bootstrap lower validity pass rate against the required
+  0.8; the incomplete 43/686 GPT-5 matrix remained unscored. Captured-site
+  transfer is separately `not_supported` because retained InteriorGS execution
+  used a different OpenPI/MuJoCo stack and supplied neither frozen evaluator
+  transfer nor site-specific physical labels
+  (`docs/experiments/policy_ranking_thesis_experiment_2_20260727/final_verdict.json`).
+- Added a replaceable Cosmos3-Nano forward-dynamics successor lane, but its
+  exact-main campaign closed `inconclusive`: Blackwell CUDA/BF16 admission and
+  model load passed, while the only direct clip returned 640x528 for a frozen
+  640x540 request and independently failed the static-video check. No causal
+  matrix, evaluator call, benchmark ranking, or captured-site arm was admitted
+  (`docs/experiments/policy_ranking_successor_experiment_20260727/final_verdict.json`).
+
+### Employee-Facing
+
+- Hardened allocator-only Vast execution with portable reviewed bundles,
+  pre-create session-budget checks, detached watchdog evidence, bounded cold
+  startup, fail-closed authorization replacement, retained-session lifecycle,
+  and personal-path sanitization. Three successor allocations consumed
+  791.277 seconds and an estimated USD 0.226920; the final authenticated
+  inventory proved provider zero and zero continuing hourly burn
+  (`src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py`,
+  `src/blueprint_pipeline/vast_provider_adapter.py`,
+  `src/blueprint_pipeline/retained_gpu_session_lifecycle.py`).
+
+### Future-Agent-Facing
+
+- The America/Chicago window contains fourteen first-parent `main` commits,
+  `115e9cae` through `39965efc` (PRs #198, #199, #201--#209, and #211--#213).
+  At review, the worktree is clean and no attributable uncommitted July 27 work
+  is recorded. Local `HEAD == main == 39965efc`; `origin/main` is seven commits
+  ahead, all dated July 28, so July 27 history remains bounded to the range above.
+- Do not spend evaluator budget until a newly preregistered Cosmos arm passes
+  recorded, zero, shuffled/reversed, and policy-swapped causal controls. The
+  successor's decodable clip and successful model load prove runtime execution,
+  not action conditioning, ranking fidelity, simulator success, deployment,
+  public readiness, or physical-robot performance.
+- Raw capture, provenance, rights, and privacy evidence remain authoritative.
+  Frozen experiment artifacts, generated clips, provider receipts, qualification
+  summaries, and this changelog are downstream support artifacts.
 ## 2026-07-26
 
 ### User-Facing
