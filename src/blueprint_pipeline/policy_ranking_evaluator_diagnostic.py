@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import statistics
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
@@ -102,6 +104,48 @@ PAIR_OUTPUT_SCHEMA: dict[str, Any] = {
 
 class DiagnosticContractError(ValueError):
     """The post-unseal diagnostic contract is invalid."""
+
+
+def pilot_cost_projection(
+    *,
+    single_canary_batch_equivalent_cost_usd: float,
+    pilot_batch_costs_usd: Sequence[float],
+    arm_cap_usd: float,
+) -> dict[str, Any]:
+    """Apply the frozen seven-row conservative matrix-cost projection."""
+
+    costs = [float(value) for value in pilot_batch_costs_usd]
+    if len(costs) != 7 or any(not math.isfinite(value) or value < 0 for value in costs):
+        raise DiagnosticContractError("pilot_costs_must_be_seven_finite_nonnegative_values")
+    canary = float(single_canary_batch_equivalent_cost_usd)
+    cap = float(arm_cap_usd)
+    if not math.isfinite(canary) or canary < 0 or not math.isfinite(cap) or cap <= 0:
+        raise DiagnosticContractError("pilot_canary_or_arm_cap_invalid")
+    mean_cost = statistics.fmean(costs)
+    sample_standard_deviation = statistics.stdev(costs)
+    sample_standard_error = sample_standard_deviation / math.sqrt(len(costs))
+    mean_plus_one_sided_t95 = mean_cost + 1.943 * sample_standard_error
+    per_request_upper = max(canary, max(costs), mean_plus_one_sided_t95)
+    matrix_projection = per_request_upper * TOTAL_PAIR_COUNT
+    report: dict[str, Any] = {
+        "schema_version": "policy_ranking_evaluator_pilot_cost_projection.v1",
+        "sample_size": len(costs),
+        "single_canary_batch_equivalent_cost_usd": canary,
+        "pilot_batch_costs_usd": costs,
+        "pilot_mean_cost_usd": mean_cost,
+        "pilot_sample_standard_deviation_usd": sample_standard_deviation,
+        "pilot_sample_standard_error_usd": sample_standard_error,
+        "pilot_mean_plus_1_943_standard_errors_usd": mean_plus_one_sided_t95,
+        "pilot_max_cost_usd": max(costs),
+        "per_request_upper_estimate_usd": per_request_upper,
+        "matrix_request_count": TOTAL_PAIR_COUNT,
+        "projected_matrix_cost_usd": matrix_projection,
+        "frozen_arm_cap_usd": cap,
+        "arm_cost_admitted": matrix_projection <= cap,
+        "claim_boundary": "cost_admission_only_not_ranking_or_scientific_validity",
+    }
+    report["report_sha256"] = canonical_sha256(report)
+    return report
 
 
 def diagnostic_protocol() -> dict[str, Any]:

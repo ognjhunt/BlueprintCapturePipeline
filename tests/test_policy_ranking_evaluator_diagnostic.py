@@ -12,6 +12,7 @@ from blueprint_pipeline.policy_ranking_evaluator_diagnostic import (
     build_pair_inventory,
     diagnostic_protocol,
     materialize_native_videos,
+    pilot_cost_projection,
 )
 from blueprint_pipeline.policy_ranking_roboarena_calibration import canonical_sha256
 
@@ -119,3 +120,17 @@ def test_native_video_materialization_fails_closed_on_unfrozen_crop_audit(
             source_root=tmp_path,
             output_root=tmp_path,
         )
+
+
+def test_pilot_cost_projection_uses_frozen_conservative_maximum() -> None:
+    report = pilot_cost_projection(
+        single_canary_batch_equivalent_cost_usd=0.01,
+        pilot_batch_costs_usd=[0.008, 0.009, 0.01, 0.011, 0.012, 0.013, 0.02],
+        arm_cap_usd=10,
+    )
+    assert report["sample_size"] == 7
+    assert report["per_request_upper_estimate_usd"] >= 0.02
+    assert report["projected_matrix_cost_usd"] == (
+        report["per_request_upper_estimate_usd"] * 441
+    )
+    assert report["arm_cost_admitted"] is True
