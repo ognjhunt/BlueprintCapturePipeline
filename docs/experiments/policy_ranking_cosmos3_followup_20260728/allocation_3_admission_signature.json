@@ -1,0 +1,12 @@
+{
+  "schema_version": "policy_ranking_cosmos3_followup_allocation_admission_signature.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "authorization_id": "policy-ranking-cosmos3-followup-20260728-allocation-3",
+  "files": {
+    "compute_authorization_allocation_3.json": "dad790e5b20fd7553feb94e917a7111e5fbb5798b9f7bcd256df56e80f6c7e0a",
+    "cosmos3_followup_provider_bundle.zip": "0e938e1674ff2efc043363ab9b7e2724ae2f9bc264e289895d7759a9eb8173fd",
+    "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py": "b004083ba220446e66045272afef175dc0cf4ef5e5e1c79a824a106282babebd",
+    "tests/test_policy_ranking_successor_gpu_admission.py": "2898ab29613afceb89f5980b3bc5f37deb929a58b35ba16ce458efffc40b003d"
+  },
+  "claim_boundary": "This signature binds the exact allocation-3 authorization to the narrow admission identity extension and unchanged scientific bundle; it does not assert provider execution or scientific validity."
+}
