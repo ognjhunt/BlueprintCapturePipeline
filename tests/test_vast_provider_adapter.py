@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import blueprint_pipeline.vast_provider_adapter as vpa
+import blueprint_pipeline.vast_cuda_runtime_probe as vcrp
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     build_paid_lane_admission,
@@ -33,6 +34,35 @@ from blueprint_pipeline.vast_provider_adapter import (
 
 
 pytestmark = pytest.mark.slow
+
+
+def test_gpu_sanity_requires_container_cuda_runtime_for_paid_bundles() -> None:
+    incompatible = vcrp.gpu_sanity_from_log(
+        "\n".join(
+            [
+                "BLUEPRINT_VAST_GPU_SANITY_OK",
+                "BLUEPRINT_VAST_CUDA_RUNTIME_BLOCKED:cudaGetDeviceCount:803",
+                "BLUEPRINT_VAST_CUDA_RUNTIME_EXIT_CODE:3",
+            ]
+        ),
+        require_cuda_runtime=True,
+    )
+    assert incompatible["nvidia_smi_ok"] is True
+    assert incompatible["gpu_ok"] is False
+    assert incompatible["blockers"] == ["vast_cuda_runtime_host_image_incompatible"]
+
+    compatible = vcrp.gpu_sanity_from_log(
+        "\n".join(
+            [
+                "BLUEPRINT_VAST_GPU_SANITY_OK",
+                "BLUEPRINT_VAST_CUDA_RUNTIME_API_OK:devices=1",
+                "BLUEPRINT_VAST_CUDA_RUNTIME_OK",
+            ]
+        ),
+        require_cuda_runtime=True,
+    )
+    assert compatible["gpu_ok"] is True
+    assert compatible["blockers"] == []
 
 
 def test_retention_requires_healthy_host_and_armed_watchdog() -> None:
@@ -4443,6 +4473,15 @@ def test_vast_adapter_small_provider_helper_edges(
         provider_bundle_kind="isaac",
     )
     assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:isaac_python_missing" in script
+    assert "cudaGetDeviceCount" in script
+    assert "BLUEPRINT_VAST_CUDA_RUNTIME_OK" in script
+    assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:cuda_runtime_incompatible" in script
+    assert "/isaac-sim/python.sh" in script
+    assert "apt-get install -y python3" in script
+    assert script.index("apt-get install -y python3") < script.index("cudaGetDeviceCount")
+    assert script.index("cudaGetDeviceCount") < script.index(
+        "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED"
+    )
     with pytest.raises(ValueError, match="unsupported_provider_bundle_kind"):
         vpa._probe_shell_script("https://heartbeat.example", provider_bundle_kind="bad")
     wam_script = vpa._probe_shell_script(
@@ -4454,6 +4493,7 @@ def test_vast_adapter_small_provider_helper_edges(
     assert vpa.VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV in wam_script
     assert "BLUEPRINT_VAST_INLINE_BUNDLE_DECODED" in wam_script
     assert "BLUEPRINT_VAST_INLINE_BUNDLE_SHA256_MISMATCH" in wam_script
+    assert "BLUEPRINT_VAST_CUDA_RUNTIME_BLOCKED" in wam_script
     assert "if [ -x /opt/conda/bin/python ]; then RUNTIME_PY=/opt/conda/bin/python" in wam_script
     assert "elif [ -x /usr/local/bin/python ]; then RUNTIME_PY=/usr/local/bin/python" in wam_script
     unitree_script = vpa._probe_shell_script(
@@ -4474,6 +4514,19 @@ def test_vast_adapter_small_provider_helper_edges(
     assert "unitree_groot_n17_sonic_policy_provider_output.json" in groot_script
     assert "BLUEPRINT_VAST_PROVIDER_PYTHON_DEPS_MISSING" in groot_script
     assert "msgpack-numpy" in groot_script
+    evaluator_script = vpa._probe_shell_script(
+        "https://heartbeat.example",
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="evaluator",
+    )
+    for generated_script in (script, wam_script, unitree_script, groot_script, evaluator_script):
+        subprocess.run(
+            ["bash", "-n"],
+            input=generated_script,
+            text=True,
+            check=True,
+            capture_output=True,
+        )
 
     monkeypatch.setattr(vpa.shutil, "which", lambda name: None if name == "ffprobe" else name)
     missing_video = vpa._ffprobe_video(tmp_path / "missing.mp4")
