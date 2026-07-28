@@ -236,6 +236,7 @@ def collect_shard(
     expected = set(manifest["pair_ids"])
     results: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    all_usage: list[dict[str, Any]] = []
     for raw_line in raw.splitlines():
         line = json.loads(raw_line)
         pair_id = str(line.get("custom_id") or "")
@@ -246,8 +247,28 @@ def collect_shard(
         if response.get("status_code") != 200 or line.get("error"):
             errors.append({"pair_id": pair_id, "error": line.get("error")})
             continue
-        structured = json.loads(_output_text(body))
-        _validate_payload(structured)
+        usage = _usage(body, model=manifest["model"])
+        all_usage.append(usage)
+        raw_text = _output_text(body)
+        try:
+            if body.get("status") != "completed":
+                raise OpenAIBatchDiagnosticError("batch_row_response_incomplete")
+            structured = json.loads(raw_text)
+            _validate_payload(structured)
+        except Exception as exc:
+            errors.append(
+                {
+                    "pair_id": pair_id,
+                    "error_type": type(exc).__name__,
+                    "error_code": "structured_output_invalid_or_incomplete",
+                    "response_id": body.get("id"),
+                    "response_status": body.get("status"),
+                    "incomplete_details": body.get("incomplete_details"),
+                    "raw_response_text": raw_text,
+                    "usage": usage,
+                }
+            )
+            continue
         result: dict[str, Any] = {
             "schema_version": PAIR_RESULT_SCHEMA_VERSION,
             "pair_id": pair_id,
@@ -257,7 +278,7 @@ def collect_shard(
             "response_id": body.get("id"),
             "response_status": body.get("status"),
             "structured_response": structured,
-            "usage": _usage(body, model=manifest["model"]),
+            "usage": usage,
             "transport": "openai_batch_api",
             "policy_identity_sent_to_provider": False,
             "physical_outcome_sent_to_provider": False,
@@ -281,7 +302,7 @@ def collect_shard(
         "completed": True,
         "result_count": len(results),
         "error_count": len(errors),
-        "estimated_batch_cost_usd": sum(row["usage"]["batch_cost_usd"] for row in results),
+        "estimated_batch_cost_usd": sum(row["batch_cost_usd"] for row in all_usage),
         "results": results,
         "errors": errors,
         "input_file_deleted": input_deleted,

@@ -85,3 +85,75 @@ def test_collect_failed_batch_records_error_and_deletes_input(
     assert report["request_counts"]["total"] == 0
     assert report["input_file_deleted"] is True
     assert deleted == ["file-id"]
+
+
+def test_collect_completed_batch_retains_incomplete_row_and_deletes_input(
+    tmp_path: Path, monkeypatch
+) -> None:
+    deleted: list[str] = []
+    raw_line = json.dumps(
+        {
+            "custom_id": "pair-id",
+            "response": {
+                "status_code": 200,
+                "body": {
+                    "id": "response-id",
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output": [],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 20,
+                        "input_tokens_details": {"cached_tokens": 0},
+                    },
+                },
+            },
+            "error": None,
+        }
+    )
+
+    class FakeClient:
+        def __init__(self, *, api_key: str) -> None:
+            assert api_key == "test-key"
+            self.batches = SimpleNamespace(
+                retrieve=lambda batch_id: SimpleNamespace(
+                    id=batch_id,
+                    status="completed",
+                    output_file_id="output-file-id",
+                )
+            )
+            self.files = SimpleNamespace(
+                content=lambda file_id: SimpleNamespace(text=raw_line),
+                delete=lambda file_id: deleted.append(file_id),
+            )
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
+    key = tmp_path / "key"
+    key.write_text("test-key")
+    key.chmod(0o600)
+    pair = {"pair_id": "pair-id"}
+    inventory = {"status": "ready", "pairs": [pair] * 441}
+    inventory["inventory_sha256"] = canonical_sha256(inventory)
+    report = collect_shard(
+        {
+            "batch_id": "batch-id",
+            "input_file_id": "input-file-id",
+            "shard_id": "shard-id",
+        },
+        {
+            "pair_ids": ["pair-id"],
+            "arm_id": "gpt54_mini_challenger",
+            "model": GPT54_MINI_MODEL,
+        },
+        inventory,
+        api_key_file=key,
+        output_path=tmp_path / "collection.json",
+    )
+
+    assert report["status"] == "failed"
+    assert report["result_count"] == 0
+    assert report["error_count"] == 1
+    assert report["errors"][0]["response_status"] == "incomplete"
+    assert report["estimated_batch_cost_usd"] > 0
+    assert report["input_file_deleted"] is True
+    assert deleted == ["input-file-id"]
