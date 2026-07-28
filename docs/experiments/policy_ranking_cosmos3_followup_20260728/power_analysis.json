@@ -1,0 +1,14 @@
+{
+  "schema_version": "policy_ranking_cosmos3_followup_power_analysis.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "screening_unit": "one attributable DROID episode/session",
+  "screening_sessions": 1,
+  "screening_role": "falsification_and_technical_screen_only",
+  "confirmatory_independent_unit": "DROID episode/session",
+  "frames_cameras_seeds_and_controls_are_independent_units": false,
+  "validity_gate": {"required_lower_95_bound": 0.8, "method": "exact two-sided Clopper-Pearson", "minimum_sessions_if_all_pass": 17, "all_pass_lower_95_bound": 0.8043763851193229},
+  "effect_gate": {"action_conditioned_excess_lower_95_bound_gt": 0.05, "minimum_sessions": "must be re-estimated from label-free multi-session pilot variance before confirmation"},
+  "currently_admitted_independent_sessions": 1,
+  "confirmatory_power_status": "underpowered",
+  "decision_rule": "The one-session ten-arm matrix cannot support or falsify general qualification. It may admit a separately frozen powered expansion only after enough attributable independent sessions and a budget projection are sealed; otherwise cosmos_wam_qualification is inconclusive."
+}

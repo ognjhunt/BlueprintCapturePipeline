@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -18,7 +20,9 @@ def _stream() -> dict[str, object]:
 def test_server_command_pins_pipeline_revision_dtype_and_guardrail_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(runtime.shutil, "which", lambda name: "/usr/bin/vllm" if name == "vllm" else None)
+    monkeypatch.setattr(
+        runtime.shutil, "which", lambda name: "/usr/bin/vllm" if name == "vllm" else None
+    )
 
     command = runtime._server_command()
 
@@ -102,6 +106,7 @@ def test_direct_and_wrapper_requests_match_exact_pinned_forward_dynamics_contrac
     assert direct == wrapper
     assert direct["model"] == "nvidia/Cosmos3-Nano"
     assert direct["num_frames"] == "17"
+    assert direct["size"] == "640x544"
     assert direct["num_inference_steps"] == "4"
     extra = runtime.json.loads(direct["extra_params"])
     assert extra["action_mode"] == "forward_dynamics"
@@ -111,6 +116,73 @@ def test_direct_and_wrapper_requests_match_exact_pinned_forward_dynamics_contrac
     assert extra["action_space"] == "midtrain"
     assert len(extra["action"]) == 16
     assert all(len(row) == 10 for row in extra["action"])
+
+
+def test_static_video_can_pass_structural_canary_without_passing_motion(
+    tmp_path: Path,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg unavailable")
+    video = tmp_path / "static.mp4"
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=gray:s=640x544:r=15:d=1.133334",
+            "-frames:v",
+            "17",
+            "-pix_fmt",
+            "yuv420p",
+            str(video),
+        ],
+        check=False,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    metrics = runtime._decode_video_metrics(video)
+
+    assert metrics["status"] == "passed"
+    assert metrics["structural_status"] == "passed"
+    assert metrics["motion_status"] == "failed"
+    assert metrics["static_detected"] is True
+
+
+def test_wrong_frame_rate_and_duration_fail_structural_canary(tmp_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg unavailable")
+    video = tmp_path / "wrong-rate.mp4"
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=gray:s=640x544:r=12:d=1.416667",
+            "-frames:v",
+            "17",
+            "-pix_fmt",
+            "yuv420p",
+            str(video),
+        ],
+        check=False,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    metrics = runtime._decode_video_metrics(video)
+
+    assert metrics["structural_status"] == "blocked"
+    assert "unexpected_video_frame_rate:12.0" in metrics["blockers"]
+    assert any(item.startswith("unexpected_video_duration:") for item in metrics["blockers"])
 
 
 def test_wrapper_serializer_is_independent_of_direct_serializer(

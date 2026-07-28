@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import time
+import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,61 @@ def _number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _cosmos_runtime_retention_evidence(video_smoke: Mapping[str, Any]) -> dict[str, Any]:
+    """Read bounded, non-secret Cosmos lifecycle evidence from the output zip."""
+
+    if "cosmos_server_loaded" in video_smoke or "cosmos_runtime_status" in video_smoke:
+        runtime_status = video_smoke.get("cosmos_runtime_status")
+        return {
+            "server_loaded": video_smoke.get("cosmos_server_loaded") is True,
+            "runtime_terminal": runtime_status == "completed",
+            "runtime_status": runtime_status,
+            "reason": "embedded",
+        }
+
+    archive_value = video_smoke.get("provider_runtime_output_zip_path")
+    if not isinstance(archive_value, str) or not archive_value:
+        return {"server_loaded": False, "runtime_terminal": False, "reason": "output_zip_missing"}
+    archive_path = Path(archive_value).expanduser()
+    try:
+        if not archive_path.is_file() or archive_path.stat().st_size > 128 * 1024 * 1024:
+            return {
+                "server_loaded": False,
+                "runtime_terminal": False,
+                "reason": "output_zip_invalid",
+            }
+        with zipfile.ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
+            required = {"cosmos_server_retention.json", "wam_runtime_result.json"}
+            if not required.issubset(names):
+                return {
+                    "server_loaded": False,
+                    "runtime_terminal": False,
+                    "reason": "lifecycle_members_missing",
+                }
+            retention = json.loads(archive.read("cosmos_server_retention.json"))
+            runtime = json.loads(archive.read("wam_runtime_result.json"))
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, zipfile.BadZipFile):
+        return {
+            "server_loaded": False,
+            "runtime_terminal": False,
+            "reason": "lifecycle_evidence_invalid",
+        }
+    server_loaded = bool(
+        isinstance(retention, Mapping)
+        and retention.get("status") == "retained_loaded"
+        and retention.get("process_alive") is True
+        and retention.get("server_remained_loaded") is True
+    )
+    runtime_terminal = bool(isinstance(runtime, Mapping) and runtime.get("status") == "completed")
+    return {
+        "server_loaded": server_loaded,
+        "runtime_terminal": runtime_terminal,
+        "runtime_status": runtime.get("status") if isinstance(runtime, Mapping) else None,
+        "reason": "observed",
+    }
 
 
 def retention_decision(
@@ -60,8 +117,11 @@ def retention_decision(
         blockers.append("retention_container_health_not_proven")
     if gpu_sanity.get("status") != "completed" or gpu_sanity.get("gpu_sanity_proven") is not True:
         blockers.append("retention_gpu_health_not_proven")
-    if video_smoke.get("status") == "completed":
+    cosmos = _cosmos_runtime_retention_evidence(video_smoke)
+    if cosmos.get("runtime_terminal") is True:
         blockers.append("retention_not_needed_after_terminal_bundle_success")
+    elif cosmos.get("server_loaded") is not True:
+        blockers.append("retention_cosmos_server_not_proven_loaded")
     return {
         "schema_version": VAST_RETENTION_SCHEMA_VERSION,
         "generated_at": utc_now_iso(),
@@ -72,7 +132,8 @@ def retention_decision(
         "watchdog_deadline_epoch": deadline,
         "container_health_proven": startup_probe.get("startup_probe_proven") is True,
         "gpu_health_proven": gpu_sanity.get("gpu_sanity_proven") is True,
-        "cosmos_server_loaded": False,
+        "cosmos_server_loaded": cosmos.get("server_loaded") is True,
+        "cosmos_runtime_status": cosmos.get("runtime_status"),
         "blockers": blockers,
         "raw_secret_values_recorded": False,
     }

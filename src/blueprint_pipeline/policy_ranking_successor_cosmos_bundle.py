@@ -42,6 +42,8 @@ SAMPLE_FILE_HASHES = {
 EXPECTED_INITIAL_OBSERVATION_SHA256 = (
     "8843f0fc9c68914dfb62222c961db19b37a5f155e602ff4a545eea1dcf42636d"
 )
+FOLLOWUP_EXPERIMENT_ID = "policy_ranking_cosmos3_followup_20260728"
+FOLLOWUP_OBSERVATION_HEIGHT = 544
 SHUFFLE_SEED = 20260727
 
 RUN_SCRIPT = """#!/usr/bin/env bash
@@ -126,7 +128,9 @@ def _extract_first_frame(video: Path, output: Path) -> None:
         raise ValueError("droid_first_frame_decode_failed")
 
 
-def _compose_initial_observation(sample_root: Path, output: Path) -> str:
+def _compose_initial_observation(
+    sample_root: Path, output: Path, *, output_height: int = 540
+) -> str:
     keys = (
         "observation.image.wrist_image_left",
         "observation.image.exterior_image_1_left",
@@ -145,16 +149,36 @@ def _compose_initial_observation(sample_root: Path, output: Path) -> str:
         composed.paste(frames[0], (0, 0))
         composed.paste(frames[1].resize((320, 180), Image.Resampling.BILINEAR), (0, 360))
         composed.paste(frames[2].resize((320, 180), Image.Resampling.BILINEAR), (320, 360))
-        composed.save(output, format="PNG", optimize=False)
+        if output_height == 540:
+            final = composed
+        elif output_height == FOLLOWUP_OBSERVATION_HEIGHT:
+            # Preserve every source pixel and extend only the bottom edge to a
+            # height divisible by the pinned spatial VAE factor (16).  The
+            # OpenAI-compatible server therefore performs no resize or crop.
+            final = Image.new("RGB", (640, output_height))
+            final.paste(composed, (0, 0))
+            edge = composed.crop((0, 539, 640, 540)).resize(
+                (640, output_height - 540), Image.Resampling.NEAREST
+            )
+            final.paste(edge, (0, 540))
+            edge.close()
+        else:
+            raise ValueError("unsupported_droid_observation_height")
+        final.save(output, format="PNG", optimize=False)
+        if final is not composed:
+            final.close()
+        composed.close()
         for frame in frames:
             frame.close()
     actual = _sha256_file(output)
-    if actual != EXPECTED_INITIAL_OBSERVATION_SHA256:
+    if output_height == 540 and actual != EXPECTED_INITIAL_OBSERVATION_SHA256:
         raise ValueError("droid_initial_observation_hash_mismatch")
     return actual
 
 
-def _build_action_streams(sample_root: Path) -> dict[str, Any]:
+def _build_action_streams(
+    sample_root: Path, *, experiment_id: str = EXPERIMENT_ID
+) -> dict[str, Any]:
     table = pq.read_table(sample_root / "data/chunk-000/file-000.parquet")
     rows = table.slice(0, 17).to_pylist()
     states = [row["observation.state.cartesian_position"] for row in rows]
@@ -171,7 +195,7 @@ def _build_action_streams(sample_root: Path) -> dict[str, Any]:
     conditions = build_action_controls(recorded, swapped, shuffle_seed=SHUFFLE_SEED)
     return {
         "schema_version": "policy_ranking_successor_action_streams.v1",
-        "experiment_id": EXPERIMENT_ID,
+        "experiment_id": experiment_id,
         "conditions": conditions,
         "condition_order": list(conditions),
         "source_gripper_action_flipped": True,
@@ -195,6 +219,8 @@ def build_successor_cosmos_bundle(
     smoke_inventory_path: str | Path,
     output_bundle: str | Path,
     receipt_path: str | Path | None = None,
+    experiment_id: str = EXPERIMENT_ID,
+    observation_height: int = 540,
 ) -> dict[str, Any]:
     root = Path(sample_root).expanduser().resolve()
     inventory_path = Path(smoke_inventory_path).expanduser().resolve()
@@ -206,7 +232,7 @@ def build_successor_cosmos_bundle(
     source_hashes = _verify_sample(root)
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     validate_smoke_inventory_manifest(inventory)
-    action_streams = _build_action_streams(root)
+    action_streams = _build_action_streams(root, experiment_id=experiment_id)
     conditions = action_streams["conditions"]
     for condition, expected in inventory["action_hashes"].items():
         if conditions[condition]["action_sha256"] != expected:
@@ -219,7 +245,7 @@ def build_successor_cosmos_bundle(
     ).read_bytes()
     with tempfile.TemporaryDirectory(prefix="cosmos3-successor-bundle-") as temporary:
         initial = Path(temporary) / "initial_observation.png"
-        initial_hash = _compose_initial_observation(root, initial)
+        initial_hash = _compose_initial_observation(root, initial, output_height=observation_height)
         if inventory["initial_observation_sha256"] != initial_hash:
             raise ValueError("frozen_initial_observation_hash_mismatch")
         action_payload = (
@@ -231,7 +257,7 @@ def build_successor_cosmos_bundle(
         )
         input_manifest = {
             "schema_version": "policy_ranking_successor_wam_rollout_input.v1",
-            "experiment_id": EXPERIMENT_ID,
+            "experiment_id": experiment_id,
             "initial_observation_sha256": initial_hash,
             "action_streams_sha256": canonical_sha256(action_streams),
             "smoke_inventory_sha256": canonical_sha256(inventory),
@@ -243,7 +269,7 @@ def build_successor_cosmos_bundle(
         }
         runtime_manifest = {
             "schema_version": BUNDLE_SCHEMA,
-            "experiment_id": EXPERIMENT_ID,
+            "experiment_id": experiment_id,
             "checkpoint": "nvidia/Cosmos3-Nano",
             "checkpoint_revision": CHECKPOINT_REVISION,
             "public_image": PUBLIC_IMAGE,
@@ -285,7 +311,11 @@ def build_successor_cosmos_bundle(
             _zip_write(
                 archive,
                 "provider_runtime/run_wam_provider_runtime.sh",
-                RUN_SCRIPT.encode("utf-8"),
+                RUN_SCRIPT.replace(
+                    "set -u\n",
+                    f'set -u\nexport BLUEPRINT_COSMOS_EXPERIMENT_ID="{experiment_id}"\n',
+                    1,
+                ).encode("utf-8"),
                 executable=True,
             )
             _zip_write(
@@ -321,14 +351,14 @@ def build_successor_cosmos_bundle(
             )
     receipt = {
         "schema_version": "policy_ranking_successor_cosmos_bundle_receipt.v1",
-        "experiment_id": EXPERIMENT_ID,
+        "experiment_id": experiment_id,
         "status": "built",
         "bundle_path": receipt_bundle_path,
         "bundle_sha256": _sha256_file(output),
         "bundle_size_bytes": output.stat().st_size,
         "public_image": f"{VLLM_IMAGE}@{VLLM_IMAGE_DIGEST}",
         "checkpoint_revision": CHECKPOINT_REVISION,
-        "initial_observation_sha256": EXPECTED_INITIAL_OBSERVATION_SHA256,
+        "initial_observation_sha256": initial_hash,
         "smoke_inventory_sha256": canonical_sha256(inventory),
         "action_streams_sha256": canonical_sha256(action_streams),
         "source_file_hashes": source_hashes,
@@ -355,12 +385,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--smoke-inventory", required=True)
     parser.add_argument("--output-bundle", required=True)
     parser.add_argument("--receipt", required=True)
+    parser.add_argument("--experiment-id", default=EXPERIMENT_ID)
+    parser.add_argument("--observation-height", type=int, default=540)
     args = parser.parse_args(argv)
     result = build_successor_cosmos_bundle(
         sample_root=args.sample_root,
         smoke_inventory_path=args.smoke_inventory,
         output_bundle=args.output_bundle,
         receipt_path=args.receipt,
+        experiment_id=args.experiment_id,
+        observation_height=args.observation_height,
     )
     print(json.dumps({"status": result["status"]}, sort_keys=True))
     return 0

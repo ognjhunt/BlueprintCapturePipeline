@@ -1,0 +1,28 @@
+{
+  "schema_version": "policy_ranking_cosmos3_provider_invoice_reconciliation.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "queried_at": "2026-07-27T22:46:15-0500",
+  "provider": "Vast",
+  "source": "authenticated_account_invoice_api",
+  "date_window_utc": ["2026-07-26T00:00:00Z", "2026-07-29T00:00:00Z"],
+  "task_scoped_prior_instance_ids": [46051923, 46059888],
+  "settled_invoice_rows": [
+    {"instance_id": 46051923, "kind": "gpu", "quantity": 0.043, "rate": 1.0, "amount_usd": 0.043},
+    {"instance_id": 46051923, "kind": "storage", "quantity": 0.051, "rate": 0.2083, "amount_usd": 0.011},
+    {"instance_id": 46051923, "kind": "bandwidth", "quantity": 0.013, "rate": 0.003, "amount_usd": 0.0},
+    {"instance_id": 46051923, "kind": "upload", "quantity": 0.0, "rate": 0.004, "amount_usd": 0.0},
+    {"instance_id": 46059888, "kind": "gpu", "quantity": 0.111, "rate": 1.0, "amount_usd": 0.111},
+    {"instance_id": 46059888, "kind": "storage", "quantity": 0.171, "rate": 0.1157, "amount_usd": 0.02},
+    {"instance_id": 46059888, "kind": "bandwidth", "quantity": 30.1, "rate": 0.007, "amount_usd": 0.196},
+    {"instance_id": 46059888, "kind": "upload", "quantity": 0.463, "rate": 0.007, "amount_usd": 0.003}
+  ],
+  "settled_task_scoped_actual_usd": 0.384,
+  "historical_local_estimate_usd": 0.22692,
+  "reconciliation_delta_usd": 0.15708,
+  "account_current_unbilled_total_usd": 0.0,
+  "cumulative_compute_ceiling_usd": 6.0,
+  "reconciled_maximum_new_spend_usd": 5.616,
+  "billing_rounding_precision_usd": 0.001,
+  "api_key_or_account_identity_recorded": false,
+  "status": "reconciled"
+}

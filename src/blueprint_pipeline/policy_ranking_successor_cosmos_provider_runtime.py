@@ -15,6 +15,7 @@ import signal
 import shutil
 import subprocess
 import time
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,9 @@ import requests
 
 CHECKPOINT = "nvidia/Cosmos3-Nano"
 CHECKPOINT_REVISION = "411f42a8fdfb8c5b2583cb8786e0938f49796eaa"
-EXPERIMENT_ID = "policy_ranking_successor_experiment_20260727"
+EXPERIMENT_ID = os.environ.get(
+    "BLUEPRINT_COSMOS_EXPERIMENT_ID", "policy_ranking_successor_experiment_20260727"
+)
 SERVER_PORT = 8001
 SERVER_BASE_URL = f"http://127.0.0.1:{SERVER_PORT}"
 SERVER_START_TIMEOUT_SECONDS = 3600
@@ -47,6 +50,8 @@ TOTAL_INITIAL_GENERATION_REQUEST_COUNT = (
 RETAIN_SERVER_ENV = "BLUEPRINT_RETAIN_COSMOS_SERVER"
 RETAINED_ROOT_ENV = "BLUEPRINT_COSMOS_RETAINED_ROOT"
 DEFAULT_RETAINED_ROOT = "/workspace/blueprint_vast_probe/cosmos3_retained"
+EXPECTED_VIDEO_WIDTH = 640
+EXPECTED_VIDEO_HEIGHT = 544
 
 
 def canonical_sha256(value: Any) -> str:
@@ -227,7 +232,12 @@ class HashChainedJournal:
         return row
 
 
-def _decode_video_metrics(path: Path) -> dict[str, Any]:
+def _decode_video_metrics(
+    path: Path,
+    *,
+    expected_width: int = EXPECTED_VIDEO_WIDTH,
+    expected_height: int = EXPECTED_VIDEO_HEIGHT,
+) -> dict[str, Any]:
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
     if not ffmpeg or not ffprobe:
@@ -240,7 +250,7 @@ def _decode_video_metrics(path: Path) -> dict[str, Any]:
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height,nb_frames,r_frame_rate",
+            "stream=width,height,nb_frames,r_frame_rate:format=duration",
             "-of",
             "json",
             str(path),
@@ -264,7 +274,7 @@ def _decode_video_metrics(path: Path) -> dict[str, Any]:
             "-i",
             str(path),
             "-vf",
-            "scale=64:54,format=gray",
+            f"scale=64:{max(1, round(64 * expected_height / expected_width))},format=gray",
             "-f",
             "rawvideo",
             "-pix_fmt",
@@ -275,11 +285,12 @@ def _decode_video_metrics(path: Path) -> dict[str, Any]:
         capture_output=True,
         timeout=180,
     )
-    frame_size = 64 * 54
+    decoded_height = max(1, round(64 * expected_height / expected_width))
+    frame_size = 64 * decoded_height
     if decoded.returncode != 0 or len(decoded.stdout) < frame_size:
         return {"status": "blocked", "blockers": ["video_decode_failed"]}
     usable = len(decoded.stdout) // frame_size * frame_size
-    frames = np.frombuffer(decoded.stdout[:usable], dtype=np.uint8).reshape(-1, 54, 64)
+    frames = np.frombuffer(decoded.stdout[:usable], dtype=np.uint8).reshape(-1, decoded_height, 64)
     frame_means = frames.astype(np.float32).mean(axis=(1, 2))
     frame_stds = frames.astype(np.float32).std(axis=(1, 2))
     temporal = (
@@ -292,23 +303,43 @@ def _decode_video_metrics(path: Path) -> dict[str, Any]:
     width = int(stream.get("width") or 0)
     height = int(stream.get("height") or 0)
     declared_frames = int(stream.get("nb_frames") or 0)
+    try:
+        frame_rate = float(Fraction(str(stream.get("r_frame_rate") or "0/1")))
+    except (ValueError, ZeroDivisionError):
+        frame_rate = 0.0
+    format_payload = probe_payload.get("format") if isinstance(probe_payload, dict) else None
+    try:
+        duration_seconds = float(
+            format_payload.get("duration") if isinstance(format_payload, dict) else 0.0
+        )
+    except (TypeError, ValueError):
+        duration_seconds = 0.0
     structural_blockers: list[str] = []
-    if (width, height) != (640, 540):
+    if (width, height) != (expected_width, expected_height):
         structural_blockers.append(f"unexpected_video_dimensions:{width}x{height}")
     if declared_frames != 17 or len(frames) != 17:
         structural_blockers.append(
             f"unexpected_video_frame_count:declared={declared_frames}:decoded={len(frames)}"
         )
+    if not np.isclose(frame_rate, 15.0, rtol=0.0, atol=1e-6):
+        structural_blockers.append(f"unexpected_video_frame_rate:{frame_rate}")
+    expected_duration_seconds = 17.0 / 15.0
+    if not np.isclose(duration_seconds, expected_duration_seconds, rtol=0.0, atol=0.05):
+        structural_blockers.append(f"unexpected_video_duration:{duration_seconds}")
     blank = bool(float(frame_stds.max(initial=0.0)) < 2.0)
     static = bool(float(temporal.max(initial=0.0)) < 0.5)
     return {
-        "status": (
-            "blocked"
-            if structural_blockers
-            else ("passed" if not blank and not static else "scientific_failure")
-        ),
+        # Four-step canaries are structural only. Motion remains a separate
+        # scientific observation and cannot make a decodable response fail its
+        # structural contract.
+        "status": "blocked" if structural_blockers else "passed",
+        "structural_status": "blocked" if structural_blockers else "passed",
+        "motion_status": "failed" if blank or static else "passed",
         "blockers": structural_blockers,
         "frame_count_decoded": int(len(frames)),
+        "frame_rate": frame_rate,
+        "duration_seconds": duration_seconds,
+        "expected_duration_seconds": expected_duration_seconds,
         "mean_luma_min": float(frame_means.min(initial=0.0)),
         "mean_luma_max": float(frame_means.max(initial=0.0)),
         "spatial_std_max": float(frame_stds.max(initial=0.0)),
@@ -458,7 +489,7 @@ def _serialize_rollout_request(
         "prompt": "A robot manipulates an object.",
         "num_frames": "17",
         "fps": "15",
-        "size": "640x540",
+        "size": f"{EXPECTED_VIDEO_WIDTH}x{EXPECTED_VIDEO_HEIGHT}",
         "num_inference_steps": str(num_inference_steps),
         "guidance_scale": "1.0",
         "flow_shift": "10.0",
@@ -495,7 +526,7 @@ def _serialize_blueprint_wrapper_request(
         "prompt": "A robot manipulates an object.",
         "num_frames": "17",
         "fps": "15",
-        "size": "640x540",
+        "size": f"{EXPECTED_VIDEO_WIDTH}x{EXPECTED_VIDEO_HEIGHT}",
         "num_inference_steps": str(num_inference_steps),
         "guidance_scale": "1.0",
         "flow_shift": "10.0",
@@ -741,6 +772,7 @@ def run() -> dict[str, Any]:
             if canonical_sha256(action_stream["actions"]) != row["action_sha256"]:
                 raise ValueError(f"action_hash_mismatch:{request_id}")
             request_artifact = {
+                "experiment_id": EXPERIMENT_ID,
                 "request_id": request_id,
                 "condition": condition,
                 "seed": int(row["seed"]),

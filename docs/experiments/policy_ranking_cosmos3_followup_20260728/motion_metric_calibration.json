@@ -1,0 +1,23 @@
+{
+  "schema_version": "policy_ranking_cosmos3_motion_metric_calibration.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "status": "completed_before_cosmos_output",
+  "source": {
+    "description": "pinned NVIDIA Cosmos DROID LeRobot example episode, first 17 frames, composed in the frozen three-camera layout",
+    "repository_revision": "bebca76311266941d06c5f5572fb601184ba24fa",
+    "wrist_video_sha256": "e9d641240f9efc344924c31715a44be1f66207f667dd63c292bbd943dfa816d0",
+    "exterior_1_video_sha256": "6aac49551ff9b9fc7b8e9899df4fc050f5cd31164ed4ee3c014f332bcef3b9f1",
+    "exterior_2_video_sha256": "34f6e5dae8591809324f1df9bf166c6e304bd2cbdad643595a991f641cbb4fd7"
+  },
+  "metric": "mean absolute per-pixel grayscale frame difference after deterministic 64-pixel-width downsampling",
+  "frozen_motion_threshold_max_gt_or_equal": 0.5,
+  "controls": {
+    "genuine_moving_droid": {"sha256": "5259167b26876d9af8c672a231ab85c2a53e8ce1b47fadec1c599a2178b2e52d", "mean": 2.2875254154205322, "max": 4.906539440155029, "motion_detected": true},
+    "static_repeated_first_frame": {"sha256": "8e94a6d3bd9d664ac0dbb87645c5bda7a5a3be61dc6c450e58500ba738ee1172", "mean": 0.0007776331040076911, "max": 0.004050925839692354, "motion_detected": false},
+    "blank": {"sha256": "d70a0f1f4284378676d73e546f744ed5750fa0bce93c9c20f488ae732c93f87d", "mean": 0.0, "max": 0.0, "motion_detected": false},
+    "synthetic_camera_motion": {"sha256": "689ed3b45c73a2e778ce34d823791a08be583e4d30dd5d88ea08751775a143e8", "mean": 2.0098018646240234, "max": 6.398148059844971, "motion_detected": true}
+  },
+  "calibration_counts": {"moving_positive": 1, "static_or_blank_negative": 2, "camera_motion_control": 1},
+  "interpretation": "The frozen global metric detects genuine motion and rejects repeated/blank frames in these controls, but also fires on camera motion. It may establish existence of motion only. It cannot establish action following, direction, contact, task success, or WAM causal validity.",
+  "historical_metric_retained_for_comparability": true
+}

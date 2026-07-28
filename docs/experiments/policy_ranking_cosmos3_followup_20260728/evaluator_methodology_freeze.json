@@ -1,0 +1,90 @@
+{
+  "schema_version": "policy_ranking_successor_evaluator_methodology_freeze.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "status": "frozen_before_cosmos_paid_output_and_before_evaluator_access",
+  "independent_evaluator": "gpt-5-mini-2025-08-07",
+  "blueprint_existing_implementation": {
+    "module": "blueprint_pipeline.roboworld_evaluator",
+    "profile_id": "roboworld_progress_v1",
+    "profile_version": "1.0.0",
+    "profile_sha256": "80b8224a0d77b29264eadb4b383682f8b48dddd4076bd223f7fc0211d6eed709",
+    "validation_status": "validated",
+    "introduced_commit": "29c19239f2557b7ea8f8920e01c89859ed02bd23",
+    "step_forcing_implemented": false,
+    "reuse_decision": "use_existing_model_neutral_profile_and_calibration_contracts"
+  },
+  "methodology": {
+    "roboworld_inspired_task_progress_judge": {
+      "role": "primary_independent_rollout_scoring_method",
+      "score_scale": [0, 1, 2, 3, 4, 5],
+      "fixed_external_views": "exclusive_authority_for_task_progress_and_success",
+      "wrist_view": "world_model_artifact_detection_only",
+      "stable_success": "must_be_confirmed_across_adjacent_frames_not_one_frame",
+      "partial_credit": "progress_before_world_model_corruption_may_be_credited",
+      "segment_sampling": "frozen_temporal_segments_scored_separately",
+      "artifact_and_progress_outputs_separate": true
+    },
+    "sc3_derived_reliability_layer": {
+      "role": "causal_validity_uncertainty_and_abstention_not_primary_task_judge",
+      "retained": [
+        "counterfactual_action_controls",
+        "temporal_consistency",
+        "cross_view_consistency_checks",
+        "uncertainty_thresholds",
+        "early_termination",
+        "abstention",
+        "pearson_and_pairwise_rank_metrics",
+        "failure_mode_reproduction"
+      ],
+      "native_inverse_dynamics_self_grading_forbidden": true,
+      "reason": "Cosmos forward dynamics must not grade itself"
+    },
+    "blueprint_calibration_layer": {
+      "sealed_outcomes_until_predictions_complete": true,
+      "policy_identity_hidden": true,
+      "clustered_uncertainty": true,
+      "abstention_calibrated_on_disjoint_data": true,
+      "pairwise_ordering_reported_separately_from_absolute_calibration": true
+    }
+  },
+  "source_status": {
+    "roboworld_code": "coming_soon_as_of_2026-07-27",
+    "roboworld_paper_rubric_and_prompts_disclosed": true,
+    "roboworld_paper_license": "CC_BY_4.0",
+    "sc3_public_code_located": false,
+    "implementation_mode": "attributed_clean_implementation_from_published_method_only"
+  },
+  "published_result_context": {
+    "roboworld": {
+      "pearson_r": 0.989,
+      "spearman_rho": 0.97,
+      "policy_count": 8,
+      "rollout_count": 4186,
+      "benchmark": "RoboArena",
+      "judge": "GPT-4o"
+    },
+    "sc3_eval": {
+      "pearson_r": 0.929,
+      "mmrv": 0.119,
+      "policy_count": 7,
+      "domain": "table_bussing",
+      "main_annotations": "blinded_trained_humans"
+    },
+    "direct_numeric_comparison_valid": false,
+    "reason": "different policies tasks datasets labels protocols judges and reported rank metrics"
+  },
+  "sources": [
+    "https://arxiv.org/html/2607.01060v4",
+    "https://byeongguks.github.io/RoboWorld/",
+    "https://arxiv.org/html/2606.18610v3"
+  ],
+  "admission": "powered_cosmos_causal_gate_passed_and_disjoint_benchmark_sealed",
+  "evaluator_calls_performed": 0,
+  "claims": {
+    "method_selected": true,
+    "implementation_calibrated": false,
+    "roboworld_result_reproduced": false,
+    "sc3_result_reproduced": false,
+    "blueprint_ranking_fidelity": false
+  }
+}
