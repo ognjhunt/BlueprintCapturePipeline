@@ -66,8 +66,8 @@
     {
       "field": "authorization_consumption_identity",
       "former": "hard_coded_allocation_1",
-      "new": "validated_positive_canonical_allocation_sequence_with_per_identity_single_use",
-      "reason": "Permit prospectively authorized retries without reusing or overwriting a consumed authorization."
+      "new": "validated_canonical_allocation_sequence_1_through_3_with_per_identity_single_use",
+      "reason": "Permit prospectively authorized retries without replay while bounding three USD 5 allocations to the USD 15 Reasoner-arm cap."
     }
   ],
   "unchanged_scientific_contract": {
@@ -95,5 +95,5 @@
     "v4_failure_retained_and_counted_in_cost_and_reliability": true
   },
   "scientific_legitimacy": "No model judgment or physical outcome influenced this repair. The retry changes only a demonstrably incompatible server architecture override and strengthens prospective compatibility validation; it does not change inputs, prompts, scoring, thresholds, or claim ceilings.",
-  "amendment_sha256": "00e710e907c18f8c814879b9d64cc9a87257ff0174e9c503d46c18abf5dbd139"
+  "amendment_sha256": "9a1b459599b692ff951eaef1e86efe1b38a3a862d8007f41c4471f7533b862a2"
 }

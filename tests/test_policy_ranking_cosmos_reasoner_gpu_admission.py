@@ -8,6 +8,7 @@ from blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission import (
     ADMISSION_SCHEMA,
     AUTHORIZATION_ID,
     AUTHORIZATION_ID_PREFIX,
+    MAX_AUTHORIZED_ALLOCATIONS_FOR_ARM,
     MAX_HOURLY_RATE_USD,
     PREFLIGHT_SCHEMA,
     TARGET_MAX_LIVE_MINUTES,
@@ -255,6 +256,7 @@ def test_reasoner_admission_rejects_nonpositive_or_unsafe_allocation_identity(
         f"{AUTHORIZATION_ID_PREFIX}0",
         f"{AUTHORIZATION_ID_PREFIX}01",
         f"{AUTHORIZATION_ID_PREFIX}../2",
+        f"{AUTHORIZATION_ID_PREFIX}{MAX_AUTHORIZED_ALLOCATIONS_FOR_ARM + 1}",
     ):
         authorization = _external_authorization(
             tmp_path,

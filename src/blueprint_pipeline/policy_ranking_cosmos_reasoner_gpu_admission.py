@@ -52,6 +52,7 @@ TARGET_SPEND_USD = 4.54
 HARD_CAP_USD = 5.00
 ARM_CAP_USD = 15.00
 HARD_TTL_SECONDS = 7_200
+MAX_AUTHORIZED_ALLOCATIONS_FOR_ARM = int(ARM_CAP_USD // HARD_CAP_USD)
 TARGET_MAX_LIVE_MINUTES = math.floor(TARGET_SPEND_USD / MAX_HOURLY_RATE_USD * 60)
 MAX_PREFLIGHT_AGE_SECONDS = 900
 DISK_GB = 200
@@ -87,7 +88,12 @@ def _valid_authorization_id(value: Any) -> bool:
     if not isinstance(value, str) or not value.startswith(AUTHORIZATION_ID_PREFIX):
         return False
     suffix = value.removeprefix(AUTHORIZATION_ID_PREFIX)
-    return suffix.isascii() and suffix.isdigit() and str(int(suffix)) == suffix and int(suffix) > 0
+    return (
+        suffix.isascii()
+        and suffix.isdigit()
+        and str(int(suffix)) == suffix
+        and 0 < int(suffix) <= MAX_AUTHORIZED_ALLOCATIONS_FOR_ARM
+    )
 
 
 def load_external_authorization(path: str | Path) -> dict[str, Any]:
@@ -388,6 +394,7 @@ def build_admission(
             "target_spend_usd": TARGET_SPEND_USD,
             "hard_cap_usd": HARD_CAP_USD,
             "reasoner_arm_cap_usd": ARM_CAP_USD,
+            "maximum_authorized_allocations_for_arm": MAX_AUTHORIZED_ALLOCATIONS_FOR_ARM,
             "hard_ttl_seconds": HARD_TTL_SECONDS,
             "target_max_live_minutes": TARGET_MAX_LIVE_MINUTES,
             "maximum_concurrent_gpus": 1,

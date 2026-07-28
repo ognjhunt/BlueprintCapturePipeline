@@ -155,7 +155,7 @@ videos, pair selection, prompt, schema, decoding, budgets, and diagnostic-only
 claim ceiling, while requiring the frozen model revision's native
 `Cosmos3ForConditionalGeneration` architecture and rejecting future bundles
 that reintroduce `--hf-overrides`. Its deterministic digest is
-`00e710e907c18f8c814879b9d64cc9a87257ff0174e9c503d46c18abf5dbd139`.
+`9a1b459599b692ff951eaef1e86efe1b38a3a862d8007f41c4471f7533b862a2`.
 It uses an evaluator-only provider bundle, one H100, a seven-pair canary, and a
 two-hour/USD 5 pilot cutoff. A full matrix requires 7/7 valid pilot rows, a
 frozen throughput projection that fits the USD 15 Reasoner-arm cap, and a new
