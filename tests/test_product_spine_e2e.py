@@ -75,11 +75,11 @@ def test_capture_bundle_to_cards_package_archive_and_webapp_projection(
         _HealthyRuntimeClient,
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        "blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review",
         lambda **_kwargs: _successful_capture_review(),
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _successful_privacy_processing(),
     )
 

@@ -18,7 +18,7 @@ from .core.logging_utils import log_event
 from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .core.pipeline_settings import PipelineConfig, PipelineSettings
-from .qualification import run_qualification_pipeline
+from .site_package_orchestrator import run_qualification_pipeline
 from .frame_alignment_stage import run_frame_alignment_stage
 from .eval_card_ids import (
     _failure_mode_ids_from_taxonomy,

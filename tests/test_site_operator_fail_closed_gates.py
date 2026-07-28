@@ -25,7 +25,7 @@ from blueprint_pipeline.proof_contracts import (
     build_proof_pack_manifest,
     build_rights_provenance_review,
 )
-from blueprint_pipeline.qualification import _worldlabs_derived_rights_allowed
+from blueprint_pipeline.site_package_orchestrator import _worldlabs_derived_rights_allowed
 
 
 def _launch_gate_capture(tmp_path: Path, *, descriptor_overrides: dict | None = None) -> Path:

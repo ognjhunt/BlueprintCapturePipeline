@@ -19,8 +19,12 @@ P2_04_EVIDENCE_PATH = "docs/specs/launch-audit-2026-07-02/README.md"
 ID_PATTERN = re.compile(r"^(?:REL|DATA|SC3|RUN|P2|EVID)-\d{2}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+# 2026-07-28: DATA-06-AC-01-EV-01 implementation evidence followed the module
+# rename src/blueprint_pipeline/qualification.py -> site_package_orchestrator.py
+# (same orchestration spine; blueprint_pipeline.qualification stays a
+# deprecated alias pinned by tests/test_qualification_alias_contract.py).
 APPROVED_CRITERION_EVIDENCE_MAP_SHA256 = (
-    "sha256:a6d647b4a66aebad22f663e97d21a68999d76a83aa5bb69318ad50b0345259b5"
+    "sha256:5edb2016c1c26f094901b6a1abd87d1e181b462a23040e74a04c69a1b0f42ad7"
 )
 ALLOWED_STATUSES = {"open", "partial", "closed", "reopened"}
 ALLOWED_SCOPES = {"BASE", "SIM", "PTDP", "SC3", "PAID", "LIVE", "PHYSICAL"}

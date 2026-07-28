@@ -8,7 +8,7 @@ import pytest
 
 from blueprint_pipeline.capture_bridge import CaptureDescriptor
 from blueprint_pipeline.common import StageError
-import blueprint_pipeline.qualification as q
+import blueprint_pipeline.site_package_orchestrator as q
 
 
 def _descriptor(**overrides) -> CaptureDescriptor:

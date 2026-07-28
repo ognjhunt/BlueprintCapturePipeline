@@ -1,8 +1,9 @@
 # AI Onboarding Map
 
-This map is for new engineers and AI agents entering `BlueprintCapturePipeline`.
-Read it after the root `AGENTS.md`, `PLATFORM_CONTEXT.md`, and
-`WORLD_MODEL_STRATEGY_CONTEXT.md`.
+This map is for new engineers and AI agents (Claude, Codex, or other) entering
+`BlueprintCapturePipeline`. Read it after the root `PLATFORM_CONTEXT.md`,
+`WORLD_MODEL_STRATEGY_CONTEXT.md`, `VISION.md`, and `AGENTS.md`; when documents
+disagree, apply [`../DOCTRINE_PRECEDENCE.md`](../DOCTRINE_PRECEDENCE.md).
 
 The repo turns a raw capture bundle into a site-specific package, provider-ready
 adapter inputs, hosted/review artifacts, and optional trust outputs. Raw capture
@@ -14,7 +15,7 @@ must stay labeled as projections or support artifacts.
 | Concern | Main files | Primary outputs | Truth label |
 | --- | --- | --- | --- |
 | Raw capture materialization | `src/blueprint_pipeline/materialization.py`, `scripts/stage_capture_bundle.py` | `capture_descriptor.json`, `qa_report.json`, `frames/index.jsonl` | Capture-grounded descriptor of raw evidence |
-| Qualification and trust support | `src/blueprint_pipeline/qualification.py` | `pipeline/qualification_summary.json`, `buyer_trust_score.json`, `rights_and_compliance_summary.json`, `world_model_fit_summary.json` | Support artifacts, not product center |
+| Capture->package orchestration and trust support | `src/blueprint_pipeline/site_package_orchestrator.py` (formerly `qualification.py`) | `pipeline/qualification_summary.json`, `buyer_trust_score.json`, `rights_and_compliance_summary.json`, `world_model_fit_summary.json` | Core orchestration spine; the qualification/trust *outputs* it writes are support artifacts, not the product center |
 | Canonical site package | `src/blueprint_pipeline/canonical_site_package.py` | `pipeline/site_package/canonical_site_package.json` | Derived package contract grounded in raw capture |
 | Provider adapter inputs | `src/blueprint_pipeline/canonical_site_package.py`, `src/blueprint_pipeline/provider_preview.py` | `pipeline/site_package/provider_adapter_inputs/world_labs_marble.json`, `worldlabs_request_manifest.json` | Provider-specific projection from canonical package |
 | Privacy-safe media | `src/blueprint_pipeline/privacy_processing.py`, `docs/PRIVACY_RUNNER_SERVICES.md` | `privacy/final_walkthrough.*`, `pipeline/privacy_processing_manifest.json`, `pipeline/worldlabs_input_manifest.json` | Derived privacy-cleared media |
@@ -58,12 +59,16 @@ python3 scripts/stage_capture_bundle.py --source-bundle /path/to/raw --storage-r
 python -m blueprint_pipeline.capture_orchestrator
 ```
 
-## Qualification And Trust Outputs
+## Capture->Package Orchestration And Trust Outputs
 
-`src/blueprint_pipeline/qualification.py` is still the largest orchestration
-module. It runs intake/scoping/completeness checks, object indexing, optional
-Gemini review, privacy post-processing, World Labs input preparation, package
-assembly, preview routing, WebApp sync, and alpha-readiness summary writes.
+`src/blueprint_pipeline/site_package_orchestrator.py` (formerly
+`qualification.py`; the old dotted path remains a deprecated import alias) is
+the largest orchestration module and the core capture->package spine. It runs
+intake/scoping/completeness checks, object indexing, optional Gemini review,
+privacy post-processing, World Labs input preparation, package assembly,
+preview routing, WebApp sync, and alpha-readiness summary writes. The
+qualification/readiness *outputs* it writes are optional support artifacts per
+platform doctrine; the module itself is not optional.
 
 Important outputs under `pipeline/` include:
 
@@ -146,7 +151,7 @@ The production preview path requires privacy-safe walkthrough media before World
 Labs submission:
 
 ```text
-BlueprintCapture upload -> storage trigger -> materialize -> qualification -> privacy/final_walkthrough.mov -> World Labs generate/poll -> WebApp sync -> catalog launch
+BlueprintCapture upload -> storage trigger -> materialize -> site-package orchestration -> privacy/final_walkthrough.mov -> World Labs generate/poll -> WebApp sync -> catalog launch
 ```
 
 GPU-backed services are expected to sit behind URL/token contracts:

@@ -1,27 +1,36 @@
 # BlueprintCapturePipeline Claude Guide
 
-Read first:
+[`AGENTS.md`](AGENTS.md) is the canonical working guide for all agents (Claude,
+Codex, or other) and human engineers. Everything there is binding; this file is
+the Claude-harness entry summary and must not drift ahead of it.
+
+Read first (repo-root-relative):
 
 1. `PLATFORM_CONTEXT.md`
 2. `WORLD_MODEL_STRATEGY_CONTEXT.md`
-3. `AGENTS.md`
+3. `VISION.md` (long-horizon direction and bets; never overrides the two above)
+4. `AGENTS.md`
+5. `docs/DOCTRINE_PRECEDENCE.md` (when docs disagree)
 
-Key rules:
+Key rules (full text and precedents in `AGENTS.md`):
 
-- Keep world-model backends swappable.
+- Keep world-model backends swappable behind stable contracts.
 - Protect provenance, rights, privacy, and raw capture truth.
-- Optimize for strong site-specific packages and hosted runtime outputs.
-- Keep readiness and review logic secondary to the product core.
-- Never resolve a failure by hand or by one-off workaround. Every fix must land
-  as code on main with a hermetic fast-lane test pinning the contract and,
-  where a paid path exists, a fail-closed gate in front of it. A manual action
-  taken to save a live run is a stopgap; the same session must land the
-  encoded equivalent (precedents: PR #180 builder swap, PR #181 compute-cap
-  ceiling — each replaced a repeatedly hand-applied workaround).
+- Optimize for Task Evaluation Runs, Policy Improvement Runs, Post-Training
+  Data Packages, and hosted runtime outputs.
+- Readiness and review *outputs* are optional support layers. The module
+  historically named for them — now
+  `src/blueprint_pipeline/site_package_orchestrator.py` (formerly
+  `qualification.py`) — is the core capture→package orchestrator, not a
+  secondary readiness module.
+- Never resolve a failure by hand or by one-off workaround: every fix lands as
+  code on main with a hermetic fast-lane test pinning the contract and, where a
+  paid path exists, a fail-closed gate (precedents: PR #180, PR #181).
 - Before claiming Paperclip/autonomous-loop `done`, `blocked`, or
   `awaiting_human_decision`, apply the Blueprint-WebApp
-  `docs/autonomous-loop-evidence-checklist-2026-05-03.md`. That cross-repo path
-  is environment-dependent; resolve it from the local Blueprint-WebApp checkout.
+  `docs/autonomous-loop-evidence-checklist-2026-05-03.md` (sibling checkout;
+  path is environment-dependent — see the sibling-checkout convention in
+  `AGENTS.md`).
 
 Key commands:
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from blueprint_pipeline.capture_bridge import CaptureDescriptor
-from blueprint_pipeline.qualification import _worldlabs_source_candidate
+from blueprint_pipeline.site_package_orchestrator import _worldlabs_source_candidate
 
 
 def test_production_rejects_raw_worldlabs_bypass(monkeypatch) -> None:

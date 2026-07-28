@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import blueprint_pipeline.evaluation_prep_stage as eps
-import blueprint_pipeline.qualification as qual
+import blueprint_pipeline.site_package_orchestrator as qual
 
 
 # --------------------------------------------------------------------------------------

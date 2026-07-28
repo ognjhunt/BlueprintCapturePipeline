@@ -2,9 +2,23 @@
 
 `BlueprintCapturePipeline` is the packaging, trust, and runtime service that turns raw Blueprint captures into real-site robot evaluation artifacts and Post-Training Data Package artifacts with provenance, privacy, and rights safety. World-model, generated, simulation, editing, and augmentation outputs remain support artifacts inside those packages unless a downstream contract explicitly labels them otherwise.
 
-The current active process is: `BlueprintCapture` output -> privacy-safe World Labs input prep -> World Labs API upload/request -> persisted provider manifests -> materialized World Labs output assets with checksums -> CPU/pre-GPU scene and episode preflight -> simulation automation manifest -> explicitly gated simulator runs. Older scene-memory, retrieval/alignment, Cosmos, single-VM GPU, SimReady, and Marble bridge lanes are legacy/advisory support paths unless a command or artifact explicitly requests them.
+Two lanes are active today.
+
+The site/package lane is: `BlueprintCapture` output -> privacy-safe World Labs input prep -> World Labs API upload/request -> persisted provider manifests -> materialized World Labs output assets with checksums -> CPU/pre-GPU scene and episode preflight -> simulation automation manifest -> explicitly gated simulator runs.
+
+The robot-evaluation engine lane is: robot-eval job requests -> WAM/simulator evaluator execution behind the replaceable adapter boundary (Cosmos 3 family as the preferred configured learned-WAM candidate, OSCAR as the baseline/compatibility lane, MuJoCo/Isaac as classical fallback and stricter-physics cross-checks) -> policy ranking, benchmark-protocol runs, and Policy Improvement Runs on gated paid GPU providers. This lane is the current engineering center of mass (see the recent commit history and `WORLD_MODEL_STRATEGY_CONTEXT.md`).
+
+Older scene-memory, retrieval/alignment, Cosmos-Predict2.5 (`cosmos_wam`), single-VM GPU, SimReady, and Marble bridge lanes are legacy/advisory support paths unless a command or artifact explicitly requests them.
 
 For public language, Google/Meta smart glasses are supported only for approved repeat walkthroughs where the assignment, hardware, launch proof, and downstream capture/package proof exist. This repo treats glasses outputs as partial/internal until that proof chain exists.
+
+Doctrine and strategy (read in this order; [`docs/DOCTRINE_PRECEDENCE.md`](docs/DOCTRINE_PRECEDENCE.md) governs conflicts):
+
+- [`PLATFORM_CONTEXT.md`](PLATFORM_CONTEXT.md) — what is true and sellable today
+- [`WORLD_MODEL_STRATEGY_CONTEXT.md`](WORLD_MODEL_STRATEGY_CONTEXT.md) — model-backend posture and build priorities
+- [`VISION.md`](VISION.md) — the long-horizon ladder (rungs 1–5); direction and bets, never overrides the two above
+- [`AGENTS.md`](AGENTS.md) — canonical working rules for agents and human engineers
+- [`AUTONOMOUS_ORG.md`](AUTONOMOUS_ORG.md) — org roles and agent lanes
 
 AI and engineer orientation maps live under [`docs/architecture/`](docs/architecture):
 

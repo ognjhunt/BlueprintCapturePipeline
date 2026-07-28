@@ -11,7 +11,7 @@ from blueprint_pipeline.capture_orchestrator import PipelineConfig, resolve_requ
 from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import materialize_capture_bundle
-from blueprint_pipeline.qualification import (
+from blueprint_pipeline.site_package_orchestrator import (
     _requested_downstream_lanes,
     _rights_review_required_use_classes,
     _should_run_default_geometry_stage,
@@ -194,11 +194,11 @@ def test_qualification_records_missing_webapp_bootstrap_without_failing_local_ru
     monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
     monkeypatch.delenv("PIPELINE_SYNC_REQUIRED", raising=False)
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        "blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review",
         lambda **_kwargs: _successful_capture_review(),
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _successful_privacy_processing(),
     )
 
@@ -206,7 +206,7 @@ def test_qualification_records_missing_webapp_bootstrap_without_failing_local_ru
         raise ValueError("site_submission_id or request_id is required")
 
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        "blueprint_pipeline.site_package_orchestrator.sync_webapp_pipeline_attachment",
         _missing_webapp_bootstrap,
     )
 
@@ -239,11 +239,11 @@ def test_qualification_required_webapp_sync_failure_still_blocks(
     monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
     monkeypatch.setenv("PIPELINE_SYNC_REQUIRED", "true")
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        "blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review",
         lambda **_kwargs: _successful_capture_review(),
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _successful_privacy_processing(),
     )
 
@@ -251,7 +251,7 @@ def test_qualification_required_webapp_sync_failure_still_blocks(
         raise ValueError("site_submission_id or request_id is required")
 
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        "blueprint_pipeline.site_package_orchestrator.sync_webapp_pipeline_attachment",
         _missing_webapp_bootstrap,
     )
 
@@ -432,15 +432,15 @@ def test_qualification_completes_without_downstream_artifacts(monkeypatch, tmp_p
     sync_calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        "blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review",
         lambda **_kwargs: _successful_capture_review(),
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        "blueprint_pipeline.site_package_orchestrator.sync_webapp_pipeline_attachment",
         lambda **kwargs: sync_calls.append(kwargs) or None,
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _successful_privacy_processing(),
     )
 
@@ -491,16 +491,16 @@ def test_qualification_completes_when_preview_provider_fails(monkeypatch, tmp_pa
     capture_root, descriptor_uri = _build_staged_capture(tmp_path, requested_outputs=["preview_simulation"])
 
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        "blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review",
         lambda **_kwargs: _successful_capture_review(),
     )
     monkeypatch.setenv("BLUEPRINT_PREVIEW_PROVIDER", "world_labs")
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        "blueprint_pipeline.site_package_orchestrator.sync_webapp_pipeline_attachment",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _successful_privacy_processing(),
     )
 
@@ -533,15 +533,15 @@ def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(m
     worldlabs_input_uri = "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input.mp4"
 
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        "blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review",
         lambda **_kwargs: _successful_capture_review(),
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        "blueprint_pipeline.site_package_orchestrator.sync_webapp_pipeline_attachment",
         lambda **kwargs: sync_calls.append(kwargs) or None,
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _successful_privacy_processing(),
     )
     def _fake_prepare_worldlabs_input_video(**kwargs: object) -> dict[str, object]:
@@ -570,7 +570,7 @@ def test_qualification_persists_worldlabs_manifest_uris_when_preview_requested(m
         }
 
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification._prepare_worldlabs_input_video",
+        "blueprint_pipeline.site_package_orchestrator._prepare_worldlabs_input_video",
         _fake_prepare_worldlabs_input_video,
     )
     monkeypatch.setenv("BLUEPRINT_PREVIEW_PROVIDER", "world_labs")
@@ -694,15 +694,15 @@ def test_canonical_site_package_records_missing_provider_inputs_and_fallback_geo
     sync_calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        "blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review",
         lambda **_kwargs: _successful_capture_review(),
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        "blueprint_pipeline.site_package_orchestrator.sync_webapp_pipeline_attachment",
         lambda **kwargs: sync_calls.append(kwargs) or None,
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: {
             **_successful_privacy_processing(),
             "status": "failed_closed",
@@ -739,15 +739,15 @@ def test_qualification_fail_closed_omits_buyer_safe_media(monkeypatch, tmp_path:
     sync_calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        "blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review",
         lambda **_kwargs: _successful_capture_review(),
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        "blueprint_pipeline.site_package_orchestrator.sync_webapp_pipeline_attachment",
         lambda **kwargs: sync_calls.append(kwargs) or None,
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: {
             "schema_version": "v1",
             "status": "failed_closed",
@@ -796,15 +796,15 @@ def test_qualification_allows_labeled_raw_worldlabs_bypass(monkeypatch, tmp_path
     monkeypatch.setenv("BLUEPRINT_ALLOW_RAW_WORLDLABS_BYPASS", "true")
     monkeypatch.setenv("BLUEPRINT_PREVIEW_PROVIDER", "world_labs")
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        "blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review",
         lambda **_kwargs: _successful_capture_review(),
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        "blueprint_pipeline.site_package_orchestrator.sync_webapp_pipeline_attachment",
         lambda **kwargs: sync_calls.append(kwargs) or None,
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: {
             "schema_version": "v1",
             "status": "failed_closed",
@@ -822,7 +822,7 @@ def test_qualification_allows_labeled_raw_worldlabs_bypass(monkeypatch, tmp_path
         },
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification._prepare_worldlabs_input_video",
+        "blueprint_pipeline.site_package_orchestrator._prepare_worldlabs_input_video",
         lambda **_kwargs: {
             "status": "ready",
             "manifest_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline/worldlabs_input/worldlabs_input_manifest.json",
@@ -831,7 +831,7 @@ def test_qualification_allows_labeled_raw_worldlabs_bypass(monkeypatch, tmp_path
         },
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_preview_provider",
+        "blueprint_pipeline.site_package_orchestrator.run_preview_provider",
         lambda **_kwargs: {
             "schema_version": "v1",
             "provider_name": "world_labs",
@@ -891,15 +891,15 @@ def test_qualification_ingests_geometry_summary_as_advisory(monkeypatch, tmp_pat
     _write_geometry_lane(monkeypatch, capture_root)
 
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        "blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review",
         lambda **_kwargs: _successful_capture_review(),
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        "blueprint_pipeline.site_package_orchestrator.sync_webapp_pipeline_attachment",
         lambda **kwargs: sync_calls.append(kwargs) or None,
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.run_privacy_postprocess",
+        "blueprint_pipeline.site_package_orchestrator.run_privacy_postprocess",
         lambda **_kwargs: _successful_privacy_processing(),
     )
 
@@ -1015,11 +1015,11 @@ def test_bad_video_review_forces_recapture_and_lower_world_model_fit(monkeypatch
     }
 
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.infer_capture_fidelity_review",
+        "blueprint_pipeline.site_package_orchestrator.infer_capture_fidelity_review",
         lambda **_kwargs: bad_review,
     )
     monkeypatch.setattr(
-        "blueprint_pipeline.qualification.sync_webapp_pipeline_attachment",
+        "blueprint_pipeline.site_package_orchestrator.sync_webapp_pipeline_attachment",
         lambda **_kwargs: None,
     )
 
