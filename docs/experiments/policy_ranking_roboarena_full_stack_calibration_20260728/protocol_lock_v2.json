@@ -1,0 +1,41 @@
+{
+  "schema_version": "policy_ranking_roboarena_full_stack_calibration_lock.v2",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "status": "prospective_amendment_frozen_unpaid",
+  "protocol_module": "blueprint_pipeline.policy_ranking_roboarena_calibration",
+  "protocol_schema_version": "policy_ranking_roboarena_full_stack_calibration.v2",
+  "protocol_sha256": "6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066",
+  "supersedes_protocol_sha256": "eab9e7868bcc7cbd774c940c781e8c3a8faac3270cbc942f1248966ba037f683",
+  "executed_prefix_steps": 16,
+  "executed_prefix_seconds_derived": 1.0666666666666667,
+  "frozen_endpoint_gates": {
+    "policy_count_minimum": 7,
+    "spearman_rho_minimum": 0.7,
+    "kendall_tau_b_minimum": 0.5,
+    "pairwise_accuracy_minimum": 0.7,
+    "pairwise_accuracy_clustered_ci95_lower_minimum": 0.5,
+    "true_top_policy_in_predicted_top_two": true,
+    "selective_coverage_minimum": 0.5,
+    "selective_pairwise_accuracy_minimum": 0.75,
+    "abstention_risk_rule": {
+      "full_empirical_curve_required": true,
+      "isotonic_smoothed_diagnostic_required": true,
+      "session_clustered_bootstrap_ci95_required": true,
+      "adjacent_risk_increase_tolerance": 0.02,
+      "ties_or_ci_level_noise_fail": false,
+      "material_supported_increase_fails": true,
+      "material_supported_increase_definition": "adjacent empirical risk increase exceeds tolerance and its session-clustered bootstrap 95% confidence interval lower bound exceeds zero"
+    },
+    "all_gates_required": true
+  },
+  "phase_order": [
+    "A_public_known_answer_reproduction",
+    "B_independent_closed_loop_confirmation",
+    "C_captured_site_transfer"
+  ],
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "outcome_labels_accessed": false,
+  "provider_resources_created": false,
+  "claim_boundary": "Prospective v2 protocol amendment and local validation only; no new scientific result."
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": "policy_ranking_gemini_batch_transport_amendment.v3",
+  "recorded_on": "2026-07-28",
+  "status": "prospective_before_second_retry",
+  "superseded_transport_amendment": "gemini_batch_transport_amendment_v2.json",
+  "failed_transport_version": "gemini36_flash_batch_pilot_v2_pre_submit",
+  "provider_batch_created": false,
+  "provider_generation_rows_created": 0,
+  "provider_generation_cost_usd": 0.0,
+  "provider_http_status": 400,
+  "provider_error_code": "INVALID_ARGUMENT",
+  "observed_defect": "Gemini Batch accepted response_schema as the correct configuration field but rejected the JSON-Schema additionalProperties keyword because its Batch OpenAPI Schema transport does not expose that field.",
+  "temporary_video_uploads_after_failure": 0,
+  "temporary_file_cleanup_verified_by": "authenticated_Gemini_Files_list_filtered_to_blueprint_diag_prefix",
+  "changed_transport": {
+    "field": "response_schema.additionalProperties",
+    "former": false,
+    "replacement": "omitted_from_provider_transport_only"
+  },
+  "local_validation_strengthening": {
+    "former": "all_required_fields_present",
+    "replacement": "returned_key_set_must_exactly_equal_registered_required_key_set",
+    "effect": "The scientific no-extra-fields rule remains fail-closed even though the provider transport cannot express additionalProperties."
+  },
+  "unchanged_fields": [
+    "diagnostic_protocol_v3_digest",
+    "model",
+    "thinking_level",
+    "max_output_tokens",
+    "prompt",
+    "registered_required_fields",
+    "field_types_and_bounds",
+    "pair_inventory",
+    "side_assignment",
+    "cost_caps",
+    "ranking_analysis",
+    "claim_boundary"
+  ],
+  "outcome_labels_accessed_to_repair": false,
+  "model_preferences_observed_in_this_failed_attempt": false,
+  "retry_scope": "same_seven_pair_label_free_transport_and_cost_pilot_only",
+  "independent_confirmation_credit": false,
+  "phase_b_admission_credit": false
+}

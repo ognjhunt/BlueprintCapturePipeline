@@ -1,0 +1,45 @@
+{
+  "schema_version": "policy_ranking_evaluator_diagnostic_amendment.v2",
+  "recorded_on": "2026-07-28",
+  "status": "prospective_pre_evaluator_execution",
+  "superseded_protocol_path": "diagnostic_evaluator_comparison_protocol_v1.json",
+  "superseded_protocol_sha256": "c5c1d233371d76b0e5de5e5f6eadac1fc1a1ec8223339e0c23b8c59f9309a130",
+  "replacement_protocol_path": "diagnostic_evaluator_comparison_protocol_v2.json",
+  "replacement_protocol_sha256": "52fc68b5be4c57085a3a218257d4d506f04701d479abec2bdb017ee9bc565e95",
+  "scientific_reason": "The v1 executable transport limited all model output, including hidden reasoning tokens, to 1000 even though that field was omitted from the written protocol. Prior Phase-A usage showed that 1000 could truncate reasoning before the registered JSON answer. The limit and per-arm reasoning settings are therefore frozen explicitly before any evaluator media request.",
+  "changed_fields": [
+    {
+      "field": "shared_judging_contract.max_output_tokens_including_reasoning",
+      "former": "implicit_executable_1000_not_written_in_protocol",
+      "replacement": 3000
+    },
+    {
+      "field": "arms.gpt54_mini_challenger.reasoning_effort",
+      "former": "high",
+      "replacement": "medium"
+    },
+    {
+      "field": "provider_call_accounting",
+      "former": "provider_called_false",
+      "replacement": "evaluator_provider_called_false_and_Gemini_metadata_lookup_true"
+    }
+  ],
+  "unchanged_fields": [
+    "prompt",
+    "structured_output_schema",
+    "pair_graph",
+    "side_assignment",
+    "model_snapshots",
+    "arm_caps",
+    "campaign_caps",
+    "claim_boundary",
+    "analysis",
+    "stopping_rules"
+  ],
+  "evaluator_provider_called": false,
+  "experiment_media_uploaded": false,
+  "outcome_labels_used_to_amend": false,
+  "paid_execution_admitted": false,
+  "gemini_metadata_lookup_called": true,
+  "gemini_metadata_lookup_billable_generation": false
+}

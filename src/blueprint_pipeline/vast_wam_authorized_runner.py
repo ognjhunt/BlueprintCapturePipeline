@@ -120,6 +120,7 @@ def run_vast_wam_authorized_runner(
     require_independent_watchdog: bool = False,
     retain_instance_on_runtime_failure: bool = False,
     retention_binding: Mapping[str, Any] | None = None,
+    provider_bundle_kind: str = "wam",
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
@@ -311,7 +312,7 @@ def run_vast_wam_authorized_runner(
                     provider_runtime_output_zip=resolved_output,
                     enable_isaac_smoke=False,
                     enable_blueprint_bundle=True,
-                    provider_bundle_kind="wam",
+                    provider_bundle_kind=provider_bundle_kind,
                     vast_launch_mode=vast_launch_mode,
                     startup_timeout_seconds=startup_timeout_seconds,
                     session_budget_ledger_path=resolved_session_budget_ledger,
@@ -471,7 +472,10 @@ def run_vast_wam_authorized_runner(
         "local_staging_self_test_status": self_test.get("status"),
         "staging_manifest_status": staging_guard_manifest.get("status"),
         "local_base_staging_manifest_status": staging_manifest.get("status"),
-        "provider_bundle_kind": "wam",
+        "provider_bundle_kind": provider_bundle_kind,
+        "authorized_lane_role": (
+            "independent_evaluator" if provider_bundle_kind == "evaluator" else "wam"
+        ),
         "public_image": public_image,
         "vast_launch_mode": vast_launch_mode,
         "allow_paid_vast_launch": allow_paid_vast_launch,

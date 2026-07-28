@@ -1,0 +1,30 @@
+{
+  "schema_version": "policy_ranking_roboarena_crop_layout_visual_review.v2",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "status": "passed",
+  "reviewed_on": "2026-07-28",
+  "reviewer_role": "independent_codex_visual_inspection",
+  "crop_audit_sha256": "9ac0e05c49468593598ef2cb49e60c977f74d434a05b7d478730b01f45b2511d",
+  "crop_manifest_file_sha256": "2d8c1bff3285549789611f388ef06d69566cbf1a96bc2811b3c4933602b7f82a",
+  "crop_manifest_path": "external-evidence://phase_a_crop_layout_audit_manifest_v2.json",
+  "contact_sheet_sha256": "f7fedb1385bd00d9e1f14487861165003f3da21c609411c460d87f41995e108a",
+  "contact_sheet_path": "external-evidence://phase_a_generated_crops_v2/review/representative_generated_crops.png",
+  "representative_request_count": 14,
+  "representative_policy_count": 7,
+  "representative_frame_count": 42,
+  "selection_rule": "lexicographically_first_and_last_session_per_policy_then_first_middle_last_sample",
+  "observations": [
+    "Every reviewed tile is a 640x480 generated-only view with the OSCAR skeleton overlay visible.",
+    "No reviewed tile contains the side-by-side physical right half or a vertical remainder from that half.",
+    "The sample spans all seven policies, two sessions per policy, and beginning, middle, and end positions.",
+    "The 25-frame short episode was separately inspected at beginning, middle, and end and is visually static; it remains retained and is expected to increase uncertainty or trigger abstention."
+  ],
+  "short_episode_request_id": "11e131d922d968f9e2d2f87877b13a7bbaf70794ee3df833db75ed798101584a",
+  "short_episode_visual_finding": "static_or_frozen_future_candidate",
+  "all_441_geometry_and_hash_audited": true,
+  "all_441_manually_viewed": false,
+  "provider_called": false,
+  "data_uploaded": false,
+  "outcome_labels_accessed": false,
+  "claim_boundary": "Representative visual leakage review plus all-file deterministic crop audit. This does not establish evaluator accuracy, policy ranking, physical success, or WAM qualification."
+}

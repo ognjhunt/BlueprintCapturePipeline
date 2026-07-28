@@ -60,6 +60,10 @@ from .provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
 )
 from .vast_independent_watchdog_control import write_started_vast_instance_id
+from .vast_evaluator_probe_script import (
+    EVALUATOR_REQUIRED_ENTRIES,
+    evaluator_provider_probe_script,
+)
 from .vast_probe_guards import (
     DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
     VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
@@ -283,6 +287,8 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         return DEFAULT_VIDEO_SMOKE_CAMERA_COUNT
     if provider_bundle_kind == "wam":
         return DEFAULT_WAM_ROLLOUT_VIDEO_COUNT
+    if provider_bundle_kind == "evaluator":
+        return 0
     if provider_bundle_kind == "unitree_unifolm":
         return DEFAULT_UNITREE_UNIFOLM_VIDEO_COUNT
     if provider_bundle_kind == "unitree_groot_n17_sonic":
@@ -1911,6 +1917,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_unitree_groot_n17_sonic_provider_runtime.sh"
         runner_member = "provider_runtime/unitree_groot_n17_sonic_provider_runner.py"
         readiness_name = "unitree_groot_n17_sonic_policy_provider_manifest.json"
+    elif provider_bundle_kind == "evaluator":
+        required_entries = EVALUATOR_REQUIRED_ENTRIES
+        entrypoint_member = "provider_runtime/run_evaluator_provider_runtime.sh"
+        runner_member = "provider_runtime/evaluator_provider_runtime_runner.py"
+        readiness_name = "evaluator_provider_runtime_manifest.json"
     else:
         required_entries = wam_required_entries
         entrypoint_member = "provider_runtime/run_wam_provider_runtime.sh"
@@ -2410,7 +2421,7 @@ def _resolve_launch_mode(
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     if requested == "auto":
-        if enable_blueprint_bundle and provider_bundle_kind in {"wam", "unitree_unifolm"}:
+        if enable_blueprint_bundle and provider_bundle_kind in {"wam", "evaluator", "unitree_unifolm"}:
             return "ssh_direct"
         return "args" if enable_isaac_smoke else "ssh_direct"
     return requested
@@ -3034,6 +3045,8 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
                 "fi; fi; fi; fi; "
             )
+        elif provider_bundle_kind == "evaluator":
+            script += evaluator_provider_probe_script(common_start)
         else:
             script += (
                 common_start + "RUNTIME_PY=''; "
@@ -3996,7 +4009,7 @@ def run_vast_provider_adapter(
         enable_blueprint_bundle=enable_blueprint_bundle,
     )
     if (
-        provider_bundle_kind in {"wam", "unitree_unifolm", "unitree_groot_n17_sonic"}
+        provider_bundle_kind in {"wam", "evaluator", "unitree_unifolm", "unitree_groot_n17_sonic"}
         and _string(provider_bundle_url)
         and inline_bundle_transport.get("inline_provider_bundle_transport_used") is True
     ):
@@ -5288,7 +5301,7 @@ def run_vast_provider_adapter(
                             VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
                             DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
                         )
-                        if provider_bundle_kind == "wam"
+                        if provider_bundle_kind in {"wam", "evaluator"}
                         else 60
                     ),
                 )

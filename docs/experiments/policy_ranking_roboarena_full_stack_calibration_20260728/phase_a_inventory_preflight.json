@@ -1,0 +1,40 @@
+{
+  "schema_version": "policy_ranking_roboarena_phase_a_inventory_preflight.v1",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "phase": "A_public_known_answer_reproduction",
+  "status": "ready",
+  "claim_class": "reproduction_only_not_independent_confirmation",
+  "base_origin_main_commit": "4cf40d9e10b309e39a7f9fd01f42f56481de6243",
+  "preflight_code_state": "uncommitted_new_experiment_branch",
+  "protocol_sha256": "eab9e7868bcc7cbd774c940c781e8c3a8faac3270cbc942f1248966ba037f683",
+  "inventory_sha256": "03c9da4bbacfc434f0c307a4eb3d9da91a8741ae2d7e165ca3e3c5f23bb93025",
+  "sources": {
+    "oscar_policy_rollout_revision": "db5edfaef285c15d0a41d5115177a983c08b4f5f",
+    "roboarena_data_dump_revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc"
+  },
+  "matrix": {
+    "session_count": 63,
+    "policy_count": 7,
+    "full_episode_request_count": 441,
+    "all_full_episode_media_materialized": true,
+    "all_media_hashed": true,
+    "blockers": []
+  },
+  "evaluator": {
+    "model": "gpt-5-mini-2025-08-07",
+    "method": "roboworld_inspired_full_episode_progress_v1",
+    "sampled_frame_count": 32,
+    "generated_crop": "left_half_only_before_provider_transport",
+    "policy_identity_in_provider_prompt": false,
+    "benchmark_outcomes_in_provider_prompt": false,
+    "third_party_physical_pixels_in_provider_prompt": false
+  },
+  "provider_called": false,
+  "data_uploaded": false,
+  "outcome_fields_loaded_into_inventory": false,
+  "openai_api_key_present": false,
+  "secure_key_destination_approved": false,
+  "paid_execution_admitted": false,
+  "next_gate": "task_scoped_evaluator_credential_then_first_fixed_canary_before_441_request_matrix",
+  "claim_boundary": "Complete local full-episode request matrix only; no evaluator or ranking result."
+}

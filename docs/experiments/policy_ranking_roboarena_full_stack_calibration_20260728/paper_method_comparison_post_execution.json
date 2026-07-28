@@ -1,0 +1,52 @@
+{
+  "schema_version": "policy_ranking_paper_method_comparison.v1",
+  "recorded_on": "2026-07-28",
+  "status": "post_execution_diagnostic_not_a_preregistered_arm",
+  "methods": {
+    "blueprint_phase_a_v4": {
+      "evidence": "441 released OSCAR generated-left-view episodes from 63 sessions and 7 policies",
+      "judge": "gpt-5-mini-2025-08-07",
+      "protocol": "32 generated-only frames scored independently per episode with task-progress, artifact, uncertainty, and abstention fields",
+      "aggregation": "mean safety-adjusted progress followed by policy ordering",
+      "result": "Spearman 0.357, Kendall tau-b 0.238, pairwise 0.619; all rank and selective-usefulness gates failed"
+    },
+    "oscar_paper": {
+      "evidence": "65 manually retained sessions by 7 policies with acceptable estimated camera calibration",
+      "judge": "gpt-5-2025-08-07 at high reasoning effort",
+      "protocol": "32 native-resolution frames for episode success plus direct two-video within-session pairwise judgments",
+      "aggregation": "1365 pairwise preferences aggregated with Bradley-Terry scores",
+      "reported_result": "skeleton conditioning Spearman 0.750, Pearson 0.852, MMRV 0.571",
+      "key_non_equivalence": "Blueprint used GPT-5 mini, 63 sessions, single-video independent scoring, and no direct pairwise judge. The released public halves are 640x480 left-view videos, whereas OSCAR reports private evaluator frames at native 512x288, so the new diagnostic shares the published view and sampling concept but is not byte-identical."
+    },
+    "roboworld_paper": {
+      "evidence": "4186 closed-loop rollouts, 8 policies, two fixed views plus wrist view",
+      "judge": "GPT-4o default; Gemini-2.5-Flash ablation",
+      "protocol": "six-level progress/world-model-error rubric; one frame per second; two 15-frame segments; maximum segment score",
+      "reported_result": "Spearman 0.970; Pearson 0.989 with GPT-4o and 0.944 with Gemini-2.5-Flash",
+      "key_non_equivalence": "purpose-trained closed-loop multi-view WAM and far larger rollout matrix; paper reports occasional VLM hallucinated success on static scenes"
+    },
+    "sc3_eval_paper": {
+      "evidence": "seven pi0.5 checkpoints, 36-37 trajectories each, three separately scored criteria, three views",
+      "judge": "blinded human annotators for main results; Gemini-3.1-Pro only an appendix substitution diagnostic",
+      "protocol": "Cosmos3-Nano initialized model trained on 381 task-specific hours with forward-inverse and cross-view consistency plus action-recovery early termination",
+      "reported_result": "closed-loop Pearson 0.929 and MMRV 0.119 over 21 checkpoint-criterion points",
+      "key_non_equivalence": "task-specific training on 32 GB200 GPUs and human main scoring; not base Cosmos3 acting as a VLM judge"
+    },
+    "ctrl_world_paper": {
+      "evidence": "three policies on a separately constructed DROID setup",
+      "judge": "human success/failure preference judgments",
+      "protocol": "closed-loop multi-view WAM trained on 95k DROID trajectories with pose memory, frame-level action conditioning, and learned joint-velocity adapter",
+      "reported_result": "instruction-following rankings aligned with real rollouts; low-level success was underestimated",
+      "key_non_equivalence": "three-policy task-specific human-scored result, not an off-the-shelf automated VLM benchmark"
+    },
+    "worldeval_paper": {
+      "evidence": "four policies across task-specific real and generated evaluation on an ALOHA-style bimanual platform",
+      "judge": "Gemini-2.0 automated binary success detector",
+      "protocol": "14B video model lightly fine-tuned on 1400 task-platform trajectories using policy latent actions",
+      "reported_result": "average Pearson 0.942 and MMRV 0.044 on three RoboTwin-derived tasks",
+      "key_non_equivalence": "small policy count and task/platform-specific fine-tuning; metrics are not directly comparable to Blueprint's seven-policy DROID rank vector"
+    }
+  },
+  "answer_to_better_vlm_question": "A stronger judge may improve Blueprint. The frozen diagnostic therefore compares full GPT-5 with OSCAR-inspired direct pairwise judgments, the newer lower-cost GPT-5.4 mini snapshot on the same 32-frame inputs, native-video Gemini 3.6 Flash, and the open Cosmos3-Nano Reasoner. Cosmos Reasoner may diagnose the released OSCAR videos, but it cannot be the sole evaluator of native Cosmos-generated rollouts because that would violate the independent-evaluator boundary. None can receive confirmatory credit on the now-exposed snapshot.",
+  "claim_boundary": "Primary-paper methodology comparison. Headline numbers are not treated as interchangeable because policies, tasks, views, world models, scoring units, and aggregation differ."
+}

@@ -1,0 +1,57 @@
+{
+  "schema_version": "policy_ranking_roboarena_phase_a_analysis_lock.v3",
+  "protocol_sha256": "6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066",
+  "evaluator_digest": "6b22136e8708223bd8b8213ca907632659d23949c7a196957af087ae2a197f57",
+  "independent_unit": "roboarena_session",
+  "primary_prediction_estimand": "mean evaluator progress_score_0_to_5 divided by 5, with zero assigned to any Blueprint safety-abstained episode",
+  "diagnostic_prediction_estimands": [
+    "raw_mean_progress_score_0_to_5_divided_by_5",
+    "mean_success_probability"
+  ],
+  "physical_ordering": "mean binary success rate, with mean partial success as a deterministic tie-break",
+  "primary_pairwise_label_basis": "per_session_binary_then_partial",
+  "selectivity": {
+    "evaluator_uncertainty_max": 0.2,
+    "action_following_confidence_min": 0.7,
+    "temporal_consistency_min": 0.7,
+    "pair_score_margin_min": 0.2
+  },
+  "risk_coverage": {
+    "session_uncertainty": "maximum evaluator uncertainty across seven policy rows; forced to 1.0 when any row has Blueprint safety abstention",
+    "full_empirical_curve": "all ordered session prefixes",
+    "registered_gate_grid": [
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      1.0
+    ],
+    "isotonic_direction": "risk_non_decreasing_as_coverage_increases",
+    "bootstrap_replicates": 2000,
+    "bootstrap_seed": 20260728,
+    "adjacent_more_abstention_risk_increase_tolerance": 0.02,
+    "failure_rule": "fail only when risk at the lower-coverage adjacent grid point minus risk at the higher-coverage point exceeds tolerance and its session-clustered bootstrap 95% lower confidence bound exceeds zero"
+  },
+  "uncertainty": {
+    "policy_level_exact_permutations": "all_7_factorial_label_assignments",
+    "session_clustered_bootstrap_replicates": 2000,
+    "session_clustered_bootstrap_seed": 20260728
+  },
+  "gates": {
+    "policy_count_minimum": 7,
+    "spearman_rho_minimum": 0.7,
+    "kendall_tau_b_minimum": 0.5,
+    "pairwise_accuracy_minimum": 0.7,
+    "pairwise_accuracy_clustered_ci95_lower_minimum": 0.5,
+    "true_top_policy_in_predicted_top_two": true,
+    "selective_coverage_minimum": 0.5,
+    "selective_pairwise_accuracy_minimum": 0.75,
+    "all_gates_required": true
+  },
+  "supersedes_analysis_contract_sha256": "b470d3fa01166a111b5b7a5f9618ca68bcd56fd6140021c6c0f92a2a8fc207ac",
+  "supersession_scope": "transport binding only; analysis rules unchanged",
+  "provider_called": false,
+  "outcome_labels_accessed": false,
+  "analysis_contract_sha256": "4a81ee0abde5f2a5a8fb064484338c42af369bab6b3a90906d30b0065228db2c"
+}

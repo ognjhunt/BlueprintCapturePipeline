@@ -17,6 +17,7 @@ VideoProbe = Callable[[Path], dict[str, Any]]
 RUNTIME_RESULT_FILENAMES = (
     "isaac_runtime_result.json",
     "wam_runtime_result.json",
+    "evaluator_runtime_result.json",
     "unitree_unifolm_policy_provider_output.json",
     "unitree_groot_n17_sonic_policy_provider_output.json",
     "unitree_groot_n17_sonic_wam_persistent_session_output.json",
@@ -151,7 +152,7 @@ def summarize_runtime_result(
     subprocess_result = _mapping(runtime_result.get("subprocess"))
     generated_path = _string(runtime_result.get("generated_rollout_video_path"))
     task_success = runtime_result.get("task_success")
-    return {
+    summary = {
         "status": _string(runtime_result.get("status")) or None,
         "blockers": _string_list(runtime_result.get("blockers")),
         "action_conditioned_video_rollout_generated": bool(
@@ -193,6 +194,16 @@ def summarize_runtime_result(
         "task_success": task_success if isinstance(task_success, bool) else None,
         "raw_secret_values_recorded": False,
     }
+    if _string(runtime_result.get("claim_class")):
+        summary.update(
+            {
+                "evaluator_result_count": runtime_result.get("result_count"),
+                "evaluator_error_count": runtime_result.get("error_count"),
+                "evaluator_model": _string(runtime_result.get("model")) or None,
+                "claim_class": _string(runtime_result.get("claim_class")),
+            }
+        )
+    return summary
 
 
 def inspect_provider_runtime_output_zip(

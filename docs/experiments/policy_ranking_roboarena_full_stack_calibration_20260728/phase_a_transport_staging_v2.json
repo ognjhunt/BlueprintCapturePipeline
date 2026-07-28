@@ -1,0 +1,53 @@
+{
+  "schema_version": "policy_ranking_roboarena_phase_a_transport_staging.v2",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "inventory_sha256": "dd1413c41db87ea499758aaa221322cc1b47bf9da4cbcfeba2fb35db4ce20b6f",
+  "evaluator_digest": "4fddb765781065e63dc520b6e7561f2e1a9ba12bb81e94701c44e63388dcf00e",
+  "selection_rule": "frozen_evaluator_inventory_order",
+  "transport_canary": {
+    "max_requests": 1,
+    "max_cost_usd": 0.05,
+    "request_id": "5c2a3d0c785edb6a488a22f93fb1b1072330653999d5a7871c1df6f20697a4b3",
+    "deterministic_collapse_flags": []
+  },
+  "small_label_blind_batch": {
+    "cumulative_max_requests": 8,
+    "cumulative_max_cost_usd": 0.4,
+    "request_ids": [
+      "5c2a3d0c785edb6a488a22f93fb1b1072330653999d5a7871c1df6f20697a4b3",
+      "7ab7288895c1c47ac7073e6539f210f8c222533715fa60bb10e0e9f1d1349d6c",
+      "4a1f1459ba47e811066817dfe167d19b1d1713c513a83ecbbb6f058120795a52",
+      "027bb305bcc65cf8731e24a94d5abd672a4c2e6defc493b1cb49159bf9825759",
+      "a670192865bb1d773bb49634b9f317686ffe9c118ce309dc396e1ed89ea9a68b",
+      "4cc8ea267eaf9b8234847119f0cd9747b7cccdf96e4671cd62891f193b057a6e",
+      "3c158a01de1d28a9116110de352597ca9e732ae50d7cd4e10fb46003fbb06287",
+      "095236e46ce967d73d03e638124ee527c8d761ef6ee0b6b9822d60cac3bf6bbe"
+    ],
+    "contains_preregistered_static_episode": true
+  },
+  "complete_matrix": {
+    "cumulative_max_requests": 441,
+    "cumulative_max_cost_usd": 25.0,
+    "precall_conservative_bound_usd": 22.05,
+    "max_workers": 4,
+    "max_attempts_per_request": 2
+  },
+  "idempotency": {
+    "deterministic_request_ids": true,
+    "one_accepted_result_path_per_request": true,
+    "resume_skips_accepted_results": true,
+    "failed_attempts_retained": true,
+    "retry_exhaustion_retained": true
+  },
+  "admission_order": [
+    "rotated_credential_and_revocation_attestation",
+    "model_schema_transport_canary",
+    "small_label_blind_batch",
+    "complete_441_request_matrix",
+    "freeze_and_hash_predictions",
+    "label_unseal"
+  ],
+  "provider_called": false,
+  "data_uploaded": false,
+  "outcome_labels_accessed": false
+}

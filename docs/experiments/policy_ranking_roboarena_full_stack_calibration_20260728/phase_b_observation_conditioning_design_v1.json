@@ -1,0 +1,86 @@
+{
+  "schema_version": "policy_ranking_phase_b_observation_conditioning_design.v1",
+  "recorded_on": "2026-07-28",
+  "status": "prospective_offline_design_phase_b_not_admitted",
+  "claim_boundary": "This record freezes a future conditioning comparison. It is not Phase-B execution, independent confirmation, WAM qualification, or ranking evidence.",
+  "primary_closed_loop": {
+    "initial_input": "same_synchronized_current_observation_for_every_policy_and_wam_arm",
+    "camera_handling": "preserve_the_exact_frozen_policy_and_wam_observation_contract_including_required_synchronized_views",
+    "step_sequence": [
+      "query_same_frozen_policy_on_current_observation_contract",
+      "validate_and_hash_16x10_action_chunk",
+      "send_current_observation_plus_action_to_exactly_one_wam_arm",
+      "receive_predicted_future_observation_sequence",
+      "advance_exactly_the_prospectively_selected_executed_prefix_steps",
+      "query_the_same_policy_on_the_selected_predicted_observation",
+      "repeat_until_terminal_abstention_collapse_or_frozen_horizon"
+    ],
+    "real_future_frames_after_time_zero": "forbidden",
+    "reason": "Injecting recorded future observations after rollout start would teacher-force the system, hide compounding error, and cease to test closed-loop WAM behavior.",
+    "policy_history": "If an upstream frozen policy requires an observation history, use its exact documented history contract. After the initial boundary, populate advancing history with WAM-predicted observations only; do not invent a history length or leak recorded futures.",
+    "wam_history": "Use the exact native WAM contract independently for each arm; do not give one arm extra temporal evidence unless that difference is the explicitly registered variable."
+  },
+  "native_cosmos3_forward_dynamics": {
+    "model": "nvidia/Cosmos3-Nano",
+    "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "official_action_mode": "forward_dynamics",
+    "conditioning": "first_frame_plus_action_chunk",
+    "image_or_video_input_behavior": "policy_and_forward_dynamics_condition_only_on_the_first_frame",
+    "rollout_boundary": "drop_or_account_for_the_conditioning_frame_then_use_the_frozen_executed_prefix_boundary",
+    "next_chunk_conditioning": "selected_generated_observation_at_the_frozen_prefix_boundary",
+    "native_credit_requires": "no_unregistered_video_to_video_adapter_and_no_recorded_future_frame_injection"
+  },
+  "teacher_forced_prefix_diagnostic": {
+    "registered_as": "separate_label_free_continuation_diagnostic",
+    "primary_closed_loop_or_ranking_credit": false,
+    "purpose": "Measure whether a short real motion prefix improves continuation stability and isolate cold-start ambiguity from rollout drift.",
+    "prefix_selection": "freeze_frame_count_duration_and_cut_point_before_predictions_or_outcomes_and_end_before_meaningful_task_progress",
+    "comparison": [
+      "single_current_observation_conditioning",
+      "short_real_prefix_conditioning_where_the_native_wam_contract_consumes_more_than_the_first_frame"
+    ],
+    "for_native_cosmos3_forward_dynamics": "not_expected_to_change_conditioning_because_the_official_action_mode_uses_only_the_first_frame",
+    "forbidden": [
+      "prefix_selected_after_viewing_model_outputs",
+      "prefix_extending_near_task_completion",
+      "continued_ground_truth_reanchoring_in_the_primary_closed_loop",
+      "promoting_video_to_video_continuation_to_native_action_forward_dynamics_credit"
+    ]
+  },
+  "fairness_and_controls": {
+    "same_initial_state_across_policies": true,
+    "same_initial_observation_across_wam_arms": true,
+    "same_action_chunk_for_parallel_wam_arms": true,
+    "separate_attribution_per_wam_arm": true,
+    "controls": [
+      "recorded_or_live_frozen_candidate_policy_action",
+      "valid_no_motion",
+      "shuffled",
+      "reversed",
+      "temporally_shifted_where_valid",
+      "real_distinct_policy_swapped"
+    ],
+    "collapse_and_uncertainty_retained": true
+  },
+  "primary_sources": [
+    {
+      "name": "NVIDIA_cosmos_README_action_modes",
+      "url": "https://github.com/NVIDIA/cosmos/blob/main/README.md",
+      "observed_on": "2026-07-28",
+      "relevant_disclosure": "Forward dynamics uses image plus action chunk and returns video."
+    },
+    {
+      "name": "Hugging_Face_Diffusers_Cosmos3_pipeline",
+      "url": "https://huggingface.co/docs/diffusers/main/api/pipelines/cosmos3",
+      "observed_on": "2026-07-28",
+      "relevant_disclosure": "Policy and forward-dynamics action modes condition only on the first frame; inverse dynamics requires video."
+    },
+    {
+      "name": "nvidia_Cosmos3_Nano_model_card",
+      "url": "https://huggingface.co/nvidia/Cosmos3-Nano",
+      "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+      "observed_on": "2026-07-28",
+      "relevant_disclosure": "The official forward-dynamics example rolls one conditioning frame and one action chunk at a time."
+    }
+  ]
+}

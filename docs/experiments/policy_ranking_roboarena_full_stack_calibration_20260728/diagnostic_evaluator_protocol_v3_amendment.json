@@ -1,0 +1,73 @@
+{
+  "schema_version": "policy_ranking_evaluator_diagnostic_amendment.v3",
+  "recorded_on": "2026-07-28",
+  "status": "prospective_before_any_completed_gpt5_result_or_batch_pilot_result",
+  "superseded_protocol_path": "diagnostic_evaluator_comparison_protocol_v2.json",
+  "superseded_protocol_sha256": "52fc68b5be4c57085a3a218257d4d506f04701d479abec2bdb017ee9bc565e95",
+  "replacement_protocol_path": "diagnostic_evaluator_comparison_protocol_v3.json",
+  "replacement_protocol_sha256": "97d4563f92aa595c4c635711a6f4e036881dde4be5815a28366d2f6919792b40",
+  "scientific_reason": "The registered GPT-5 canary reached the 3000-token combined reasoning/output limit and terminated incomplete before producing the structured answer. Raising only that arm to 4000 is a disclosed result-triggered technical repair, not a scientific tuning change. The seven-pair pilot admission formula is also frozen now, after the first Batch job failed with zero provider request rows and before any Batch pilot result exists, so cost admission cannot be selected after seeing pilot usage.",
+  "changed_fields": [
+    {
+      "field": "shared_judging_contract.max_output_tokens_including_reasoning",
+      "former": 3000,
+      "replacement": "default_3000_with_per_arm_overrides"
+    },
+    {
+      "field": "arms.gpt5_oscar_comparability.max_output_tokens_including_reasoning",
+      "former": 3000,
+      "replacement": 4000
+    },
+    {
+      "field": "admission_and_stopping.seven_pair_cost_projection",
+      "former": "measured_projection_required_but_formula_not_explicit",
+      "replacement": "max_of_canary_batch_equivalent_pilot_max_and_pilot_mean_plus_1.943_standard_errors_times_441_with_separate_global_cap_check"
+    },
+    {
+      "field": "OpenAI_canary_idempotency_identity",
+      "former": "model_and_pair_only",
+      "replacement": "model_pair_reasoning_limit_prompt_and_schema_digest"
+    }
+  ],
+  "unchanged_fields": [
+    "prompt",
+    "structured_output_schema",
+    "pair_graph",
+    "side_assignment",
+    "model_snapshots",
+    "reasoning_effort",
+    "arm_caps",
+    "campaign_caps",
+    "claim_boundary",
+    "ranking_analysis",
+    "scientific_stopping_rules"
+  ],
+  "trigger_evidence": {
+    "gpt5_model": "gpt-5-2025-08-07",
+    "persisted_response_id": "resp_0691104a15030b94016a68d8fac3948197bd8fd24e50ef0f42",
+    "response_status": "incomplete",
+    "incomplete_reason": "max_output_tokens",
+    "input_tokens": 4854,
+    "output_tokens_including_reasoning": 2944,
+    "persisted_standard_cost_usd": 0.0355075,
+    "additional_identical_pre_persistence_call_possible": true,
+    "cost_accounting_rule": "count_two_identical_incomplete_calls_conservatively_until_billing_resolved"
+  },
+  "failed_batch_transport_evidence": {
+    "batch_id": "batch_6a68d881af2881909fe7c61116a144b2",
+    "status": "failed",
+    "cause": "input_file_expiration_below_provider_minimum_at_batch_creation",
+    "request_rows": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "input_file_deleted": true,
+    "pilot_predictions_observed": false
+  },
+  "completed_gpt5_structured_results_before_amendment": 0,
+  "completed_batch_pilot_results_before_amendment": 0,
+  "outcome_labels_accessed_to_amend": false,
+  "thresholds_or_prompt_tuned": false,
+  "claim_class": "post_unseal_diagnostic_only",
+  "independent_confirmation_credit": false,
+  "phase_b_admission_credit": false
+}

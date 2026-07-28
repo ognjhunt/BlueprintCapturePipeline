@@ -1,0 +1,271 @@
+{
+  "schema_version": "policy_ranking_evaluator_diagnostic.v2",
+  "purpose": "post_unseal_evaluator_failure_diagnosis",
+  "claim_class": "diagnostic_only",
+  "independent_confirmation_credit": false,
+  "phase_b_admission_credit": false,
+  "source_episode_count": 441,
+  "source_and_model_freeze": [
+    {
+      "name": "OSCAR_public_policy_rollouts",
+      "revision": "db5edfaef285c15d0a41d5115177a983c08b4f5f",
+      "license": "upstream_repository_license_and_dataset_terms",
+      "use": "already_unsealed_generated_episode_pixels"
+    },
+    {
+      "name": "RoboArena_public_outcomes",
+      "revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+      "license": "upstream_repository_license_and_dataset_terms",
+      "use": "already_unsealed_diagnostic_answer_key"
+    },
+    {
+      "name": "gpt-5-2025-08-07",
+      "url": "https://developers.openai.com/api/docs/models/gpt-5",
+      "identity_kind": "immutable_API_snapshot",
+      "terms": "OpenAI_API_service_terms"
+    },
+    {
+      "name": "gpt-5.4-mini-2026-03-17",
+      "url": "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+      "identity_kind": "immutable_API_snapshot",
+      "terms": "OpenAI_API_service_terms"
+    },
+    {
+      "name": "gemini-3.6-flash",
+      "url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash",
+      "identity_kind": "stable_GA_API_model_observed_2026_07_28",
+      "terms": "Google_Gemini_API_service_terms"
+    },
+    {
+      "name": "nvidia/Cosmos3-Nano",
+      "url": "https://huggingface.co/nvidia/Cosmos3-Nano",
+      "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+      "last_modified_observed": "2026-07-09T16:28:47Z",
+      "license": "NVIDIA_Open_Model_License"
+    },
+    {
+      "name": "NVIDIA/cosmos",
+      "url": "https://github.com/NVIDIA/cosmos",
+      "revision": "bebca76311266941d06c5f5572fb601184ba24fa",
+      "license": "Apache-2.0",
+      "license_sha256": "2ab44b68365473c112f5092211a38f231cb23e50de68b75a13369adbd76a74df"
+    }
+  ],
+  "session_count": 63,
+  "policy_count": 7,
+  "comparison_graph": {
+    "kind": "sorted_policy_cycle_per_session",
+    "edges_per_session": 7,
+    "total_edges": 441,
+    "complete_graph_edges_per_session": 21,
+    "complete_graph_total_edges": 1323,
+    "side_assignment": "sha256_session_edge_parity",
+    "label_fields_used_to_select_edges": false,
+    "all_episodes_included": true,
+    "each_episode_appearances": 2,
+    "connected_for_bradley_terry": true,
+    "claim_label": "OSCAR_inspired_reduced_graph_not_exact_OSCAR_reproduction"
+  },
+  "shared_judging_contract": {
+    "prompt": "You are Blueprint's independent conservative robot-episode comparison judge. Two complete generated episodes, A and B, show the same task and starting session. Policy identities, published physical outcomes, and physical ground-truth pixels are withheld. Compare visible full-episode task progress directly. Success requires task completion that remains stable across adjacent moments. A visible skeleton is intended-motion evidence, not proof of an object or scene consequence. Retain and penalize frozen futures, loops, discontinuities, robot-skeleton divergence, disappearance, corruption, and out-of-view motion. Choose A, B, tie, or abstain. Abstain when neither ordering is trustworthy. Return only the registered JSON object.",
+    "prompt_sha256": "ebe714130b8ade9305f8b5c6df77fa414fa7b9ac33d843d5a25c2905da41943c",
+    "output_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preferred_episode": {
+          "type": "string",
+          "enum": [
+            "A",
+            "B",
+            "tie",
+            "abstain"
+          ]
+        },
+        "episode_a_progress_0_to_5": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "episode_b_progress_0_to_5": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "stable_success_a": {
+          "type": "boolean"
+        },
+        "stable_success_b": {
+          "type": "boolean"
+        },
+        "comparison_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "uncertainty": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "decisive_evidence": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "string"
+          }
+        },
+        "artifact_flags_a": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string"
+          }
+        },
+        "artifact_flags_b": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string"
+          }
+        },
+        "abstention_factors": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "preferred_episode",
+        "episode_a_progress_0_to_5",
+        "episode_b_progress_0_to_5",
+        "stable_success_a",
+        "stable_success_b",
+        "comparison_confidence",
+        "uncertainty",
+        "decisive_evidence",
+        "artifact_flags_a",
+        "artifact_flags_b",
+        "abstention_factors"
+      ]
+    },
+    "output_schema_sha256": "cc1bb974e6313543cc9de63789bd50b4e996feac0d834d71ae8312e8ca50d750",
+    "policy_identity_in_provider_payload": false,
+    "physical_outcome_in_provider_payload": false,
+    "physical_ground_truth_pixels_in_provider_payload": false,
+    "ties": "half_win_each_in_bradley_terry",
+    "abstentions": "retained_and_excluded_from_fit",
+    "max_output_tokens_including_reasoning": 3000
+  },
+  "arms": [
+    {
+      "arm_id": "gpt5_oscar_comparability",
+      "provider": "openai",
+      "model": "gpt-5-2025-08-07",
+      "media": "32_generated_only_frames_per_episode_64_per_pair",
+      "reasoning_effort": "high",
+      "transport": "batch_api_sequential_shards",
+      "diagnostic_role": "paper_comparability_anchor",
+      "full_matrix_cap_usd": 8.75
+    },
+    {
+      "arm_id": "gpt54_mini_challenger",
+      "provider": "openai",
+      "model": "gpt-5.4-mini-2026-03-17",
+      "media": "32_generated_only_frames_per_episode_64_per_pair",
+      "reasoning_effort": "medium",
+      "transport": "batch_api_sequential_shards",
+      "diagnostic_role": "newer_lower_cost_openai_challenger",
+      "full_matrix_cap_usd": 4.75
+    },
+    {
+      "arm_id": "gemini36_flash_native_video",
+      "provider": "google",
+      "model": "gemini-3.6-flash",
+      "media": "two_generated_only_native_mp4_videos",
+      "thinking_level": "medium",
+      "transport": "batch_api",
+      "diagnostic_role": "cross_family_native_video_challenger",
+      "full_matrix_cap_usd": 8.75
+    },
+    {
+      "arm_id": "cosmos3_nano_reasoner",
+      "provider": "self_hosted_gpu",
+      "model": "nvidia/Cosmos3-Nano",
+      "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+      "surface": "reasoner_only_vllm",
+      "media": "two_generated_only_native_mp4_videos",
+      "diagnostic_role": "open_physical_ai_native_video_challenger",
+      "cannot_be_sole_judge_of_native_cosmos_generated_rollouts": true,
+      "full_matrix_cap_usd": 15.0
+    }
+  ],
+  "admission_and_stopping": {
+    "one_schema_transport_canary_per_arm": true,
+    "small_label_free_transport_batch_after_canary": true,
+    "full_matrix_requires_measured_projected_cost_within_arm_cap": true,
+    "partial_matrix_ranking_credit": false,
+    "scientifically_unfavorable_outputs_are_not_a_stop_reason": true,
+    "stop_reasons": [
+      "schema_or_transport_invalid",
+      "redaction_or_media_integrity_failure",
+      "measured_projection_exceeds_frozen_arm_cap",
+      "campaign_category_or_total_cap_would_be_exceeded"
+    ]
+  },
+  "cost_caps_usd": {
+    "combined_evaluator_api_including_prior_phase_a": 25.0,
+    "prior_phase_a_measured": 2.53707425,
+    "gpu_compute_campaign": 50.0,
+    "storage_and_transfer_campaign": 10.0,
+    "total_campaign": 100.0,
+    "maximum_concurrent_gpus": 1,
+    "api_arm_caps_plus_prior_total": 24.78707425,
+    "api_contingency_remaining": 0.21292575
+  },
+  "prospective_api_pricing_usd_per_million_tokens": {
+    "gpt5_standard": {
+      "input": 1.25,
+      "output": 10.0
+    },
+    "gpt54_mini_standard": {
+      "input": 0.75,
+      "output": 4.5
+    },
+    "openai_batch_discount_fraction": 0.5,
+    "gemini36_flash_standard": {
+      "input": 1.5,
+      "output": 7.5
+    },
+    "gemini36_flash_batch": {
+      "input": 0.75,
+      "output": 3.75
+    },
+    "pricing_is_prospective_not_measured_campaign_economics": true
+  },
+  "analysis": {
+    "ranking": "Bradley_Terry_maximum_likelihood",
+    "ties": "half_win_each",
+    "abstentions": "retained_excluded_and_reported_as_coverage",
+    "metrics": [
+      "full_seven_policy_vector",
+      "spearman_rho",
+      "kendall_tau_b",
+      "pairwise_ordering_accuracy",
+      "session_clustered_bootstrap_ci95",
+      "exact_or_permutation_small_n_uncertainty",
+      "top_policy_rank",
+      "abstention_coverage",
+      "cost_and_latency"
+    ],
+    "outcomes_already_unsealed": true,
+    "threshold_tuning_forbidden": true
+  },
+  "paid_execution_admitted": false,
+  "evaluator_provider_called": false,
+  "provider_metadata_lookup_called": true,
+  "provider_metadata_lookup_scope": "Gemini_model_get_no_generation_no_media",
+  "protocol_sha256": "52fc68b5be4c57085a3a218257d4d506f04701d479abec2bdb017ee9bc565e95"
+}

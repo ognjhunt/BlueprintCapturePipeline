@@ -1,0 +1,82 @@
+{
+  "schema_version": "policy_ranking_roboarena_prefix_pilot_selection.v2",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "protocol_sha256": "6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066",
+  "label_free": true,
+  "physical_outcome_labels_accessed": false,
+  "candidate_executed_prefix_steps": [4, 8, 16],
+  "candidate_seconds_derived": {
+    "4": 0.26666666666666666,
+    "8": 0.5333333333333333,
+    "16": 1.0666666666666667
+  },
+  "pilot_status": "empirical_pilot_deferred_live_policy_and_wam_endpoints_not_yet_admitted",
+  "frozen_canary_inputs": {
+    "source": "same label-blind DROID observation and two real distinct candidate-policy traces used only after Phase B data admission",
+    "seeds": [0, 1],
+    "outcome_labels_forbidden": true
+  },
+  "observation_validity_criteria": [
+    "response decodes as H.264 MP4",
+    "17 frames are present for the native 16-action request including the conditioning frame",
+    "registered width and height match the pinned runtime geometry contract",
+    "RGB color, 15 FPS, and frame timestamps are valid",
+    "no collapse category is triggered before the selected advance boundary"
+  ],
+  "policy_requery_success_criteria": [
+    "the same frozen endpoint receives the exact retained generated observation",
+    "one 16x10 finite DROID action chunk is returned",
+    "action and request identities are hashed",
+    "policy identity never enters the evaluator payload"
+  ],
+  "temporal_alignment_checks": [
+    "conditioning frame is index 0",
+    "action row i governs transition from frame i to frame i plus 1",
+    "the selected boundary frame is reused byte-exactly for the next policy query",
+    "derived seconds equal executed steps divided by 15"
+  ],
+  "collapse_and_discontinuity_thresholds": {
+    "boundary_frame_reuse_mean_absolute_rgb_max": 0.00392156862745098,
+    "static_transition_mean_absolute_rgb_max": 0.00392156862745098,
+    "static_consecutive_future_transitions": 3,
+    "repeated_exact_frame_hash_count": 3,
+    "sudden_consecutive_frame_mean_absolute_rgb_min": 0.35,
+    "robot_or_skeleton_projected_joint_error_frame_diagonal_fraction_max": 0.05,
+    "out_of_view_required_joint_fraction_max": 0.25,
+    "out_of_view_consecutive_frames": 2,
+    "uncertainty_increase_consecutive_chunks": 3
+  },
+  "maximum_test_horizon": {
+    "steps": 240,
+    "seconds_derived": 16.0
+  },
+  "projected_wam_calls_per_240_step_episode": {
+    "4": 60,
+    "8": 30,
+    "16": 15
+  },
+  "historical_projection_only": {
+    "basis": "Cosmos3 follow-up post-load mean 3.289976753604909 seconds per request; not a new provider quote",
+    "post_load_wam_seconds_per_240_step_episode": {
+      "4": 197.39860521629454,
+      "8": 98.69930260814727,
+      "16": 49.34965130407364
+    },
+    "relative_wam_cost_and_latency": {
+      "4": 4.0,
+      "8": 2.0,
+      "16": 1.0
+    },
+    "model_load_policy_and_evaluator_latency_excluded": true
+  },
+  "deterministic_selection_rule": "Prefer the smallest candidate supported by the exact upstream native DROID autoregressive advance contract; break ties toward fewer WAM calls, then lower projected latency.",
+  "selected_executed_prefix_steps": 16,
+  "selected_executed_prefix_seconds_derived": 1.0666666666666667,
+  "selection_basis": [
+    "The pinned Cosmos DROID contract uses a 16-action chunk at 15 FPS.",
+    "The official autoregressive notebook advances all 16 generated frames and conditions the next request on the last generated frame.",
+    "The pinned model card declares action inputs of at least 16 frames.",
+    "No live endpoint or outcome label was used to choose among candidates."
+  ],
+  "claim_boundary": "This is a prospective contract-derived fallback selection, not an empirical finding that 16 steps optimizes ranking fidelity. The 4/8/16 empirical comparison remains required if eligible live endpoints are later admitted without exposing outcome labels."
+}

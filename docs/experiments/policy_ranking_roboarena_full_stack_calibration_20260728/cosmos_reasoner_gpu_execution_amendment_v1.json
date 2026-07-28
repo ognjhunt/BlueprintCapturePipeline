@@ -1,0 +1,88 @@
+{
+  "schema_version": "policy_ranking_cosmos_reasoner_gpu_execution_amendment.v1",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "registered_before_first_cosmos_reasoner_provider_call": true,
+  "parent_diagnostic_protocol_v3_sha256": "97d4563f92aa595c4c635711a6f4e036881dde4be5815a28366d2f6919792b40",
+  "claim_class": "post_unseal_diagnostic_only",
+  "independent_confirmation_credit": false,
+  "phase_b_admission_credit": false,
+  "model": {
+    "repository": "nvidia/Cosmos3-Nano",
+    "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "surface": "reasoner_only_vllm",
+    "architecture_override": "Cosmos3ReasonerForConditionalGeneration",
+    "precision": "bf16",
+    "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "official_model_card_verified_on": "2026-07-28",
+    "official_model_card_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "officially_supported_microarchitectures": ["Ampere", "Hopper", "Blackwell"],
+    "officially_tested_hardware": ["H100", "GB200"],
+    "selected_hardware_family": "H100"
+  },
+  "media_contract": {
+    "inputs_per_pair": 2,
+    "input_kind": "complete_generated_only_native_mp4",
+    "uniform_sampled_frames_per_episode": 32,
+    "pair_video_frames_max": 64,
+    "media_io_kwargs": {"video": {"num_frames": 32}},
+    "max_model_len": 131072,
+    "task_instruction_present": true,
+    "policy_identity_present": false,
+    "physical_outcome_present": false,
+    "physical_ground_truth_pixels_present": false
+  },
+  "decoding_contract": {
+    "temperature": 0,
+    "seed": 0,
+    "max_output_tokens": 4096,
+    "registered_pair_schema_required": true,
+    "raw_text_retained": true,
+    "invalid_or_incomplete_rows_retained_and_counted_as_failures": true
+  },
+  "pilot": {
+    "pair_offset": 0,
+    "pair_count": 7,
+    "labels_used_for_pair_selection": false,
+    "single_gpu_only": true,
+    "maximum_concurrent_gpus": 1,
+    "minimum_gpu_ram_mb": 80000,
+    "minimum_reliability": 0.98,
+    "maximum_hourly_rate_usd": 2.5,
+    "target_spend_usd": 4.54,
+    "hard_spend_cap_usd": 5.0,
+    "hard_ttl_seconds": 7200,
+    "disk_gb": 200,
+    "independent_watchdog_required": true,
+    "teardown_on_success_required": true,
+    "retain_on_code_only_failure_until_hard_ttl": true,
+    "provider_zero_required_after_terminal_teardown": true
+  },
+  "full_matrix_admission": {
+    "pilot_transport_and_schema_must_pass_7_of_7": true,
+    "pilot_failures_or_invalid_rows_are_not_discarded": true,
+    "projection_seconds": "pilot_model_load_seconds + 900 + 441 * max(pilot_mean_pair_latency_seconds, pilot_mean_pair_latency_seconds + 1.943 * pilot_standard_error_pair_latency_seconds)",
+    "projection_cost_usd": "projection_seconds * 2.5 / 3600",
+    "combined_pilot_actual_plus_full_projection_must_be_lte_reasoner_arm_cap": true,
+    "reasoner_arm_cap_usd": 15.0,
+    "new_single_use_authorization_required_for_full_matrix": true,
+    "partial_matrix_ranking_credit": false
+  },
+  "security_exception": {
+    "existing_vast_key_live_authenticated": true,
+    "secret_file_mode": "0600",
+    "rotation_metadata_present": false,
+    "workspace_user_explicitly_authorized_existing_key_use": true,
+    "provider_side_rotation_event_claimed": false,
+    "key_exposure_evidence_found": false,
+    "exception_is_not_rotation_proof": true,
+    "secret_value_or_path_published": false
+  },
+  "boundaries": {
+    "cosmos_reasoner_is_not_a_wam_rollout": true,
+    "cosmos_reasoner_does_not_grade_native_cosmos_generated_rollouts_as_sole_judge": true,
+    "physical_robot_endpoint_access_forbidden": true,
+    "generated_or_simulated_success_is_not_physical_success": true,
+    "successful_gpu_runtime_is_not_ranking_fidelity": true
+  },
+  "amendment_sha256": "a6d7fc52a0bfb5a077b3bedc8a70ee6ebb1a8c75f0cd5dc313aec4b2ead94b78"
+}

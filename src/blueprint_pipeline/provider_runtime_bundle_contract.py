@@ -6,6 +6,7 @@ from __future__ import annotations
 PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "isaac",
     "wam",
+    "evaluator",
     "unitree_unifolm",
     "unitree_groot_n17_sonic",
 )
@@ -55,6 +56,18 @@ def provider_runtime_contract_blockers(
             and "unitree_groot_n17_sonic_policy_action_command_ran" in runner_text
         )
         runner_blocker = "provider_runner_missing_unitree_groot_n17_sonic_runtime_contract"
+    elif provider_bundle_kind == "evaluator":
+        entrypoint_valid = (
+            "write_missing_result" in entrypoint_text
+            and "evaluator_runner_process_exited_without_runtime_result" in entrypoint_text
+            and "blocked_evaluator_process_exited_without_result" in entrypoint_text
+        )
+        runner_valid = (
+            "evaluator_runtime_result.json" in runner_text
+            and "Cosmos3-Nano" in runner_text
+            and "post_unseal_diagnostic_only" in runner_text
+        )
+        runner_blocker = "provider_runner_missing_evaluator_runtime_contract"
     else:
         entrypoint_valid = (
             "write_missing_result" in entrypoint_text

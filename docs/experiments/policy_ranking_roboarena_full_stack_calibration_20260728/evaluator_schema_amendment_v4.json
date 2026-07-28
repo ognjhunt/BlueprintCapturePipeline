@@ -1,0 +1,39 @@
+{
+  "schema_version": "policy_ranking_roboarena_schema_amendment.v4",
+  "status": "prospective_zero_completed_rows_fix",
+  "former_inventory_sha256": "7e04a9f9c877396778456698fcda121c09aa86fbae4d248d90b93bd4cf712915",
+  "former_inventory_file_sha256": "97055f496c2174cd2834fe9df8250e6d49409b5abddb13318e2bb36a8f8f5af7",
+  "former_evaluator_digest": "6b22136e8708223bd8b8213ca907632659d23949c7a196957af087ae2a197f57",
+  "failed_run_sha256": "b70311d7aaba21aa8a9e6cd10d68ea257c71c5d044ad9c54859132710d7d831b",
+  "schema_diagnostic_file_sha256": "870ae8398a2ae5cf257631407143e6e85c9889791de6dd5a61d24005473d607b",
+  "new_inventory_sha256": "3e110b66b986c5f241329598987d1a885a2ca9f61e54eaa00db71a3eb31387d2",
+  "new_inventory_file_sha256": "6b32f0e8b7798b1782e3c42c8e14e1501ae36fcd288d8b09aae5cee4d8a6b6ba",
+  "new_evaluator_digest": "079bb46d34ba24d0741784f8df6b25be221081412c26ea998ee8ea40eccf7108",
+  "provider_diagnosis": {
+    "model_available": true,
+    "http_status": 400,
+    "error_type": "invalid_request_error",
+    "error_code": "invalid_json_schema",
+    "error_param": "text.format.schema",
+    "rejected_keyword_path": "properties.artifact_flags.uniqueItems"
+  },
+  "official_methodology_source": "https://developers.openai.com/api/docs/guides/structured-outputs#some-type-specific-keywords-are-not-yet-supported",
+  "reason": "The live strict-schema endpoint rejected uniqueItems. Remove only that provider-invalid keyword and enforce the identical uniqueness invariant in the local response validator.",
+  "changed_fields": [
+    "evaluator.schema_version",
+    "evaluator.output_schema.properties.artifact_flags.uniqueItems",
+    "evaluator.evaluator_digest",
+    "requests[*].evaluator_digest",
+    "requests[*].request_id",
+    "schema_version"
+  ],
+  "prompt_changed": false,
+  "semantic_output_contract_changed": false,
+  "sampling_changed": false,
+  "scientific_thresholds_changed": false,
+  "local_duplicate_artifact_flag_rejection_required": true,
+  "former_completed_scientific_rows": 0,
+  "former_outcome_labels_accessed": false,
+  "provider_called": false,
+  "outcome_labels_accessed": false
+}

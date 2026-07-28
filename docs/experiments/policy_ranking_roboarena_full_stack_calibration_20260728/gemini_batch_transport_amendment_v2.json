@@ -1,0 +1,41 @@
+{
+  "schema_version": "policy_ranking_gemini_batch_transport_amendment.v2",
+  "recorded_on": "2026-07-28",
+  "status": "prospective_before_retry",
+  "failed_transport_version": "gemini36_flash_batch_pilot_v1",
+  "failed_batch_name": "batches/2a56op1osusfgz792ew4pvpv9v487z5xef80",
+  "provider_job_state": "JOB_STATE_SUCCEEDED",
+  "valid_structured_results": 0,
+  "malformed_results_retained": 7,
+  "estimated_batch_cost_usd": 0.05985525,
+  "temporary_video_files_deleted": true,
+  "observed_defect": "The Gemini Batch requests encoded the frozen JSON Schema through response_json_schema. The provider returned ordinary JSON with provider-selected fields for all seven rows instead of enforcing the registered fields.",
+  "primary_source_basis": {
+    "url": "https://ai.google.dev/gemini-api/docs/batch-api",
+    "observed_on": "2026-07-28",
+    "disclosure": "Google's Batch structured-output example uses response_schema with application/json."
+  },
+  "changed_field": {
+    "field": "Gemini_Batch_GenerateContentConfig_schema_transport",
+    "former": "response_json_schema",
+    "replacement": "response_schema"
+  },
+  "unchanged_fields": [
+    "diagnostic_protocol_v3_digest",
+    "model",
+    "thinking_level",
+    "max_output_tokens",
+    "prompt",
+    "JSON_schema_content",
+    "pair_inventory",
+    "side_assignment",
+    "cost_caps",
+    "ranking_analysis",
+    "claim_boundary"
+  ],
+  "outcome_labels_accessed_to_repair": false,
+  "malformed_model_preferences_used_to_repair": false,
+  "retry_scope": "same_seven_pair_label_free_transport_and_cost_pilot_only",
+  "independent_confirmation_credit": false,
+  "phase_b_admission_credit": false
+}

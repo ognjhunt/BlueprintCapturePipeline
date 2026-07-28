@@ -1,0 +1,68 @@
+{
+  "schema_version": "policy_ranking_primary_source_correction.v3",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "recorded_on": "2026-07-28",
+  "timing": "post_execution_post_label_unseal",
+  "status": "supersedes_incorrect_paper_entries_without_rewriting_v2",
+  "superseded_artifact": "source_revision_license_freeze_v2.json",
+  "defect": "The v2 paper URLs for OSCAR, RoboWorld, and SC3-Eval resolve to unrelated papers. Therefore the v2 claim that these primary paper sources were verified before execution is false.",
+  "incorrect_entries_preserved": [
+    {
+      "intended_name": "OSCAR",
+      "incorrect_url": "https://arxiv.org/pdf/2502.03878",
+      "actual_title_at_url": "Sensitivity to Triple Higgs Couplings via Di-Higgs Production in the RxSM at the (HL-)LHC and future e+e- Colliders"
+    },
+    {
+      "intended_name": "RoboWorld",
+      "incorrect_url": "https://arxiv.org/pdf/2506.10887",
+      "actual_title_at_url": "Generalization or Hallucination? Understanding Out-of-Context Reasoning in Transformers"
+    },
+    {
+      "intended_name": "SC3-Eval",
+      "incorrect_url": "https://arxiv.org/pdf/2506.06369",
+      "actual_title_at_url": "On astheno-Kahler manifolds"
+    }
+  ],
+  "corrected_primary_sources": [
+    {
+      "name": "OSCAR",
+      "url": "https://arxiv.org/pdf/2606.04463v2",
+      "version": "v2",
+      "pdf_sha256": "44c78bd87169ab5abc5c04c6e103c003e7a3d834e75ba778e30edde1714c83ff"
+    },
+    {
+      "name": "RoboWorld",
+      "url": "https://arxiv.org/pdf/2607.01060v4",
+      "version": "v4",
+      "pdf_sha256": "be2a6af575b63df53ff3a248414868c7db69c599af5beb167162aaace2e14c79"
+    },
+    {
+      "name": "SC3-Eval",
+      "url": "https://arxiv.org/pdf/2606.18610v3",
+      "version": "v3",
+      "pdf_sha256": "db070a6808cdd1352fe0aabc156e7aa5aa1062f0781e885ecd760ccf0afdfb45"
+    },
+    {
+      "name": "Ctrl-World",
+      "url": "https://arxiv.org/pdf/2510.10125v3",
+      "version": "v3",
+      "pdf_sha256": "5acee75221001b53171078e8b02f85151147b6dc629b36cf086d91d1c921ba0f"
+    },
+    {
+      "name": "WorldEval",
+      "url": "https://arxiv.org/pdf/2505.19017v1",
+      "version": "v1",
+      "pdf_sha256": "9ba537bf8a9bae5223465c26858d1c55489253e107b6dca53015f0370d30a043"
+    },
+    {
+      "name": "RoboArena",
+      "url": "https://arxiv.org/pdf/2506.18123v2",
+      "version": "v2",
+      "pdf_sha256": "0f793633ba5767b6e93f01056dcd5c3357dabcaf70844cd0a157a364fa843698"
+    }
+  ],
+  "local_evidence_root": "external-evidence://sources/primary_papers_post_execution_correction",
+  "scientific_effect": "The 441 frozen evaluator outputs are unchanged, but the campaign did not satisfy the required pre-execution primary-source verification. The corrected papers also show that Blueprint's frozen evaluator protocol is not an exact reproduction of OSCAR, RoboWorld, SC3-Eval, or Ctrl-World. This is a methodological confound and prevents a strong terminal claim.",
+  "rerun_policy": "No evaluator rerun on the exposed answer key receives independent or confirmatory credit. A corrected evaluator arm requires prospective registration and a new untouched benchmark snapshot.",
+  "claim_boundary": "Post-execution source correction only; it does not retroactively validate the protocol or alter the frozen rank result."
+}

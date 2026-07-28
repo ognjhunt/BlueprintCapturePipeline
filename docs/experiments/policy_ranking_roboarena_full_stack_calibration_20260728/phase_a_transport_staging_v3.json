@@ -1,0 +1,55 @@
+{
+  "schema_version": "policy_ranking_roboarena_phase_a_transport_staging.v3",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "inventory_sha256": "7e04a9f9c877396778456698fcda121c09aa86fbae4d248d90b93bd4cf712915",
+  "evaluator_digest": "6b22136e8708223bd8b8213ca907632659d23949c7a196957af087ae2a197f57",
+  "selection_rule": "frozen_evaluator_inventory_order",
+  "transport_canary": {
+    "max_requests": 1,
+    "max_cost_usd": 0.05,
+    "request_id": "07886508fda39c9d218a37c6510823f5482b9f6ae841b5f99d67529a1bdb57b8",
+    "deterministic_collapse_flags": []
+  },
+  "small_label_blind_batch": {
+    "cumulative_max_requests": 8,
+    "cumulative_max_cost_usd": 0.4,
+    "request_ids": [
+      "07886508fda39c9d218a37c6510823f5482b9f6ae841b5f99d67529a1bdb57b8",
+      "6971448892e9e72ddee1d4194e487a250c9e7942bfa15639a72a7f7d8ad089c2",
+      "d104066dc31df3671c02ba179a4d10481da49a208f8c96c22155ebcbc13e9d42",
+      "88d24554a90280fdf6d3f70e2c4e5bf39d04759ba8b26f33b7df7a42bff20caf",
+      "918476b402a05fe6bb9225b7c85b0b5f6e41faa2d26c64325b5ba1441652547f",
+      "ab088fceec3f08372078518aeded95679d0969357f43c4081ad7c8b075c69efb",
+      "796f7f19403229a901c49c85c153e69a5ed07dd732eb57be109125b91b7e1edf",
+      "7648e639b6fa356f8cba33b778567a911433e939a0a24fd7a872a26b81c9deb7"
+    ],
+    "contains_preregistered_static_episode": true
+  },
+  "complete_matrix": {
+    "cumulative_max_requests": 441,
+    "cumulative_max_cost_usd": 25.0,
+    "precall_conservative_bound_usd": 22.05,
+    "max_workers": 4,
+    "max_attempts_per_request": 2
+  },
+  "idempotency": {
+    "deterministic_request_ids": true,
+    "provider_idempotency_key_equals_request_id": true,
+    "resume_requires_exact_source_commit": true,
+    "one_accepted_result_path_per_request": true,
+    "resume_skips_digest_valid_accepted_results": true,
+    "failed_attempts_retained": true,
+    "retry_exhaustion_retained": true
+  },
+  "admission_order": [
+    "rotated_credential_and_revocation_attestation",
+    "model_schema_idempotent_transport_canary",
+    "small_label_blind_batch",
+    "complete_441_request_matrix",
+    "freeze_and_hash_predictions",
+    "label_unseal"
+  ],
+  "provider_called": false,
+  "data_uploaded": false,
+  "outcome_labels_accessed": false
+}

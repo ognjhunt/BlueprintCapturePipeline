@@ -1,0 +1,384 @@
+"""Resumable media staging for the full Gemini native-video diagnostic matrix."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .common import write_json
+from .policy_ranking_evaluator_diagnostic import diagnostic_protocol
+from .policy_ranking_evaluator_diagnostic_gemini import (
+    GATE_ENV,
+    _secure_file,
+    _upload_video,
+    _validated_manifest_rows,
+)
+from .policy_ranking_evaluator_diagnostic_gemini_batch import _build_inline_request, _job_state
+from .policy_ranking_roboarena_calibration import canonical_sha256
+
+
+LEDGER_SCHEMA = "policy_ranking_gemini_matrix_media_ledger.v1"
+
+
+class GeminiMatrixError(ValueError):
+    """The full-matrix Gemini media stage is invalid."""
+
+
+def _ledger_core(
+    *,
+    status: str,
+    inventory: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    receipts: Sequence[Mapping[str, Any]],
+    source_commit: str,
+    blockers: Sequence[str] = (),
+) -> dict[str, Any]:
+    ledger: dict[str, Any] = {
+        "schema_version": LEDGER_SCHEMA,
+        "status": status,
+        "arm_id": "gemini36_flash_native_video",
+        "inventory_sha256": inventory["inventory_sha256"],
+        "native_video_manifest_sha256": manifest["manifest_sha256"],
+        "expected_video_count": 441,
+        "uploaded_video_count": len(receipts),
+        "uploads": sorted((dict(row) for row in receipts), key=lambda row: row["request_id"]),
+        "source_commit": source_commit,
+        "policy_identity_sent_to_provider": False,
+        "physical_outcome_sent_to_provider": False,
+        "physical_ground_truth_pixels_uploaded": False,
+        "credential_path_or_value_persisted": False,
+        "blockers": sorted(set(blockers)),
+        "updated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    ledger["ledger_sha256"] = canonical_sha256(ledger)
+    return ledger
+
+
+def _validate_inventory(inventory: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    protocol = diagnostic_protocol()
+    pairs = inventory.get("pairs")
+    payload = {key: value for key, value in inventory.items() if key != "inventory_sha256"}
+    if (
+        inventory.get("status") != "ready"
+        or inventory.get("pair_count") != 441
+        or inventory.get("protocol_sha256") != protocol["protocol_sha256"]
+        or canonical_sha256(payload) != inventory.get("inventory_sha256")
+        or not isinstance(pairs, list)
+        or len(pairs) != 441
+    ):
+        raise GeminiMatrixError("pair_inventory_not_ready_bound_and_valid_441")
+    return pairs
+
+
+def _delete_receipts(client: Any, receipts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for receipt in receipts:
+        name = str(receipt["provider_file_name"])
+        try:
+            client.files.delete(name=name)
+            rows.append({"provider_file_name": name, "deleted": True})
+        except Exception as exc:
+            rows.append(
+                {"provider_file_name": name, "deleted": False, "error_type": type(exc).__name__}
+            )
+    return rows
+
+
+def upload_matrix_media(
+    inventory: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    *,
+    api_key_file: str | Path,
+    ledger_path: str | Path,
+    source_commit: str,
+    workers: int = 4,
+) -> dict[str, Any]:
+    if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
+        raise GeminiMatrixError(f"missing_env_{GATE_ENV}")
+    pairs = _validate_inventory(inventory)
+    manifest_rows = _validated_manifest_rows(manifest)
+    required_ids = sorted(
+        {
+            str(pair[side]["source_request_id"])
+            for pair in pairs
+            for side in ("episode_a", "episode_b")
+        }
+    )
+    if len(required_ids) != 441 or set(required_ids) != set(manifest_rows):
+        raise GeminiMatrixError("matrix_video_identity_set_not_exact_441")
+    key_path = _secure_file(api_key_file)
+    api_key = key_path.read_text(encoding="utf-8").strip()
+    target = Path(ledger_path)
+    existing: list[dict[str, Any]] = []
+    if target.is_file():
+        previous = json.loads(target.read_text(encoding="utf-8"))
+        previous_payload = {
+            key: value for key, value in previous.items() if key != "ledger_sha256"
+        }
+        if (
+            canonical_sha256(previous_payload) != previous.get("ledger_sha256")
+            or previous.get("inventory_sha256") != inventory["inventory_sha256"]
+            or previous.get("native_video_manifest_sha256") != manifest["manifest_sha256"]
+        ):
+            raise GeminiMatrixError("existing_media_ledger_invalid_or_wrong_inputs")
+        existing = [dict(row) for row in previous.get("uploads") or []]
+    existing_by_id = {str(row["request_id"]): row for row in existing}
+    pending = [request_id for request_id in required_ids if request_id not in existing_by_id]
+    receipts = list(existing_by_id.values())
+    failures: list[str] = []
+
+    def upload_one(request_id: str) -> dict[str, Any]:
+        from google import genai
+
+        client = genai.Client(api_key=api_key)
+        _, receipt = _upload_video(client, manifest_rows[request_id])
+        return receipt
+
+    with ThreadPoolExecutor(max_workers=max(1, min(int(workers), 8))) as pool:
+        futures = {pool.submit(upload_one, request_id): request_id for request_id in pending}
+        for future in as_completed(futures):
+            request_id = futures[future]
+            try:
+                receipts.append(future.result())
+            except Exception as exc:
+                failures.append(f"{request_id}:{type(exc).__name__}")
+            progress = _ledger_core(
+                status="uploading" if not failures else "cleanup_required",
+                inventory=inventory,
+                manifest=manifest,
+                receipts=receipts,
+                source_commit=source_commit,
+                blockers=failures,
+            )
+            write_json(target, progress)
+    if failures:
+        from google import genai
+
+        cleanup_client = genai.Client(api_key=api_key)
+        deletions = _delete_receipts(cleanup_client, receipts)
+        cleanup_failed = [row for row in deletions if not row["deleted"]]
+        failed = _ledger_core(
+            status="failed_cleaned" if not cleanup_failed else "blocked_cleanup_incomplete",
+            inventory=inventory,
+            manifest=manifest,
+            receipts=[],
+            source_commit=source_commit,
+            blockers=failures + ["provider_file_cleanup_incomplete"] * bool(cleanup_failed),
+        )
+        failed["deletions"] = deletions
+        failed["ledger_sha256"] = canonical_sha256(
+            {key: value for key, value in failed.items() if key != "ledger_sha256"}
+        )
+        write_json(target, failed)
+        return failed
+    ready = _ledger_core(
+        status="ready",
+        inventory=inventory,
+        manifest=manifest,
+        receipts=receipts,
+        source_commit=source_commit,
+    )
+    if ready["uploaded_video_count"] != 441:
+        raise GeminiMatrixError("media_upload_completed_without_441_receipts")
+    write_json(target, ready)
+    return ready
+
+
+def cleanup_matrix_media(
+    ledger: Mapping[str, Any],
+    *,
+    api_key_file: str | Path,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    payload = {key: value for key, value in ledger.items() if key != "ledger_sha256"}
+    if canonical_sha256(payload) != ledger.get("ledger_sha256"):
+        raise GeminiMatrixError("media_ledger_digest_invalid")
+    key_path = _secure_file(api_key_file)
+    from google import genai
+
+    client = genai.Client(api_key=key_path.read_text(encoding="utf-8").strip())
+    deletions = _delete_receipts(client, ledger.get("uploads") or [])
+    deleted_all = all(row["deleted"] for row in deletions)
+    report = {
+        "schema_version": "policy_ranking_gemini_matrix_media_cleanup.v1",
+        "status": "passed" if deleted_all else "blocked",
+        "ledger_sha256": ledger["ledger_sha256"],
+        "expected_deletion_count": len(ledger.get("uploads") or []),
+        "deletions": deletions,
+        "all_task_media_deleted": deleted_all,
+    }
+    report["report_sha256"] = canonical_sha256(report)
+    write_json(Path(output_path), report)
+    return report
+
+
+def submit_matrix_batch(
+    inventory: Mapping[str, Any],
+    ledger: Mapping[str, Any],
+    *,
+    api_key_file: str | Path,
+    receipt_path: str | Path,
+    source_commit: str,
+) -> dict[str, Any]:
+    if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
+        raise GeminiMatrixError(f"missing_env_{GATE_ENV}")
+    target = Path(receipt_path)
+    if target.is_file():
+        previous = json.loads(target.read_text(encoding="utf-8"))
+        previous_payload = {
+            key: value for key, value in previous.items() if key != "receipt_sha256"
+        }
+        if canonical_sha256(previous_payload) != previous.get("receipt_sha256"):
+            raise GeminiMatrixError("existing_matrix_batch_receipt_digest_invalid")
+        if (
+            previous.get("batch_name")
+            and previous.get("arm_id") == "gemini36_flash_native_video"
+            and previous.get("request_count") == 441
+        ):
+            return previous
+        raise GeminiMatrixError("existing_matrix_batch_failure_receipt_requires_review")
+    pairs = _validate_inventory(inventory)
+    ledger_payload = {key: value for key, value in ledger.items() if key != "ledger_sha256"}
+    if (
+        canonical_sha256(ledger_payload) != ledger.get("ledger_sha256")
+        or ledger.get("status") != "ready"
+        or ledger.get("inventory_sha256") != inventory["inventory_sha256"]
+        or ledger.get("uploaded_video_count") != 441
+    ):
+        raise GeminiMatrixError("matrix_media_ledger_not_ready_bound_and_valid_441")
+    key_path = _secure_file(api_key_file)
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=key_path.read_text(encoding="utf-8").strip())
+    upload_by_id = {str(row["request_id"]): row for row in ledger["uploads"]}
+    files_by_id = {
+        request_id: types.File(
+            name=str(row["provider_file_name"]),
+            uri=str(row["provider_file_uri"]),
+            mime_type=str(row.get("provider_mime_type") or "video/mp4"),
+        )
+        for request_id, row in upload_by_id.items()
+    }
+    requests = [
+        _build_inline_request(
+            pair,
+            files_by_id[str(pair["episode_a"]["source_request_id"])],
+            files_by_id[str(pair["episode_b"]["source_request_id"])],
+            types_module=types,
+        )
+        for pair in pairs
+    ]
+    try:
+        job = client.batches.create(
+            model="gemini-3.6-flash",
+            src=requests,
+            config=types.CreateBatchJobConfig(
+                display_name="blueprint-roboarena-gemini36-full-matrix-v1"
+            ),
+        )
+    except Exception as exc:
+        deletions = _delete_receipts(client, ledger["uploads"])
+        failed: dict[str, Any] = {
+            "schema_version": "policy_ranking_gemini_matrix_batch_submission.v1",
+            "status": "failed_before_batch_creation",
+            "batch_name": None,
+            "request_count": 441,
+            "media_ledger_sha256": ledger["ledger_sha256"],
+            "error_type": type(exc).__name__,
+            "deletions": deletions,
+            "all_task_media_deleted": all(row["deleted"] for row in deletions),
+            "provider_generation_rows_created": 0,
+            "credential_path_or_value_persisted": False,
+        }
+        failed["receipt_sha256"] = canonical_sha256(failed)
+        write_json(target, failed)
+        return failed
+    receipt: dict[str, Any] = {
+        "schema_version": "policy_ranking_gemini_matrix_batch_submission.v1",
+        "status": _job_state(job),
+        "batch_name": str(job.name),
+        "model": "gemini-3.6-flash",
+        "arm_id": "gemini36_flash_native_video",
+        "pair_ids": [str(pair["pair_id"]) for pair in pairs],
+        "request_count": 441,
+        "unique_video_count": 441,
+        "uploads": ledger["uploads"],
+        "media_ledger_sha256": ledger["ledger_sha256"],
+        "submitted_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "media_staging_source_commit": ledger["source_commit"],
+        "submission_source_commit": source_commit,
+        "provider_called": True,
+        "data_uploaded": True,
+        "policy_identity_sent_to_provider": False,
+        "physical_outcome_sent_to_provider": False,
+        "physical_ground_truth_pixels_uploaded": False,
+        "credential_path_or_value_persisted": False,
+        "duplicate_submission_refused_when_receipt_exists": True,
+    }
+    receipt["receipt_sha256"] = canonical_sha256(receipt)
+    write_json(target, receipt)
+    return receipt
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    upload = commands.add_parser("upload")
+    upload.add_argument("--inventory", required=True)
+    upload.add_argument("--native-video-manifest", required=True)
+    upload.add_argument("--api-key-file", required=True)
+    upload.add_argument("--ledger", required=True)
+    upload.add_argument("--source-commit", required=True)
+    upload.add_argument("--workers", type=int, default=4)
+    cleanup = commands.add_parser("cleanup")
+    cleanup.add_argument("--ledger", required=True)
+    cleanup.add_argument("--api-key-file", required=True)
+    cleanup.add_argument("--output", required=True)
+    submit = commands.add_parser("submit")
+    submit.add_argument("--inventory", required=True)
+    submit.add_argument("--ledger", required=True)
+    submit.add_argument("--api-key-file", required=True)
+    submit.add_argument("--receipt", required=True)
+    submit.add_argument("--source-commit", required=True)
+    args = parser.parse_args(argv)
+    if args.command == "upload":
+        result = upload_matrix_media(
+            json.loads(Path(args.inventory).read_text(encoding="utf-8")),
+            json.loads(Path(args.native_video_manifest).read_text(encoding="utf-8")),
+            api_key_file=args.api_key_file,
+            ledger_path=args.ledger,
+            source_commit=args.source_commit,
+            workers=args.workers,
+        )
+    elif args.command == "cleanup":
+        result = cleanup_matrix_media(
+            json.loads(Path(args.ledger).read_text(encoding="utf-8")),
+            api_key_file=args.api_key_file,
+            output_path=args.output,
+        )
+    else:
+        result = submit_matrix_batch(
+            json.loads(Path(args.inventory).read_text(encoding="utf-8")),
+            json.loads(Path(args.ledger).read_text(encoding="utf-8")),
+            api_key_file=args.api_key_file,
+            receipt_path=args.receipt,
+            source_commit=args.source_commit,
+        )
+    print(json.dumps({key: value for key, value in result.items() if key not in {"uploads", "deletions"}}))
+    return (
+        0
+        if result.get("status")
+        in {"ready", "passed", "JOB_STATE_PENDING", "JOB_STATE_RUNNING"}
+        else 2
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
