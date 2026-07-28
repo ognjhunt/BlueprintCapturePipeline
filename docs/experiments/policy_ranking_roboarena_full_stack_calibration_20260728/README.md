@@ -181,4 +181,4 @@ digest, failing before any provider request on drift. It applies to every future
 Reasoner evaluator run and does not alter pair selection, field meanings,
 scoring, thresholds, or the diagnostic-only claim ceiling.
 Its deterministic amendment digest is
-`38b15fbc5bace6e69629622ea1ca2d61ccb0202971143192506d700befc3ca36`.
+`e07bcde4f12ee38edc42d0e41546cc63bc33d27f926605cdbba9f9e89161f163`.

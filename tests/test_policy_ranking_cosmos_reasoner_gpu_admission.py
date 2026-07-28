@@ -84,7 +84,12 @@ def _bundle(tmp_path):
         "source_commit": COMMIT,
     }
     runtime["manifest_sha256"] = canonical_sha256(runtime)
-    inputs = {"pair_count": 7, "claim_class": "post_unseal_diagnostic_only"}
+    inputs = {
+        "pair_count": 7,
+        "claim_class": "post_unseal_diagnostic_only",
+        "output_schema": PAIR_OUTPUT_SCHEMA,
+        "output_schema_sha256": canonical_sha256(PAIR_OUTPUT_SCHEMA),
+    }
     inputs["manifest_sha256"] = canonical_sha256(inputs)
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("provider_runtime/evaluator_provider_runtime_runner.py", runner)
@@ -271,6 +276,30 @@ def test_reasoner_bundle_rejects_modified_runtime_even_without_literal_override(
     inspection = inspect_bundle(bundle_path, receipt, expected_source_commit=COMMIT)
     assert inspection["status"] == "blocked"
     assert "cosmos_reasoner_provider_runtime_digest_invalid" in inspection["blockers"]
+
+
+def test_reasoner_bundle_rejects_schema_drift_before_paid_admission(tmp_path):
+    bundle_path, receipt = _bundle(tmp_path)
+    with zipfile.ZipFile(bundle_path, "a") as archive:
+        inputs = json.loads(
+            archive.read("provider_runtime/evaluator_input_manifest.json").decode("utf-8")
+        )
+        inputs["output_schema"]["required"].remove("uncertainty")
+        inputs["output_schema_sha256"] = canonical_sha256(inputs["output_schema"])
+        inputs["manifest_sha256"] = canonical_sha256(
+            {key: value for key, value in inputs.items() if key != "manifest_sha256"}
+        )
+        archive.writestr(
+            "provider_runtime/evaluator_input_manifest.json",
+            json.dumps(inputs),
+        )
+    receipt["bundle_sha256"] = file_sha256(bundle_path)
+    receipt["receipt_sha256"] = canonical_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    )
+    inspection = inspect_bundle(bundle_path, receipt, expected_source_commit=COMMIT)
+    assert inspection["status"] == "blocked"
+    assert "cosmos_reasoner_output_schema_contract_invalid" in inspection["blockers"]
 
 
 def test_reasoner_session_window_stays_below_frozen_target_spend():

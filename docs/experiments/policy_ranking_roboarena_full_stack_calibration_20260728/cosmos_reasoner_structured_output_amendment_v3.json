@@ -67,8 +67,8 @@
     {
       "field": "provider_runtime.schema_admission",
       "former": "post_generation_validation_only",
-      "new": "fail_closed_pre_request_schema_digest_and_key_validation_plus_post_generation_value_validation",
-      "reason": "Prevent future runs from spending on a missing, modified, or drifted structured-output contract."
+      "new": "fail_closed_local_bundle_admission_plus_provider_runtime_schema_validation_plus_post_generation_value_validation",
+      "reason": "Prevent paid allocation and inference when the structured-output contract is missing, modified, or drifted."
     }
   ],
   "unchanged_scientific_contract": {
@@ -90,7 +90,7 @@
   "future_run_contract": {
     "applies_to_all_future_cosmos_reasoner_evaluator_runs": true,
     "provider_visible_schema_must_match_post_generation_validator": true,
-    "schema_digest_mismatch_blocks_before_provider_request": true,
+    "schema_digest_mismatch_blocks_before_paid_provider_allocation": true,
     "new_versioned_namespace_required": true,
     "new_exact_main_source_binding_required": true,
     "new_single_use_external_authorization_required": true,
@@ -104,5 +104,5 @@
     "provider_runtime_entrypoint_sha256": "c37823b2c7bc5358d534164fed9ac9785bc78f0946e9a0e6e9bdba79b536a2af"
   },
   "scientific_legitimacy": "The repair addresses a directly observed transport-contract mismatch before any accepted Cosmos judgment existed. It does not change inputs, evaluator meaning, scoring, thresholds, labels, or claim ceilings; rejected raw preferences remain rejected.",
-  "amendment_sha256": "38b15fbc5bace6e69629622ea1ca2d61ccb0202971143192506d700befc3ca36"
+  "amendment_sha256": "e07bcde4f12ee38edc42d0e41546cc63bc33d27f926605cdbba9f9e89161f163"
 }
