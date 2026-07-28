@@ -80,7 +80,11 @@ def _zip_write(archive: zipfile.ZipFile, name: str, data: bytes, *, executable: 
 
 
 def _manifest_rows(native: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
-    if native.get("status") != "ready" or native.get("video_count") != 441:
+    if (
+        native.get("status") != "passed"
+        or native.get("video_count") != 441
+        or native.get("all_physical_right_half_pixels_excluded") is not True
+    ):
         raise ValueError("native_video_manifest_not_ready_441")
     rows = native.get("receipts")
     if not isinstance(rows, list) or len(rows) != 441:
