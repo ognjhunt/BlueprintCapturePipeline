@@ -198,13 +198,14 @@ def assess_rollout_reliability(
     actions: np.ndarray,
     thresholds: ReliabilityThresholds | None = None,
     *,
-    timing_flag_scope: Literal["window", "session"] = TIMING_SCOPE_SESSION,
+    timing_flag_scope: Literal["window", "session"] = TIMING_SCOPE_WINDOW,
 ) -> RolloutReliabilityReport:
     """Screen one generated rollout against its commanded action chunk.
 
-    Phase-B callers use the default ``session`` scope: correlation is recorded
-    here but cannot reject a single noisy window.  Historical reproduction of
-    the lab gate can request ``window`` explicitly.
+    The generic API defaults to the fail-closed ``window`` scope so existing
+    callers cannot silently bypass a timing failure. Phase-B callers must
+    explicitly request ``session`` scope and then call
+    :func:`assess_session_reliability` before treating the evidence as usable.
     """
     if timing_flag_scope not in {TIMING_SCOPE_WINDOW, TIMING_SCOPE_SESSION}:
         raise ValueError(f"unsupported_timing_flag_scope:{timing_flag_scope}")

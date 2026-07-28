@@ -100,7 +100,7 @@ def test_session_aggregation_rejects_legacy_window_scoped_reports() -> None:
         )
 
 
-def test_window_assessment_records_but_does_not_kill_timing_by_default(monkeypatch) -> None:
+def test_session_scope_records_timing_only_when_explicit(monkeypatch) -> None:
     actions = np.zeros((16, ACTION_DIM))
     actions[:, 3:9] = ROT6D_IDENTITY
     actions[:8, 0] = 0.02
@@ -111,15 +111,20 @@ def test_window_assessment_records_but_does_not_kill_timing_by_default(monkeypat
         lambda *_args, **_kwargs: (motion, 20.0, 17),
     )
 
-    session_scoped = reliability.assess_rollout_reliability("fixture.mp4", actions)
+    session_scoped = reliability.assess_rollout_reliability(
+        "fixture.mp4",
+        actions,
+        timing_flag_scope="session",
+    )
     assert session_scoped.timing_correlation is not None
     assert session_scoped.timing_correlation < 0
     assert session_scoped.timing_flag_scope == "session"
     assert FLAG_TIMING_DISAGREEMENT not in session_scoped.flags
 
-    legacy_window_scoped = reliability.assess_rollout_reliability(
+    default_window_scoped = reliability.assess_rollout_reliability(
         "fixture.mp4",
         actions,
-        timing_flag_scope="window",
     )
-    assert FLAG_TIMING_DISAGREEMENT in legacy_window_scoped.flags
+    assert default_window_scoped.timing_flag_scope == "window"
+    assert not default_window_scoped.reliable
+    assert FLAG_TIMING_DISAGREEMENT in default_window_scoped.flags
