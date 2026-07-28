@@ -68,7 +68,7 @@ def _build_inline_request(
         metadata={"pair_id": str(pair["pair_id"])},
         config=types_module.GenerateContentConfig(
             response_mime_type="application/json",
-            response_json_schema=PAIR_OUTPUT_SCHEMA,
+            response_schema=PAIR_OUTPUT_SCHEMA,
             max_output_tokens=MAX_OUTPUT_TOKENS,
             thinking_config=types_module.ThinkingConfig(
                 thinking_level="MEDIUM", include_thoughts=False
