@@ -1,0 +1,39 @@
+{
+  "schema_version": "policy_ranking_successor_environment_source_manifest.v1",
+  "experiment_id": "policy_ranking_cosmos3_followup_20260728",
+  "recorded_at": "2026-07-27T22:44:00-0500",
+  "blueprint_source": {
+    "base_origin_main_sha": "b80a32844e50bcc7fe8f63ae78cb16ae085c0613",
+    "publication_pr": 214,
+    "exact_paid_execution_requires_clean_origin_main": true
+  },
+  "upstream_source": {
+    "cosmos": {
+      "repository": "https://github.com/NVIDIA/cosmos",
+      "revision": "bebca76311266941d06c5f5572fb601184ba24fa"
+    },
+    "cosmos_framework": {
+      "repository": "https://github.com/NVIDIA/cosmos-framework",
+      "revision": "09f23119ea92c707207bba55565e7a09d16896a2"
+    },
+    "vllm_omni": {
+      "repository": "https://github.com/vllm-project/vllm-omni",
+      "pinned_image_source_revision": "9c1b7504b178afcf541867c1a2d30db48c69cda8",
+      "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587"
+    }
+  },
+  "checkpoint": {
+    "repository": "nvidia/Cosmos3-Nano",
+    "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "remote_code_policy": "no_unpinned_remote_code_and_trust_remote_code_false"
+  },
+  "claims": {
+    "implementation": true,
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "evaluator_validity": false,
+    "ranking_fidelity": false,
+    "physical_performance": false
+  }
+}

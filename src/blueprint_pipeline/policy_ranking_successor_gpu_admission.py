@@ -32,7 +32,6 @@ from .policy_ranking_successor_cosmos import (
     CHECKPOINT_REVISION,
     COSMOS_FRAMEWORK_REVISION,
     COSMOS_REVISION,
-    EXPERIMENT_ID,
     VLLM_IMAGE,
     VLLM_IMAGE_DIGEST,
     canonical_sha256,
@@ -52,6 +51,7 @@ from .vast_session_budget_contract import (
 
 
 PROBE_KIND = "policy-ranking-successor-cosmos"
+FOLLOWUP_EXPERIMENT_ID = "policy_ranking_cosmos3_followup_20260728"
 SCHEMA_VERSION = "policy_ranking_successor_gpu_admission.v1"
 AUTHORIZATION_SCHEMA = "policy_ranking_successor_compute_authorization.v1"
 PREFLIGHT_SCHEMA = "policy_ranking_successor_vast_preflight.v1"
@@ -66,22 +66,23 @@ DISK_GB = 250
 MIN_GPU_RAM_MB = 95_000
 MIN_RELIABILITY = 0.98
 MAX_PREFLIGHT_AGE_SECONDS = 900
-AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v7"
-PREDECESSOR_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v5"
-REPLACED_ZERO_SPEND_AUTHORIZATION_ID = "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v6"
+AUTHORIZATION_ID = "policy-ranking-cosmos3-followup-20260728-allocation-1"
+GOAL_COST_AUTHORIZATION_SHA256 = (
+    "7f2ebe7ae1d176f9eea6b97a2b2f0ce235e7c5ff6af0ddd3baaef9000ab92cc0"
+)
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
-EXPECTED_BUNDLE_SHA256 = "79e25e21290a826479cd675b5363c3787f4925b094ae53514e493370e1935948"
-EXPECTED_BUNDLE_SIZE_BYTES = 301_170
+EXPECTED_BUNDLE_SHA256 = "79c6a299ca0b27b44cbadbe0c6dbcd1c692b2ec51e4921ca99e5cbcc4fb6edbf"
+EXPECTED_BUNDLE_SIZE_BYTES = 301_388
 QUALIFICATION_CANARY_REQUEST_COUNT = 2
 SCIENTIFIC_MATRIX_REQUEST_COUNT = 10
 TOTAL_INITIAL_GENERATION_REQUEST_COUNT = 12
 REQUEST_BUDGET_AMENDMENT_SHA256 = "e67226e16318a073e9190915554dc37b1d378fc155c6eb6bec7ecc79fb27786a"
 EXPECTED_EMBEDDED_INPUT_HASHES = {
     "initial_observation_sha256": (
-        "8843f0fc9c68914dfb62222c961db19b37a5f155e602ff4a545eea1dcf42636d"
+        "ed17ad901b3f1779d5282e328bafaac1be8e42a2407c668e188f6e24261cc23b"
     ),
-    "smoke_inventory_sha256": ("c925d168c166ec7bf53ed9252a33a937416a3f6fa9ecad8a01d0e201920a07aa"),
-    "action_streams_sha256": ("9ece91bb2a2e50165bf21c6fa62afd25831281ade80607d7a6987e29e4f80c58"),
+    "smoke_inventory_sha256": ("1e1a6eb0be7d31067ad91e871430e3f87523b64e414ae8cccad52dbf52b58f0f"),
+    "action_streams_sha256": ("1deafb10863b46895354ac274dcbe7243e1ab199e80d73f9b921f2a967b6e3e2"),
 }
 RTX_ALLOWED_KEYWORDS = ("RTX PRO 6000",)
 RTX_SELECTION_POLICY: Mapping[str, Any] = {
@@ -203,7 +204,7 @@ def inspect_successor_bundle(
     )
     if manifest.get("schema_version") != BUNDLE_SCHEMA:
         blockers.append("successor_cosmos_provider_bundle_manifest_invalid")
-    if manifest.get("experiment_id") != EXPERIMENT_ID:
+    if manifest.get("experiment_id") != FOLLOWUP_EXPERIMENT_ID:
         blockers.append("successor_cosmos_provider_bundle_experiment_mismatch")
     if manifest.get("checkpoint_revision") != CHECKPOINT_REVISION:
         blockers.append("successor_cosmos_provider_bundle_checkpoint_mismatch")
@@ -222,7 +223,7 @@ def inspect_successor_bundle(
     bundle_size_bytes = resolved.stat().st_size if resolved.is_file() else 0
     if receipt_value.get("schema_version") != ("policy_ranking_successor_cosmos_bundle_receipt.v1"):
         blockers.append("successor_cosmos_provider_bundle_receipt_invalid")
-    if receipt_value.get("experiment_id") != EXPERIMENT_ID:
+    if receipt_value.get("experiment_id") != FOLLOWUP_EXPERIMENT_ID:
         blockers.append("successor_cosmos_provider_bundle_receipt_experiment_mismatch")
     if receipt_value.get("bundle_sha256") != bundle_sha256:
         blockers.append("successor_cosmos_provider_bundle_receipt_hash_mismatch")
@@ -269,7 +270,7 @@ def build_successor_gpu_admission(
     cosmos = _mapping(upstream.get("cosmos"))
     framework = _mapping(upstream.get("cosmos_framework"))
     vllm = _mapping(upstream.get("vllm_omni"))
-    if environment.get("experiment_id") != EXPERIMENT_ID:
+    if environment.get("experiment_id") != FOLLOWUP_EXPERIMENT_ID:
         blockers.append("successor_environment_experiment_mismatch")
     if cosmos.get("revision") != COSMOS_REVISION:
         blockers.append("successor_cosmos_revision_mismatch")
@@ -296,6 +297,8 @@ def build_successor_gpu_admission(
 
     if provider_preflight.get("schema_version") != PREFLIGHT_SCHEMA:
         blockers.append("successor_vast_preflight_schema_invalid")
+    if provider_preflight.get("experiment_id") != FOLLOWUP_EXPERIMENT_ID:
+        blockers.append("successor_vast_preflight_experiment_mismatch")
     if provider_preflight.get("status") != "verified":
         blockers.append("successor_vast_preflight_not_verified")
     if provider_preflight.get("provider") != "vast":
@@ -332,7 +335,7 @@ def build_successor_gpu_admission(
     authorization_blockers: list[str] = []
     if authorization.get("schema_version") != AUTHORIZATION_SCHEMA:
         authorization_blockers.append("successor_compute_authorization_schema_invalid")
-    if authorization.get("experiment_id") != EXPERIMENT_ID:
+    if authorization.get("experiment_id") != FOLLOWUP_EXPERIMENT_ID:
         authorization_blockers.append("successor_compute_authorization_experiment_mismatch")
     if authorization.get("authorization_id") != AUTHORIZATION_ID:
         authorization_blockers.append("successor_compute_authorization_id_invalid")
@@ -340,31 +343,16 @@ def build_successor_gpu_admission(
         authorization_blockers.append("successor_compute_authorization_allocation_limit_invalid")
     if authorization.get("single_use_consumption_required") is not True:
         authorization_blockers.append("successor_compute_authorization_single_use_invalid")
-    if authorization.get("infrastructure_retry_of") != PREDECESSOR_AUTHORIZATION_ID:
-        authorization_blockers.append("successor_compute_authorization_retry_predecessor_invalid")
-    if (
-        authorization.get("pre_provider_zero_spend_replacement_of")
-        != REPLACED_ZERO_SPEND_AUTHORIZATION_ID
+    if authorization.get("allocation_index") != 1:
+        authorization_blockers.append("successor_compute_authorization_allocation_index_invalid")
+    if authorization.get("goal_cost_authorization_amendment_sha256") != (
+        GOAL_COST_AUTHORIZATION_SHA256
     ):
-        authorization_blockers.append(
-            "successor_compute_authorization_zero_spend_replacement_invalid"
-        )
-    if authorization.get("predecessor_provider_allocations") != 2:
-        authorization_blockers.append(
-            "successor_compute_authorization_retry_allocation_count_invalid"
-        )
-    if authorization.get("predecessor_compute_spend_usd") != 0.050839:
-        authorization_blockers.append("successor_compute_authorization_retry_prior_spend_invalid")
-    if authorization.get("additional_compute_authority_usd") != 0.0:
-        authorization_blockers.append(
-            "successor_compute_authorization_retry_additional_authority_invalid"
-        )
-    if (
-        authorization.get("infrastructure_retry_limit") != 2
-        or authorization.get("paid_infrastructure_retry_index") != 2
-        or authorization.get("pre_provider_zero_spend_authorization_replacements") != 4
-    ):
-        authorization_blockers.append("successor_compute_authorization_retry_contract_invalid")
+        authorization_blockers.append("successor_goal_cost_authorization_binding_invalid")
+    if authorization.get("prior_cumulative_compute_cap_superseded") is not True:
+        authorization_blockers.append("successor_goal_cost_ceiling_amendment_missing")
+    if authorization.get("per_allocation_maximum_spend_required") is not True:
+        authorization_blockers.append("successor_per_allocation_spend_limit_missing")
     if authorization.get("paid_mutation_authorized") is not True:
         authorization_blockers.append("successor_compute_not_explicitly_authorized")
     try:
@@ -397,7 +385,7 @@ def build_successor_gpu_admission(
         "schema_version": SCHEMA_VERSION,
         "status": "admitted" if not blockers else "blocked",
         "probe_kind": PROBE_KIND,
-        "experiment_id": EXPERIMENT_ID,
+        "experiment_id": FOLLOWUP_EXPERIMENT_ID,
         "execute_requested": bool(execute),
         "blockers": sorted(set(blockers)),
         "source_commit": source_commit or None,
@@ -475,7 +463,7 @@ def _consume_authorization_once(
         "schema_version": "policy_ranking_successor_authorization_consumption.v1",
         "authorization_id": authorization_id,
         "authorization_sha256": canonical_sha256(authorization),
-        "experiment_id": EXPERIMENT_ID,
+        "experiment_id": FOLLOWUP_EXPERIMENT_ID,
         "source_commit": expected_source_commit,
         "consumed_at_epoch": time.time(),
         "maximum_provider_allocations": 1,
@@ -629,7 +617,7 @@ def run_successor_gpu_lane(
     bound = {
         "schema_version": "policy_ranking_successor_bound_gpu_request.v1",
         "status": "bound" if admission["status"] == "admitted" else "blocked",
-        "experiment_id": EXPERIMENT_ID,
+        "experiment_id": FOLLOWUP_EXPERIMENT_ID,
         "source_commit": expected_source_commit,
         "provider": "vast",
         "probe_kind": PROBE_KIND,

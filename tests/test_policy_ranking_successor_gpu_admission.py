@@ -14,19 +14,34 @@ from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGran
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPERIMENT = ROOT / "docs/experiments/policy_ranking_successor_experiment_20260727"
+EXPERIMENT = ROOT / "docs/experiments/policy_ranking_cosmos3_followup_20260728"
+HISTORICAL_EXPERIMENT = ROOT / "docs/experiments/policy_ranking_successor_experiment_20260727"
+BUNDLE_NAME = "cosmos3_followup_provider_bundle.zip"
+BUNDLE_RECEIPT_NAME = "cosmos3_followup_provider_bundle_receipt.json"
 
 
 def _load(name: str) -> dict[str, Any]:
-    return json.loads((EXPERIMENT / name).read_text(encoding="utf-8"))
+    path = EXPERIMENT / name
+    if not path.is_file():
+        path = HISTORICAL_EXPERIMENT / name
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if name == "vast_compute_preflight.json":
+        value["experiment_id"] = "policy_ranking_cosmos3_followup_20260728"
+    return value
 
 
 def _inspect_bundle(path: Path | None = None) -> dict[str, Any]:
     return admission.inspect_successor_bundle(
-        path or EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
-        receipt=_load("cosmos3_successor_provider_bundle_receipt.json"),
+        path or EXPERIMENT / BUNDLE_NAME,
+        receipt=_load(BUNDLE_RECEIPT_NAME),
         smoke_inventory=_load("smoke_request_inventory.json"),
     )
+
+
+def _preflight_path(tmp_path: Path) -> Path:
+    path = tmp_path / "vast_compute_preflight.json"
+    path.write_text(json.dumps(_load("vast_compute_preflight.json")), encoding="utf-8")
+    return path
 
 
 def test_frozen_successor_bundle_passes_integrity_inspection() -> None:
@@ -35,7 +50,7 @@ def test_frozen_successor_bundle_passes_integrity_inspection() -> None:
     assert result["status"] == "passed"
     assert result["blockers"] == []
     assert result["bundle_sha256"] == (
-        "79e25e21290a826479cd675b5363c3787f4925b094ae53514e493370e1935948"
+        "79c6a299ca0b27b44cbadbe0c6dbcd1c692b2ec51e4921ca99e5cbcc4fb6edbf"
     )
     assert result["manifest"]["qualification_canary_request_count"] == 2
     assert result["manifest"]["scientific_matrix_request_count"] == 10
@@ -119,11 +134,9 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
         authorization_path=EXPERIMENT / "compute_authorization.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
-        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
-        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
-        provider_bundle_receipt_path=(
-            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
-        ),
+        provider_preflight_path=_preflight_path(tmp_path),
+        provider_bundle_path=EXPERIMENT / BUNDLE_NAME,
+        provider_bundle_receipt_path=EXPERIMENT / BUNDLE_RECEIPT_NAME,
         admission_out=tmp_path / "admission.json",
         bound_request_out=tmp_path / "bound.json",
         adapter_output=tmp_path / "adapter.json",
@@ -138,7 +151,7 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
         observed_now_epoch=float(preflight["observed_at_epoch"]) + 1,
     )
 
-    assert result["status"] == "completed"
+    assert result["status"] == "completed", result
     assert isinstance(captured["paid_resource_admission_grant"], PaidResourceAdmissionGrant)
     assert captured["hard_cap_usd"] == 6.0
     assert captured["target_spend_usd"] == 3.25
@@ -158,11 +171,9 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
         authorization_path=EXPERIMENT / "compute_authorization.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
-        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
-        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
-        provider_bundle_receipt_path=(
-            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
-        ),
+        provider_preflight_path=_preflight_path(tmp_path),
+        provider_bundle_path=EXPERIMENT / BUNDLE_NAME,
+        provider_bundle_receipt_path=EXPERIMENT / BUNDLE_RECEIPT_NAME,
         admission_out=tmp_path / "admission-second.json",
         bound_request_out=tmp_path / "bound-second.json",
         adapter_output=tmp_path / "adapter-second.json",
@@ -205,11 +216,9 @@ def test_successor_lane_does_not_consume_authorization_when_staging_blocks(
         authorization_path=EXPERIMENT / "compute_authorization.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
-        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
-        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
-        provider_bundle_receipt_path=(
-            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
-        ),
+        provider_preflight_path=_preflight_path(tmp_path),
+        provider_bundle_path=EXPERIMENT / BUNDLE_NAME,
+        provider_bundle_receipt_path=EXPERIMENT / BUNDLE_RECEIPT_NAME,
         admission_out=tmp_path / "admission.json",
         bound_request_out=tmp_path / "bound.json",
         adapter_output=tmp_path / "adapter.json",
@@ -224,7 +233,7 @@ def test_successor_lane_does_not_consume_authorization_when_staging_blocks(
         observed_now_epoch=float(preflight["observed_at_epoch"]) + 1,
     )
 
-    assert result["status"] == "blocked"
+    assert result["status"] == "blocked", result
     assert result["authorization_consumption"]["status"] == "not_consumed"
     assert result["blockers"] == ["provider_bundle_fetch_url_unreachable"]
     assert not consumption_root.exists()
@@ -261,11 +270,9 @@ def test_successor_lane_rechecks_preflight_age_before_consumption(
         authorization_path=EXPERIMENT / "compute_authorization.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
-        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
-        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
-        provider_bundle_receipt_path=(
-            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
-        ),
+        provider_preflight_path=_preflight_path(tmp_path),
+        provider_bundle_path=EXPERIMENT / BUNDLE_NAME,
+        provider_bundle_receipt_path=EXPERIMENT / BUNDLE_RECEIPT_NAME,
         admission_out=tmp_path / "admission.json",
         bound_request_out=tmp_path / "bound.json",
         adapter_output=tmp_path / "adapter.json",
@@ -327,11 +334,9 @@ def test_successor_lane_checks_provider_env_before_consuming_authorization(
         authorization_path=EXPERIMENT / "compute_authorization.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
-        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
-        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
-        provider_bundle_receipt_path=(
-            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
-        ),
+        provider_preflight_path=_preflight_path(tmp_path),
+        provider_bundle_path=EXPERIMENT / BUNDLE_NAME,
+        provider_bundle_receipt_path=EXPERIMENT / BUNDLE_RECEIPT_NAME,
         admission_out=tmp_path / "admission.json",
         bound_request_out=tmp_path / "bound.json",
         adapter_output=tmp_path / "adapter.json",
@@ -375,11 +380,9 @@ def test_successor_lane_checks_session_budget_before_consuming_authorization(
         authorization_path=EXPERIMENT / "compute_authorization.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
-        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
-        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
-        provider_bundle_receipt_path=(
-            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
-        ),
+        provider_preflight_path=_preflight_path(tmp_path),
+        provider_bundle_path=EXPERIMENT / BUNDLE_NAME,
+        provider_bundle_receipt_path=EXPERIMENT / BUNDLE_RECEIPT_NAME,
         admission_out=tmp_path / "admission.json",
         bound_request_out=tmp_path / "bound.json",
         adapter_output=tmp_path / "adapter.json",
@@ -416,11 +419,9 @@ def test_successor_lane_requires_existing_session_budget_before_execute(
         authorization_path=EXPERIMENT / "compute_authorization.json",
         environment_path=EXPERIMENT / "environment_and_source_manifest.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
-        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
-        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
-        provider_bundle_receipt_path=(
-            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
-        ),
+        provider_preflight_path=_preflight_path(tmp_path),
+        provider_bundle_path=EXPERIMENT / BUNDLE_NAME,
+        provider_bundle_receipt_path=EXPERIMENT / BUNDLE_RECEIPT_NAME,
         admission_out=tmp_path / "admission.json",
         bound_request_out=tmp_path / "bound.json",
         adapter_output=tmp_path / "adapter.json",
@@ -444,7 +445,7 @@ def test_successor_bundle_is_bound_to_receipt_and_embedded_inputs(
     tmp_path: Path,
 ) -> None:
     altered = tmp_path / "altered.zip"
-    shutil.copyfile(EXPERIMENT / "cosmos3_successor_provider_bundle.zip", altered)
+    shutil.copyfile(EXPERIMENT / BUNDLE_NAME, altered)
     with zipfile.ZipFile(altered, "a") as archive:
         archive.writestr("provider_runtime/unregistered_marker.txt", "changed")
 
@@ -459,7 +460,7 @@ def test_successor_bundle_requires_shared_crash_fallback_contract(
 ) -> None:
     altered = tmp_path / "missing-crash-fallback.zip"
     with (
-        zipfile.ZipFile(EXPERIMENT / "cosmos3_successor_provider_bundle.zip") as source,
+        zipfile.ZipFile(EXPERIMENT / BUNDLE_NAME) as source,
         zipfile.ZipFile(altered, "w") as target,
     ):
         for info in source.infolist():
@@ -484,11 +485,9 @@ def test_successor_lane_writes_blocked_artifacts_for_unreadable_input(
         authorization_path=EXPERIMENT / "compute_authorization.json",
         environment_path=tmp_path / "missing-environment.json",
         smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
-        provider_preflight_path=EXPERIMENT / "vast_compute_preflight.json",
-        provider_bundle_path=EXPERIMENT / "cosmos3_successor_provider_bundle.zip",
-        provider_bundle_receipt_path=(
-            EXPERIMENT / "cosmos3_successor_provider_bundle_receipt.json"
-        ),
+        provider_preflight_path=_preflight_path(tmp_path),
+        provider_bundle_path=EXPERIMENT / BUNDLE_NAME,
+        provider_bundle_receipt_path=EXPERIMENT / BUNDLE_RECEIPT_NAME,
         admission_out=admission_out,
         bound_request_out=bound_out,
         adapter_output=adapter_out,

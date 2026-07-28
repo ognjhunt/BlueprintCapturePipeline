@@ -9,7 +9,9 @@
     "evaluator_methodology_freeze.json": "cf99eb802d8ddf1dde71f84d57fd9253a48a5cc75cad6e8032661093b52d26b3",
     "geometry_freeze.json": "72b08abf21ddbe11c74553a90b3c83bd7fdf527e73080b270166b19b7b794b24",
     "smoke_request_inventory.json": "8fc27a41f9f16682a4be894e72d5d17ca30f2623615d340fe7ce49fac4b3c100",
-    "goal_cost_authorization_amendment.json": "7f2ebe7ae1d176f9eea6b97a2b2f0ce235e7c5ff6af0ddd3baaef9000ab92cc0"
+    "goal_cost_authorization_amendment.json": "7f2ebe7ae1d176f9eea6b97a2b2f0ce235e7c5ff6af0ddd3baaef9000ab92cc0",
+    "compute_authorization.json": "b915c0ef7c32a9c912c52012e7cc23d56d545e6e6c8cb95cd2cb618469d26498",
+    "environment_and_source_manifest.json": "5597faa00a631bafc1c36ed79ffa02418b08db43f0127f206c9deeb221121042"
   },
   "claims": {
     "implementation": true,
