@@ -1,0 +1,81 @@
+{
+  "schema_version": "policy_ranking_reasoner_schema_canary_protocol.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "registered_at": "2026-07-28T18:16:19-0500",
+  "status": "prospective_not_executed",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "outcome_labels_accessed_for_selection": false,
+  "source_campaign": {
+    "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+    "terminal_verdict": "inconclusive",
+    "protocol_v2_sha256": "6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066",
+    "structured_output_amendment_file_sha256": "c818b55749a37fed357d3a131ef82ed9febe0056df25fb4eca04772fa338f95a",
+    "pilot_v6_closeout_file_sha256": "4f6f392cc1154288dc3cdd0afd284bfca5d875ada151c016bfbb9ddfb9b9943f"
+  },
+  "input": {
+    "claim_class": "post_unseal_diagnostic_only",
+    "pair_inventory": "diagnostic_pair_inventory_v3.json",
+    "pair_selection": "offset_0_count_1",
+    "pair_count": 1,
+    "complete_generated_only_videos": 2,
+    "sampled_frames_per_episode": 32,
+    "physical_ground_truth_pixels_allowed": false,
+    "policy_identity_in_provider_payload": false,
+    "physical_outcome_in_provider_payload": false
+  },
+  "runtime": {
+    "evaluator_arm": "cosmos3_nano_reasoner",
+    "model": "nvidia/Cosmos3-Nano",
+    "model_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "native_architecture": "CosmosForConditionalGeneration",
+    "public_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "temperature": 0,
+    "seed": 0,
+    "max_output_tokens": 4096,
+    "structured_output_transport": "vllm_json_schema",
+    "exact_schema_required": true
+  },
+  "gpu_admission": {
+    "provider": "Vast",
+    "gpu_keyword": "H100",
+    "minimum_gpu_ram_mb": 80000,
+    "minimum_reliability": 0.98,
+    "minimum_provider_reported_cuda_max_good": 12.8,
+    "container_local_cuda_get_device_count_required_before_bundle_download": true,
+    "maximum_concurrent_gpus": 1,
+    "maximum_allocations": 1,
+    "maximum_hourly_rate_usd": 2.5,
+    "target_spend_usd": 1.5,
+    "hard_cap_usd": 2.0,
+    "target_max_live_minutes": 36,
+    "hard_ttl_seconds": 2400
+  },
+  "success_gate": {
+    "model_loaded": true,
+    "http_result_count": 1,
+    "structured_result_count": 1,
+    "error_count": 0,
+    "schema_matches_exactly": true,
+    "request_and_output_redaction_pass": true,
+    "provider_zero_after_run": true,
+    "silent_scientific_retry_allowed": false
+  },
+  "failure_rule": "Any CUDA, model-load, transport, schema, redaction, accounting, teardown, or provider-zero failure fails the canary and is retained.",
+  "claim_boundary": {
+    "ranking_credit": false,
+    "phase_b_admission_credit": false,
+    "independent_confirmation_credit": false,
+    "wam_qualification_credit": false,
+    "economics_credit": false,
+    "reasoner_cannot_be_sole_judge_of_native_cosmos_rollouts": true
+  },
+  "future_run_rule": {
+    "applies_to_all_future_reasoner_runs": true,
+    "minimum_cuda_floor_is_shared_offer_selection_policy": true,
+    "new_exact_main_source_binding_required": true,
+    "new_versioned_evidence_namespace_required": true,
+    "no_threshold_or_prompt_tuning_after_output": true
+  },
+  "protocol_sha256": "91ee2649b06f66a9ce4385704d8d8efc479ce7d24a75854d9e2adae600552f3c"
+}

@@ -23,6 +23,7 @@ from .policy_ranking_roboarena_calibration import canonical_sha256, file_sha256
 
 SCHEMA_VERSION = "policy_ranking_cosmos_reasoner_bundle.v1"
 RECEIPT_SCHEMA_VERSION = "policy_ranking_cosmos_reasoner_bundle_receipt.v1"
+RUN_PURPOSE = "structured_output_canary_only"
 PUBLIC_IMAGE = (
     "docker.io/vllm/vllm-omni:cosmos3@"
     "sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587"
@@ -130,7 +131,7 @@ def build_cosmos_reasoner_bundle(
     receipt_path: str | Path,
     source_commit: str,
     offset: int = 0,
-    count: int = 7,
+    count: int = 1,
 ) -> dict[str, Any]:
     inventory = _read_mapping(inventory_path)
     native = _read_mapping(native_video_manifest_path)
@@ -167,6 +168,7 @@ def build_cosmos_reasoner_bundle(
         "schema_version": "policy_ranking_cosmos_reasoner_input.v1",
         "arm_id": "cosmos3_nano_reasoner",
         "claim_class": "post_unseal_diagnostic_only",
+        "run_purpose": RUN_PURPOSE,
         "offset": offset,
         "pair_count": count,
         "pairs": runtime_pairs,
@@ -197,6 +199,7 @@ def build_cosmos_reasoner_bundle(
         "tensor_parallel_size": 1,
         "source_commit": source,
         "claim_class": "post_unseal_diagnostic_only",
+        "run_purpose": RUN_PURPOSE,
         "cannot_be_sole_judge_of_native_cosmos_generated_rollouts": True,
         "generated_video_or_policy_endpoint_invoked": False,
     }
@@ -260,6 +263,7 @@ def build_cosmos_reasoner_bundle(
         "provider_mutations_performed": 0,
         "paid_resources_used": False,
         "claim_class": "post_unseal_diagnostic_only",
+        "run_purpose": RUN_PURPOSE,
         "policy_identity_in_bundle": False,
         "physical_outcome_in_bundle": False,
         "physical_ground_truth_pixels_in_bundle": False,
@@ -277,7 +281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--receipt", required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--offset", type=int, default=0)
-    parser.add_argument("--count", type=int, default=7)
+    parser.add_argument("--count", type=int, default=1)
     args = parser.parse_args(argv)
     result = build_cosmos_reasoner_bundle(
         inventory_path=args.inventory,

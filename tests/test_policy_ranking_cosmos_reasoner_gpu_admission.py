@@ -10,7 +10,9 @@ from blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission import (
     AUTHORIZATION_ID_PREFIX,
     MAX_AUTHORIZED_ALLOCATIONS_FOR_ARM,
     MAX_HOURLY_RATE_USD,
+    MIN_CUDA_MAX_GOOD,
     PREFLIGHT_SCHEMA,
+    RUN_PURPOSE,
     TARGET_MAX_LIVE_MINUTES,
     TARGET_SPEND_USD,
     build_admission,
@@ -85,8 +87,9 @@ def _bundle(tmp_path):
     }
     runtime["manifest_sha256"] = canonical_sha256(runtime)
     inputs = {
-        "pair_count": 7,
+        "pair_count": 1,
         "claim_class": "post_unseal_diagnostic_only",
+        "run_purpose": RUN_PURPOSE,
         "output_schema": PAIR_OUTPUT_SCHEMA,
         "output_schema_sha256": canonical_sha256(PAIR_OUTPUT_SCHEMA),
     }
@@ -102,7 +105,8 @@ def _bundle(tmp_path):
     receipt = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "bundle_sha256": file_sha256(path),
-        "pair_count": 7,
+        "pair_count": 1,
+        "run_purpose": RUN_PURPOSE,
         "source_commit": COMMIT,
         "public_image": PUBLIC_IMAGE,
         "native_reasoner_architecture": NATIVE_REASONER_ARCHITECTURE,
@@ -124,17 +128,19 @@ def _external_authorization(
         authority_root,
     )
     record = {
-        "schema_version": "policy_ranking_cosmos_reasoner_compute_authorization.v1",
+        "schema_version": "policy_ranking_cosmos_reasoner_compute_authorization.v2",
         "authorization_id": authorization_id,
-        "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+        "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
         "source_commit": source_commit,
         "authorization_origin": "external_workspace_user_task_authority",
         "paid_mutation_authorized": True,
         "authorized_by": "workspace_user",
-        "authorized_compute_cap_usd": 5.0,
-        "reasoner_arm_total_cap_usd": 15.0,
+        "authorized_compute_cap_usd": 2.0,
+        "reasoner_arm_total_cap_usd": 2.0,
         "maximum_provider_allocations": 1,
-        "hard_ttl_seconds": 7200,
+        "authorized_pair_count": 1,
+        "run_purpose": RUN_PURPOSE,
+        "hard_ttl_seconds": 2400,
         "task_security_exception": {
             "existing_vast_key_use_explicitly_authorized": True,
             "rotation_metadata_missing_acknowledged": True,
@@ -162,6 +168,7 @@ def _preflight(now: float) -> dict:
             "hourly_rate_usd": 2.25,
             "gpu_ram_mb": 81_559,
             "reliability": 0.99,
+            "cuda_max_good": MIN_CUDA_MAX_GOOD,
         },
     }
 
@@ -309,6 +316,43 @@ def test_reasoner_session_window_stays_below_frozen_target_spend():
     assert next_minute > TARGET_SPEND_USD
 
 
+def test_reasoner_preflight_rejects_h100_below_pinned_cuda_floor(monkeypatch):
+    class Provider:
+        @staticmethod
+        def capacity_preflight(request):
+            return {
+                "status": "available",
+                "viable_gpu_types": [
+                    {
+                        "gpu_name": "H100 SXM",
+                        "num_gpus": 1,
+                        "gpu_ram_mb": 81_559,
+                        "hourly_rate_usd": 1.75,
+                        "reliability": 0.999,
+                        "cuda_max_good": 12.5,
+                    }
+                ],
+            }
+
+        @staticmethod
+        def billable_inventory(*, name_prefix):
+            return {"api_confirmed": True, "live_resource_count": 0}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission.get_render_provider",
+        lambda name: Provider(),
+    )
+    from blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission import (
+        collect_vast_preflight,
+    )
+
+    result = collect_vast_preflight(name_prefix="successor-")
+    assert result["status"] == "blocked"
+    assert result["selected_offer"] is None
+    assert result["minimum_cuda_max_good"] == MIN_CUDA_MAX_GOOD
+    assert "cosmos_reasoner_compatible_single_h100_offer_unavailable" in result["blockers"]
+
+
 def test_reasoner_bundle_and_security_exception_admit_dry_run(tmp_path, monkeypatch):
     bundle_path, receipt = _bundle(tmp_path)
     inspection = inspect_bundle(bundle_path, receipt, expected_source_commit=COMMIT)
@@ -331,7 +375,7 @@ def test_reasoner_bundle_and_security_exception_admit_dry_run(tmp_path, monkeypa
     assert admission["blockers"] == []
 
 
-def test_reasoner_admission_accepts_fresh_positive_allocation_sequence(tmp_path, monkeypatch):
+def test_reasoner_admission_rejects_second_allocation_when_arm_cap_is_one(tmp_path, monkeypatch):
     bundle_path, receipt = _bundle(tmp_path)
     authorization_id = f"{AUTHORIZATION_ID_PREFIX}2"
     authorization = _external_authorization(
@@ -344,8 +388,8 @@ def test_reasoner_admission_accepts_fresh_positive_allocation_sequence(tmp_path,
         expected_source_commit=COMMIT,
         execute=False,
     )
-    assert admission["status"] == "admitted"
-    assert admission["authorization_id"] == authorization_id
+    assert admission["status"] == "blocked"
+    assert "cosmos_reasoner_authorization_identity_invalid" in admission["blockers"]
 
 
 def test_reasoner_admission_rejects_nonpositive_or_unsafe_allocation_identity(
@@ -373,17 +417,15 @@ def test_reasoner_admission_rejects_nonpositive_or_unsafe_allocation_identity(
         assert "cosmos_reasoner_authorization_identity_invalid" in admission["blockers"]
 
 
-def test_reasoner_authorization_consumption_is_unique_per_allocation(tmp_path, monkeypatch):
+def test_reasoner_authorization_consumption_is_unique(tmp_path, monkeypatch):
     root = tmp_path / "consumed"
     monkeypatch.setattr(
         "blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission.AUTHORIZATION_CONSUMPTION_ROOT",
         root,
     )
     first = {"authorization_id": f"{AUTHORIZATION_ID_PREFIX}1"}
-    second = {"authorization_id": f"{AUTHORIZATION_ID_PREFIX}2"}
     assert _consume_once(first, COMMIT)["status"] == "consumed"
     assert _consume_once(first, COMMIT)["status"] == "blocked"
-    assert _consume_once(second, COMMIT)["status"] == "consumed"
 
 
 def test_reasoner_admission_rejects_unacknowledged_rotation_metadata(tmp_path, monkeypatch):

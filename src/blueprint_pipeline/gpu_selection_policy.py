@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-GPU_SELECTION_POLICY_SCHEMA_VERSION = "gpu_selection_policy.v1"
+GPU_SELECTION_POLICY_SCHEMA_VERSION = "gpu_selection_policy.v2"
 
 ISAAC_RENDERING_GPU_POLICY = "isaac_rendering"
 GENERATION_GPU_POLICY = "generation"
@@ -94,6 +94,15 @@ def resolve_gpu_selection_policy(
     """
 
     if isinstance(policy, Mapping):
+        minimum_cuda_max_good = policy.get("minimum_cuda_max_good")
+        try:
+            minimum_cuda_max_good = (
+                float(minimum_cuda_max_good)
+                if minimum_cuda_max_good is not None
+                else 0.0
+            )
+        except (TypeError, ValueError):
+            minimum_cuda_max_good = "invalid"
         return {
             "policy_id": _text(policy.get("policy_id")) or "inline",
             "denied_gpu_keywords": tuple(
@@ -110,6 +119,7 @@ def resolve_gpu_selection_policy(
             "recommended_max_hourly_rate": policy.get("recommended_max_hourly_rate"),
             "recommended_hard_cap_usd": policy.get("recommended_hard_cap_usd"),
             "recommended_min_gpu_ram_mb": policy.get("recommended_min_gpu_ram_mb") or 0,
+            "minimum_cuda_max_good": minimum_cuda_max_good,
         }
     name = _text(policy)
     if name:
@@ -121,7 +131,12 @@ def resolve_gpu_selection_policy(
     return dict(GPU_SELECTION_POLICIES[default_name])
 
 
-def gpu_allowed_by_policy(gpu_name: str, policy: Mapping[str, Any]) -> bool:
+def gpu_allowed_by_policy(
+    gpu_name: str,
+    policy: Mapping[str, Any],
+    *,
+    cuda_max_good: Any = None,
+) -> bool:
     """Whether one offer's GPU is eligible under a resolved policy."""
 
     upper = _text(gpu_name).upper()
@@ -131,6 +146,17 @@ def gpu_allowed_by_policy(gpu_name: str, policy: Mapping[str, Any]) -> bool:
         return False
     if allowed and not any(item in upper for item in allowed):
         return False
+    try:
+        minimum_cuda_max_good = float(policy.get("minimum_cuda_max_good") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if minimum_cuda_max_good > 0:
+        try:
+            observed_cuda_max_good = float(cuda_max_good)
+        except (TypeError, ValueError):
+            return False
+        if observed_cuda_max_good < minimum_cuda_max_good:
+            return False
     return True
 
 
@@ -143,6 +169,7 @@ def policy_manifest(policy: Mapping[str, Any]) -> dict[str, Any]:
         "denied_gpu_keywords": list(policy.get("denied_gpu_keywords") or ()),
         "allowed_gpu_keywords": list(policy.get("allowed_gpu_keywords") or ()),
         "reason": policy.get("reason"),
+        "minimum_cuda_max_good": policy.get("minimum_cuda_max_good") or 0.0,
     }
 
 
