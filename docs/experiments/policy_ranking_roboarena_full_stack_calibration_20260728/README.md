@@ -128,11 +128,14 @@ analysis digest
 The v3 canary did call the provider and upload one generated-only episode; the
 diagnostic uploaded fixed synthetic text only. No provider request completed
 inference, and no evaluator result, new WAM generation, policy ranking, captured-site
-transfer, physical evaluation, or paid allocation has occurred in this
-experiment. Invoice-attributable API cost is not yet available, so the ledger
-conservatively reserves USD 0.10 against the USD 25 API cap. GPU spend remains
-USD 0 and authenticated compute-provider inventory was zero at the Phase 0
-audit.
+transfer, or physical evaluation had occurred at that Phase-A checkpoint.
+Invoice-attributable API cost was not yet available there, so the ledger
+conservatively reserved USD 0.10 against the USD 25 API cap. A later paid
+Reasoner v4 attempt used an estimated USD 0.1845 of GPU compute before failing
+prior to model load; that attempt remains in campaign cost and reliability
+accounting. Authenticated compute-provider inventory was zero at the Phase 0
+audit and again after v4 teardown; provider zero is current resource-state
+evidence, not a claim of zero historical spend.
 
 ## Post-unseal evaluator comparison continuation
 
@@ -145,6 +148,18 @@ leaderboard.
 Cosmos Reasoner GPU execution is prospectively bound by
 `cosmos_reasoner_gpu_execution_amendment_v1.json`, digest
 `a6d7fc52a0bfb5a077b3bedc8a70ee6ebb1a8c75f0cd5dc313aec4b2ead94b78`.
+
+The first paid Reasoner attempt is preserved as `cosmos3_reasoner_pilot_v4` in
+the external evidence store. It failed before model loading or any pair result
+because the runtime forced an unsupported architecture override. The
+prospective, runtime-only supersession is
+`cosmos_reasoner_runtime_compatibility_amendment_v2.json`. It retains the same
+videos, pair selection, prompt, schema, decoding, budgets, and diagnostic-only
+claim ceiling, while requiring the frozen model revision's native
+`Cosmos3ForConditionalGeneration` architecture and rejecting future bundles
+that does not exactly match the frozen runtime runner and entrypoint. Its
+deterministic digest is
+`ae10006cb17bcc58080a60b495755a53dd35fe64c2480a1559f2424546a550a1`.
 It uses an evaluator-only provider bundle, one H100, a seven-pair canary, and a
 two-hour/USD 5 pilot cutoff. A full matrix requires 7/7 valid pilot rows, a
 frozen throughput projection that fits the USD 15 Reasoner-arm cap, and a new

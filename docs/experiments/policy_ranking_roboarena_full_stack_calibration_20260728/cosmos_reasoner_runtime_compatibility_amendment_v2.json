@@ -1,0 +1,101 @@
+{
+  "schema_version": "policy_ranking_cosmos_reasoner_runtime_compatibility_amendment.v2",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "registered_at": "2026-07-28T14:11:54-0500",
+  "registered_before_retry_provider_call": true,
+  "retry_paid_execution_admitted": false,
+  "retry_provider_called": false,
+  "prior_amendment": {
+    "path": "cosmos_reasoner_gpu_execution_amendment_v1.json",
+    "amendment_sha256": "a6d7fc52a0bfb5a077b3bedc8a70ee6ebb1a8c75f0cd5dc313aec4b2ead94b78",
+    "file_sha256": "ec5cccbef4166c901ff863abc9db032653aa2223488f70ac0ca41f018fa6b79d",
+    "status": "superseded_for_retry_runtime_compatibility_only",
+    "all_scientific_media_prompt_schema_and_claim_boundaries_retained": true
+  },
+  "triggering_attempt": {
+    "evidence_namespace": "cosmos3_reasoner_pilot_v4",
+    "status": "blocked_before_model_load",
+    "provider_called": true,
+    "result_count": 0,
+    "error_count": 1,
+    "model_load_seconds": 0.0,
+    "estimated_gpu_cost_usd": 0.1845,
+    "provider_output_zip_sha256": "97df8e06e921f8e3b546f8aa255856dae1b6d9a1bc5d60d52c8c55b7aaefedc4",
+    "evaluator_runtime_result_sha256": "064a5370c6deeadda796955079d0d25bbe9a0f13441f64a6ac47fdd9696bf621",
+    "reasoner_server_log_sha256": "dd48277748fee6fd990c4a95a6183f2cfdb527c57eac97e405e8bcf7f88171bd",
+    "provider_zero_verified": true,
+    "continuing_hourly_burn": false,
+    "failure": "The pinned vLLM runtime rejected the forced Cosmos3ReasonerForConditionalGeneration override as unsupported before loading weights. Its own registered architecture list included Cosmos3ForConditionalGeneration.",
+    "scientific_pair_outputs_observed": false
+  },
+  "primary_source_freeze": {
+    "nvidia_cosmos_repository": "https://github.com/NVIDIA/cosmos",
+    "nvidia_cosmos_revision": "bebca76311266941d06c5f5572fb601184ba24fa",
+    "nvidia_cosmos_readme_sha256": "663414cf5c0b783085847ebe46692e5234851b50afac76440e25963036e3d3d4",
+    "nvidia_cosmos_license": "OpenMDW-1.1",
+    "official_reasoner_command": "vllm serve nvidia/Cosmos3-Nano --async-scheduling --allowed-local-media-path / --port 8000",
+    "official_reasoner_minimum_vllm": "0.23.0",
+    "model_config_url": "https://huggingface.co/nvidia/Cosmos3-Nano/resolve/411f42a8fdfb8c5b2583cb8786e0938f49796eaa/config.json",
+    "model_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "model_config_sha256": "c32f2468a54542c21946bc8eab6172b911dcec9a7193a94c023ea2d4073bcda6",
+    "model_config_architecture": "Cosmos3ForConditionalGeneration",
+    "model_license": "OpenMDW-1.1",
+    "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "runtime_observed_vllm_version": "0.25.0",
+    "runtime_license": "Apache-2.0",
+    "provider_runtime_runner_sha256": "53034363aea2b6c79361d5a4b8e8972239dacb98d94371512edd872053e09738",
+    "provider_runtime_entrypoint_sha256": "c37823b2c7bc5358d534164fed9ac9785bc78f0946e9a0e6e9bdba79b536a2af"
+  },
+  "changed_fields": [
+    {
+      "field": "model.architecture_override",
+      "former": "Cosmos3ReasonerForConditionalGeneration",
+      "new": null,
+      "reason": "The official current Reasoner command and frozen model config require native architecture discovery."
+    },
+    {
+      "field": "model.architecture_selection",
+      "former": "forced_override",
+      "new": "native_frozen_model_config",
+      "reason": "Bind serving to the exact architecture declared by the pinned model revision."
+    },
+    {
+      "field": "bundle_and_admission_validation",
+      "former": "model_revision_and_image_only",
+      "new": "model_revision_image_native_architecture_model_config_sha_exact_runner_and_entrypoint_digests_and_all_manifest_digests",
+      "reason": "Make the repair apply fail-closed to all future Reasoner bundles, not only this retry."
+    },
+    {
+      "field": "authorization_consumption_identity",
+      "former": "hard_coded_allocation_1",
+      "new": "validated_canonical_allocation_sequence_1_through_3_with_per_identity_single_use",
+      "reason": "Permit prospectively authorized retries without replay while bounding three USD 5 allocations to the USD 15 Reasoner-arm cap."
+    }
+  ],
+  "unchanged_scientific_contract": {
+    "pair_selection": "same_first_seven_label_free_cycle_pairs",
+    "videos": "same_fourteen_complete_generated_only_mp4_inputs",
+    "sampled_frames_per_episode": 32,
+    "prompt": "unchanged",
+    "structured_output_schema": "unchanged",
+    "temperature": 0,
+    "seed": 0,
+    "max_output_tokens": 4096,
+    "claim_class": "post_unseal_diagnostic_only",
+    "independent_confirmation_credit": false,
+    "phase_b_admission_credit": false,
+    "outcome_labels_used_to_select_runtime_fix": false,
+    "reasoner_outputs_used_to_select_runtime_fix": false
+  },
+  "retry_contract": {
+    "new_versioned_namespace_required": true,
+    "new_exact_main_source_binding_required": true,
+    "new_single_use_external_authorization_required": true,
+    "same_gpu_and_campaign_caps_apply": true,
+    "maximum_concurrent_gpus": 1,
+    "teardown_and_provider_zero_required": true,
+    "v4_failure_retained_and_counted_in_cost_and_reliability": true
+  },
+  "scientific_legitimacy": "No model judgment or physical outcome influenced this repair. The retry changes only a demonstrably incompatible server architecture override and strengthens prospective compatibility validation; it does not change inputs, prompts, scoring, thresholds, or claim ceilings.",
+  "amendment_sha256": "ae10006cb17bcc58080a60b495755a53dd35fe64c2480a1559f2424546a550a1"
+}

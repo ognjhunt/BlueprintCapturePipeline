@@ -20,6 +20,8 @@ from typing import Any, Mapping
 
 MODEL = "nvidia/Cosmos3-Nano"
 REVISION = "411f42a8fdfb8c5b2583cb8786e0938f49796eaa"
+NATIVE_REASONER_ARCHITECTURE = "Cosmos3ForConditionalGeneration"
+MODEL_CONFIG_SHA256 = "c32f2468a54542c21946bc8eab6172b911dcec9a7193a94c023ea2d4073bcda6"
 CLAIM_CLASS = "post_unseal_diagnostic_only"
 PORT = 8000
 EXPECTED_KEYS = {
@@ -52,7 +54,9 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     )
 
 
-def _http_json(method: str, url: str, payload: Mapping[str, Any] | None = None, timeout: int = 60) -> dict[str, Any]:
+def _http_json(
+    method: str, url: str, payload: Mapping[str, Any] | None = None, timeout: int = 60
+) -> dict[str, Any]:
     body = None if payload is None else json.dumps(dict(payload)).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -69,7 +73,9 @@ def _http_json(method: str, url: str, payload: Mapping[str, Any] | None = None, 
     return dict(value)
 
 
-def _wait_for_server(process: subprocess.Popen[str], timeout_seconds: int = 3600) -> tuple[dict[str, Any], float]:
+def _wait_for_server(
+    process: subprocess.Popen[str], timeout_seconds: int = 3600
+) -> tuple[dict[str, Any], float]:
     started = time.monotonic()
     last_error = "not_started"
     while time.monotonic() - started < timeout_seconds:
@@ -130,7 +136,11 @@ def _validate_payload(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(f"{key}_invalid")
     for key in ("comparison_confidence", "uncertainty"):
         number = value[key]
-        if isinstance(number, bool) or not isinstance(number, (int, float)) or not 0 <= float(number) <= 1:
+        if (
+            isinstance(number, bool)
+            or not isinstance(number, (int, float))
+            or not 0 <= float(number) <= 1
+        ):
             raise ValueError(f"{key}_invalid")
     for key, maximum in (
         ("decisive_evidence", 4),
@@ -139,7 +149,11 @@ def _validate_payload(value: Mapping[str, Any]) -> dict[str, Any]:
         ("abstention_factors", 4),
     ):
         items = value[key]
-        if not isinstance(items, list) or len(items) > maximum or any(not isinstance(item, str) for item in items):
+        if (
+            not isinstance(items, list)
+            or len(items) > maximum
+            or any(not isinstance(item, str) for item in items)
+        ):
             raise ValueError(f"{key}_invalid")
     return dict(value)
 
@@ -154,17 +168,23 @@ def _message_content(response: Mapping[str, Any]) -> str:
     return str(message["content"])
 
 
-def _request_payload(row: Mapping[str, Any], bundle_root: Path, served_model: str) -> dict[str, Any]:
+def _request_payload(
+    row: Mapping[str, Any], bundle_root: Path, served_model: str
+) -> dict[str, Any]:
     video_a = (bundle_root / str(row["episode_a_video"])).resolve().as_uri()
     video_b = (bundle_root / str(row["episode_b_video"])).resolve().as_uri()
-    prompt = str(row["prompt"]) + "\n" + json.dumps(
-        {
-            "task_instruction": row["task_instruction"],
-            "episode_a": "first complete chronological generated-only video",
-            "episode_b": "second complete chronological generated-only video",
-            "claim_boundary": "generated_episode_pair_diagnostic_not_physical_success",
-        },
-        sort_keys=True,
+    prompt = (
+        str(row["prompt"])
+        + "\n"
+        + json.dumps(
+            {
+                "task_instruction": row["task_instruction"],
+                "episode_a": "first complete chronological generated-only video",
+                "episode_b": "second complete chronological generated-only video",
+                "claim_boundary": "generated_episode_pair_diagnostic_not_physical_success",
+            },
+            sort_keys=True,
+        )
     )
     return {
         "model": served_model,
@@ -186,20 +206,20 @@ def _request_payload(row: Mapping[str, Any], bundle_root: Path, served_model: st
     }
 
 
-def run() -> int:
-    bundle_root = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_BUNDLE_DIR"]).resolve()
-    output_dir = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_OUTPUT_DIR"]).resolve()
-    manifest = _read_json(Path(os.environ["BLUEPRINT_EVALUATOR_INPUT"]).resolve())
-    output_dir.mkdir(parents=True, exist_ok=True)
-    server_log_path = output_dir / "reasoner_server.log"
-    command = [
+def _reasoner_server_command(bundle_root: Path) -> list[str]:
+    """Build the pinned native-architecture Reasoner command.
+
+    Cosmos3-Nano's frozen model config declares ``Cosmos3ForConditionalGeneration``.
+    The serving runtime must honor that native declaration. Forcing the separate
+    Cosmos Framework class name is incompatible with the pinned vLLM runtime.
+    """
+
+    return [
         "vllm",
         "serve",
         MODEL,
         "--revision",
         REVISION,
-        "--hf-overrides",
-        '{"architectures":["Cosmos3ReasonerForConditionalGeneration"]}',
         "--tensor-parallel-size",
         "1",
         "--mm-encoder-tp-mode",
@@ -218,6 +238,15 @@ def run() -> int:
         "--port",
         str(PORT),
     ]
+
+
+def run() -> int:
+    bundle_root = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_BUNDLE_DIR"]).resolve()
+    output_dir = Path(os.environ["BLUEPRINT_EVALUATOR_PROVIDER_OUTPUT_DIR"]).resolve()
+    manifest = _read_json(Path(os.environ["BLUEPRINT_EVALUATOR_INPUT"]).resolve())
+    output_dir.mkdir(parents=True, exist_ok=True)
+    server_log_path = output_dir / "reasoner_server.log"
+    command = _reasoner_server_command(bundle_root)
     process: subprocess.Popen[str] | None = None
     results: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -300,9 +329,15 @@ def run() -> int:
     _write_json(output_dir / "pair_results.json", {"results": results, "errors": errors})
     runtime = {
         "schema_version": "policy_ranking_cosmos_reasoner_runtime.v1",
-        "status": "completed" if len(results) == int(manifest["pair_count"]) and not errors else "blocked",
+        "status": "completed"
+        if len(results) == int(manifest["pair_count"]) and not errors
+        else "blocked",
         "model": MODEL,
         "model_revision": REVISION,
+        "model_config_sha256": MODEL_CONFIG_SHA256,
+        "native_reasoner_architecture": NATIVE_REASONER_ARCHITECTURE,
+        "architecture_selection": "native_frozen_model_config",
+        "architecture_override_used": False,
         "surface": "reasoner_only_vllm",
         "claim_class": CLAIM_CLASS,
         "result_count": len(results),
@@ -321,7 +356,12 @@ def run() -> int:
         "raw_secret_values_recorded": False,
     }
     _write_json(output_dir / "evaluator_runtime_result.json", runtime)
-    print("BLUEPRINT_COSMOS_REASONER_EVALUATOR_COMPLETED" if runtime["status"] == "completed" else "BLUEPRINT_COSMOS_REASONER_EVALUATOR_BLOCKED", flush=True)
+    print(
+        "BLUEPRINT_COSMOS_REASONER_EVALUATOR_COMPLETED"
+        if runtime["status"] == "completed"
+        else "BLUEPRINT_COSMOS_REASONER_EVALUATOR_BLOCKED",
+        flush=True,
+    )
     return 0 if runtime["status"] == "completed" else 1
 
 
