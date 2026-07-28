@@ -3,7 +3,7 @@
   "generated_at": "2026-07-28T00:59:31.251566+00:00",
   "status": "passed",
   "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11",
-  "bundle_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-successor-run-fd352/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
+  "bundle_path": "workspace://exact-main/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
   "output_path": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11/vast_wam_staging_self_test_output.zip",
   "token_file": {
     "path_redacted": true,

@@ -6,7 +6,7 @@
   "job_dir": "/private/tmp/policy-ranking-successor-live-20260727/provider-job-v11",
   "provider_bundle_url_redacted": "https://prot-preservation-saved-completion.trycloudflare.com/bundle.zip?REDACTED_QUERY",
   "provider_output_put_url_redacted": "https://prot-preservation-saved-completion.trycloudflare.com/output.zip?REDACTED_QUERY",
-  "bundle_path": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-successor-run-fd352/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
+  "bundle_path": "workspace://exact-main/docs/experiments/policy_ranking_successor_experiment_20260727/cosmos3_successor_provider_bundle.zip",
   "output_path": "/private/tmp/policy-ranking-successor-live-20260727/runtime-output-v11-exact-main.zip",
   "max_wait_seconds": 180,
   "retry_interval_seconds": 5.0,

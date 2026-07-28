@@ -1,0 +1,27 @@
+{
+  "schema_version": "policy_ranking_successor_personal_path_sanitization.v1",
+  "experiment_id": "policy_ranking_successor_experiment_20260727",
+  "transformation": "Replace user-specific absolute workspace and secret-file locations with workspace://exact-main and secret-file:// logical locations. No scientific, provider, timing, cost, identity, status, hash-of-input, or hash-of-output field was changed.",
+  "unsanitized_receipt_binding": {
+    "kind": "git_commit_relative_path",
+    "repository": "https://github.com/ognjhunt/BlueprintCapturePipeline",
+    "commit": "56a868bb0bee42abf10c8ebd0b251414ff80acd1",
+    "path_rule": "Each original receipt is the file at the same relative path in this commit. Individual original receipt hashes are intentionally omitted from the publishable packet."
+  },
+  "files": [
+    {"path": "provider_job/vast_blueprint_bundle_preflight.json", "sanitized_sha256": "5d6009784084ff6b81fd914a0499cb3be84ed4fbfa919cf72aadb79f9488bdda"},
+    {"path": "provider_job/vast_bundle_staging_manifest.json", "sanitized_sha256": "a7c9ccb019749f80655e99f0e085b18fd555554833436aeb48a3e36cb159e96c"},
+    {"path": "provider_job/vast_bundle_staging_self_test.json", "sanitized_sha256": "fe247e8a10bcf2306af62e2b4fffa1bd1d212401832e04e7dbcc7b22ceb1602c"},
+    {"path": "provider_job/vast_launch_lock_manifest.json", "sanitized_sha256": "83d098fb49da7caf3ef967f2a492b9193e86d95f06bc11abdc6f36b24e533771"},
+    {"path": "provider_job/vast_provider_adapter_result.json", "sanitized_sha256": "e3b24790960e1fab87d500fa19779a949fd88ad080e8e2facc56c7baeb3e2dae"},
+    {"path": "provider_job/vast_provider_command_result.json", "sanitized_sha256": "79d7b7765f4c9ee205d6ffb2d7acb17cc52791ea73e23754fd93a1b6c6eff400"},
+    {"path": "provider_job/vast_provider_plan.json", "sanitized_sha256": "3d7322209d5fe3b2b47e0b3441dda56851b1886c5f922ef86e7117b21a90053d"},
+    {"path": "provider_job/vast_public_staging_verification.json", "sanitized_sha256": "c06d195c2b85b3be57eadaf3a3f50f6e4b94f441d9878f20d208dd8a1413130e"},
+    {"path": "provider_job/vast_wam_authorized_runner_manifest.json", "sanitized_sha256": "2cd4a6c9dfe5696c2dc895e486b89e64089023cf1b6eaa600921c195480076a9"}
+  ],
+  "unsanitized_receipt_hashes_disclosed": false,
+  "historical_git_objects_rewritten": false,
+  "privacy_scope": "The current publishable tree removes personal paths. Historical Git objects remain the immutable provenance source and are outside this sanitization change.",
+  "original_runtime_output_zip_unchanged": true,
+  "original_runtime_output_zip_sha256": "23d7a9782015ffa08669f3bd8f9e823a096faa96be31196451167f5823ba914a"
+}
