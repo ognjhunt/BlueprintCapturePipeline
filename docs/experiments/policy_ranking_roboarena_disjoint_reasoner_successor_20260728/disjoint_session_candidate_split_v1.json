@@ -10,7 +10,7 @@
     "local_session_directory_count": 3883
   },
   "exclusion": {
-    "phase_a_inventory_path": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728/phase_a_evaluator_inventory_v4.json",
+    "phase_a_inventory_path": "external_evidence_root/phase_a_evaluator_inventory_v4.json",
     "phase_a_inventory_file_sha256": "6b32f0e8b7798b1782e3c42c8e14e1501ae36fcd288d8b09aae5cee4d8a6b6ba",
     "exposed_session_count": 63,
     "unexposed_session_count": 3820,
@@ -77,5 +77,5 @@
     "phase_a_all_gates_did_not_pass",
     "same_snapshot_claim_ceiling_requires_explicit_treatment"
   ],
-  "manifest_sha256": "7e0b4461c349f07bf2cb13d958333bdd53f566853704acf8effe3822da1447ea"
+  "manifest_sha256": "a4fbbc8fa379b87c4ad9bdda2caab89b1fe9f3f5cda631c9a20e1b4e4f928f10"
 }

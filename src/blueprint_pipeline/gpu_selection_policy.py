@@ -132,13 +132,16 @@ def resolve_gpu_selection_policy(
 
 
 def gpu_allowed_by_policy(
-    gpu_name: str,
+    gpu_name: str | Mapping[str, Any],
     policy: Mapping[str, Any],
     *,
     cuda_max_good: Any = None,
 ) -> bool:
     """Whether one offer's GPU is eligible under a resolved policy."""
 
+    if isinstance(gpu_name, Mapping):
+        cuda_max_good = gpu_name.get("cuda_max_good")
+        gpu_name = _text(gpu_name.get("gpu_name"))
     upper = _text(gpu_name).upper()
     denied = tuple(policy.get("denied_gpu_keywords") or ())
     allowed = tuple(policy.get("allowed_gpu_keywords") or ())

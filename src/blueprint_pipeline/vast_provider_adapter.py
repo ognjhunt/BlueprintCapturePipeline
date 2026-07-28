@@ -1561,11 +1561,7 @@ def _select_offer(
             )
         )
         and (not require_direct_port or int(_number(item.get("direct_port_count")) or 0) > 0)
-        and gpu_allowed_by_policy(
-            _string(item.get("gpu_name")),
-            policy,
-            cuda_max_good=item.get("cuda_max_good"),
-        )
+        and gpu_allowed_by_policy(item, policy)
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
         and (not require_avx or item.get("has_avx") is True)
@@ -1673,11 +1669,7 @@ def _offer_selection_manifest(
             )
         )
         and (not require_direct_port or int(_number(item.get("direct_port_count")) or 0) > 0)
-        and gpu_allowed_by_policy(
-            _string(item.get("gpu_name")),
-            policy,
-            cuda_max_good=item.get("cuda_max_good"),
-        )
+        and gpu_allowed_by_policy(item, policy)
         and int(_number(item.get("machine_id")) or -1) not in excluded
         and (not allowed or int(_number(item.get("machine_id")) or -1) in allowed)
     )
