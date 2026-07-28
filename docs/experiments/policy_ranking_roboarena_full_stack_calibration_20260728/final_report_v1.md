@@ -59,7 +59,7 @@ Raw structured responses, frozen predictions, label-unseal ledger, crop audit, c
 
 ## Provider state and publication
 
-All three task Vast instances were destroyed, watchdogs and tunnels were stopped, task staging secret files were deleted, and authenticated Vast inventory was empty after V6. The GPT-5.4 mini batch was cancelled with zero completed requests and zero recorded token usage; its input file was deleted. Provider-zero proves current resource state, not invoice settlement or scientific validity. Exact merged-main publication and final hosted-check bindings are recorded after merge in the external evidence store so this report does not pretend a commit can contain its own SHA.
+All three task Vast instances were destroyed, watchdogs and tunnels were stopped, task staging secret files were deleted, and authenticated Vast inventory was empty after V6. Cancellation was requested for the GPT-5.4 mini batch; it had zero completed requests, zero recorded token usage, no output or error file, and its input file was deleted. The terminal provider receipt records whether the provider advanced the administrative batch object from `cancelling` to `cancelled`. Provider-zero proves current resource state, not invoice settlement or scientific validity. Exact merged-main publication and final hosted-check bindings are recorded after merge in the external evidence store so this report does not pretend a commit can contain its own SHA.
 
 ## Cheapest valid next experiment
 
