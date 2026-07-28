@@ -55,7 +55,7 @@ The current campaign did not execute new skeleton-only, OSCAR purpose-built WAM,
 
 Protocol v1 digest `eab9e7868bcc7cbd774c940c781e8c3a8faac3270cbc942f1248966ba037f683` remains immutable superseded history. Protocol v2 digest is `6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066`; it governs integer prefixes and uses `16` steps (`16/15` seconds) derived from the pinned upstream contract because a live label-free endpoint pilot was unavailable. The source/model/data freeze is `source_revision_license_freeze_v2.json`. Key identities include OSCAR code `4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb`, RoboArena data `7931db81f3f6a48a3245427f7213a4c461f92ccc`, Cosmos3-Nano `411f42a8fdfb8c5b2583cb8786e0938f49796eaa`, vLLM-Omni `9c1b7504b178afcf541867c1a2d30db48c69cda8`, and Phase-A evaluator `gpt-5-mini-2025-08-07`.
 
-Raw structured responses, frozen predictions, label-unseal ledger, crop audit, collapse report, Gemini analysis, Reasoner ledgers, and provider receipts remain under `/Users/nijelhunt_1/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728`. Review media locations and hashes are indexed by `review_gallery_manifest_v1.json`.
+Raw structured responses, frozen predictions, label-unseal ledger, crop audit, collapse report, Gemini analysis, Reasoner ledgers, and provider receipts remain under `$HOME/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728`. Review media locations and hashes are indexed by `review_gallery_manifest_v1.json`.
 
 ## Provider state and publication
 
