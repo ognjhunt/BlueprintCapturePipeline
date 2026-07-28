@@ -1,0 +1,33 @@
+{
+  "schema_version": "policy_ranking_roboarena_review_gallery.v1",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "local_evidence_root": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728",
+  "phase_a_generated_only_contact_sheet": {
+    "path": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728/phase_a_generated_crops_v2/review/representative_generated_crops.png",
+    "sha256": "f7fedb1385bd00d9e1f14487861165003f3da21c609411c460d87f41995e108a",
+    "request_count": 14,
+    "policy_count": 7,
+    "frame_count": 42,
+    "selection_rule": "lexicographically_first_and_last_session_per_policy_then_first_middle_last_sample"
+  },
+  "full_oscar_media_root": {
+    "path": "/Users/nijelhunt_1/workspace/policy-ranking-experiment-2-inputs/OSCAR_policy_rollout",
+    "video_count": 441,
+    "immutable_per_video_hashes": "phase_a_crop_layout_audit_manifest_v2.json in the external evidence root",
+    "warning": "Each source compare video includes generated and physical halves. Only the audited generated crop was evaluator input."
+  },
+  "collapse_and_failure_index": {
+    "path": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728/phase_a_collapse_audit_v1.json",
+    "static_or_frozen": 36,
+    "repeated_loop": 1,
+    "sudden_discontinuity": 2,
+    "retained": true
+  },
+  "historical_oscar_visible_and_scene_masked_evidence": "docs/experiments/policy_ranking_thesis_experiment_2_20260727",
+  "historical_native_cosmos_evidence": "docs/experiments/policy_ranking_cosmos3_followup_20260728",
+  "current_phase_b_wam_arm_gallery": {
+    "available": false,
+    "reason": "Phase B was not admitted or executed, so no new skeleton-only, OSCAR WAM, native Cosmos WAM, or registered hybrid full-episode media exists."
+  },
+  "claim_boundary": "The gallery supports review and failure inspection. Attractive or generated media is not physical success, rank fidelity, captured-site accuracy, or WAM causal qualification."
+}

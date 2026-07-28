@@ -1,6 +1,9 @@
 # RoboArena/DROID whole-stack calibration — 2026-07-28
 
-Status: `phase_a_v4_schema_fix_ready_for_retry_after_zero_row_v3_failure`
+Status: `terminal_inconclusive`
+
+Terminal report: `final_report_v1.md`. Machine-readable verdict:
+`final_verdict_v1.json`.
 
 This is a new experiment. It does not reopen or modify the sealed OSCAR
 Experiment 2 or Cosmos3 follow-up verdicts.

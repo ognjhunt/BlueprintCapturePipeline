@@ -1,0 +1,71 @@
+{
+  "schema_version": "policy_ranking_roboarena_claim_evidence_matrix.v1",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "overall_verdict": "inconclusive",
+  "claims": [
+    {
+      "component": "cosmos_wam_qualification",
+      "verdict": "inconclusive",
+      "positive_credit": false,
+      "evidence": [
+        "docs/experiments/policy_ranking_cosmos3_followup_20260728/final_report.md",
+        "cosmos3_reasoner_pilot_v4/session_budget_ledger.json in external evidence root",
+        "cosmos3_reasoner_pilot_v5/session_budget_ledger.json in external evidence root",
+        "cosmos3_reasoner_pilot_v6/session_budget_ledger.json in external evidence root",
+        "cosmos_reasoner_pilot_v6_closeout.json"
+      ],
+      "missing_or_blocked": [
+        "corrected powered native Cosmos WAM causal screen",
+        "scene-masked action response",
+        "rollout-depth robustness",
+        "closed-loop policy re-query",
+        "qualified abstention"
+      ]
+    },
+    {
+      "component": "frozen_benchmark_calibration",
+      "verdict": "not_supported_for_frozen_gpt5_mini_phase_a_stack",
+      "positive_credit": false,
+      "evidence": [
+        "phase_a_analysis_report_v4.json in external evidence root",
+        "phase_a_frozen_predictions_v4.json in external evidence root",
+        "phase_a_label_unseal_ledger_v4.json in external evidence root",
+        "gemini36_flash_full_matrix_v1/analysis.json in external evidence root"
+      ],
+      "claim_ceiling": "Phase A is known-answer reproduction; Gemini is post-unseal diagnostic only."
+    },
+    {
+      "component": "captured_site_transfer",
+      "verdict": "inconclusive",
+      "positive_credit": false,
+      "evidence": [
+        "phase_b_availability_refresh_v1/availability_report.json in external evidence root"
+      ],
+      "missing_or_blocked": [
+        "Phase-B admission",
+        "captured-site full episodes",
+        "independently attributable same-site physical outcomes"
+      ]
+    },
+    {
+      "component": "economics_and_speed",
+      "verdict": "inconclusive",
+      "positive_credit": false,
+      "evidence": [
+        "campaign_cost_and_time_ledger_v1.json",
+        "phase_a_evaluator_run_v4/run.json in external evidence root",
+        "gemini36_flash_full_matrix_v1/collection.json in external evidence root",
+        "cosmos3_reasoner_pilot_v4/job/vast_budget_ledger.json in external evidence root",
+        "cosmos3_reasoner_pilot_v5/job/vast_budget_ledger.json in external evidence root",
+        "cosmos3_reasoner_pilot_v6/job/vast_budget_ledger.json in external evidence root"
+      ],
+      "missing_or_blocked": [
+        "completed end-to-end useful ranking",
+        "physical monetary anchor",
+        "setup reset failure and labor accounting",
+        "break-even policy count"
+      ]
+    }
+  ],
+  "anti_combination_rule": "A passing transport, generated clip, simulator result, evaluator score, historical baseline, or diagnostic challenger is never promoted across a missing component boundary."
+}
