@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Sequence
+from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
@@ -3848,6 +3848,7 @@ def run_vast_provider_adapter(
     retain_instance_on_runtime_failure: bool = False,
     retention_watchdog_handoff: Mapping[str, Any] | None = None,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
+    pre_provider_mutation_hook: Callable[[], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
@@ -4916,6 +4917,7 @@ def run_vast_provider_adapter(
     try:
         search_request = _search_payload(limit=100, max_hourly_rate=max_hourly_rate)
         create_retry_attempts: list[dict[str, Any]] = []
+        pre_provider_mutation_result: dict[str, Any] | None = None
         max_stale_offer_retries = _vast_stale_offer_create_retry_attempts()
         create_status = 0
         create_response: dict[str, Any] = {}
@@ -5047,6 +5049,18 @@ def run_vast_provider_adapter(
                 create_attempt_index=create_attempt_index,
             )
             try:
+                if pre_provider_mutation_hook is not None and pre_provider_mutation_result is None:
+                    pre_provider_mutation_result = dict(pre_provider_mutation_hook())
+                    base_result["pre_provider_mutation_hook_result"] = pre_provider_mutation_result
+                    if pre_provider_mutation_result.get("status") != "consumed":
+                        hook_blockers = _string_list(
+                            pre_provider_mutation_result.get("blockers")
+                        )
+                        raise RuntimeError(
+                            hook_blockers[0]
+                            if hook_blockers
+                            else "pre_provider_mutation_authorization_not_consumed"
+                        )
                 base_result["provider_create_attempted"] = True
                 create_status, create_response = _api_json(
                     method="PUT",

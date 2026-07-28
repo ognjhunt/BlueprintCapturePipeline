@@ -8,7 +8,7 @@
   "compute_cap_authorized_usd": 6.0,
   "actual_compute_spend_usd": 0.050839,
   "actual_compute_spend_basis": "cumulative all-in provider-rate estimate: USD 0.029948 for the 97.485577-second v3 cold-start failure at USD 1.1059259259259258/hour plus USD 0.020891 for the 62.240012-second v5 runtime-bundle validation failure at USD 1.2083333333333333/hour; the conservative sum of per-attempt rounded charges is USD 0.050839 and provider invoice reconciliation remains pending",
-  "allocation_status": "v3 cold-container orchestration failure and v5 action-key ordering failure are closed with teardown and provider-zero proof; v6 was consumed by expired quick-tunnel DNS before provider mutation, and v7 replaces it at zero spend under the unchanged USD 6 cap",
+  "allocation_status": "v3 cold-container orchestration failure and v5 action-key ordering failure are closed with teardown and provider-zero proof; v6 was consumed by expired quick-tunnel DNS before provider mutation, and v7 replaces it at zero spend under the unchanged USD 6 cap with consumption deferred until immediately before provider create",
   "last_live_attempt": {
     "authorization_id": "policy-ranking-successor-cosmos-smoke-20260727-cap-6p00-v5",
     "provider_instance_id": 46051923,
