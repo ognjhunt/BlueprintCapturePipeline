@@ -1,5 +1,53 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-26
+
+### User-Facing
+
+- Completed the frozen policy-ranking thesis experiment with an `inconclusive`
+  verdict. Calibration failed the selective-coverage and action-following gates,
+  while rate limits left the required held-out matrix unmeasured; the frozen
+  protocol therefore forbids either a support or definitive-falsification claim
+  (`docs/experiments/policy_ranking_thesis_20260726/final_verdict.md`).
+- Executed 24 contract-valid OpenPI/MuJoCo GPU episodes across NVIDIA Warehouse
+  and InteriorGS-derived scene lanes. Both lanes abstained from a total ranking;
+  this proves pipeline ingestion and learned-policy execution, not useful policy
+  ordering, site-specific physical success, or transfer of the OSCAR/GPT
+  evaluator stack (`src/blueprint_pipeline/openpi_policy_ranking_runpod.py`,
+  `src/blueprint_pipeline/captured_site_policy_ranking.py`).
+
+### Employee-Facing
+
+- Split orchestrator authority, release source, runtime image, and mutable
+  overlay identities in qualification and paid-resource admission. Spend
+  watchdog ownership now survives authorized identity migration, and a
+  WAM-primary evaluation authority cannot silently fall back to legacy Isaac
+  scoring (`src/blueprint_pipeline/single_g1_kitchen_qualification_contract.py`,
+  `src/blueprint_pipeline/paid_resource_allocator.py`,
+  `scripts/gpu_spend_guard.py`,
+  `src/blueprint_pipeline/wam_isaac_evaluation_hierarchy.py`).
+- Added an allocator-governed OpenPI GPU build/run lane with checkpoint,
+  action-space, scene, image-result, lease, budget, and teardown controls. Final
+  Vast absence was API-confirmed and the reservation settled; teardown proof is
+  separate from ranking or task-success proof
+  (`src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py`,
+  `src/blueprint_pipeline/paid_lane_guard.py`,
+  `src/blueprint_pipeline/gpu_render_providers.py`).
+
+### Future-Agent-Facing
+
+- The America/Chicago window contains ten first-parent `main` commits,
+  `dd38227a` through `1a7376e7` (including PRs #192 and #197). At review,
+  `HEAD == main == origin/main`, divergence is `0 0`, the worktree is clean,
+  and no attributable uncommitted July 26 source work is recorded.
+- Preserve the frozen retry limit and held-out abstention. A provider reset or
+  new evaluator arm requires a separately preregistered experiment; do not
+  retrofit the missing held-out result or equate deterministic MuJoCo scoring
+  with the unexecuted OSCAR/GPT cross-lane transfer.
+- Raw capture, provenance, rights, and privacy evidence remain authoritative.
+  Benchmark reports, generated media, simulator episodes, ranking summaries,
+  provider receipts, and this changelog are downstream support artifacts.
+
 ## 2026-07-25
 
 ### User-Facing

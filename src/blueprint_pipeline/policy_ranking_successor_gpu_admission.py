@@ -480,12 +480,31 @@ def _consume_authorization_once(
         "consumed_at_epoch": time.time(),
         "maximum_provider_allocations": 1,
     }
+    record_bytes = (
+        json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    record_sha256 = hashlib.sha256(record_bytes).hexdigest()
+    temporary_path = root / (
+        f".{authorization_id}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+    )
     try:
         descriptor = os.open(
-            record_path,
+            temporary_path,
             os.O_CREAT | os.O_EXCL | os.O_WRONLY,
             0o600,
         )
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": ["successor_authorization_consumption_write_failed"],
+            "authorization_id": authorization_id,
+        }
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(record_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary_path, record_path)
     except FileExistsError:
         return {
             "status": "blocked",
@@ -498,22 +517,15 @@ def _consume_authorization_once(
             "blockers": ["successor_authorization_consumption_write_failed"],
             "authorization_id": authorization_id,
         }
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(record, handle, sort_keys=True, separators=(",", ":"))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-    except OSError:
-        return {
-            "status": "blocked",
-            "blockers": ["successor_authorization_consumption_write_failed"],
-            "authorization_id": authorization_id,
-        }
+    finally:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     return {
         "status": "consumed",
         "authorization_id": authorization_id,
-        "consumption_record_sha256": _sha256_file(record_path),
+        "consumption_record_sha256": record_sha256,
         "record_location_disclosed": False,
     }
 
@@ -679,30 +691,35 @@ def run_successor_gpu_lane(
         }
         write_json(Path(adapter_output), result)
         return result
-    consumption = _consume_authorization_once(
-        authorization,
-        expected_source_commit=expected_source_commit,
-    )
-    if consumption["status"] != "consumed":
-        result = {
-            "status": "blocked",
-            "reason": "single_use_compute_authorization_blocked",
-            "blockers": consumption.get("blockers") or [],
-            "authorization_consumption": consumption,
-            "provider_mutations_performed": 0,
-        }
-        write_json(Path(adapter_output), result)
-        return result
-    admission["authorization_consumption"] = consumption
-    admission["manifest_sha256"] = canonical_sha256(
-        {key: value for key, value in admission.items() if key != "manifest_sha256"}
-    )
-    write_json(Path(admission_out), admission)
-    bound["authorization_consumption"] = consumption
-    bound["manifest_sha256"] = canonical_sha256(
-        {key: value for key, value in bound.items() if key != "manifest_sha256"}
-    )
-    write_json(Path(bound_request_out), bound)
+    consumption: dict[str, Any] = {
+        "status": "not_consumed",
+        "reason": "awaiting_verified_staging_and_selected_offer",
+        "provider_mutations_performed": 0,
+    }
+
+    def consume_immediately_before_provider_mutation() -> Mapping[str, Any]:
+        nonlocal consumption
+        observed_preflight_epoch = provider_preflight.get("observed_at_epoch")
+        mutation_now_epoch = time.time()
+        if (
+            type(observed_preflight_epoch) not in {int, float}
+            or not math.isfinite(float(observed_preflight_epoch))
+            or not 0.0
+            <= mutation_now_epoch - float(observed_preflight_epoch)
+            <= MAX_PREFLIGHT_AGE_SECONDS
+        ):
+            consumption = {
+                "status": "blocked",
+                "blockers": ["successor_vast_preflight_stale_or_future_at_provider_mutation"],
+                "provider_mutations_performed": 0,
+            }
+            return consumption
+        consumption = _consume_authorization_once(
+            authorization,
+            expected_source_commit=expected_source_commit,
+        )
+        return consumption
+
     result = run_vast_wam_authorized_runner(
         job_dir=job_dir,
         bundle_path=provider_bundle_path,
@@ -741,7 +758,25 @@ def run_successor_gpu_lane(
             "checkpoint_revision": CHECKPOINT_REVISION,
         },
         paid_resource_admission_grant=grant,
+        pre_provider_mutation_hook=consume_immediately_before_provider_mutation,
     )
+    if consumption["status"] != "consumed":
+        blockers = [str(item) for item in result.get("blockers") or []]
+        if result.get("status") in {"completed", "retained_owned"}:
+            blockers.append("successor_compute_authorization_not_consumed_before_provider_mutation")
+            result["status"] = "blocked"
+        result["blockers"] = sorted(set(blockers))
+    else:
+        admission["authorization_consumption"] = consumption
+        admission["manifest_sha256"] = canonical_sha256(
+            {key: value for key, value in admission.items() if key != "manifest_sha256"}
+        )
+        write_json(Path(admission_out), admission)
+        bound["authorization_consumption"] = consumption
+        bound["manifest_sha256"] = canonical_sha256(
+            {key: value for key, value in bound.items() if key != "manifest_sha256"}
+        )
+        write_json(Path(bound_request_out), bound)
     result["authorization_consumption"] = consumption
     write_json(Path(adapter_output), result)
     return result
