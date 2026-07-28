@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 import numpy as np
 
-import blueprint_pipeline.wam_rollout_reliability as reliability
 from blueprint_pipeline.wam_rollout_reliability import (
     ACTION_DIM,
     FLAG_STATIC_UNDER_COMMAND,
@@ -12,6 +11,7 @@ from blueprint_pipeline.wam_rollout_reliability import (
     ROT6D_IDENTITY,
     RolloutReliabilityReport,
     SessionReliabilityThresholds,
+    assess_rollout_reliability,
     assess_session_reliability,
 )
 
@@ -106,12 +106,11 @@ def test_session_scope_records_timing_only_when_explicit(monkeypatch) -> None:
     actions[:8, 0] = 0.02
     motion = np.asarray([0.1] * 8 + [1.0] * 8)
     monkeypatch.setattr(
-        reliability,
-        "video_motion_series",
+        "blueprint_pipeline.wam_rollout_reliability.video_motion_series",
         lambda *_args, **_kwargs: (motion, 20.0, 17),
     )
 
-    session_scoped = reliability.assess_rollout_reliability(
+    session_scoped = assess_rollout_reliability(
         "fixture.mp4",
         actions,
         timing_flag_scope="session",
@@ -121,7 +120,7 @@ def test_session_scope_records_timing_only_when_explicit(monkeypatch) -> None:
     assert session_scoped.timing_flag_scope == "session"
     assert FLAG_TIMING_DISAGREEMENT not in session_scoped.flags
 
-    default_window_scoped = reliability.assess_rollout_reliability(
+    default_window_scoped = assess_rollout_reliability(
         "fixture.mp4",
         actions,
     )
