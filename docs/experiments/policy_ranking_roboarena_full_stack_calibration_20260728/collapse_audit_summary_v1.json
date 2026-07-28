@@ -5,7 +5,7 @@
   "crop_audit_sha256": "9ac0e05c49468593598ef2cb49e60c977f74d434a05b7d478730b01f45b2511d",
   "report_sha256": "a8684e7b2761cff2b811aded59aba9e56c16f2949b21d3f9abc02f554de9efe3",
   "report_file_sha256": "caf4aa039a4fb5f1395949929f09c8ba6ca0790bfdebeb711ad03c90f7cc81d4",
-  "report_path": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728/phase_a_collapse_audit_v1.json",
+  "report_path": "external-evidence://phase_a_collapse_audit_v1.json",
   "episode_count": 441,
   "flagged_episode_count": 39,
   "flag_counts": {

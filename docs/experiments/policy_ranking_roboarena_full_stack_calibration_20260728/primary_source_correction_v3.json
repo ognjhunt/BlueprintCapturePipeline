@@ -61,7 +61,7 @@
       "pdf_sha256": "0f793633ba5767b6e93f01056dcd5c3357dabcaf70844cd0a157a364fa843698"
     }
   ],
-  "local_evidence_root": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728/sources/primary_papers_post_execution_correction",
+  "local_evidence_root": "external-evidence://sources/primary_papers_post_execution_correction",
   "scientific_effect": "The 441 frozen evaluator outputs are unchanged, but the campaign did not satisfy the required pre-execution primary-source verification. The corrected papers also show that Blueprint's frozen evaluator protocol is not an exact reproduction of OSCAR, RoboWorld, SC3-Eval, or Ctrl-World. This is a methodological confound and prevents a strong terminal claim.",
   "rerun_policy": "No evaluator rerun on the exposed answer key receives independent or confirmatory credit. A corrected evaluator arm requires prospective registration and a new untouched benchmark snapshot.",
   "claim_boundary": "Post-execution source correction only; it does not retroactively validate the protocol or alter the frozen rank result."

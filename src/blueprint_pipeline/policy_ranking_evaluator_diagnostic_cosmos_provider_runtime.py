@@ -60,7 +60,9 @@ def _http_json(method: str, url: str, payload: Mapping[str, Any] | None = None, 
         method=method,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.urlopen(  # nosec B310 - fixed loopback reasoner endpoint
+        request, timeout=timeout
+    ) as response:
         value = json.loads(response.read().decode("utf-8"))
     if not isinstance(value, Mapping):
         raise ValueError("provider_response_not_object")

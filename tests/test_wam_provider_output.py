@@ -60,6 +60,24 @@ def test_provider_output_inspection_is_provider_neutral(tmp_path: Path) -> None:
     assert result["video_smoke_proven"] is False
 
 
+def test_runtime_summary_adds_evaluator_fields_only_for_attributable_result() -> None:
+    summary = summarize_runtime_result(
+        {
+            "status": "completed",
+            "result_count": 7,
+            "error_count": 0,
+            "model": "nvidia/Cosmos3-Nano",
+            "claim_class": "post_unseal_diagnostic_only",
+        }
+    )
+
+    assert summary is not None
+    assert summary["evaluator_result_count"] == 7
+    assert summary["evaluator_error_count"] == 0
+    assert summary["evaluator_model"] == "nvidia/Cosmos3-Nano"
+    assert summary["claim_class"] == "post_unseal_diagnostic_only"
+
+
 def test_provider_output_video_probe_is_injected(tmp_path: Path) -> None:
     output_zip = tmp_path / "provider-output.zip"
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:

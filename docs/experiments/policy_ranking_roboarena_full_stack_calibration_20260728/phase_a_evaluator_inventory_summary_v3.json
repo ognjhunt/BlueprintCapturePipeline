@@ -10,7 +10,7 @@
   "evaluator_digest": "6b22136e8708223bd8b8213ca907632659d23949c7a196957af087ae2a197f57",
   "inventory_sha256": "7e04a9f9c877396778456698fcda121c09aa86fbae4d248d90b93bd4cf712915",
   "inventory_file_sha256": "97055f496c2174cd2834fe9df8250e6d49409b5abddb13318e2bb36a8f8f5af7",
-  "inventory_path": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728/phase_a_evaluator_inventory_v3.json",
+  "inventory_path": "external-evidence://phase_a_evaluator_inventory_v3.json",
   "request_count": 441,
   "deterministic_safety_abstention_recommended_count": 39,
   "model": "gpt-5-mini-2025-08-07",
