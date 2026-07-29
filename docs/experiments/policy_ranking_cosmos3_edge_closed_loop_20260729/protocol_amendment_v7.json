@@ -1,0 +1,30 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v7",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T10:45:00-0500",
+  "supersedes_amendment_sha256": "a27cbeb11c58b1b2d0a2953f85ad44ca3a36d2a906dcb1cd5d5f028d498bac9a",
+  "phase": "phase_2_exact_public_oscar_compatibility",
+  "triggering_failure": "The v2 local bundle was blocked before provider execution because the generic RGB review-video smoke rejected the exact public sparse skeleton-on-black conditioning stream.",
+  "prospective_input_gate": {
+    "name": "decoded_sparse_texture_free_skeleton_signal",
+    "scope": "separate texture-free camera-aligned skeleton streams",
+    "sample_count": 6,
+    "foreground_threshold_uint8": 32,
+    "minimum_foreground_fraction": 0.0002,
+    "maximum_foreground_fraction": 0.25,
+    "all_sampled_frames_must_decode": true,
+    "blank_or_near_blank_stream_blocks": true,
+    "dense_scene_like_stream_blocks_sparse_gate": true,
+    "generic_rgb_visual_smoke_bypassed_only_after_sparse_gate_passes": true
+  },
+  "scientific_inputs_changed": false,
+  "public_source_or_checkpoint_changed": false,
+  "sampling_settings_changed": false,
+  "physical_future_rgb_admitted": false,
+  "maximum_successor_allocations_without_another_amendment": 1,
+  "paid_execution_admitted": false,
+  "provider_called_for_successor_bundle": false,
+  "physical_outcome_labels_accessed": false,
+  "claim_boundary": "This is decoded input validation, not proof of WAM execution, world consequence prediction, causal validity, ranking, captured-site transfer, economics, physical success, or thesis support.",
+  "amendment_sha256": "675dd0627686dd7bb51b9c37b3c20cf9f58593a865b33929deef740a2b05ac52"
+}

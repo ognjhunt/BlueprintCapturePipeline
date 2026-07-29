@@ -172,7 +172,9 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
         ("protocol_amendment_v4.json", "amendment_sha256"),
         ("protocol_amendment_v5.json", "amendment_sha256"),
         ("protocol_amendment_v6.json", "amendment_sha256"),
+        ("protocol_amendment_v7.json", "amendment_sha256"),
         ("oscar_public_contract_audit_v1.json", "record_sha256"),
+        ("oscar_replay_bundle_v2_pre_provider_input_gate_incident_v1.json", "record_sha256"),
         ("policy_canary_bundle_overwrite_incident_v1.json", "record_sha256"),
         ("policy_canary_bundle_concurrent_supersession_v1.json", "record_sha256"),
         ("allocation_4_pre_provider_gate_v1.json", "record_sha256"),
@@ -251,6 +253,12 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
     assert payloads["protocol_amendment_v6.json"]["prospective_change"]["successor_fps"] == (
         14.0
     )
+    assert payloads["protocol_amendment_v7.json"]["prospective_input_gate"][
+        "minimum_foreground_fraction"
+    ] == 0.0002
+    assert payloads["oscar_replay_bundle_v2_pre_provider_input_gate_incident_v1.json"][
+        "provider_called"
+    ] is False
     assert payloads["oscar_public_contract_audit_v1.json"]["paper"]["classification"] == (
         "open_loop_recorded_action_replay"
     )

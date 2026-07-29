@@ -50,6 +50,8 @@ DEFAULT_OSCAR_HF_REPO = OFFICIAL_OSCAR_HF_REPO
 DEFAULT_OSCAR_HF_REVISION = OFFICIAL_OSCAR_HF_REVISION
 DEFAULT_BUNDLE_FILENAME = "oscar_wam_provider_runtime_bundle.zip"
 ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV = "BLUEPRINT_ALLOW_EXPERIMENTAL_OSCAR_WAM_VERSION"
+TEXTURE_FREE_SKELETON_MIN_FOREGROUND_FRACTION = 0.0002
+TEXTURE_FREE_SKELETON_MAX_FOREGROUND_FRACTION = 0.25
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -1035,6 +1037,14 @@ def _conditioning_video_model_input_useful(
 ) -> bool:
     visual_signal = _mapping(skeleton_video.get("visual_signal"))
     visual_signal_blockers = list(visual_signal.get("blockers") or [])
+    sparse_signal = _mapping(skeleton_video.get("texture_free_skeleton_signal"))
+    if (
+        skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and skeleton_video.get("skeleton_stream_texture_free")
+        and skeleton_video.get("skeleton_stream_image_aligned_to_rgb")
+        and sparse_signal.get("status") == "passed_sparse_texture_free_skeleton"
+    ):
+        return True
     if (
         _is_oscar_projected_gripper_axes_stream(skeleton_video)
         and skeleton_video.get("skeleton_stream_separate_from_rgb")
@@ -1067,6 +1077,64 @@ def _conditioning_video_model_input_useful(
             "visual_rollout_useful_for_task_success_review"
         )
     )
+
+
+def _measure_texture_free_skeleton_signal(path: Path, *, sample_count: int = 6) -> dict[str, Any]:
+    """Validate sparse geometry on black without applying RGB-scene brightness gates."""
+
+    import cv2
+    import numpy as np
+
+    capture = cv2.VideoCapture(str(path))
+    try:
+        frame_count = max(int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0), 0)
+        if not capture.isOpened() or frame_count <= 0:
+            return {
+                "status": "blocked",
+                "sampled_frame_count": 0,
+                "blockers": ["texture_free_skeleton_video_unreadable"],
+            }
+        count = min(max(int(sample_count), 1), frame_count)
+        indices = np.linspace(0, frame_count - 1, num=count, dtype=int)
+        fractions: list[float] = []
+        for index in indices:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                continue
+            foreground = np.max(frame, axis=2) >= 32
+            fractions.append(float(np.mean(foreground)))
+        minimum = min(fractions or [0.0])
+        maximum = max(fractions or [0.0])
+        blockers: list[str] = []
+        if len(fractions) != count:
+            blockers.append("texture_free_skeleton_sample_frame_unreadable")
+        if minimum < TEXTURE_FREE_SKELETON_MIN_FOREGROUND_FRACTION:
+            blockers.append("texture_free_skeleton_foreground_missing")
+        if maximum > TEXTURE_FREE_SKELETON_MAX_FOREGROUND_FRACTION:
+            blockers.append("texture_free_skeleton_foreground_not_sparse")
+        return {
+            "status": "passed_sparse_texture_free_skeleton" if not blockers else "blocked",
+            "sampled_frame_count": len(fractions),
+            "expected_sampled_frame_count": count,
+            "sampled_frame_indices": [int(value) for value in indices],
+            "minimum_foreground_fraction": minimum,
+            "maximum_foreground_fraction": maximum,
+            "foreground_threshold_uint8": 32,
+            "minimum_required_foreground_fraction": (
+                TEXTURE_FREE_SKELETON_MIN_FOREGROUND_FRACTION
+            ),
+            "maximum_allowed_foreground_fraction": (
+                TEXTURE_FREE_SKELETON_MAX_FOREGROUND_FRACTION
+            ),
+            "blockers": blockers,
+            "claim_boundary": {
+                "sparse_signal_check_is_model_input_validation_only": True,
+                "sparse_signal_check_is_not_wam_output_or_ranking_proof": True,
+            },
+        }
+    finally:
+        capture.release()
 
 
 def _omit_local_path_field(section: dict[str, Any], key: str) -> None:
@@ -2075,6 +2143,7 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
     visual_smoke = _mapping(input_package.get("conditioning_video_visual_smoke"))
     skeleton_video = _mapping(input_package.get("skeleton_video"))
     visual_signal = _mapping(skeleton_video.get("visual_signal"))
+    texture_free_signal = _mapping(skeleton_video.get("texture_free_skeleton_signal"))
     claim_boundary = _mapping(input_package.get("claim_boundary"))
     projected_trace = _mapping(input_package.get("projected_skeleton_trace"))
     requested_output = _mapping(input_package.get("requested_output"))
@@ -2099,6 +2168,12 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
         and skeleton_video.get("skeleton_stream_separate_from_rgb")
         and skeleton_video.get("skeleton_stream_texture_free")
     )
+    validated_sparse_texture_free_stream = bool(
+        skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and skeleton_video.get("skeleton_stream_texture_free")
+        and skeleton_video.get("skeleton_stream_image_aligned_to_rgb")
+        and texture_free_signal.get("status") == "passed_sparse_texture_free_skeleton"
+    )
     if validation.get("status") != "completed":
         blockers.append("oscar_input_skeleton_conditioning_video_unreadable")
     if input_package.get("conditioning_video_decode_valid_for_review") is not True:
@@ -2107,6 +2182,7 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
         visual_smoke.get("status") != "passed_visual_quality_smoke"
         and not pure_projected_skeleton_stream
         and not pure_projected_gripper_axes_stream
+        and not validated_sparse_texture_free_stream
     ):
         blockers.append("oscar_input_skeleton_conditioning_video_visual_smoke_failed")
     if input_package.get("conditioning_video_visually_useful_for_model_input") is not True:
@@ -2846,6 +2922,14 @@ def _materialized_package_from_existing(
         conditioning_validation.get("status") == "completed"
     )
     skeleton_video = _mapping(manifest.get("skeleton_video"))
+    if (
+        skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and skeleton_video.get("skeleton_stream_texture_free")
+    ):
+        skeleton_video["texture_free_skeleton_signal"] = (
+            _measure_texture_free_skeleton_signal(skeleton)
+        )
+        manifest["skeleton_video"] = skeleton_video
     if not _mapping(skeleton_video.get("visual_signal")):
         smoke_passed = any(
             _mapping(rollout).get("status") == "passed_visual_quality_smoke"
