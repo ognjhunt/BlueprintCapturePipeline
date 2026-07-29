@@ -1,0 +1,21 @@
+{
+  "schema_version": "policy_ranking_oscar_public_replay_environment.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "source_commit": "3af77a81a608398b269d73ed331d5d5f5c48e545",
+  "checkpoint": {
+    "repository": "zywu2115/OSCAR-2B",
+    "revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+    "remote_code_policy": "no_unpinned_remote_code_and_trust_remote_code_false"
+  },
+  "upstream_source": {
+    "oscar": {
+      "repository": "https://github.com/wuzy2115/oscar-public",
+      "revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb"
+    },
+    "vllm_omni": {
+      "runtime_image": "docker.io/nijelhunt/blueprint-oscar-wam@sha256:b0f3f675023d4333767d798b565fc049ac5ba788cd7041db5cac7f9784fd49b3"
+    }
+  },
+  "physical_outcome_labels_accessed": false,
+  "raw_secret_values_recorded": false
+}

@@ -1,0 +1,40 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v5",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T10:34:55-0500",
+  "supersedes_amendment_sha256": "a8c36efcbe8ea1a6efd00667841914781b04c517c120212ef81b4fe75cc8be54",
+  "prospective_arm": "oscar_public_replay",
+  "purpose": "Run one exact public OSCAR DROID replay canary before attempting Blueprint's prospective policy-to-OSCAR-to-policy extension.",
+  "frozen_runtime": {
+    "official_case": "droid_TRI",
+    "oscar_source_revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "oscar_checkpoint": "zywu2115/OSCAR-2B",
+    "oscar_checkpoint_revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+    "public_image": "docker.io/nijelhunt/blueprint-oscar-wam@sha256:b0f3f675023d4333767d798b565fc049ac5ba788cd7041db5cac7f9784fd49b3",
+    "num_frames": 81,
+    "height": 480,
+    "width": 640,
+    "num_inference_steps": 35,
+    "guidance": 6.0,
+    "seed": 42,
+    "future_rgb_video_enabled": false,
+    "task_prompt_source": "safe task-specific caption in the frozen official case metadata"
+  },
+  "request_budget": {
+    "qualification_canary_request_count": 1,
+    "scientific_matrix_request_count": 0,
+    "total_initial_generation_request_count": 1
+  },
+  "conditioning_validation_change": {
+    "world_video_scene_gate_removed_from_texture_free_skeleton_inputs": true,
+    "texture_free_skeleton_decode_and_visible_signal_required": true,
+    "active_action_skeleton_temporal_change_threshold_mean_absolute_difference": 0.1,
+    "registered_no_motion_control_may_remain_static": true,
+    "generated_world_outputs_still_require_scene_and_collapse_checks": true
+  },
+  "physical_outcome_labels_accessed": false,
+  "paid_execution_admitted": false,
+  "provider_called_for_successor_bundle": false,
+  "claim_boundary": "A pass establishes only exact public OSCAR runtime compatibility and one generated replay. It does not establish live policy re-query, WAM causal qualification, ranking fidelity, captured-site transfer, economics, or physical success.",
+  "amendment_sha256": "15cb36107e7011cf9948c1f744e1daa6f3cab887a5ae11145052c541cd9a8e10"
+}
