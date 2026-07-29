@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -17,6 +19,10 @@ from blueprint_pipeline.oscar_official_release import (  # noqa: E402
     OFFICIAL_OSCAR_HF_REVISION,
     OFFICIAL_OSCAR_SOURCE_COMMIT,
     official_release_contract,
+)
+from blueprint_pipeline.policy_ranking_successor_gpu_admission import (  # noqa: E402
+    OSCAR_PUBLIC_REPLAY_PROFILE,
+    inspect_successor_bundle,
 )
 
 
@@ -772,7 +778,7 @@ def test_build_oscar_wam_provider_bundle_records_official_case_smoke_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_SMOKE", "agibot_465")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_SMOKE", "droid_TRI")
     monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_USE_SCRIPT", "true")
     rollout_input = tmp_path / "wam_rollout_input_manifest.json"
     rollout_input.write_text(
@@ -795,15 +801,62 @@ def test_build_oscar_wam_provider_bundle_records_official_case_smoke_env(
         wam_rollout_input_manifest=rollout_input,
         oscar_input_dir=oscar_input,
         generated_at="2026-06-21T00:00:00+00:00",
+        experiment_id=OSCAR_PUBLIC_REPLAY_PROFILE.experiment_id,
     )
 
     with zipfile.ZipFile(Path(str(manifest["bundle_path"]))) as archive:
         runtime_manifest = json.loads(
             archive.read("provider_runtime/wam_provider_runtime_manifest.json").decode("utf-8")
         )
-    assert runtime_manifest["official_case_smoke"] == "agibot_465"
+    assert runtime_manifest["official_case_smoke"] == "droid_TRI"
     assert runtime_manifest["official_case_rgb_video"] == ""
     assert runtime_manifest["official_case_use_script"] == "true"
+    bundle_path = Path(str(manifest["bundle_path"]))
+    with zipfile.ZipFile(bundle_path) as archive:
+        embedded = {
+            "runtime_manifest_file_sha256": hashlib.sha256(
+                archive.read("provider_runtime/wam_provider_runtime_manifest.json")
+            ).hexdigest(),
+            "rollout_manifest_file_sha256": hashlib.sha256(
+                archive.read("provider_runtime/wam_rollout_input_manifest.json")
+            ).hexdigest(),
+            "first_frame_sha256": hashlib.sha256(
+                archive.read("provider_runtime/oscar_input/first_frame.png")
+            ).hexdigest(),
+            "skeleton_video_sha256": hashlib.sha256(
+                archive.read(
+                    "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4"
+                )
+            ).hexdigest(),
+            "runner_sha256": hashlib.sha256(
+                archive.read("provider_runtime/wam_provider_runtime_runner.py")
+            ).hexdigest(),
+            "entrypoint_sha256": hashlib.sha256(
+                archive.read("provider_runtime/run_wam_provider_runtime.sh")
+            ).hexdigest(),
+        }
+    bundle_sha256 = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+    receipt = {
+        "schema_version": OSCAR_PUBLIC_REPLAY_PROFILE.receipt_schema,
+        "experiment_id": OSCAR_PUBLIC_REPLAY_PROFILE.experiment_id,
+        "bundle_sha256": bundle_sha256,
+        "bundle_size_bytes": bundle_path.stat().st_size,
+        **embedded,
+    }
+    profile = replace(
+        OSCAR_PUBLIC_REPLAY_PROFILE,
+        expected_bundle_sha256=bundle_sha256,
+        expected_bundle_size_bytes=bundle_path.stat().st_size,
+        expected_embedded_input_hashes=embedded,
+    )
+    inspection = inspect_successor_bundle(
+        bundle_path,
+        receipt=receipt,
+        smoke_inventory={},
+        profile=profile,
+    )
+    assert inspection["status"] == "passed"
+    assert inspection["blockers"] == []
 
 
 def test_build_oscar_wam_provider_bundle_packages_projected_g1_overlay_rgb_context(

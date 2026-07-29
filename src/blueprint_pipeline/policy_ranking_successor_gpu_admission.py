@@ -42,6 +42,12 @@ from .policy_ranking_successor_cosmos import (
     validate_smoke_inventory_manifest,
 )
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
+from .oscar_official_release import (
+    OFFICIAL_OSCAR_HF_REPO,
+    OFFICIAL_OSCAR_HF_REVISION,
+    OFFICIAL_OSCAR_SOURCE_COMMIT,
+    OFFICIAL_OSCAR_WAM_IMAGE_REF,
+)
 from .gpu_render_providers import get_render_provider
 from .groot_oscar_runpod_watchdog import EVIDENCE_NAME as RUNPOD_WATCHDOG_EVIDENCE_NAME
 from .runpod_wam_async_runner import (
@@ -98,6 +104,7 @@ class SuccessorGPUProfile:
     reference_bundle: bool = False
     powered_bundle: bool = False
     edge_policy_canary_bundle: bool = False
+    oscar_replay_bundle: bool = False
     provider_bundle_kind: str = "wam"
     bundle_schema: str = BUNDLE_SCHEMA
     checkpoint_repository: str = CHECKPOINT_REPOSITORY
@@ -372,6 +379,61 @@ EDGE_CLOSED_LOOP_PROFILE = SuccessorGPUProfile(
     allowed_providers=("vast",),
     compatible_gpu_keywords=("H100", "RTX PRO 6000"),
 )
+OSCAR_PUBLIC_REPLAY_PROFILE = SuccessorGPUProfile(
+    experiment_id="policy_ranking_cosmos3_edge_closed_loop_20260729",
+    admission_schema="policy_ranking_oscar_public_replay_gpu_admission.v1",
+    authorization_schema=("policy_ranking_cosmos3_edge_closed_loop_compute_authorization.v1"),
+    preflight_schema="policy_ranking_oscar_public_replay_vast_preflight.v1",
+    receipt_schema="oscar_public_replay_bundle_receipt.v1",
+    authorization_ids_by_allocation_index={
+        6: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-6",
+    },
+    cost_authorization_binding_sha256=(
+        "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
+    ),
+    expected_bundle_sha256="f505f7516e65e7faff13fd8b6868f599c23cea79bee586b40ce14323b8de4a24",
+    expected_bundle_size_bytes=565_588,
+    expected_embedded_input_hashes={
+        "runtime_manifest_file_sha256": (
+            "1167746ebbc15a99edb41a8077a082862f395b548fb5443bedb41dc914271afd"
+        ),
+        "rollout_manifest_file_sha256": (
+            "81d6f3b0260611afa28336f1b7fa7fe284fba421b03fef585d890b7b91296d49"
+        ),
+        "first_frame_sha256": (
+            "e253f141bc5490e36622c78e8c37a687cbad815140507d6729ceb4520abf0777"
+        ),
+        "skeleton_video_sha256": (
+            "7a49d643a2740ec508bd1d0cd1fc6594b022c7dae1f20afd310219c9eda89bd7"
+        ),
+        "runner_sha256": (
+            "fcbbe0bf0512cd30b43208713b9479bfa82ff77c5215b0ad142a7a21ef372343"
+        ),
+        "entrypoint_sha256": (
+            "194f4809624cc82e1f3a88f64e12304451708986dad5880695af0518a0efb19c"
+        ),
+    },
+    qualification_canary_request_count=1,
+    scientific_matrix_request_count=0,
+    total_initial_generation_request_count=1,
+    request_budget_amendment_sha256=None,
+    max_compute_cap_usd=5.0,
+    max_hourly_rate_usd=2.05,
+    target_spend_usd=3.0,
+    hard_ttl_seconds=7_200,
+    oscar_replay_bundle=True,
+    provider_bundle_kind="wam",
+    bundle_schema="wam_provider_runtime_manifest.v1",
+    checkpoint_repository=OFFICIAL_OSCAR_HF_REPO,
+    checkpoint_revision=OFFICIAL_OSCAR_HF_REVISION,
+    public_image=OFFICIAL_OSCAR_WAM_IMAGE_REF,
+    min_gpu_ram_mb=80_000,
+    cosmos_revision=None,
+    cosmos_framework_revision=OFFICIAL_OSCAR_SOURCE_COMMIT,
+    vllm_omni_revision=None,
+    allowed_providers=("vast",),
+    compatible_gpu_keywords=("RTX PRO 6000", "H100"),
+)
 RTX_ALLOWED_KEYWORDS = ("RTX PRO 6000",)
 RTX_SELECTION_POLICY: Mapping[str, Any] = {
     "policy_id": "policy_ranking_successor_rtx_pro_6000_blackwell_preflight",
@@ -433,6 +495,16 @@ EDGE_POLICY_CANARY_BUNDLE_ENTRIES = frozenset(
         "provider_runtime/policy_snapshot_manifest.json",
         "provider_runtime/blueprint_pipeline/core/__init__.py",
         "provider_runtime/blueprint_pipeline/core/common.py",
+        "provider_runtime/oscar_input/first_frame.png",
+        "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
+    }
+)
+OSCAR_PUBLIC_REPLAY_BUNDLE_ENTRIES = frozenset(
+    {
+        "provider_runtime/wam_provider_runtime_runner.py",
+        "provider_runtime/run_wam_provider_runtime.sh",
+        "provider_runtime/wam_provider_runtime_manifest.json",
+        "provider_runtime/wam_rollout_input_manifest.json",
         "provider_runtime/oscar_input/first_frame.png",
         "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
     }
@@ -677,6 +749,29 @@ def inspect_successor_bundle(
                             archive.read("provider_runtime/run_wam_provider_runtime.sh")
                         ).hexdigest(),
                     }
+                elif profile.oscar_replay_bundle:
+                    embedded_hashes = {
+                        "runtime_manifest_file_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_provider_runtime_manifest.json")
+                        ).hexdigest(),
+                        "rollout_manifest_file_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_rollout_input_manifest.json")
+                        ).hexdigest(),
+                        "first_frame_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/oscar_input/first_frame.png")
+                        ).hexdigest(),
+                        "skeleton_video_sha256": hashlib.sha256(
+                            archive.read(
+                                "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4"
+                            )
+                        ).hexdigest(),
+                        "runner_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_provider_runtime_runner.py")
+                        ).hexdigest(),
+                        "entrypoint_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/run_wam_provider_runtime.sh")
+                        ).hexdigest(),
+                    }
                 elif profile.powered_bundle:
                     powered_packet = json.loads(
                         archive.read("provider_runtime/cosmos3_powered_droid/packet.json").decode(
@@ -815,6 +910,8 @@ def inspect_successor_bundle(
     required_entries = (
         EDGE_POLICY_CANARY_BUNDLE_ENTRIES
         if profile.edge_policy_canary_bundle
+        else OSCAR_PUBLIC_REPLAY_BUNDLE_ENTRIES
+        if profile.oscar_replay_bundle
         else POWERED_BUNDLE_ENTRIES
         if profile.powered_bundle
         else REFERENCE_BUNDLE_ENTRIES
@@ -852,6 +949,17 @@ def inspect_successor_bundle(
             blockers.append("successor_cosmos_provider_bundle_checkpoint_mismatch")
         if framework.get("revision") != profile.cosmos_framework_revision:
             blockers.append("successor_cosmos_provider_bundle_framework_mismatch")
+    elif profile.oscar_replay_bundle:
+        if manifest.get("oscar_hf_repo") != profile.checkpoint_repository:
+            blockers.append("successor_oscar_bundle_checkpoint_repository_mismatch")
+        if manifest.get("oscar_hf_revision") != profile.checkpoint_revision:
+            blockers.append("successor_oscar_bundle_checkpoint_mismatch")
+        if manifest.get("oscar_source_ref") != profile.cosmos_framework_revision:
+            blockers.append("successor_oscar_bundle_source_mismatch")
+        if manifest.get("official_case_smoke") != "droid_TRI":
+            blockers.append("successor_oscar_bundle_official_case_mismatch")
+        if str(manifest.get("official_case_rgb_video") or "").strip():
+            blockers.append("successor_oscar_bundle_physical_future_rgb_enabled")
     elif manifest.get("checkpoint_revision") != profile.checkpoint_revision:
         blockers.append("successor_cosmos_provider_bundle_checkpoint_mismatch")
     if manifest.get("public_image") != profile.public_image:
@@ -887,6 +995,7 @@ def inspect_successor_bundle(
             blockers.append(f"successor_cosmos_provider_bundle_receipt_{key}_mismatch")
     if (
         not profile.edge_policy_canary_bundle
+        and not profile.oscar_replay_bundle
         and not profile.reference_bundle
         and not profile.powered_bundle
         and smoke_inventory is not None
@@ -923,13 +1032,18 @@ def build_successor_gpu_admission(
     upstream = _mapping(environment.get("upstream_source"))
     cosmos = _mapping(upstream.get("cosmos"))
     framework = _mapping(upstream.get("cosmos_framework"))
+    oscar = _mapping(upstream.get("oscar"))
     vllm = _mapping(upstream.get("vllm_omni"))
     if environment.get("experiment_id") != profile.experiment_id:
         blockers.append("successor_environment_experiment_mismatch")
-    if profile.cosmos_revision is not None and cosmos.get("revision") != profile.cosmos_revision:
-        blockers.append("successor_cosmos_revision_mismatch")
-    if framework.get("revision") != profile.cosmos_framework_revision:
-        blockers.append("successor_framework_revision_mismatch")
+    if profile.oscar_replay_bundle:
+        if oscar.get("revision") != profile.cosmos_framework_revision:
+            blockers.append("successor_oscar_source_revision_mismatch")
+    else:
+        if profile.cosmos_revision is not None and cosmos.get("revision") != profile.cosmos_revision:
+            blockers.append("successor_cosmos_revision_mismatch")
+        if framework.get("revision") != profile.cosmos_framework_revision:
+            blockers.append("successor_framework_revision_mismatch")
     if checkpoint.get("repository") != profile.checkpoint_repository:
         blockers.append("successor_checkpoint_repository_mismatch")
     if checkpoint.get("revision") != profile.checkpoint_revision:
@@ -946,12 +1060,19 @@ def build_successor_gpu_admission(
     ):
         blockers.append("successor_remote_code_policy_invalid")
 
-    if profile.edge_policy_canary_bundle or profile.reference_bundle or profile.powered_bundle:
+    if (
+        profile.edge_policy_canary_bundle
+        or profile.oscar_replay_bundle
+        or profile.reference_bundle
+        or profile.powered_bundle
+    ):
         inventory_validation = {
             "status": "not_applicable",
             "reason": (
                 "edge_policy_canary_inputs_are_frozen_inside_the_bundle"
                 if profile.edge_policy_canary_bundle
+                else "official_oscar_replay_inputs_are_frozen_inside_the_bundle"
+                if profile.oscar_replay_bundle
                 else "powered_droid_inputs_are_frozen_inside_the_bundle"
                 if profile.powered_bundle
                 else "official_droid_reference_inputs_are_frozen_inside_the_bundle"
@@ -1533,7 +1654,9 @@ def run_successor_gpu_lane(
     provider_preflight = load_input("provider_preflight", provider_preflight_path)
     bundle_receipt = load_input("bundle_receipt", provider_bundle_receipt_path)
     receipt_schema = bundle_receipt.get("schema_version")
-    if receipt_schema == EDGE_CLOSED_LOOP_PROFILE.receipt_schema:
+    if receipt_schema == OSCAR_PUBLIC_REPLAY_PROFILE.receipt_schema:
+        profile = OSCAR_PUBLIC_REPLAY_PROFILE
+    elif receipt_schema == EDGE_CLOSED_LOOP_PROFILE.receipt_schema:
         profile = EDGE_CLOSED_LOOP_PROFILE
     elif receipt_schema == POWERED_DROID_PROFILE.receipt_schema:
         profile = POWERED_DROID_PROFILE
@@ -1866,6 +1989,7 @@ __all__ = [
     "PREFLIGHT_SCHEMA",
     "DROID_REFERENCE_PROFILE",
     "EDGE_CLOSED_LOOP_PROFILE",
+    "OSCAR_PUBLIC_REPLAY_PROFILE",
     "POWERED_DROID_PROFILE",
     "PHASE_B_PROFILE",
     "PHASE_B_POSITIVE_CONTROL_PROFILE",
