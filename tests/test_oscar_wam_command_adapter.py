@@ -566,9 +566,8 @@ def test_oscar_wam_command_adapter_private_helper_edges(
     assert selected["task_prompt"] == "Push the lightweight object from robot POV."
     with pytest.raises(FileNotFoundError, match="missing_selected_review_video"):
         adapter._selected_video_path({"selected_review_videos": [{"path": "missing.mp4"}]})
-    assert adapter._task_prompt({}) == (
-        "Predict the next robot-scene frames from Blueprint action conditioning."
-    )
+    with pytest.raises(ValueError, match="oscar_task_specific_prompt_required"):
+        adapter._task_prompt({})
 
     trace_path = tmp_path / "trace.jsonl"
     _write_jsonl(trace_path, [{"episode_id": "other", "root_position": [1, 2, 3]}])
@@ -790,6 +789,7 @@ def test_oscar_wam_runtime_probe_subprocess_and_rollout_edges(
     assert failed["stale_output_removed_before_launch"] is True
     assert not stale_output.exists()
     argv = captured_subprocess["args"][0]
+    assert argv[argv.index("--negative-prompt") + 1] == adapter.OSCAR_DEFAULT_NEGATIVE_PROMPT
     assert "--rgb-video" in argv
     assert str(rgb_video) in argv
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import platform
@@ -39,6 +40,17 @@ DEFAULT_NUM_FRAMES = 81
 DEFAULT_HEIGHT = 480
 DEFAULT_WIDTH = 640
 DEFAULT_FPS = 15.0
+OSCAR_PUBLIC_SOURCE_REVISION = "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb"
+OSCAR_DEFAULT_NEGATIVE_PROMPT = (
+    "The video captures a series of frames showing ugly scenes, static with "
+    "no motion, motion blur, over-saturation, shaky footage, low resolution, "
+    "grainy texture, pixelated images, poorly lit areas, underexposed and "
+    "overexposed scenes, poor color balance, washed out colors, choppy "
+    "sequences, jerky movements, low frame rate, artifacting, color banding, "
+    "unnatural transitions, outdated special effects, fake elements, "
+    "unconvincing visuals, poorly edited content, jump cuts, visual noise, "
+    "and flickering. Overall, the video is of poor quality."
+)
 ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV = "BLUEPRINT_ALLOW_EXPERIMENTAL_OSCAR_WAM_VERSION"
 DEFAULT_CONDITIONING_BACKGROUND_ALPHA = 0.88
 DEFAULT_CONDITIONING_NEAR_BLACK_THRESHOLD = 10
@@ -323,7 +335,7 @@ def _task_prompt(rollout_manifest: Mapping[str, Any]) -> str:
         prompt = _string(_mapping(row).get("task_prompt"))
         if prompt:
             return prompt
-    return "Predict the next robot-scene frames from Blueprint action conditioning."
+    raise ValueError("oscar_task_specific_prompt_required")
 
 
 def _trace_rows(rollout_manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -1261,6 +1273,16 @@ def _materialize_oscar_input_package(
             "num_frames": num_frames,
         },
         "prompt": _task_prompt(rollout_manifest),
+        "prompt_contract": {
+            "task_specific_prompt_required": True,
+            "generic_fallback_allowed": False,
+            "future_ground_truth_used_to_construct_prompt": False,
+            "oscar_public_source_revision": OSCAR_PUBLIC_SOURCE_REVISION,
+        },
+        "negative_prompt": OSCAR_DEFAULT_NEGATIVE_PROMPT,
+        "negative_prompt_sha256": hashlib.sha256(
+            OSCAR_DEFAULT_NEGATIVE_PROMPT.encode("utf-8")
+        ).hexdigest(),
         "num_frames": num_frames,
         "fps": fps,
         "height": height,
@@ -1557,6 +1579,8 @@ def _run_oscar(
         "0",
         "--prompt",
         _string(package_manifest.get("prompt")),
+        "--negative-prompt",
+        _string(package_manifest.get("negative_prompt") or OSCAR_DEFAULT_NEGATIVE_PROMPT),
         "--num-steps",
         str(num_steps),
         "--guidance",
