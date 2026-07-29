@@ -36,13 +36,16 @@ stored at
 - `protocol_v2.json`
 - `protocol_v3.json`
 - `protocol_v4.json`
+- `protocol_v5.json`
 - `environment_and_source_manifest_v1.json`
 - `goal_cost_authorization_amendment_v1.json`
 - `compute_authorization_allocation_1.json`
 - `compute_authorization_allocation_2.json`
 - `compute_authorization_allocation_3.json`
+- `compute_authorization_allocation_4.json`
 - `allocation_1_infrastructure_failure_v1.json`
 - `allocation_2_geometry_gate_result_v1.json`
+- `allocation_3_provider_rejection_v1.json`
 - `geometry_amendment_evidence_v1.json`
 - external canary manifest digest:
   `3f29f83f6698543bd7ce13e23b632e355031e54e2a123f0d439868bac3906f04`

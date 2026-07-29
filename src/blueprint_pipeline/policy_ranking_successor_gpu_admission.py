@@ -238,6 +238,7 @@ DROID_REFERENCE_PROFILE = SuccessorGPUProfile(
         1: "policy-ranking-droid-reference-20260729-allocation-1",
         2: "policy-ranking-droid-reference-20260729-allocation-2",
         3: "policy-ranking-droid-reference-20260729-allocation-3",
+        4: "policy-ranking-droid-reference-20260729-allocation-4",
     },
     cost_authorization_binding_sha256=(
         "305668fe34d4524caa0d7dc5ce301e44a1a04e0b66176719c02a8cab76373cb4"
