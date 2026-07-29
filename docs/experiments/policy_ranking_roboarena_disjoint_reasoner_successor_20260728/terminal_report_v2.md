@@ -104,8 +104,8 @@ remains immutable superseded history. Governing v2 digest is
 The download repair amendment digest is
 `ae034d9ebd976c4f4d5540d340182d69568555bf772b18fd4b6bc6544bfbc7fc`.
 
-The non-cherry-picked 32-video gallery is at
-`/Users/nijelhunt_1/workspace/policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_positive_control_v2/review_gallery_v1`.
+The non-cherry-picked 32-video gallery is indexed as
+`external-evidence-store://policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_positive_control_v2/review_gallery_v1`.
 It contains every DROID condition and seed, all four official positive-control
 chunks, the original three-camera composites, and top-camera review crops. The
 crops were not used for scientific metrics.

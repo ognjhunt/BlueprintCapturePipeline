@@ -91,7 +91,7 @@
     "governing_v2_digest": "6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066",
     "positive_control_bisection_amendment_sha256": "ff587fa17d215c97e4c834e233b699524c13cba5295539b0cacc9426a94b312f",
     "download_transport_amendment_sha256": "ae034d9ebd976c4f4d5540d340182d69568555bf772b18fd4b6bc6544bfbc7fc",
-    "positive_control_result_sha256": "96e45e6f724ba510cd4a74a2f9856137ce5c4907b8031f3cd0c05b0823599850"
+    "positive_control_result_sha256": "7bc92b47818376b8bfc0c2f0dfa7103fa242196b081a1e15f45436ec8297c607"
   },
   "provider_zero": {
     "task_live_instance_count": 0,
@@ -102,12 +102,12 @@
     "persistent_evaluator_resource_created": false,
     "does_not_prove_invoice_settlement_or_scientific_validity": true
   },
-  "review_gallery": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_positive_control_v2/review_gallery_v1",
+  "review_gallery": "external-evidence-store://policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_positive_control_v2/review_gallery_v1",
   "historical_evidence_immutability": {
     "oscar_experiment_2_verdict": "thesis_not_supported",
     "cosmos3_followup_verdict": "inconclusive",
     "rewritten": false
   },
   "cheapest_scientifically_valid_next_experiment": "Complete the exact upstream Cosmos3 DROID normalization and preprocessing audit. If ambiguity remains, run the preregistered label-free action-scale dose-response diagnostic, freeze any selected transform, then use new untouched independent DROID sessions for a powered causal confirmation before full-episode ranking.",
-  "manifest_sha256": "5d480cadb34e15c41f1c5742d45c2d0a01fa6e35ee146443b10e24e4b2913dfa"
+  "manifest_sha256": "7ecfd7f976a41ec1b6f4d3192f509693890e89c843950e58096a1b2e666ff57c"
 }

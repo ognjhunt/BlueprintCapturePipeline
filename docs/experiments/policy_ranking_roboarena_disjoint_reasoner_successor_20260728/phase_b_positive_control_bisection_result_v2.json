@@ -154,12 +154,12 @@
     "object_store_closure": "4fb399f2e31955bee78367df3a13733085eedd3047433ab481939bb726136e19"
   },
   "review_gallery": {
-    "path": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_positive_control_v2/review_gallery_v1",
+    "path": "external-evidence-store://policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_positive_control_v2/review_gallery_v1",
     "video_count": 32,
     "all_conditions_and_seeds_retained": true,
     "single_top_camera_review_crops_included": true,
     "review_crops_used_for_scientific_metrics": false
   },
   "cheapest_scientifically_valid_next_experiment": "Complete the exact upstream Cosmos3 DROID normalization/preprocessing audit. If ambiguity remains, run the preregistered label-free action-scale dose-response diagnostic, freeze any selected transform, and then use new untouched independent DROID sessions for a powered causal confirmation before full-episode ranking.",
-  "manifest_sha256": "96e45e6f724ba510cd4a74a2f9856137ce5c4907b8031f3cd0c05b0823599850"
+  "manifest_sha256": "7bc92b47818376b8bfc0c2f0dfa7103fa242196b081a1e15f45436ec8297c607"
 }

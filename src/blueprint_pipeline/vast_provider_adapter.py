@@ -3878,11 +3878,9 @@ def run_vast_provider_adapter(
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
-    resolved_image_login_mode = (
-        _string(ngc_image_login_mode)
-        or _string(os.getenv(VAST_IMAGE_LOGIN_MODE_ENV))
-        or DEFAULT_NGC_IMAGE_LOGIN_MODE
-    )
+    resolved_image_login_mode = _string(ngc_image_login_mode) or _string(
+        os.getenv(VAST_IMAGE_LOGIN_MODE_ENV)
+    ) or DEFAULT_NGC_IMAGE_LOGIN_MODE
     if resolved_image_login_mode not in NGC_IMAGE_LOGIN_MODES:
         raise ValueError(f"unsupported_ngc_image_login_mode:{resolved_image_login_mode}")
     resolved_job_dir = Path(job_dir).expanduser().resolve()

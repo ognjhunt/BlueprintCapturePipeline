@@ -1,7 +1,7 @@
 {
   "schema_version": "policy_ranking_phase_b_high_motion_native_cosmos_gallery_manifest.v1",
   "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
-  "external_gallery_root": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_first_frame_high_motion_v2/live_v2/review_gallery",
+  "external_gallery_root": "external-evidence-store://policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_first_frame_high_motion_v2/live_v2/review_gallery",
   "presentation": "single left-camera crops for review; raw three-camera Cosmos outputs remain immutable in the provider output bundle",
   "physical_reference": {
     "file": "REAL_PHYSICAL_left_first_17_frames.mp4",
@@ -24,5 +24,5 @@
   ],
   "raw_provider_output_bundle_sha256": "0ec1fda0d996ea6d583d27438a44ccd4480f290324284387be63a3cd733d0859",
   "cherry_pick_policy": "all controls and both seeds retained; no output selected by attractiveness",
-  "manifest_sha256": "fea1f1a6c7b2bf27dad96326e0addd12de16748086d790d397135d603ebb469e"
+  "manifest_sha256": "ff3c6beeaed859b9d977dca7fd76ee6db3e44abae40a19d012e699b52ee60a39"
 }

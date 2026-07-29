@@ -51,7 +51,7 @@
     "wam_causal_validity": false,
     "ranking_fidelity": false
   },
-  "external_evidence_root": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_replay_canary_v1",
+  "external_evidence_root": "external-evidence-store://policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_replay_canary_v1",
   "raw_secret_values_recorded": false,
-  "manifest_sha256": "35b16515e73402dca83d688185d3d5a75fbfc2778def510d8281a41ace58630f"
+  "manifest_sha256": "93fe94d43f217106dbc30111597a5627c0587f603be934dcd94bf2496db4a109"
 }
