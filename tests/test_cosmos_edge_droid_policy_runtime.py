@@ -165,10 +165,13 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
         ("source_freeze_amendment_v6.json", "amendment_sha256"),
         ("source_freeze_v7.json", "manifest_sha256"),
         ("source_freeze_amendment_v7.json", "amendment_sha256"),
+        ("source_freeze_v8.json", "manifest_sha256"),
+        ("source_freeze_amendment_v8.json", "amendment_sha256"),
         ("protocol_amendment_v2.json", "amendment_sha256"),
         ("protocol_amendment_v3.json", "amendment_sha256"),
         ("protocol_amendment_v4.json", "amendment_sha256"),
         ("protocol_amendment_v5.json", "amendment_sha256"),
+        ("protocol_amendment_v6.json", "amendment_sha256"),
         ("oscar_public_contract_audit_v1.json", "record_sha256"),
         ("policy_canary_bundle_overwrite_incident_v1.json", "record_sha256"),
         ("policy_canary_bundle_concurrent_supersession_v1.json", "record_sha256"),
@@ -241,6 +244,12 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
     )
     assert payloads["protocol_amendment_v5.json"]["closed_loop_disposition"]["status"] == (
         "technically_blocked"
+    )
+    assert payloads["source_freeze_amendment_v8.json"]["successor_manifest_sha256"] == (
+        payloads["source_freeze_v8.json"]["manifest_sha256"]
+    )
+    assert payloads["protocol_amendment_v6.json"]["prospective_change"]["successor_fps"] == (
+        14.0
     )
     assert payloads["oscar_public_contract_audit_v1.json"]["paper"]["classification"] == (
         "open_loop_recorded_action_replay"
