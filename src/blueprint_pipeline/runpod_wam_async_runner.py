@@ -1617,6 +1617,11 @@ def create_runpod_wam_async_run(
             required_consecutive_successes=1 if direct_provider_urls else 2,
             allow_output_put_probe=verify_output_put_url or not direct_provider_urls,
             cleanup_output_probe=not direct_provider_urls,
+            # S3-compatible presigned URLs are bound to the HTTP method used
+            # when they were minted.  The object-store transport signs the
+            # worker's bundle download as GET, so a HEAD-only preflight would
+            # fail with 403 even though the worker's real fetch is valid.
+            bundle_probe_method="GET" if direct_provider_urls else "HEAD",
             generated_at=generated,
         )
     api_key, api_key_meta = _read_runpod_api_key()
