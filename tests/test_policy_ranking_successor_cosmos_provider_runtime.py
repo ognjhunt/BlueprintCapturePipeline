@@ -170,6 +170,17 @@ def test_positive_control_serializer_rejects_wrong_action_shape() -> None:
         )
 
 
+def test_server_environment_disables_xet_for_all_runtime_launches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HF_HUB_DISABLE_XET", "0")
+
+    environment = runtime._server_environment()
+
+    assert environment["HF_HUB_DISABLE_XET"] == "1"
+    assert environment["HF_HUB_DISABLE_TELEMETRY"] == "1"
+
+
 def test_static_video_can_pass_structural_canary_without_passing_motion(
     tmp_path: Path,
 ) -> None:

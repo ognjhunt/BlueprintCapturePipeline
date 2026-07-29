@@ -181,13 +181,13 @@ PHASE_B_POSITIVE_CONTROL_PROFILE = SuccessorGPUProfile(
         "policy_ranking_phase_b_native_cosmos_positive_control_bundle_receipt.v1"
     ),
     authorization_ids_by_allocation_index={
-        3: "policy-ranking-roboarena-phase-b-positive-control-20260728-allocation-3",
+        4: "policy-ranking-roboarena-phase-b-positive-control-20260728-allocation-4",
     },
     cost_authorization_binding_sha256=(
-        "ff587fa17d215c97e4c834e233b699524c13cba5295539b0cacc9426a94b312f"
+        "ae034d9ebd976c4f4d5540d340182d69568555bf772b18fd4b6bc6544bfbc7fc"
     ),
-    expected_bundle_sha256="dd9c7ec2b05ea4185502cfb1be01d2933a679bcb8fcd3e398d4076bc0307ed72",
-    expected_bundle_size_bytes=1_776_106,
+    expected_bundle_sha256="0daebe3845c4ad70effce16e793abdb1f5307a12a28840cce97578bcaad81229",
+    expected_bundle_size_bytes=1_776_383,
     expected_embedded_input_hashes={
         "initial_observation_sha256": (
             "c1d89dd07b597796ad7620661dd2eacd4d4f58aad03d8860a52e13612bf0d99a"
@@ -1002,6 +1002,10 @@ def run_successor_gpu_lane(
         gpu_selection_policy=RTX_SELECTION_POLICY,
         require_independent_watchdog=True,
         retain_instance_on_runtime_failure=True,
+        # Cosmos3-Nano at the frozen revision is publicly downloadable.  Do not
+        # put an unrelated account credential into provider-visible instance
+        # environment metadata.
+        forward_hf_token=False,
         retention_binding={
             "source_commit": expected_source_commit,
             "dirty_state_declaration": "clean_exact_commit",

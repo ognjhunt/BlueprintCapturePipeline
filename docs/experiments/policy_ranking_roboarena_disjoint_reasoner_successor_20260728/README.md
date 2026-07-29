@@ -121,3 +121,19 @@ outcome by itself earns DROID WAM qualification, ranking, or independent
 confirmation credit. `terminal_verdict_v1.json` and `terminal_report_v1.md`
 remain interim `inconclusive` evidence snapshots until that finite bisection and
 any admitted successor stages finish.
+
+The first positive-control allocation reached provider startup but never loaded
+the model: the Hugging Face Xet transfer stopped making progress, the GPU stayed
+idle, and no positive-control or DROID generation request was submitted. The
+attempt cost an estimated USD 0.463386 and closed with authenticated provider
+zero. A raw provider inventory response also surfaced secret-bearing instance
+environment fields in local command output, so that attempt is not eligible for
+retention or refresh.
+
+`phase_b_positive_control_download_transport_amendment_v2.json` preserves that
+failure and prospectively freezes the replacement. The replacement disables Xet
+inside the reusable runtime and does not forward a Hugging Face token because
+the pinned public Cosmos3-Nano revision was verified to be anonymously
+downloadable. It changes no prompt, action, control, seed, threshold, request
+order, or decision gate. This is an infrastructure repair only and earns no
+scientific credit by itself.

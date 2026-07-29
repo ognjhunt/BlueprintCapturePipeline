@@ -120,6 +120,7 @@ def run_vast_wam_authorized_runner(
     require_independent_watchdog: bool = False,
     retain_instance_on_runtime_failure: bool = False,
     retention_binding: Mapping[str, Any] | None = None,
+    forward_hf_token: bool = True,
     provider_bundle_kind: str = "wam",
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -342,6 +343,7 @@ def run_vast_wam_authorized_runner(
                         retain_instance_on_runtime_failure and watchdog_handle is not None
                     ),
                     retention_watchdog_handoff=watchdog_handoff,
+                    forward_hf_token=forward_hf_token,
                     paid_resource_admission_grant=paid_resource_admission_grant,
                     pre_provider_mutation_hook=pre_provider_mutation_hook,
                 )

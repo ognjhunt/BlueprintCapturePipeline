@@ -146,6 +146,7 @@ def test_committed_disjoint_preflight_artifact_digests_are_canonical() -> None:
         "phase_b_high_motion_native_cosmos_cost_provider_zero_v1.json",
         "phase_b_high_motion_native_cosmos_gallery_manifest_v1.json",
         "phase_b_positive_control_bisection_amendment_v1.json",
+        "phase_b_positive_control_download_transport_amendment_v2.json",
         "phase_b_terminal_admission_v1.json",
         "terminal_verdict_v1.json",
     ):
@@ -201,6 +202,23 @@ def test_terminal_admission_does_not_promote_short_screen_to_phase_b() -> None:
         "phase_b_positive_control_bisection_amendment_v1.json"
     )
     assert "No live closed-loop" in admission["claim_ceiling"]
+
+
+def test_download_transport_amendment_preserves_science_and_minimizes_credentials() -> None:
+    amendment = json.loads(
+        (
+            EXPERIMENT_DOCS
+            / "phase_b_positive_control_download_transport_amendment_v2.json"
+        ).read_text(encoding="utf-8")
+    )
+    failed = amendment["failed_infrastructure_attempt"]
+    replacement = amendment["replacement_runtime_changes"]
+    assert failed["provider_generation_requests_attempted"] == 0
+    assert failed["provider_zero_proven"] is True
+    assert failed["scientific_result_produced"] is False
+    assert replacement["disable_huggingface_xet_before_model_library_import"] is True
+    assert replacement["forward_huggingface_token_to_provider"] is False
+    assert amendment["unchanged_scientific_contract"]["outcome_labels_accessed"] is False
 
 
 def test_terminal_verdict_keeps_all_components_separate() -> None:

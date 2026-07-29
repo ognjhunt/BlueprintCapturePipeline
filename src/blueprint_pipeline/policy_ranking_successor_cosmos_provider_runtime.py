@@ -384,6 +384,28 @@ def _server_command() -> list[str]:
     ]
 
 
+def _server_environment() -> dict[str, str]:
+    """Return the fail-closed environment shared by every Cosmos server launch.
+
+    The Xet transfer client can leave a healthy paid worker indefinitely waiting
+    on partial model shards without exercising the GPU.  Use the Hub's ordinary
+    HTTP download path instead.  Keep this in the runtime module rather than an
+    allocation-specific launch command so retained refreshes and future runs
+    receive the same protection.
+    """
+
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "HF_HUB_DISABLE_XET": "1",
+            "HF_HUB_DISABLE_TELEMETRY": "1",
+            "DO_NOT_TRACK": "1",
+            "TRANSFORMERS_NO_ADVISORY_WARNINGS": "1",
+        }
+    )
+    return environment
+
+
 def _run_cuda_preflight() -> dict[str, Any]:
     commands = {
         "nvidia_smi": [
@@ -913,14 +935,7 @@ def run() -> dict[str, Any]:
             "bf16_cuda_matrix_operation": True,
         }
     )
-    environment = dict(os.environ)
-    environment.update(
-        {
-            "HF_HUB_DISABLE_TELEMETRY": "1",
-            "DO_NOT_TRACK": "1",
-            "TRANSFORMERS_NO_ADVISORY_WARNINGS": "1",
-        }
-    )
+    environment = _server_environment()
     process, server_identity, server_log, reused_retained_server = _acquire_server(
         output_dir=output_dir,
         environment=environment,
