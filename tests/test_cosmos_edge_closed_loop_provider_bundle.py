@@ -78,6 +78,11 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
         assert "HF_TOKEN" not in runner
         assert 'uv_bin = uv / "bin/uv"' in runner
         assert "policy_server_client_readiness_timeout" in runner
+        assert "BLUEPRINT_EDGE_POLICY_VENV_REEXEC" in runner
+        assert "os.execve" in runner
+        assert 'OPENPI_CLIENT_VERSION = "0.1.2"' in runner
+        assert "policy_client_not_running_in_pinned_cosmos_venv" in runner
+        assert "openpi_client_version_mismatch" in runner
         assert "policy_server_load_seconds" in runner
         assert "policy_server_action_only_guardrail_mode_not_proven" in runner
         assert "policy_server_guardrail_override_scope_not_proven" in runner
@@ -88,6 +93,8 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
         manifest = json.loads(archive.read("provider_runtime/wam_provider_runtime_manifest.json"))
         assert manifest["experiment_id"] == ("policy_ranking_cosmos3_edge_closed_loop_20260729")
         assert manifest["nvidia_guardrails_enabled"] is False
+        assert manifest["openpi_client_version"] == "0.1.2"
+        assert manifest["policy_client_runtime"] == "pinned_cosmos_framework_venv"
         assert manifest["guardrail_mode"] == "disabled_source_supported_post_generation_filter"
         assert (
             manifest["policy_checkpoint_or_action_contract_modified_by_guardrail_override"] is False

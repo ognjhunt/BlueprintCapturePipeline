@@ -1,0 +1,26 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v4",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T09:45:00-0500",
+  "supersedes_amendment_sha256": "353a97dd7e27d534e3a1b78aebc25a2935afdb786abc2472ae78ee06b03f1fef",
+  "triggering_failure": "Allocation 4 loaded the frozen policy and official server but stopped before transport because Blueprint's client ran outside the Cosmos virtual environment containing openpi-client.",
+  "prospective_runtime_change": {
+    "former_client_runtime": "outer provider interpreter",
+    "successor_client_runtime": "pinned Cosmos framework virtual environment",
+    "mechanism": "After the exact uv sync completes, atomically re-exec the same frozen bundle runner under the Cosmos virtual-environment Python before checkpoint download, server startup, or client transport.",
+    "locked_openpi_client_version": "0.1.2",
+    "policy_weights_changed": false,
+    "policy_conditioning_changed": false,
+    "native_action_contract_changed": false,
+    "guardrail_mode_changed": false,
+    "scientific_input_changed": false
+  },
+  "canary_input_sha256": "0dc1b72a90dace038a8b9ea3b444fffa8daf51b0db6ef3228e5fe1a8010a2974",
+  "frozen_thresholds_changed": false,
+  "physical_outcome_labels_accessed": false,
+  "paid_execution_admitted": false,
+  "provider_called_for_successor_bundle": false,
+  "maximum_successor_allocations_without_another_amendment": 1,
+  "claim_boundary": "A successful retry can establish only the structured candidate-policy endpoint contract. It cannot establish WAM qualification, ranking, captured-site transfer, economics, or physical success.",
+  "amendment_sha256": "a8c36efcbe8ea1a6efd00667841914781b04c517c120212ef81b4fe75cc8be54"
+}

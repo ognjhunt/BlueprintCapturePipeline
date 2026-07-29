@@ -161,12 +161,17 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
         ("source_freeze_amendment_v4.json", "amendment_sha256"),
         ("source_freeze_v5.json", "manifest_sha256"),
         ("source_freeze_amendment_v5.json", "amendment_sha256"),
+        ("source_freeze_v6.json", "manifest_sha256"),
+        ("source_freeze_amendment_v6.json", "amendment_sha256"),
         ("protocol_amendment_v2.json", "amendment_sha256"),
         ("protocol_amendment_v3.json", "amendment_sha256"),
+        ("protocol_amendment_v4.json", "amendment_sha256"),
         ("policy_canary_bundle_overwrite_incident_v1.json", "record_sha256"),
         ("policy_canary_bundle_concurrent_supersession_v1.json", "record_sha256"),
+        ("allocation_4_pre_provider_gate_v1.json", "record_sha256"),
         ("policy_canary_bundle_freeze_v2.json", "freeze_sha256"),
         ("policy_canary_bundle_freeze_v4.json", "freeze_sha256"),
+        ("policy_canary_bundle_freeze_v5.json", "freeze_sha256"),
         ("confirmation_cohort_v1.json", "cohort_sha256"),
         ("offline_oscar_projection_validation_v1.json", "record_sha256"),
         ("diagnostic_session_unseal_v1.json", "record_sha256"),
@@ -214,6 +219,17 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
     assert payloads["policy_canary_bundle_overwrite_incident_v1.json"]["provider_called"] is False
     assert payloads["policy_canary_bundle_freeze_v2.json"]["bundle_version"] == 4
     assert payloads["policy_canary_bundle_freeze_v4.json"]["bundle_version"] == 8
+    assert payloads["policy_canary_bundle_freeze_v5.json"]["bundle_version"] == 9
+    assert (
+        payloads["source_freeze_v6.json"]["openpi_dependency_contract"]["openpi_client_version"]
+        == "0.1.2"
+    )
+    assert (
+        payloads["protocol_amendment_v4.json"]["prospective_runtime_change"][
+            "successor_client_runtime"
+        ]
+        == "pinned Cosmos framework virtual environment"
+    )
     assert (
         payloads["policy_canary_bundle_concurrent_supersession_v1.json"][
             "selected_successor_bundle_version"
@@ -230,3 +246,15 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
         payloads["calibration_availability_v1.json"]["public_session_files"]["camera_intrinsics"]
         is False
     )
+
+    former_authorization = json.loads(
+        (root / "compute_authorization_allocation_4.json").read_text(encoding="utf-8")
+    )
+    successor_authorization = json.loads(
+        (root / "compute_authorization_allocation_4_v2.json").read_text(encoding="utf-8")
+    )
+    assert successor_authorization[
+        "supersedes_unconsumed_authorization_sha256"
+    ] == canonical_sha256(former_authorization)
+    assert successor_authorization["bundle_version"] == 8
+    assert successor_authorization["source_commit"] == "74132bb03423746fa6b8a88b7c552f64fac9bc45"

@@ -25,6 +25,7 @@ FRAMEWORK_URL = "https://github.com/NVIDIA/cosmos-framework.git"
 FRAMEWORK_REVISION = "2f603cb114ff8b335e116060444d0b6caee3a85e"
 MODEL_ID = "nvidia/Cosmos3-Edge-Policy-DROID"
 MODEL_REVISION = "3ea407af3e156c0af3b4bb6edd85842cc9a58777"
+OPENPI_CLIENT_VERSION = "0.1.2"
 PUBLIC_IMAGE = f"{VLLM_IMAGE}@{VLLM_IMAGE_DIGEST}"
 
 
@@ -48,6 +49,7 @@ FRAMEWORK_URL = "https://github.com/NVIDIA/cosmos-framework.git"
 FRAMEWORK_REVISION = "2f603cb114ff8b335e116060444d0b6caee3a85e"
 MODEL_ID = "nvidia/Cosmos3-Edge-Policy-DROID"
 MODEL_REVISION = "3ea407af3e156c0af3b4bb6edd85842cc9a58777"
+OPENPI_CLIENT_VERSION = "0.1.2"
 REGISTERED_NEXT_WAM = "OSCAR-2B"
 
 
@@ -67,7 +69,7 @@ def free_port() -> int:
 
 
 def main() -> int:
-    started = time.time()
+    started = float(os.environ.get("BLUEPRINT_EDGE_POLICY_ORIGINAL_STARTED_EPOCH", time.time()))
     bundle = Path(os.environ["BLUEPRINT_WAM_PROVIDER_BUNDLE_DIR"]).resolve()
     runtime = bundle / "provider_runtime"
     output = Path(os.environ["BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR"]).resolve()
@@ -110,6 +112,22 @@ def main() -> int:
             cwd=source, timeout=2400,
         )
         python = source / ".venv/bin/python"
+        if os.environ.get("BLUEPRINT_EDGE_POLICY_VENV_REEXEC") != "1":
+            reexec_env = os.environ.copy()
+            reexec_env["BLUEPRINT_EDGE_POLICY_VENV_REEXEC"] = "1"
+            reexec_env["BLUEPRINT_EDGE_POLICY_ORIGINAL_STARTED_EPOCH"] = str(started)
+            os.execve(
+                str(python),
+                [str(python), str(Path(__file__).resolve())],
+                reexec_env,
+            )
+        if Path(sys.prefix).resolve() != (source / ".venv").resolve():
+            raise RuntimeError("policy_client_not_running_in_pinned_cosmos_venv")
+        from importlib.metadata import version
+
+        openpi_client_version = version("openpi-client")
+        if openpi_client_version != OPENPI_CLIENT_VERSION:
+            raise RuntimeError("openpi_client_version_mismatch")
         checkpoint = work / "policy_snapshot"
         download_code = (
             "from huggingface_hub import snapshot_download;"
@@ -193,6 +211,8 @@ def main() -> int:
             "policy_request_receipt": response["policy_request_receipt"],
             "policy_endpoint_evidence": client.evidence_summary(),
             "policy_server_load_seconds": policy_server_load_seconds,
+            "policy_client_python": sys.executable,
+            "openpi_client_version": openpi_client_version,
             "nvidia_guardrails_enabled": False,
             "guardrail_mode": "disabled_source_supported_post_generation_filter",
             "policy_checkpoint_or_action_contract_modified_by_guardrail_override": False,
@@ -213,6 +233,8 @@ def main() -> int:
             "wam_prefix_action_shape": [16, 8],
             "executed_prefix_steps": 8,
             "commanded_state_advance_proven": True,
+            "policy_client_running_in_pinned_cosmos_venv": True,
+            "openpi_client_version": openpi_client_version,
             "policy_server_load_seconds": policy_server_load_seconds,
             "nvidia_guardrails_enabled": False,
             "guardrail_mode": "disabled_source_supported_post_generation_filter",
@@ -411,6 +433,8 @@ def build_cosmos_edge_policy_canary_bundle(
         "public_image": PUBLIC_IMAGE,
         "cosmos_framework": {"url": FRAMEWORK_URL, "revision": FRAMEWORK_REVISION},
         "policy": {"model_id": MODEL_ID, "revision": MODEL_REVISION},
+        "openpi_client_version": OPENPI_CLIENT_VERSION,
+        "policy_client_runtime": "pinned_cosmos_framework_venv",
         "native_action_shape": [32, 8],
         "wam_prefix_action_shape": [16, 8],
         "qualification_canary_request_count": 1,

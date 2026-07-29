@@ -1,0 +1,29 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze.v6",
+  "frozen_at": "2026-07-29T09:45:00-0500",
+  "supersedes_manifest_sha256": "0cb1f124def47bc6189dc00ed5f6dde5d951a5b408a15616be3a6920793e70df",
+  "inherits_all_sources_from": "source_freeze_v5.json",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "cosmos_framework_revision": "2f603cb114ff8b335e116060444d0b6caee3a85e",
+  "dependency_source_hashes": {
+    "pyproject.toml": "06fdbbd83dd4caa16652e98ecaae8fabd3e1ef11807acfed7b97c0a2109e754e",
+    "uv.lock": "f5ec25154f3dc63f49680c91c0dee807b02ea6b846833d6f204bc5659f67e555"
+  },
+  "openpi_dependency_contract": {
+    "dependency_group": "policy-server",
+    "openpi_server_version": "0.1.0",
+    "openpi_server_wheel_sha256": "e4db08c1f718cb704eb1c995270b46ffd013bf1e2cf95300d5b303f2040551af",
+    "openpi_client_version": "0.1.2",
+    "openpi_client_wheel_sha256": "b8aa6d2ea7172d3b7c1fcf867d43930052b5ff19ea7b777966781105aa989897",
+    "openpi_server_depends_on_openpi_client": true
+  },
+  "runtime_contract": {
+    "runner_reexecs_into_pinned_cosmos_venv": true,
+    "client_version_asserted_before_transport": true,
+    "server_and_client_share_locked_environment": true,
+    "policy_checkpoint_or_action_contract_changed": false
+  },
+  "manifest_sha256": "56db03603d72c5da25bc623b77e6b8443bdc4a10053e91554e779d0d4e779944"
+}
