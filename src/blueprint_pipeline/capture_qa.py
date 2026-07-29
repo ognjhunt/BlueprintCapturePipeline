@@ -225,7 +225,11 @@ def _validate_observations(
             errors.append("quality_observations.operator_attested:quantified_fractions_forbidden")
     if errors:
         raise CaptureIntakeError(errors)
-    observations["observations_digest"] = _digest(observations, omit="observations_digest")
+    computed_digest = _digest(observations, omit="observations_digest")
+    supplied_digest = str(observations.get("observations_digest") or "")
+    if supplied_digest and supplied_digest != computed_digest:
+        raise CaptureIntakeError(["quality_observations.observations_digest:mismatch"])
+    observations["observations_digest"] = computed_digest
     return observations
 
 
@@ -388,6 +392,20 @@ def build_capture_qa_report(
     envelope, verified = verify_capture_intake_bytes(envelope_value, upload_root=upload_root)
     admission = build_capture_admission(envelope)
     source_file_digests = {str(row.get("sha256") or "") for row in verified}
+    profile = str(envelope["capture_authority_profile"])
+    source = _video_source(envelope, verified) if profile in _VIDEO_PROFILES else None
+    quality_analysis_errors: list[str] = []
+    if quality_observations is None and media_probe is None and source is not None:
+        try:
+            from .capture_quality_analyzer import analyze_capture_video_quality
+
+            quality_observations = analyze_capture_video_quality(
+                Path(str(source["source_path"])),
+                intake_id=str(envelope["intake_id"]),
+                source_file_sha256=str(source["sha256"]),
+            )
+        except CaptureIntakeError as exc:
+            quality_analysis_errors.extend(exc.errors)
     observations = _validate_observations(
         quality_observations,
         intake_id=str(envelope["intake_id"]),
@@ -395,12 +413,10 @@ def build_capture_qa_report(
     )
     measurements = observations.get("measurements")
     measurements = measurements if isinstance(measurements, Mapping) else {}
-    profile = str(envelope["capture_authority_profile"])
     checks: list[dict[str, Any]] = []
     recapture_plan = [dict(row) for row in _rows(admission.get("recapture_plan"))]
 
     if profile in _VIDEO_PROFILES:
-        source = _video_source(envelope, verified)
         expected_source_digest = str(source.get("sha256") or "") if source else ""
         if media_probe is not None:
             probe = dict(media_probe)
@@ -708,6 +724,7 @@ def build_capture_qa_report(
         "required_analysis": required_analysis,
         "next_cheapest_experiment": next_experiment,
         "quality_observations_digest": observations.get("observations_digest"),
+        "quality_analysis_errors": sorted(set(quality_analysis_errors)),
         "claim_ceiling": claim_ceiling,
         "prohibited_claims": [
             "physical_task_success",

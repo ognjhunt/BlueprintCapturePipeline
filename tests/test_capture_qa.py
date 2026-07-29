@@ -9,6 +9,7 @@ import jsonschema
 import pytest
 
 import blueprint_pipeline.capture_qa as capture_qa
+import blueprint_pipeline.capture_quality_analyzer as capture_quality_analyzer
 from blueprint_pipeline.capture_intake import CaptureIntakeError
 from blueprint_pipeline.capture_qa import build_capture_qa_report
 
@@ -260,6 +261,16 @@ def test_quality_observations_require_provenance_and_deterministic_digest(tmp_pa
             quality_observations=invalid,
         )
 
+    mismatched_digest = _observations(payload)
+    mismatched_digest["observations_digest"] = "sha256:" + "0" * 64
+    with pytest.raises(CaptureIntakeError, match="observations_digest:mismatch"):
+        build_capture_qa_report(
+            envelope,
+            upload_root=upload,
+            media_probe=_probe(payload),
+            quality_observations=mismatched_digest,
+        )
+
     wrong_probe = _probe(b"different-bytes")
     with pytest.raises(CaptureIntakeError, match="media_probe.source_file_sha256:mismatch"):
         build_capture_qa_report(
@@ -380,6 +391,54 @@ def test_media_probe_uses_decoded_frame_pts_instead_of_packet_order(
     assert "-show_packets" not in commands[0]
     assert probe["frame_pts_seconds"] == [0.0, 0.066667]
     assert probe["decoded_frame_count"] == 2
+
+
+def test_bound_local_analyzer_runs_before_capture_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"locally-analyzed-video"
+    monkeypatch.setattr(
+        capture_quality_analyzer,
+        "analyze_capture_video_quality",
+        lambda _path, **_kwargs: _observations(payload),
+    )
+    monkeypatch.setattr(capture_qa, "_probe_video", lambda _path: _probe(payload))
+
+    report = build_capture_qa_report(
+        _envelope(payload),
+        upload_root=_upload(tmp_path, payload),
+    )
+
+    assert report["status"] == "accepted"
+    assert report["state"] == "capture_accepted"
+    assert report["required_analysis"] == []
+    assert report["quality_analysis_errors"] == []
+
+
+def test_local_analyzer_failure_stays_in_validation_with_exact_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"analyzer-cannot-decode-video"
+
+    def fail_analysis(*_args: object, **_kwargs: object) -> dict:
+        raise CaptureIntakeError(["local_quality_analyzer_video_open_failed"])
+
+    monkeypatch.setattr(
+        capture_quality_analyzer,
+        "analyze_capture_video_quality",
+        fail_analysis,
+    )
+    monkeypatch.setattr(capture_qa, "_probe_video", lambda _path: _probe(payload))
+
+    report = build_capture_qa_report(
+        _envelope(payload),
+        upload_root=_upload(tmp_path, payload),
+    )
+
+    assert report["status"] == "analysis_required"
+    assert report["state"] == "validating"
+    assert report["quality_analysis_errors"] == ["local_quality_analyzer_video_open_failed"]
+    assert report["claim_ceiling"]["capture_admitted"] is False
 
 
 def test_privacy_and_dynamic_scene_checks_fail_closed_with_separate_reasons(

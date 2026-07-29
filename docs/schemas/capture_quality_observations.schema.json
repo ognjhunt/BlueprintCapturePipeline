@@ -19,6 +19,8 @@
     "intake_id": {"type": "string", "minLength": 1},
     "source_file_sha256": {"$ref": "#/$defs/sha256"},
     "observations_digest": {"$ref": "#/$defs/sha256"},
+    "analyzer": {"type": "object"},
+    "limitations": {"type": "array", "items": {"type": "string"}},
     "measurements": {
       "type": "object",
       "additionalProperties": true,

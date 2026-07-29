@@ -25,6 +25,13 @@ The report distinguishes:
 - `capture_quality_observations.v1` measurements emitted by capture sidecars,
   a versioned local analyzer, or an identified operator review.
 
+When no observations packet is supplied, the CLI invokes
+`blueprint_local_frame_quality.v1` on the exact digest-verified video. It samples
+decoded frames deterministically and measures sharpness, exposure, compression,
+visual-overlap support, inter-frame motion, and a labeled rolling-shutter symptom
+proxy. The packet records its analyzer identity, sample counts, source digest,
+limitations, and canonical digest. A supplied digest mismatch fails closed.
+
 An observations packet from another intake or another source-file digest fails
 closed. Missing measurements remain `not_measured`; they are never converted
 to passes. Missing blur, exposure, overlap, compression, or rolling-shutter
@@ -65,9 +72,9 @@ validity prohibited. The frozen policy-ranking verdict is
 
 ## Remaining work
 
-The Pipeline still needs a checked-in local quality analyzer that emits the
-bound observations packet from real frames, native INSV normalization,
-task-aware spatial coverage measurement, privacy-review workflow and redacted
-derivative integration, persistence through the hosted state machine, and the
-rights-cleared real-capture proof. Therefore this contract and its hermetic
-tests do not yet prove the capture-admission launch gate.
+The Pipeline still needs native INSV normalization, task-aware spatial coverage
+measurement, privacy-review workflow and redacted-derivative integration,
+persistence through the hosted state machine, and the rights-cleared
+real-capture proof. The local analyzer's rolling-shutter result is a symptom
+proxy, and it does not certify privacy or task coverage. Therefore this contract
+and its hermetic tests do not yet prove the capture-admission launch gate.
