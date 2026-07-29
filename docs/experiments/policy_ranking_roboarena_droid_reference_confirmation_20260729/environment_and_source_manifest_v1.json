@@ -17,7 +17,7 @@
     "vllm_omni": {
       "url": "https://github.com/vllm-project/vllm-omni",
       "revision": "1c6e7313394923000215a3299f4f79ede3873ecc",
-      "runtime_image": "docker.io/vllm/vllm-omni@sha256:970dee6658ea223f615b2438ce41e47f1d5322225482546e6e6bc5d8134f757c"
+      "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587"
     }
   },
   "checkpoint": {
