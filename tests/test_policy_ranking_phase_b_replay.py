@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import math
 import shutil
@@ -21,6 +22,7 @@ from blueprint_pipeline.policy_ranking_phase_b_high_motion_selection import (
     build_high_motion_selection,
 )
 from blueprint_pipeline.policy_ranking_phase_b_replay import build_selected_replay_canary
+from blueprint_pipeline import policy_ranking_successor_cosmos_bundle as successor_bundle
 from blueprint_pipeline.policy_ranking_successor_gpu_admission import (
     PHASE_B_POSITIVE_CONTROL_PROFILE,
     PHASE_B_PROFILE,
@@ -391,3 +393,18 @@ def test_selected_replay_canary_binds_motion_prompt_views_and_controls(tmp_path:
     assert len(set(result["control_action_sha256"].values())) == 6
     assert result["access_contract"]["physical_future_pixels_in_provider_input"] is False
     assert result["conditioning_modes"]["starter_video_supported_by_pinned_native_action_api"] is False
+
+
+def test_successor_bundle_import_does_not_require_optional_pyarrow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_import = builtins.__import__
+
+    def without_pyarrow(name: str, *args: object, **kwargs: object):
+        if name == "pyarrow.parquet":
+            raise ModuleNotFoundError("optional pyarrow unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_pyarrow)
+    with pytest.raises(ValueError, match="pyarrow_required_to_build_droid_action_streams"):
+        successor_bundle._build_action_streams(tmp_path)

@@ -12,7 +12,6 @@ import zipfile
 from pathlib import Path
 from typing import Any, Sequence
 
-import pyarrow.parquet as pq
 from PIL import Image
 
 from .common import write_json
@@ -179,6 +178,10 @@ def _compose_initial_observation(
 def _build_action_streams(
     sample_root: Path, *, experiment_id: str = EXPERIMENT_ID
 ) -> dict[str, Any]:
+    try:
+        import pyarrow.parquet as pq
+    except ModuleNotFoundError as exc:
+        raise ValueError("pyarrow_required_to_build_droid_action_streams") from exc
     table = pq.read_table(sample_root / "data/chunk-000/file-000.parquet")
     rows = table.slice(0, 17).to_pylist()
     states = [row["observation.state.cartesian_position"] for row in rows]
