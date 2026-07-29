@@ -268,8 +268,13 @@ def download_url_to_file(
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
             data = response.read()
             http_status = int(getattr(response, "status", 200))
-            response_last_modified = response.headers.get("Last-Modified")
-            response_etag = response.headers.get("ETag")
+            response_headers = getattr(response, "headers", None)
+            response_last_modified = (
+                response_headers.get("Last-Modified")
+                if hasattr(response_headers, "get")
+                else None
+            )
+            response_etag = response_headers.get("ETag") if hasattr(response_headers, "get") else None
         output_path.write_bytes(data)
         return {
             "status": "completed",
