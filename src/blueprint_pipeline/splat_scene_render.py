@@ -42,6 +42,22 @@ def _decimate_to_standard_ply(
     source: Path, dst: Path, decimate: int, *, repo_root: Path, node: str, timeout: int
 ) -> dict:
     """One splat-transform call: decode + optional decimate -> standard 3DGS PLY."""
+    if source.suffix.lower() == ".ply" and decimate <= 0:
+        try:
+            splat = read_standard_3dgs_ply(source)
+        except (OSError, ValueError):
+            pass
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, dst)
+            return {
+                "status": "completed",
+                "output": str(dst),
+                "output_bytes": dst.stat().st_size,
+                "decoder": "validated_standard_3dgs_copy",
+                "vertex_count": splat.count,
+                "decimation_applied": False,
+            }
     cli = find_splat_transform_cli(repo_root)
     if cli is None:
         return {"status": "blocked", "blockers": ["splat_transform_cli_unavailable"]}

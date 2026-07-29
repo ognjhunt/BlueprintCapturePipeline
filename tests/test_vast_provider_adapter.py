@@ -4579,6 +4579,9 @@ def test_vast_adapter_small_provider_helper_edges(
     assert "BLUEPRINT_VAST_INLINE_BUNDLE_DECODED" in wam_script
     assert "BLUEPRINT_VAST_INLINE_BUNDLE_SHA256_MISMATCH" in wam_script
     assert "BLUEPRINT_VAST_CUDA_RUNTIME_BLOCKED" in wam_script
+    assert "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_DIAGNOSTIC_WRITTEN" in wam_script
+    assert "provider_entrypoint_diagnostic.json" in wam_script
+    assert "BLUEPRINT_VAST_PROVIDER_EARLY_DIAGNOSTIC_UPLOAD_OK" in wam_script
     assert "if [ -x /opt/conda/bin/python ]; then RUNTIME_PY=/opt/conda/bin/python" in wam_script
     assert "elif [ -x /usr/local/bin/python ]; then RUNTIME_PY=/usr/local/bin/python" in wam_script
     unitree_script = vpa._probe_shell_script(

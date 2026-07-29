@@ -22,6 +22,7 @@ RUNTIME_RESULT_FILENAMES = (
     "unitree_groot_n17_sonic_policy_provider_output.json",
     "unitree_groot_n17_sonic_wam_persistent_session_output.json",
 )
+ENTRYPOINT_DIAGNOSTIC_FILENAME = "provider_entrypoint_diagnostic.json"
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -234,6 +235,7 @@ def inspect_provider_runtime_output_zip(
         }
     names: list[str] = []
     runtime_result: dict[str, Any] | None = None
+    entrypoint_diagnostic: dict[str, Any] | None = None
     json_parse_errors: list[str] = []
     mp4s: list[str] = []
     mp4_validation_rows: list[dict[str, Any]] = []
@@ -252,6 +254,15 @@ def inspect_provider_runtime_output_zip(
                         json_parse_errors.append(
                             f"{candidate}:{type(exc).__name__}"
                         )
+            for candidate in names:
+                if candidate.endswith(ENTRYPOINT_DIAGNOSTIC_FILENAME):
+                    try:
+                        parsed = json.loads(archive.read(candidate).decode("utf-8"))
+                        if isinstance(parsed, Mapping):
+                            entrypoint_diagnostic = dict(parsed)
+                        break
+                    except Exception as exc:
+                        json_parse_errors.append(f"{candidate}:{type(exc).__name__}")
             if video_extract_dir and mp4s:
                 ensure_dir(video_extract_dir)
                 for index, member in enumerate(mp4s):
@@ -300,6 +311,8 @@ def inspect_provider_runtime_output_zip(
             if runtime_result_summary
             else []
         ),
+        "entrypoint_diagnostic_present": entrypoint_diagnostic is not None,
+        "entrypoint_diagnostic": entrypoint_diagnostic,
         "mp4_count": len(mp4s),
         "mp4_members": mp4s[:25],
         "video_smoke_expected_video_count": expected_count or None,

@@ -237,10 +237,65 @@ class CallableMultiViewOscarWamArm:
         }
 
 
+@dataclass(frozen=True)
+class SkeletonOnlyIntendedMotionArm:
+    """Use the projected skeleton itself as an outcome-blind control arm.
+
+    This arm deliberately receives no world-prediction credit.  It advances
+    the visual observation with the commanded kinematic skeleton solely to
+    exercise the same camera/media/reliability plumbing as learned WAM arms.
+    """
+
+    arm_id: str = "skeleton_only_intended_motion"
+
+    def predict(self, request: Mapping[str, Any], *, output_dir: Path) -> dict[str, Any]:
+        import cv2
+
+        views = request.get("views")
+        if not isinstance(views, Mapping) or set(views) != set(REQUIRED_POLICY_VIEWS):
+            raise ValueError("skeleton_only_multiview_request_invalid")
+        generated_videos: dict[str, str] = {}
+        generated_frames: dict[str, str] = {}
+        for view_id in REQUIRED_POLICY_VIEWS:
+            skeleton = _safe_file(
+                views[view_id].get("skeleton_video_path"),
+                reason=f"skeleton_only_video_missing:{view_id}",
+            )
+            capture = cv2.VideoCapture(str(skeleton))
+            try:
+                frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                requested_index = int(request.get("executed_prefix_steps") or 8)
+                frame_index = min(max(requested_index, 0), max(frame_count - 1, 0))
+                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+                ok, frame = capture.read()
+            finally:
+                capture.release()
+            if not ok or frame is None:
+                raise ValueError(f"skeleton_only_frame_decode_failed:{view_id}")
+            view_dir = output_dir / view_id.replace("/", "_")
+            view_dir.mkdir(parents=True, exist_ok=True)
+            frame_path = view_dir / "executed_prefix_frame.png"
+            if not cv2.imwrite(str(frame_path), frame):
+                raise RuntimeError(f"skeleton_only_frame_write_failed:{view_id}")
+            generated_videos[view_id] = str(skeleton)
+            generated_frames[view_id] = str(frame_path)
+        return {
+            "generated_video_path": generated_videos[EXTERIOR_VIEW],
+            "generated_videos_by_view": generated_videos,
+            "generated_view_frames": generated_frames,
+            "same_frozen_wam_generated_all_views": False,
+            "skeleton_only": True,
+            "intended_motion_only": True,
+            "world_consequence_credit": False,
+            "physical_future_observation_used": False,
+        }
+
+
 __all__ = [
     "CallableMultiViewOscarWamArm",
     "DroidOscarSkeletonTransitionAdapter",
     "EXTERIOR_VIEW",
     "REQUIRED_POLICY_VIEWS",
+    "SkeletonOnlyIntendedMotionArm",
     "WRIST_VIEW",
 ]

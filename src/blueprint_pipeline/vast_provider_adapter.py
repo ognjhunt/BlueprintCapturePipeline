@@ -76,6 +76,7 @@ from .vast_session_budget_contract import (
     attempt_runtime_seconds as _attempt_runtime_seconds,
     build_vast_session_budget_guard,
 )
+from .vast_wam_terminal_diagnostic import wam_terminal_diagnostic_shell_fragment
 from .vast_cuda_runtime_probe import (
     build_gpu_sanity_report,
     cuda_runtime_probe_shell_fragment,
@@ -3088,7 +3089,8 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
                 'bash "$WORK_DIR/wam_provider_bundle/provider_runtime/run_wam_provider_runtime.sh"; provider_rc=$?; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
-                "$RUNTIME_PY - <<'PY'\n"
+                + wam_terminal_diagnostic_shell_fragment()
+                + "$RUNTIME_PY - <<'PY'\n"
                 "import json\n"
                 "import os\n"
                 "import zipfile\n"
