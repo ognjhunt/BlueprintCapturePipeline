@@ -1,0 +1,24 @@
+{
+  "schema_version": "policy_ranking_cosmos3_droid_provider_zero.v1",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "runpod": {
+    "authenticated_task_inventory_live_count": 0,
+    "authenticated_global_inventory_live_count": 0,
+    "allocation_4_absence_confirmed": true,
+    "continuing_hourly_burn": false,
+    "independent_watchdog_exited": true
+  },
+  "object_store": {
+    "staging_versions_closed": [1, 2, 3],
+    "exact_objects_deleted": 6,
+    "all_objects_absence_confirmed": true,
+    "signed_url_files_removed": true,
+    "cleanup_receipt_sha256": {
+      "v1": "66b573afd86d8fed3cc93ee7d89172f3e355148fb6226421c7079dd30246a7bc",
+      "v2": "5ac17c2fd8f5423e72a4b3475729569147899a3a8cb19f6a348e1c04f1994877",
+      "v3": "54416626006fbe9cc6ccee20d497154c1e99e028f13b60881f47dcba22b9502a"
+    }
+  },
+  "persistent_evaluator_resource_created": false,
+  "claim_boundary": "Provider zero proves current task-owned resource closure, not invoice settlement or scientific validity."
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import cv2  # type: ignore[import-not-found]
 import numpy as np
 import pytest
 
@@ -15,11 +16,20 @@ from blueprint_pipeline.policy_ranking_droid_reference import (
     _no_motion_stream,
     amend_reference_canary_geometry,
 )
+from blueprint_pipeline.policy_ranking_droid_reference_analysis import (
+    _decode_concat_view,
+    analyze_droid_reference_pair,
+)
 from blueprint_pipeline.policy_ranking_successor_cosmos import (
     canonical_sha256,
     validate_droid_action_stream,
 )
 from blueprint_pipeline.policy_ranking_thesis import file_sha256
+from blueprint_pipeline.wam_rollout_reliability import (
+    FLAG_TIMING_EVIDENCE_INSUFFICIENT,
+    ReliabilityThresholds,
+    SessionReliabilityThresholds,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,3 +176,57 @@ def test_allocation_2_result_preserves_failed_gate_and_provider_zero() -> None:
     assert result["adjudication"]["same_output_may_be_retroactively_reclassified_as_pass"] is False
     assert result["provider_zero"]["task_inventory_live_count"] == 0
     assert result["provider_zero"]["continuing_hourly_burn"] is False
+
+
+def _write_concat_video(path: Path, *, wrist_step: int, left_step: int, right_step: int) -> None:
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15.0, (60, 48))
+    assert writer.isOpened()
+    try:
+        for index in range(17):
+            frame = np.zeros((48, 60, 3), dtype=np.uint8)
+            frame[4:12, (index * wrist_step) % 48 : (index * wrist_step) % 48 + 8] = 255
+            frame[36:44, (index * left_step) % 22 : (index * left_step) % 22 + 8] = 180
+            offset = 30 + (index * right_step) % 22
+            frame[36:44, offset : offset + 8] = 220
+            writer.write(frame)
+    finally:
+        writer.release()
+
+
+def test_reference_pair_analysis_is_view_attributable_and_fails_closed(tmp_path: Path) -> None:
+    recorded = tmp_path / "recorded.mp4"
+    no_motion = tmp_path / "no_motion.mp4"
+    _write_concat_video(recorded, wrist_step=2, left_step=2, right_step=2)
+    _write_concat_video(no_motion, wrist_step=1, left_step=0, right_step=0)
+    views = _decode_concat_view(recorded)
+    assert {name: frames[0].shape[:2] for name, frames in views.items()} == {
+        "wrist": (32, 60),
+        "left": (16, 30),
+        "right": (16, 30),
+    }
+    active = np.zeros((16, 10), dtype=np.float64)
+    active[:, 3] = active[:, 7] = 1.0
+    active[:, 0] = np.linspace(0.0, 0.1, 16)
+    null = np.zeros((16, 10), dtype=np.float64)
+    null[:, 3] = null[:, 7] = 1.0
+
+    report = analyze_droid_reference_pair(
+        recorded_video=recorded,
+        no_motion_video=no_motion,
+        recorded_actions=active,
+        no_motion_actions=null,
+        reliability_thresholds=ReliabilityThresholds(),
+        session_thresholds=SessionReliabilityThresholds(
+            timing_correlation_min=0.15,
+            minimum_eligible_timing_windows=3,
+        ),
+        session_id="fixture-session",
+    )
+
+    assert set(report["view_comparison"]) == {"wrist", "left", "right"}
+    assert report["abstain"] is True
+    assert FLAG_TIMING_EVIDENCE_INSUFFICIENT in report["abstention_reasons"]
+    assert report["cosmos_wam_qualification_credit"] is False
+    recorded_report = report["recorded_rollout_reliability"]
+    assert recorded_report["timing_flag_scope"] == "session"
+    assert len(report["analysis_sha256"]) == 64
