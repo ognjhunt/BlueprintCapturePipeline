@@ -1,0 +1,66 @@
+{
+  "schema_version": "policy_ranking_roboarena_droid_reference_allocation_result.v1",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "allocation_id": "policy-ranking-droid-reference-20260729-allocation-2",
+  "status": "scientific_gate_failed_due_to_prospectively_frozen_geometry_expectation",
+  "source_sha": "2b4433d57be6498e9652447a874aeadc3b887506",
+  "provider": "runpod",
+  "provider_instance_id": "kbnhuxcr9ummhu",
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "model": "nvidia/Cosmos3-Nano",
+  "model_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+  "vllm_omni_revision": "1c6e7313394923000215a3299f4f79ede3873ecc",
+  "request": {
+    "provider_response_id": "video_gen_031b8ae0af66422390410c7f9b2d4e41",
+    "request_size": "640x540",
+    "action_shape": [16, 10],
+    "provider_generation_requests_attempted": 1,
+    "no_motion_request_attempted": false
+  },
+  "output": {
+    "video_sha256": "9fe94aa7feb32a25b8bbe7215060495ec5e7be71144494075455c5f0dc417672",
+    "video_size_bytes": 336355,
+    "decoded_width": 640,
+    "decoded_height": 528,
+    "decoded_frames": 17,
+    "decoded_fps": 15.0,
+    "duration_seconds": 1.134,
+    "temporal_absolute_difference_mean_gray_0_255": 1.6726164817810059,
+    "temporal_absolute_difference_max_gray_0_255": 3.5876736640930176,
+    "first_to_last_absolute_difference_mean_gray_0_255": 14.26475715637207,
+    "motion_gate_passed": true,
+    "static_detected": false,
+    "blank_detected": false,
+    "frozen_geometry_gate_passed": false,
+    "frozen_geometry_blocker": "unexpected_video_dimensions:640x528"
+  },
+  "adjudication": {
+    "structured_canary_passed": false,
+    "paired_reference_complete": false,
+    "cosmos_wam_qualification_credit": false,
+    "untouched_data_admitted": false,
+    "evaluator_eligible": false,
+    "same_output_may_be_retroactively_reclassified_as_pass": false,
+    "interpretation": "The clip is a strong dynamic diagnostic, but the prospectively frozen 640x540 decoded-output gate failed. The paired no-motion control was correctly not submitted."
+  },
+  "runtime": {
+    "model_load_seconds": 175.04856367403409,
+    "scientific_runtime_seconds": 179.19261820800602,
+    "allocation_runtime_seconds": 220.22235798835754,
+    "selected_hourly_rate_usd": 1.99,
+    "estimated_gpu_cost_usd": 0.12173402566578653,
+    "cumulative_estimated_gpu_cost_usd": 0.5088180256657865
+  },
+  "external_evidence": {
+    "provider_output_zip": "external-evidence-store://policy-ranking-roboarena-droid-reference-confirmation-evidence-20260729/live_run_v3/provider_output.zip",
+    "provider_output_zip_sha256": "a157d294c547af29deb26635d59a9450864fef57d21732bc94935ee8d3e56e6d",
+    "adapter_output": "external-evidence-store://policy-ranking-roboarena-droid-reference-confirmation-evidence-20260729/live_run_v3/adapter_output.json",
+    "adapter_output_sha256": "0fcc32467278c62184437d23ac306304d636af3699546553b5d6230e7252a2cf"
+  },
+  "provider_zero": {
+    "task_inventory_live_count": 0,
+    "global_inventory_live_count": 0,
+    "continuing_hourly_burn": false,
+    "independent_watchdog_provider_absence_confirmed": true
+  }
+}

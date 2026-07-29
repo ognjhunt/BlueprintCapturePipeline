@@ -22,7 +22,7 @@ from .policy_ranking_successor_gpu_admission import BUNDLE_SCHEMA, PUBLIC_IMAGE
 
 EXPERIMENT_ID = "policy_ranking_roboarena_droid_reference_confirmation_20260729"
 RECEIPT_SCHEMA = "policy_ranking_cosmos3_droid_reference_bundle_receipt.v1"
-REFERENCE_SCHEMA = "policy_ranking_cosmos3_official_droid_reference_canary.v1"
+REFERENCE_SCHEMA = "policy_ranking_cosmos3_official_droid_reference_canary.v2"
 
 
 def _load_reference(reference_dir: Path) -> tuple[dict[str, Any], dict[str, Any], Path]:

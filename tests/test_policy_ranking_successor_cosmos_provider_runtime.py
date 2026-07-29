@@ -44,6 +44,10 @@ def _droid_reference_manifest() -> dict[str, object]:
     }
 
 
+def test_droid_reference_schema_requires_geometry_amendment_v2() -> None:
+    assert runtime.DROID_REFERENCE_SCHEMA_VERSION.endswith(".v2")
+
+
 def test_server_command_pins_pipeline_revision_dtype_and_guardrail_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -276,6 +280,43 @@ def test_static_video_can_pass_structural_canary_without_passing_motion(
     assert metrics["structural_status"] == "passed"
     assert metrics["motion_status"] == "failed"
     assert metrics["static_detected"] is True
+
+
+def test_pinned_droid_decoded_geometry_passes_manifest_bound_structure(tmp_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg unavailable")
+    video = tmp_path / "droid-decoded.mp4"
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=gray:s=640x528:r=15:d=1.133334",
+            "-frames:v",
+            "17",
+            "-pix_fmt",
+            "yuv420p",
+            str(video),
+        ],
+        check=False,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+    metrics = runtime._decode_video_metrics(
+        video,
+        expected_width=640,
+        expected_height=528,
+        expected_frames=17,
+        expected_fps=15.0,
+    )
+
+    assert metrics["structural_status"] == "passed"
+    assert not any("unexpected_video_dimensions" in item for item in metrics["blockers"])
 
 
 def test_wrong_frame_rate_and_duration_fail_structural_canary(tmp_path: Path) -> None:

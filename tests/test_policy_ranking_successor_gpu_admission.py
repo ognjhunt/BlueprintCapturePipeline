@@ -240,7 +240,7 @@ def test_droid_reference_runpod_preflight_selects_compatible_secure_offer(
     assert captured["requires_rtx"] is False
 
 
-@pytest.mark.parametrize("allocation_index", [1, 2])
+@pytest.mark.parametrize("allocation_index", [1, 2, 3])
 def test_droid_reference_admission_accepts_runpod_without_smoke_inventory(
     allocation_index: int,
 ) -> None:

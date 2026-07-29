@@ -29,7 +29,7 @@ def _reference_fixture(root: Path) -> Path:
         json.dumps(actions, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     manifest = {
-        "schema_version": "policy_ranking_cosmos3_official_droid_reference_canary.v1",
+        "schema_version": "policy_ranking_cosmos3_official_droid_reference_canary.v2",
         "provider_inputs": {
             "initial_observation_sha256": _sha256_file(observation),
             "action_streams_sha256": canonical_sha256(actions),
