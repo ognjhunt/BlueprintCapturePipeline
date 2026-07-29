@@ -268,12 +268,19 @@ def download_url_to_file(
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
             data = response.read()
             http_status = int(getattr(response, "status", 200))
+            response_last_modified = response.headers.get("Last-Modified")
+            response_etag = response.headers.get("ETag")
         output_path.write_bytes(data)
         return {
             "status": "completed",
             "http_status_code": http_status,
             "downloaded_size_bytes": len(data),
             "output_present": output_path.is_file(),
+            # Safe response metadata lets an authorized runner prove that a
+            # recovered callback object was written during the current paid run,
+            # rather than accepting a stale object after a provider log-tail race.
+            "response_last_modified": response_last_modified,
+            "response_etag_present": bool(response_etag),
             "raw_secret_values_recorded": False,
         }
     except urllib.error.HTTPError as exc:
