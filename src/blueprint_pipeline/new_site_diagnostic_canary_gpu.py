@@ -40,21 +40,32 @@ from .policy_wam_closed_loop import ClosedLoopConfig, run_policy_wam_closed_loop
 from .policy_wam_reliability_gate import FrozenMaximumHorizonTerminalCriterion
 from .scene_placement.stance_cameras import link_mounted_camera_spec
 from .wam_rollout_reliability import (
+    FLAG_MOTION_WITHOUT_COMMAND,
+    FLAG_STATIC_UNDER_COMMAND,
+    FLAG_TIMING_DISAGREEMENT,
     TIMING_SCOPE_SESSION,
     ReliabilityThresholds,
     RolloutReliabilityReport,
+    action_energy_series,
     assess_rollout_reliability,
 )
 
 
 SCHEMA_VERSION = "new_site_diagnostic_canary_gpu.v1"
-INPUT_SCHEMA_VERSION = "new_site_diagnostic_canary_input.v1"
-INPUT_RECEIPT_SCHEMA_VERSION = "new_site_diagnostic_canary_input_receipt.v1"
+INPUT_SCHEMA_VERSION = "new_site_diagnostic_canary_input.v2"
+INPUT_RECEIPT_SCHEMA_VERSION = "new_site_diagnostic_canary_input_receipt.v2"
 PROTOCOL_NAME = "protocol.json"
 BACKGROUND_NAME = "captured_site_background.png"
 MANIFEST_NAME = "bundle_manifest.json"
+NATIVE_CAMERA_RESULT_NAME = "native_camera_canary_result.json"
+NATIVE_EXTERNAL_NAME = "native_external_initial.png"
+NATIVE_WRIST_NAME = "native_wrist_initial.png"
 MAX_INPUT_BYTES = 8 * 1024 * 1024
 SUPPORTED_ARMS = frozenset({"skeleton_only"})
+SKELETON_WRIST_REFERENCE_DISPLACEMENT_MIN_M = 0.001
+_SKELETON_WRIST_PIXEL_MOTION_FLAGS = frozenset(
+    {FLAG_STATIC_UNDER_COMMAND, FLAG_MOTION_WITHOUT_COMMAND, FLAG_TIMING_DISAGREEMENT}
+)
 
 
 def _sha256(path: Path) -> str:
@@ -121,6 +132,7 @@ def build_canary_input_bundle(
     background_path: str | Path,
     output_zip: str | Path,
     arm_id: str,
+    native_camera_canary_result_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build a private, protocol-bound single-arm input bundle."""
 
@@ -166,7 +178,69 @@ def build_canary_input_bundle(
         "redistribution_authorized": False,
         "label_free": True,
         "purpose": "private_internal_noncommercial_new_site_diagnostic_canary",
+        "initial_observation_source": "mujoco_hybrid_camera_render",
     }
+    native_camera_material: dict[str, Any] | None = None
+    if native_camera_canary_result_path is not None:
+        native_result_path = Path(native_camera_canary_result_path).expanduser().resolve()
+        native_result = _read_object(native_result_path)
+        declared_result_sha256 = native_result.pop("result_sha256", None)
+        if declared_result_sha256 != canonical_sha256(native_result):
+            raise ValueError("new_site_canary_native_camera_result_sha256_invalid")
+        native_result["result_sha256"] = declared_result_sha256
+        if (
+            native_result.get("status") != "passed"
+            or native_result.get("label_free") is not True
+            or native_result.get("rankings_or_policy_outcomes_accessed") is not False
+        ):
+            raise ValueError("new_site_canary_native_camera_result_not_admissible")
+        assessment = native_result.get("assessment")
+        assessment = assessment if isinstance(assessment, Mapping) else {}
+        views = assessment.get("views")
+        views = views if isinstance(views, Mapping) else {}
+        native_camera_material = {
+            "result_path": native_result_path,
+            "result": native_result,
+            "frames": {},
+        }
+        for view_id, filename in (
+            (EXTERIOR_VIEW, NATIVE_EXTERNAL_NAME),
+            (WRIST_VIEW, NATIVE_WRIST_NAME),
+        ):
+            view_key = "external" if view_id == EXTERIOR_VIEW else "wrist"
+            view = views.get(view_key)
+            view = view if isinstance(view, Mapping) else {}
+            frames = view.get("frames")
+            frames = frames if isinstance(frames, Mapping) else {}
+            frame = frames.get("initial")
+            frame = frame if isinstance(frame, Mapping) else {}
+            path = Path(str(frame.get("path") or "")).expanduser().resolve()
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or frame.get("sha256") != file_sha256(path)
+                or frame.get("resolution") != [640, 480]
+                or frame.get("nonblank") is not True
+            ):
+                raise ValueError(f"new_site_canary_native_initial_frame_invalid:{view_key}")
+            native_camera_material["frames"][view_id] = (filename, path)
+        manifest.update(
+            {
+                "initial_observation_source": "native_isaac_simready_warehouse_camera_canary",
+                "native_camera_canary_result_filename": NATIVE_CAMERA_RESULT_NAME,
+                "native_camera_canary_result_sha256": file_sha256(native_result_path),
+                "native_camera_canary_result_identity_sha256": declared_result_sha256,
+                "native_initial_cameras": {
+                    view_id: {
+                        "filename": filename,
+                        "sha256": file_sha256(path),
+                        "size_bytes": path.stat().st_size,
+                        "resolution": [640, 480],
+                    }
+                    for view_id, (filename, path) in native_camera_material["frames"].items()
+                },
+            }
+        )
     if manifest["variant"] != "center":
         raise ValueError("new_site_canary_variant_not_center")
     if not str(manifest["policy_id"] or ""):
@@ -177,6 +251,10 @@ def build_canary_input_bundle(
         archive.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
         archive.write(protocol_file, PROTOCOL_NAME)
         archive.write(background, BACKGROUND_NAME)
+        if native_camera_material is not None:
+            archive.write(native_camera_material["result_path"], NATIVE_CAMERA_RESULT_NAME)
+            for filename, path in native_camera_material["frames"].values():
+                archive.write(path, filename)
     if destination.stat().st_size > MAX_INPUT_BYTES:
         destination.unlink(missing_ok=True)
         raise ValueError("new_site_canary_input_bundle_too_large")
@@ -201,9 +279,16 @@ def extract_canary_input_bundle(
         raise ValueError("new_site_canary_input_sha256_mismatch")
     with zipfile.ZipFile(bundle) as archive:
         infos = archive.infolist()
-        if {info.filename for info in infos} != {MANIFEST_NAME, PROTOCOL_NAME, BACKGROUND_NAME}:
+        names = {info.filename for info in infos}
+        base_names = {MANIFEST_NAME, PROTOCOL_NAME, BACKGROUND_NAME}
+        native_names = base_names | {
+            NATIVE_CAMERA_RESULT_NAME,
+            NATIVE_EXTERNAL_NAME,
+            NATIVE_WRIST_NAME,
+        }
+        if frozenset(names) not in {frozenset(base_names), frozenset(native_names)}:
             raise ValueError("new_site_canary_input_member_allowlist_mismatch")
-        if len(infos) != 3:
+        if len(infos) not in {3, 6}:
             raise ValueError("new_site_canary_input_member_count_invalid")
         for info in infos:
             member = PurePosixPath(info.filename)
@@ -212,6 +297,17 @@ def extract_canary_input_bundle(
         manifest_value = json.loads(archive.read(MANIFEST_NAME).decode("utf-8"))
         protocol_bytes = archive.read(PROTOCOL_NAME)
         background_bytes = archive.read(BACKGROUND_NAME)
+        native_result_bytes = (
+            archive.read(NATIVE_CAMERA_RESULT_NAME) if NATIVE_CAMERA_RESULT_NAME in names else None
+        )
+        native_frame_bytes = (
+            {
+                EXTERIOR_VIEW: archive.read(NATIVE_EXTERNAL_NAME),
+                WRIST_VIEW: archive.read(NATIVE_WRIST_NAME),
+            }
+            if native_result_bytes is not None
+            else {}
+        )
     if not isinstance(manifest_value, Mapping):
         raise ValueError("new_site_canary_input_manifest_not_object")
     manifest = dict(manifest_value)
@@ -234,6 +330,31 @@ def extract_canary_input_bundle(
     background_path = output / BACKGROUND_NAME
     protocol_path.write_bytes(protocol_bytes)
     background_path.write_bytes(background_bytes)
+    initial_camera_paths: dict[str, str] = {}
+    if native_result_bytes is not None:
+        if hashlib.sha256(native_result_bytes).hexdigest() != manifest.get(
+            "native_camera_canary_result_sha256"
+        ):
+            raise ValueError("new_site_canary_native_result_file_sha256_mismatch")
+        native_manifest = manifest.get("native_initial_cameras")
+        if not isinstance(native_manifest, Mapping):
+            raise ValueError("new_site_canary_native_camera_manifest_missing")
+        for view_id, filename in (
+            (EXTERIOR_VIEW, NATIVE_EXTERNAL_NAME),
+            (WRIST_VIEW, NATIVE_WRIST_NAME),
+        ):
+            entry = native_manifest.get(view_id)
+            entry = entry if isinstance(entry, Mapping) else {}
+            data = native_frame_bytes[view_id]
+            if (
+                entry.get("filename") != filename
+                or hashlib.sha256(data).hexdigest() != entry.get("sha256")
+                or len(data) != entry.get("size_bytes")
+            ):
+                raise ValueError(f"new_site_canary_native_frame_manifest_mismatch:{view_id}")
+            path = output / filename
+            path.write_bytes(data)
+            initial_camera_paths[view_id] = str(path)
     protocol = _read_object(protocol_path)
     _validate_protocol_identity(protocol)
     if protocol.get("protocol_sha256") != manifest.get("protocol_sha256"):
@@ -242,11 +363,16 @@ def extract_canary_input_bundle(
         "manifest": manifest,
         "protocol_path": str(protocol_path),
         "background_path": str(background_path),
+        "initial_camera_paths": initial_camera_paths,
     }
 
 
 def _initial_observation(
-    *, runtime: Mapping[str, Any], background_path: str | Path, prompt: str
+    *,
+    runtime: Mapping[str, Any],
+    background_path: str | Path,
+    prompt: str,
+    initial_camera_paths: Mapping[str, str | Path] | None = None,
 ) -> dict[str, Any]:
     """Render the exact frozen initial DROID observation without stepping a task rollout."""
 
@@ -281,29 +407,42 @@ def _initial_observation(
         look_distance_m=0.5,
         fov_deg=82.0,
     )
-    renderer = mujoco.Renderer(model, height=224, width=224)
-    try:
-        external, interaction_pixels = _render_hybrid_external_observation(
-            renderer,
-            model,
-            data,
-            _EXTERNAL_CAMERA,
-            background,
-            mujoco,
-            np_module,
-        )
-        wrist = _render_link_mounted_observation(
-            renderer,
-            model,
-            data,
-            wrist_spec,
-            camera_id=int(ids["wrist_camera"]),
-            camera_mocap_id=int(ids["wrist_camera_mocap"]),
-            mujoco=mujoco,
-            np=np_module,
-        )
-    finally:
-        renderer.close()
+    if initial_camera_paths:
+        if set(initial_camera_paths) != {EXTERIOR_VIEW, WRIST_VIEW}:
+            raise ValueError("new_site_canary_native_initial_camera_set_invalid")
+        loaded = {}
+        for view_id in (EXTERIOR_VIEW, WRIST_VIEW):
+            with Image.open(Path(initial_camera_paths[view_id]).expanduser().resolve()) as image:
+                loaded[view_id] = np_module.asarray(
+                    image.convert("RGB").resize((224, 224), Image.Resampling.LANCZOS),
+                    dtype=np_module.uint8,
+                )
+        external, wrist = loaded[EXTERIOR_VIEW], loaded[WRIST_VIEW]
+        interaction_pixels = int(np_module.count_nonzero(np_module.std(external, axis=2) > 1.0))
+    else:
+        renderer = mujoco.Renderer(model, height=224, width=224)
+        try:
+            external, interaction_pixels = _render_hybrid_external_observation(
+                renderer,
+                model,
+                data,
+                _EXTERNAL_CAMERA,
+                background,
+                mujoco,
+                np_module,
+            )
+            wrist = _render_link_mounted_observation(
+                renderer,
+                model,
+                data,
+                wrist_spec,
+                camera_id=int(ids["wrist_camera"]),
+                camera_mocap_id=int(ids["wrist_camera_mocap"]),
+                mujoco=mujoco,
+                np=np_module,
+            )
+        finally:
+            renderer.close()
     observation = {
         EXTERIOR_VIEW: external,
         WRIST_VIEW: wrist,
@@ -322,7 +461,14 @@ def _initial_observation(
 
 @dataclass(frozen=True)
 class MultiViewCanaryReliabilityGate:
-    """Apply the frozen reliability thresholds to both required camera videos."""
+    """Apply camera-aware reliability checks to both required videos.
+
+    A skeleton rigidly expressed in its own link-mounted wrist camera can be
+    image-static while the wrist moves substantially in the robot/world frame.
+    For that one outcome-blind control arm, media integrity still comes from
+    the wrist video while motion presence comes from the hash-bound FK trace.
+    Learned WAM arms continue to require visible wrist-video response.
+    """
 
     thresholds: ReliabilityThresholds
     assessor: Callable[..., RolloutReliabilityReport] = assess_rollout_reliability
@@ -346,6 +492,10 @@ class MultiViewCanaryReliabilityGate:
             raise ValueError("new_site_canary_reliability_actions_invalid")
         reports: dict[str, Any] = {}
         flags: list[str] = []
+        skeleton_only = (
+            wam_prediction.get("skeleton_only") is True
+            and wam_prediction.get("intended_motion_only") is True
+        )
         for view_id in (EXTERIOR_VIEW, WRIST_VIEW):
             video = Path(str(videos[view_id])).expanduser().resolve()
             if not video.is_file() or video.is_symlink():
@@ -356,8 +506,32 @@ class MultiViewCanaryReliabilityGate:
                 self.thresholds,
                 timing_flag_scope=TIMING_SCOPE_SESSION,
             )
-            reports[view_id] = report.as_dict()
-            flags.extend(f"{view_id}:{flag}" for flag in report.flags)
+            report_payload = report.as_dict()
+            effective_flags = list(report.flags)
+            if skeleton_only and view_id == WRIST_VIEW:
+                motion = _assess_skeleton_wrist_reference_motion(
+                    prepared_transition=prepared_transition,
+                    actions=actions,
+                    thresholds=self.thresholds,
+                )
+                effective_flags = [
+                    flag
+                    for flag in effective_flags
+                    if flag not in _SKELETON_WRIST_PIXEL_MOTION_FLAGS
+                ]
+                effective_flags.extend(motion["flags"])
+                report_payload.update(
+                    {
+                        "raw_pixel_flags": list(report.flags),
+                        "flags": effective_flags,
+                        "reliable": not effective_flags,
+                        "motion_basis": "hash_verified_reference_frame_fk_trace",
+                        "pixel_motion_used_for_media_integrity_only": True,
+                        "kinematic_motion": motion,
+                    }
+                )
+            reports[view_id] = report_payload
+            flags.extend(f"{view_id}:{flag}" for flag in effective_flags)
         return {
             "status": "passed" if not flags else "failed",
             "abstain": bool(flags),
@@ -369,6 +543,101 @@ class MultiViewCanaryReliabilityGate:
             "label_free": True,
             "claim_boundary": "multiview technical reliability only; not task success",
         }
+
+
+def _assess_skeleton_wrist_reference_motion(
+    *,
+    prepared_transition: Mapping[str, Any],
+    actions: np.ndarray,
+    thresholds: ReliabilityThresholds,
+) -> dict[str, Any]:
+    evidence_value = prepared_transition.get("conditioning_builder_evidence")
+    if not isinstance(evidence_value, Mapping):
+        raise ValueError("new_site_canary_wrist_conditioning_evidence_missing")
+    evidence = dict(evidence_value)
+    declared_evidence_sha256 = evidence.pop("evidence_sha256", None)
+    if (
+        not isinstance(declared_evidence_sha256, str)
+        or declared_evidence_sha256 != canonical_sha256(evidence)
+    ):
+        raise ValueError("new_site_canary_wrist_conditioning_evidence_sha256_invalid")
+    trace_evidence = evidence.get("trace_evidence")
+    if not isinstance(trace_evidence, Mapping):
+        raise ValueError("new_site_canary_wrist_trace_evidence_missing")
+    trace_value = trace_evidence.get(WRIST_VIEW)
+    if not isinstance(trace_value, Mapping):
+        raise ValueError("new_site_canary_wrist_trace_manifest_missing")
+    trace_path = Path(str(trace_value.get("trace_path") or "")).expanduser().resolve()
+    if not trace_path.is_file() or trace_path.is_symlink():
+        raise ValueError("new_site_canary_wrist_trace_missing_or_unsafe")
+    if file_sha256(trace_path) != trace_value.get("trace_sha256"):
+        raise ValueError("new_site_canary_wrist_trace_sha256_mismatch")
+
+    rows: list[dict[str, Any]] = []
+    for line in trace_path.read_text(encoding="utf-8").splitlines():
+        value = json.loads(line)
+        if not isinstance(value, Mapping):
+            raise ValueError("new_site_canary_wrist_trace_row_invalid")
+        row = dict(value)
+        declared_frame_sha256 = row.pop("frame_sha256", None)
+        if declared_frame_sha256 != canonical_sha256(row):
+            raise ValueError("new_site_canary_wrist_trace_frame_sha256_invalid")
+        row["frame_sha256"] = declared_frame_sha256
+        rows.append(row)
+    if not rows or len(rows) != trace_value.get("frame_count"):
+        raise ValueError("new_site_canary_wrist_trace_frame_count_mismatch")
+
+    positions: list[np.ndarray] = []
+    for frame_index, row in enumerate(rows):
+        if (
+            row.get("schema_version") != "franka_droid_skeleton_projection_frame.v1"
+            or row.get("view_id") != WRIST_VIEW
+            or row.get("frame_index") != frame_index
+            or row.get("physical_future_observation_used") is not False
+        ):
+            raise ValueError("new_site_canary_wrist_trace_contract_invalid")
+        landmarks = row.get("landmarks")
+        if not isinstance(landmarks, list):
+            raise ValueError("new_site_canary_wrist_trace_landmarks_invalid")
+        centers = [
+            landmark
+            for landmark in landmarks
+            if isinstance(landmark, Mapping)
+            and landmark.get("landmark_id") == "wrist_action_center"
+        ]
+        if len(centers) != 1:
+            raise ValueError("new_site_canary_wrist_action_center_invalid")
+        position = np.asarray(centers[0].get("reference_position_m"), dtype=float)
+        if position.shape != (3,) or not np.isfinite(position).all():
+            raise ValueError("new_site_canary_wrist_reference_position_invalid")
+        positions.append(position)
+
+    displacement = np.linalg.norm(np.asarray(positions) - positions[0], axis=1)
+    maximum_displacement_m = float(np.max(displacement))
+    energy = action_energy_series(actions)
+    commanded_active = float(np.mean(energy)) >= thresholds.command_active_energy_min
+    commanded_null = float(np.max(energy)) <= thresholds.command_null_energy_max
+    motion_present = maximum_displacement_m > SKELETON_WRIST_REFERENCE_DISPLACEMENT_MIN_M
+    motion_flags: list[str] = []
+    if commanded_active and not motion_present:
+        motion_flags.append("kinematic_static_under_command")
+    if commanded_null and motion_present:
+        motion_flags.append("kinematic_motion_without_command")
+    return {
+        "flags": motion_flags,
+        "reliable": not motion_flags,
+        "maximum_reference_displacement_m": maximum_displacement_m,
+        "minimum_reference_displacement_m": SKELETON_WRIST_REFERENCE_DISPLACEMENT_MIN_M,
+        "commanded_active": commanded_active,
+        "commanded_null": commanded_null,
+        "landmark_id": "wrist_action_center",
+        "reference_frame": "pinned_mujoco_franka_world",
+        "trace_path": str(trace_path),
+        "trace_sha256": trace_value["trace_sha256"],
+        "frame_count": len(rows),
+        "physical_future_observation_used": False,
+        "claim_boundary": "commanded FK motion only; not scene response or task success",
+    }
 
 
 def _thresholds(protocol: Mapping[str, Any]) -> ReliabilityThresholds:
@@ -390,6 +659,7 @@ def run_skeleton_only_canary(
     checkpoint_inventory_path: str | Path,
     menagerie_root: str | Path,
     output_dir: str | Path,
+    initial_camera_paths: Mapping[str, str | Path] | None = None,
     checkpoint_downloader: Callable[[str], Path] = _default_checkpoint_downloader,
     policy_loader: Callable[[Any, Path], Any] = _default_openpi_loader,
 ) -> dict[str, Any]:
@@ -423,6 +693,7 @@ def run_skeleton_only_canary(
         runtime=runtime,
         background_path=background_path,
         prompt=prompt,
+        initial_camera_paths=initial_camera_paths,
     )
     interaction_pixels = int(observation.pop("_diagnostic_interaction_pixel_count"))
     loop = run_policy_wam_closed_loop(
@@ -441,31 +712,62 @@ def run_skeleton_only_canary(
         config=ClosedLoopConfig(
             task_prompt=prompt,
             executed_prefix_steps=8,
-            max_policy_queries=1,
+            max_policy_queries=2,
             execution_mode="engineering_smoke",
         ),
         output_dir=output / "loop",
     )
     trace_path = Path(loop["trace_path"])
     rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
-    row = rows[0] if rows else {}
-    reliability = row.get("reliability")
-    reliability = reliability if isinstance(reliability, Mapping) else {}
-    reasons = [str(reason) for reason in reliability.get("reasons") or []]
+    row_mappings = [row if isinstance(row, Mapping) else {} for row in rows]
+    reliabilities = []
+    reasons: list[str] = []
+    if any(not isinstance(row, Mapping) for row in rows):
+        reasons.append("policy_wam_trace_row_invalid")
+    for row in row_mappings:
+        reliability_value = row.get("reliability")
+        reliability = reliability_value if isinstance(reliability_value, Mapping) else {}
+        reliabilities.append(reliability)
+        reasons.extend(str(reason) for reason in reliability.get("reasons") or [])
+    first_provenance_value = (
+        row_mappings[0].get("next_observation_provenance") if row_mappings else None
+    )
+    first_provenance = (
+        first_provenance_value if isinstance(first_provenance_value, Mapping) else {}
+    )
+    round_trip_passed = (
+        len(rows) == 2
+        and len(row_mappings) == 2
+        and all(isinstance(row, Mapping) for row in rows)
+        and loop.get("policy_call_count") == 2
+        and loop.get("wam_call_count") == 2
+        and first_provenance.get("visual_source") == "wam_prediction"
+        and isinstance(row_mappings[1].get("policy_observation_sha256"), str)
+    )
+    all_transitions_completed = bool(row_mappings) and all(
+        row.get("status") == "completed" for row in row_mappings
+    )
+    all_reliability_passed = bool(reliabilities) and all(
+        reliability.get("status") == "passed" for reliability in reliabilities
+    )
+    if not round_trip_passed:
+        reasons.append("policy_wam_policy_round_trip_incomplete")
     evidence = {
         "arm_id": "skeleton_only",
         "protocol_sha256": protocol["protocol_sha256"],
         "label_free": True,
         "ranking_outputs_accessed": False,
         "attempt_stage": "rollout",
-        "model_invoked": loop.get("policy_call_count") == 1,
+        "model_invoked": int(loop.get("policy_call_count") or 0) >= 1,
         "scene_id": protocol["scene"]["scene_id"],
         "task_instruction": prompt,
         "policy_id": policy_id,
         "variant": rule.get("frozen_variant"),
-        "observation_validity_passed": row.get("status") in {"completed", "abstained"},
-        "motion_passed": reliability.get("status") == "passed",
-        "collapse_checks_passed": reliability.get("status") == "passed",
+        "observation_validity_passed": all_transitions_completed and round_trip_passed,
+        "motion_passed": all_reliability_passed,
+        "collapse_checks_passed": all_reliability_passed,
+        "policy_wam_policy_round_trip_passed": round_trip_passed,
+        "transition_count": len(rows),
         "blockers": [*loop.get("blockers", []), *reasons],
     }
     canary = assess_canary(protocol, evidence)
@@ -480,7 +782,13 @@ def run_skeleton_only_canary(
         "variant": rule.get("frozen_variant"),
         "policy_checkpoint_verification": local_verification,
         "initial_observation_interaction_pixel_count": interaction_pixels,
+        "initial_observation_source": (
+            "native_isaac_simready_warehouse_camera_canary"
+            if initial_camera_paths
+            else "mujoco_hybrid_camera_render"
+        ),
         "loop_manifest": loop,
+        "policy_wam_policy_round_trip_passed": round_trip_passed,
         "canary": canary,
         "provider_execution_required_for_result": True,
         "physical_robot_operated": False,

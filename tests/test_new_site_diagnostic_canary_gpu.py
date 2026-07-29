@@ -18,13 +18,91 @@ from blueprint_pipeline.new_site_diagnostic_canary_gpu import (
     run_skeleton_only_canary,
 )
 from blueprint_pipeline.new_site_diagnostic_smoke import build_protocol
+from blueprint_pipeline.policy_ranking_thesis import canonical_sha256, file_sha256
 from blueprint_pipeline.wam_rollout_reliability import (
+    FLAG_STATIC_UNDER_COMMAND,
     ReliabilityThresholds,
     RolloutReliabilityReport,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _active_reliability_actions() -> np.ndarray:
+    actions = np.zeros((8, 10), dtype=float)
+    actions[:, 0] = 0.1
+    actions[:, 3] = 1.0
+    actions[:, 7] = 1.0
+    return actions
+
+
+def _write_wrist_trace_evidence(tmp_path: Path, positions: list[list[float]]) -> dict:
+    trace_path = tmp_path / "wrist_skeleton.jsonl"
+    rows = []
+    for frame_index, position in enumerate(positions):
+        row = {
+            "schema_version": "franka_droid_skeleton_projection_frame.v1",
+            "episode_id": "query_000",
+            "view_id": WRIST_VIEW,
+            "frame_index": frame_index,
+            "source_controller_horizon_frame_index": frame_index,
+            "source_width": 640,
+            "source_height": 480,
+            "landmarks": [
+                {
+                    "landmark_id": "wrist_action_center",
+                    "reference_position_m": position,
+                    "camera_position_m": [0.0, 0.0, 0.25],
+                    "image_projection": {
+                        "available": True,
+                        "u_px": 319.5,
+                        "v_px": 239.5,
+                        "positive_depth": True,
+                        "in_image_bounds": True,
+                    },
+                }
+            ],
+            "segments": [],
+            "projected_landmark_count": 1,
+            "physical_future_observation_used": False,
+        }
+        row["frame_sha256"] = canonical_sha256(row)
+        rows.append(row)
+    trace_path.write_text(
+        "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    evidence = {
+        "schema_version": "franka_droid_skeleton_conditioning.v1",
+        "trace_evidence": {
+            WRIST_VIEW: {
+                "trace_path": str(trace_path),
+                "trace_sha256": file_sha256(trace_path),
+                "frame_count": len(rows),
+            }
+        },
+        "physical_future_observation_used": False,
+    }
+    evidence["evidence_sha256"] = canonical_sha256(evidence)
+    return evidence
+
+
+def _reliability_report(video_path: Path, *, flags: tuple[str, ...]) -> RolloutReliabilityReport:
+    return RolloutReliabilityReport(
+        video_path=str(video_path),
+        n_frames=81,
+        n_action_steps=8,
+        flags=flags,
+        reliable=not flags,
+        command_energy_mean=0.2,
+        command_energy_std=0.1,
+        motion_mean=0.002 if flags else 0.2,
+        motion_max=0.008 if flags else 0.3,
+        timing_correlation=0.5,
+        timing_flag_scope="session",
+        spatial_std_mean=20.0,
+    )
 
 
 def _write_protocol(path: Path) -> dict:
@@ -85,6 +163,61 @@ def test_canary_input_roundtrip_is_protocol_bound_and_label_free(tmp_path: Path)
         )
 
 
+def test_canary_input_roundtrip_carries_passed_native_initial_camera_frames(
+    tmp_path: Path,
+) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224), color=(12, 34, 56)).save(background)
+    frame_entries = {}
+    for view_key, view_id, color in (
+        ("external", EXTERIOR_VIEW, (20, 40, 60)),
+        ("wrist", WRIST_VIEW, (60, 40, 20)),
+    ):
+        path = tmp_path / f"native_{view_key}.png"
+        Image.new("RGB", (640, 480), color=color).save(path)
+        frame_entries[view_key] = {
+            "frames": {
+                "initial": {
+                    "path": str(path),
+                    "sha256": file_sha256(path),
+                    "resolution": [640, 480],
+                    "nonblank": True,
+                }
+            }
+        }
+    native_result = {
+        "status": "passed",
+        "label_free": True,
+        "rankings_or_policy_outcomes_accessed": False,
+        "assessment": {"views": frame_entries},
+    }
+    native_result["result_sha256"] = canonical_sha256(native_result)
+    native_result_path = tmp_path / "native_result.json"
+    native_result_path.write_text(json.dumps(native_result), encoding="utf-8")
+
+    receipt = build_canary_input_bundle(
+        protocol_path=protocol_path,
+        background_path=background,
+        output_zip=tmp_path / "native_canary.zip",
+        arm_id="skeleton_only",
+        native_camera_canary_result_path=native_result_path,
+    )
+    extracted = extract_canary_input_bundle(
+        bundle_path=tmp_path / "native_canary.zip",
+        expected_bundle_sha256=receipt["bundle_sha256"],
+        output_dir=tmp_path / "native_extracted",
+    )
+
+    assert set(extracted["initial_camera_paths"]) == {EXTERIOR_VIEW, WRIST_VIEW}
+    assert receipt["manifest"]["initial_observation_source"] == (
+        "native_isaac_simready_warehouse_camera_canary"
+    )
+    for path in extracted["initial_camera_paths"].values():
+        assert Image.open(path).size == (640, 480)
+
+
 def test_canary_input_rejects_mutated_protocol_identity(tmp_path: Path) -> None:
     protocol_path = tmp_path / "protocol.json"
     protocol = _write_protocol(protocol_path)
@@ -142,7 +275,128 @@ def test_multiview_gate_checks_both_individual_camera_videos(tmp_path: Path) -> 
     assert {call[0] for call in calls} == {Path(path) for path in videos.values()}
 
 
-def test_skeleton_canary_runs_exactly_one_policy_query_without_ranking(
+def test_skeleton_wrist_uses_hash_verified_world_motion_not_rigid_camera_pixels(
+    tmp_path: Path,
+) -> None:
+    videos = {}
+    for view_id in (EXTERIOR_VIEW, WRIST_VIEW):
+        path = tmp_path / f"{view_id.rsplit('/', 1)[-1]}.mp4"
+        path.write_bytes(b"test-video")
+        videos[view_id] = str(path)
+
+    def assessor(video_path, *_args, **_kwargs):
+        path = Path(video_path)
+        return _reliability_report(
+            path,
+            flags=(FLAG_STATIC_UNDER_COMMAND,) if "wrist" in path.name else (),
+        )
+
+    evidence = _write_wrist_trace_evidence(
+        tmp_path,
+        [[0.50, 0.00, 0.10], [0.52, 0.00, 0.10]],
+    )
+    result = MultiViewCanaryReliabilityGate(
+        ReliabilityThresholds(), assessor=assessor
+    ).assess(
+        previous_observation={},
+        prepared_transition={
+            "reliability_actions_10d": _active_reliability_actions(),
+            "conditioning_builder_evidence": evidence,
+        },
+        wam_prediction={
+            "generated_videos_by_view": videos,
+            "skeleton_only": True,
+            "intended_motion_only": True,
+        },
+        query_index=0,
+        output_dir=tmp_path,
+    )
+
+    wrist = result["reports_by_view"][WRIST_VIEW]
+    assert result["status"] == "passed"
+    assert wrist["raw_pixel_flags"] == [FLAG_STATIC_UNDER_COMMAND]
+    assert wrist["flags"] == []
+    assert wrist["motion_basis"] == "hash_verified_reference_frame_fk_trace"
+    assert wrist["kinematic_motion"]["maximum_reference_displacement_m"] == pytest.approx(
+        0.02
+    )
+
+
+def test_skeleton_wrist_still_fails_when_fk_trace_is_stationary(tmp_path: Path) -> None:
+    videos = {}
+    for view_id in (EXTERIOR_VIEW, WRIST_VIEW):
+        path = tmp_path / f"{view_id.rsplit('/', 1)[-1]}.mp4"
+        path.write_bytes(b"test-video")
+        videos[view_id] = str(path)
+
+    def assessor(video_path, *_args, **_kwargs):
+        path = Path(video_path)
+        return _reliability_report(
+            path,
+            flags=(FLAG_STATIC_UNDER_COMMAND,) if "wrist" in path.name else (),
+        )
+
+    evidence = _write_wrist_trace_evidence(
+        tmp_path,
+        [[0.50, 0.00, 0.10], [0.50, 0.00, 0.10]],
+    )
+    result = MultiViewCanaryReliabilityGate(
+        ReliabilityThresholds(), assessor=assessor
+    ).assess(
+        previous_observation={},
+        prepared_transition={
+            "reliability_actions_10d": _active_reliability_actions(),
+            "conditioning_builder_evidence": evidence,
+        },
+        wam_prediction={
+            "generated_videos_by_view": videos,
+            "skeleton_only": True,
+            "intended_motion_only": True,
+        },
+        query_index=0,
+        output_dir=tmp_path,
+    )
+
+    assert result["status"] == "failed"
+    assert result["reasons"] == [f"{WRIST_VIEW}:kinematic_static_under_command"]
+
+
+def test_skeleton_wrist_trace_tampering_fails_closed(tmp_path: Path) -> None:
+    videos = {}
+    for view_id in (EXTERIOR_VIEW, WRIST_VIEW):
+        path = tmp_path / f"{view_id.rsplit('/', 1)[-1]}.mp4"
+        path.write_bytes(b"test-video")
+        videos[view_id] = str(path)
+    evidence = _write_wrist_trace_evidence(
+        tmp_path,
+        [[0.50, 0.00, 0.10], [0.52, 0.00, 0.10]],
+    )
+    trace_path = Path(evidence["trace_evidence"][WRIST_VIEW]["trace_path"])
+    trace_path.write_text(trace_path.read_text(encoding="utf-8") + "{}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="wrist_trace_sha256_mismatch"):
+        MultiViewCanaryReliabilityGate(
+            ReliabilityThresholds(),
+            assessor=lambda video_path, *_args, **_kwargs: _reliability_report(
+                Path(video_path), flags=()
+            ),
+        ).assess(
+            previous_observation={},
+            prepared_transition={
+                "reliability_actions_10d": _active_reliability_actions(),
+                "conditioning_builder_evidence": evidence,
+            },
+            wam_prediction={
+                "generated_videos_by_view": videos,
+                "skeleton_only": True,
+                "intended_motion_only": True,
+            },
+            query_index=0,
+            output_dir=tmp_path,
+        )
+
+
+def test_skeleton_canary_runs_two_policy_wam_transitions_without_ranking(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     protocol_path = tmp_path / "protocol.json"
@@ -173,17 +427,29 @@ def test_skeleton_canary_runs_exactly_one_policy_query_without_ranking(
     )
 
     def fake_loop(**kwargs):
+        assert kwargs["config"].max_policy_queries == 2
         trace = Path(kwargs["output_dir"]) / "closed_loop_trace.jsonl"
         trace.parent.mkdir(parents=True)
         trace.write_text(
-            json.dumps({"status": "completed", "reliability": {"status": "passed", "reasons": []}})
-            + "\n",
+            "".join(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "policy_observation_sha256": str(index) * 64,
+                        "next_observation_provenance": {"visual_source": "wam_prediction"},
+                        "reliability": {"status": "passed", "reasons": []},
+                    }
+                )
+                + "\n"
+                for index in (1, 2)
+            ),
             encoding="utf-8",
         )
         return {
             "status": "max_horizon",
             "trace_path": str(trace),
-            "policy_call_count": 1,
+            "policy_call_count": 2,
+            "wam_call_count": 2,
             "blockers": [],
         }
 
@@ -202,6 +468,81 @@ def test_skeleton_canary_runs_exactly_one_policy_query_without_ranking(
 
     assert result["status"] == "completed"
     assert result["canary"]["status"] == "passed"
-    assert result["loop_manifest"]["policy_call_count"] == 1
+    assert result["loop_manifest"]["policy_call_count"] == 2
+    assert result["loop_manifest"]["wam_call_count"] == 2
+    assert result["policy_wam_policy_round_trip_passed"] is True
     assert "rankings" not in result
     assert result["claim_boundary"]["physical_success"] is False
+
+
+def test_skeleton_canary_abstains_on_malformed_round_trip_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    protocol = _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224)).save(background)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    spec = SimpleNamespace(checkpoint_uri="s3://example/checkpoint", action_chunk_rows=15)
+    monkeypatch.setattr(canary_module, "load_policy_spec", lambda *_args, **_kwargs: spec)
+    monkeypatch.setattr(
+        canary_module, "verify_local_checkpoint", lambda **_kwargs: {"status": "verified"}
+    )
+    monkeypatch.setattr(canary_module, "LocalOpenPIDroidPolicyClient", lambda **_kwargs: object())
+    monkeypatch.setattr(canary_module, "prepare_franka_droid_runtime", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        canary_module,
+        "_initial_observation",
+        lambda **_kwargs: {
+            EXTERIOR_VIEW: np.zeros((224, 224, 3), dtype=np.uint8),
+            WRIST_VIEW: np.zeros((224, 224, 3), dtype=np.uint8),
+            "observation/joint_position": np.zeros(7),
+            "observation/gripper_position": np.zeros(1),
+            "prompt": protocol["scene"]["task_instruction"],
+            "_diagnostic_interaction_pixel_count": 10,
+        },
+    )
+
+    def malformed_loop(**kwargs):
+        trace = Path(kwargs["output_dir"]) / "closed_loop_trace.jsonl"
+        trace.parent.mkdir(parents=True)
+        trace.write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "policy_observation_sha256": str(index) * 64,
+                        "next_observation_provenance": "not-an-object" if index == 1 else {},
+                        "reliability": {"status": "passed", "reasons": []},
+                    }
+                )
+                + "\n"
+                for index in (1, 2)
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "status": "max_horizon",
+            "trace_path": str(trace),
+            "policy_call_count": 2,
+            "wam_call_count": 2,
+            "blockers": [],
+        }
+
+    monkeypatch.setattr(canary_module, "run_policy_wam_closed_loop", malformed_loop)
+
+    result = run_skeleton_only_canary(
+        protocol_path=protocol_path,
+        background_path=background,
+        cohort_path=tmp_path / "cohort.json",
+        checkpoint_inventory_path=tmp_path / "inventory.json",
+        menagerie_root=tmp_path / "menagerie",
+        output_dir=tmp_path / "output",
+        checkpoint_downloader=lambda _uri: checkpoint,
+        policy_loader=lambda _spec, _checkpoint: object(),
+    )
+
+    assert result["canary"]["status"] != "passed"
+    assert result["policy_wam_policy_round_trip_passed"] is False
+    assert "policy_wam_policy_round_trip_incomplete" in result["canary"]["blockers"]
