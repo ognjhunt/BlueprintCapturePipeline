@@ -8,6 +8,8 @@ import pytest
 
 from blueprint_pipeline.policy_ranking_phase_b_high_motion_selection import (
     build_high_motion_selection,
+    build_powered_window_selection,
+    main,
 )
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
 
@@ -100,3 +102,72 @@ def test_rejects_tampered_or_unsealed_split(tmp_path: Path) -> None:
     split_path.write_text(json.dumps(split), encoding="utf-8")
     with pytest.raises(ValueError, match="split_not_label_sealed"):
         build_high_motion_selection(split_manifest_path=split_path, dataset_root=root)
+
+
+def test_accepts_prospective_v3_split(tmp_path: Path) -> None:
+    root, split_path = _fixture(tmp_path)
+    split = json.loads(split_path.read_text(encoding="utf-8"))
+    split["schema_version"] = "policy_ranking_disjoint_session_candidate_split_amendment.v3"
+    split.pop("manifest_sha256")
+    split["manifest_sha256"] = canonical_sha256(split)
+    split_path.write_text(json.dumps(split), encoding="utf-8")
+
+    result = build_high_motion_selection(split_manifest_path=split_path, dataset_root=root)
+
+    assert result["status"] == "passed"
+
+
+def test_builds_powered_session_windows_without_cross_rate_mapping(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    policies = ("policy-a", "policy-b", "policy-c", "policy-d")
+    for session_index, session_id in enumerate(("session-a", "session-b"), start=1):
+        for policy_index, policy_id in enumerate(policies, start=1):
+            directory = root / "evaluation_sessions" / session_id / f"P_{policy_id}"
+            _npz(
+                directory / f"{policy_id}_npz_file.npz",
+                translation_per_step=0.001 * session_index * policy_index,
+            )
+    split = {
+        "schema_version": "policy_ranking_disjoint_session_candidate_split_amendment.v3",
+        "dataset": {"id": "fixture", "revision": "frozen", "license": "mit"},
+        "required_policy_ids": list(policies),
+        "selection": {
+            "metadata_yaml_opened": False,
+            "session_ids": ["session-a", "session-b"],
+        },
+    }
+    split["manifest_sha256"] = canonical_sha256(split)
+    split_path = tmp_path / "powered-split.json"
+    split_path.write_text(json.dumps(split), encoding="utf-8")
+
+    result = build_powered_window_selection(
+        split_manifest_path=split_path,
+        dataset_root=root,
+        windows_per_session=3,
+    )
+
+    assert result["status"] == "passed"
+    assert result["selected_session_count"] == 2
+    assert result["selection"]["session_count"] == 2
+    assert result["temporal_alignment"]["cross_rate_frame_mapping_invented"] is False
+    assert result["input_access"]["outcome_labels_accessed"] is False
+
+    output = tmp_path / "powered-selection.json"
+    assert (
+        main(
+            [
+                "--split-manifest",
+                str(split_path),
+                "--dataset-root",
+                str(root),
+                "--output",
+                str(output),
+                "--windows-per-session",
+                "3",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(output.read_text())["schema_version"] == (
+        "policy_ranking_phase_b_powered_window_selection.v1"
+    )

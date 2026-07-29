@@ -161,7 +161,11 @@ def build_selected_replay_canary(
     task_access = task_receipt.get("access_contract")
     if not isinstance(task_access, Mapping) or any(
         task_access.get(field) is not False
-        for field in ("yaml_document_deserialized", "outcome_fields_parsed", "outcome_values_returned")
+        for field in (
+            "yaml_document_deserialized",
+            "outcome_fields_parsed",
+            "outcome_values_returned",
+        )
     ):
         raise ValueError("task_instruction_receipt_access_contract_invalid")
 
@@ -203,13 +207,9 @@ def build_selected_replay_canary(
 
     recorded_stream = _action_stream(recorded_arrays, 0)
     swapped_stream = _action_stream(swapped_arrays, 0)
-    if recorded_stream["action_sha256"] != recorded.get("action_stream", {}).get(
-        "action_sha256"
-    ):
+    if recorded_stream["action_sha256"] != recorded.get("action_stream", {}).get("action_sha256"):
         raise ValueError("recorded_action_does_not_match_selection")
-    if swapped_stream["action_sha256"] != swapped.get("action_stream", {}).get(
-        "action_sha256"
-    ):
+    if swapped_stream["action_sha256"] != swapped.get("action_stream", {}).get("action_sha256"):
         raise ValueError("policy_swapped_action_does_not_match_selection")
 
     hold = 1.0 - float(recorded_arrays["gripper_position"][0, 0])
@@ -220,9 +220,7 @@ def build_selected_replay_canary(
         shuffle_seed=SHUFFLE_SEED,
     )
     shifted = _action_stream(recorded_arrays, 1)
-    if shifted["action_sha256"] in {
-        payload["action_sha256"] for payload in controls.values()
-    }:
+    if shifted["action_sha256"] in {payload["action_sha256"] for payload in controls.values()}:
         raise ValueError("temporally_shifted_action_not_distinct")
     controls["shifted"] = validate_droid_action_stream(shifted)
     if len({payload["action_sha256"] for payload in controls.values()}) != len(controls):
@@ -325,9 +323,7 @@ def build_replay_canary(
         shuffle_seed=SHUFFLE_SEED,
     )
     shifted = _action_stream(recorded_arrays, 1)
-    if shifted["action_sha256"] in {
-        payload["action_sha256"] for payload in controls.values()
-    }:
+    if shifted["action_sha256"] in {payload["action_sha256"] for payload in controls.values()}:
         raise ValueError("temporally_shifted_action_not_distinct")
     controls["shifted"] = validate_droid_action_stream(shifted)
 
@@ -373,17 +369,184 @@ def build_replay_canary(
     return result
 
 
+def build_powered_replay_packet(
+    *,
+    powered_window_selection_path: str | Path,
+    dataset_root: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Materialize all powered, label-blind native-Cosmos replay inputs."""
+
+    selection_path = Path(powered_window_selection_path).resolve()
+    manifest = _validated_manifest(selection_path, digest_field="manifest_sha256")
+    if manifest.get("schema_version") != "policy_ranking_phase_b_powered_window_selection.v1":
+        raise ValueError("powered_window_selection_schema_invalid")
+    if manifest.get("status") != "passed":
+        raise ValueError("powered_window_selection_not_passed")
+    access = manifest.get("input_access")
+    if not isinstance(access, Mapping) or any(
+        access.get(field) is not False
+        for field in (
+            "metadata_yaml_opened",
+            "outcome_labels_accessed",
+            "video_pixels_opened",
+            "generated_media_accessed",
+            "evaluator_predictions_accessed",
+        )
+    ):
+        raise ValueError("powered_window_selection_not_label_blind")
+    selection = manifest.get("selection")
+    if not isinstance(selection, Mapping):
+        raise ValueError("powered_window_selection_payload_missing")
+    nested_digest = str(selection.get("selection_sha256") or "")
+    if nested_digest != canonical_sha256(
+        {key: value for key, value in selection.items() if key != "selection_sha256"}
+    ):
+        raise ValueError("powered_window_nested_digest_mismatch")
+
+    root = Path(dataset_root).resolve()
+    out = Path(output_dir).resolve()
+    ensure_dir(out)
+    packet_rows: list[dict[str, Any]] = []
+    for session in selection.get("sessions", []):
+        if not isinstance(session, Mapping):
+            raise ValueError("powered_window_session_row_invalid")
+        session_id = str(session.get("session_id_internal_only") or "")
+        windows = session.get("windows")
+        if not session_id or not isinstance(windows, Sequence):
+            raise ValueError("powered_window_session_identity_invalid")
+        session_dir = root / "evaluation_sessions" / session_id
+        for window in windows:
+            if not isinstance(window, Mapping):
+                raise ValueError("powered_window_row_invalid")
+            window_index = int(window.get("window_index", -1))
+            recorded = window.get("recorded")
+            swapped = window.get("policy_swapped")
+            if not isinstance(recorded, Mapping) or not isinstance(swapped, Mapping):
+                raise ValueError("powered_window_action_pair_missing")
+            recorded_policy = str(recorded.get("policy_id_internal_only") or "")
+            swapped_policy = str(swapped.get("policy_id_internal_only") or "")
+            if not recorded_policy or not swapped_policy or recorded_policy == swapped_policy:
+                raise ValueError("powered_window_policy_pair_invalid")
+            recorded_dir = _policy_dir(session_dir, recorded_policy)
+            swapped_dir = _policy_dir(session_dir, swapped_policy)
+            recorded_npz_files = sorted(recorded_dir.glob("*_npz_file.npz"))
+            swapped_npz_files = sorted(swapped_dir.glob("*_npz_file.npz"))
+            if len(recorded_npz_files) != 1 or len(swapped_npz_files) != 1:
+                raise ValueError("powered_window_npz_resolution_invalid")
+            recorded_npz = recorded_npz_files[0]
+            swapped_npz = swapped_npz_files[0]
+            recorded_arrays = load_restricted_roboarena_npz(recorded_npz)
+            swapped_arrays = load_restricted_roboarena_npz(swapped_npz)
+            if len(recorded_arrays["action"]) < DROID_HORIZON + 1:
+                raise ValueError("powered_recorded_trace_too_short_for_shift")
+            if len(swapped_arrays["action"]) < DROID_HORIZON:
+                raise ValueError("powered_swapped_trace_too_short")
+            recorded_stream = _action_stream(recorded_arrays, 0)
+            swapped_stream = _action_stream(swapped_arrays, 0)
+            if recorded_stream["action_sha256"] != (recorded.get("action_stream") or {}).get(
+                "action_sha256"
+            ):
+                raise ValueError("powered_recorded_action_selection_mismatch")
+            if swapped_stream["action_sha256"] != (swapped.get("action_stream") or {}).get(
+                "action_sha256"
+            ):
+                raise ValueError("powered_swapped_action_selection_mismatch")
+            hold = 1.0 - float(recorded_arrays["gripper_position"][0, 0])
+            controls = build_action_controls(
+                recorded_stream,
+                swapped_stream,
+                observation_gripper_hold=hold,
+                shuffle_seed=SHUFFLE_SEED,
+            )
+            shifted = _action_stream(recorded_arrays, 1)
+            if shifted["action_sha256"] in {
+                payload["action_sha256"] for payload in controls.values()
+            }:
+                raise ValueError("powered_temporally_shifted_action_not_distinct")
+            controls["shifted"] = validate_droid_action_stream(shifted)
+            if len({payload["action_sha256"] for payload in controls.values()}) != len(controls):
+                raise ValueError("powered_action_controls_not_pairwise_distinct")
+
+            window_dir = out / "sessions" / session_id / f"window_{window_index:02d}"
+            observation = compose_initial_observation(
+                recorded_dir,
+                window_dir / "initial_observation.png",
+            )
+            initial_views = materialize_initial_view_frames(
+                recorded_dir,
+                window_dir / "initial_views",
+            )
+            packet_rows.append(
+                {
+                    "session_id_internal_only": session_id,
+                    "window_index": window_index,
+                    "recorded_policy_id_internal_only": recorded_policy,
+                    "swapped_policy_id_internal_only": swapped_policy,
+                    "recorded_npz_sha256": file_sha256(recorded_npz),
+                    "swapped_npz_sha256": file_sha256(swapped_npz),
+                    "initial_observation": observation,
+                    "initial_views": initial_views,
+                    "controls": controls,
+                    "control_action_sha256": {
+                        name: payload["action_sha256"] for name, payload in controls.items()
+                    },
+                    "shuffle_seed": SHUFFLE_SEED,
+                }
+            )
+
+    session_count = len({row["session_id_internal_only"] for row in packet_rows})
+    expected_rows = int(manifest["selected_session_count"]) * int(manifest["windows_per_session"])
+    if len(packet_rows) != expected_rows:
+        raise ValueError(f"powered_window_packet_incomplete:{len(packet_rows)}:{expected_rows}")
+    result: dict[str, Any] = {
+        "schema_version": "policy_ranking_phase_b_powered_replay_packet.v1",
+        "status": "passed",
+        "powered_window_selection_manifest_sha256": manifest["manifest_sha256"],
+        "powered_window_selection_file_sha256": file_sha256(selection_path),
+        "session_count": session_count,
+        "window_count": len(packet_rows),
+        "conditions_per_window": 6,
+        "seeds_per_condition": 2,
+        "scientific_request_count": len(packet_rows) * 6 * 2,
+        "task_prompt": " ",
+        "rows": packet_rows,
+        "label_seal": {
+            "metadata_yaml_opened": False,
+            "outcome_labels_accessed": False,
+            "task_instruction_accessed": False,
+            "physical_future_pixels_used_as_provider_input": False,
+        },
+        "claim_boundary": (
+            "label_blind same-snapshot disjoint-session open-loop causal input packet; "
+            "not WAM output, policy ranking, live closed loop, or physical performance"
+        ),
+    }
+    result["manifest_sha256"] = canonical_sha256(result)
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--split-manifest")
     parser.add_argument("--high-motion-selection")
     parser.add_argument("--task-instruction-receipt")
+    parser.add_argument("--powered-window-selection")
     parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args(argv)
     output_dir = Path(args.output_dir)
+    powered_mode = bool(args.powered_window_selection)
     selected_mode = bool(args.high_motion_selection or args.task_instruction_receipt)
-    if selected_mode:
+    if powered_mode:
+        if args.split_manifest or selected_mode:
+            parser.error("--powered-window-selection cannot be combined with other selectors")
+        report = build_powered_replay_packet(
+            powered_window_selection_path=args.powered_window_selection,
+            dataset_root=args.dataset_root,
+            output_dir=output_dir,
+        )
+    elif selected_mode:
         if not args.high_motion_selection or not args.task_instruction_receipt:
             parser.error(
                 "--high-motion-selection and --task-instruction-receipt are required together"
@@ -404,7 +567,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             dataset_root=args.dataset_root,
             output_dir=output_dir,
         )
-    write_json(output_dir / "replay_canary.json", report)
+    filename = "powered_replay_packet.json" if powered_mode else "replay_canary.json"
+    write_json(output_dir / filename, report)
     return 0
 
 

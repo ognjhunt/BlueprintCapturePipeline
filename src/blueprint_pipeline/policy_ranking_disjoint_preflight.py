@@ -31,6 +31,7 @@ def _validated_split(path: Path) -> dict[str, Any]:
     if payload.get("schema_version") not in {
         "policy_ranking_disjoint_session_candidate_split.v1",
         "policy_ranking_disjoint_session_candidate_split_amendment.v2",
+        "policy_ranking_disjoint_session_candidate_split_amendment.v3",
     }:
         raise ValueError("split_schema_version_invalid")
     recorded = str(payload.get("manifest_sha256") or "")
@@ -164,9 +165,7 @@ def build_disjoint_technical_preflight(
             if not row["blockers"]:
                 row["status"] = "passed"
             else:
-                blockers.extend(
-                    f"{session_id}:{policy_id}:{reason}" for reason in row["blockers"]
-                )
+                blockers.extend(f"{session_id}:{policy_id}:{reason}" for reason in row["blockers"])
             rows.append(row)
 
     expected_rows = len(sessions) * len(policies)

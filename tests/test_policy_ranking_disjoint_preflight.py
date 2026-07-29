@@ -69,9 +69,7 @@ def test_disjoint_preflight_passes_without_opening_metadata(tmp_path: Path, monk
         return original_read_text(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", guarded_read_text)
-    report = build_disjoint_technical_preflight(
-        split_manifest_path=split_path, dataset_root=root
-    )
+    report = build_disjoint_technical_preflight(split_manifest_path=split_path, dataset_root=root)
     assert report["status"] == "passed"
     assert report["passed_row_count"] == 1
     assert report["view_counts"] == {"left": 1, "right": 1, "wrist": 1}
@@ -82,9 +80,7 @@ def test_disjoint_preflight_passes_without_opening_metadata(tmp_path: Path, monk
 def test_disjoint_preflight_fails_closed_on_missing_required_view(tmp_path: Path) -> None:
     split_path, root = _fixture(tmp_path)
     (root / "evaluation_sessions/session-1/A_policy-1/policy-1_video_right.mp4").unlink()
-    report = build_disjoint_technical_preflight(
-        split_manifest_path=split_path, dataset_root=root
-    )
+    report = build_disjoint_technical_preflight(split_manifest_path=split_path, dataset_root=root)
     assert report["status"] == "blocked"
     assert report["passed_row_count"] == 0
     assert any("video_resolution:right:0" in blocker for blocker in report["blockers"])
@@ -129,9 +125,18 @@ def test_disjoint_preflight_accepts_prospective_v2_split_amendment(tmp_path: Pat
     payload.pop("manifest_sha256")
     payload["manifest_sha256"] = canonical_sha256(payload)
     split_path.write_text(json.dumps(payload), encoding="utf-8")
-    report = build_disjoint_technical_preflight(
-        split_manifest_path=split_path, dataset_root=root
-    )
+    report = build_disjoint_technical_preflight(split_manifest_path=split_path, dataset_root=root)
+    assert report["status"] == "passed"
+
+
+def test_disjoint_preflight_accepts_prospective_v3_split_amendment(tmp_path: Path) -> None:
+    split_path, root = _fixture(tmp_path)
+    payload = json.loads(split_path.read_text(encoding="utf-8"))
+    payload["schema_version"] = "policy_ranking_disjoint_session_candidate_split_amendment.v3"
+    payload.pop("manifest_sha256")
+    payload["manifest_sha256"] = canonical_sha256(payload)
+    split_path.write_text(json.dumps(payload), encoding="utf-8")
+    report = build_disjoint_technical_preflight(split_manifest_path=split_path, dataset_root=root)
     assert report["status"] == "passed"
 
 
@@ -175,25 +180,25 @@ def test_committed_native_cosmos_result_preserves_failure_and_claim_ceiling() ->
 def test_committed_native_cosmos_cost_receipt_proves_zero_without_overclaiming() -> None:
     receipt = json.loads(
         (
-            EXPERIMENT_DOCS
-            / "phase_b_high_motion_native_cosmos_cost_provider_zero_v1.json"
+            EXPERIMENT_DOCS / "phase_b_high_motion_native_cosmos_cost_provider_zero_v1.json"
         ).read_text(encoding="utf-8")
     )
     assert receipt["gpu"]["estimated_cost_usd"] == 0.088401
     assert receipt["gpu"]["continuing_spend_from_this_run"] is False
     assert receipt["provider_zero"]["task_live_instance_count"] == 0
     assert receipt["provider_zero"]["all_live_instance_count"] == 0
-    assert receipt["provider_zero"][
-        "provider_zero_does_not_prove_invoice_settlement_or_scientific_validity"
-    ] is True
+    assert (
+        receipt["provider_zero"][
+            "provider_zero_does_not_prove_invoice_settlement_or_scientific_validity"
+        ]
+        is True
+    )
     assert "not a completed ranking cost" in receipt["claim_boundary"]
 
 
 def test_terminal_admission_does_not_promote_short_screen_to_phase_b() -> None:
     admission = json.loads(
-        (EXPERIMENT_DOCS / "phase_b_terminal_admission_v1.json").read_text(
-            encoding="utf-8"
-        )
+        (EXPERIMENT_DOCS / "phase_b_terminal_admission_v1.json").read_text(encoding="utf-8")
     )
     assert admission["status"] == "terminal_not_admitted"
     assert admission["paid_execution_admitted"] is False
@@ -209,8 +214,7 @@ def test_terminal_admission_does_not_promote_short_screen_to_phase_b() -> None:
 def test_download_transport_amendment_preserves_science_and_minimizes_credentials() -> None:
     amendment = json.loads(
         (
-            EXPERIMENT_DOCS
-            / "phase_b_positive_control_download_transport_amendment_v2.json"
+            EXPERIMENT_DOCS / "phase_b_positive_control_download_transport_amendment_v2.json"
         ).read_text(encoding="utf-8")
     )
     failed = amendment["failed_infrastructure_attempt"]
@@ -224,9 +228,7 @@ def test_download_transport_amendment_preserves_science_and_minimizes_credential
 
 
 def test_terminal_verdict_keeps_all_components_separate() -> None:
-    verdict = json.loads(
-        (EXPERIMENT_DOCS / "terminal_verdict_v1.json").read_text(encoding="utf-8")
-    )
+    verdict = json.loads((EXPERIMENT_DOCS / "terminal_verdict_v1.json").read_text(encoding="utf-8"))
     assert verdict["overall_verdict"] == "inconclusive"
     assert set(verdict["components"]) == {
         "cosmos_wam_qualification",
@@ -238,15 +240,15 @@ def test_terminal_verdict_keeps_all_components_separate() -> None:
     assert verdict["phase_b"]["full_episode_executed"] is False
     assert verdict["phase_b"]["policy_requery_executed"] is False
     assert verdict["phase_b"]["selected_sessions_remaining_label_sealed"] == 16
-    assert verdict["abstention"]["native_cosmos_product_abstention_correct_for_frozen_gates"] is True
+    assert (
+        verdict["abstention"]["native_cosmos_product_abstention_correct_for_frozen_gates"] is True
+    )
     assert verdict["cost_and_time"]["completed_useful_digital_ranking"] is False
     assert verdict["provider_zero"]["all_live_instance_count"] == 0
 
 
 def test_terminal_verdict_v2_preserves_positive_control_and_droid_failure() -> None:
-    verdict = json.loads(
-        (EXPERIMENT_DOCS / "terminal_verdict_v2.json").read_text(encoding="utf-8")
-    )
+    verdict = json.loads((EXPERIMENT_DOCS / "terminal_verdict_v2.json").read_text(encoding="utf-8"))
     assert verdict["overall_verdict"] == "inconclusive"
     assert set(verdict["components"]) == {
         "cosmos_wam_qualification",
@@ -257,8 +259,8 @@ def test_terminal_verdict_v2_preserves_positive_control_and_droid_failure() -> N
     assert verdict["components"]["cosmos_wam_qualification"]["qualified"] is False
     assert verdict["phase_b"]["policy_requery_executed"] is False
     assert verdict["phase_b"]["ranking_executed"] is False
-    assert verdict["abstention"][
-        "native_cosmos_product_abstention_correct_for_frozen_gates"
-    ] is True
+    assert (
+        verdict["abstention"]["native_cosmos_product_abstention_correct_for_frozen_gates"] is True
+    )
     assert verdict["cost_and_time"]["completed_useful_digital_ranking"] is False
     assert verdict["provider_zero"]["all_live_instance_count"] == 0

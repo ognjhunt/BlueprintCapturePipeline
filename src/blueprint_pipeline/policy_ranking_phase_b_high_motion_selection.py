@@ -19,6 +19,7 @@ from typing import Any
 from .common import write_json
 from .policy_ranking_label_free_chunk_selection import (
     select_first_frame_high_motion_pair,
+    select_first_frame_windows_by_session,
 )
 from .policy_ranking_successor_cosmos import (
     DROID_HORIZON,
@@ -33,6 +34,7 @@ SUPPORTED_SPLIT_SCHEMAS = frozenset(
     {
         "policy_ranking_disjoint_session_candidate_split.v1",
         "policy_ranking_disjoint_session_candidate_split_amendment.v2",
+        "policy_ranking_disjoint_session_candidate_split_amendment.v3",
     }
 )
 
@@ -161,16 +163,127 @@ def build_high_motion_selection(
     return result
 
 
+def build_powered_window_selection(
+    *,
+    split_manifest_path: str | Path,
+    dataset_root: str | Path,
+    windows_per_session: int = 3,
+) -> dict[str, Any]:
+    """Freeze multiple label-blind first-frame windows for each session.
+
+    This is the powered causal-screen input selector. It deliberately chooses
+    separate policies at their recorded first frame instead of later temporal
+    offsets, because the source review videos are 10 FPS while the upstream
+    DROID action contract is 15 Hz. No guessed cross-rate frame mapping enters
+    the scientific packet.
+    """
+
+    split_path = Path(split_manifest_path).resolve()
+    root = Path(dataset_root).resolve()
+    split = _validated_split(split_path)
+    session_ids = [str(value) for value in split["selection"]["session_ids"]]
+    policy_ids = [str(value) for value in split["required_policy_ids"]]
+    candidates: list[dict[str, Any]] = []
+    source_rows: list[dict[str, Any]] = []
+
+    for session_id in session_ids:
+        session_dir = root / "evaluation_sessions" / session_id
+        if not session_dir.is_dir():
+            raise ValueError(f"session_directory_missing:{session_id}")
+        for policy_id in policy_ids:
+            policy_dir = _policy_directory(session_dir, policy_id)
+            npz_files = sorted(policy_dir.glob("*_npz_file.npz"))
+            if len(npz_files) != 1:
+                raise ValueError(f"npz_resolution:{session_id}:{policy_id}:{len(npz_files)}")
+            npz_path = npz_files[0]
+            action_stream = _first_action_stream(npz_path)
+            candidates.append(
+                {
+                    "session_id": session_id,
+                    "policy_id": policy_id,
+                    "start_index": 0,
+                    "action_stream": action_stream,
+                }
+            )
+            source_rows.append(
+                {
+                    "session_id_internal_only": session_id,
+                    "policy_id_internal_only": policy_id,
+                    "npz_path_relative_to_dataset_root": str(npz_path.relative_to(root)),
+                    "npz_sha256": file_sha256(npz_path),
+                    "npz_bytes": npz_path.stat().st_size,
+                    "restricted_loader_used": True,
+                    "numpy_allow_pickle_used": False,
+                    "selected_chunk_start_index": 0,
+                    "selected_chunk_action_sha256": action_stream["action_sha256"],
+                }
+            )
+
+    expected_count = len(session_ids) * len(policy_ids)
+    if len(candidates) != expected_count:
+        raise ValueError("candidate_matrix_incomplete")
+    selection = select_first_frame_windows_by_session(
+        candidates,
+        windows_per_session=windows_per_session,
+    )
+    result: dict[str, Any] = {
+        "schema_version": "policy_ranking_phase_b_powered_window_selection.v1",
+        "status": "passed",
+        "dataset": split.get("dataset"),
+        "split_manifest_sha256": split["manifest_sha256"],
+        "split_manifest_file_sha256": file_sha256(split_path),
+        "selected_session_count": len(session_ids),
+        "required_policy_count": len(policy_ids),
+        "windows_per_session": windows_per_session,
+        "candidate_count": len(candidates),
+        "source_rows": source_rows,
+        "selection": selection,
+        "temporal_alignment": {
+            "source_review_video_fps": 10,
+            "wam_action_fps": 15,
+            "selected_action_start_index": 0,
+            "selected_video_frame_index": 0,
+            "cross_rate_frame_mapping_invented": False,
+        },
+        "input_access": {
+            "restricted_numeric_npz_actions_opened": True,
+            "metadata_yaml_opened": False,
+            "outcome_labels_accessed": False,
+            "video_pixels_opened": False,
+            "generated_media_accessed": False,
+            "evaluator_predictions_accessed": False,
+        },
+        "claim_boundary": (
+            "label_blind_powered_causal_input_selection_only; not WAM qualification, "
+            "policy ranking, task success, or independent new-snapshot confirmation"
+        ),
+    }
+    result["manifest_sha256"] = canonical_sha256(result)
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--split-manifest", required=True)
     parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--output", required=True)
-    args = parser.parse_args(argv)
-    report = build_high_motion_selection(
-        split_manifest_path=args.split_manifest,
-        dataset_root=args.dataset_root,
+    parser.add_argument(
+        "--windows-per-session",
+        type=int,
+        help="Build the powered per-session selection instead of the legacy global pair.",
     )
+    args = parser.parse_args(argv)
+    if args.windows_per_session is None:
+        report = build_high_motion_selection(
+            split_manifest_path=args.split_manifest,
+            dataset_root=args.dataset_root,
+        )
+    else:
+        report = build_powered_window_selection(
+            split_manifest_path=args.split_manifest,
+            dataset_root=args.dataset_root,
+            windows_per_session=args.windows_per_session,
+        )
     write_json(Path(args.output), report)
     return 0
 
@@ -179,4 +292,8 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["SCHEMA_VERSION", "build_high_motion_selection"]
+__all__ = [
+    "SCHEMA_VERSION",
+    "build_high_motion_selection",
+    "build_powered_window_selection",
+]

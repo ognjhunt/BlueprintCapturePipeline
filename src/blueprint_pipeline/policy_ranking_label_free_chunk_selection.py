@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from collections import defaultdict
 from typing import Any
 
 import numpy as np
@@ -171,9 +172,91 @@ def select_first_frame_high_motion_pair(
     return result
 
 
+def select_first_frame_windows_by_session(
+    candidates: Sequence[Mapping[str, Any]], *, windows_per_session: int = 3
+) -> dict[str, Any]:
+    """Select several first-frame-compatible windows for every session.
+
+    Each window uses a different recorded policy and a real distinct policy as
+    its swapped control. Keeping ``start_index=0`` means the initial RGB frame
+    is aligned without inventing a mapping between RoboArena's 10 FPS review
+    videos and the pinned 15 Hz DROID action contract.
+    """
+
+    if windows_per_session <= 0:
+        raise ValueError("windows_per_session_must_be_positive")
+    validated = [_validate_candidate(candidate) for candidate in candidates]
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for candidate in validated:
+        grouped[str(candidate["session_id"])].append(candidate)
+    if not grouped:
+        raise ValueError("candidates_required")
+
+    sessions: list[dict[str, Any]] = []
+    for session_id, session_candidates in sorted(grouped.items()):
+        ranked = sorted(session_candidates, key=_sort_key)
+        if len(ranked) < windows_per_session + 1:
+            raise ValueError(
+                f"insufficient_distinct_policies:{session_id}:{len(ranked)}:"
+                f"{windows_per_session + 1}"
+            )
+        windows: list[dict[str, Any]] = []
+        for window_index, recorded in enumerate(ranked[:windows_per_session]):
+            swapped = next(
+                candidate for candidate in ranked if candidate["policy_id"] != recorded["policy_id"]
+            )
+            windows.append(
+                {
+                    "window_index": window_index,
+                    "start_index": 0,
+                    "recorded": {
+                        "policy_id_internal_only": recorded["policy_id"],
+                        "action_stream": recorded["action_stream"],
+                        "metrics": recorded["metrics"],
+                    },
+                    "policy_swapped": {
+                        "policy_id_internal_only": swapped["policy_id"],
+                        "action_stream": swapped["action_stream"],
+                        "metrics": swapped["metrics"],
+                    },
+                }
+            )
+        sessions.append(
+            {
+                "session_id_internal_only": session_id,
+                "window_count": len(windows),
+                "windows": windows,
+            }
+        )
+
+    result: dict[str, Any] = {
+        "schema_version": "policy_ranking_label_free_session_windows.v1",
+        "selection_rule_id": "per_session_first_frame_top_translation_windows_v1",
+        "selection_rule": (
+            "within every session, consider only start_index=0; rank by translation path, "
+            "rotation path, gripper variation, then policy identity; select the first K "
+            "distinct policies and pair each with the highest-ranked distinct real policy"
+        ),
+        "windows_per_session": windows_per_session,
+        "session_count": len(sessions),
+        "sessions": sessions,
+        "label_seal": {
+            "metadata_opened": False,
+            "outcome_labels_accessed": False,
+            "video_pixels_opened": False,
+            "generated_media_accessed": False,
+            "evaluator_predictions_accessed": False,
+        },
+        "claim_boundary": "label_free_powered_causal_input_selection_only",
+    }
+    result["selection_sha256"] = canonical_sha256(result)
+    return result
+
+
 __all__ = [
     "SCHEMA_VERSION",
     "SELECTION_RULE_ID",
     "action_chunk_motion_metrics",
     "select_first_frame_high_motion_pair",
+    "select_first_frame_windows_by_session",
 ]
