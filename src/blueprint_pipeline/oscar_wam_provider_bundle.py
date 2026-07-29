@@ -38,6 +38,7 @@ from .oscar_official_release import (
     OFFICIAL_OSCAR_HF_REVISION,
     OFFICIAL_OSCAR_SOURCE_COMMIT,
     OFFICIAL_OSCAR_SOURCE_URL,
+    OFFICIAL_OSCAR_WAM_IMAGE_REF,
     official_release_blockers,
     official_release_contract,
 )
@@ -5472,6 +5473,10 @@ def _write_runtime_files(
     num_steps: int,
     guidance: float,
     seed: int,
+    experiment_id: str,
+    qualification_canary_request_count: int,
+    scientific_matrix_request_count: int,
+    public_image: str,
 ) -> None:
     ensure_dir(runtime_dir)
     oscar_input_dir = runtime_dir / "oscar_input"
@@ -5550,6 +5555,14 @@ def _write_runtime_files(
     )
     runtime_manifest = {
         "schema_version": "wam_provider_runtime_manifest.v1",
+        "experiment_id": experiment_id,
+        "provider_bundle_kind": "wam",
+        "public_image": public_image,
+        "qualification_canary_request_count": qualification_canary_request_count,
+        "scientific_matrix_request_count": scientific_matrix_request_count,
+        "total_initial_generation_request_count": (
+            qualification_canary_request_count + scientific_matrix_request_count
+        ),
         "runtime": "oscar_wam_provider_runtime",
         "model_candidate": "oscar_wam",
         "model_name": "OSCAR-2B",
@@ -5655,6 +5668,10 @@ def build_oscar_wam_provider_bundle(
     height: int = DEFAULT_HEIGHT,
     width: int = DEFAULT_WIDTH,
     fps: float = DEFAULT_FPS,
+    experiment_id: str = "",
+    qualification_canary_request_count: int = 1,
+    scientific_matrix_request_count: int = 0,
+    public_image: str = OFFICIAL_OSCAR_WAM_IMAGE_REF,
     bundle_filename: str = DEFAULT_BUNDLE_FILENAME,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -5668,6 +5685,12 @@ def build_oscar_wam_provider_bundle(
         shutil.rmtree(bundle_root)
     ensure_dir(runtime_dir)
     blockers: list[str] = []
+    if qualification_canary_request_count < 0 or scientific_matrix_request_count < 0:
+        blockers.append("oscar_wam_request_budget_invalid")
+    if qualification_canary_request_count + scientific_matrix_request_count <= 0:
+        blockers.append("oscar_wam_request_budget_empty")
+    if public_image != OFFICIAL_OSCAR_WAM_IMAGE_REF:
+        blockers.append("oscar_wam_public_image_not_frozen_official_digest")
     experimental_version_allowed = (
         bool(allow_experimental_oscar_version)
         if allow_experimental_oscar_version is not None
@@ -5688,6 +5711,11 @@ def build_oscar_wam_provider_bundle(
         blockers.append("wam_rollout_input_manifest_missing")
     else:
         rollout_manifest = _read_json(resolved_rollout_input)
+    resolved_experiment_id = (
+        experiment_id
+        or _string(rollout_manifest.get("experiment_id"))
+        or "unregistered_oscar_wam_bundle"
+    )
     materialization_error: dict[str, Any] = {}
     try:
         if not blockers and oscar_input_dir:
@@ -5766,6 +5794,10 @@ def build_oscar_wam_provider_bundle(
             num_steps=num_steps,
             guidance=guidance,
             seed=seed,
+            experiment_id=resolved_experiment_id,
+            qualification_canary_request_count=qualification_canary_request_count,
+            scientific_matrix_request_count=scientific_matrix_request_count,
+            public_image=public_image,
         )
     bundle_path = resolved_job_dir / bundle_filename
     zip_entries: list[str] = []
@@ -5789,6 +5821,13 @@ def build_oscar_wam_provider_bundle(
         "local_bundle_ready_for_remote_staging": not blockers,
         "wam_rollout_input_manifest": str(resolved_rollout_input),
         "provider_bundle_kind": "wam",
+        "experiment_id": resolved_experiment_id,
+        "public_image": public_image,
+        "qualification_canary_request_count": qualification_canary_request_count,
+        "scientific_matrix_request_count": scientific_matrix_request_count,
+        "total_initial_generation_request_count": (
+            qualification_canary_request_count + scientific_matrix_request_count
+        ),
         "runtime_dir": str(runtime_dir),
         "zip_entry_count": len(zip_entries),
         "zip_entries": zip_entries,
@@ -5843,6 +5882,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT)
     parser.add_argument("--width", type=int, default=DEFAULT_WIDTH)
     parser.add_argument("--fps", type=float, default=DEFAULT_FPS)
+    parser.add_argument("--experiment-id", default="")
+    parser.add_argument("--qualification-canary-request-count", type=int, default=1)
+    parser.add_argument("--scientific-matrix-request-count", type=int, default=0)
+    parser.add_argument("--public-image", default=OFFICIAL_OSCAR_WAM_IMAGE_REF)
     parser.add_argument("--bundle-filename", default=DEFAULT_BUNDLE_FILENAME)
     args = parser.parse_args(argv)
     manifest = build_oscar_wam_provider_bundle(
@@ -5863,6 +5906,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         height=args.height,
         width=args.width,
         fps=args.fps,
+        experiment_id=args.experiment_id,
+        qualification_canary_request_count=args.qualification_canary_request_count,
+        scientific_matrix_request_count=args.scientific_matrix_request_count,
+        public_image=args.public_image,
         bundle_filename=args.bundle_filename,
     )
     print(
