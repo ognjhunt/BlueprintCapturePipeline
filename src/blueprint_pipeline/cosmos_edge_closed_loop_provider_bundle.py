@@ -81,7 +81,13 @@ def main() -> int:
             ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
             check=True, capture_output=True, text=True, timeout=30,
         ).stdout.strip()
-        work = output / "runtime_work"
+        work = Path(
+            os.environ.get("BLUEPRINT_EDGE_POLICY_WORK_DIR", "/workspace/blueprint_edge_runtime_work")
+        ).resolve()
+        legacy_work = output / "runtime_work"
+        if legacy_work.exists() and not work.exists():
+            legacy_work.rename(work)
+        work.mkdir(parents=True, exist_ok=True)
         source = work / "cosmos-framework"
         if not source.exists():
             run(["git", "clone", "--filter=blob:none", FRAMEWORK_URL, str(source)], timeout=900)
@@ -296,8 +302,9 @@ def build_cosmos_edge_policy_canary_bundle(
     runtime = root / "provider_runtime"
     canary_dir = runtime / "policy_canary"
     package_dir = runtime / "blueprint_pipeline"
+    core_package_dir = package_dir / "core"
     oscar_dir = runtime / "oscar_input"
-    for path in (canary_dir, package_dir, oscar_dir):
+    for path in (canary_dir, package_dir, core_package_dir, oscar_dir):
         ensure_dir(path)
     source_root = Path(__file__).resolve().parent
     for name in (
@@ -309,6 +316,8 @@ def build_cosmos_edge_policy_canary_bundle(
         "cosmos_edge_droid_policy_server.py",
     ):
         shutil.copy2(source_root / name, package_dir / name)
+    for name in ("__init__.py", "common.py"):
+        shutil.copy2(source_root / "core" / name, core_package_dir / name)
     snapshot_manifest = Path(policy_snapshot_manifest_path).expanduser().resolve()
     shutil.copy2(snapshot_manifest, runtime / "policy_snapshot_manifest.json")
     required_views = {

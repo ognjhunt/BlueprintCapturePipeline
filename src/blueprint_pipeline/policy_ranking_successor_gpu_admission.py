@@ -337,14 +337,14 @@ EDGE_CLOSED_LOOP_PROFILE = SuccessorGPUProfile(
     cost_authorization_binding_sha256=(
         "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
     ),
-    expected_bundle_sha256="3579d8e67f4872a56f7397c4cb59fd339b9e94afae4a5540dc12b02026a164a7",
-    expected_bundle_size_bytes=762_143,
+    expected_bundle_sha256="50acb4b26a52f5d05c80023463f8240c3c8175d917adb4000e6f1aedb5111f68",
+    expected_bundle_size_bytes=765_906,
     expected_embedded_input_hashes={
         "runtime_manifest_sha256": (
             "4de5f233ae6577c49ceed8b5342ee74621ac56d5454a1cfa6a6b922f2ef80ef1"
         ),
         "canary_input_sha256": ("0dc1b72a90dace038a8b9ea3b444fffa8daf51b0db6ef3228e5fe1a8010a2974"),
-        "runner_sha256": ("7e1b430b3e184ea3251b49660f59dc60f8aa15df664dbc7745329f788e870b16"),
+        "runner_sha256": ("d8f3b2c9a175d3b9ac99644ae8255e1e3ec47d627aa31957ecd0453907f27639"),
         "entrypoint_sha256": ("f104ef7f92d9af3f1f79cea025c6d6eaf81705df80ee0c1ff5b033147526fa3e"),
     },
     qualification_canary_request_count=1,
@@ -425,6 +425,8 @@ EDGE_POLICY_CANARY_BUNDLE_ENTRIES = frozenset(
         "provider_runtime/policy_canary/view_1.png",
         "provider_runtime/policy_canary/view_2.png",
         "provider_runtime/policy_snapshot_manifest.json",
+        "provider_runtime/blueprint_pipeline/core/__init__.py",
+        "provider_runtime/blueprint_pipeline/core/common.py",
         "provider_runtime/oscar_input/first_frame.png",
         "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
     }

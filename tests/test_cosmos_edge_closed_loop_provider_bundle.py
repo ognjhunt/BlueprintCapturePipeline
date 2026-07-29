@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -57,6 +60,8 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
             "provider_runtime/run_wam_provider_runtime.sh",
             "provider_runtime/wam_provider_runtime_manifest.json",
             "provider_runtime/wam_rollout_input_manifest.json",
+            "provider_runtime/blueprint_pipeline/core/__init__.py",
+            "provider_runtime/blueprint_pipeline/core/common.py",
             "provider_runtime/oscar_input/first_frame.png",
             "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
         }.issubset(names)
@@ -72,6 +77,8 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
         assert "policy_server_load_seconds" in runner
         assert "gpu_memory_after_inference_mb" in runner
         assert "commanded_state_advance_proven" in runner
+        assert "BLUEPRINT_EDGE_POLICY_WORK_DIR" in runner
+        assert 'legacy_work = output / "runtime_work"' in runner
         manifest = json.loads(archive.read("provider_runtime/wam_provider_runtime_manifest.json"))
         assert manifest["experiment_id"] == ("policy_ranking_cosmos3_edge_closed_loop_20260729")
         assert "@sha256:" in manifest["public_image"]
@@ -101,3 +108,23 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
     )
     assert inspection["status"] == "passed"
     assert inspection["blockers"] == []
+
+    import_root = tmp_path / "import-check"
+    with zipfile.ZipFile(bundle) as archive:
+        archive.extractall(import_root)
+    import_check = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from blueprint_pipeline.cosmos_edge_droid_policy_server "
+                "import serve_identity_bound_policy; print('ok')"
+            ),
+        ],
+        env={**os.environ, "PYTHONPATH": str(import_root / "provider_runtime")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert import_check.returncode == 0, import_check.stderr
+    assert import_check.stdout.strip() == "ok"
