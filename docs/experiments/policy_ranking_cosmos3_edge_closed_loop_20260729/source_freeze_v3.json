@@ -1,0 +1,70 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze.v3",
+  "frozen_at": "2026-07-29T08:02:29-0500",
+  "supersedes_manifest_sha256": "90729933493012540a47385d6482eef4886b5634539d5be03ebb0ae48f39b4e2",
+  "inherits_all_sources_from": "source_freeze_v2.json",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "additional_sources": [
+    {
+      "identity": "microsoft/MoGe",
+      "role": "OSCAR-inspired monocular camera-intrinsics estimator",
+      "url": "https://github.com/microsoft/MoGe",
+      "revision": "925b8ed835a7a9cdb7578ba15c658a0afc969030",
+      "license": "MIT",
+      "license_sha256": "ad7d951c80c5fc2b2bce035f2041bc0a0dbf9028c8ecc4c9a8e1fba8130b6b59",
+      "readme_sha256": "20a0b3443fc29f4d5197e6408e2681367ca4170ce46eee58e8aa6f1a0993ac48"
+    },
+    {
+      "identity": "Ruicheng/moge-2-vitl",
+      "role": "MoGe-v2 intrinsics checkpoint",
+      "url": "https://huggingface.co/Ruicheng/moge-2-vitl",
+      "revision": "39c4d5e957afe587e04eec59dc2bcc3be5ecd968",
+      "license": "MIT",
+      "readme_sha256": "d8d7a46d41a1a37fe4f0a5f637bf55c649310185329127d8a2204632e480be17",
+      "model_file": "model.pt",
+      "model_size_bytes": 1305030700,
+      "model_sha256": "3eefd4abb2102f38f12b2d1992e5ff15e4923e5431c67dd494afe157e0111cd5"
+    },
+    {
+      "identity": "darthandvader/CtRNet-X",
+      "role": "OSCAR-inspired camera-to-robot-base extrinsics estimator",
+      "url": "https://github.com/darthandvader/CtRNet-X",
+      "revision": "e95562f6a753059865ad679fe57fe5e32384c99c",
+      "license": "MIT",
+      "license_sha256": "780ee176477557877bf6577dbd4b530ef18c9cb64bf5d3dee337ae87391c3e59",
+      "readme_sha256": "84074d64ae57484803b06e3639f0b18a4de924b9fa8f3b5c3a7f7f3ff9a70dcf",
+      "droid_inference_sha256": "089360aec96af9900a3114920d131594db28381c4d54f456bc539e9222241737",
+      "model_code_sha256": "d198c087b8f0da2944a0dc90d1bb8dc65414157ba72a41870b300ff9bb8547f9",
+      "panda_urdf_sha256": "cf9251732e2fe3c08842dad400e7d668dc5218adc9ed0db07b915bcccadcdb97"
+    },
+    {
+      "identity": "CtRNet-X public camera-pose weights",
+      "role": "extrinsics checkpoint",
+      "distribution_url": "https://drive.google.com/file/d/1H6nJ-pXfEG4WzRF-tT74ti4mbsB5SjPU",
+      "archive_size_bytes": 586573157,
+      "archive_sha256": "18ab54f54794973fff51fc68844f43fa19bac488bbb304bcf485af8ec8ba6ff4",
+      "net_best_size_bytes": 480789897,
+      "net_best_sha256": "679a47cb32ac57b1a276f3bf44b81618cbad495e3c9827acec5a1fe22604f1e3",
+      "net_epoch_260_size_bytes": 160463657,
+      "net_epoch_260_sha256": "9a9e8ca3451371506c864505d5da70bfb10d0beee33ebd4f915c532a4a474c96"
+    },
+    {
+      "identity": "CtRNet-X public CLIP adapter weights",
+      "role": "CtRNet-X visual feature adapter",
+      "distribution_url": "https://drive.google.com/file/d/1C-Zhih6hLM0ctc0Jz-qA5iHPnITAqqdx",
+      "archive_sha256": "940301f05b2bef239937f8ea30b211de0d0de14793aaecd3dde29d1dc6701751",
+      "tune_ee_sha256": "a57d9215ddaed69e11c9d5cf6a3a488c7ff3c9923df25167b7474a7c3b90fa76",
+      "tune_base_sha256": "d0b33b74217a201f501f178cf6ae644b51cd718a9c45b9af9dd247d6cb1684b3"
+    }
+  ],
+  "method_claim": "Blueprint camera calibration is inspired by OSCAR's disclosed MoGe-v2 plus CtRNet-X methodology. The unpublished OSCAR calibration pipeline is not claimed as exactly reproduced.",
+  "adapter_rules": [
+    "no guessed camera intrinsics or extrinsics",
+    "static external-camera world-to-camera matrices and dynamic wrist-camera matrices remain distinct",
+    "calibration validity is established label-free before WAM generation",
+    "a calibration failure is retained and causes abstention"
+  ],
+  "manifest_sha256": "a8ad40aed9fae224ec6bb7f4de7d9f49ff29a7f23fb0a74e9940956472434128"
+}

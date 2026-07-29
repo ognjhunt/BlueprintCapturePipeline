@@ -1,0 +1,54 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_offline_oscar_projection_validation.v1",
+  "validated_at": "2026-07-29T08:11:20-0500",
+  "status": "passed",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "source": {
+    "repository": "https://github.com/wuzy2115/oscar-public",
+    "revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "render_skeleton_sha256": "4cfd5a28dce18fed8972a20dd2131b3ee90bf4b3071797af46aed4a7b1042491",
+    "panda_robotiq_urdf_sha256": "09f4b2854c72b52c6641cca658ee4a77e85d73f37c5b00d899851ccda736c370",
+    "fixture_episode_meta_sha256": "d51299181664f90231a5dc15948b8460667a26c489e9504c9e68f536c385352b",
+    "fixture_rgb_sha256": "9ed4aac35e0165f11784bb60516dee22d38f01d67dcdd3867498f306fadb1a51"
+  },
+  "blueprint_adapter": {
+    "module": "blueprint_pipeline.droid_oscar_skeleton_conditioning.AbsoluteJointOscarConditioningBuilder",
+    "trajectory_sha256": "7c28abce0017bd4d88731fa015248a14ba9d19b3026d3a5b0a05f6b9619899f5",
+    "camera_calibration_sha256": "0317617ae5f89daf30aefe5f84bd7edf0224595e301f4492d0b3007e631e542d",
+    "reliability_action_shape": [16, 10],
+    "mean_fk_translation_delta_m": 0.0030790113940658403,
+    "physical_future_observation_used": false,
+    "joint_targets_clamped": false
+  },
+  "output": {
+    "local_evidence_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/offline_projection_fixture_v1",
+    "skeleton_video": "skeleton.mp4",
+    "skeleton_video_sha256": "7a49d643a2740ec508bd1d0cd1fc6594b022c7dae1f20afd310219c9eda89bd7",
+    "contact_sheet": "contact_sheet.png",
+    "contact_sheet_sha256": "1dd86bf90ac5cc0799939f025789d0385b8ec0defccf6a4f6f1eea200eb88600",
+    "codec": "h264",
+    "width": 1280,
+    "height": 720,
+    "fps": 15.0,
+    "frame_count": 81,
+    "duration_seconds": 5.4
+  },
+  "direct_public_renderer_comparison": {
+    "frames_compared": 17,
+    "decoded_pixel_scale": "0_to_255",
+    "decoded_mean_absolute_error_mean": 0.016578222869008712,
+    "decoded_mean_absolute_error_max": 0.039137008101851854,
+    "interpretation": "codec-level difference between independently encoded videos using identical public FK and drawing functions"
+  },
+  "claim_boundary": {
+    "absolute_joint_to_skeleton_projection_contract_validated": true,
+    "camera_convention_validated_on_public_fixture": true,
+    "new_roboarena_camera_calibration_validated": false,
+    "cosmos3_skeleton_conditioning_compatibility_proven": false,
+    "world_prediction_proven": false,
+    "closed_loop_policy_ranking_proven": false
+  },
+  "record_sha256": "671f68cf6027514212f97b7e938a9829462ec13507c84325d9068c378abfc74c"
+}

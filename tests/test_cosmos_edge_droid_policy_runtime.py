@@ -149,6 +149,10 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
         ("source_freeze_v1.json", "manifest_sha256"),
         ("source_freeze_v2.json", "manifest_sha256"),
         ("source_freeze_amendment_v2.json", "amendment_sha256"),
+        ("source_freeze_v3.json", "manifest_sha256"),
+        ("source_freeze_amendment_v3.json", "amendment_sha256"),
+        ("confirmation_cohort_v1.json", "cohort_sha256"),
+        ("offline_oscar_projection_validation_v1.json", "record_sha256"),
         ("diagnostic_session_unseal_v1.json", "record_sha256"),
         ("calibration_availability_v1.json", "record_sha256"),
         ("protocol_v1.json", "protocol_sha256"),
@@ -176,6 +180,14 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
     ]
     assert amendment["paid_execution_admitted"] is False
     assert amendment["provider_called"] is False
+    amendment_v3 = payloads["source_freeze_amendment_v3.json"]
+    assert amendment_v3["former_manifest_sha256"] == payloads["source_freeze_v2.json"][
+        "manifest_sha256"
+    ]
+    assert amendment_v3["successor_manifest_sha256"] == payloads[
+        "source_freeze_v3.json"
+    ]["manifest_sha256"]
+    assert payloads["confirmation_cohort_v1.json"]["physical_outcome_labels_accessed"] is False
     assert payloads["diagnostic_session_unseal_v1.json"][
         "outcome_labels_accessed_before_predictions_were_frozen"
     ] is True
