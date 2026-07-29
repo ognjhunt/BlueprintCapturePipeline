@@ -48,9 +48,10 @@ SHUFFLE_SEED = 20260727
 RUN_SCRIPT = """#!/usr/bin/env bash
 set -u
 RUNTIME_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-OUTPUT_DIR=${BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR:-"$RUNTIME_DIR/../runtime_output"}
+OUTPUT_DIR=${BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR:-${BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR:-"$RUNTIME_DIR/../runtime_output"}}
 mkdir -p "$OUTPUT_DIR"
 export BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR="$OUTPUT_DIR"
+export BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR="$OUTPUT_DIR"
 RETAINED_ROOT=${BLUEPRINT_COSMOS_RETAINED_ROOT:-/workspace/blueprint_vast_probe/cosmos3_retained}
 mkdir -p "$RETAINED_ROOT"
 install -m 700 "$RUNTIME_DIR/successor_retained_control.py" "$RETAINED_ROOT/successor_retained_control.py"

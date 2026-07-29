@@ -46,6 +46,7 @@ from .gpu_render_providers import get_render_provider
 from .groot_oscar_runpod_watchdog import EVIDENCE_NAME as RUNPOD_WATCHDOG_EVIDENCE_NAME
 from .runpod_wam_async_runner import (
     RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV,
+    RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV,
     RUNPOD_WAM_TEARDOWN_ACTION_ENV,
     create_runpod_wam_async_run,
     poll_runpod_wam_async_run,
@@ -235,12 +236,13 @@ DROID_REFERENCE_PROFILE = SuccessorGPUProfile(
     receipt_schema="policy_ranking_cosmos3_droid_reference_bundle_receipt.v1",
     authorization_ids_by_allocation_index={
         1: "policy-ranking-droid-reference-20260729-allocation-1",
+        2: "policy-ranking-droid-reference-20260729-allocation-2",
     },
     cost_authorization_binding_sha256=(
         "305668fe34d4524caa0d7dc5ce301e44a1a04e0b66176719c02a8cab76373cb4"
     ),
-    expected_bundle_sha256="7e422f002ec206ce1a7b603d83f618c548f384e53eca7b84812d9d2d7b3779e3",
-    expected_bundle_size_bytes=419_867,
+    expected_bundle_sha256="e729340c2eb8b1eb45f9b35add822fea97c5060b0c1c593831f921d38a4612fc",
+    expected_bundle_size_bytes=419_881,
     expected_embedded_input_hashes={
         "reference_manifest_sha256": (
             "3f29f83f6698543bd7ce13e23b632e355031e54e2a123f0d439868bac3906f04"
@@ -1145,8 +1147,10 @@ def _run_successor_runpod(
     pod_name = f"{RUNPOD_DROID_REFERENCE_PREFIX}{int(time.time())}"
     prior_disable_warm = os.environ.get(RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV)
     prior_teardown = os.environ.get(RUNPOD_WAM_TEARDOWN_ACTION_ENV)
+    prior_terminal_hold = os.environ.get(RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV)
     os.environ[RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV] = "1"
     os.environ[RUNPOD_WAM_TEARDOWN_ACTION_ENV] = "delete"
+    os.environ[RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV] = str(profile.hard_ttl_seconds)
     try:
         create = create_runpod_wam_async_run(
             job_dir=root,
@@ -1182,6 +1186,10 @@ def _run_successor_runpod(
             os.environ.pop(RUNPOD_WAM_TEARDOWN_ACTION_ENV, None)
         else:
             os.environ[RUNPOD_WAM_TEARDOWN_ACTION_ENV] = prior_teardown
+        if prior_terminal_hold is None:
+            os.environ.pop(RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV, None)
+        else:
+            os.environ[RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV] = prior_terminal_hold
     if create.get("status") != "pod_created":
         _stop_unallocated_runpod_watchdog(process)
         return {

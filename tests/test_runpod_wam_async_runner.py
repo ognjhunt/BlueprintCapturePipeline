@@ -366,6 +366,11 @@ def test_runpod_wam_payload_wraps_entrypoint_with_timeout_and_log() -> None:
     assert "entrypoint_log_tail" in script
     assert "upload_wam_running_heartbeat runpod_wam_entrypoint_running" in script
     assert "entrypoint_heartbeat_pid" in script
+    assert (
+        'export BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR="$BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR"' in script
+    )
+    assert 'sleep "$terminal_hold_seconds"' in script
+    assert "BLUEPRINT_RUNPOD_WAM_TERMINAL_HOLD_SECONDS" in script
     heredocs = _python_heredoc_chunks(script)
     assert len(heredocs) == 5
     for index, chunk in enumerate(heredocs):

@@ -240,7 +240,10 @@ def test_droid_reference_runpod_preflight_selects_compatible_secure_offer(
     assert captured["requires_rtx"] is False
 
 
-def test_droid_reference_admission_accepts_runpod_without_smoke_inventory() -> None:
+@pytest.mark.parametrize("allocation_index", [1, 2])
+def test_droid_reference_admission_accepts_runpod_without_smoke_inventory(
+    allocation_index: int,
+) -> None:
     profile = admission.DROID_REFERENCE_PROFILE
     environment = {
         "experiment_id": profile.experiment_id,
@@ -261,8 +264,8 @@ def test_droid_reference_admission_accepts_runpod_without_smoke_inventory() -> N
     authorization = {
         "schema_version": profile.authorization_schema,
         "experiment_id": profile.experiment_id,
-        "authorization_id": profile.authorization_ids_by_allocation_index[1],
-        "allocation_index": 1,
+        "authorization_id": profile.authorization_ids_by_allocation_index[allocation_index],
+        "allocation_index": allocation_index,
         "maximum_provider_allocations": 1,
         "single_use_consumption_required": True,
         "paid_mutation_authorized": True,
@@ -320,6 +323,7 @@ def test_droid_reference_runpod_executor_binds_watchdog_public_model_and_teardow
 ) -> None:
     captured: dict[str, Any] = {}
     process = object()
+    monkeypatch.delenv(admission.RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV, raising=False)
 
     monkeypatch.setattr(
         admission,
@@ -333,6 +337,7 @@ def test_droid_reference_runpod_executor_binds_watchdog_public_model_and_teardow
 
     def fake_create(**kwargs: Any) -> dict[str, Any]:
         captured.update(kwargs)
+        assert admission.os.environ[admission.RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV] == "7200"
         assert kwargs["pre_provider_mutation_hook"]()["status"] == "consumed"
         (tmp_path / "job").mkdir(exist_ok=True)
         (tmp_path / "job" / "runpod_wam_async_state.json").write_text(
@@ -398,6 +403,7 @@ def test_droid_reference_runpod_executor_binds_watchdog_public_model_and_teardow
     assert captured["forward_model_secret_env"] is False
     assert captured["cloud_type"] == "SECURE"
     assert captured["pre_provider_mutation_hook"] is not None
+    assert admission.RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV not in admission.os.environ
 
 
 def test_successor_gpu_admission_rejects_mismatched_retry_identity() -> None:
