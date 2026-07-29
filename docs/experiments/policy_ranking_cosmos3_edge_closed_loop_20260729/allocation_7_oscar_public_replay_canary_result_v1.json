@@ -1,0 +1,109 @@
+{
+  "schema_version": "policy_ranking_oscar_public_replay_canary_result.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-29T11:18:21-0500",
+  "allocation_id": "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-7",
+  "provider": "vast",
+  "provider_instance_id": 46208005,
+  "status": "completed",
+  "authorization_consumed": true,
+  "paid_launch_attempted": true,
+  "executed_source_commit": "a29ee27d448101aa92539af63ac1900c1f9126ce",
+  "executed_bundle": {
+    "version": 4,
+    "sha256": "d6447c8432eb9d484c64f61244eaec40739f9115d778390f6b1fef18c9564752",
+    "runner_sha256": "4b1367be37fc49b319b602c5cedbd40c66c5fe5d16afcf10697cccc8f0fa60e4",
+    "fps": 14.0,
+    "seed": 44,
+    "public_script_ownership_guard_present": true
+  },
+  "runtime": {
+    "model_name": "OSCAR-2B",
+    "exact_source_commit": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "exact_checkpoint_repo": "zywu2115/OSCAR-2B",
+    "exact_checkpoint_revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+    "exact_source_loaded": true,
+    "exact_checkpoint_downloaded": true,
+    "checkpoint_size_bytes": 4245466409,
+    "official_public_script_invoked": true,
+    "official_case": "droid_TRI",
+    "official_case_start_frame": 116,
+    "official_case_seed": 44,
+    "physical_future_rgb_provided_to_model": false,
+    "learned_wam_model_ran": true,
+    "generated_video_count": 1,
+    "generated_video": {
+      "codec": "h264",
+      "width": 640,
+      "height": 480,
+      "fps": 14.0,
+      "frame_count": 81,
+      "duration_seconds": 5.785714,
+      "size_bytes": 239783,
+      "sha256": "68bcce578a46855b2f56f83a52fb3312ab6938b0a7ee0eda9f65ba4921cf04d4"
+    },
+    "sampling": {
+      "num_steps": 35,
+      "guidance": 6.0
+    },
+    "inference_duration_seconds": 168.247001,
+    "runtime_duration_seconds": 227.415846,
+    "gpu_memory_peak": "not_recorded",
+    "blockers": []
+  },
+  "review": {
+    "manual_frame_review_completed": true,
+    "first_middle_last_frames_scene_coherent": true,
+    "task_success_label_assigned": false,
+    "review_frame_sha256": [
+      "ac9994c25445a171951d75a65b8cb7740b9dfcedc3370971d0143f2b5ff7dc3b",
+      "1f505a98d343e655f5edbc9df25d03aa35c6cee500eae07360735b2f19bb3454",
+      "ac396abe936b7fa7620067d87e76a6b7cb45e2eed923bc959fdd39cc518ddf0e"
+    ]
+  },
+  "cost": {
+    "selected_hourly_rate_usd": 1.3362962962962963,
+    "provider_all_in_hourly_rate_observed_usd": 1.3778703703703703,
+    "actual_live_runtime_seconds_observed_by_adapter": 527.4702717084438,
+    "estimated_stage_cost_usd": 0.195793,
+    "campaign_gpu_cost_before_allocation_usd": 3.344877,
+    "updated_campaign_gpu_cost_usd": 3.54067,
+    "gpu_category_cap_usd": 50.0
+  },
+  "teardown": {
+    "destroy_request_completed": true,
+    "provider_zero_api_confirmed": true,
+    "provider_live_resource_count": 0,
+    "provider_zero_observations": [
+      "2026-07-29T11:18:16-0500",
+      "2026-07-29T11:18:21-0500"
+    ],
+    "continuing_spend": false
+  },
+  "evidence": {
+    "external_job_root": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/oscar_public_replay_provider_job_v2",
+    "provider_output_zip_sha256": "03e79ec3e17eca17582df40521ad08b6e1f6d9d5b0d08a076860c8a07cf73e76",
+    "adapter_output_sha256": "a4a542c6638d33210f691ecc676e24673097e114bb0c9529c1a8a0bb04a74bc0",
+    "budget_ledger_sha256": "4d420f8f77da34700c1a45091abe5636566eaa27674dae5ea75bd46f0897fc11",
+    "session_budget_ledger_sha256": "4727e052d10d9e5fa4a58fb7e1538134911c023eeddac1fc64454f658b263416",
+    "retained_session_manifest_sha256": "6ac5e8722da14591a74522ff1b472b1ee01aacd24420cbf0e37f92c0c26dfb6a",
+    "watchdog_manifest_sha256": "901d6c2f002021d9a8d4b02e4ad10c571da7a9e1d0af01f5f2c7eeca07eb9eda",
+    "watchdog_cancel_manifest_sha256": "77158dc18b2dc48182ff42e413904dbfb2c3257b705ef7f2351d979218d2156d",
+    "teardown_manifest_sha256": "c9968126dc9e66ca41392270c66efc8be787e59e71dd5529fe815c4265980edc",
+    "final_validation_sha256": "f575cd4dd2b1c2459df2c343848cf3cae51e63e49dff1a93d9b20bdc8e699d3d",
+    "video_smoke_result_sha256": "66c78d764df1fae64cde4def16f002fc4254d717cd0a030970511f6bbc89a01b"
+  },
+  "claims": {
+    "exact_public_oscar_runtime_compatibility": true,
+    "generated_media": true,
+    "open_loop_recorded_action_replay": true,
+    "closed_loop_policy_evaluation": false,
+    "wam_causal_validity": false,
+    "ranking_fidelity": false,
+    "captured_site_transfer": false,
+    "economics_and_speed": false,
+    "physical_success": false
+  },
+  "claim_ceiling": "label_free_exact_public_compatibility_canary_only",
+  "result_sha256": "07b91a3fc32b6661bf10981e6860a4e74e72415c596619d855e8c85b93317196"
+}
