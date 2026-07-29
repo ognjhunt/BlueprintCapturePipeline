@@ -1,0 +1,30 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze.v4",
+  "frozen_at": "2026-07-29T08:11:20-0500",
+  "supersedes_manifest_sha256": "a8ad40aed9fae224ec6bb7f4de7d9f49ff29a7f23fb0a74e9940956472434128",
+  "inherits_all_sources_from": "source_freeze_v3.json",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "corrected_source_contract": "nvidia/Cosmos3-Edge-Policy-DROID native action horizon",
+  "native_policy_action_shape": [32, 8],
+  "native_policy_action_semantics": "32 absolute Franka joint-position plus gripper targets at 15 Hz",
+  "checkpoint_metadata_sha256": "a279d57b84d458c2aeeaf9698aee8c1b3830204422da67ab31c801ab57225019",
+  "checkpoint_metadata_fields": {
+    "policy.action_chunk_size": 32,
+    "policy.conditioning_fps": 15.0
+  },
+  "training_config_evidence": {
+    "chunk_length": 32,
+    "tokenizer_encode_exact_durations": [33]
+  },
+  "official_server": {
+    "source_revision": "2f603cb114ff8b335e116060444d0b6caee3a85e",
+    "source_path": "cosmos_framework/scripts/action_policy_server_robolab.py",
+    "source_sha256": "0ea7c258e5e3250ffa9e259151fc856ab767164d94a05040518409e4a7e31423",
+    "default_action_chunk_size": 32,
+    "server_documentation_sha256": "e5c0367573935bd09e107305ec4df882d8547bdbd1bcaaecf72785bd37e43dae"
+  },
+  "correction": "source_freeze_v1 and source_freeze_v2 recorded a 16x8 published policy action shape. The pinned checkpoint and executable server establish a native 32x8 horizon. That earlier field is superseded, not rewritten.",
+  "manifest_sha256": "328e04599abd0fc54b7d989659ee0c91a8e469c772582a20c3deabe240982b66"
+}

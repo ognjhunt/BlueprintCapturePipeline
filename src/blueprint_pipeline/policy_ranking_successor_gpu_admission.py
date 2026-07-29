@@ -97,7 +97,13 @@ class SuccessorGPUProfile:
     hard_ttl_seconds: int
     reference_bundle: bool = False
     powered_bundle: bool = False
-    cosmos_revision: str = COSMOS_REVISION
+    edge_policy_canary_bundle: bool = False
+    bundle_schema: str = BUNDLE_SCHEMA
+    checkpoint_repository: str = CHECKPOINT_REPOSITORY
+    checkpoint_revision: str = CHECKPOINT_REVISION
+    public_image: str = PUBLIC_IMAGE
+    min_gpu_ram_mb: int = 95_000
+    cosmos_revision: str | None = COSMOS_REVISION
     cosmos_framework_revision: str = COSMOS_FRAMEWORK_REVISION
     vllm_omni_revision: str | None = None
     allowed_providers: tuple[str, ...] = ("vast",)
@@ -319,6 +325,47 @@ POWERED_DROID_PROFILE = SuccessorGPUProfile(
     allowed_providers=("vast", "runpod"),
     compatible_gpu_keywords=("RTX PRO 6000", "H100"),
 )
+EDGE_CLOSED_LOOP_PROFILE = SuccessorGPUProfile(
+    experiment_id="policy_ranking_cosmos3_edge_closed_loop_20260729",
+    admission_schema="policy_ranking_cosmos3_edge_closed_loop_gpu_admission.v1",
+    authorization_schema=("policy_ranking_cosmos3_edge_closed_loop_compute_authorization.v1"),
+    preflight_schema="policy_ranking_cosmos3_edge_closed_loop_vast_preflight.v1",
+    receipt_schema="cosmos_edge_closed_loop_bundle_receipt.v1",
+    authorization_ids_by_allocation_index={
+        1: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-1",
+    },
+    cost_authorization_binding_sha256=(
+        "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
+    ),
+    expected_bundle_sha256="97b3e2b31a57a3a805feef8196ff96988d1259038004b3200e7e8dec3015d954",
+    expected_bundle_size_bytes=761_711,
+    expected_embedded_input_hashes={
+        "runtime_manifest_sha256": (
+            "4de5f233ae6577c49ceed8b5342ee74621ac56d5454a1cfa6a6b922f2ef80ef1"
+        ),
+        "canary_input_sha256": ("0dc1b72a90dace038a8b9ea3b444fffa8daf51b0db6ef3228e5fe1a8010a2974"),
+        "runner_sha256": ("31221860eb437729600a79f96cde38de81a32c342e4ac3609e1a8040904134b2"),
+        "entrypoint_sha256": ("f104ef7f92d9af3f1f79cea025c6d6eaf81705df80ee0c1ff5b033147526fa3e"),
+    },
+    qualification_canary_request_count=1,
+    scientific_matrix_request_count=0,
+    total_initial_generation_request_count=1,
+    request_budget_amendment_sha256=None,
+    max_compute_cap_usd=8.0,
+    max_hourly_rate_usd=2.05,
+    target_spend_usd=5.0,
+    hard_ttl_seconds=7_200,
+    edge_policy_canary_bundle=True,
+    bundle_schema="cosmos_edge_closed_loop_provider_bundle.v1",
+    checkpoint_repository="nvidia/Cosmos3-Edge-Policy-DROID",
+    checkpoint_revision="3ea407af3e156c0af3b4bb6edd85842cc9a58777",
+    min_gpu_ram_mb=80_000,
+    cosmos_revision=None,
+    cosmos_framework_revision="2f603cb114ff8b335e116060444d0b6caee3a85e",
+    vllm_omni_revision=None,
+    allowed_providers=("vast",),
+    compatible_gpu_keywords=("H100", "RTX PRO 6000"),
+)
 RTX_ALLOWED_KEYWORDS = ("RTX PRO 6000",)
 RTX_SELECTION_POLICY: Mapping[str, Any] = {
     "policy_id": "policy_ranking_successor_rtx_pro_6000_blackwell_preflight",
@@ -367,6 +414,21 @@ POWERED_BUNDLE_ENTRIES = frozenset(
         "provider_runtime/cosmos3_powered_droid/official_canary/action_streams.json",
     }
 )
+EDGE_POLICY_CANARY_BUNDLE_ENTRIES = frozenset(
+    {
+        "provider_runtime/wam_provider_runtime_runner.py",
+        "provider_runtime/run_wam_provider_runtime.sh",
+        "provider_runtime/wam_provider_runtime_manifest.json",
+        "provider_runtime/wam_rollout_input_manifest.json",
+        "provider_runtime/policy_canary/input.json",
+        "provider_runtime/policy_canary/view_0.png",
+        "provider_runtime/policy_canary/view_1.png",
+        "provider_runtime/policy_canary/view_2.png",
+        "provider_runtime/policy_snapshot_manifest.json",
+        "provider_runtime/oscar_input/first_frame.png",
+        "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
+    }
+)
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -398,16 +460,19 @@ def collect_successor_vast_preflight(
     provider = get_render_provider("vast")
     request = {
         "max_hourly_rate_usd": profile.max_hourly_rate_usd,
-        "min_gpu_ram_mb": MIN_GPU_RAM_MB,
+        "min_gpu_ram_mb": profile.min_gpu_ram_mb,
         "min_reliability": MIN_RELIABILITY,
         "require_avx": True,
         "require_known_supported_isaac_driver": False,
         "require_direct_port": False,
-        "preferred_gpu_keywords": list(RTX_ALLOWED_KEYWORDS),
+        "preferred_gpu_keywords": list(profile.compatible_gpu_keywords),
         "min_compute_cap": 1200,
         "max_compute_cap": 0,
         "prefer_isaac_rt": False,
-        "gpu_selection_policy": RTX_SELECTION_POLICY,
+        "gpu_selection_policy": {
+            **RTX_SELECTION_POLICY,
+            "allowed_gpu_keywords": profile.compatible_gpu_keywords,
+        },
     }
     capacity = provider.capacity_preflight(request)
     task_inventory = provider.billable_inventory(name_prefix=name_prefix)
@@ -416,9 +481,12 @@ def collect_successor_vast_preflight(
         dict(row)
         for row in capacity.get("viable_gpu_types", [])
         if isinstance(row, Mapping)
-        and "RTX PRO 6000" in str(row.get("gpu_name") or "").upper()
+        and any(
+            keyword.upper() in str(row.get("gpu_name") or "").upper()
+            for keyword in profile.compatible_gpu_keywords
+        )
         and int(row.get("num_gpus") or 0) == 1
-        and int(row.get("gpu_ram_mb") or 0) >= MIN_GPU_RAM_MB
+        and int(row.get("gpu_ram_mb") or 0) >= profile.min_gpu_ram_mb
         and 0 < float(row.get("hourly_rate_usd") or 0) <= profile.max_hourly_rate_usd
         and float(row.get("reliability") or 0) >= MIN_RELIABILITY
     ]
@@ -438,7 +506,7 @@ def collect_successor_vast_preflight(
     if not inventory_zero:
         blockers.append("successor_vast_inventory_not_zero")
     if not selected:
-        blockers.append("successor_compatible_single_rtx_pro_6000_offer_unavailable")
+        blockers.append("successor_compatible_single_gpu_offer_unavailable")
     result: dict[str, Any] = {
         "schema_version": profile.preflight_schema,
         "status": "verified" if not blockers else "blocked",
@@ -581,7 +649,27 @@ def inspect_successor_bundle(
                     runner_text = archive.read(
                         "provider_runtime/wam_provider_runtime_runner.py"
                     ).decode("utf-8")
-                if profile.powered_bundle:
+                if profile.edge_policy_canary_bundle:
+                    canary_input = json.loads(
+                        archive.read("provider_runtime/policy_canary/input.json").decode("utf-8")
+                    )
+                    recorded_manifest_sha256 = manifest.get("manifest_sha256")
+                    computed_manifest_sha256 = canonical_sha256(
+                        {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+                    )
+                    if recorded_manifest_sha256 != computed_manifest_sha256:
+                        blockers.append("successor_edge_runtime_manifest_hash_invalid")
+                    embedded_hashes = {
+                        "runtime_manifest_sha256": computed_manifest_sha256,
+                        "canary_input_sha256": canonical_sha256(canary_input),
+                        "runner_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_provider_runtime_runner.py")
+                        ).hexdigest(),
+                        "entrypoint_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/run_wam_provider_runtime.sh")
+                        ).hexdigest(),
+                    }
+                elif profile.powered_bundle:
                     powered_packet = json.loads(
                         archive.read("provider_runtime/cosmos3_powered_droid/packet.json").decode(
                             "utf-8"
@@ -717,7 +805,9 @@ def inspect_successor_bundle(
         ):
             blockers.append("successor_cosmos_provider_bundle_unreadable")
     required_entries = (
-        POWERED_BUNDLE_ENTRIES
+        EDGE_POLICY_CANARY_BUNDLE_ENTRIES
+        if profile.edge_policy_canary_bundle
+        else POWERED_BUNDLE_ENTRIES
         if profile.powered_bundle
         else REFERENCE_BUNDLE_ENTRIES
         if profile.reference_bundle
@@ -741,13 +831,22 @@ def inspect_successor_bundle(
             runner_text=runner_text,
         )
     )
-    if manifest.get("schema_version") != BUNDLE_SCHEMA:
+    if manifest.get("schema_version") != profile.bundle_schema:
         blockers.append("successor_cosmos_provider_bundle_manifest_invalid")
     if manifest.get("experiment_id") != profile.experiment_id:
         blockers.append("successor_cosmos_provider_bundle_experiment_mismatch")
-    if manifest.get("checkpoint_revision") != CHECKPOINT_REVISION:
+    if profile.edge_policy_canary_bundle:
+        policy = _mapping(manifest.get("policy"))
+        framework = _mapping(manifest.get("cosmos_framework"))
+        if policy.get("model_id") != profile.checkpoint_repository:
+            blockers.append("successor_cosmos_provider_bundle_checkpoint_repository_mismatch")
+        if policy.get("revision") != profile.checkpoint_revision:
+            blockers.append("successor_cosmos_provider_bundle_checkpoint_mismatch")
+        if framework.get("revision") != profile.cosmos_framework_revision:
+            blockers.append("successor_cosmos_provider_bundle_framework_mismatch")
+    elif manifest.get("checkpoint_revision") != profile.checkpoint_revision:
         blockers.append("successor_cosmos_provider_bundle_checkpoint_mismatch")
-    if manifest.get("public_image") != PUBLIC_IMAGE:
+    if manifest.get("public_image") != profile.public_image:
         blockers.append("successor_cosmos_provider_bundle_image_mismatch")
     expected_request_budget = {
         "qualification_canary_request_count": profile.qualification_canary_request_count,
@@ -779,7 +878,8 @@ def inspect_successor_bundle(
         if embedded_hashes.get(key) != expected or receipt_value.get(key) != expected:
             blockers.append(f"successor_cosmos_provider_bundle_receipt_{key}_mismatch")
     if (
-        not profile.reference_bundle
+        not profile.edge_policy_canary_bundle
+        and not profile.reference_bundle
         and not profile.powered_bundle
         and smoke_inventory is not None
         and receipt_value.get("smoke_inventory_sha256") != canonical_sha256(smoke_inventory)
@@ -818,15 +918,15 @@ def build_successor_gpu_admission(
     vllm = _mapping(upstream.get("vllm_omni"))
     if environment.get("experiment_id") != profile.experiment_id:
         blockers.append("successor_environment_experiment_mismatch")
-    if cosmos.get("revision") != profile.cosmos_revision:
+    if profile.cosmos_revision is not None and cosmos.get("revision") != profile.cosmos_revision:
         blockers.append("successor_cosmos_revision_mismatch")
     if framework.get("revision") != profile.cosmos_framework_revision:
         blockers.append("successor_framework_revision_mismatch")
-    if checkpoint.get("repository") != CHECKPOINT_REPOSITORY:
+    if checkpoint.get("repository") != profile.checkpoint_repository:
         blockers.append("successor_checkpoint_repository_mismatch")
-    if checkpoint.get("revision") != CHECKPOINT_REVISION:
+    if checkpoint.get("revision") != profile.checkpoint_revision:
         blockers.append("successor_checkpoint_revision_mismatch")
-    if vllm.get("runtime_image") != PUBLIC_IMAGE:
+    if vllm.get("runtime_image") != profile.public_image:
         blockers.append("successor_runtime_image_mismatch")
     if (
         profile.vllm_omni_revision is not None
@@ -838,11 +938,13 @@ def build_successor_gpu_admission(
     ):
         blockers.append("successor_remote_code_policy_invalid")
 
-    if profile.reference_bundle or profile.powered_bundle:
+    if profile.edge_policy_canary_bundle or profile.reference_bundle or profile.powered_bundle:
         inventory_validation = {
             "status": "not_applicable",
             "reason": (
-                "powered_droid_inputs_are_frozen_inside_the_bundle"
+                "edge_policy_canary_inputs_are_frozen_inside_the_bundle"
+                if profile.edge_policy_canary_bundle
+                else "powered_droid_inputs_are_frozen_inside_the_bundle"
                 if profile.powered_bundle
                 else "official_droid_reference_inputs_are_frozen_inside_the_bundle"
             ),
@@ -873,7 +975,7 @@ def build_successor_gpu_admission(
     gpu_name = str(
         offer.get("gpu_name") or offer.get("gpu_type_id") or offer.get("display_name") or ""
     )
-    if not any(keyword in gpu_name.upper() for keyword in profile.compatible_gpu_keywords):
+    if not any(keyword.upper() in gpu_name.upper() for keyword in profile.compatible_gpu_keywords):
         blockers.append("successor_provider_preflight_gpu_not_compatible")
     try:
         gpu_ram_mb = int(offer.get("gpu_ram_mb") or 0)
@@ -883,7 +985,7 @@ def build_successor_gpu_admission(
         reliability = float(offer.get("reliability") or 0.0)
     except (TypeError, ValueError):
         gpu_ram_mb, hourly_rate, reliability = 0, 0.0, 0.0
-    minimum_gpu_ram_mb = 80_000 if provider_name == "runpod" else MIN_GPU_RAM_MB
+    minimum_gpu_ram_mb = profile.min_gpu_ram_mb
     if gpu_ram_mb < minimum_gpu_ram_mb:
         blockers.append("successor_provider_preflight_gpu_ram_below_minimum")
     if not 0.0 < hourly_rate <= profile.max_hourly_rate_usd:
@@ -965,8 +1067,8 @@ def build_successor_gpu_admission(
         "execute_requested": bool(execute),
         "blockers": sorted(set(blockers)),
         "source_commit": source_commit or None,
-        "public_image": PUBLIC_IMAGE,
-        "checkpoint_revision": CHECKPOINT_REVISION,
+        "public_image": profile.public_image,
+        "checkpoint_revision": profile.checkpoint_revision,
         "smoke_inventory_validation": inventory_validation,
         "smoke_inventory_sha256": canonical_sha256(smoke_inventory),
         "provider_preflight_sha256": canonical_sha256(provider_preflight),
@@ -1286,7 +1388,7 @@ def _run_successor_runpod(
             max_spend_usd=profile.max_compute_cap_usd,
             allow_paid_runpod_launch=True,
             gpu_type_ids=(gpu_name,),
-            image_name=PUBLIC_IMAGE,
+            image_name=profile.public_image,
             provider_bundle_kind="wam",
             container_disk_gb=100,
             volume_gb=20,
@@ -1423,7 +1525,9 @@ def run_successor_gpu_lane(
     provider_preflight = load_input("provider_preflight", provider_preflight_path)
     bundle_receipt = load_input("bundle_receipt", provider_bundle_receipt_path)
     receipt_schema = bundle_receipt.get("schema_version")
-    if receipt_schema == POWERED_DROID_PROFILE.receipt_schema:
+    if receipt_schema == EDGE_CLOSED_LOOP_PROFILE.receipt_schema:
+        profile = EDGE_CLOSED_LOOP_PROFILE
+    elif receipt_schema == POWERED_DROID_PROFILE.receipt_schema:
         profile = POWERED_DROID_PROFILE
     elif receipt_schema == DROID_REFERENCE_PROFILE.receipt_schema:
         profile = DROID_REFERENCE_PROFILE
@@ -1503,7 +1607,7 @@ def run_successor_gpu_lane(
         "source_commit": expected_source_commit,
         "provider": str(provider_preflight.get("provider") or "").strip().lower(),
         "probe_kind": PROBE_KIND,
-        "public_image": PUBLIC_IMAGE,
+        "public_image": profile.public_image,
         "provider_bundle_sha256": bundle.get("bundle_sha256"),
         "smoke_inventory_sha256": canonical_sha256(smoke_inventory),
         "request_budget": admission.get("request_budget"),
@@ -1692,15 +1796,18 @@ def run_successor_gpu_lane(
         max_live_minutes=requested_live_minutes,
         session_max_live_minutes=int(session_limit["session_max_live_runtime_minutes"]),
         startup_timeout_seconds=3600,
-        public_image=PUBLIC_IMAGE,
+        public_image=profile.public_image,
         disk_gb=DISK_GB,
-        min_gpu_ram_mb=MIN_GPU_RAM_MB,
+        min_gpu_ram_mb=profile.min_gpu_ram_mb,
         min_compute_cap=1200,
         max_compute_cap=0,
         min_reliability=MIN_RELIABILITY,
-        preferred_gpu_keywords=RTX_ALLOWED_KEYWORDS,
+        preferred_gpu_keywords=profile.compatible_gpu_keywords,
         prefer_isaac_rt=False,
-        gpu_selection_policy=RTX_SELECTION_POLICY,
+        gpu_selection_policy={
+            **RTX_SELECTION_POLICY,
+            "allowed_gpu_keywords": profile.compatible_gpu_keywords,
+        },
         require_independent_watchdog=True,
         retain_instance_on_runtime_failure=True,
         # Cosmos3-Nano at the frozen revision is publicly downloadable.  Do not
@@ -1749,6 +1856,7 @@ __all__ = [
     "MAX_COMPUTE_CAP_USD",
     "PREFLIGHT_SCHEMA",
     "DROID_REFERENCE_PROFILE",
+    "EDGE_CLOSED_LOOP_PROFILE",
     "POWERED_DROID_PROFILE",
     "PHASE_B_PROFILE",
     "PHASE_B_POSITIVE_CONTROL_PROFILE",

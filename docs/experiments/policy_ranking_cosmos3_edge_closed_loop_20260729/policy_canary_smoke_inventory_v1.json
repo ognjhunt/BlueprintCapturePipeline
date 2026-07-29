@@ -1,0 +1,10 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_policy_canary_inventory.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "request_count": 1,
+  "request_kind": "policy_structured_canary",
+  "native_action_shape": [32, 8],
+  "wam_prefix_action_shape": [16, 8],
+  "physical_outcome_fields_included": false,
+  "diagnostic_only": true
+}

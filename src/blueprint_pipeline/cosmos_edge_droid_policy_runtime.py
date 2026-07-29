@@ -29,7 +29,9 @@ MODEL_REVISION = "3ea407af3e156c0af3b4bb6edd85842cc9a58777"
 COSMOS_FRAMEWORK_REVISION = "2f603cb114ff8b335e116060444d0b6caee3a85e"
 MODEL_CONFIG_SHA256 = "da6a23cbf4477aafda3e773874bf2c98d6869156e8a450d944e2f28c94eee00b"
 CHECKPOINT_CONFIG_SHA256 = "a279d57b84d458c2aeeaf9698aee8c1b3830204422da67ab31c801ab57225019"
-ACTION_CHUNK_ROWS = 16
+NATIVE_ACTION_CHUNK_ROWS = 32
+WAM_ACTION_CHUNK_ROWS = 16
+ACTION_CHUNK_ROWS = WAM_ACTION_CHUNK_ROWS
 ACTION_DIMENSION = 8
 EXECUTED_PREFIX_STEPS = 8
 CONDITIONING_FPS = 15.0
@@ -51,7 +53,8 @@ class CosmosEdgeDroidPolicySpec:
     checkpoint_config_sha256: str = CHECKPOINT_CONFIG_SHA256
     snapshot_manifest_sha256: str = ""
     action_space: str = "absolute_joint_position_plus_gripper"
-    action_chunk_rows: int = ACTION_CHUNK_ROWS
+    native_action_chunk_rows: int = NATIVE_ACTION_CHUNK_ROWS
+    action_chunk_rows: int = WAM_ACTION_CHUNK_ROWS
     action_dimension: int = ACTION_DIMENSION
     executed_prefix_steps: int = EXECUTED_PREFIX_STEPS
     conditioning_fps: float = CONDITIONING_FPS
@@ -72,8 +75,9 @@ class CosmosEdgeDroidPolicySpec:
             raise ValueError("cosmos_edge_policy_snapshot_manifest_missing")
         if self.action_space != "absolute_joint_position_plus_gripper":
             raise ValueError("cosmos_edge_policy_action_space_mismatch")
-        if (self.action_chunk_rows, self.action_dimension) != (
-            ACTION_CHUNK_ROWS,
+        if (self.native_action_chunk_rows, self.action_chunk_rows, self.action_dimension) != (
+            NATIVE_ACTION_CHUNK_ROWS,
+            WAM_ACTION_CHUNK_ROWS,
             ACTION_DIMENSION,
         ):
             raise ValueError("cosmos_edge_policy_action_shape_mismatch")
@@ -179,9 +183,7 @@ def validate_server_metadata(
 ) -> dict[str, Any]:
     expected_metadata = expected.server_metadata()
     actual = dict(metadata)
-    mismatches = sorted(
-        key for key, value in expected_metadata.items() if actual.get(key) != value
-    )
+    mismatches = sorted(key for key, value in expected_metadata.items() if actual.get(key) != value)
     local_fields = {
         "local_snapshot_verified",
         "local_snapshot_manifest_sha256",
@@ -260,15 +262,11 @@ class CosmosEdgeDroidPolicyClient:
         )
         if blockers:
             raise ValueError(f"cosmos_edge_policy_observation_invalid:{blockers[0]}")
-        transport_observation = {
-            view: observation[view] for view in self.required_policy_views
-        }
+        transport_observation = {view: observation[view] for view in self.required_policy_views}
         transport_observation.update(
             {
                 "observation/joint_position": observation["observation/joint_position"],
-                "observation/gripper_position": observation[
-                    "observation/gripper_position"
-                ],
+                "observation/gripper_position": observation["observation/gripper_position"],
                 "prompt": observation["prompt"],
             }
         )
@@ -277,33 +275,37 @@ class CosmosEdgeDroidPolicyClient:
             raise ValueError("cosmos_edge_policy_response_not_object")
         action = raw_response.get("action", raw_response.get("actions"))
         action_blockers = validate_droid_action_chunk(
-            action, expected_rows=self.action_chunk_rows
+            action, expected_rows=self._spec.native_action_chunk_rows
         )
         if action_blockers:
             raise ValueError(f"cosmos_edge_policy_action_invalid:{action_blockers[0]}")
-        action_array = np.asarray(action, dtype=np.float64)
+        native_action_array = np.asarray(action, dtype=np.float64)
+        action_array = native_action_array[: self.action_chunk_rows].copy()
         observation_identity = {
             "prompt": str(observation["prompt"]),
             "views": {
                 view: _array_sha256(observation[view]) for view in self.required_policy_views
             },
-            "joint_position_sha256": _array_sha256(
-                observation["observation/joint_position"]
-            ),
-            "gripper_position_sha256": _array_sha256(
-                observation["observation/gripper_position"]
-            ),
+            "joint_position_sha256": _array_sha256(observation["observation/joint_position"]),
+            "gripper_position_sha256": _array_sha256(observation["observation/gripper_position"]),
         }
         receipt = {
             "query_index": len(self._receipts),
             "observation_sha256": canonical_sha256(observation_identity),
-            "action_sha256": _array_sha256(action_array),
-            "action_shape": list(action_array.shape),
+            "native_action_sha256": _array_sha256(native_action_array),
+            "native_action_shape": list(native_action_array.shape),
+            "wam_prefix_action_sha256": _array_sha256(action_array),
+            "wam_prefix_action_shape": list(action_array.shape),
+            "wam_prefix_rule": "first_16_rows_of_native_32_row_policy_output",
             "server_identity_sha256": self.server_metadata["identity_sha256"],
         }
         receipt["receipt_sha256"] = canonical_sha256(receipt)
         self._receipts.append(receipt)
-        return {"action": action_array, "policy_request_receipt": receipt}
+        return {
+            "action": action_array,
+            "native_action": native_action_array,
+            "policy_request_receipt": receipt,
+        }
 
     def evidence_summary(self) -> dict[str, Any]:
         return {
@@ -316,6 +318,8 @@ class CosmosEdgeDroidPolicyClient:
 
 
 __all__ = [
+    "NATIVE_ACTION_CHUNK_ROWS",
+    "WAM_ACTION_CHUNK_ROWS",
     "CosmosEdgeDroidPolicyClient",
     "CosmosEdgeDroidPolicySpec",
     "validate_server_metadata",
