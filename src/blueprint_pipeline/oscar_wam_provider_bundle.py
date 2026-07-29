@@ -4909,7 +4909,11 @@ def main() -> int:
         prompt = runtime_manifest.get("prompt") or "Predict the next robot-scene frames from Blueprint action conditioning."
         start_frame = "0"
         seed = str(runtime_manifest.get("seed") or 42)
-        if official_case_smoke:
+        # The exact public-script path owns extraction of the first RGB frame,
+        # start-frame/seed selection, and public caption decoding. Do not run
+        # Blueprint's safer direct-CLI preparation first because its alternate
+        # caption contract would block before the exact script could run.
+        if official_case_smoke and not official_case_use_script:
             checkpoint_roots = [
                 checkpoint_path,
                 checkpoint_path.parent,

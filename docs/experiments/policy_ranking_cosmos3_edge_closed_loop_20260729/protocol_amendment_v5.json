@@ -1,0 +1,69 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v5",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T10:31:00-0500",
+  "supersedes_amendment_sha256": "a8c36efcbe8ea1a6efd00667841914781b04c517c120212ef81b4fe75cc8be54",
+  "phase": "phase_2_exact_public_oscar_compatibility",
+  "trigger": "Prospective transition from the completed candidate-policy canary to exact public OSCAR replay qualification.",
+  "public_method_classification": "open_loop_recorded_action_replay",
+  "canary": {
+    "arm_id": "oscar_public_replay",
+    "case": "droid_TRI",
+    "entrypoint": "scripts/run_inference.sh",
+    "source_revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "checkpoint_revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+    "start_frame": 116,
+    "seed": 44,
+    "num_frames": 81,
+    "height": 480,
+    "width": 640,
+    "fps_source": "auto_detect_from_frozen_skeleton_video",
+    "expected_fps": 15.0,
+    "num_inference_steps": 35,
+    "guidance": 6.0,
+    "shift": 5.0,
+    "task_prompt_source": "frozen public droid_TRI caption asset",
+    "negative_prompt_source": "pinned public COSMOS_DEFAULT_NEGATIVE_PROMPT",
+    "future_rgb_video_argument": "omitted",
+    "label_free": true,
+    "maximum_provider_allocations": 1
+  },
+  "implementation_correction": {
+    "defect": "The provider runner applied Blueprint direct-CLI safe-caption preparation before the exact public script, but the pinned public asset contract uses the public script's own serialized caption input.",
+    "correction": "When exact public-script execution is selected, skip the alternate direct-CLI preparation and let the pinned script own first-frame extraction, caption decoding, start-frame selection, and seed selection.",
+    "scientific_input_changed": false,
+    "public_source_or_checkpoint_changed": false,
+    "sampling_settings_changed": false,
+    "physical_future_rgb_admitted": false
+  },
+  "closed_loop_disposition": {
+    "arm_id": "blueprint_policy_oscar_closed_loop",
+    "status": "technically_blocked",
+    "reason": "The public OSCAR interface returns one RGB view and no policy state, while the frozen Policy-DROID endpoint requires three distinct RGB views plus joint and gripper state.",
+    "fabricated_view_or_state_adapter_forbidden": true,
+    "may_be_reopened_only_by": "a prospectively registered evidence-backed adapter producing every required view and state field"
+  },
+  "gates": {
+    "provider_zero_before_allocation": true,
+    "immutable_pushed_source_commit": true,
+    "content_addressed_bundle_and_unique_output_key": true,
+    "one_gpu": true,
+    "watchdog_and_ttl": true,
+    "provider_zero_after_teardown": true,
+    "generated_mp4_reviewable": true,
+    "exact_runtime_argv_and_source_identity_recorded": true
+  },
+  "claim_boundary": {
+    "canary_credit": "exact_public_oscar_runtime_compatibility_only",
+    "wam_causal_qualification": false,
+    "ranking_fidelity": false,
+    "captured_site_transfer": false,
+    "economics_and_speed": false,
+    "physical_success": false,
+    "thesis_support": false
+  },
+  "paid_execution_admitted": false,
+  "provider_called_for_this_amendment": false,
+  "physical_outcome_labels_accessed": false,
+  "amendment_sha256": "1b12cac54047dd2e8812defb0399b6c59d9c5deef6e4b9daad5db0c5fce95fd1"
+}

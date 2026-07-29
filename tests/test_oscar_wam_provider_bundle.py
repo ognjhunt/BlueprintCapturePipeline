@@ -664,6 +664,7 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
     assert "rgb_context.mp4" in runner_text
     assert "official_case_rgb_video" in runner_text
     assert "official_case_use_script" in runner_text
+    assert "if official_case_smoke and not official_case_use_script:" in runner_text
     assert "scripts/run_inference.sh" in runner_text
     assert "_prepare_official_script_runtime" in runner_text
     assert "(official_case_smoke or runtime_rgb_expected)" not in runner_text

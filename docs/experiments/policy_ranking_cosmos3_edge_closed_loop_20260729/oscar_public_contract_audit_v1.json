@@ -1,0 +1,111 @@
+{
+  "schema_version": "policy_ranking_oscar_public_contract_audit.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "audited_at": "2026-07-29T10:31:00-0500",
+  "status": "passed_for_replay_canary_closed_loop_technically_blocked",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "paper": {
+    "url": "https://arxiv.org/html/2606.04463",
+    "version": "arXiv:2606.04463v2",
+    "published_at": "2026-06-04",
+    "policy_evaluation_contract": "For each episode OSCAR is rolled out from the recorded first frame and the given robot action.",
+    "classification": "open_loop_recorded_action_replay",
+    "video_autoregression_is_not_policy_requery": true
+  },
+  "public_source": {
+    "repository": "https://github.com/wuzy2115/oscar-public.git",
+    "revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "remote_head_at_audit": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "remote_main_at_audit": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "git_tree": "45229e06738b19c43cad4cca8f447bacd4a9bda8",
+    "git_ls_tree_sha256": "7c00ef62d2e58651eec4c39c6d291e962f3ffc71505d1a6cedf628effbc60130",
+    "license": "Apache-2.0",
+    "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "readme_sha256": "3c75d074b9b2d17a818b8da978369245c2ccc22ed337007ea0c63a57ec3b0efa",
+    "inference_entry_sha256": "03774f982f6bddcebae2279d0978a71a35e3c8962cce4b1f8f813e8d8943bce5",
+    "inference_core_sha256": "2e65fa459fae12c23510f405dad38431785841d6cdea2bc084d89b81ca37c374",
+    "run_inference_sha256": "a13dab2bfc250e6e851c29d3446a60553e2d6a04f13b4f8bea2b437152bb6e6b",
+    "negative_prompt_sha256": "d671ee777de5ee3e4896e9979f32250606b37dcf5390b4274070fd0036bd740a",
+    "requirements_sha256": "6002a7c982b96435f995d765306785f4835e404ea41308d4864f59bc8e34d117"
+  },
+  "checkpoint": {
+    "repository": "zywu2115/OSCAR-2B",
+    "revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+    "api_revision_at_audit": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+    "public": true,
+    "gated": false,
+    "disabled": false,
+    "license": "Apache-2.0",
+    "model_card_sha256": "7984b666bb4061e01bf37fa0be3ce71ea31c1d939a4988f95078d7569478bc7a",
+    "checkpoint_metadata_sha256": "74ea9359634d4f757ebf1dcf1a6279f6c2980120762f9d5b214d6b95a3cfdac9",
+    "checkpoint_shard_sha256": "51612eb9d1335b248f3112a206e72c2c3e84c774cee9cf2c459cb3ee62383cd5"
+  },
+  "exact_public_inference_contract": {
+    "entrypoint": "scripts/run_inference.sh",
+    "first_rgb_frame": "extracted at the frozen case start_frame",
+    "skeleton_video": "complete camera-aligned gripper_scenario.mp4",
+    "task_prompt": "decoded from the frozen case caption asset",
+    "num_frames": 81,
+    "height": 480,
+    "width": 640,
+    "fps": "auto-detected from skeleton video; expected 15 Hz",
+    "num_inference_steps": 35,
+    "guidance": 6.0,
+    "shift": 5.0,
+    "negative_prompt": "pinned public Cosmos default",
+    "future_rgb_video_argument": "omitted",
+    "physical_future_rgb_pixels_used": false,
+    "output": "81-frame H.264 MP4"
+  },
+  "replay_canary": {
+    "case": "droid_TRI",
+    "embodiment": "DROID Franka Panda plus Robotiq 2F-85",
+    "start_frame": 116,
+    "seed": 44,
+    "label_free": true,
+    "exact_public_script_required": true,
+    "oracle_rgb_context_forbidden": true,
+    "maximum_provider_allocations_before_amendment": 1
+  },
+  "closed_loop_interface_audit": {
+    "candidate_policy_required_rgb_views": [
+      "observation/wrist_image_left",
+      "observation/exterior_image_1_left",
+      "observation/exterior_image_2_left"
+    ],
+    "candidate_policy_required_image_shape": [224, 224, 3],
+    "candidate_policy_required_state": [
+      "observation/joint_position shape 7",
+      "observation/gripper_position shape 1",
+      "prompt"
+    ],
+    "public_oscar_outputs": [
+      "one generated RGB video for one camera",
+      "no joint-state estimate",
+      "no gripper-state estimate",
+      "no wrist/exterior multi-view reconstruction contract",
+      "no candidate-policy re-query endpoint"
+    ],
+    "commanded_state_adapter_available": true,
+    "all_three_next_policy_views_available": false,
+    "registered_multi_view_state_adapter_validated": false,
+    "verdict": "technically_blocked",
+    "blockers": [
+      "public_oscar_single_view_output_cannot_satisfy_three_view_policy_observation",
+      "public_oscar_does_not_predict_required_policy_proprioception",
+      "no_frozen_evidence_backed_multi_view_observation_adapter"
+    ]
+  },
+  "claim_boundary": {
+    "exact_public_replay_canary_may_run": true,
+    "published_oscar_policy_evaluation_is_closed_loop": false,
+    "blueprint_same_policy_requery_may_run": false,
+    "skeleton_only_is_intended_motion_evidence": true,
+    "generated_video_is_not_physical_success": true,
+    "replay_canary_can_establish_ranking_fidelity": false,
+    "replay_canary_can_establish_thesis_support": false
+  },
+  "record_sha256": "26d0d3ceb030689f215fdadca291b39368ced00abcad3a1e2a9a5fed3291be06"
+}

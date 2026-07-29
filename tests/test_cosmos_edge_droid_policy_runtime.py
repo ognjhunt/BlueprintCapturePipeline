@@ -163,9 +163,13 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
         ("source_freeze_amendment_v5.json", "amendment_sha256"),
         ("source_freeze_v6.json", "manifest_sha256"),
         ("source_freeze_amendment_v6.json", "amendment_sha256"),
+        ("source_freeze_v7.json", "manifest_sha256"),
+        ("source_freeze_amendment_v7.json", "amendment_sha256"),
         ("protocol_amendment_v2.json", "amendment_sha256"),
         ("protocol_amendment_v3.json", "amendment_sha256"),
         ("protocol_amendment_v4.json", "amendment_sha256"),
+        ("protocol_amendment_v5.json", "amendment_sha256"),
+        ("oscar_public_contract_audit_v1.json", "record_sha256"),
         ("policy_canary_bundle_overwrite_incident_v1.json", "record_sha256"),
         ("policy_canary_bundle_concurrent_supersession_v1.json", "record_sha256"),
         ("allocation_4_pre_provider_gate_v1.json", "record_sha256"),
@@ -230,6 +234,16 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
             "successor_client_runtime"
         ]
         == "pinned Cosmos framework virtual environment"
+    )
+    assert (
+        payloads["source_freeze_amendment_v7.json"]["successor_manifest_sha256"]
+        == payloads["source_freeze_v7.json"]["manifest_sha256"]
+    )
+    assert payloads["protocol_amendment_v5.json"]["closed_loop_disposition"]["status"] == (
+        "technically_blocked"
+    )
+    assert payloads["oscar_public_contract_audit_v1.json"]["paper"]["classification"] == (
+        "open_loop_recorded_action_replay"
     )
     assert (
         payloads["policy_canary_bundle_concurrent_supersession_v1.json"][

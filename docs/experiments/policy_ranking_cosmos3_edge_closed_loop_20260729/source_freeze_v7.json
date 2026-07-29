@@ -1,0 +1,54 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze.v7",
+  "frozen_at": "2026-07-29T10:31:00-0500",
+  "supersedes_manifest_sha256": "56db03603d72c5da25bc623b77e6b8443bdc4a10053e91554e779d0d4e779944",
+  "inherits_all_sources_from": "source_freeze_v6.json",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "oscar_public_source_reverification": {
+    "repository": "https://github.com/wuzy2115/oscar-public.git",
+    "revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "remote_head_and_main_match_revision": true,
+    "git_tree": "45229e06738b19c43cad4cca8f447bacd4a9bda8",
+    "git_ls_tree_sha256": "7c00ef62d2e58651eec4c39c6d291e962f3ffc71505d1a6cedf628effbc60130",
+    "license": "Apache-2.0",
+    "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "inference_entry_sha256": "03774f982f6bddcebae2279d0978a71a35e3c8962cce4b1f8f813e8d8943bce5",
+    "inference_core_sha256": "2e65fa459fae12c23510f405dad38431785841d6cdea2bc084d89b81ca37c374",
+    "run_inference_sha256": "a13dab2bfc250e6e851c29d3446a60553e2d6a04f13b4f8bea2b437152bb6e6b"
+  },
+  "oscar_checkpoint_reverification": {
+    "repository": "zywu2115/OSCAR-2B",
+    "revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+    "api_revision_match": true,
+    "public": true,
+    "gated": false,
+    "disabled": false,
+    "license": "Apache-2.0",
+    "model_card_sha256": "7984b666bb4061e01bf37fa0be3ce71ea31c1d939a4988f95078d7569478bc7a",
+    "checkpoint_metadata_sha256": "74ea9359634d4f757ebf1dcf1a6279f6c2980120762f9d5b214d6b95a3cfdac9",
+    "checkpoint_shard_sha256": "51612eb9d1335b248f3112a206e72c2c3e84c774cee9cf2c459cb3ee62383cd5"
+  },
+  "exact_public_script_contract": {
+    "entrypoint": "scripts/run_inference.sh",
+    "case": "droid_TRI",
+    "start_frame": 116,
+    "seed": 44,
+    "num_frames": 81,
+    "height": 480,
+    "width": 640,
+    "expected_fps": 15.0,
+    "num_inference_steps": 35,
+    "guidance": 6.0,
+    "shift": 5.0,
+    "future_rgb_video_argument": "omitted"
+  },
+  "methodology_evidence": {
+    "paper": "https://arxiv.org/html/2606.04463",
+    "paper_version": "arXiv:2606.04463v2",
+    "published_policy_evaluation": "recorded first frame plus given robot action",
+    "published_method_classification": "open_loop_recorded_action_replay"
+  },
+  "manifest_sha256": "10b6abbd83e2fdc85f8fc971b6513ca11f3008670bd4a3a67a29a88c8a4ffef5"
+}
