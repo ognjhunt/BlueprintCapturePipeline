@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from blueprint_pipeline.cosmos_edge_closed_loop_provider_bundle import (
@@ -48,6 +49,9 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
         prompt="Pick up the bottle.",
         oscar_fixture_first_frame=first,
         oscar_fixture_skeleton=skeleton,
+        source_first_frame_sha256_by_view={
+            key: f"{index + 1:064x}" for index, key in enumerate(keys)
+        },
         generated_at="2026-07-29T00:00:00Z",
     )
 
@@ -75,12 +79,20 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
         assert 'uv_bin = uv / "bin/uv"' in runner
         assert "policy_server_client_readiness_timeout" in runner
         assert "policy_server_load_seconds" in runner
+        assert "policy_server_action_only_guardrail_mode_not_proven" in runner
+        assert "policy_server_guardrail_override_scope_not_proven" in runner
         assert "gpu_memory_after_inference_mb" in runner
         assert "commanded_state_advance_proven" in runner
         assert "BLUEPRINT_EDGE_POLICY_WORK_DIR" in runner
         assert 'legacy_work = output / "runtime_work"' in runner
         manifest = json.loads(archive.read("provider_runtime/wam_provider_runtime_manifest.json"))
         assert manifest["experiment_id"] == ("policy_ranking_cosmos3_edge_closed_loop_20260729")
+        assert manifest["nvidia_guardrails_enabled"] is False
+        assert manifest["guardrail_mode"] == "disabled_source_supported_post_generation_filter"
+        assert (
+            manifest["policy_checkpoint_or_action_contract_modified_by_guardrail_override"] is False
+        )
+        assert manifest["blueprint_action_and_abstention_gates_remain_enabled"] is True
         assert "@sha256:" in manifest["public_image"]
     receipt_payload = dict(receipt)
     recorded = receipt_payload.pop("receipt_sha256")
@@ -128,3 +140,22 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
     )
     assert import_check.returncode == 0, import_check.stderr
     assert import_check.stdout.strip() == "ok"
+
+
+def test_policy_canary_bundle_rejects_incomplete_source_hash_inventory(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="policy_canary_source_hash_views_mismatch"):
+        build_cosmos_edge_policy_canary_bundle(
+            output_dir=tmp_path / "out",
+            policy_snapshot_manifest_path=tmp_path / "not-read.json",
+            view_first_frames={
+                "observation/wrist_image_left": tmp_path / "not-read.png",
+                "observation/exterior_image_1_left": tmp_path / "not-read.png",
+                "observation/exterior_image_2_left": tmp_path / "not-read.png",
+            },
+            source_first_frame_sha256_by_view={"observation/wrist_image_left": "a" * 64},
+            joint_position=np.zeros(7),
+            gripper_position=np.zeros(1),
+            prompt="Pick up the bottle.",
+            oscar_fixture_first_frame=tmp_path / "not-read.png",
+            oscar_fixture_skeleton=tmp_path / "not-read.mp4",
+        )

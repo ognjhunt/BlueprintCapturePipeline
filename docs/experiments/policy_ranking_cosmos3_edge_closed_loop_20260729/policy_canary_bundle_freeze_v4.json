@@ -1,0 +1,30 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_policy_canary_bundle_freeze.v4",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T09:35:00-0500",
+  "supersedes_freeze": "policy_canary_bundle_freeze_v3.json",
+  "supersedes_freeze_sha256": "1a9e3568f4529fcc2c78fe3d8dca35cc86ac96b917e739807fe70ff007ce9379",
+  "bundle_version": 8,
+  "superseded_unadmitted_intermediate_bundle_versions": [6, 7],
+  "bundle_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/policy_canary_bundle_v8/cosmos_edge_policy_canary_provider_bundle.zip",
+  "bundle_sha256": "8afe819e47b43e0d08ad5b0c4b22613e8aad276332d6c8750c3653312295e241",
+  "bundle_size_bytes": 766880,
+  "receipt_sha256": "d84e61c26c96e139d28e50b53cea959b9818308dc4981b63f03776d93a2f38b2",
+  "runtime_manifest_sha256": "db092260ea32cb82f719d95545403dfe3e9bf8ef8534276283e5a22e6901ea96",
+  "canary_input_sha256": "0dc1b72a90dace038a8b9ea3b444fffa8daf51b0db6ef3228e5fe1a8010a2974",
+  "runner_sha256": "d7dc88dfb9d05cc485379b4796d2fdd1cf9ad6b0bcda37ee49e85be1b6c439ff",
+  "entrypoint_sha256": "f104ef7f92d9af3f1f79cea025c6d6eaf81705df80ee0c1ff5b033147526fa3e",
+  "changed_runtime_evidence": [
+    "source-supported Cosmos generation guardrail override is explicit and fail-closed",
+    "policy checkpoint and native 32x8 action contract remain unchanged",
+    "startup, server metadata, bundle manifest, canary result, and final result preserve the override provenance",
+    "original source-frame hashes are preserved while rebuilding from immutable v5 embedded inputs"
+  ],
+  "scientific_inputs_changed": false,
+  "frozen_thresholds_changed": false,
+  "paid_execution_admitted": false,
+  "provider_called_for_v8": false,
+  "physical_outcome_labels_accessed": false,
+  "claim_boundary": "Code-only diagnostic recovery bundle; no policy, WAM, ranking, transfer, economics, or physical-success credit.",
+  "freeze_sha256": "b996a57d535e330492532f9f044691efb9abf50b44566b3dc4c8f2e7f0f8c480"
+}

@@ -36,6 +36,8 @@ ACTION_CHUNK_ROWS = WAM_ACTION_CHUNK_ROWS
 ACTION_DIMENSION = 8
 EXECUTED_PREFIX_STEPS = 8
 CONDITIONING_FPS = 15.0
+GENERATION_GUARDRAILS_ENABLED = False
+GENERATION_GUARDRAIL_MODE = "disabled_source_supported_post_generation_filter"
 SERVER_METADATA_SCHEMA = "cosmos_edge_droid_policy_server_metadata.v1"
 SNAPSHOT_MANIFEST_SCHEMA = "cosmos_edge_droid_policy_snapshot_manifest.v1"
 
@@ -59,6 +61,8 @@ class CosmosEdgeDroidPolicySpec:
     action_dimension: int = ACTION_DIMENSION
     executed_prefix_steps: int = EXECUTED_PREFIX_STEPS
     conditioning_fps: float = CONDITIONING_FPS
+    generation_guardrails_enabled: bool = GENERATION_GUARDRAILS_ENABLED
+    generation_guardrail_mode: str = GENERATION_GUARDRAIL_MODE
     required_policy_views: tuple[str, ...] = DROID_ROBOARENA_CONCAT_VIEWS
     use_state: bool = True
     license_id: str = "OpenMDW-1.1"
@@ -86,6 +90,11 @@ class CosmosEdgeDroidPolicySpec:
             raise ValueError("cosmos_edge_policy_executed_prefix_invalid")
         if self.conditioning_fps != CONDITIONING_FPS:
             raise ValueError("cosmos_edge_policy_conditioning_fps_mismatch")
+        if (
+            self.generation_guardrails_enabled is not GENERATION_GUARDRAILS_ENABLED
+            or self.generation_guardrail_mode != GENERATION_GUARDRAIL_MODE
+        ):
+            raise ValueError("cosmos_edge_policy_generation_guardrail_mode_mismatch")
         if tuple(self.required_policy_views) != DROID_ROBOARENA_CONCAT_VIEWS:
             raise ValueError("cosmos_edge_policy_view_contract_mismatch")
         if self.use_state is not True or self.license_id != "OpenMDW-1.1":

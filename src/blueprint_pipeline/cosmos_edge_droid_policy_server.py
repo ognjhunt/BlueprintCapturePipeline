@@ -44,6 +44,29 @@ class NativeActionShapeGuard:
         return result
 
 
+def _disable_policy_guardrails(setup_args: Any) -> Any:
+    """Disable the optional post-generation guardrail dependency.
+
+    The pinned NVIDIA RoboLab service inherits the Cosmos inference default of
+    loading ``nvidia/Cosmos-Guardrail1`` before the policy can return structured
+    robot actions. NVIDIA's setup model exposes this as a supported setting,
+    and NVIDIA's export verifier uses the same setting because the guardrail is
+    an orthogonal Hugging Face dependency. The pinned inference source applies
+    it to prompt/video acceptance after generation, not to policy weights,
+    conditioning, or native action shape. Blueprint's own action validation,
+    uncertainty, and abstention gates remain in force.
+    """
+
+    if not isinstance(getattr(setup_args, "guardrails", None), bool):
+        raise TypeError("cosmos_edge_policy_setup_args_guardrails_field_unavailable")
+    if not hasattr(setup_args, "model_copy"):
+        raise TypeError("cosmos_edge_policy_setup_args_model_copy_unavailable")
+    updated = setup_args.model_copy(update={"guardrails": False})
+    if getattr(updated, "guardrails", None) is not False:
+        raise ValueError("cosmos_edge_policy_guardrails_disable_failed")
+    return updated
+
+
 def serve_identity_bound_policy(
     *,
     checkpoint_path: str | Path,
@@ -98,8 +121,12 @@ def serve_identity_bound_policy(
             format_prompt_as_json=True,
         )
 
+        class BlueprintRobolabPolicyService(RobolabPolicyService):
+            def _build_setup_args(self, service_args: Any) -> Any:
+                return _disable_policy_guardrails(super()._build_setup_args(service_args))
+
         def _official_service_factory() -> Any:
-            return RobolabPolicyService(args)
+            return BlueprintRobolabPolicyService(args)
 
         server_cls = _load_openpi_websocket_policy_server()
 
@@ -118,6 +145,10 @@ def serve_identity_bound_policy(
         "metadata": metadata,
         "native_action_shape": [NATIVE_ACTION_CHUNK_ROWS, 8],
         "wam_prefix_adapter_runs_client_side": True,
+        "nvidia_guardrails_enabled": False,
+        "guardrail_mode": "disabled_source_supported_post_generation_filter",
+        "policy_checkpoint_or_action_contract_modified_by_guardrail_override": False,
+        "blueprint_action_and_abstention_gates_remain_enabled": True,
         "raw_credentials_written": False,
     }
     startup_path = Path(output_dir).expanduser().resolve() / "policy_server_startup.json"

@@ -141,6 +141,11 @@ def main() -> int:
         if not startup.is_file():
             raise RuntimeError("policy_server_startup_timeout")
         policy_server_load_seconds = time.time() - server_started
+        startup_payload = json.loads(startup.read_text(encoding="utf-8"))
+        if startup_payload.get("nvidia_guardrails_enabled") is not False:
+            raise RuntimeError("policy_server_action_only_guardrail_mode_not_proven")
+        if startup_payload.get("policy_checkpoint_or_action_contract_modified_by_guardrail_override") is not False:
+            raise RuntimeError("policy_server_guardrail_override_scope_not_proven")
 
         sys.path.insert(0, str(runtime))
         from blueprint_pipeline.cosmos_edge_droid_policy_runtime import (
@@ -188,6 +193,10 @@ def main() -> int:
             "policy_request_receipt": response["policy_request_receipt"],
             "policy_endpoint_evidence": client.evidence_summary(),
             "policy_server_load_seconds": policy_server_load_seconds,
+            "nvidia_guardrails_enabled": False,
+            "guardrail_mode": "disabled_source_supported_post_generation_filter",
+            "policy_checkpoint_or_action_contract_modified_by_guardrail_override": False,
+            "blueprint_action_and_abstention_gates_remain_enabled": True,
             "latency_seconds": latency,
             "gpu_memory_after_inference_mb": gpu_memory_after_inference,
         }
@@ -205,6 +214,10 @@ def main() -> int:
             "executed_prefix_steps": 8,
             "commanded_state_advance_proven": True,
             "policy_server_load_seconds": policy_server_load_seconds,
+            "nvidia_guardrails_enabled": False,
+            "guardrail_mode": "disabled_source_supported_post_generation_filter",
+            "policy_checkpoint_or_action_contract_modified_by_guardrail_override": False,
+            "blueprint_action_and_abstention_gates_remain_enabled": True,
             "policy_inference_latency_seconds": latency,
             "gpu_memory_after_inference_mb": gpu_memory_after_inference,
             "structured_policy_canary_passed": True,
@@ -290,10 +303,23 @@ def build_cosmos_edge_policy_canary_bundle(
     prompt: str,
     oscar_fixture_first_frame: str | Path,
     oscar_fixture_skeleton: str | Path,
+    source_first_frame_sha256_by_view: Mapping[str, str] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic provider bundle for one diagnostic policy canary."""
 
+    required_views = {
+        "observation/wrist_image_left",
+        "observation/exterior_image_1_left",
+        "observation/exterior_image_2_left",
+    }
+    if set(view_first_frames) != required_views:
+        raise ValueError("policy_canary_required_views_mismatch")
+    if (
+        source_first_frame_sha256_by_view is not None
+        and set(source_first_frame_sha256_by_view) != required_views
+    ):
+        raise ValueError("policy_canary_source_hash_views_mismatch")
     out = Path(output_dir).expanduser().resolve()
     ensure_dir(out)
     root = out / "cosmos_edge_policy_canary_bundle"
@@ -320,13 +346,6 @@ def build_cosmos_edge_policy_canary_bundle(
         shutil.copy2(source_root / "core" / name, core_package_dir / name)
     snapshot_manifest = Path(policy_snapshot_manifest_path).expanduser().resolve()
     shutil.copy2(snapshot_manifest, runtime / "policy_snapshot_manifest.json")
-    required_views = {
-        "observation/wrist_image_left",
-        "observation/exterior_image_1_left",
-        "observation/exterior_image_2_left",
-    }
-    if set(view_first_frames) != required_views:
-        raise ValueError("policy_canary_required_views_mismatch")
     view_entries: dict[str, str] = {}
     source_hashes: dict[str, str] = {}
     for index, key in enumerate(sorted(view_first_frames)):
@@ -339,7 +358,17 @@ def build_cosmos_edge_policy_canary_bundle(
                 runtime / relative
             )
         view_entries[key] = relative
-        source_hashes[key] = file_sha256(source)
+        source_hashes[key] = (
+            str(source_first_frame_sha256_by_view[key])
+            if source_first_frame_sha256_by_view is not None
+            else file_sha256(source)
+        )
+    if source_first_frame_sha256_by_view is not None:
+        if any(
+            len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
+            for value in source_hashes.values()
+        ):
+            raise ValueError("policy_canary_source_hash_invalid")
     joints = np.asarray(joint_position, dtype=np.float64)
     gripper = np.asarray(gripper_position, dtype=np.float64)
     if joints.shape != (7,) or not np.isfinite(joints).all():
@@ -388,6 +417,10 @@ def build_cosmos_edge_policy_canary_bundle(
         "scientific_matrix_request_count": 0,
         "total_initial_generation_request_count": 1,
         "registered_next_wam": "OSCAR-2B",
+        "nvidia_guardrails_enabled": False,
+        "guardrail_mode": "disabled_source_supported_post_generation_filter",
+        "policy_checkpoint_or_action_contract_modified_by_guardrail_override": False,
+        "blueprint_action_and_abstention_gates_remain_enabled": True,
         "action_conditioned_video_rollout_generated": False,
         "physical_outcomes_in_bundle": False,
         "raw_credentials_in_bundle": False,

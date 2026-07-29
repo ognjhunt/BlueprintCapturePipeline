@@ -1,0 +1,34 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_bundle_concurrent_supersession.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-29T09:40:00-0500",
+  "cause": "Concurrent work produced and rewrote unadmitted intermediate bundles while the guardrail correction was under audit.",
+  "intermediates": [
+    {
+      "bundle_version": 6,
+      "bundle_sha256": "7792705f189c3f657be864b36c7bd8b276655d8e78c77b3609e02e46d11638f4",
+      "bundle_size_bytes": 766574,
+      "receipt_sha256": "952be7bd96b67a24b8228cba661f020c96e5b80095af2dedabe40e5ac910a927",
+      "provider_called": false,
+      "paid_execution_admitted": false
+    },
+    {
+      "bundle_version": 7,
+      "initial_bundle_sha256": "e8e8f68f07aa797c3b0a44d5500554d1ab23b81253cd86043a2db8985f33cfa6",
+      "initial_bundle_size_bytes": 766881,
+      "initial_receipt_sha256": "ec679bdefedf28c730890ce9d593c6748995046511faddcb0611d8b60ebbbae1",
+      "replacement_bundle_sha256": "706e3d0e6d94667fee221bee1b8ce94dab086b89e046d05daf70e374df5cda3d",
+      "replacement_bundle_size_bytes": 766572,
+      "replacement_receipt_sha256": "0d8dda051852808eebc9ce48617f3bf3746b92b27f70bd951aefbf3162d65e61",
+      "provider_called": false,
+      "paid_execution_admitted": false
+    }
+  ],
+  "selected_successor_bundle_version": 8,
+  "selected_successor_bundle_sha256": "8afe819e47b43e0d08ad5b0c4b22613e8aad276332d6c8750c3653312295e241",
+  "scientific_inputs_changed": false,
+  "physical_outcome_labels_accessed": false,
+  "provider_called_for_selected_successor": false,
+  "claim_boundary": "Bundle-construction provenance only; none of the intermediate or successor bundles earns policy, WAM, ranking, transfer, economics, or physical-success credit without a separately admitted run.",
+  "record_sha256": "4c852f7b78ed6d792e726b10cf2d707ffed6606513c7a75ad280361a6917f79a"
+}
