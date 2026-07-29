@@ -1,0 +1,33 @@
+{
+  "schema_version": "policy_ranking_powered_droid_cost_ledger.v1",
+  "generated_at": "2026-07-29T07:00:23-0500",
+  "currency": "USD",
+  "gpu": {
+    "allocation_1_implementation_failure": 0.477329,
+    "allocation_2_complete_matrix": 1.748783,
+    "cumulative": 2.226112,
+    "category_cap": 50.0,
+    "within_category_cap": true
+  },
+  "openai_evaluator_api": {
+    "actual": 0.0,
+    "category_cap": 25.0,
+    "note": "No evaluator call was admitted because native Cosmos failed causal qualification."
+  },
+  "storage_and_transfer": {
+    "actual_metered": null,
+    "category_cap": 10.0,
+    "known_output_archive_bytes": 200594982,
+    "note": "No attributable provider invoice line was available at analysis time; do not treat a byte-size estimate as measured cost."
+  },
+  "campaign_total_attributable_actual": 2.226112,
+  "campaign_total_cap": 100.0,
+  "within_total_cap": true,
+  "completed_causal_matrix_cost_per_scientific_rollout_allocation_2": 0.002857488562091503,
+  "completed_causal_matrix_cost_per_window_allocation_2": 0.03428986274509804,
+  "completed_causal_matrix_cost_per_session_allocation_2": 0.10286958823529412,
+  "completed_useful_policy_ranking_cost": null,
+  "physical_evaluation_comparison": null,
+  "economics_and_speed": "not_measured_for_a_completed_useful_ranking",
+  "provider_zero_continuing_hourly_burn": 0.0
+}

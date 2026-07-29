@@ -58,6 +58,7 @@ from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_ma
 from .provider_runtime_bundle_contract import (
     PROVIDER_RUNTIME_BUNDLE_KINDS as VAST_PROVIDER_BUNDLE_KINDS,
     provider_runtime_contract_blockers,
+    wam_registered_alternative_inputs_present,
 )
 from .vast_independent_watchdog_control import write_started_vast_instance_id
 from .vast_evaluator_probe_script import (
@@ -2014,15 +2015,12 @@ def _blueprint_bundle_preflight(
                     f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}"
                 )
             missing_entries = sorted(required_entries - set(zip_entries))
-            cosmos3_inputs_present = all(
-                f"provider_runtime/cosmos3_input/{name}" in zip_entries
-                for name in (
-                    "initial_observation.png",
-                    "smoke_request_inventory.json",
-                    "action_streams.json",
+            if missing_entries and not (
+                provider_bundle_kind == "wam"
+                and wam_registered_alternative_inputs_present(
+                    bundle_path=bundle_path, zip_entries=zip_entries
                 )
-            )
-            if missing_entries and not (provider_bundle_kind == "wam" and cosmos3_inputs_present):
+            ):
                 blockers.append("provider_runtime_bundle_required_entries_missing")
             if zip_testzip_result is not None:
                 blockers.append("provider_runtime_bundle_zip_integrity_failed")
@@ -5078,9 +5076,7 @@ def run_vast_provider_adapter(
                     pre_provider_mutation_result = dict(pre_provider_mutation_hook())
                     base_result["pre_provider_mutation_hook_result"] = pre_provider_mutation_result
                     if pre_provider_mutation_result.get("status") != "consumed":
-                        hook_blockers = _string_list(
-                            pre_provider_mutation_result.get("blockers")
-                        )
+                        hook_blockers = _string_list(pre_provider_mutation_result.get("blockers"))
                         raise RuntimeError(
                             hook_blockers[0]
                             if hook_blockers
@@ -5283,15 +5279,13 @@ def run_vast_provider_adapter(
             if heartbeat_no_progress_seconds is None
             else heartbeat_no_progress_seconds
         )
-        resolved_heartbeat_no_progress_seconds = (
-            cold_pull_aware_heartbeat_no_progress_seconds(
-                configured_seconds=resolved_heartbeat_no_progress_seconds,
-                provider_bundle_kind=provider_bundle_kind,
-                allow_cold_image_pull=allow_cold_isaac_image_pull,
-                min_cold_image_pull_live_minutes=min_cold_isaac_pull_live_minutes,
-                startup_timeout_seconds=startup_timeout_seconds,
-                max_live_minutes=max_live_minutes,
-            )
+        resolved_heartbeat_no_progress_seconds = cold_pull_aware_heartbeat_no_progress_seconds(
+            configured_seconds=resolved_heartbeat_no_progress_seconds,
+            provider_bundle_kind=provider_bundle_kind,
+            allow_cold_image_pull=allow_cold_isaac_image_pull,
+            min_cold_image_pull_live_minutes=min_cold_isaac_pull_live_minutes,
+            startup_timeout_seconds=startup_timeout_seconds,
+            max_live_minutes=max_live_minutes,
         )
         onstart_logs = _request_logs_and_fetch(
             instance_id=instance_id,

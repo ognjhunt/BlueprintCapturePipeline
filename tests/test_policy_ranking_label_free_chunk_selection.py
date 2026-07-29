@@ -8,6 +8,7 @@ import pytest
 from blueprint_pipeline.policy_ranking_label_free_chunk_selection import (
     action_chunk_motion_metrics,
     select_first_frame_high_motion_pair,
+    select_first_frame_windows_by_session,
 )
 from blueprint_pipeline.policy_ranking_successor_cosmos import droid_action_stream
 
@@ -91,4 +92,47 @@ def test_selector_fails_when_selected_session_has_no_real_swap() -> None:
                 _candidate("session-a", "only-policy", 0.01),
                 _candidate("session-b", "other-policy", 0.009),
             ]
+        )
+
+
+def test_selects_three_first_frame_windows_per_session() -> None:
+    result = select_first_frame_windows_by_session(
+        [
+            _candidate(session, policy, translation)
+            for session in ("session-a", "session-b")
+            for policy, translation in (
+                ("policy-a", 0.007),
+                ("policy-b", 0.005),
+                ("policy-c", 0.003),
+                ("policy-d", 0.001),
+            )
+        ],
+        windows_per_session=3,
+    )
+
+    assert result["session_count"] == 2
+    assert all(session["window_count"] == 3 for session in result["sessions"])
+    assert all(
+        window["recorded"]["policy_id_internal_only"]
+        != window["policy_swapped"]["policy_id_internal_only"]
+        for session in result["sessions"]
+        for window in session["windows"]
+    )
+    assert all(
+        window["start_index"] == 0
+        for session in result["sessions"]
+        for window in session["windows"]
+    )
+    assert result["label_seal"]["outcome_labels_accessed"] is False
+
+
+def test_session_window_selector_requires_distinct_swap_capacity() -> None:
+    with pytest.raises(ValueError, match="insufficient_distinct_policies"):
+        select_first_frame_windows_by_session(
+            [
+                _candidate("session-a", "policy-a", 0.004),
+                _candidate("session-a", "policy-b", 0.003),
+                _candidate("session-a", "policy-c", 0.002),
+            ],
+            windows_per_session=3,
         )

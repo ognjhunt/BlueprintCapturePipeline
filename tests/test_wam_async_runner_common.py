@@ -142,6 +142,10 @@ def test_read_sensitive_url_file_reports_metadata_without_echoing_value(tmp_path
 def test_download_url_to_file_does_not_record_signed_url(tmp_path, monkeypatch) -> None:
     class Response:
         status = 200
+        headers = {
+            "Last-Modified": "Wed, 29 Jul 2026 11:37:00 GMT",
+            "ETag": '"safe-object-etag"',
+        }
 
         def __enter__(self):
             return self
@@ -168,6 +172,8 @@ def test_download_url_to_file_does_not_record_signed_url(tmp_path, monkeypatch) 
 
     assert result["status"] == "completed"
     assert result["downloaded_size_bytes"] == len(b"provider-output")
+    assert result["response_last_modified"] == "Wed, 29 Jul 2026 11:37:00 GMT"
+    assert result["response_etag_present"] is True
     assert output.read_bytes() == b"provider-output"
     assert url not in json.dumps(result)
 

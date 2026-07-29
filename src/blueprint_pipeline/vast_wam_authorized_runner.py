@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import json
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -45,11 +47,20 @@ from .oscar_official_release import OFFICIAL_OSCAR_WAM_IMAGE_REF
 from .paid_resource_admission import PaidResourceAdmissionGrant
 from .policy_ranking_successor_retained_session import create_retained_session_manifest
 from .gpu_render_providers import get_render_provider
+from .wam_async_runner_common import download_url_to_file
+from .wam_provider_output import inspect_provider_runtime_output_zip
 
 
 VAST_WAM_AUTHORIZED_RUNNER_SCHEMA_VERSION = "vast_wam_authorized_runner.v1"
 DEFAULT_WAM_PUBLIC_IMAGE = OFFICIAL_OSCAR_WAM_IMAGE_REF
 DEFAULT_WAM_VAST_LAUNCH_MODE = "auto"
+RECOVERABLE_PROVIDER_OBSERVATION_BLOCKERS = frozenset(
+    {
+        "vast_heartbeat_container_missing",
+        "vast_heartbeat_output_missing_success_marker",
+        "vast_heartbeat_no_log_progress_timeout",
+    }
+)
 
 
 def _string(value: Any) -> str:
@@ -74,6 +85,154 @@ def _truth_boundaries() -> dict[str, Any]:
         "official_policy_execution_proven": False,
         "controller_grade_execution_proven": False,
     }
+
+
+def _timestamp(value: Any) -> datetime | None:
+    text = _string(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _recover_completed_provider_output(
+    *,
+    job_dir: Path,
+    output_path: Path,
+    provider_output_get_url: str,
+    provider_bundle_kind: str,
+    adapter_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Recover a fresh completed callback archive after a provider log-tail race.
+
+    Vast can destroy a short-lived container between log polls after the callback
+    upload succeeds. Recovery is deliberately narrow: only observation-layer
+    blockers qualify, provider teardown must already be proven, the callback must
+    have been modified during this allocation, and the archive must contain a
+    completed runtime result. Scientific gates remain separate.
+    """
+
+    blockers = sorted(
+        {
+            str(item).strip()
+            for item in adapter_result.get("blockers") or []
+            if str(item).strip()
+        }
+    )
+    manifest: dict[str, Any] = {
+        "schema_version": "vast_provider_output_completion_recovery.v1",
+        "generated_at": utc_now_iso(),
+        "status": "not_eligible",
+        "adapter_status": adapter_result.get("status"),
+        "adapter_blockers": blockers,
+        "provider_bundle_kind": provider_bundle_kind,
+        "provider_output_get_url_present": bool(_string(provider_output_get_url)),
+        "provider_instance_ids_present": bool(adapter_result.get("vast_instance_ids")),
+        "provider_teardown_proven": (
+            adapter_result.get("continuing_spend_from_this_run") is False
+        ),
+        "raw_secret_values_recorded": False,
+    }
+    eligibility_blockers: list[str] = []
+    if adapter_result.get("status") == "completed":
+        eligibility_blockers.append("adapter_already_completed")
+    if not blockers or not set(blockers).issubset(RECOVERABLE_PROVIDER_OBSERVATION_BLOCKERS):
+        eligibility_blockers.append("adapter_failure_not_limited_to_observation_layer")
+    if adapter_result.get("continuing_spend_from_this_run") is not False:
+        eligibility_blockers.append("provider_teardown_not_proven")
+    if not adapter_result.get("vast_instance_ids"):
+        eligibility_blockers.append("provider_instance_id_missing")
+    if not _string(provider_output_get_url):
+        eligibility_blockers.append("provider_output_get_url_missing")
+    if eligibility_blockers:
+        manifest["blockers"] = eligibility_blockers
+        write_json(job_dir / "vast_provider_output_completion_recovery.json", manifest)
+        return manifest
+
+    transfer = download_url_to_file(
+        url=_string(provider_output_get_url),
+        output_path=output_path,
+        user_agent="BlueprintVastAuthorizedWamRecovery/1.0",
+        timeout_seconds=180,
+    )
+    manifest["download"] = {
+        key: transfer.get(key)
+        for key in (
+            "status",
+            "http_status_code",
+            "downloaded_size_bytes",
+            "output_present",
+            "response_last_modified",
+            "response_etag_present",
+            "error_type",
+        )
+        if key in transfer
+    }
+    if transfer.get("status") != "completed":
+        manifest.update(
+            {
+                "status": "blocked",
+                "blockers": ["provider_output_recovery_download_failed"],
+            }
+        )
+        write_json(job_dir / "vast_provider_output_completion_recovery.json", manifest)
+        return manifest
+
+    allocation_started = _timestamp(adapter_result.get("generated_at"))
+    object_modified = _timestamp(transfer.get("response_last_modified"))
+    fresh_for_allocation = bool(
+        allocation_started and object_modified and object_modified >= allocation_started
+    )
+    manifest["freshness"] = {
+        "allocation_started_at": (
+            allocation_started.isoformat() if allocation_started else None
+        ),
+        "object_last_modified_at": object_modified.isoformat() if object_modified else None,
+        "object_fresh_for_allocation": fresh_for_allocation,
+    }
+    inspection = inspect_provider_runtime_output_zip(
+        output_path,
+        expected_video_count=1 if provider_bundle_kind == "wam" else None,
+    )
+    manifest["output_inspection"] = inspection
+    runtime_completed = (
+        inspection.get("status") == "completed"
+        and inspection.get("runtime_result_present") is True
+        and inspection.get("runtime_result_status") == "completed"
+        and not inspection.get("runtime_result_blockers")
+    )
+    wam_media_present = provider_bundle_kind != "wam" or int(
+        inspection.get("mp4_count") or 0
+    ) >= 1
+    recovery_blockers: list[str] = []
+    if not fresh_for_allocation:
+        recovery_blockers.append("provider_output_object_not_fresh_for_allocation")
+    if not runtime_completed:
+        recovery_blockers.append("provider_runtime_result_not_completed")
+    if not wam_media_present:
+        recovery_blockers.append("provider_wam_output_missing_video")
+    manifest.update(
+        {
+            "status": "completed" if not recovery_blockers else "blocked",
+            "completion_recovered": not recovery_blockers,
+            "blockers": recovery_blockers,
+            "claim_boundary": {
+                "provider_transport_completion_only": True,
+                "scientific_validity_proven": False,
+                "ranking_fidelity_proven": False,
+            },
+        }
+    )
+    write_json(job_dir / "vast_provider_output_completion_recovery.json", manifest)
+    return manifest
 
 
 def run_vast_wam_authorized_runner(
@@ -278,6 +437,7 @@ def run_vast_wam_authorized_runner(
     watchdog_handoff: dict[str, Any] = {"status": "not_required"}
     watchdog_close: dict[str, Any] = {"status": "not_required"}
     retained_session: dict[str, Any] = {"status": "not_created"}
+    completion_recovery: dict[str, Any] = {"status": "not_required"}
     paid_launch_attempted = False
     if allow_paid_vast_launch:
         if not provider_bundle_url or not provider_output_put_url:
@@ -416,7 +576,17 @@ def run_vast_wam_authorized_runner(
                                     provider_teardown_completed=True,
                                 )
                 if adapter_result.get("status") != "completed":
-                    blockers.extend(str(item) for item in adapter_result.get("blockers") or [])
+                    completion_recovery = _recover_completed_provider_output(
+                        job_dir=resolved_job_dir,
+                        output_path=resolved_output,
+                        provider_output_get_url=provider_output_get_url,
+                        provider_bundle_kind=provider_bundle_kind,
+                        adapter_result=adapter_result,
+                    )
+                    if completion_recovery.get("status") != "completed":
+                        blockers.extend(
+                            str(item) for item in adapter_result.get("blockers") or []
+                        )
     else:
         blockers.append("paid_vast_launch_not_authorized_by_runner_flag")
 
@@ -432,19 +602,26 @@ def run_vast_wam_authorized_runner(
         else "completed"
         if paid_launch_attempted
         and adapter_result
-        and adapter_result.get("status") == "completed"
+        and (
+            adapter_result.get("status") == "completed"
+            or completion_recovery.get("status") == "completed"
+        )
         and not blockers
         else "blocked"
     )
-    output_inspection: dict[str, Any] = {}
+    output_inspection: dict[str, Any] = dict(
+        completion_recovery.get("output_inspection") or {}
+    )
     if resolved_output.is_file():
         try:
-            output_inspection = {
-                "output_zip_present": True,
-                "output_zip_size_bytes": resolved_output.stat().st_size,
-            }
+            output_inspection.update(
+                {
+                    "output_zip_present": True,
+                    "output_zip_size_bytes": resolved_output.stat().st_size,
+                }
+            )
         except OSError:
-            output_inspection = {"output_zip_present": True}
+            output_inspection["output_zip_present"] = True
     manifest = {
         "schema_version": VAST_WAM_AUTHORIZED_RUNNER_SCHEMA_VERSION,
         "generated_at": generated,
@@ -490,6 +667,7 @@ def run_vast_wam_authorized_runner(
         "independent_watchdog_close": watchdog_close,
         "adapter_result_status": adapter_result.get("status") if adapter_result else None,
         "adapter_result_reason": adapter_result.get("reason") if adapter_result else None,
+        "provider_output_completion_recovery": completion_recovery,
         "adapter_result_path": str(resolved_job_dir / "vast_provider_adapter_result.json")
         if adapter_result
         else None,

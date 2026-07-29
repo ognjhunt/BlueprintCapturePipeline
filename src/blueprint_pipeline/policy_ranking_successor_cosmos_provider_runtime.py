@@ -57,6 +57,7 @@ POSITIVE_CONTROL_DIRECTORY = "cosmos3_positive_control"
 POSITIVE_CONTROL_REQUEST_COUNT = 4
 DROID_REFERENCE_DIRECTORY = "cosmos3_droid_reference"
 DROID_REFERENCE_SCHEMA_VERSION = "policy_ranking_cosmos3_official_droid_reference_canary.v2"
+POWERED_DROID_DIRECTORY = "cosmos3_powered_droid"
 
 
 def canonical_sha256(value: Any) -> str:
@@ -791,6 +792,11 @@ def _submit_rollout(
     initial_observation: Path,
     output_path: Path,
 ) -> dict[str, Any]:
+    # Every caller may choose a condition/request-specific output path.  The
+    # transport owns materializing that path so a fresh runtime cannot fail
+    # before the first provider request merely because its parent directory
+    # has not been created yet.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with initial_observation.open("rb") as image_file:
         response = requests.post(
             f"{SERVER_BASE_URL}/v1/videos/sync",
@@ -866,6 +872,39 @@ def _serialize_droid_reference_request(
         "flow_shift": "10.0",
         "seed": "0",
         "extra_params": json.dumps({**expected_extra, "action": actions}, separators=(",", ":")),
+    }
+
+
+def _serialize_powered_droid_request(*, action_stream: dict[str, Any], seed: int) -> dict[str, Any]:
+    """Serialize the powered replay using the official blank-prompt DROID contract."""
+
+    actions = action_stream.get("actions")
+    if (
+        not isinstance(actions, list)
+        or len(actions) != 16
+        or any(not isinstance(row, list) or len(row) != 10 for row in actions)
+    ):
+        raise ValueError("powered_droid_action_shape_invalid")
+    extra = {
+        "action_mode": "forward_dynamics",
+        "domain_name": "droid_lerobot",
+        "action_chunk_size": 16,
+        "image_size": 480,
+        "view_point": "concat_view",
+        "guardrails": False,
+        "action": actions,
+    }
+    return {
+        "model": CHECKPOINT,
+        "prompt": " ",
+        "num_frames": "17",
+        "fps": "15",
+        "size": "640x540",
+        "num_inference_steps": "30",
+        "guidance_scale": "1.0",
+        "flow_shift": "10.0",
+        "seed": str(int(seed)),
+        "extra_params": json.dumps(extra, separators=(",", ":")),
     }
 
 
@@ -1093,6 +1132,280 @@ def _classify_retryable(exc: BaseException) -> bool:
     )
 
 
+def _run_powered_droid(*, runtime_dir: Path, output_dir: Path) -> dict[str, Any]:
+    """Run one official canary, then the frozen 17-session causal matrix."""
+
+    control = runtime_dir / POWERED_DROID_DIRECTORY
+    packet_path = control / "packet.json"
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    packet_digest = str(packet.get("manifest_sha256") or "")
+    if packet_digest != canonical_sha256(
+        {key: value for key, value in packet.items() if key != "manifest_sha256"}
+    ):
+        raise ValueError("powered_droid_packet_digest_mismatch")
+    if packet.get("schema_version") != "policy_ranking_powered_droid_provider_packet.v1":
+        raise ValueError("powered_droid_packet_schema_invalid")
+    rows = packet.get("rows")
+    if not isinstance(rows, list) or len(rows) != 51:
+        raise ValueError("powered_droid_packet_window_count_invalid")
+    if packet.get("scientific_request_count") != 612:
+        raise ValueError("powered_droid_packet_request_count_invalid")
+
+    canary_dir = control / "official_canary"
+    canary_manifest = json.loads((canary_dir / "canary_manifest.json").read_text(encoding="utf-8"))
+    canary_digest = str(canary_manifest.get("manifest_sha256") or "")
+    if canary_digest != canonical_sha256(
+        {key: value for key, value in canary_manifest.items() if key != "manifest_sha256"}
+    ):
+        raise ValueError("powered_droid_canary_manifest_digest_mismatch")
+    canary_image = canary_dir / "initial_observation.png"
+    canary_actions = json.loads((canary_dir / "action_streams.json").read_text(encoding="utf-8"))
+    provider_inputs = canary_manifest.get("provider_inputs") or {}
+    if sha256_file(canary_image) != provider_inputs.get("initial_observation_sha256"):
+        raise ValueError("powered_droid_canary_image_digest_mismatch")
+    if canonical_sha256(canary_actions) != provider_inputs.get("action_streams_sha256"):
+        raise ValueError("powered_droid_canary_actions_digest_mismatch")
+
+    journal = HashChainedJournal(output_dir / "immutable_request_journal.jsonl")
+    result_path = output_dir / "wam_runtime_result.json"
+    try:
+        cuda_preflight = _run_cuda_preflight()
+    except Exception as exc:
+        result = {
+            "schema_version": "policy_ranking_powered_droid_runtime.v1",
+            "status": "blocked",
+            "failure_class": "cuda_driver_or_runtime_failure",
+            "blockers": [f"{type(exc).__name__}:{str(exc)[:300]}"],
+            "provider_generation_requests_attempted": 0,
+        }
+        write_json(result_path, result)
+        return result
+    write_json(output_dir / "gpu_preflight.json", cuda_preflight)
+
+    process, server_identity, server_log, reused = _acquire_server(
+        output_dir=output_dir, environment=_server_environment()
+    )
+    started = time.monotonic()
+    attempted = 0
+    accepted = 0
+    force_shutdown = False
+    try:
+        _wait_for_server(process)
+        model_load_seconds = 0.0 if reused else time.monotonic() - started
+        canary_request = _serialize_droid_reference_request(
+            manifest=canary_manifest,
+            action_stream=canary_actions["recorded"],
+        )
+        canary_output = output_dir / "structured_canary" / "recorded.mp4"
+        attempted += 1
+        canary_response = _submit_rollout_async(
+            serialized_request=canary_request,
+            initial_observation=canary_image,
+            output_path=canary_output,
+        )
+        canary_metrics = _decode_video_metrics(
+            canary_output,
+            expected_width=640,
+            expected_height=528,
+            expected_frames=17,
+            expected_fps=15.0,
+        )
+        canary_gates = (canary_manifest.get("frozen_gates") or {}).get("structured_canary") or {}
+        canary_dynamic = float(
+            canary_metrics.get("temporal_absolute_difference_mean") or 0.0
+        ) >= float(
+            canary_gates.get("temporal_absolute_difference_mean_minimum_gray_0_255") or 0.0
+        ) and float(canary_metrics.get("first_to_last_absolute_difference_mean") or 0.0) >= float(
+            canary_gates.get("first_to_last_absolute_difference_mean_minimum_gray_0_255") or 0.0
+        )
+        canary_passed = canary_metrics.get("structural_status") == "passed" and canary_dynamic
+        canary_record = {
+            "request": canary_request,
+            "request_sha256": canonical_sha256(canary_request),
+            "response": canary_response,
+            "metrics": canary_metrics,
+            "structural_and_dynamic_gate_passed": canary_passed,
+        }
+        write_json(output_dir / "structured_canary" / "recorded.json", canary_record)
+        journal.append(
+            {
+                "event": "powered_official_canary_completed",
+                "output_sha256": canary_response["output_sha256"],
+                "gate_passed": canary_passed,
+            }
+        )
+        if not canary_passed:
+            force_shutdown = True
+            result = {
+                "schema_version": "policy_ranking_powered_droid_runtime.v1",
+                "status": "completed",
+                "experiment_id": packet.get("experiment_id"),
+                "structured_canary_passed": False,
+                "untouched_matrix_admitted": False,
+                "provider_generation_requests_attempted": attempted,
+                "provider_scientific_matrix_responses_valid": 0,
+                "evaluator_eligible": False,
+                "runtime_seconds": time.monotonic() - started,
+            }
+            result["result_sha256"] = canonical_sha256(result)
+            write_json(result_path, result)
+            return result
+
+        for row in rows:
+            session_id = str(row.get("session_id_internal_only") or "")
+            window_index = int(row.get("window_index", -1))
+            image_relative = str(row.get("initial_observation_relative_path") or "")
+            image_path = (control / image_relative).resolve()
+            if not image_path.is_relative_to(control.resolve()):
+                raise ValueError("powered_droid_image_path_escape")
+            if sha256_file(image_path) != row.get("initial_observation_sha256"):
+                raise ValueError("powered_droid_image_digest_mismatch")
+            controls = row.get("controls")
+            if not isinstance(controls, dict) or set(controls) != set(PHASE_B_EXPECTED_CONDITIONS):
+                raise ValueError("powered_droid_controls_invalid")
+            for condition in PHASE_B_EXPECTED_CONDITIONS:
+                action_stream = controls[condition]
+                action_hash = canonical_sha256(action_stream.get("actions"))
+                if action_hash != action_stream.get("action_sha256"):
+                    raise ValueError("powered_droid_action_digest_mismatch")
+                for seed in EXPECTED_SEEDS:
+                    request_material = {
+                        "packet_sha256": packet_digest,
+                        "session_id": session_id,
+                        "window_index": window_index,
+                        "condition": condition,
+                        "seed": seed,
+                        "initial_observation_sha256": row["initial_observation_sha256"],
+                        "action_sha256": action_stream["action_sha256"],
+                        "checkpoint_revision": CHECKPOINT_REVISION,
+                    }
+                    request_id = canonical_sha256(request_material)
+                    video_path = output_dir / "videos" / f"{request_id}.mp4"
+                    response_path = output_dir / "responses" / f"{request_id}.json"
+                    if response_path.is_file() and video_path.is_file():
+                        prior = json.loads(response_path.read_text(encoding="utf-8"))
+                        if prior.get("accepted_first_valid") is True and sha256_file(
+                            video_path
+                        ) == (prior.get("response") or {}).get("output_sha256"):
+                            accepted += 1
+                            continue
+                    serialized = _serialize_powered_droid_request(
+                        action_stream=action_stream,
+                        seed=seed,
+                    )
+                    last_error: Exception | None = None
+                    for attempt in range(1, INFRASTRUCTURE_RETRY_LIMIT + 2):
+                        try:
+                            attempted += 1
+                            response = _submit_rollout(
+                                serialized_request=serialized,
+                                initial_observation=image_path,
+                                output_path=video_path,
+                            )
+                            metrics = _decode_video_metrics(
+                                video_path,
+                                expected_width=640,
+                                expected_height=528,
+                                expected_frames=17,
+                                expected_fps=15.0,
+                            )
+                            if metrics.get("structural_status") != "passed":
+                                raise RuntimeError("powered_droid_generated_video_invalid")
+                            record = {
+                                **request_material,
+                                "request_id": request_id,
+                                "attempt": attempt,
+                                "serialized_request_sha256": canonical_sha256(serialized),
+                                "response": response,
+                                "deterministic_video_metrics": metrics,
+                                "accepted_first_valid": True,
+                            }
+                            write_json(response_path, record)
+                            journal.append(
+                                {
+                                    "event": "powered_droid_response_recorded",
+                                    "request_id": request_id,
+                                    "output_sha256": response["output_sha256"],
+                                }
+                            )
+                            accepted += 1
+                            last_error = None
+                            break
+                        except Exception as exc:
+                            last_error = exc
+                            if not _classify_retryable(exc) or attempt > INFRASTRUCTURE_RETRY_LIMIT:
+                                raise
+                    if last_error is not None:
+                        raise last_error
+
+        complete = accepted == 612
+        result = {
+            "schema_version": "policy_ranking_powered_droid_runtime.v1",
+            "status": "completed" if complete else "blocked",
+            "experiment_id": packet.get("experiment_id"),
+            "packet_sha256": packet_digest,
+            "checkpoint": CHECKPOINT,
+            "checkpoint_revision": CHECKPOINT_REVISION,
+            "server_identity": server_identity,
+            "model_load_seconds": model_load_seconds,
+            "reused_retained_server": reused,
+            "structured_canary_passed": True,
+            "untouched_matrix_admitted": True,
+            "provider_generation_requests_attempted": attempted,
+            "provider_scientific_matrix_responses_valid": accepted,
+            "complete_action_condition_seed_matrix_generated": complete,
+            "evaluator_eligible": False,
+            "runtime_seconds": time.monotonic() - started,
+            "immutable_request_journal_tail_sha256": journal.previous,
+            "claims": {
+                "runtime": True,
+                "generated_media": complete,
+                "wam_causal_validity": False,
+                "ranking_fidelity": False,
+                "physical_performance": False,
+            },
+        }
+        result["result_sha256"] = canonical_sha256(result)
+        write_json(result_path, result)
+        return result
+    except Exception as exc:
+        force_shutdown = True
+        result = {
+            "schema_version": "policy_ranking_powered_droid_runtime.v1",
+            "status": "blocked",
+            "failure_class": "powered_droid_runtime_or_transport_failure",
+            "blockers": [f"{type(exc).__name__}:{str(exc)[:300]}"],
+            "structured_canary_passed": False if attempted <= 1 else True,
+            "untouched_matrix_admitted": attempted > 1,
+            "provider_generation_requests_attempted": attempted,
+            "provider_scientific_matrix_responses_valid": accepted,
+            "evaluator_eligible": False,
+        }
+        write_json(result_path, result)
+        return result
+    finally:
+        retained = _env_truthy(RETAIN_SERVER_ENV) and not force_shutdown and process.poll() is None
+        write_json(
+            output_dir / "cosmos_server_retention.json",
+            {
+                "status": "retained_loaded" if retained else "terminal_shutdown",
+                "server_identity": server_identity,
+                "process_alive": process.poll() is None,
+                "server_remained_loaded": retained,
+                "reused_retained_server": reused,
+            },
+        )
+        if not retained:
+            process.terminate()
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=30)
+        if server_log is not None:
+            server_log.close()
+
+
 def _declared_expected_conditions(inventory: dict[str, Any]) -> tuple[str, ...] | None:
     declared = inventory.get("required_conditions")
     if declared is None:
@@ -1121,6 +1434,8 @@ def run() -> dict[str, Any]:
         os.environ.get("BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR", runtime_dir.parent / "runtime_output")
     ).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    if (runtime_dir / POWERED_DROID_DIRECTORY / "packet.json").is_file():
+        return _run_powered_droid(runtime_dir=runtime_dir, output_dir=output_dir)
     if (runtime_dir / DROID_REFERENCE_DIRECTORY / "canary_manifest.json").is_file():
         return _run_droid_reference_only(runtime_dir=runtime_dir, output_dir=output_dir)
 

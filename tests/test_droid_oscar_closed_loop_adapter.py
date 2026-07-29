@@ -196,6 +196,7 @@ def test_full_policy_oscar_wam_policy_loop_requeries_from_generated_views(
             task_prompt="Pick up the bottle.",
             executed_prefix_steps=8,
             max_policy_queries=3,
+            execution_mode="engineering_smoke",
         ),
         output_dir=tmp_path / "loop",
     )

@@ -96,6 +96,7 @@ class SuccessorGPUProfile:
     target_spend_usd: float
     hard_ttl_seconds: int
     reference_bundle: bool = False
+    powered_bundle: bool = False
     cosmos_revision: str = COSMOS_REVISION
     cosmos_framework_revision: str = COSMOS_FRAMEWORK_REVISION
     vllm_omni_revision: str | None = None
@@ -274,6 +275,50 @@ DROID_REFERENCE_PROFILE = SuccessorGPUProfile(
     allowed_providers=("vast", "runpod"),
     compatible_gpu_keywords=("RTX PRO 6000", "H100"),
 )
+POWERED_DROID_PROFILE = SuccessorGPUProfile(
+    experiment_id="policy_ranking_roboarena_powered_droid_confirmation_20260729",
+    admission_schema="policy_ranking_powered_droid_gpu_admission.v1",
+    authorization_schema="policy_ranking_powered_droid_compute_authorization.v1",
+    preflight_schema="policy_ranking_powered_droid_provider_preflight.v1",
+    receipt_schema="policy_ranking_powered_droid_bundle_receipt.v1",
+    authorization_ids_by_allocation_index={
+        1: "policy-ranking-powered-droid-20260729-allocation-1",
+        2: "policy-ranking-powered-droid-20260729-allocation-2",
+    },
+    cost_authorization_binding_sha256=(
+        "6a7486b8eda01057934106206c5ecf3de808d19f3b3124a4a829c7a144f4c689"
+    ),
+    expected_bundle_sha256="bae438e48fa4ac2544840c91e713cdfc1274334820f1d7649d0c772876f1831a",
+    expected_bundle_size_bytes=17_986_110,
+    expected_embedded_input_hashes={
+        "provider_packet_sha256": (
+            "e9eceb32f9875cf2399877b91d43a709fb58222c944f0a16ed35c2f33120d9ee"
+        ),
+        "image_manifest_sha256": (
+            "1804981b2c05695a04dc1816dd0d3e3bba0c59333dd3058db18b55463804c4cc"
+        ),
+        "official_canary_manifest_sha256": (
+            "7d7ec85a0976ed5ede44db53a8566bd50f6596b99f2bf22f0383593d20b08ffe"
+        ),
+        "provider_runtime_runner_sha256": (
+            "53b3627ecc444dd6ca3cc1468b1ac7149ce674c7966fdb64e89303114343fcbc"
+        ),
+    },
+    qualification_canary_request_count=1,
+    scientific_matrix_request_count=612,
+    total_initial_generation_request_count=613,
+    request_budget_amendment_sha256=None,
+    max_compute_cap_usd=10.0,
+    max_hourly_rate_usd=2.05,
+    target_spend_usd=6.7,
+    hard_ttl_seconds=10_800,
+    powered_bundle=True,
+    cosmos_revision="0299468993d8bcd8f6a95b0d8427b1221fccfced",
+    cosmos_framework_revision="9726697a83315540c6885baefd2fe353d9c74920",
+    vllm_omni_revision="1c6e7313394923000215a3299f4f79ede3873ecc",
+    allowed_providers=("vast", "runpod"),
+    compatible_gpu_keywords=("RTX PRO 6000", "H100"),
+)
 RTX_ALLOWED_KEYWORDS = ("RTX PRO 6000",)
 RTX_SELECTION_POLICY: Mapping[str, Any] = {
     "policy_id": "policy_ranking_successor_rtx_pro_6000_blackwell_preflight",
@@ -307,6 +352,19 @@ REFERENCE_BUNDLE_ENTRIES = frozenset(
         "provider_runtime/cosmos3_droid_reference/canary_manifest.json",
         "provider_runtime/cosmos3_droid_reference/initial_observation.png",
         "provider_runtime/cosmos3_droid_reference/action_streams.json",
+    }
+)
+POWERED_BUNDLE_ENTRIES = frozenset(
+    {
+        "provider_runtime/wam_provider_runtime_runner.py",
+        "provider_runtime/run_wam_provider_runtime.sh",
+        "provider_runtime/successor_retained_control.py",
+        "provider_runtime/wam_provider_runtime_manifest.json",
+        "provider_runtime/wam_rollout_input_manifest.json",
+        "provider_runtime/cosmos3_powered_droid/packet.json",
+        "provider_runtime/cosmos3_powered_droid/official_canary/canary_manifest.json",
+        "provider_runtime/cosmos3_powered_droid/official_canary/initial_observation.png",
+        "provider_runtime/cosmos3_powered_droid/official_canary/action_streams.json",
     }
 )
 
@@ -523,7 +581,58 @@ def inspect_successor_bundle(
                     runner_text = archive.read(
                         "provider_runtime/wam_provider_runtime_runner.py"
                     ).decode("utf-8")
-                if profile.reference_bundle:
+                if profile.powered_bundle:
+                    powered_packet = json.loads(
+                        archive.read("provider_runtime/cosmos3_powered_droid/packet.json").decode(
+                            "utf-8"
+                        )
+                    )
+                    recorded_packet_sha256 = powered_packet.get("manifest_sha256")
+                    computed_packet_sha256 = canonical_sha256(
+                        {
+                            key: value
+                            for key, value in powered_packet.items()
+                            if key != "manifest_sha256"
+                        }
+                    )
+                    if recorded_packet_sha256 != computed_packet_sha256:
+                        blockers.append("successor_powered_packet_hash_invalid")
+                    image_manifest: list[dict[str, str]] = []
+                    for row in powered_packet.get("rows", []):
+                        relative = str(row.get("initial_observation_relative_path") or "")
+                        expected = str(row.get("initial_observation_sha256") or "")
+                        archive_name = f"provider_runtime/cosmos3_powered_droid/{relative}"
+                        if archive_name not in names:
+                            blockers.append("successor_powered_image_missing")
+                            continue
+                        observed_image = hashlib.sha256(archive.read(archive_name)).hexdigest()
+                        if observed_image != expected:
+                            blockers.append("successor_powered_image_hash_invalid")
+                        image_manifest.append({"relative_path": relative, "sha256": expected})
+                    canary_manifest = json.loads(
+                        archive.read(
+                            "provider_runtime/cosmos3_powered_droid/official_canary/"
+                            "canary_manifest.json"
+                        ).decode("utf-8")
+                    )
+                    computed_canary_sha256 = canonical_sha256(
+                        {
+                            key: value
+                            for key, value in canary_manifest.items()
+                            if key != "manifest_sha256"
+                        }
+                    )
+                    if canary_manifest.get("manifest_sha256") != computed_canary_sha256:
+                        blockers.append("successor_powered_canary_manifest_hash_invalid")
+                    embedded_hashes = {
+                        "provider_packet_sha256": computed_packet_sha256,
+                        "image_manifest_sha256": canonical_sha256(image_manifest),
+                        "official_canary_manifest_sha256": computed_canary_sha256,
+                        "provider_runtime_runner_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_provider_runtime_runner.py")
+                        ).hexdigest(),
+                    }
+                elif profile.reference_bundle:
                     reference_manifest = json.loads(
                         archive.read(
                             "provider_runtime/cosmos3_droid_reference/canary_manifest.json"
@@ -608,7 +717,11 @@ def inspect_successor_bundle(
         ):
             blockers.append("successor_cosmos_provider_bundle_unreadable")
     required_entries = (
-        REFERENCE_BUNDLE_ENTRIES if profile.reference_bundle else REQUIRED_BUNDLE_ENTRIES
+        POWERED_BUNDLE_ENTRIES
+        if profile.powered_bundle
+        else REFERENCE_BUNDLE_ENTRIES
+        if profile.reference_bundle
+        else REQUIRED_BUNDLE_ENTRIES
     )
     missing = sorted(required_entries - names)
     if "positive_control_manifest_sha256" in profile.expected_embedded_input_hashes:
@@ -667,6 +780,7 @@ def inspect_successor_bundle(
             blockers.append(f"successor_cosmos_provider_bundle_receipt_{key}_mismatch")
     if (
         not profile.reference_bundle
+        and not profile.powered_bundle
         and smoke_inventory is not None
         and receipt_value.get("smoke_inventory_sha256") != canonical_sha256(smoke_inventory)
     ):
@@ -724,10 +838,14 @@ def build_successor_gpu_admission(
     ):
         blockers.append("successor_remote_code_policy_invalid")
 
-    if profile.reference_bundle:
+    if profile.reference_bundle or profile.powered_bundle:
         inventory_validation = {
             "status": "not_applicable",
-            "reason": "official_droid_reference_inputs_are_frozen_inside_the_bundle",
+            "reason": (
+                "powered_droid_inputs_are_frozen_inside_the_bundle"
+                if profile.powered_bundle
+                else "official_droid_reference_inputs_are_frozen_inside_the_bundle"
+            ),
         }
     else:
         try:
@@ -1305,7 +1423,9 @@ def run_successor_gpu_lane(
     provider_preflight = load_input("provider_preflight", provider_preflight_path)
     bundle_receipt = load_input("bundle_receipt", provider_bundle_receipt_path)
     receipt_schema = bundle_receipt.get("schema_version")
-    if receipt_schema == DROID_REFERENCE_PROFILE.receipt_schema:
+    if receipt_schema == POWERED_DROID_PROFILE.receipt_schema:
+        profile = POWERED_DROID_PROFILE
+    elif receipt_schema == DROID_REFERENCE_PROFILE.receipt_schema:
         profile = DROID_REFERENCE_PROFILE
     elif receipt_schema == PHASE_B_POSITIVE_CONTROL_PROFILE.receipt_schema:
         profile = PHASE_B_POSITIVE_CONTROL_PROFILE
@@ -1629,6 +1749,7 @@ __all__ = [
     "MAX_COMPUTE_CAP_USD",
     "PREFLIGHT_SCHEMA",
     "DROID_REFERENCE_PROFILE",
+    "POWERED_DROID_PROFILE",
     "PHASE_B_PROFILE",
     "PHASE_B_POSITIVE_CONTROL_PROFILE",
     "PROBE_KIND",

@@ -1,0 +1,46 @@
+{
+  "schema_version": "policy_ranking_powered_droid_environment_and_source.v1",
+  "experiment_id": "policy_ranking_roboarena_powered_droid_confirmation_20260729",
+  "recorded_at": "2026-07-29T04:55:00-0500",
+  "upstream_source": {
+    "cosmos": {
+      "repository": "https://github.com/NVIDIA/cosmos",
+      "revision": "0299468993d8bcd8f6a95b0d8427b1221fccfced"
+    },
+    "cosmos_framework": {
+      "repository": "https://github.com/NVIDIA/cosmos-framework",
+      "revision": "9726697a83315540c6885baefd2fe353d9c74920"
+    },
+    "vllm_omni": {
+      "repository": "https://github.com/vllm-project/vllm-omni",
+      "revision": "1c6e7313394923000215a3299f4f79ede3873ecc",
+      "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587"
+    }
+  },
+  "checkpoint": {
+    "repository": "nvidia/Cosmos3-Nano",
+    "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "remote_code_policy": "no_unpinned_remote_code_and_trust_remote_code_false"
+  },
+  "dataset": {
+    "repository": "RoboArena/DataDump_07-17-2026",
+    "revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "license": "MIT"
+  },
+  "execution_source_binding": {
+    "mode": "clean_pushed_experimental_branch_commit_passed_to_canonical_allocator",
+    "dirty_worktree_execution_forbidden": true,
+    "exact_commit_recorded_in_admission_and_bound_request": true
+  },
+  "execution": {
+    "arm": "native_cosmos3_nano_forward_dynamics",
+    "allowed_gpu": "single compatible preflight-approved RTX PRO 6000 Blackwell or H100 with at least 80 GB",
+    "maximum_hourly_rate_usd": 2.05,
+    "target_spend_usd": 6.2,
+    "hard_cap_usd": 10.0,
+    "hard_ttl_seconds": 10800,
+    "maximum_concurrent_gpus": 1
+  },
+  "raw_secret_values_recorded": false,
+  "manifest_sha256": "0e5f1d39166e18b8116c7aff9ab9b9749dee23df28335f411a64041ba11bffde"
+}

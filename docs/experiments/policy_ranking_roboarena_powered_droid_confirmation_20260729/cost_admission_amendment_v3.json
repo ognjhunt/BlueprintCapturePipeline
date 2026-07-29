@@ -1,0 +1,35 @@
+{
+  "schema_version": "policy_ranking_roboarena_powered_droid_cost_admission_amendment.v3",
+  "experiment_id": "policy_ranking_roboarena_powered_droid_confirmation_20260729",
+  "frozen_at": "2026-07-29T05:04:00-0500",
+  "status": "prospective_zero_mutation_cost_admission_amendment",
+  "supersedes": {
+    "environment_manifest_sha256": "88724af6996c0be6113f8b83cae04459e631d366410b034b9700d8c3c7cc9cef",
+    "prior_target_spend_usd": 6.0,
+    "prior_rewritten": false
+  },
+  "trigger": {
+    "allocator_status": "blocked_before_provider_mutation",
+    "blocker": "requested_max_spend_would_exceed_target",
+    "provider_mutations_performed": 0,
+    "live_gpu_count_after_attempt": 0,
+    "estimated_gpu_cost_usd": 0.0,
+    "authorization_consumed": false,
+    "scientific_requests_submitted": 0
+  },
+  "change": {
+    "target_spend_usd_before": 6.0,
+    "target_spend_usd_after": 6.2,
+    "basis": "The reusable guard projects from the full 3-hour TTL and profile maximum hourly rate: 3 x 2.05 = 6.15. The selected Vast offer remains 1.056 per hour, or 3.168 for the full TTL.",
+    "allocation_hard_cap_usd_unchanged": 10.0,
+    "gpu_category_ceiling_usd_unchanged": 50.0,
+    "campaign_total_ceiling_usd_unchanged": 100.0,
+    "maximum_concurrent_gpus_unchanged": 1,
+    "scientific_fields_changed": false,
+    "bundle_changed": false
+  },
+  "provider_called": false,
+  "new_generated_output_seen": false,
+  "outcome_labels_accessed": false,
+  "manifest_sha256": "454b3f778a1ef49ba4f0186babbee3e67761273d489ea5feca819d57e12e85af"
+}

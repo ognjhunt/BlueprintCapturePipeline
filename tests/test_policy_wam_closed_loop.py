@@ -11,6 +11,10 @@ from blueprint_pipeline.policy_wam_closed_loop import (
     ClosedLoopConfig,
     run_policy_wam_closed_loop,
 )
+from blueprint_pipeline.wam_conditioning_fidelity import (
+    ConditioningFidelityThresholds,
+    assess_wam_conditioning_fidelity,
+)
 
 
 class _Policy:
@@ -117,6 +121,7 @@ def _run(tmp_path: Path, **overrides: Any) -> tuple[dict[str, Any], _Policy, _Wa
                 task_prompt="Pick up the bottle and place it in the bin.",
                 executed_prefix_steps=8,
                 max_policy_queries=5,
+                execution_mode="engineering_smoke",
             ),
         ),
         output_dir=tmp_path,
@@ -135,6 +140,8 @@ def test_same_policy_is_requeried_from_wam_predictions_until_terminal(tmp_path: 
     assert [row["query_index"] for row in wam.requests] == [0, 1, 2]
     assert all("policy_id" not in row for row in wam.requests)
     assert result["executed_prefix_seconds_derived"] == pytest.approx(8 / 15)
+    assert result["claim_boundary"]["engineering_smoke_only"] is True
+    assert result["conditioning_fidelity_certificate_passed"] is False
     rows = [json.loads(line) for line in Path(result["trace_path"]).read_text().splitlines()]
     assert all(row["wam_arm_id"] == "oscar_purpose_built_wam" for row in rows)
     assert all(row["next_observation_provenance"]["visual_source"] == "wam_prediction" for row in rows)
@@ -174,5 +181,115 @@ def test_executed_prefix_steps_must_be_positive_integer(tmp_path: Path, value: A
                 task_prompt="Move the object.",
                 executed_prefix_steps=value,
                 max_policy_queries=1,
+                execution_mode="engineering_smoke",
             ),
         )
+
+
+def test_scientific_loop_fails_before_execution_without_conditioning_certificate(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="conditioning_fidelity_certificate_required"):
+        _run(
+            tmp_path,
+            config=ClosedLoopConfig(
+                task_prompt="Move the object.",
+                executed_prefix_steps=8,
+                max_policy_queries=1,
+                execution_mode="scientific",
+            ),
+        )
+
+
+def _passing_conditioning_certificate() -> dict[str, Any]:
+    controls = {
+        "recorded": {"action_sha256": "1" * 64, "vendor_native_action": True},
+        "no_motion": {
+            "action_sha256": "2" * 64,
+            "valid_identity_rotation": True,
+            "explicit_gripper_hold": True,
+        },
+        "shuffled": {
+            "action_sha256": "3" * 64,
+            "real_action_permutation": True,
+        },
+    }
+    evidence = {
+        "schema_version": "wam_conditioning_fidelity_evidence.v1",
+        "backend": {
+            "backend_id": "oscar_purpose_built_wam",
+            "source_revision": "a" * 64,
+            "model_revision": "b" * 64,
+        },
+        "vendor_reference": {
+            "asset_id": "vendor/reference/example-1",
+            "asset_sha256": "c" * 64,
+            "license": "Vendor-Test-License",
+        },
+        "action_contract": {
+            "shape": [16, 10],
+            "effective_parameters_sha256": "4" * 64,
+        },
+        "controls": controls,
+        "server_action_attestations": [
+            {
+                "seed": seed,
+                "condition": condition,
+                "requested_action_sha256": control["action_sha256"],
+                "parsed_action_sha256": control["action_sha256"],
+                "applied_action_sha256": control["action_sha256"],
+                "parsed_action_shape": [16, 10],
+                "attestation_location": "inside_model_preprocess",
+                "effective_parameters_sha256": "4" * 64,
+                "output_sha256": f"{seed + 5:x}" * 64,
+            }
+            for seed in range(4)
+            for condition, control in controls.items()
+        ],
+        "causal_views": [
+            {
+                "view_id": "primary",
+                "seed_comparisons": [
+                    {
+                        "seed": seed,
+                        "cross_seed_noise": 0.1,
+                        "active_vs_no_motion_distance": 0.2,
+                        "active_vs_shuffled_distance": 0.15,
+                    }
+                    for seed in range(4)
+                ],
+            }
+        ],
+    }
+    return assess_wam_conditioning_fidelity(
+        evidence, thresholds=ConditioningFidelityThresholds()
+    )
+
+
+def test_passed_backend_matched_certificate_admits_scientific_loop(tmp_path: Path) -> None:
+    policy = _Policy()
+    wam = _Wam()
+    certificate = _passing_conditioning_certificate()
+
+    result = run_policy_wam_closed_loop(
+        initial_observation={"step": 0, "external": np.zeros((4, 4, 3), dtype=np.uint8)},
+        policy_client=policy,
+        wam_arm=wam,
+        transition_adapter=_Adapter(),
+        reliability_gate=_Gate(),
+        terminal_criterion=_Terminal(1),
+        config=ClosedLoopConfig(
+            task_prompt="Move the object.",
+            executed_prefix_steps=8,
+            max_policy_queries=1,
+            execution_mode="scientific",
+        ),
+        output_dir=tmp_path,
+        conditioning_fidelity_certificate=certificate,
+    )
+
+    assert result["status"] == "completed"
+    assert result["conditioning_fidelity_certificate_passed"] is True
+    assert result["conditioning_fidelity_certificate_sha256"] == certificate["manifest_sha256"]
+    assert result["claim_boundary"]["scientific_execution_admitted"] is True
+    assert result["claim_boundary"]["policy_rank_fidelity_proven"] is False

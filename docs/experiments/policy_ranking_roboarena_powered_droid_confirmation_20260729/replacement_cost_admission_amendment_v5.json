@@ -1,0 +1,39 @@
+{
+  "schema_version": "policy_ranking_roboarena_powered_droid_replacement_cost_admission_amendment.v5",
+  "experiment_id": "policy_ranking_roboarena_powered_droid_confirmation_20260729",
+  "frozen_at": "2026-07-29T05:34:00-0500",
+  "status": "prospective_provider_zero_replacement_cost_amendment",
+  "supersedes": {
+    "environment_and_source_manifest_v2_prior_sha256": "c0aac61e78c22f5a5fefac61f6dda1c8466108a3858c30d2a83931d78dfd3ad5",
+    "runtime_fix_amendment_v4_sha256": "d64a338a232119881e24e00ef6193df6031f398eb2dc2be23c86c8c300017b82",
+    "prior_records_rewritten": false
+  },
+  "basis": {
+    "allocation_1_measured_estimated_cost_usd": 0.477329,
+    "replacement_maximum_hourly_rate_usd": 2.05,
+    "replacement_hard_ttl_hours": 3.0,
+    "replacement_maximum_projected_cost_usd": 6.15,
+    "cumulative_maximum_projection_usd": 6.627329,
+    "target_rounding_contingency_usd": 0.072671
+  },
+  "change": {
+    "cumulative_target_spend_usd_before": 6.2,
+    "cumulative_target_spend_usd_after": 6.7,
+    "per_allocation_hard_cap_usd_unchanged": 10.0,
+    "gpu_category_ceiling_usd_unchanged": 50.0,
+    "campaign_total_ceiling_usd_unchanged": 100.0,
+    "maximum_concurrent_gpus_unchanged": 1,
+    "scientific_fields_changed": false,
+    "bundle_changed": false
+  },
+  "timing": {
+    "allocation_1_provider_called": true,
+    "allocation_1_output_seen": true,
+    "allocation_2_provider_called": false,
+    "allocation_2_output_seen": false,
+    "provider_live_instance_count": 0,
+    "continuing_hourly_burn_usd": 0.0,
+    "outcome_labels_accessed": false
+  },
+  "manifest_sha256": "03854f105e5fd10daa11ea4dd94fbe609e1c48c686552832195151d2251c5d4b"
+}

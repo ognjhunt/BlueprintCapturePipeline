@@ -20,8 +20,12 @@ from blueprint_pipeline.policy_ranking_phase_b_cosmos_bundle import (
 from blueprint_pipeline import policy_ranking_phase_b_cosmos_bundle as cosmos_bundle
 from blueprint_pipeline.policy_ranking_phase_b_high_motion_selection import (
     build_high_motion_selection,
+    build_powered_window_selection,
 )
-from blueprint_pipeline.policy_ranking_phase_b_replay import build_selected_replay_canary
+from blueprint_pipeline.policy_ranking_phase_b_replay import (
+    build_powered_replay_packet,
+    build_selected_replay_canary,
+)
 from blueprint_pipeline import policy_ranking_successor_cosmos_bundle as successor_bundle
 from blueprint_pipeline.policy_ranking_successor_gpu_admission import (
     PHASE_B_POSITIVE_CONTROL_PROFILE,
@@ -289,9 +293,7 @@ def test_native_cosmos_bundle_embeds_hash_pinned_official_positive_control(
             "initial_observation_sha256": result["initial_observation_sha256"],
             "smoke_inventory_sha256": result["smoke_inventory_sha256"],
             "action_streams_sha256": result["action_streams_sha256"],
-            "positive_control_manifest_sha256": result[
-                "positive_control_manifest_sha256"
-            ],
+            "positive_control_manifest_sha256": result["positive_control_manifest_sha256"],
         },
         request_budget_amendment_sha256=result["positive_control_manifest_sha256"],
     )
@@ -349,9 +351,7 @@ def test_selected_replay_canary_binds_motion_prompt_views_and_controls(tmp_path:
             _replay_video(directory / f"{policy}_video_{view}.mp4", color)
     metadata = session / "metadata.yaml"
     metadata.write_text(
-        "session_id: session-a\n"
-        "language_instruction: put the bowl in the plate\n"
-        "success: true\n",
+        "session_id: session-a\nlanguage_instruction: put the bowl in the plate\nsuccess: true\n",
         encoding="utf-8",
     )
     split = {
@@ -392,7 +392,61 @@ def test_selected_replay_canary_binds_motion_prompt_views_and_controls(tmp_path:
     }
     assert len(set(result["control_action_sha256"].values())) == 6
     assert result["access_contract"]["physical_future_pixels_in_provider_input"] is False
-    assert result["conditioning_modes"]["starter_video_supported_by_pinned_native_action_api"] is False
+    assert (
+        result["conditioning_modes"]["starter_video_supported_by_pinned_native_action_api"] is False
+    )
+
+
+def test_powered_replay_packet_materializes_every_session_window(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    session_ids = ("session-a", "session-b")
+    policy_rows = (
+        ("A", "policy-one", 0.005),
+        ("B", "policy-two", 0.004),
+        ("C", "policy-three", 0.003),
+        ("D", "policy-four", 0.002),
+    )
+    for session_id in session_ids:
+        session = root / "evaluation_sessions" / session_id
+        for prefix, policy, scale in policy_rows:
+            directory = session / f"{prefix}_{policy}"
+            _replay_npz(directory / f"{policy}_npz_file.npz", scale)
+            for view, color in (
+                ("left", (10, 20, 30)),
+                ("right", (40, 50, 60)),
+                ("wrist", (70, 80, 90)),
+            ):
+                _replay_video(directory / f"{policy}_video_{view}.mp4", color)
+    split = {
+        "schema_version": "policy_ranking_disjoint_session_candidate_split_amendment.v3",
+        "dataset": {"id": "fixture", "revision": "frozen", "license": "mit"},
+        "required_policy_ids": [row[1] for row in policy_rows],
+        "selection": {"metadata_yaml_opened": False, "session_ids": list(session_ids)},
+    }
+    split["manifest_sha256"] = canonical_sha256(split)
+    split_path = tmp_path / "split.json"
+    split_path.write_text(json.dumps(split), encoding="utf-8")
+    selection = build_powered_window_selection(
+        split_manifest_path=split_path,
+        dataset_root=root,
+        windows_per_session=3,
+    )
+    selection_path = tmp_path / "powered-selection.json"
+    selection_path.write_text(json.dumps(selection), encoding="utf-8")
+
+    result = build_powered_replay_packet(
+        powered_window_selection_path=selection_path,
+        dataset_root=root,
+        output_dir=tmp_path / "packet",
+    )
+
+    assert result["status"] == "passed"
+    assert result["session_count"] == 2
+    assert result["window_count"] == 6
+    assert result["scientific_request_count"] == 72
+    assert all(len(row["controls"]) == 6 for row in result["rows"])
+    assert all(Path(row["initial_observation"]["path"]).is_file() for row in result["rows"])
+    assert result["label_seal"]["outcome_labels_accessed"] is False
 
 
 def test_successor_bundle_import_does_not_require_optional_pyarrow(

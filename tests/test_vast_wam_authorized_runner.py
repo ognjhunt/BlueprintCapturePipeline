@@ -196,6 +196,125 @@ def test_vast_wam_authorized_runner_accepts_direct_signed_url_files(
     assert "put=secret" not in serialized
 
 
+def test_vast_wam_authorized_runner_recovers_fresh_completed_callback_after_log_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "bundle.zip"
+    _write_minimal_bundle(bundle)
+    budget = tmp_path / "vast_session_cost_summary.json"
+    budget.write_text(json.dumps({"estimated_cost_usd": 0.0}), encoding="utf-8")
+    url_files: dict[str, Path] = {}
+    for label, value in {
+        "provider_bundle_url": "https://objects.example/bundle.zip?get=secret",
+        "provider_output_put_url": "https://objects.example/output.zip?put=secret",
+        "provider_output_get_url": "https://objects.example/output.zip?get=secret",
+    }.items():
+        path = tmp_path / f"{label}.txt"
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o600)
+        url_files[label] = path
+
+    monkeypatch.setattr(runner, "verify_public_staging_urls", _passed_public_staging)
+    monkeypatch.setattr(
+        runner,
+        "run_vast_provider_adapter",
+        lambda **kwargs: {
+            "status": "failed",
+            "reason": "vast_probe_failed",
+            "blockers": ["vast_heartbeat_container_missing"],
+            "generated_at": "2026-07-29T10:37:05+00:00",
+            "vast_instance_ids": [46187244],
+            "continuing_spend_from_this_run": False,
+        },
+    )
+
+    def fake_download(**kwargs: Any) -> dict[str, Any]:
+        output_path = kwargs["output_path"]
+        with zipfile.ZipFile(output_path, "w") as archive:
+            archive.writestr(
+                "wam_runtime_result.json",
+                json.dumps({"status": "completed", "blockers": []}),
+            )
+            archive.writestr("videos/result.mp4", b"video-bytes")
+        return {
+            "status": "completed",
+            "http_status_code": 200,
+            "downloaded_size_bytes": output_path.stat().st_size,
+            "output_present": True,
+            "response_last_modified": "Wed, 29 Jul 2026 11:37:00 GMT",
+            "response_etag_present": True,
+            "raw_secret_values_recorded": False,
+        }
+
+    monkeypatch.setattr(runner, "download_url_to_file", fake_download)
+    output = tmp_path / "recovered-output.zip"
+    result = runner.run_vast_wam_authorized_runner(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        provider_bundle_url_file=url_files["provider_bundle_url"],
+        provider_output_put_url_file=url_files["provider_output_put_url"],
+        provider_output_get_url_file=url_files["provider_output_get_url"],
+        output_path=output,
+        token_file=tmp_path / "token",
+        secret_env_file=tmp_path / "urls.env",
+        session_budget_ledger=budget,
+        allow_paid_vast_launch=True,
+        max_live_minutes=1,
+        generated_at="2026-07-29T10:37:00+00:00",
+    )
+
+    assert result["status"] == "completed"
+    assert result["adapter_result_status"] == "failed"
+    assert result["provider_output_completion_recovery"]["status"] == "completed"
+    assert result["provider_output_completion_recovery"]["completion_recovered"] is True
+    assert result["blockers"] == []
+    assert result["output_inspection"]["runtime_result_status"] == "completed"
+    assert result["output_inspection"]["mp4_count"] == 1
+    serialized = json.dumps(result)
+    assert "get=secret" not in serialized
+    assert "put=secret" not in serialized
+
+
+def test_vast_wam_completion_recovery_rejects_stale_callback_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_download(**kwargs: Any) -> dict[str, Any]:
+        output_path = kwargs["output_path"]
+        with zipfile.ZipFile(output_path, "w") as archive:
+            archive.writestr("wam_runtime_result.json", json.dumps({"status": "completed"}))
+            archive.writestr("videos/result.mp4", b"video-bytes")
+        return {
+            "status": "completed",
+            "http_status_code": 200,
+            "downloaded_size_bytes": output_path.stat().st_size,
+            "output_present": True,
+            "response_last_modified": "Wed, 29 Jul 2026 09:00:00 GMT",
+            "response_etag_present": True,
+            "raw_secret_values_recorded": False,
+        }
+
+    monkeypatch.setattr(runner, "download_url_to_file", fake_download)
+    result = runner._recover_completed_provider_output(
+        job_dir=tmp_path,
+        output_path=tmp_path / "output.zip",
+        provider_output_get_url="https://objects.example/output.zip?get=secret",
+        provider_bundle_kind="wam",
+        adapter_result={
+            "status": "failed",
+            "blockers": ["vast_heartbeat_container_missing"],
+            "generated_at": "2026-07-29T10:37:05+00:00",
+            "vast_instance_ids": [46187244],
+            "continuing_spend_from_this_run": False,
+        },
+    )
+
+    assert result["status"] == "blocked"
+    assert result["completion_recovered"] is False
+    assert result["blockers"] == ["provider_output_object_not_fresh_for_allocation"]
+
+
 def test_vast_wam_authorized_runner_helper_and_blocker_edges(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

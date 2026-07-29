@@ -1,0 +1,143 @@
+{
+  "schema_version": "policy_ranking_roboarena_powered_droid_confirmation_protocol.v1",
+  "experiment_id": "policy_ranking_roboarena_powered_droid_confirmation_20260729",
+  "frozen_at": "2026-07-29T04:32:32-0500",
+  "status": "prospective_unpaid_protocol",
+  "purpose": "Test whether native Cosmos3-Nano responds causally and reliably to frozen DROID-compatible policy actions across independent sessions before any full-episode ranking spend.",
+  "inputs": {
+    "split": "disjoint_session_candidate_split_amendment_v3.json",
+    "independent_sessions": 17,
+    "first_frame_windows_per_session": 3,
+    "window_selection": "three highest-translation first chunks from distinct real policies within each session, with action-only rotation and gripper tie-breakers",
+    "initial_observation": "recorded frame zero from the same session and policy as each active action chunk",
+    "source_review_video_fps": 10,
+    "wam_action_fps": 15,
+    "cross_rate_mapping": "none; every selected action window and initial observation starts at index zero",
+    "task_prompt": "single ASCII space, matching the official label-free DROID forward-dynamics example and avoiding task metadata access",
+    "outcome_labels_accessed": false,
+    "metadata_yaml_opened": false
+  },
+  "source_lock": {
+    "cosmos_repository": "https://github.com/NVIDIA/cosmos",
+    "cosmos_revision": "0299468993d8bcd8f6a95b0d8427b1221fccfced",
+    "cosmos_license": "Apache-2.0",
+    "cosmos_framework_repository": "https://github.com/NVIDIA/cosmos-framework",
+    "cosmos_framework_revision": "9726697a83315540c6885baefd2fe353d9c74920",
+    "vllm_omni_repository": "https://github.com/vllm-project/vllm-omni",
+    "vllm_omni_revision": "1c6e7313394923000215a3299f4f79ede3873ecc",
+    "checkpoint": "nvidia/Cosmos3-Nano",
+    "checkpoint_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "checkpoint_license": "OpenMDW-1.1",
+    "roboarena_dataset": "RoboArena/DataDump_07-17-2026",
+    "roboarena_revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "roboarena_license": "MIT"
+  },
+  "action_contract": {
+    "shape": [16, 10],
+    "frequency_hz": 15,
+    "translation_unit": "meter",
+    "rotation": "valid rot6d derived from backward framewise SE3 delta",
+    "gripper": "explicit observation-bound hold for no-motion; dataset-version flip for recorded actions",
+    "normalization": null,
+    "normalization_basis": "official current Cosmos DROID forward-dynamics config sets action_normalization=None and the pinned vLLM helper pads but does not normalize external tensors",
+    "view_contract": "wrist full-width top; exterior 1 half-width bottom-left; exterior 2 half-width bottom-right",
+    "request_size": "640x540",
+    "expected_decoded_size": "640x528",
+    "output_frames": 17
+  },
+  "controls": {
+    "conditions": [
+      "recorded",
+      "zero",
+      "shuffled",
+      "reversed",
+      "shifted",
+      "policy_swapped"
+    ],
+    "seeds": [0, 1],
+    "zero_rotation": [1, 0, 0, 0, 1, 0],
+    "policy_swapped": "real distinct policy trace from the same session",
+    "shifted": "same real policy trace beginning one action step later while retaining frame-zero observation"
+  },
+  "execution": {
+    "structured_canary_requests": 1,
+    "canary_input": "official NVIDIA Cosmos3-DROID recorded-action reference",
+    "canary_must_pass_before_untouched_matrix": true,
+    "scientific_request_count": 612,
+    "request_count_derivation": "17 sessions x 3 windows x 6 conditions x 2 seeds",
+    "maximum_concurrent_gpus": 1,
+    "inference_steps": 30,
+    "guidance_scale": 1.0,
+    "flow_shift": 10.0,
+    "precision": "bf16",
+    "evaluator_calls": 0,
+    "policy_ranking_calls": 0
+  },
+  "structured_canary_gates": {
+    "schema_valid": true,
+    "response_decodable": true,
+    "frame_count": 17,
+    "decoded_width": 640,
+    "decoded_height": 528,
+    "action_tensor_hash_matches": true,
+    "runtime_remains_healthy": true
+  },
+  "frozen_rollout_reliability_thresholds": {
+    "downscale_width": 160,
+    "blank_spatial_std_min": 4.0,
+    "command_active_energy_min": 0.05,
+    "command_null_energy_max": 0.01,
+    "static_motion_max": 0.05,
+    "null_motion_max": 0.60,
+    "timing_correlation_min": 0.15,
+    "timing_check_min_energy_std": 0.05,
+    "rot6d_orthonormal_tol": 0.15,
+    "threshold_anchor": "campaign-3 development clips plus real DROID reference; frozen here before new generated output"
+  },
+  "frozen_session_reliability_rule": {
+    "minimum_eligible_timing_windows": 3,
+    "timing_correlation_median_min": 0.15,
+    "hard_failure_in_any_window": "session abstains",
+    "minimum_reliable_session_rate": 0.80,
+    "session_clustered_bootstrap_lower95_min": 0.50
+  },
+  "frozen_causal_gates": {
+    "minimum_original_action_motion_correlation": 0.10,
+    "minimum_excess_over_strongest_temporal_placebo": 0.05,
+    "minimum_session_clustered_validity_pass_rate": 0.80,
+    "minimum_session_clustered_validity_pass_rate_lower95": 0.80,
+    "same_seed_recorded_vs_zero_scene_difference_min": 0.01,
+    "both_seed_robustness_required": true,
+    "recorded_must_exceed_no_motion_in_each_camera_view": true,
+    "action_effect_to_cross_seed_noise_ratio_min": 1.0,
+    "action_effect_definition": "median same-seed recorded-versus-zero scene-masked distance",
+    "cross_seed_noise_definition": "maximum of recorded seed0-versus-seed1 and zero seed0-versus-seed1 scene-masked distance",
+    "collapse_or_corruption_counts_against_reliability": true,
+    "all_gates_required": true
+  },
+  "cost_authority": {
+    "gpu_category_ceiling_usd": 50.0,
+    "campaign_total_ceiling_usd": 100.0,
+    "maximum_concurrent_gpus": 1,
+    "preallocation_projected_gpu_cost_usd_max": 10.0,
+    "hard_ttl_seconds": 10800,
+    "spend_watchdog_required": true,
+    "teardown_on_failure": true
+  },
+  "decision_rule": {
+    "pass": "native Cosmos may advance to complete replay/full-episode ranking diagnostics at the same-snapshot claim ceiling",
+    "fail_with_complete_powered_matrix": "native Cosmos is not qualified for this frozen DROID stack; Blueprint must abstain",
+    "blocked_or_incomplete": "inconclusive; no full-episode ranking admission"
+  },
+  "claim_ceiling": {
+    "same_snapshot_disjoint_session_open_loop_causal_qualification_only": true,
+    "independent_new_snapshot_confirmation": false,
+    "live_policy_wam_policy_closed_loop": false,
+    "policy_ranking_fidelity": false,
+    "captured_site_transfer": false,
+    "economics_and_speed": false
+  },
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "manifest_sha256": "6a7486b8eda01057934106206c5ecf3de808d19f3b3124a4a829c7a144f4c689"
+}

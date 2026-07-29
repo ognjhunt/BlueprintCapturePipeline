@@ -1,0 +1,55 @@
+{
+  "schema_version": "policy_ranking_roboarena_powered_droid_confirmation_protocol_amendment.v2",
+  "experiment_id": "policy_ranking_roboarena_powered_droid_confirmation_20260729",
+  "frozen_at": "2026-07-29T04:55:00-0500",
+  "status": "prospective_unpaid_protocol_amendment",
+  "supersedes": {
+    "protocol": "protocol_v1.json",
+    "protocol_v1_manifest_sha256": "6a7486b8eda01057934106206c5ecf3de808d19f3b3124a4a829c7a144f4c689",
+    "protocol_v1_rewritten": false
+  },
+  "amendment_basis": {
+    "provider_called": false,
+    "paid_execution_admitted": false,
+    "new_generated_output_seen": false,
+    "outcome_labels_accessed": false,
+    "reason": "Bind the completed deterministic provider bundle and require the already-published official DROID reference motion floor in addition to structural validity for the single pre-matrix canary.",
+    "scientific_legitimacy": "The dynamic canary thresholds predate this powered run and come unchanged from the official DROID reference protocol; no new model output or benchmark label informed the amendment."
+  },
+  "changed_fields": {
+    "structured_canary_gates": {
+      "schema_valid": true,
+      "terminal_status": "completed",
+      "provider_response_id_required": true,
+      "response_decodable": true,
+      "frame_count": 17,
+      "decoded_width": 640,
+      "decoded_height": 528,
+      "output_fps": 15,
+      "temporal_absolute_difference_mean_minimum_gray_0_255": 1.0,
+      "first_to_last_absolute_difference_mean_minimum_gray_0_255": 3.0,
+      "action_tensor_hash_matches": true,
+      "runtime_remains_healthy": true,
+      "all_required": true
+    },
+    "frozen_provider_bundle": {
+      "bundle_sha256": "7909049ad3f8d879d245e32b7d4515fbf22123b1b0a5a3f26965b71b8ebcdffc",
+      "bundle_size_bytes": 17985987,
+      "provider_packet_sha256": "e9eceb32f9875cf2399877b91d43a709fb58222c944f0a16ed35c2f33120d9ee",
+      "image_manifest_sha256": "1804981b2c05695a04dc1816dd0d3e3bba0c59333dd3058db18b55463804c4cc",
+      "official_canary_manifest_sha256": "7d7ec85a0976ed5ede44db53a8566bd50f6596b99f2bf22f0383593d20b08ffe",
+      "provider_runtime_runner_sha256": "4403048b858a1e9628510ff43ab3edd4873fd7189b68e3713c2ec2e28f5837a2"
+    },
+    "execution": {
+      "structured_canary_requests": 1,
+      "scientific_request_count": 612,
+      "total_initial_generation_request_count": 613,
+      "canary_failure_submits_zero_untouched_requests": true,
+      "idempotent_resume": true
+    }
+  },
+  "unchanged_fields": "All protocol_v1 data, causal, reliability, seed-noise, cost, decision, and claim-ceiling fields remain unchanged.",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "manifest_sha256": "4cb9c3c8c3cb7f49f97d31dab925e0a75adbd3ced5068a4b1cdd2556e3a66591"
+}

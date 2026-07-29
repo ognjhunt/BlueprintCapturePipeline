@@ -138,6 +138,7 @@ class ClosedLoopConfig:
     executed_prefix_steps: int
     max_policy_queries: int
     control_hz: float = 15.0
+    execution_mode: str = "scientific"
 
     def validate(self) -> None:
         if not self.task_prompt.strip():
@@ -156,6 +157,8 @@ class ClosedLoopConfig:
             raise ValueError("max_policy_queries_must_be_positive")
         if not math.isfinite(self.control_hz) or self.control_hz <= 0:
             raise ValueError("control_hz_must_be_positive_finite")
+        if self.execution_mode not in {"engineering_smoke", "scientific"}:
+            raise ValueError("closed_loop_execution_mode_invalid")
 
     @property
     def executed_prefix_seconds_derived(self) -> float:
@@ -236,6 +239,7 @@ def run_policy_wam_closed_loop(
     terminal_criterion: TerminalCriterion,
     config: ClosedLoopConfig,
     output_dir: str | Path,
+    conditioning_fidelity_certificate: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the same candidate policy against exactly one WAM until terminal.
 
@@ -244,6 +248,14 @@ def run_policy_wam_closed_loop(
     """
 
     config.validate()
+    validated_conditioning_certificate: dict[str, Any] | None = None
+    if config.execution_mode == "scientific":
+        from .wam_conditioning_fidelity import validate_conditioning_fidelity_certificate
+
+        validated_conditioning_certificate = validate_conditioning_fidelity_certificate(
+            conditioning_fidelity_certificate,
+            backend_id=str(wam_arm.arm_id),
+        )
     output = Path(output_dir).expanduser().resolve()
     ensure_dir(output)
     trace_path = output / "policy_wam_closed_loop_trace.jsonl"
@@ -376,6 +388,15 @@ def run_policy_wam_closed_loop(
         "executed_prefix_steps": config.executed_prefix_steps,
         "executed_prefix_seconds_derived": config.executed_prefix_seconds_derived,
         "control_hz": config.control_hz,
+        "execution_mode": config.execution_mode,
+        "conditioning_fidelity_certificate_sha256": (
+            validated_conditioning_certificate["manifest_sha256"]
+            if validated_conditioning_certificate is not None
+            else None
+        ),
+        "conditioning_fidelity_certificate_passed": bool(
+            validated_conditioning_certificate is not None
+        ),
         "maximum_policy_queries": config.max_policy_queries,
         "completed_policy_queries": sum(row.get("status") == "completed" for row in rows),
         "policy_call_count": len(rows),
@@ -391,10 +412,20 @@ def run_policy_wam_closed_loop(
             "evaluator_in_control_loop": False,
             "physical_future_observation_allowed": False,
         },
-        "claim_boundary": (
-            "technical_closed_loop_execution_only; generated observations are not physical "
-            "success and do not establish rank fidelity"
-        ),
+        "claim_boundary": {
+            "engineering_smoke_only": config.execution_mode == "engineering_smoke",
+            "scientific_execution_admitted": bool(
+                config.execution_mode == "scientific"
+                and validated_conditioning_certificate is not None
+            ),
+            "domain_wam_qualification_proven_by_loop": False,
+            "policy_rank_fidelity_proven": False,
+            "physical_success_proven": False,
+            "explanation": (
+                "Technical closed-loop execution only; a conditioning certificate admits "
+                "the run but does not make generated observations physical evidence."
+            ),
+        },
     }
     manifest["manifest_sha256"] = canonical_sha256(manifest)
     write_json(output / "policy_wam_closed_loop_manifest.json", manifest)
