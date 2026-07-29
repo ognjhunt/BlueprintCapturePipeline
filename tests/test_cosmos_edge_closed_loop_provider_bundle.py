@@ -68,6 +68,10 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
         assert "action_conditioned_video_rollout_generated" in runner
         assert "HF_TOKEN" not in runner
         assert 'uv_bin = uv / "bin/uv"' in runner
+        assert "policy_server_client_readiness_timeout" in runner
+        assert "policy_server_load_seconds" in runner
+        assert "gpu_memory_after_inference_mb" in runner
+        assert "commanded_state_advance_proven" in runner
         manifest = json.loads(archive.read("provider_runtime/wam_provider_runtime_manifest.json"))
         assert manifest["experiment_id"] == ("policy_ranking_cosmos3_edge_closed_loop_20260729")
         assert "@sha256:" in manifest["public_image"]

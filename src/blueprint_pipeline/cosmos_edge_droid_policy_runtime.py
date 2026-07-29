@@ -3,8 +3,9 @@
 The NVIDIA RoboLab policy server intentionally speaks OpenPI's websocket
 protocol, but its stock metadata is empty.  Blueprint wraps that transport with
 an immutable model/source identity and validates the exact three-view DROID
-observation plus the returned 16x8 joint-position action chunk before a WAM can
-consume it.
+observation plus the returned native 32x8 joint-position action chunk. Blueprint
+retains that complete output, derives the first 16 rows for WAM conditioning,
+and advances commanded policy state by exactly the first eight rows.
 """
 
 from __future__ import annotations
@@ -281,6 +282,8 @@ class CosmosEdgeDroidPolicyClient:
             raise ValueError(f"cosmos_edge_policy_action_invalid:{action_blockers[0]}")
         native_action_array = np.asarray(action, dtype=np.float64)
         action_array = native_action_array[: self.action_chunk_rows].copy()
+        executed_action_array = action_array[: self.open_loop_horizon].copy()
+        commanded_next_state = executed_action_array[-1].copy()
         observation_identity = {
             "prompt": str(observation["prompt"]),
             "views": {
@@ -297,6 +300,10 @@ class CosmosEdgeDroidPolicyClient:
             "wam_prefix_action_sha256": _array_sha256(action_array),
             "wam_prefix_action_shape": list(action_array.shape),
             "wam_prefix_rule": "first_16_rows_of_native_32_row_policy_output",
+            "executed_prefix_steps": self.open_loop_horizon,
+            "executed_prefix_action_sha256": _array_sha256(executed_action_array),
+            "commanded_next_state_sha256": _array_sha256(commanded_next_state),
+            "commanded_next_state_rule": "row_7_after_executing_rows_0_through_7",
             "server_identity_sha256": self.server_metadata["identity_sha256"],
         }
         receipt["receipt_sha256"] = canonical_sha256(receipt)
@@ -304,6 +311,9 @@ class CosmosEdgeDroidPolicyClient:
         return {
             "action": action_array,
             "native_action": native_action_array,
+            "executed_action": executed_action_array,
+            "commanded_next_joint_position": commanded_next_state[:7],
+            "commanded_next_gripper_position": commanded_next_state[7:],
             "policy_request_receipt": receipt,
         }
 

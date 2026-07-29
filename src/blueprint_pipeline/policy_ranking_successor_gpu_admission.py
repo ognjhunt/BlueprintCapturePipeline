@@ -337,14 +337,14 @@ EDGE_CLOSED_LOOP_PROFILE = SuccessorGPUProfile(
     cost_authorization_binding_sha256=(
         "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
     ),
-    expected_bundle_sha256="97b3e2b31a57a3a805feef8196ff96988d1259038004b3200e7e8dec3015d954",
-    expected_bundle_size_bytes=761_711,
+    expected_bundle_sha256="3579d8e67f4872a56f7397c4cb59fd339b9e94afae4a5540dc12b02026a164a7",
+    expected_bundle_size_bytes=762_143,
     expected_embedded_input_hashes={
         "runtime_manifest_sha256": (
             "4de5f233ae6577c49ceed8b5342ee74621ac56d5454a1cfa6a6b922f2ef80ef1"
         ),
         "canary_input_sha256": ("0dc1b72a90dace038a8b9ea3b444fffa8daf51b0db6ef3228e5fe1a8010a2974"),
-        "runner_sha256": ("31221860eb437729600a79f96cde38de81a32c342e4ac3609e1a8040904134b2"),
+        "runner_sha256": ("7e1b430b3e184ea3251b49660f59dc60f8aa15df664dbc7745329f788e870b16"),
         "entrypoint_sha256": ("f104ef7f92d9af3f1f79cea025c6d6eaf81705df80ee0c1ff5b033147526fa3e"),
     },
     qualification_canary_request_count=1,

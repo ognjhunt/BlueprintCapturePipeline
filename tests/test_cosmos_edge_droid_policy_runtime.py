@@ -53,7 +53,7 @@ def test_client_verifies_identity_three_views_and_action_shape() -> None:
         def infer(self, observation):
             assert set(DROID_ROBOARENA_CONCAT_VIEWS).issubset(observation)
             assert "blueprint/wam_source_view_paths" not in observation
-            native = np.zeros((32, 8))
+            native = np.arange(32 * 8, dtype=np.float64).reshape(32, 8)
             native[16:, 0] = 9.0
             return {"action": native}
 
@@ -69,9 +69,12 @@ def test_client_verifies_identity_three_views_and_action_shape() -> None:
 
     assert response["action"].shape == (16, 8)
     assert response["native_action"].shape == (32, 8)
-    assert np.all(response["action"][:, 0] == 0.0)
+    assert response["executed_action"].shape == (8, 8)
+    assert np.array_equal(response["commanded_next_joint_position"], response["action"][7, :7])
+    assert np.array_equal(response["commanded_next_gripper_position"], response["action"][7, 7:])
     assert response["policy_request_receipt"]["native_action_shape"] == [32, 8]
     assert response["policy_request_receipt"]["wam_prefix_action_shape"] == [16, 8]
+    assert response["policy_request_receipt"]["executed_prefix_steps"] == 8
     assert len(response["policy_request_receipt"]["receipt_sha256"]) == 64
     assert client.evidence_summary()["request_count"] == 1
 

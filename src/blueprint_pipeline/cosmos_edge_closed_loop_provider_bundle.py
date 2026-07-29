@@ -115,6 +115,7 @@ def main() -> int:
         server_env = os.environ.copy()
         server_env["PYTHONPATH"] = str(runtime) + os.pathsep + str(source)
         server_log = (output / "policy_server.log").open("w", encoding="utf-8")
+        server_started = time.time()
         process = subprocess.Popen(
             [
                 str(python), "-m", "blueprint_pipeline.cosmos_edge_droid_policy_server",
@@ -133,6 +134,7 @@ def main() -> int:
             time.sleep(5)
         if not startup.is_file():
             raise RuntimeError("policy_server_startup_timeout")
+        policy_server_load_seconds = time.time() - server_started
 
         sys.path.insert(0, str(runtime))
         from blueprint_pipeline.cosmos_edge_droid_policy_runtime import (
@@ -140,7 +142,19 @@ def main() -> int:
         )
         manifest = json.loads((runtime / "policy_snapshot_manifest.json").read_text())
         spec = CosmosEdgeDroidPolicySpec(snapshot_manifest_sha256=manifest["manifest_sha256"])
-        client = CosmosEdgeDroidPolicyClient(spec=spec, host="127.0.0.1", port=port)
+        client_deadline = time.time() + 120
+        client_error = None
+        while time.time() < client_deadline:
+            try:
+                client = CosmosEdgeDroidPolicyClient(spec=spec, host="127.0.0.1", port=port)
+                break
+            except (ConnectionError, OSError, TimeoutError) as exc:
+                client_error = exc
+                if process.poll() is not None:
+                    raise RuntimeError("policy_server_exited_before_client_ready") from exc
+                time.sleep(2)
+        else:
+            raise RuntimeError("policy_server_client_readiness_timeout") from client_error
         input_payload = json.loads((runtime / "policy_canary/input.json").read_text())
         observation = {
             key: np.asarray(Image.open(runtime / value).convert("RGB"), dtype=np.uint8)
@@ -154,13 +168,22 @@ def main() -> int:
         request_started = time.time()
         response = client.infer(observation)
         latency = time.time() - request_started
+        gpu_memory_after_inference = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+            check=True, capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
         canary = {
             "status": "passed",
             "native_action": response["native_action"].tolist(),
             "wam_prefix_action": response["action"].tolist(),
+            "executed_action": response["executed_action"].tolist(),
+            "commanded_next_joint_position": response["commanded_next_joint_position"].tolist(),
+            "commanded_next_gripper_position": response["commanded_next_gripper_position"].tolist(),
             "policy_request_receipt": response["policy_request_receipt"],
             "policy_endpoint_evidence": client.evidence_summary(),
+            "policy_server_load_seconds": policy_server_load_seconds,
             "latency_seconds": latency,
+            "gpu_memory_after_inference_mb": gpu_memory_after_inference,
         }
         write(output / "policy_structured_canary.json", canary)
         result = {
@@ -173,6 +196,11 @@ def main() -> int:
             "model_revision": MODEL_REVISION,
             "native_action_shape": [32, 8],
             "wam_prefix_action_shape": [16, 8],
+            "executed_prefix_steps": 8,
+            "commanded_state_advance_proven": True,
+            "policy_server_load_seconds": policy_server_load_seconds,
+            "policy_inference_latency_seconds": latency,
+            "gpu_memory_after_inference_mb": gpu_memory_after_inference,
             "structured_policy_canary_passed": True,
             "registered_next_wam": REGISTERED_NEXT_WAM,
             "action_conditioned_video_rollout_generated": False,

@@ -7,8 +7,10 @@ rewrite that terminal result.
 The frozen candidate policy is NVIDIA's 4B
 `nvidia/Cosmos3-Edge-Policy-DROID`. It consumes a DROID observation containing
 wrist, left-exterior, right-exterior, joint, gripper, and task information and
-returns a 16-step, 8-D absolute joint-position action chunk. It is a policy, not
-the neutral world model.
+returns a native 32-step, 8-D absolute joint-position action chunk. Blueprint
+hashes and retains all 32 rows, derives the first 16 rows as the WAM-conditioning
+prefix, and advances exactly the first eight rows before policy re-query. It is
+a policy, not the neutral world model.
 
 Blueprint advances eight action steps, asks exactly one independently named WAM
 arm to predict all three next camera observations, binds the commanded joint and
@@ -23,10 +25,24 @@ a parallel diagnostic because its pinned DROID path expects a 10-D end-effector
 representation while the policy emits 8-D joint positions. Blueprint will not
 invent that conversion.
 
+OSCAR's published RoboArena evaluation is open-loop replay: OSCAR receives the
+recorded first RGB frame and the complete action/skeleton trajectory from an
+already executed physical rollout. Video autoregression in that experiment is
+not policy re-query. This namespace therefore separates two OSCAR uses:
+
+- `oscar_public_replay` reproduces the public purpose-built WAM interface and
+  can earn replay/diagnostic qualification only;
+- `blueprint_policy_oscar_closed_loop` is a prospective Blueprint extension in
+  which OSCAR-predicted observations and an evidence-backed commanded-state
+  adapter re-query the same frozen policy. It must abstain as technically
+  blocked if all three policy views or required proprioception cannot be
+  produced without fabrication.
+
 The immediate finite gates are:
 
 1. verify the exact local policy snapshot and one identity-bound action canary;
-2. run up to three policy-to-OSCAR-to-policy transitions across all three views;
+2. qualify exact public OSCAR replay separately from any prospective
+   policy-to-OSCAR-to-policy transition across all three views;
 3. freeze and run the OSCAR causal certificate;
 4. only then run a complete episode and independent evaluator;
 5. use a disjoint labeled snapshot for any policy-ranking confirmation claim.
