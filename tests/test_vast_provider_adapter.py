@@ -786,6 +786,39 @@ def test_inline_provider_bundle_payload_is_wam_only_and_size_capped(
     )
 
 
+def test_url_provider_bundle_download_fails_closed_on_sha256_mismatch(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.zip"
+    destination = tmp_path / "downloaded.zip"
+    source.write_bytes(b"substituted bundle")
+    script = vpa._probe_shell_script(
+        "https://heartbeat.example",
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="wam",
+    )
+    function_start = script.index("blueprint_download_url() { ")
+    function_end = script.index("blueprint_upload_put() { ")
+    download_function = script[function_start:function_end]
+    command = (
+        "PY_NET=$(command -v python3); RUNTIME_PY=$PY_NET; "
+        f"{download_function} "
+        "export BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256=" + ("0" * 64) + "; "
+        f"blueprint_download_url {shlex.quote(source.as_uri())} "
+        f"{shlex.quote(str(destination))}"
+    )
+
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 42
+    assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256_MISMATCH" in completed.stdout
+
+
 def test_vast_adapter_disables_inline_wam_or_unitree_bundle_when_fetch_url_present(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -814,6 +847,7 @@ def test_vast_adapter_disables_inline_wam_or_unitree_bundle_when_fetch_url_prese
         result["provider_bundle_inline_transport_reason"]
         == "disabled_for_vast_env_size_with_fetch_url"
     )
+    assert result["provider_bundle_sha256"] == vpa._provider_bundle_sha256(bundle)
 
     unitree_bundle = tmp_path / "unitree_bundle.zip"
     _write_valid_unitree_unifolm_provider_bundle(unitree_bundle)
@@ -4578,6 +4612,9 @@ def test_vast_adapter_small_provider_helper_edges(
     assert vpa.VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV in wam_script
     assert "BLUEPRINT_VAST_INLINE_BUNDLE_DECODED" in wam_script
     assert "BLUEPRINT_VAST_INLINE_BUNDLE_SHA256_MISMATCH" in wam_script
+    assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256_MISSING" in wam_script
+    assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256_MISMATCH" in wam_script
+    assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256_VERIFIED" in wam_script
     assert "BLUEPRINT_VAST_CUDA_RUNTIME_BLOCKED" in wam_script
     assert "if [ -x /opt/conda/bin/python ]; then RUNTIME_PY=/opt/conda/bin/python" in wam_script
     assert "elif [ -x /usr/local/bin/python ]; then RUNTIME_PY=/usr/local/bin/python" in wam_script

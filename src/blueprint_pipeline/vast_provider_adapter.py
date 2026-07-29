@@ -632,6 +632,17 @@ def _inline_provider_bundle_payload(
     }
 
 
+def _provider_bundle_sha256(bundle_path: Path | None) -> str:
+    """Hash the exact local bundle that a provider URL is expected to serve."""
+    if bundle_path is None or not bundle_path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with bundle_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _redact_runtime_value(value: Any, secret_values: Sequence[str] = ()) -> Any:
     if isinstance(value, str):
         return _redact_text(value, secret_values)
@@ -2813,6 +2824,9 @@ def _probe_shell_script(
         "expected_sha256 = os.environ.get('BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256', '')\n"
         "dst = os.environ.get('BLUEPRINT_DOWNLOAD_PATH', '')\n"
         "try:\n"
+        "    if not expected_sha256:\n"
+        "        print('BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256_MISSING')\n"
+        "        raise SystemExit(44)\n"
         "    data = base64.b64decode(payload.encode('ascii'), validate=True)\n"
         "    actual_sha256 = hashlib.sha256(data).hexdigest()\n"
         "    if expected_sha256 and actual_sha256 != expected_sha256:\n"
@@ -2829,10 +2843,11 @@ def _probe_shell_script(
         "PY\n"
         "return $?; "
         "fi; "
-        'if command -v curl >/dev/null 2>&1; then curl -fL "$blueprint_download_src" -o "$blueprint_download_dst"; return $?; fi; '
-        'if command -v wget >/dev/null 2>&1; then wget -O "$blueprint_download_dst" "$blueprint_download_src"; return $?; fi; '
+        "blueprint_download_rc=127; "
+        'if command -v curl >/dev/null 2>&1; then curl -fL "$blueprint_download_src" -o "$blueprint_download_dst"; blueprint_download_rc=$?; '
+        'elif command -v wget >/dev/null 2>&1; then wget -O "$blueprint_download_dst" "$blueprint_download_src"; blueprint_download_rc=$?; '
         'blueprint_download_py="${PY_NET:-${RUNTIME_PY:-}}"; '
-        'if [ -n "$blueprint_download_py" ]; then '
+        'elif [ -n "$blueprint_download_py" ]; then '
         'BLUEPRINT_DOWNLOAD_URL="$blueprint_download_src" BLUEPRINT_DOWNLOAD_PATH="$blueprint_download_dst" "$blueprint_download_py" - <<\'PY\'\n'
         "import os\n"
         "import shutil\n"
@@ -2847,9 +2862,30 @@ def _probe_shell_script(
         "    print('BLUEPRINT_VAST_PY_DOWNLOAD_ERROR:%s' % type(exc).__name__)\n"
         "    raise SystemExit(1)\n"
         "PY\n"
-        "return $?; "
+        "blueprint_download_rc=$?; "
         "fi; "
-        "return 127; "
+        'if [ "$blueprint_download_rc" -ne 0 ]; then return "$blueprint_download_rc"; fi; '
+        'blueprint_verify_py="${PY_NET:-${RUNTIME_PY:-}}"; '
+        'if [ -z "$blueprint_verify_py" ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256_BLOCKED:python_missing; return 127; fi; '
+        'BLUEPRINT_DOWNLOAD_PATH="$blueprint_download_dst" "$blueprint_verify_py" - <<\'PY\'\n'
+        "import hashlib\n"
+        "import os\n"
+        "expected_sha256 = os.environ.get('BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256', '')\n"
+        "dst = os.environ.get('BLUEPRINT_DOWNLOAD_PATH', '')\n"
+        "if not expected_sha256:\n"
+        "    print('BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256_MISSING')\n"
+        "    raise SystemExit(44)\n"
+        "digest = hashlib.sha256()\n"
+        "with open(dst, 'rb') as handle:\n"
+        "    for chunk in iter(lambda: handle.read(1024 * 1024), b''):\n"
+        "        digest.update(chunk)\n"
+        "actual_sha256 = digest.hexdigest()\n"
+        "if actual_sha256 != expected_sha256:\n"
+        "    print('BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256_MISMATCH')\n"
+        "    raise SystemExit(42)\n"
+        "print('BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256_VERIFIED')\n"
+        "PY\n"
+        "return $?; "
         "}; "
         "blueprint_upload_put() { "
         'blueprint_upload_url="$1"; blueprint_upload_path="$2"; '
@@ -4069,6 +4105,7 @@ def run_vast_provider_adapter(
     hf_token, hf_token_status = _read_hf_token_file()
     previous_path = Path(previous_job_dir).expanduser().resolve() if previous_job_dir else None
     bundle_path = Path(provider_bundle).expanduser().resolve() if provider_bundle else None
+    provider_bundle_sha256 = _provider_bundle_sha256(bundle_path)
     output_zip_path = (
         Path(provider_runtime_output_zip).expanduser().resolve()
         if provider_runtime_output_zip
@@ -4194,6 +4231,7 @@ def run_vast_provider_adapter(
         "provider_bundle_inline_transport_sha256_present": (
             inline_bundle_transport.get("inline_provider_bundle_sha256_present") is True
         ),
+        "provider_bundle_sha256": provider_bundle_sha256 or None,
         "machine_avoidlist_path": str(resolved_machine_avoidlist_path),
         "excluded_machine_ids": sorted(excluded_machine_ids),
         "allowed_machine_ids": sorted(resolved_allowed_machine_ids),
@@ -5120,7 +5158,7 @@ def run_vast_provider_adapter(
                         inline_bundle_transport.get("inline_provider_bundle_base64")
                     ),
                     provider_bundle_inline_sha256=_string(
-                        inline_bundle_transport.get("inline_provider_bundle_sha256")
+                        provider_bundle_sha256
                     ),
                     retain_cosmos_server=retain_instance_on_runtime_failure,
                     forward_hf_token=forward_hf_token,
