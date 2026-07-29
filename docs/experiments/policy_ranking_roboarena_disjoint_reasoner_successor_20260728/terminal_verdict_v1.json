@@ -1,0 +1,127 @@
+{
+  "schema_version": "policy_ranking_roboarena_disjoint_successor_terminal_verdict.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "overall_verdict": "inconclusive",
+  "decision_basis": "The frozen GPT-5-mini known-answer reproduction failed, Gemini was promising only on already-unsealed diagnostic data and never abstained, the one-session native-Cosmos causal screen failed and correctly triggered abstention, and no valid whole-stack closed-loop Phase B, independently anchored captured-site transfer, or useful end-to-end economics comparison was completed. The current negative WAM screen is underpowered and therefore cannot by itself falsify the replaceable Blueprint thesis.",
+  "components": {
+    "cosmos_wam_qualification": {
+      "verdict": "inconclusive",
+      "qualified": false,
+      "basis": "On one label-blind disjoint session, native Cosmos passed 1/10 active scene-response comparisons, 2/10 temporal-placebo comparisons, and 0/5 both-seed robustness conditions. The tier-1 gate found five hard-failure windows and session-median timing correlation 0.021936 versus 0.15 required. Blueprint correctly abstained, but one session is below the 17-session prospective target."
+    },
+    "frozen_benchmark_calibration": {
+      "verdict": "not_supported_for_frozen_gpt5_mini_phase_a_stack",
+      "registered_gates_passed": false,
+      "basis": "Across 63 sessions, seven policies, and 441 episodes, GPT-5 mini achieved Spearman 0.357143, Kendall tau-b 0.238095, policy pairwise accuracy 0.619048 with clustered interval [0.428571, 0.857143], selective coverage 0.050182, and selective pairwise accuracy 0.600000. Gemini 3.6 Flash achieved 0.75, 0.619048, and 0.809524 respectively, but only after label unseal and with zero abstentions."
+    },
+    "captured_site_transfer": {
+      "verdict": "inconclusive",
+      "measured": false,
+      "basis": "Phase C was not admitted. No Blueprint 3DGS/site adapter was run through this frozen stack and no independently attributable physical outcomes existed for the same site, task, embodiment, and policies."
+    },
+    "economics_and_speed": {
+      "verdict": "inconclusive",
+      "qualified_comparison_completed": false,
+      "basis": "Attributable digital costs were measured, but no WAM arm completed a useful ranking and no defensible physical monetary or robot-hour baseline was available. Therefore no speed ratio, cost ratio, or break-even policy count is claimed."
+    }
+  },
+  "phase_a": {
+    "result": "failed_registered_gates",
+    "claim_ceiling": "non_independent_known_answer_reproduction_only",
+    "session_count": 63,
+    "policy_count": 7,
+    "episode_count": 441,
+    "analysis_file_sha256": "2364da4180c83761cbcb1a718eac33da9ffad73eaa0f38d233df8bdaa8958567"
+  },
+  "diagnostic_evaluator_challengers": {
+    "gemini_3_6_flash": {
+      "status": "promising_post_unseal_diagnostic_only",
+      "spearman_rho": 0.75,
+      "kendall_tau_b": 0.6190476190476191,
+      "policy_pairwise_accuracy": 0.8095238095238095,
+      "direct_within_session_pair_accuracy": 0.7219251336898396,
+      "session_clustered_ci95": [0.6763031400709597, 0.7624104011647849],
+      "abstention_count": 0,
+      "analysis_file_sha256": "2a1d73bfbac044704d1894d4d6fb4be84f271ecd78b3997b9f205f82af73a3e4"
+    },
+    "cosmos3_nano_reasoner": {
+      "status": "transport_passed_semantic_consistency_failed",
+      "model": "nvidia/Cosmos3-Nano",
+      "model_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+      "ranking_credit": false
+    }
+  },
+  "phase_b": {
+    "design_achieved": "fallback_level_3_single_chunk_open_loop_replay_causal_diagnostic",
+    "full_episode_executed": false,
+    "policy_requery_executed": false,
+    "ranking_executed": false,
+    "independent_confirmation_credit": false,
+    "selected_sessions_remaining_label_sealed": 16,
+    "claim_ceiling": "short_horizon_label_blind_negative_causal_evidence_and_correct_abstention_only"
+  },
+  "wam_arms": {
+    "historical_oscar_baseline": "Experiment 2 remains thesis_not_supported for its frozen OSCAR-derived stack; visible skeleton evidence did not survive scene masking.",
+    "skeleton_only_current": "not_run",
+    "visible_skeleton_current": "not_run",
+    "scene_masked_current": "not_run",
+    "oscar_purpose_built_wam_current": "not_run",
+    "native_cosmos_current": "failed_one_session_short_horizon_causal_screen_and_abstained",
+    "registered_hybrid_current": "not_run"
+  },
+  "abstention": {
+    "native_cosmos_product_abstention_required": true,
+    "native_cosmos_product_abstention_correct_for_frozen_gates": true,
+    "gemini_calibrated_abstention_established": false,
+    "phase_a_selective_use_passed": false
+  },
+  "cost_and_time": {
+    "api_evaluator_estimated_usd": 6.175862375,
+    "gpu_estimated_usd_before_successor": 0.733574,
+    "successor_reasoner_schema_canary_estimated_usd": 0.24818,
+    "successor_native_cosmos_canary_estimated_usd": 0.088401,
+    "known_conservative_provider_total_excluding_unavailable_storage_transfer_usd": 7.246017375,
+    "storage_and_transfer_invoice_line_available": false,
+    "phase_a_matrix_wall_seconds": 2001.047457832843,
+    "gemini_submission_to_collection_seconds": 1514.0,
+    "successor_reasoner_provider_live_seconds": 418.51343641709536,
+    "successor_native_cosmos_provider_live_seconds": 317.302998,
+    "completed_useful_digital_ranking": false,
+    "physical_playback_lower_bound_hours": 3.576,
+    "physical_monetary_baseline_available": false,
+    "speed_ratio": null,
+    "cost_ratio": null,
+    "break_even_policy_count": null
+  },
+  "identities": {
+    "oscar_code_revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "roboarena_data": "RoboArena/DataDump_07-17-2026",
+    "roboarena_data_revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "cosmos3_nano_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "native_cosmos_runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "phase_a_evaluator": "gpt-5-mini-2025-08-07",
+    "gemini_diagnostic_evaluator": "gemini-3.6-flash"
+  },
+  "protocols": {
+    "superseded_v1_digest": "eab9e7868bcc7cbd774c940c781e8c3a8faac3270cbc942f1248966ba037f683",
+    "governing_v2_digest": "6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066",
+    "successor_high_motion_amendment_sha256": "b2411e5981af473ff992b13f253253674a33293fa396012e9cf633695f3aa196",
+    "positive_control_bisection_amendment_sha256": "ff587fa17d215c97e4c834e233b699524c13cba5295539b0cacc9426a94b312f"
+  },
+  "provider_zero": {
+    "task_live_instance_count": 0,
+    "all_live_instance_count": 0,
+    "continuing_hourly_burn_usd": 0.0,
+    "temporary_task_object_prefix_closed": true,
+    "persistent_evaluator_resource_created": false,
+    "does_not_prove_invoice_settlement_or_scientific_validity": true
+  },
+  "historical_evidence_immutability": {
+    "oscar_experiment_2_verdict": "thesis_not_supported",
+    "cosmos3_followup_verdict": "inconclusive",
+    "rewritten": false
+  },
+  "cheapest_scientifically_valid_next_experiment": "First run the hash-pinned official NVIDIA AgiBotWorld positive control to distinguish deployment failure from DROID-contract failure, with zero DROID requests on a positive-control failure. If it passes, run the already-frozen DROID diagnostic and then require a genuinely new powered independent-session set before full-episode ranking. The positive-control result itself cannot earn qualification credit.",
+  "status_note": "This verdict is an interim evidence snapshot. Its overall verdict and completed-result claims remain valid while the prospectively frozen positive-control bisection is pending.",
+  "manifest_sha256": "570fd06d816172dd75155d6a89dc2d064acf6e537e9b479ed830f63567d8bebe"
+}

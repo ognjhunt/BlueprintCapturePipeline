@@ -652,7 +652,7 @@ def test_paid_resource_allocator_dispatches_successor_lane_only_through_probe_ki
     monkeypatch.setattr(
         allocator,
         "_source_checkout_blockers",
-        lambda _commit: ([], "d" * 40),
+        lambda _commit, **_kwargs: ([], "d" * 40),
     )
 
     def fake_lane(**kwargs: Any) -> dict[str, Any]:

@@ -24,7 +24,7 @@
     "outcome_labels_accessed": false,
     "task_instructions_accessed": false
   },
-  "external_evidence_directory": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/disjoint_preflight_v1",
+  "external_evidence_directory": "external-evidence-store://policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/disjoint_preflight_v1",
   "claim_boundary": "technical_media_and_action_completeness_only; no task outcomes, ranking, WAM qualification, or closed-loop execution",
-  "manifest_sha256": "2905e6969333cef17fa6ec28d45c4cbe421500e066ffcbf6e7fb74f2711b4b7b"
+  "manifest_sha256": "e39a098f4d83b1947b17f4e33a82a22d31f605c43c11b0ab5d39a2a39d24a8d1"
 }

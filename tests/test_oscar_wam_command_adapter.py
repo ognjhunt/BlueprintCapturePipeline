@@ -566,9 +566,8 @@ def test_oscar_wam_command_adapter_private_helper_edges(
     assert selected["task_prompt"] == "Push the lightweight object from robot POV."
     with pytest.raises(FileNotFoundError, match="missing_selected_review_video"):
         adapter._selected_video_path({"selected_review_videos": [{"path": "missing.mp4"}]})
-    assert adapter._task_prompt({}) == (
-        "Predict the next robot-scene frames from Blueprint action conditioning."
-    )
+    with pytest.raises(ValueError, match="oscar_task_specific_prompt_required"):
+        adapter._task_prompt({})
 
     trace_path = tmp_path / "trace.jsonl"
     _write_jsonl(trace_path, [{"episode_id": "other", "root_position": [1, 2, 3]}])
@@ -584,6 +583,9 @@ def test_oscar_wam_command_adapter_private_helper_edges(
     assert adapter._projected_skeleton_projectable_row_count(projected_rows) == 4
     assert adapter._configured_conditioning_mode(projected_rows) == "projected_g1_skeleton"
     assert adapter._configured_conditioning_mode([]) == "oscar_gripper_scenario_proxy"
+    assert adapter._projected_skeleton_rows(
+        {"inputs": {"projected_robot_skeleton_trace_jsonl": str(projected_trace)}}
+    ) == projected_rows
     assert adapter._sample_rows([], 3) == []
     assert adapter._sample_rows([{"row": 1}], 3) == [{"row": 1}, {"row": 1}, {"row": 1}]
     assert adapter._point_from_root({"root_position": "bad"}) == (0.0, 0.0, 0.8)
@@ -790,6 +792,7 @@ def test_oscar_wam_runtime_probe_subprocess_and_rollout_edges(
     assert failed["stale_output_removed_before_launch"] is True
     assert not stale_output.exists()
     argv = captured_subprocess["args"][0]
+    assert argv[argv.index("--negative-prompt") + 1] == adapter.OSCAR_DEFAULT_NEGATIVE_PROMPT
     assert "--rgb-video" in argv
     assert str(rgb_video) in argv
 

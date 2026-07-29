@@ -77,3 +77,79 @@ a shared TensorRT compute-cap ceiling being applied to this non-TensorRT Cosmos
 lane. The code now explicitly admits Blackwell for this profile and a regression
 test pins that contract. The second preflight verified authenticated zero
 inventory and one compatible advisory offer; it did not reserve or launch it.
+
+## High-motion native-Cosmos result
+
+The amended high-motion canary completed on source commit `c04ce132` using one
+RTX Pro 6000 WS. Both structural requests returned byte-identical direct and
+Blueprint-wrapper videos, and all 12 frozen condition/seed requests completed.
+Estimated GPU cost was `$0.088401` for `317.302998` live seconds. Authenticated
+post-run inventory found zero task instances and zero total instances.
+
+The scientific screen failed. Only 1/10 active same-seed comparisons visibly
+separated from the no-motion future at the frozen threshold, only 2/10 active
+rows rejected their strongest temporal placebo, and 0/5 active conditions were
+robust across both seeds. The separate tier-1 gate found five hard-failure
+windows and a session-median timing correlation of `0.02194`, below the frozen
+`0.15` threshold. Blueprint therefore abstains from native Cosmos and does not
+admit the full-episode matrix or evaluator spend.
+
+This is a one-session, 17-frame open-loop causal diagnostic. It did not re-query
+a policy and is underpowered for WAM qualification. The matching physical video
+was retained outside provider and evaluator inputs and is published only as a
+post-generation review reference. The selected session's metadata was later
+opened while checking for camera calibration; the resulting one-session label
+unseal is recorded explicitly, and the remaining 16 selected sessions remain
+sealed. `phase_b_high_motion_native_cosmos_result_v1.json`, the cost/provider-zero
+receipt, and the gallery manifest preserve the complete claim boundary.
+
+## Interim closeout and positive-control amendment
+
+`phase_b_terminal_admission_v1.json` records why 17 frames can resolve only the
+short-horizon causal prerequisite and why that failed result did not admit a
+full Phase-B matrix. A subsequent independent first-principles audit identified
+a narrower missing gate: the exact deployment had never been tested against a
+known-good published forward-dynamics pathway. The prospective
+`phase_b_positive_control_bisection_amendment_v1.json` therefore supersedes only
+the future-execution recommendation, not the completed result.
+
+The amended run uses NVIDIA's hash-pinned four-chunk AgiBotWorld example first.
+At least three chunks must pass frozen visible-motion thresholds. Failure stops
+the run with zero DROID requests and forces teardown; a pass admits only the
+already-frozen 12-request DROID diagnostic in the same loaded process. Neither
+outcome by itself earns DROID WAM qualification, ranking, or independent
+confirmation credit. `terminal_verdict_v1.json` and `terminal_report_v1.md`
+remain interim `inconclusive` evidence snapshots until that finite bisection and
+any admitted successor stages finish.
+
+The first positive-control allocation reached provider startup but never loaded
+the model: the Hugging Face Xet transfer stopped making progress, the GPU stayed
+idle, and no positive-control or DROID generation request was submitted. The
+attempt cost an estimated USD 0.463386 and closed with authenticated provider
+zero. A raw provider inventory response also surfaced secret-bearing instance
+environment fields in local command output, so that attempt is not eligible for
+retention or refresh.
+
+`phase_b_positive_control_download_transport_amendment_v2.json` preserves that
+failure and prospectively freezes the replacement. The replacement disables Xet
+inside the reusable runtime and does not forward a Hugging Face token because
+the pinned public Cosmos3-Nano revision was verified to be anonymously
+downloadable. It changes no prompt, action, control, seed, threshold, request
+order, or decision gate. This is an infrastructure repair only and earns no
+scientific credit by itself.
+
+## Positive-control bisection and terminal closeout
+
+The replacement completed on source commit `8364c2f2`. The official
+AgiBotWorld positive control passed: 3/4 chunks cleared the frozen motion gate.
+The same loaded Cosmos3-Nano runtime then completed all 12 frozen DROID requests,
+but the DROID causal screen failed at 1/10 scene-response comparisons, 2/10
+temporal-placebo rejections, and 0/5 both-seed robustness conditions. The tier-1
+gate classified the session as unreliable and Blueprint correctly abstained.
+
+`phase_b_positive_control_bisection_result_v2.json`, `terminal_verdict_v2.json`,
+and `terminal_report_v2.md` supersede the interim closeout for reporting without
+rewriting it. Overall verdict remains `inconclusive`: the deployment works, the
+frozen DROID conditioning path does not qualify, and the one-session diagnostic
+is underpowered. No full closed loop, new policy ranking, captured-site transfer,
+or useful physical economics comparison was admitted.

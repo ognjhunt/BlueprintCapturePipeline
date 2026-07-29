@@ -1,0 +1,43 @@
+{
+  "schema_version": "policy_ranking_phase_b_high_motion_native_cosmos_cost_provider_zero.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "source_commit": "c04ce1327ef8c45dad43e1b2a8e7087ff8d156ef",
+  "gpu": {
+    "provider": "Vast",
+    "instance_id_recorded_in_local_evidence": true,
+    "gpu": "RTX PRO 6000 WS",
+    "all_in_hourly_rate_usd": 1.002962962962963,
+    "live_runtime_seconds": 317.302998,
+    "estimated_cost_usd": 0.088401,
+    "hard_cap_usd": 5.0,
+    "target_spend_usd": 2.5,
+    "continuing_spend_from_this_run": false
+  },
+  "evaluator_api": {
+    "provider_calls": 0,
+    "cost_usd": 0.0
+  },
+  "storage_transfer": {
+    "bundle_bytes": 452403,
+    "output_bytes": 6359286,
+    "actual_billed_cost_available": false,
+    "cost_usd_reported": null,
+    "temporary_task_prefix_closed": true,
+    "temporary_objects_deleted": 2,
+    "temporary_objects_remaining": 0,
+    "signed_url_files_removed": 3,
+    "object_prefix_closure_report_sha256": "ca0323f4a972514ae4ee61af52e01403975f05dff0076cb53ec265a6d0dd5710"
+  },
+  "provider_zero": {
+    "authenticated_check": true,
+    "task_live_instance_count": 0,
+    "all_live_instance_count": 0,
+    "continuing_hourly_burn_usd": 0.0,
+    "provider_zero_report_sha256": "e9724e9f9c6ab2670e4a95aee0aec46b393485e3737e05e42fd2821175362379",
+    "teardown_manifest_sha256": "2d1939a47943043cb873e3c093e400aaf214ac9cb1511fa585176ab9ffaec756",
+    "provider_zero_does_not_prove_invoice_settlement_or_scientific_validity": true
+  },
+  "budget_ledger_sha256": "b7809d471c82a5d913464c887c8bdb7f5f1a94c1b16779746b5565274f378e1d",
+  "claim_boundary": "Measured compute for this short causal diagnostic only. It is not a completed ranking cost and cannot support the thesis economics comparison.",
+  "manifest_sha256": "60ce547efd3896672d11cf8b409898b89dbe9f12d06451924ed63ac00f23a173"
+}

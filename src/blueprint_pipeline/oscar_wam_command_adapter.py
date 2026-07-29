@@ -27,6 +27,18 @@ from .oscar_official_release import (
     official_release_blockers,
     official_release_contract,
 )
+from .oscar_wam_contract import (
+    ALL_PROJECTED_G1_SKELETON_MODES,
+    EGOCENTRIC_ARM_SKELETON_MODES,
+    FIRST_PERSON_CONDITIONING_MODES,
+    OSCAR_DEFAULT_NEGATIVE_PROMPT,
+    OSCAR_DEFAULT_NEGATIVE_PROMPT_SHA256,
+    OSCAR_GRIPPER_SCENARIO_PROXY_MODES,
+    OSCAR_PUBLIC_SOURCE_REVISION,
+    PROJECTED_G1_SKELETON_RGB_OVERLAY_MODES,
+    PROXY_SKELETON_CONDITIONING_MODES,
+    TEXTURE_FREE_EGOCENTRIC_ARM_SKELETON_MODES,
+)
 from .wam_generated_video_review import (
     validate_generated_mp4_for_review,
     visual_smoke_generated_rollouts_for_review,
@@ -44,47 +56,6 @@ DEFAULT_CONDITIONING_BACKGROUND_ALPHA = 0.88
 DEFAULT_CONDITIONING_NEAR_BLACK_THRESHOLD = 10
 DEFAULT_CONDITIONING_VOID_FILL_BGR = (52, 56, 58)
 DEFAULT_CONDITIONING_MODE = "oscar_gripper_scenario_proxy"
-FIRST_PERSON_CONDITIONING_MODES = {
-    "first_person_review_video",
-    "selected_review_video_passthrough",
-    "egocentric_review_video_passthrough",
-}
-EGOCENTRIC_ARM_SKELETON_MODES = {
-    "egocentric_arm_skeleton",
-    "egocentric_hand_skeleton",
-    "first_person_arm_skeleton",
-}
-TEXTURE_FREE_EGOCENTRIC_ARM_SKELETON_MODES = {
-    "texture_free_egocentric_arm_skeleton",
-    "oscar_texture_free_egocentric_arm_skeleton",
-}
-OSCAR_GRIPPER_SCENARIO_PROXY_MODES = {
-    "oscar_gripper_scenario_proxy",
-    "oscar_egocentric_gripper_proxy",
-    "egocentric_rgb_gripper_proxy",
-}
-PROJECTED_G1_SKELETON_CONDITIONING_MODES = {
-    "projected_g1_skeleton",
-    "g1_projected_skeleton",
-    "unitree_g1_projected_skeleton",
-    "projected_g1_arm_hand_skeleton",
-}
-PROJECTED_G1_SKELETON_RGB_OVERLAY_MODES = {
-    "projected_g1_skeleton_rgb_overlay",
-    "projected_g1_skeleton_scene_overlay",
-    "unitree_g1_projected_skeleton_rgb_overlay",
-}
-ALL_PROJECTED_G1_SKELETON_MODES = (
-    PROJECTED_G1_SKELETON_CONDITIONING_MODES
-    | PROJECTED_G1_SKELETON_RGB_OVERLAY_MODES
-)
-PROXY_SKELETON_CONDITIONING_MODES = {
-    "scene_overlay_proxy_skeleton",
-    "proxy_skeleton",
-    "blueprint_proxy_skeleton",
-}
-
-
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
@@ -323,7 +294,7 @@ def _task_prompt(rollout_manifest: Mapping[str, Any]) -> str:
         prompt = _string(_mapping(row).get("task_prompt"))
         if prompt:
             return prompt
-    return "Predict the next robot-scene frames from Blueprint action conditioning."
+    raise ValueError("oscar_task_specific_prompt_required")
 
 
 def _trace_rows(rollout_manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -345,7 +316,12 @@ def _trace_rows(rollout_manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def _projected_skeleton_rows(rollout_manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
     inputs = _mapping(rollout_manifest.get("inputs"))
-    trace_path = Path(_string(inputs.get("g1_projected_skeleton_trace_jsonl"))).expanduser()
+    trace_path = Path(
+        _string(
+            inputs.get("projected_robot_skeleton_trace_jsonl")
+            or inputs.get("g1_projected_skeleton_trace_jsonl")
+        )
+    ).expanduser()
     rows = _read_jsonl(trace_path)
     selected_episode = ""
     try:
@@ -370,8 +346,10 @@ def _package_uses_projected_g1_skeleton(package_manifest: Mapping[str, Any]) -> 
     claim_boundary = _mapping(package_manifest.get("claim_boundary"))
     return bool(
         skeleton_video.get("projected_g1_skeleton_rendered")
+        or skeleton_video.get("projected_robot_skeleton_rendered")
         or projected_trace.get("used_for_conditioning")
         or claim_boundary.get("projected_g1_skeleton_conditioning_used")
+        or claim_boundary.get("projected_robot_skeleton_conditioning_used")
     )
 
 
@@ -948,6 +926,7 @@ def _render_proxy_skeleton_video(
         "first_person_review_video_passthrough": first_person_passthrough,
         "egocentric_arm_skeleton_rendered": egocentric_arm_skeleton,
         "projected_g1_skeleton_rendered": projected_g1_skeleton,
+        "projected_robot_skeleton_rendered": projected_g1_skeleton,
         "oscar_gripper_scenario_proxy_rendered": oscar_gripper_scenario_proxy,
         "texture_free_egocentric_arm_skeleton_rendered": (
             texture_free_egocentric_arm_skeleton
@@ -1001,9 +980,8 @@ def _render_proxy_skeleton_video(
             else 0.0,
             "preprocessing_applies_only_to_generated_conditioning_asset": True,
         },
-        "simulated_g1_projected_kinematic_skeleton_available": bool(
-            projected_g1_skeleton
-        ),
+        "simulated_g1_projected_kinematic_skeleton_available": bool(projected_g1_skeleton),
+        "projected_robot_kinematic_skeleton_available": bool(projected_g1_skeleton),
         "true_robot_proprioceptive_skeleton_available": False,
         "projected_g1_skeleton_trace_row_count": len(projected_rows),
         "projected_g1_skeleton_projectable_row_count": _projected_skeleton_projectable_row_count(
@@ -1261,6 +1239,14 @@ def _materialize_oscar_input_package(
             "num_frames": num_frames,
         },
         "prompt": _task_prompt(rollout_manifest),
+        "prompt_contract": {
+            "task_specific_prompt_required": True,
+            "generic_fallback_allowed": False,
+            "future_ground_truth_used_to_construct_prompt": False,
+            "oscar_public_source_revision": OSCAR_PUBLIC_SOURCE_REVISION,
+        },
+        "negative_prompt": OSCAR_DEFAULT_NEGATIVE_PROMPT,
+        "negative_prompt_sha256": OSCAR_DEFAULT_NEGATIVE_PROMPT_SHA256,
         "num_frames": num_frames,
         "fps": fps,
         "height": height,
@@ -1288,7 +1274,11 @@ def _materialize_oscar_input_package(
         },
         "source_review_video": selected_video,
         "projected_skeleton_trace": {
-            "path": _string(inputs.get("g1_projected_skeleton_trace_jsonl")) or None,
+            "path": _string(
+                inputs.get("projected_robot_skeleton_trace_jsonl")
+                or inputs.get("g1_projected_skeleton_trace_jsonl")
+            )
+            or None,
             "available": bool(projected_skeleton_rows),
             "used_for_conditioning": bool(
                 skeleton_video.get("projected_g1_skeleton_rendered")
@@ -1316,6 +1306,9 @@ def _materialize_oscar_input_package(
             ),
             "projected_g1_skeleton_conditioning_used": bool(
                 skeleton_video.get("projected_g1_skeleton_rendered")
+            ),
+            "projected_robot_skeleton_conditioning_used": bool(
+                skeleton_video.get("projected_robot_skeleton_rendered")
             ),
             "projected_g1_skeleton_conditioning_is_simulated_mujoco_state": bool(
                 skeleton_video.get("projected_g1_skeleton_rendered")
@@ -1557,6 +1550,8 @@ def _run_oscar(
         "0",
         "--prompt",
         _string(package_manifest.get("prompt")),
+        "--negative-prompt",
+        _string(package_manifest.get("negative_prompt") or OSCAR_DEFAULT_NEGATIVE_PROMPT),
         "--num-steps",
         str(num_steps),
         "--guidance",

@@ -1,0 +1,165 @@
+{
+  "schema_version": "policy_ranking_phase_b_positive_control_bisection_result.v2",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "status": "completed_positive_control_passed_droid_causal_failed_product_abstention",
+  "overall_verdict": "inconclusive",
+  "execution_identity": {
+    "source_commit": "8364c2f2b811f9db1142b9a5c86839a6b6b01a80",
+    "source_branch": "codex/oscar-matched-closed-loop-20260728",
+    "bundle_sha256": "0daebe3845c4ad70effce16e793abdb1f5307a12a28840cce97578bcaad81229",
+    "model": "nvidia/Cosmos3-Nano",
+    "model_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "vllm_omni_source_revision": "9c1b7504b178afcf541867c1a2d30db48c69cda8",
+    "runtime_image_digest": "sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "gpu": "RTX PRO 6000 WS",
+    "provider_instance_id": 46166224,
+    "huggingface_xet_disabled": true,
+    "huggingface_token_forwarded": false
+  },
+  "official_positive_control": {
+    "status": "passed",
+    "role": "deployment_path_diagnostic_only",
+    "requests_valid": 4,
+    "structural_pass": true,
+    "dynamic_chunks": 3,
+    "required_dynamic_chunks": 3,
+    "chunk_metrics": [
+      {
+        "chunk_index": 0,
+        "temporal_absolute_difference_mean": 0.9662950038909912,
+        "first_to_last_absolute_difference_mean": 8.921223640441895,
+        "frozen_motion_gate_passed": false
+      },
+      {
+        "chunk_index": 1,
+        "temporal_absolute_difference_mean": 1.6982,
+        "first_to_last_absolute_difference_mean": 12.041,
+        "frozen_motion_gate_passed": true
+      },
+      {
+        "chunk_index": 2,
+        "temporal_absolute_difference_mean": 1.8168,
+        "first_to_last_absolute_difference_mean": 10.5321,
+        "frozen_motion_gate_passed": true
+      },
+      {
+        "chunk_index": 3,
+        "temporal_absolute_difference_mean": 2.2288,
+        "first_to_last_absolute_difference_mean": 12.1335,
+        "frozen_motion_gate_passed": true
+      }
+    ],
+    "claim_boundary": "Proves that the pinned deployment can generate dynamic outputs on NVIDIA's published AgiBotWorld pathway; it does not qualify DROID action following, ranking, or physical performance."
+  },
+  "droid_causal_screen": {
+    "status": "failed",
+    "requests_valid": 12,
+    "conditions": [
+      "recorded",
+      "zero",
+      "shuffled",
+      "reversed",
+      "policy_swapped",
+      "shifted"
+    ],
+    "scene_response_pass_count": 1,
+    "scene_response_comparison_count": 10,
+    "temporal_placebo_rejection_pass_count": 2,
+    "temporal_placebo_comparison_count": 10,
+    "both_seed_robust_condition_count": 0,
+    "active_condition_count": 5,
+    "gates": {
+      "nonidentical_scene_response": false,
+      "directional_temporal_placebo_rejection": false,
+      "seed_robustness": false
+    },
+    "independent_session_count": 1,
+    "confirmatory_power_sufficient": false,
+    "cosmos_wam_qualification": false
+  },
+  "tier_1_rollout_reliability": {
+    "implementation_provenance": "Claude lab gate integrated on main by PR 227 and frozen for Phase B with session-level timing aggregation",
+    "session_reliable": false,
+    "product_abstention_required": true,
+    "window_count": 12,
+    "reliable_window_count": 7,
+    "hard_failure_window_count": 5,
+    "hard_failure_flag": "static_under_command",
+    "timing_eligible_window_count": 5,
+    "timing_correlation_median": 0.022880492479712775,
+    "timing_correlation_minimum": 0.15,
+    "session_flags": [
+      "static_under_command",
+      "timing_disagreement"
+    ],
+    "abstention_correct_for_frozen_gates": true
+  },
+  "phase_b": {
+    "design_achieved": "fallback_level_3_single_session_frozen_real_action_trace_replay",
+    "full_episode_executed": false,
+    "policy_requery_executed": false,
+    "closed_loop_policy_wam_policy_executed": false,
+    "ranking_executed": false,
+    "evaluator_called": false,
+    "reason_not_admitted": "Native Cosmos failed both the frozen DROID causal screen and the tier-1 reliability gate.",
+    "claim_ceiling": "Open-loop deployment and DROID causal diagnostic only; no live closed-loop, policy ranking, independent confirmation, or physical-performance claim."
+  },
+  "components": {
+    "cosmos_wam_qualification": {
+      "verdict": "inconclusive",
+      "qualified": false,
+      "evidence": "Official AgiBotWorld pathway passed, but the frozen DROID pathway failed causal and reliability gates in one underpowered session."
+    },
+    "frozen_benchmark_calibration": {
+      "verdict": "inconclusive",
+      "evidence": "No new disjoint full-episode ranking was admitted; prior already-unsealed evaluator diagnostics remain diagnostic only."
+    },
+    "captured_site_transfer": {
+      "verdict": "inconclusive",
+      "evidence": "Not admitted and not measured; no independently attributable same-site physical outcome anchor exists in this run."
+    },
+    "economics_and_speed": {
+      "verdict": "inconclusive",
+      "evidence": "Digital diagnostic cost and time were measured, but no useful completed ranking exists for a defensible physical-evaluation comparison."
+    }
+  },
+  "cost_and_time": {
+    "failed_download_attempt_cost_usd": 0.463386,
+    "successful_bisection_attempt_cost_usd": 0.146992,
+    "combined_gpu_and_storage_cost_usd": 0.610378,
+    "successful_attempt_model_load_seconds": 190.06276773102582,
+    "successful_attempt_runtime_seconds": 258.26910016778857,
+    "successful_attempt_approximate_total_provider_seconds": 492.6707,
+    "evaluator_api_cost_usd": 0.0,
+    "completed_useful_ranking": false,
+    "physical_cost_or_speed_ratio_claimed": false
+  },
+  "provider_zero": {
+    "exact_instance_absent": true,
+    "task_live_instance_count": 0,
+    "all_live_instance_count": 0,
+    "continuing_hourly_burn_usd": 0.0,
+    "temporary_object_prefixes_absent": true,
+    "signed_url_files_removed": 6,
+    "provider_zero_does_not_prove_invoice_settlement_or_scientific_validity": true
+  },
+  "evidence_sha256": {
+    "provider_output_archive": "c03123b35daa8de850cdf57ace8ac14045ebe57e7c5d1fae00d47be6a441180f",
+    "positive_control_result": "5927582e7f39a3ca67a3e4b6500a8832e040c708da5245b968ce477176c0195b",
+    "droid_causal_screen": "ed1337b3c0293ea3b8c8535866ce728bfb377f3bd55b6cb168344554bcff08c5",
+    "tier_1_rollout_reliability": "b76e129b5048270f44e452f46bc3ddc1ba48833324cf6aee026b1fa833114f3f",
+    "cost_ledger": "63b10ba80976bbbb9009459cdbb5ee2839951777e1264e06e2e76063b2f679cc",
+    "watchdog_provider_zero": "ebcaa3802fa124f25faa3bc5a34873260f9de65cf418f8fb9a199220231f4e94",
+    "gallery_manifest": "42d98bc8a00f8b451251ec6c4b1f4549621bdfa84e14785a5a665420f8c692ba",
+    "object_store_closure": "4fb399f2e31955bee78367df3a13733085eedd3047433ab481939bb726136e19"
+  },
+  "review_gallery": {
+    "path": "external-evidence-store://policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_positive_control_v2/review_gallery_v1",
+    "video_count": 32,
+    "all_conditions_and_seeds_retained": true,
+    "single_top_camera_review_crops_included": true,
+    "review_crops_used_for_scientific_metrics": false
+  },
+  "cheapest_scientifically_valid_next_experiment": "Complete the exact upstream Cosmos3 DROID normalization/preprocessing audit. If ambiguity remains, run the preregistered label-free action-scale dose-response diagnostic, freeze any selected transform, and then use new untouched independent DROID sessions for a powered causal confirmation before full-episode ranking.",
+  "manifest_sha256": "7bc92b47818376b8bfc0c2f0dfa7103fa242196b081a1e15f45436ec8297c607"
+}

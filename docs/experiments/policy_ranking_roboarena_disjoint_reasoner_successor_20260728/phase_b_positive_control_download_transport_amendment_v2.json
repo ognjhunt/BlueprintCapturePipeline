@@ -1,0 +1,77 @@
+{
+  "schema_version": "policy_ranking_phase_b_positive_control_download_transport_amendment.v2",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "status": "prospectively_frozen_before_replacement_paid_execution",
+  "supersedes_for_future_execution": {
+    "phase_b_positive_control_bisection_amendment_v1_sha256": "ff587fa17d215c97e4c834e233b699524c13cba5295539b0cacc9426a94b312f",
+    "completed_attempt_remains_immutable": true,
+    "scientific_inputs_or_thresholds_changed": false
+  },
+  "failed_infrastructure_attempt": {
+    "source_commit": "e588b6ce6a329312ed23ef9787ec00127dcef6a5",
+    "provider_instance_id": 46163759,
+    "failure_layer": "model_weight_download_transport",
+    "observed_failure": "Xet shard transfers stopped making progress before model load while GPU utilization remained zero.",
+    "provider_generation_requests_attempted": 0,
+    "droid_requests_attempted": 0,
+    "positive_control_requests_attempted": 0,
+    "scientific_result_produced": false,
+    "estimated_gpu_and_storage_cost_usd": 0.463386,
+    "provider_zero_proven": true,
+    "continuing_hourly_burn_usd": 0.0,
+    "credential_incident": "A raw provider inventory response surfaced secret-bearing instance environment fields in local command output. No credential value is retained in this amendment. The replacement run must not forward a Hugging Face credential.",
+    "evidence_sha256": {
+      "watchdog_provider_zero": "8349b0e8f3f88ba64de39768c13f0231334700ec1158e1d8cb586135f4a100a5",
+      "adapter_output": "17e8d442924b9e4191d77250a1aa3e39332ced918f68c782c8229c6bc4ca91cc",
+      "budget_ledger": "f2cc6d8881e8a206ae29aad8d386034d72c13bee99d218f7b9d70473cf4ee7fd"
+    }
+  },
+  "replacement_runtime_changes": {
+    "disable_huggingface_xet_before_model_library_import": true,
+    "hf_hub_disable_xet": "1",
+    "forward_huggingface_token_to_provider": false,
+    "public_checkpoint_unauthenticated_config_fetch_verified_http_200": true,
+    "applies_to_future_runs": true,
+    "code_only_not_image_resident": true
+  },
+  "unchanged_scientific_contract": {
+    "official_positive_control_assets": true,
+    "official_positive_control_request_contract": true,
+    "positive_control_motion_thresholds": true,
+    "droid_observation": true,
+    "droid_actions_and_controls": true,
+    "task_instruction": true,
+    "request_order": true,
+    "decision_tree": true,
+    "outcome_labels_accessed": false
+  },
+  "replacement_bundle": {
+    "bundle_sha256": "0daebe3845c4ad70effce16e793abdb1f5307a12a28840cce97578bcaad81229",
+    "bundle_size_bytes": 1776383,
+    "bundle_receipt_manifest_sha256": "c1b5aebbce73c691cb095600dc8550be9d0ac43abf68ff1b8e786e0af000591b",
+    "source_replay_canary_manifest_sha256": "148a69a85ef1243ef8070f59c83dc46c86b7b348c3f1fbd575ab86d7b8ec52c9",
+    "initial_observation_sha256": "c1d89dd07b597796ad7620661dd2eacd4d4f58aad03d8860a52e13612bf0d99a",
+    "smoke_inventory_sha256": "9acdfb578d1c595970e3d33a0daade2ecfa1fc0ea6b87cddd163a8bf374747fb",
+    "action_streams_sha256": "12b572607ec3f4f68c2514f15553dfd1ef8c420fa0e7e601cefe8e12447a59b4",
+    "positive_control_manifest_sha256": "326efd06d1659c57b86e979eee7a7b30611fd22eda00f37c11e0f3ddbd0c3584"
+  },
+  "replacement_cost_authority": {
+    "allocation_index": 4,
+    "maximum_concurrent_gpus": 1,
+    "maximum_gpu_cost_usd_this_allocation": 5.0,
+    "target_gpu_cost_usd_this_allocation": 2.5,
+    "maximum_hourly_rate_usd": 1.25,
+    "hard_ttl_seconds": 7200,
+    "prior_attempt_cost_counts_against_campaign_ceiling": true,
+    "campaign_gpu_category_ceiling_usd": 50.0,
+    "campaign_total_ceiling_usd": 100.0,
+    "canonical_paid_resource_allocator_required": true,
+    "spend_watchdog_required": true,
+    "teardown_and_provider_zero_required": true
+  },
+  "claim_boundary": "This amendment repairs only download transport and credential minimization after a zero-request infrastructure failure. It cannot supply WAM, ranking, Phase-B confirmation, captured-site, physical, or economics credit.",
+  "paid_execution_admitted": false,
+  "replacement_provider_called": false,
+  "outcome_labels_accessed": false,
+  "manifest_sha256": "ae034d9ebd976c4f4d5540d340182d69568555bf772b18fd4b6bc6544bfbc7fc"
+}

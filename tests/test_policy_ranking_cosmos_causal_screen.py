@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import zipfile
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from blueprint_pipeline.policy_ranking_cosmos_causal_screen import (
     camera_compensated_motion,
 )
 from blueprint_pipeline.policy_ranking_thesis import file_sha256
+from blueprint_pipeline.policy_ranking_successor_cosmos import CHECKPOINT_REVISION
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +53,47 @@ def _runtime_matrix(tmp_path: Path, smoke: dict[str, object]) -> Path:
         }
         (root / "responses" / f"{request_id}.json").write_text(json.dumps(response))
     return root
+
+
+def _with_shifted_control(
+    smoke: dict[str, object], actions: dict[str, object]
+) -> tuple[dict[str, object], dict[str, object]]:
+    smoke = copy.deepcopy(smoke)
+    actions = copy.deepcopy(actions)
+    shifted = copy.deepcopy(actions["conditions"]["recorded"])
+    shifted["actions"][0][0] += 0.001
+    shifted["action_sha256"] = screen.canonical_sha256(shifted["actions"])
+    actions["conditions"]["shifted"] = shifted
+    smoke["required_conditions"] = list(screen.PHASE_B_CONDITIONS)
+    smoke["action_hashes"]["shifted"] = shifted["action_sha256"]
+    for seed in screen.EXPECTED_SEEDS:
+        material = {
+            "initial_observation_sha256": smoke["initial_observation_sha256"],
+            "task_instruction": smoke["task_instruction"],
+            "action_sha256": shifted["action_sha256"],
+            "seed": seed,
+            "checkpoint_revision": CHECKPOINT_REVISION,
+        }
+        smoke["requests"].append(
+            {
+                "request_id": screen.canonical_sha256(material),
+                "condition": "shifted",
+                "seed": seed,
+                "action_sha256": shifted["action_sha256"],
+            }
+        )
+    inventory_rows = [
+        {
+            "request_id": row["request_id"],
+            "condition": row["condition"],
+            "seed": row["seed"],
+            "action_sha256": row["action_sha256"],
+            "observation_sha256": smoke["initial_observation_sha256"],
+        }
+        for row in smoke["requests"]
+    ]
+    smoke["inventory_sha256"] = screen.canonical_sha256(inventory_rows)
+    return smoke, actions
 
 
 def test_action_intensity_rejects_wrong_shape_and_preserves_zero_control() -> None:
@@ -116,6 +159,86 @@ def test_causal_screen_accepts_only_frozen_response_inventory(
     assert report["blockers"] == []
     assert report["independent_session_count"] == 1
     assert report["confirmatory_power_sufficient"] is False
+
+
+def test_causal_screen_accepts_any_consistently_registered_experiment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smoke, actions = _frozen_inputs()
+    smoke = json.loads(json.dumps(smoke))
+    actions = json.loads(json.dumps(actions))
+    smoke["experiment_id"] = "future_registered_experiment"
+    actions["experiment_id"] = "future_registered_experiment"
+    runtime_root = _runtime_matrix(tmp_path, smoke)
+    monkeypatch.setattr(
+        screen,
+        "_decode_scene",
+        lambda _path: (
+            np.zeros((17, 136, 160, 3), dtype=np.float32),
+            np.zeros((17, 136, 160), dtype=np.uint8),
+        ),
+    )
+
+    report = screen.build_causal_screen(
+        runtime_output_root=runtime_root,
+        action_streams=actions,
+        smoke_inventory=smoke,
+    )
+
+    assert report["status"] == "completed"
+    assert report["experiment_id"] == "future_registered_experiment"
+    assert report["blockers"] == []
+
+
+def test_causal_screen_accepts_registered_shifted_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smoke, actions = _with_shifted_control(*_frozen_inputs())
+    runtime_root = _runtime_matrix(tmp_path, smoke)
+    monkeypatch.setattr(
+        screen,
+        "_decode_scene",
+        lambda _path: (
+            np.zeros((17, 136, 160, 3), dtype=np.float32),
+            np.zeros((17, 136, 160), dtype=np.uint8),
+        ),
+    )
+
+    report = screen.build_causal_screen(
+        runtime_output_root=runtime_root,
+        action_streams=actions,
+        smoke_inventory=smoke,
+    )
+
+    assert report["status"] == "completed"
+    assert report["required_conditions"] == list(screen.PHASE_B_CONDITIONS)
+    assert report["blockers"] == []
+
+
+def test_causal_screen_rejects_action_inventory_experiment_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smoke, actions = _frozen_inputs()
+    actions = json.loads(json.dumps(actions))
+    actions["experiment_id"] = "wrong_experiment"
+    runtime_root = _runtime_matrix(tmp_path, smoke)
+    monkeypatch.setattr(
+        screen,
+        "_decode_scene",
+        lambda _path: (
+            np.zeros((17, 136, 160, 3), dtype=np.float32),
+            np.zeros((17, 136, 160), dtype=np.uint8),
+        ),
+    )
+
+    report = screen.build_causal_screen(
+        runtime_output_root=runtime_root,
+        action_streams=actions,
+        smoke_inventory=smoke,
+    )
+
+    assert report["status"] == "blocked"
+    assert "action_inventory_experiment_mismatch" in report["blockers"]
 
 
 def test_causal_screen_rejects_mixed_experiment_response(

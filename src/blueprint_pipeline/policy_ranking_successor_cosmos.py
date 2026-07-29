@@ -92,6 +92,7 @@ ALLOWED_CONDITIONS = (
     "reversed",
     "policy_swapped",
 )
+PHASE_B_REQUIRED_CONDITIONS = (*ALLOWED_CONDITIONS, "shifted")
 FORBIDDEN_IDENTITY_KEYS = frozenset(
     {
         "policy",
@@ -445,7 +446,12 @@ def build_forward_dynamics_request(
 
 
 def validate_smoke_inventory_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
-    """Verify the frozen 5-condition x 2-seed request inventory."""
+    """Verify a declared frozen control-condition x two-seed inventory.
+
+    Historical manifests omit ``required_conditions`` and retain the original
+    five-condition contract.  New Phase-B manifests explicitly add the valid
+    temporally shifted control.  No other condition set is accepted.
+    """
 
     if manifest.get("schema_version") != "policy_ranking_successor_smoke_request_inventory.v1":
         raise SuccessorContractError("smoke_inventory_schema_invalid")
@@ -453,15 +459,26 @@ def validate_smoke_inventory_manifest(manifest: Mapping[str, Any]) -> dict[str, 
     instruction = str(manifest.get("task_instruction") or "").strip()
     actions = manifest.get("action_hashes")
     requests = manifest.get("requests")
+    declared = manifest.get("required_conditions")
+    if declared is None:
+        expected_conditions = ALLOWED_CONDITIONS
+    elif isinstance(declared, Sequence) and not isinstance(
+        declared, (str, bytes, bytearray)
+    ):
+        expected_conditions = tuple(str(value) for value in declared)
+        if expected_conditions not in {ALLOWED_CONDITIONS, PHASE_B_REQUIRED_CONDITIONS}:
+            raise SuccessorContractError("smoke_inventory_required_conditions_invalid")
+    else:
+        raise SuccessorContractError("smoke_inventory_required_conditions_invalid")
     if (
         not isinstance(actions, Mapping)
-        or len(actions) != len(ALLOWED_CONDITIONS)
-        or set(actions) != set(ALLOWED_CONDITIONS)
+        or len(actions) != len(expected_conditions)
+        or set(actions) != set(expected_conditions)
     ):
         raise SuccessorContractError("smoke_inventory_action_conditions_invalid")
     if not isinstance(requests, Sequence) or isinstance(requests, (str, bytes, bytearray)):
         raise SuccessorContractError("smoke_inventory_requests_invalid")
-    expected_pairs = {(condition, seed) for condition in ALLOWED_CONDITIONS for seed in (0, 1)}
+    expected_pairs = {(condition, seed) for condition in expected_conditions for seed in (0, 1)}
     observed_pairs: set[tuple[str, int]] = set()
     inventory_rows: list[dict[str, Any]] = []
     for row in requests:
@@ -497,12 +514,18 @@ def validate_smoke_inventory_manifest(manifest: Mapping[str, Any]) -> dict[str, 
                 "observation_sha256": observation_hash,
             }
         )
-    if observed_pairs != expected_pairs or len(inventory_rows) != 10:
+    expected_request_count = len(expected_conditions) * 2
+    if observed_pairs != expected_pairs or len(inventory_rows) != expected_request_count:
         raise SuccessorContractError("smoke_inventory_incomplete")
     digest = canonical_sha256(inventory_rows)
     if manifest.get("inventory_sha256") != digest:
         raise SuccessorContractError("smoke_inventory_sha256_invalid")
-    return {"status": "passed", "request_count": 10, "inventory_sha256": digest}
+    return {
+        "status": "passed",
+        "request_count": expected_request_count,
+        "required_conditions": list(expected_conditions),
+        "inventory_sha256": digest,
+    }
 
 
 def assert_evaluator_eligible(rollout: Mapping[str, Any]) -> None:

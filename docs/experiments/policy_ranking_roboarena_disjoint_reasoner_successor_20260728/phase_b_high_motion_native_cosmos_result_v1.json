@@ -1,0 +1,101 @@
+{
+  "schema_version": "policy_ranking_phase_b_high_motion_native_cosmos_result.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "status": "completed_causal_screen_failed_product_abstention",
+  "source_commit": "c04ce1327ef8c45dad43e1b2a8e7087ff8d156ef",
+  "protocol_amendment_sha256": "b2411e5981af473ff992b13f253253674a33293fa396012e9cf633695f3aa196",
+  "provider_bundle_sha256": "56e0b86e1070140587b132bbe04178382a4f1478b200c282958e59d7d935f823",
+  "provider_runtime_output_sha256": "0ec1fda0d996ea6d583d27438a44ccd4480f290324284387be63a3cd733d0859",
+  "data": {
+    "dataset": "RoboArena/DataDump_07-17-2026",
+    "dataset_revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "independent_session_count": 1,
+    "session_id": "005387dc-76ab-405e-b363-b2182a075b5c",
+    "prediction_was_label_blind": true,
+    "policy_identity_in_provider_payload": false,
+    "physical_future_pixels_in_provider_payload": false,
+    "task_instruction": "put the brown bowl in the purple plate"
+  },
+  "runtime": {
+    "provider": "Vast",
+    "gpu": "RTX PRO 6000 WS",
+    "image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "checkpoint": "nvidia/Cosmos3-Nano",
+    "checkpoint_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "conditioning": "one 640x540 DROID wrist-left-right composite plus one valid 16x10 action trace",
+    "generated_frames_per_request": 17,
+    "fps": 15,
+    "structural_canaries": {
+      "count": 2,
+      "same_process_handoff": "passed",
+      "direct_video_sha256": "4f4d24d00f198973de2b06eabe303b4308b56f718b88f775137758dc39f6a7ba",
+      "blueprint_wrapper_video_sha256": "4f4d24d00f198973de2b06eabe303b4308b56f718b88f775137758dc39f6a7ba",
+      "byte_identical_output": true
+    },
+    "scientific_request_count": 12,
+    "conditions": [
+      "recorded",
+      "zero",
+      "shuffled",
+      "reversed",
+      "policy_swapped",
+      "shifted"
+    ],
+    "seeds": [0, 1]
+  },
+  "causal_screen": {
+    "report_file_sha256": "963f12092c0ec4393eef228e46a8b1161610f303bae0e004286181e7a6685bba",
+    "screen_passed": false,
+    "nonidentical_scene_response_gate": false,
+    "directional_temporal_placebo_rejection_gate": false,
+    "seed_robustness_gate": false,
+    "active_same_seed_scene_response_passes": 1,
+    "active_same_seed_scene_response_total": 10,
+    "active_temporal_placebo_rejection_passes": 2,
+    "active_temporal_placebo_rejection_total": 10,
+    "conditions_passing_both_seed_robustness": 0,
+    "conditions_tested_for_both_seed_robustness": 5,
+    "powered_confirmation": false,
+    "required_independent_sessions": 17
+  },
+  "tier_1_rollout_reliability": {
+    "report_file_sha256": "93fe7543fc4e4a8f1210be360fda8983788ed09cd6cb959b0bba5f8f1c81a72f",
+    "window_count": 12,
+    "window_hard_failure_count": 5,
+    "session_reliable": false,
+    "session_flags": [
+      "static_under_command",
+      "timing_disagreement"
+    ],
+    "eligible_timing_window_count": 5,
+    "timing_correlation_median": 0.021935567756890394,
+    "frozen_minimum_timing_correlation": 0.15
+  },
+  "physical_reference_diagnostic": {
+    "source": "matching real left-camera episode retained outside provider and evaluator payloads",
+    "first_window_motion_mean": 0.12390393681591377,
+    "first_window_motion_max": 0.9842496514320374,
+    "first_window_timing_correlation": 0.18923612813378857,
+    "generated_recorded_seed_0_motion_mean": 0.0135,
+    "generated_recorded_seed_1_motion_mean": 0.0378,
+    "role": "post-generation visual diagnostic; not evaluator input and not a substitute for powered causal qualification"
+  },
+  "abstention": {
+    "product_abstention_required": true,
+    "product_abstention_correct_for_frozen_gates": true,
+    "native_cosmos_full_episode_matrix_admitted": false,
+    "native_cosmos_ranking_credit": false,
+    "reason": "the WAM failed both the registered counterfactual causal screen and the session-aggregated reliability gate"
+  },
+  "label_unseal": {
+    "occurred_after_prediction_and_causal_report_freeze": true,
+    "scope": "this one session only",
+    "ledger_file_sha256": "8c6c9d84e504613055a16b6a90a7459935d5d4b09e174b0755e8f4abd1a2217b",
+    "this_session_future_confirmation_eligible": false,
+    "remaining_selected_sessions_still_label_sealed": 16
+  },
+  "phase_b_design_achieved": "fallback_level_3_single_chunk_open_loop_replay_causal_diagnostic",
+  "claim_boundary": "This is valid label-blind negative evidence for the frozen one-session native-Cosmos configuration and a correct product abstention. It is underpowered for Cosmos WAM qualification, is not a full episode, did not re-query a policy, did not rank policies, and did not test captured-site transfer.",
+  "cosmos_wam_qualification": "inconclusive_not_qualified",
+  "manifest_sha256": "c6011b281b0a79f7b008512f972f1d49eb4aa3d21fc9705e62b4d9c365551591"
+}

@@ -6101,6 +6101,14 @@ def test_vast_adapter_remaining_small_helper_branches(
         == vpa.REDACTED_SECRET_FIELD
     )
 
+    public_env = vpa._probe_env(
+        job_dir=tmp_path / "public-model-env",
+        enable_isaac_smoke=False,
+        forward_hf_token=False,
+    )
+    assert "HF_TOKEN" not in public_env
+    assert "HUGGING_FACE_HUB_TOKEN" not in public_env
+
     with pytest.raises(ValueError, match="unsupported_provider_bundle_kind"):
         run_vast_provider_adapter(job_dir=tmp_path / "bad-kind", provider_bundle_kind="bad")
     assert vpa._release_vast_launch_lock(None) is None

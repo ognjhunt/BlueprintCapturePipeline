@@ -2461,6 +2461,7 @@ def _probe_env(
     provider_bundle_inline_base64: str | None = None,
     provider_bundle_inline_sha256: str | None = None,
     retain_cosmos_server: bool = False,
+    forward_hf_token: bool = True,
 ) -> dict[str, str]:
     env = {
         "BLUEPRINT_VAST_PROBE": "true",
@@ -2486,7 +2487,7 @@ def _probe_env(
         env["BLUEPRINT_RETAIN_COSMOS_SERVER"] = "true"
         env["BLUEPRINT_COSMOS_RETAINED_ROOT"] = "/workspace/blueprint_vast_probe/cosmos3_retained"
     hf_token, _hf_token_status = _read_hf_token_file()
-    if hf_token:
+    if forward_hf_token and hf_token:
         env["HF_TOKEN"] = hf_token
         env["HUGGING_FACE_HUB_TOKEN"] = hf_token
         env["HF_HUB_DISABLE_TELEMETRY"] = "1"
@@ -3871,16 +3872,15 @@ def run_vast_provider_adapter(
     started_instance_id_path: str | Path | None = None,
     retain_instance_on_runtime_failure: bool = False,
     retention_watchdog_handoff: Mapping[str, Any] | None = None,
+    forward_hf_token: bool = True,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None,
     pre_provider_mutation_hook: Callable[[], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
-    resolved_image_login_mode = (
-        _string(ngc_image_login_mode)
-        or _string(os.getenv(VAST_IMAGE_LOGIN_MODE_ENV))
-        or DEFAULT_NGC_IMAGE_LOGIN_MODE
-    )
+    resolved_image_login_mode = _string(ngc_image_login_mode) or _string(
+        os.getenv(VAST_IMAGE_LOGIN_MODE_ENV)
+    ) or DEFAULT_NGC_IMAGE_LOGIN_MODE
     if resolved_image_login_mode not in NGC_IMAGE_LOGIN_MODES:
         raise ValueError(f"unsupported_ngc_image_login_mode:{resolved_image_login_mode}")
     resolved_job_dir = Path(job_dir).expanduser().resolve()
@@ -5061,6 +5061,7 @@ def run_vast_provider_adapter(
                         inline_bundle_transport.get("inline_provider_bundle_sha256")
                     ),
                     retain_cosmos_server=retain_instance_on_runtime_failure,
+                    forward_hf_token=forward_hf_token,
                 ),
                 image_login=image_login,
                 template_hash_id=template_hash,
