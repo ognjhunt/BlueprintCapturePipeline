@@ -20,6 +20,7 @@ from blueprint_pipeline.policy_ranking_successor_cosmos import (
     SuccessorContractError,
     build_action_controls,
     droid_action_stream,
+    validate_smoke_inventory_manifest,
 )
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256, file_sha256
 
@@ -110,6 +111,7 @@ def test_native_cosmos_canary_bundle_is_immutable_and_label_blind(tmp_path: Path
         inventory = json.loads(
             archive.read("provider_runtime/cosmos3_input/smoke_request_inventory.json")
         )
+        assert validate_smoke_inventory_manifest(inventory)["status"] == "passed"
         assert inventory["outcome_labels_accessed"] is False
         assert len(inventory["requests"]) == 10
         action_streams = json.loads(
