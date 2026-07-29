@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -26,17 +27,18 @@ from blueprint_pipeline.policy_ranking_successor_cosmos import (
 def _actions(offset: float = 0.0) -> list[list[float]]:
     rows = []
     for index in range(16):
+        angle = index * 0.001
         rows.append(
             [
                 offset + index * 0.0001,
                 offset - index * 0.0002,
                 offset + index * 0.0003,
-                1.0,
-                index * 0.0004,
-                index * 0.0005,
-                index * 0.0006,
-                1.0,
-                index * 0.0007,
+                math.cos(angle),
+                math.sin(angle),
+                0.0,
+                -math.sin(angle),
+                math.cos(angle),
+                0.0,
                 float(index % 2),
             ]
         )
@@ -47,10 +49,22 @@ def test_action_controls_remain_pairwise_distinct() -> None:
     controls = build_action_controls(
         droid_action_stream(_actions()),
         droid_action_stream(_actions(0.002)),
+        observation_gripper_hold=0.0,
         shuffle_seed=20260727,
     )
     assert set(controls) == {"recorded", "zero", "shuffled", "reversed", "policy_swapped"}
     assert len({item["action_sha256"] for item in controls.values()}) == 5
+    assert all(
+        row[3:9] == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        for row in controls["zero"]["actions"]
+    )
+    assert all(row[-1] == 0.0 for row in controls["zero"]["actions"])
+
+
+def test_action_stream_rejects_literal_zero_rot6d() -> None:
+    invalid = [[0.0] * 10 for _ in range(16)]
+    with pytest.raises(SuccessorContractError, match="rot6d_first_column_not_unit"):
+        droid_action_stream(invalid)
 
 
 def test_raw_droid_state_conversion_preserves_exact_shape_and_gripper_flip() -> None:

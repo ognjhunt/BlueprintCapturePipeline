@@ -1,0 +1,148 @@
+{
+  "schema_version": "policy_ranking_phase_b_open_loop_replay_protocol.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "frozen_at": "2026-07-28T20:03:00-0500",
+  "frozen_before_predictions": true,
+  "paid_execution_admitted": false,
+  "provider_called_for_this_phase": false,
+  "outcome_labels_accessed": false,
+  "design": {
+    "achieved_level": "phase_b_fallback_3_frozen_replayed_real_candidate_policy_traces",
+    "not_achieved": ["new_independently_published_snapshot", "runnable_seven_policy_endpoints", "live_policy_requery_closed_loop"],
+    "claim_ceiling": "open_loop_replay_qualification_and_disjoint_same_snapshot_rank_calibration_only"
+  },
+  "data": {
+    "dataset": "RoboArena/DataDump_07-17-2026",
+    "revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "license": "MIT",
+    "split_amendment_manifest_sha256": "df0a5c8b845a09c5b2ebe7e47ec33e53d09164c637821b3249af955433547c78",
+    "technical_preflight_manifest_sha256": "fbb458a017cea0b248fb6a91ec9fea57f467ff15fa8c073231b4ad14ea847b5f",
+    "sessions": 17,
+    "policies": 7,
+    "rows": 119,
+    "views": ["wrist", "left", "right"],
+    "labels_sealed_until_all_predictions_hashed": true
+  },
+  "prefix": {
+    "executed_prefix_steps": 16,
+    "executed_prefix_seconds_derived": 1.0666666666666667,
+    "basis": "inherited contract-derived v2 selection; native DROID forward-dynamics chunk is 16 actions and no live endpoint exists for a 4/8/16 requery pilot",
+    "maximum_horizon_steps": 240,
+    "maximum_chunks_per_episode": 15,
+    "empirical_4_8_16_pilot": "still required if runnable endpoints are later admitted"
+  },
+  "action_contract": {
+    "source_action_space": "joint_velocity_7_plus_binary_gripper_1",
+    "arm_motion_source": "recorded absolute cartesian_position state transitions",
+    "source_gripper_index": 7,
+    "source_gripper_action_flipped_for_cosmos": true,
+    "target_shape": [16, 10],
+    "frequency_hz": 15,
+    "translation_unit": "meters",
+    "pose_convention": "backward_framewise",
+    "coordinate_conversion": "DROID-to-OpenCV",
+    "rotation": "column_based_rot6d",
+    "rot6d_identity": [1, 0, 0, 0, 1, 0],
+    "normalization": "raw_external_actions_no_adapter_normalization",
+    "no_motion_gripper": "one_minus_chunk_initial_observation_gripper_position",
+    "literal_zero_rot6d_rejected": true
+  },
+  "controls": {
+    "conditions": ["recorded", "zero", "shuffled", "reversed", "shifted", "policy_swapped"],
+    "policy_swapped": "real trace from another frozen candidate policy in the same session",
+    "shifted": "one recorded action step forward where at least 18 source states exist",
+    "seeds": [0, 1],
+    "all_action_hashes_pairwise_distinct_required": true
+  },
+  "observation": {
+    "initial": "first synchronized available frame from each recorded view",
+    "composition": "wrist 640x360 top; left and right 320x180 bottom; bottom-edge pad to 640x544 for pinned runtime",
+    "subsequent_for_open_loop_replay": "last generated future frame from the same WAM arm",
+    "physical_ground_truth_future_pixels_as_wam_input": false,
+    "policy_identity_in_wam_or_evaluator_prompt": false
+  },
+  "arms": {
+    "skeleton_only": {
+      "status": "technically_blocked_for_new_sessions",
+      "reason": "RoboArena snapshot lacks per-session camera intrinsics/extrinsics required for attributable OSCAR Franka projection",
+      "historical_baseline_retained": true
+    },
+    "oscar_wam": {
+      "status": "technically_blocked_for_new_sessions",
+      "reason": "OSCAR requires a calibrated 2D kinematic skeleton video; no disjoint session in the public OSCAR rollout set overlaps the frozen split"
+    },
+    "native_cosmos3_nano": {
+      "status": "label_free_causal_canary_prepared",
+      "model": "nvidia/Cosmos3-Nano",
+      "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+      "mode": "forward_dynamics",
+      "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+      "environment_manifest_sha256": "7f976b9f9e5180d1def18648aed85f787911dbff67eb4d1a5cf81210c158ff3f"
+    },
+    "cosmos3_oscar_skeleton_hybrid": {
+      "status": "technically_blocked_for_new_sessions",
+      "reason": "no frozen calibrated adapter can project the Franka skeleton into these captured camera views; uncalibrated overlay is forbidden"
+    }
+  },
+  "native_cosmos_causal_canary": {
+    "session_selection": "first frozen session",
+    "policy_selection": "first required policy, second required policy as real swap",
+    "requests": 10,
+    "structural_requests": 2,
+    "inference_steps": 30,
+    "causal_excess_over_strongest_placebo_minimum": 0.05,
+    "strongest_placebo_rejected": true,
+    "both_seed_robustness_required": true,
+    "scene_only_required": true,
+    "tier1_rollout_reliability_gate": "wam_rollout_reliability.py with ReliabilityThresholds defaults frozen before outputs; timing disagreement aggregated at session level",
+    "failure_effect": "no native Cosmos WAM qualification credit; retain outputs; Blueprint must abstain"
+  },
+  "full_episode_admission": {
+    "requires_native_causal_canary_pass": true,
+    "episode_unit": "session_policy",
+    "action_sequence": "contiguous real recorded chunks",
+    "termination": ["trace_end", "240_steps", "collapse_abstention", "safety_abstention"],
+    "complete_episode_required_for_ranking": true
+  },
+  "evaluator": {
+    "provider": "Google Gemini API",
+    "model": "gemini-3.6-flash",
+    "authenticated_version": "3.6-flash-07-2026",
+    "native_video": true,
+    "structured_output": true,
+    "primary_method": "direct within-session policy-pair comparison then Bradley-Terry aggregation",
+    "schema_canary": "one synchronous request before batch",
+    "matrix_transport": "Batch API at documented 50 percent standard price",
+    "independent_of_cosmos_wam_family": true,
+    "policy_identity_and_outcomes_hidden": true,
+    "physical_ground_truth_pixels_forbidden": true,
+    "stable_success_requires_progress_5_and_multiple_adjacent_frames": true,
+    "abstention_required": true
+  },
+  "ranking_and_abstention": {
+    "units": "sessions and policies, never frames/seeds/requests",
+    "metrics": ["Spearman rho", "Kendall tau-b", "pairwise ordering accuracy", "session-clustered bootstrap 95CI", "exact permutation uncertainty", "risk coverage", "selective pairwise accuracy"],
+    "tier1_gate_merged_commit": "55c1a1ac",
+    "timing_scope": "session",
+    "failed_or_collapsed_rows_retained": true,
+    "labels_unsealed_only_after_predictions_and_uncertainty_hashed": true
+  },
+  "budgets": {
+    "gpu_compute_cap_usd": 50,
+    "evaluator_api_cap_usd": 25,
+    "storage_transfer_cap_usd": 10,
+    "campaign_total_cap_usd": 100,
+    "maximum_concurrent_gpus": 1,
+    "current_measured_gpu_spend_usd": 0.24818,
+    "next_native_canary_hard_cap_usd": 5.0
+  },
+  "sources": {
+    "oscar": {"url": "https://github.com/wuzy2115/oscar-public", "revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb"},
+    "cosmos_framework": {"url": "https://github.com/NVIDIA/cosmos-framework", "revision": "09f23119ea92c707207bba55565e7a09d16896a2"},
+    "cosmos": {"url": "https://github.com/NVIDIA/cosmos", "revision": "bebca76311266941d06c5f5572fb601184ba24fa"},
+    "gemini_model_doc": "https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash",
+    "gemini_batch_doc": "https://ai.google.dev/gemini-api/docs/batch-api"
+  },
+  "forbidden": ["OSCAR generated world video feeding Cosmos", "Cosmos output feeding OSCAR", "one WAM grading another", "WAM or candidate policy self grading", "unregistered score fusion", "promoting replay to live closed loop", "unsealing outcomes before prediction freeze", "threshold relaxation after outputs"],
+  "manifest_sha256": "0c9cab83b263e7710b37d9d6391bc910590cf78eeb36cc0ed7e60bd3bed9698c"
+}

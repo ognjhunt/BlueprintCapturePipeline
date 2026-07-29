@@ -183,6 +183,7 @@ def _build_action_streams(
     rows = table.slice(0, 17).to_pylist()
     states = [row["observation.state.cartesian_position"] for row in rows]
     source_gripper = [row["action.gripper_position"] for row in rows[:16]]
+    source_gripper_hold = float(rows[0]["observation.state.gripper_position"])
     recorded = convert_droid_states_to_action_stream(
         states,
         source_gripper,
@@ -192,7 +193,12 @@ def _build_action_streams(
         [0.001, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0 if i < 8 else 0.0] for i in range(16)
     ]
     swapped = droid_action_stream(swapped_actions)
-    conditions = build_action_controls(recorded, swapped, shuffle_seed=SHUFFLE_SEED)
+    conditions = build_action_controls(
+        recorded,
+        swapped,
+        observation_gripper_hold=1.0 - source_gripper_hold,
+        shuffle_seed=SHUFFLE_SEED,
+    )
     return {
         "schema_version": "policy_ranking_successor_action_streams.v1",
         "experiment_id": experiment_id,
