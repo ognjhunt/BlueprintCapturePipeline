@@ -105,3 +105,16 @@ def test_runtime_fix_amendment_preserves_science_and_binds_replacement_bundle() 
     assert environment["replacement_bundle"]["bundle_sha256"] == (
         "bae438e48fa4ac2544840c91e713cdfc1274334820f1d7649d0c772876f1831a"
     )
+
+
+def test_replacement_cost_amendment_preserves_hard_caps_and_science() -> None:
+    amendment = _artifact("replacement_cost_admission_amendment_v5.json")
+    environment = _artifact("environment_and_source_manifest_v2.json")
+
+    assert amendment["basis"]["cumulative_maximum_projection_usd"] == 6.627329
+    assert amendment["change"]["cumulative_target_spend_usd_after"] == 6.7
+    assert amendment["change"]["per_allocation_hard_cap_usd_unchanged"] == 10.0
+    assert amendment["change"]["gpu_category_ceiling_usd_unchanged"] == 50.0
+    assert amendment["change"]["scientific_fields_changed"] is False
+    assert amendment["timing"]["allocation_2_provider_called"] is False
+    assert environment["execution"]["target_spend_usd"] == 6.7
