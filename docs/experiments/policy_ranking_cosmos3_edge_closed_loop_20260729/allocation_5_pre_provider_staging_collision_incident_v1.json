@@ -9,8 +9,11 @@
     "pid": 16098,
     "termination_signal": "SIGTERM",
     "exit_code": 143,
+    "intentional_coordination_teardown": true,
+    "termination_reason": "Stop the canonical allocator before provider mutation after proving the admitted local v9 bundle did not match the bundle reachable through the shared signed URL pointer.",
     "terminated_before_provider_creation": true,
-    "process_absent_after_termination": true
+    "process_absent_after_termination": true,
+    "signal_handling_change_authorized": false
   },
   "admitted_binding": {
     "source_commit": "aecb80b3193c6fbde0b5b4ef79075394f1eefe78",
