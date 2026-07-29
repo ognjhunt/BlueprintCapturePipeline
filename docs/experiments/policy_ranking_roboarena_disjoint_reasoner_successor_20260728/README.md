@@ -20,3 +20,20 @@ No provider call, GPU allocation, outcome-label read, or data upload is authoriz
 by these files alone. Paid execution must pass the canonical allocator, exact-source
 binding, single-use external authorization, watchdog, budget, teardown, and
 provider-zero gates.
+
+## Structured-output canary result
+
+The exact-main canary completed on source commit
+`a67f6077e648d13b1b3781d6df02c5739dee8138`. The pinned Reasoner loaded on one
+CUDA-compatible H100 NVL and returned one exact-schema JSON response. Estimated
+GPU cost was `$0.24818`; authenticated provider inventory returned to zero.
+
+This is a transport/runtime success and not evaluator qualification. The response
+assigned zero progress to both episodes and described no task action, but also
+set both stable-success fields to true with confidence 1 and uncertainty 0.
+`reasoner_schema_canary_result_v1.json` therefore records a semantic-consistency
+failure and awards no judging, ranking, Phase-B, WAM, or transfer credit.
+
+`reasoner_semantic_validation_amendment_v2.json` prospectively requires every
+future Reasoner result to pass cross-field stable-success validation. Invalid
+responses remain in evidence and are rejected rather than silently repaired.

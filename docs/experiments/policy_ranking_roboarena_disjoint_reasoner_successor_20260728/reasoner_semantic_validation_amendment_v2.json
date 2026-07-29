@@ -1,0 +1,38 @@
+{
+  "schema_version": "policy_ranking_reasoner_semantic_validation_amendment.v2",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "status": "prospective_for_all_future_reasoner_evaluator_runs",
+  "supersedes_for_future_runs_only": "reasoner_schema_canary_protocol_v1 semantic validation surface",
+  "former_protocol_sha256": "7d742760268c0324d06232912924b13cd9ff79e67f524818dbc1f0806f47d1f1",
+  "amendment_reason": "The completed canary returned schema-valid but semantically contradictory stable-success fields, proving that JSON Schema conformance alone is insufficient evaluator admission.",
+  "historical_canary_rewritten": false,
+  "historical_canary_claim": "technical transport passed and semantic consistency failed",
+  "changes": [
+    {
+      "field": "stable_success_contract",
+      "former": "boolean type only",
+      "new": "stable_success may be true only when the corresponding task-progress score is 5 and success persists across multiple adjacent frames"
+    },
+    {
+      "field": "semantic_validation_failure_handling",
+      "former": "not registered",
+      "new": "retain the response, mark the row invalid for evaluator/ranking credit, and fail closed without silently repairing the model output"
+    },
+    {
+      "field": "reasoner_prompt",
+      "former": "schema and task rubric only",
+      "new": "explicitly states the stable-success consistency contract before provider execution"
+    },
+    {
+      "field": "public_tunnel_transport",
+      "former": "implicit cloudflared default and child process tied to caller session",
+      "new": "explicit auto/http2/quic selection with a detached process session and recorded transport"
+    }
+  ],
+  "paid_execution_admitted": false,
+  "provider_called_by_amendment": false,
+  "outcome_labels_used_to_choose_thresholds": false,
+  "thresholds_relaxed": false,
+  "future_run_rule": "All future Reasoner evaluator bundles must bind to source code containing these validators; previously generated responses are never silently repaired or discarded.",
+  "manifest_sha256": "9e51bdeeff9a251f33172c495025da5542eec728857105c0ab94a1d66e7e0b9d"
+}

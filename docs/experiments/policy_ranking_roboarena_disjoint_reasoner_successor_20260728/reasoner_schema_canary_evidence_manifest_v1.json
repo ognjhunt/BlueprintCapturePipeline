@@ -1,0 +1,25 @@
+{
+  "schema_version": "policy_ranking_reasoner_schema_canary_evidence_manifest.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "run_id": "reasoner_schema_canary_v1",
+  "external_evidence_root": "policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/reasoner_schema_canary_v1",
+  "artifacts": [
+    {"path": "provider_bundle.zip", "sha256": "e74e0ea2fe99a7696744cf5b1bbc65171d809f563bbfa3076acdbd897bcbf646"},
+    {"path": "bundle_receipt.json", "sha256": "bd023fcb62c65ec480dd93869770a15a0fd12982c99cf78e64b23c1bab4389d9"},
+    {"path": "preflight.json", "sha256": "4ec1955dfce8ef08bf6456c9082f3bff5197b6c8843c6e7936a1599ec04d7520"},
+    {"path": "admission_execute.json", "sha256": "2e67af0363b9f6db6392b7cb274a3c7ae08f15d04dcd9b901ad7f9d3e443edd7"},
+    {"path": "bound_request_execute.json", "sha256": "7ae47d08bd29889ad07fe4a9e4a6427d6dae828bb21ded9c86b16c67e929277b"},
+    {"path": "adapter_execute.json", "sha256": "134084ece1072b7b89b1576419f10e005da5e566348cd5bad74d5b4549efcd52"},
+    {"path": "provider_output.zip", "sha256": "1c2a326e98001f398b1f240ba4ba60076b69d7d077ee904d349383dd0ea41ad5"},
+    {"path": "provider_output_extracted/evaluator_runtime_result.json", "sha256": "4cbacf60b2ddd254b79d4dd342bc238144c1f7095754cfa9cba8aa147bdd4302"},
+    {"path": "provider_output_extracted/pair_results.json", "sha256": "07169f54f2ae0d780882c0a42cca94337a5eb7437d8c4ac7e7564c0abe303d4d"},
+    {"path": "provider_output_extracted/reasoner_server.log", "sha256": "c6787c12ab1e6fbb29724f54570f1fc71c6ac31c21cbde9d5080e5e93d34d55b"},
+    {"path": "job/vast_budget_ledger.json", "sha256": "7a5017bbf3bacc6b0c31ac51be3c88ca6fce0339eb107a4f70322201c7410a7f"},
+    {"path": "job/vast_final_validation.json", "sha256": "0c9e94ee4c0a95006523f5a2082f980ec8d57e281d1db88a2180baaa59e83658"},
+    {"path": "job/vast_teardown_manifest.json", "sha256": "30a169c5a0a0c01dafb05f9dba0e854bd195e71dde5146e8260cbb10c5c61a17"},
+    {"path": "provider_zero_evidence.json", "sha256": "7a11174e9ec3fdaac13ce2401c452f3d8c8e0b57cf0797d01288039ef41387ab"}
+  ],
+  "large_or_operational_evidence_committed": false,
+  "secrets_or_signed_urls_committed": false,
+  "manifest_sha256": "5ec68eb8b2c0029934d1ebdd0f0e453024972111c8a4aa7d7287d216f3fb1d0f"
+}
