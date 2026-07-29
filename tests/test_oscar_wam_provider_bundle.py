@@ -449,6 +449,13 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
         == "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4"
     )
     assert (
+        runtime_input_package["claim_boundary"][
+            "skeleton_conditioning_is_proxy_from_mujoco_trace"
+        ]
+        is True
+    )
+    assert runtime_input_package["claim_boundary"]["existing_input_package_used"] is True
+    assert (
         runtime_input_package["oscar_dual_stream_input_contract"]["separate_2d_skeleton_stream"]
         is True
     )
@@ -670,6 +677,62 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
     assert "(official_case_rgb_video or runtime_rgb_expected)" in runner_text
     assert "--rgb-video" in runner_text
     assert 'inference_checkpoint_path = (\n            checkpoint_path / "model"' not in runner_text
+
+
+def test_existing_droid_oscar_input_preserves_recorded_joint_provenance(
+    tmp_path: Path,
+) -> None:
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    rollout_input.write_text(
+        json.dumps(
+            {
+                "schema_version": "wam_rollout_input_manifest.v1",
+                "task_prompts": [{"task_prompt": "Pick up the bottle."}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    oscar_input = tmp_path / "oscar_input"
+    oscar_input.mkdir()
+    _write_review_png(oscar_input / "first_frame.png")
+    _write_useful_conditioning_mp4(oscar_input / "blueprint_proxy_skeleton_conditioning.mp4")
+    package_manifest = tmp_path / "oscar_wam_input_package_manifest.json"
+    package_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint_oscar_wam_input_package.v1",
+                "status": "completed",
+                "prompt": "robot picks up the bottle",
+                "claim_boundary": {
+                    "skeleton_conditioning_from_recorded_droid_joint_state": True,
+                    "true_robot_proprioceptive_skeleton_available": True,
+                },
+                "skeleton_video": {
+                    "visual_signal": {"status": "completed", "blockers": []}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_oscar_wam_provider_bundle(
+        job_dir=tmp_path / "bundle-job",
+        wam_rollout_input_manifest=rollout_input,
+        oscar_input_dir=oscar_input,
+        oscar_input_package_manifest=package_manifest,
+        generated_at="2026-07-29T00:00:00+00:00",
+    )
+
+    assert manifest["status"] == "completed"
+    with zipfile.ZipFile(Path(str(manifest["bundle_path"]))) as archive:
+        runtime_manifest = json.loads(
+            archive.read("provider_runtime/wam_provider_runtime_manifest.json").decode("utf-8")
+        )
+    boundary = runtime_manifest["input_package"]["claim_boundary"]
+    assert boundary["skeleton_conditioning_from_recorded_droid_joint_state"] is True
+    assert boundary["true_robot_proprioceptive_skeleton_available"] is True
+    assert "skeleton_conditioning_is_proxy_from_mujoco_trace" not in boundary
+    assert boundary["existing_input_package_used"] is True
 
 
 def test_build_oscar_wam_provider_bundle_blocks_unpinned_official_source(
