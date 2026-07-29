@@ -1,0 +1,36 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_amendment.v6",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T09:47:52-0500",
+  "supersedes_amendment": "source_freeze_amendment_v5.json",
+  "former_amendment_sha256": "144cdd88d468e6926bf480859d3fe7f2192d2fda36897d39950a89413332cda5",
+  "triggering_evidence": "Allocation 4 loaded the exact Policy-DROID model and started the pinned NVIDIA service, then stopped before its first request because the base runner interpreter did not contain the pinned openpi_client package that was installed in the Cosmos virtual environment.",
+  "prospective_change": "Re-execute the same runner once under the already-built pinned Cosmos virtual-environment Python before constructing the client or server; classify this structured action-only bundle as provider bundle kind policy so the generic adapter does not require generated MP4 media.",
+  "scientific_legitimacy": "This is an interpreter and bundle-contract correction. It does not alter the policy checkpoint, observation pixels, robot state, task prompt, action decoding, deterministic settings, WAM, evaluator, labels, or thresholds.",
+  "pinned_dependency_evidence": {
+    "package": "openpi-client",
+    "version": "0.1.2",
+    "wheel_sha256": "b8aa6d2ea7172d3b7c1fcf867d43930052b5ff19ea7b777966781105aa989897",
+    "source": "the frozen NVIDIA Cosmos Framework uv.lock"
+  },
+  "paid_execution_admitted": false,
+  "provider_called_for_v8": false,
+  "physical_outcome_labels_accessed": false,
+  "changed_fields": [
+    "provider runner interpreter: base Python to pinned Cosmos virtual-environment Python",
+    "provider bundle kind: WAM video to structured policy action"
+  ],
+  "unchanged_fields": [
+    "policy checkpoint and revision",
+    "Cosmos Framework revision and lockfile",
+    "three policy observation views",
+    "joint and gripper state",
+    "task prompt",
+    "native 32x8 action contract",
+    "16-row WAM prefix",
+    "8 executed prefix steps",
+    "deterministic seed and decoder settings",
+    "all physical outcomes"
+  ],
+  "manifest_sha256": "869aadbbbaafe0f974ca439b03496c9e0d81e8fc33844066cf61d832bd558106"
+}

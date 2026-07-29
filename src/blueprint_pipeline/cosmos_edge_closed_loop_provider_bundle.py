@@ -110,6 +110,11 @@ def main() -> int:
             cwd=source, timeout=2400,
         )
         python = source / ".venv/bin/python"
+        if os.environ.get("BLUEPRINT_EDGE_POLICY_VENV_REEXEC") != "1":
+            reexec_env = os.environ.copy()
+            reexec_env["BLUEPRINT_EDGE_POLICY_VENV_REEXEC"] = "1"
+            reexec_env["PYTHONPATH"] = str(runtime) + os.pathsep + str(source)
+            os.execve(str(python), [str(python), __file__], reexec_env)
         checkpoint = work / "policy_snapshot"
         download_code = (
             "from huggingface_hub import snapshot_download;"

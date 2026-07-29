@@ -1,0 +1,29 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_policy_canary_bundle_freeze.v5",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T09:47:52-0500",
+  "supersedes_freeze": "policy_canary_bundle_freeze_v4.json",
+  "supersedes_freeze_sha256": "a138e05e16afea7bee2f442d7b319895130158a889e63d7aa6eeee384a67b88f",
+  "bundle_version": 8,
+  "bundle_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/policy_canary_bundle_v8/cosmos_edge_policy_canary_provider_bundle.zip",
+  "bundle_sha256": "09a7dd357de9bc544c8533a23e6698a3ebd7a87b7e8f3ebaa3ac0a633b7946aa",
+  "bundle_size_bytes": 766637,
+  "receipt_sha256": "061dce9395ffe2483fd7ff34df520de05e8c78a1e7b749cce37a87f8349a9fc3",
+  "runtime_manifest_sha256": "3cbded862d5307f9d4f7907ea4f6e6a0877da509d5d3afd20e0846b92667fe9d",
+  "canary_input_sha256": "0dc1b72a90dace038a8b9ea3b444fffa8daf51b0db6ef3228e5fe1a8010a2974",
+  "runner_sha256": "75e7810667aae40a702bf9539a063591aa6cf847685c2de4269103d63d365c21",
+  "entrypoint_sha256": "f104ef7f92d9af3f1f79cea025c6d6eaf81705df80ee0c1ff5b033147526fa3e",
+  "changed_runtime_evidence": [
+    "policy client and server run under the same exact pinned Cosmos virtual environment",
+    "the action-only provider bundle is validated as structured policy output and requires zero MP4 files",
+    "all prior policy identity, action-contract, guardrail-mode, and Blueprint-gate provenance remains required"
+  ],
+  "triggering_failure": "Allocation 4 loaded the exact model and started the service but could not import openpi_client from the base runner interpreter.",
+  "scientific_inputs_changed": false,
+  "canary_input_digest_unchanged": true,
+  "paid_execution_admitted": false,
+  "provider_called_for_v8": false,
+  "physical_outcome_labels_accessed": false,
+  "claim_boundary": "Code-only diagnostic recovery bundle; no WAM, ranking, transfer, economics, or physical-success credit.",
+  "freeze_sha256": "11ec86634e406aaee42903edf729dab55ef5fa5e88fd66def610c2d83c84fc4f"
+}

@@ -6,6 +6,7 @@ from __future__ import annotations
 PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "isaac",
     "wam",
+    "policy",
     "evaluator",
     "unitree_unifolm",
     "unitree_groot_n17_sonic",
@@ -79,7 +80,11 @@ def provider_runtime_contract_blockers(
             and ("OSCAR-2B" in runner_text or "Cosmos3-Nano" in runner_text)
             and "action_conditioned_video_rollout_generated" in runner_text
         )
-        runner_blocker = "provider_runner_missing_wam_runtime_contract"
+        runner_blocker = (
+            "provider_runner_missing_policy_runtime_contract"
+            if provider_bundle_kind == "policy"
+            else "provider_runner_missing_wam_runtime_contract"
+        )
     blockers: list[str] = []
     if not entrypoint_valid:
         blockers.append("provider_entrypoint_missing_runtime_result_crash_fallback")

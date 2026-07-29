@@ -98,6 +98,7 @@ class SuccessorGPUProfile:
     reference_bundle: bool = False
     powered_bundle: bool = False
     edge_policy_canary_bundle: bool = False
+    provider_bundle_kind: str = "wam"
     bundle_schema: str = BUNDLE_SCHEMA
     checkpoint_repository: str = CHECKPOINT_REPOSITORY
     checkpoint_revision: str = CHECKPOINT_REVISION
@@ -336,18 +337,19 @@ EDGE_CLOSED_LOOP_PROFILE = SuccessorGPUProfile(
         2: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-2",
         3: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-3",
         4: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-4",
+        5: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-5",
     },
     cost_authorization_binding_sha256=(
         "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
     ),
-    expected_bundle_sha256="706e3d0e6d94667fee221bee1b8ce94dab086b89e046d05daf70e374df5cda3d",
-    expected_bundle_size_bytes=766_572,
+    expected_bundle_sha256="09a7dd357de9bc544c8533a23e6698a3ebd7a87b7e8f3ebaa3ac0a633b7946aa",
+    expected_bundle_size_bytes=766_637,
     expected_embedded_input_hashes={
         "runtime_manifest_sha256": (
-            "cc21cc3784999bf2edc3174cd7996561e001dd34ad3db6356a00700a9e7b6b2f"
+            "3cbded862d5307f9d4f7907ea4f6e6a0877da509d5d3afd20e0846b92667fe9d"
         ),
         "canary_input_sha256": ("0dc1b72a90dace038a8b9ea3b444fffa8daf51b0db6ef3228e5fe1a8010a2974"),
-        "runner_sha256": ("3279e1281b47542921c3aeda21e60e15d6c79a0bb8e81660769db21af8863759"),
+        "runner_sha256": ("75e7810667aae40a702bf9539a063591aa6cf847685c2de4269103d63d365c21"),
         "entrypoint_sha256": ("f104ef7f92d9af3f1f79cea025c6d6eaf81705df80ee0c1ff5b033147526fa3e"),
     },
     qualification_canary_request_count=1,
@@ -359,6 +361,7 @@ EDGE_CLOSED_LOOP_PROFILE = SuccessorGPUProfile(
     target_spend_usd=5.0,
     hard_ttl_seconds=7_200,
     edge_policy_canary_bundle=True,
+    provider_bundle_kind="policy",
     bundle_schema="cosmos_edge_closed_loop_provider_bundle.v1",
     checkpoint_repository="nvidia/Cosmos3-Edge-Policy-DROID",
     checkpoint_revision="3ea407af3e156c0af3b4bb6edd85842cc9a58777",
@@ -831,7 +834,7 @@ def inspect_successor_bundle(
         blockers.append("successor_cosmos_provider_bundle_entries_missing")
     blockers.extend(
         provider_runtime_contract_blockers(
-            provider_bundle_kind="wam",
+            provider_bundle_kind=profile.provider_bundle_kind,
             entrypoint_text=entrypoint_text,
             runner_text=runner_text,
         )
@@ -1832,6 +1835,7 @@ def run_successor_gpu_lane(
         },
         paid_resource_admission_grant=grant,
         pre_provider_mutation_hook=consume_immediately_before_provider_mutation,
+        provider_bundle_kind=profile.provider_bundle_kind,
     )
     if consumption["status"] != "consumed":
         blockers = [str(item) for item in result.get("blockers") or []]

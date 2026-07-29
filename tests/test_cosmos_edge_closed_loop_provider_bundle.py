@@ -19,6 +19,8 @@ from blueprint_pipeline.policy_ranking_successor_gpu_admission import (
     inspect_successor_bundle,
 )
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
+from blueprint_pipeline.provider_runtime_bundle_contract import PROVIDER_RUNTIME_BUNDLE_KINDS
+from blueprint_pipeline.vast_provider_adapter import _provider_expected_video_count
 
 
 def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) -> None:
@@ -82,6 +84,8 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
         assert "gpu_memory_after_inference_mb" in runner
         assert "commanded_state_advance_proven" in runner
         assert "BLUEPRINT_EDGE_POLICY_WORK_DIR" in runner
+        assert "BLUEPRINT_EDGE_POLICY_VENV_REEXEC" in runner
+        assert "os.execve" in runner
         assert 'legacy_work = output / "runtime_work"' in runner
         manifest = json.loads(archive.read("provider_runtime/wam_provider_runtime_manifest.json"))
         assert manifest["experiment_id"] == ("policy_ranking_cosmos3_edge_closed_loop_20260729")
@@ -114,6 +118,9 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
     )
     assert inspection["status"] == "passed"
     assert inspection["blockers"] == []
+    assert profile.provider_bundle_kind == "policy"
+    assert "policy" in PROVIDER_RUNTIME_BUNDLE_KINDS
+    assert _provider_expected_video_count("policy") == 0
 
     import_root = tmp_path / "import-check"
     with zipfile.ZipFile(bundle) as archive:
