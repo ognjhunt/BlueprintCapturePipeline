@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import zipfile
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+
 
 PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "isaac",
@@ -10,6 +15,61 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "unitree_unifolm",
     "unitree_groot_n17_sonic",
 )
+
+
+def wam_registered_alternative_inputs_present(
+    *, bundle_path: Path, zip_entries: Sequence[str]
+) -> bool:
+    """Return whether a WAM bundle carries one complete registered input layout."""
+    entries = set(zip_entries)
+    standard_inputs_present = all(
+        f"provider_runtime/cosmos3_input/{name}" in entries
+        for name in (
+            "initial_observation.png",
+            "smoke_request_inventory.json",
+            "action_streams.json",
+        )
+    )
+    reference_inputs_present = all(
+        f"provider_runtime/cosmos3_droid_reference/{name}" in entries
+        for name in ("canary_manifest.json", "initial_observation.png", "action_streams.json")
+    )
+    powered_root = "provider_runtime/cosmos3_powered_droid/"
+    powered_packet_name = powered_root + "packet.json"
+    powered_inputs_present = False
+    if powered_packet_name in entries:
+        try:
+            with zipfile.ZipFile(bundle_path) as archive:
+                payload = json.loads(archive.read(powered_packet_name).decode("utf-8"))
+            packet = dict(payload) if isinstance(payload, Mapping) else {}
+            rows = packet.get("rows")
+            powered_images = (
+                {
+                    powered_root + str(row.get("initial_observation_relative_path") or "")
+                    for row in rows
+                    if isinstance(row, Mapping)
+                }
+                if isinstance(rows, list)
+                else set()
+            )
+            powered_inputs_present = (
+                packet.get("schema_version") == "policy_ranking_powered_droid_provider_packet.v1"
+                and isinstance(rows, list)
+                and len(rows) == 51
+                and len(powered_images) == 51
+                and powered_images.issubset(entries)
+                and all(
+                    powered_root + "official_canary/" + name in entries
+                    for name in (
+                        "canary_manifest.json",
+                        "initial_observation.png",
+                        "action_streams.json",
+                    )
+                )
+            )
+        except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
+            powered_inputs_present = False
+    return standard_inputs_present or reference_inputs_present or powered_inputs_present
 
 
 def provider_runtime_contract_blockers(

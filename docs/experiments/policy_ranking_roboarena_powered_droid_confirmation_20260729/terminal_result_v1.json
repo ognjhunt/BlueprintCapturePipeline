@@ -178,7 +178,7 @@
     "provider_zero_does_not_prove_invoice_settlement_or_scientific_validity": true
   },
   "review_gallery": {
-    "external_path": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-powered-droid-confirmation-evidence-20260729/live_run_v5/review_gallery_v2",
+    "external_path": "${BLUEPRINT_POWERED_DROID_EVIDENCE_ROOT}/live_run_v5/review_gallery_v2",
     "manifest_sha256": "1d1ee91486448d2db90acff1a7e0b5d3305b8fd047df669fe59a110f0437bee4",
     "video_count": 48,
     "selection_uses_physical_outcomes": false,
@@ -194,5 +194,5 @@
     "economics_and_speed": false
   },
   "cheapest_scientifically_valid_next_experiment": "Freeze a separate Cosmos plus OSCAR-skeleton adapter and skeleton-only baseline, select 17 untouched label-sealed sessions, and repeat only the causal/control matrix before any evaluator spend. Score visible-skeleton and skeleton-masked scene response separately. Do not rerun native Cosmos unchanged and do not enter ranking unless the new arm passes.",
-  "manifest_sha256": "1bf152472aa59f902f7ca7fc08d64daad15c2888abc7adb876c562e36fccefbd"
+  "manifest_sha256": "de3d535780adc0d330171c0d54809b51e400079c9d806492b4985bbe41a73f62"
 }

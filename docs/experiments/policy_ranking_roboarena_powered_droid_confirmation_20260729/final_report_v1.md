@@ -137,8 +137,8 @@ physical-evaluation cost/time anchor.
 
 ## Review media and immutable evidence
 
-The full local evidence root is
-`/Users/nijelhunt_1/workspace/policy-ranking-roboarena-powered-droid-confirmation-evidence-20260729`.
+The full local evidence root is the operator-bound
+`${BLUEPRINT_POWERED_DROID_EVIDENCE_ROOT}`.
 The non-cherry-picked gallery is under `live_run_v5/review_gallery_v2`; it
 contains all six action conditions, both seeds, all three separated camera
 views, and the original composites. All 48 gallery videos passed hash and

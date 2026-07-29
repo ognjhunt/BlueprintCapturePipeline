@@ -58,6 +58,7 @@ from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_ma
 from .provider_runtime_bundle_contract import (
     PROVIDER_RUNTIME_BUNDLE_KINDS as VAST_PROVIDER_BUNDLE_KINDS,
     provider_runtime_contract_blockers,
+    wam_registered_alternative_inputs_present,
 )
 from .vast_independent_watchdog_control import write_started_vast_instance_id
 from .vast_evaluator_probe_script import (
@@ -2014,67 +2015,11 @@ def _blueprint_bundle_preflight(
                     f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}"
                 )
             missing_entries = sorted(required_entries - set(zip_entries))
-            cosmos3_inputs_present = all(
-                f"provider_runtime/cosmos3_input/{name}" in zip_entries
-                for name in (
-                    "initial_observation.png",
-                    "smoke_request_inventory.json",
-                    "action_streams.json",
-                )
-            )
-            cosmos3_reference_inputs_present = all(
-                f"provider_runtime/cosmos3_droid_reference/{name}" in zip_entries
-                for name in (
-                    "canary_manifest.json",
-                    "initial_observation.png",
-                    "action_streams.json",
-                )
-            )
-            powered_packet_name = "provider_runtime/cosmos3_powered_droid/packet.json"
-            cosmos3_powered_inputs_present = False
-            if powered_packet_name in zip_entries:
-                try:
-                    with zipfile.ZipFile(bundle_path) as powered_archive:
-                        powered_packet = json.loads(
-                            powered_archive.read(powered_packet_name).decode("utf-8")
-                        )
-                    powered_rows = powered_packet.get("rows")
-                    powered_images = (
-                        {
-                            "provider_runtime/cosmos3_powered_droid/"
-                            + str(row.get("initial_observation_relative_path") or "")
-                            for row in powered_rows
-                            if isinstance(row, Mapping)
-                        }
-                        if isinstance(powered_rows, list)
-                        else set()
-                    )
-                    cosmos3_powered_inputs_present = (
-                        powered_packet.get("schema_version")
-                        == "policy_ranking_powered_droid_provider_packet.v1"
-                        and len(powered_rows or []) == 51
-                        and powered_images.issubset(set(zip_entries))
-                        and all(
-                            name in zip_entries
-                            for name in (
-                                "provider_runtime/cosmos3_powered_droid/official_canary/"
-                                "canary_manifest.json",
-                                "provider_runtime/cosmos3_powered_droid/official_canary/"
-                                "initial_observation.png",
-                                "provider_runtime/cosmos3_powered_droid/official_canary/"
-                                "action_streams.json",
-                            )
-                        )
-                    )
-                except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
-                    cosmos3_powered_inputs_present = False
-            wam_registered_alternative_present = (
-                cosmos3_inputs_present
-                or cosmos3_reference_inputs_present
-                or cosmos3_powered_inputs_present
-            )
             if missing_entries and not (
-                provider_bundle_kind == "wam" and wam_registered_alternative_present
+                provider_bundle_kind == "wam"
+                and wam_registered_alternative_inputs_present(
+                    bundle_path=bundle_path, zip_entries=zip_entries
+                )
             ):
                 blockers.append("provider_runtime_bundle_required_entries_missing")
             if zip_testzip_result is not None:
@@ -2478,11 +2423,7 @@ def _resolve_launch_mode(
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     if requested == "auto":
-        if enable_blueprint_bundle and provider_bundle_kind in {
-            "wam",
-            "evaluator",
-            "unitree_unifolm",
-        }:
+        if enable_blueprint_bundle and provider_bundle_kind in {"wam", "evaluator", "unitree_unifolm"}:
             return "ssh_direct"
         return "args" if enable_isaac_smoke else "ssh_direct"
     return requested
@@ -3935,11 +3876,9 @@ def run_vast_provider_adapter(
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
-    resolved_image_login_mode = (
-        _string(ngc_image_login_mode)
-        or _string(os.getenv(VAST_IMAGE_LOGIN_MODE_ENV))
-        or DEFAULT_NGC_IMAGE_LOGIN_MODE
-    )
+    resolved_image_login_mode = _string(ngc_image_login_mode) or _string(
+        os.getenv(VAST_IMAGE_LOGIN_MODE_ENV)
+    ) or DEFAULT_NGC_IMAGE_LOGIN_MODE
     if resolved_image_login_mode not in NGC_IMAGE_LOGIN_MODES:
         raise ValueError(f"unsupported_ngc_image_login_mode:{resolved_image_login_mode}")
     resolved_job_dir = Path(job_dir).expanduser().resolve()
