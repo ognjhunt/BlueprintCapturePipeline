@@ -60,8 +60,8 @@ qualification boundaries remain unchanged.
 
 The current implementation now hands admitted bytes to the separately versioned
 `capture_qa_report.v1` boundary for decoded media/PTS checks and provenance-bound
-quality observations. It does not yet provide resumable signed upload session
-creation, a checked-in local frame-quality analyzer, 360 native-container
-normalization, task-candidate approval, reconstruction planning, testbed
+quality observations. It does not yet provide Pipeline handoff from the WebApp
+resumable upload session, 360 native-container normalization, task-candidate
+approval, reconstruction planning, testbed
 compilation, or the hosted WebApp state machine. Those remain launch gates and
 must not be inferred from intake admission.
