@@ -1,0 +1,22 @@
+{
+  "schema_version": "decision_evidence_compatibility_policy.v1",
+  "major_version": 1,
+  "request_schema": "decision_evidence_request.v1",
+  "result_schema": "decision_envelope.v1",
+  "normalized_result_schema": "normalized_evidence_result.v1",
+  "rules": {
+    "unknown_major_version": "reject",
+    "unknown_required_field": "reject",
+    "missing_digest_binding": "reject",
+    "new_optional_display_field": "forward_compatible",
+    "historical_artifact_mutation": "forbidden",
+    "legacy_translation": "explicit_versioned_adapter_only",
+    "provider_selection_owner": "pipeline",
+    "scientific_verdict_owner": "pipeline"
+  },
+  "deprecations": {
+    "evaluation_run_spec.v1": "readable_via_legacy_pack_adapter",
+    "policy_improvement_run": "internal_experiment_only",
+    "post_training_data_package": "evidence_use_export_only"
+  }
+}

@@ -1,18 +1,23 @@
-# Policy Improvement Run
+# Legacy Policy Improvement Run Compatibility
+
+> Deprecated: this is not a customer-facing product or default workflow.
+> `policy_improvement_run_offer.v2` remains readable for compatibility and may
+> be used only as an internal candidate-generation experiment. Translate its
+> input into a Task Evaluation Run; no artifact here implies training occurred
+> or a policy improved.
 
 ## Objective
 
-Policy Improvement Run is Blueprint's managed policy-lift offer for robot teams.
-It turns a real-site Task Evaluation Run and Post-Training Data Package into a
-bounded attempt to improve a customer-supplied policy, adapter, task head,
+The legacy workflow records a bounded internal attempt to improve a
+customer-supplied policy, adapter, task head,
 distilled skill, or complete policy candidate. WAM/substrate evaluation is now
 first-class; classical simulation remains available as a fallback, cross-check,
 or stricter physics lane.
 
-The offer is more valuable than evaluation alone when a team already has a
+The experiment may be useful when a team already has a
 borderline policy and needs evidence that recoverable site/task failures can be
-closed before a pilot. The sales promise is not "Blueprint owns the robot
-foundation model." The sales promise is:
+closed before a pilot. It is not a sales promise and does not make Blueprint a
+robot foundation-model owner. Its historical objective was:
 
 > Turn a failed or borderline site eval into a better policy candidate with
 > auditable before/after evidence.
@@ -95,10 +100,10 @@ deployment-readiness measure.
 
 ## Commands
 
-Build a Policy Improvement Run offer manifest:
+Build the deprecated internal experiment manifest:
 
 ```bash
-blueprint-build-policy-improvement-run \
+python -m blueprint_pipeline.policy_improvement_run \
   --capture-root /path/to/<capture-root> \
   --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id> \
   --access-level config_adapter \
@@ -121,7 +126,7 @@ Closed robot teams do not need to hand Blueprint their full robot model on day
 one, and Blueprint should not hand customers the raw site scene, raw capture
 bundle, full scoring harness, or sealed audit seeds by default.
 
-The Policy Improvement Run manifest writes
+The legacy manifest writes
 `private_hardware_integration_plan.json` with one of four modes:
 
 - `reference_public_robot`: public/reference embodiment such as Unitree G1 for
@@ -174,10 +179,10 @@ blueprint-run-policy-autoresearch \
   --evaluator-command "python -m blueprint_pipeline.policy_autoresearch_mujoco_evaluator"
 ```
 
-Build the Post-Training Data Package:
+Build the deprecated compatibility evidence export (explicit opt-in only):
 
 ```bash
-blueprint-build-post-training-data-package \
+python -m blueprint_pipeline.post_training_data_package \
   --capture-root /path/to/<capture-root> \
   --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id>
 ```
@@ -223,9 +228,8 @@ python -m pytest tests/test_policy_improvement_run.py tests/test_policy_autorese
 
 ## Success Criteria
 
-- The repo has a named Policy Improvement Run artifact contract.
-- The offer clearly extends Task Evaluation Runs and Post-Training Data
-  Packages.
+- The repo can still read and translate the named legacy artifact contract.
+- The experiment remains internal to a Task Evaluation Run and is not a SKU.
 - Customer-supplied policies work without source code access.
 - The artifact reports baseline score, improved candidate score, failure modes,
   access level, readiness ladder, WebApp-safe projection, and proof limits.
@@ -236,8 +240,6 @@ python -m pytest tests/test_policy_improvement_run.py tests/test_policy_autorese
 
 ## Open Questions
 
-- Which buyer-facing name should ship first: Policy Improvement Run, Policy
-  Lift Sprint, or Pilot Gate Improvement Run?
 - Which tasks should be the first paid wedge: navigation, tote transfer, mobile
   manipulation, or inspection?
 - When should Blueprint accept responsibility for delivering complete policy

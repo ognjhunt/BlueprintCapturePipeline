@@ -8,7 +8,12 @@ drifts from this guide, this guide wins; if docs disagree with each other, use
 
 ## Mission
 
-`BlueprintCapturePipeline` turns raw capture bundles into site/task/scenario/eval artifacts, Task Evaluation Run artifacts, Policy Improvement Run artifacts, Post-Training Data Package artifacts, hosted-session artifacts, generated/model-derived support assets, and optional trust or review outputs.
+`BlueprintCapturePipeline` turns raw capture bundles into maintained Site-Task
+Testbeds and claim-level **Task Evaluation Runs**. A run routes each claim to
+qualified evidence, returns a decision or explicit abstention, and may expose
+rights-cleared evidence for evaluation or post-training use. Generated,
+simulation, legacy export, hosted-session, and trust artifacts are supporting
+machinery inside that one product, not separate products.
 
 ## Read First
 
@@ -34,8 +39,11 @@ dependent step as blocked instead of guessing.
 
 ## Product Rules
 
-- Keep model backends replaceable behind stable capture, evaluation, and data-package contracts.
-- Optimize for Task Evaluation Runs, Policy Improvement Runs, Post-Training Data Packages, hosted outputs, and support artifacts, not one permanent provider or world-model product.
+- Keep geometry, capture observations, simulators, learned evaluators, providers,
+  and physical evidence replaceable behind stable capture and evaluation contracts.
+- Optimize for Task Evaluation Runs over maintained Site-Task Testbeds. Legacy
+  Policy Improvement Run and Post-Training Data Package contracts remain
+  compatibility/internal evidence machinery, not products or default outputs.
 - Preserve rights, privacy, provenance, and capture truth through the pipeline.
 - Treat readiness and review *outputs* (qualification summaries, trust scores, readiness matrices) as optional support layers. Do not confuse that posture with the module historically named for it: `src/blueprint_pipeline/site_package_orchestrator.py` (formerly `qualification.py`) is the core capture→package orchestration spine, not a secondary readiness module.
 - Do not make downstream generated artifacts appear more authoritative than raw capture evidence.

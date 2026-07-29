@@ -299,9 +299,9 @@ def test_major_capability_scenarios_define_five_scenarios_with_one_method() -> N
     assert {scenario["scenario_id"] for scenario in scenarios} == {
         "capture_to_robot_eval_artifacts",
         "task_evaluation_run_execution",
-        "post_training_data_package_export",
+        "task_evaluation_evidence_use_export",
         "hosted_runtime_session",
-        "support_assets_trust_and_policy_improvement",
+        "support_assets_trust_and_candidate_experiments",
     }
     assert all(scenario["success_criteria"] for scenario in scenarios)
 
@@ -337,7 +337,7 @@ def test_major_capability_scenario_suite_passes_and_records_evidence(tmp_path: P
 
     persisted = _read_json(report_path)
     assert persisted["status"] == "passed"
-    assert "Support Assets, Trust, And Policy Improvement" in markdown_path.read_text(
+    assert "Support Assets, Trust, And Candidate Experiments" in markdown_path.read_text(
         encoding="utf-8"
     )
 
@@ -369,7 +369,7 @@ def test_major_capability_scenario_suite_fails_closed_on_overclaimed_package(
     package_scenario = next(
         scenario
         for scenario in suite["scenarios"]  # type: ignore[index]
-        if scenario["scenario_id"] == "post_training_data_package_export"
+        if scenario["scenario_id"] == "task_evaluation_evidence_use_export"
     )
     assert package_scenario["status"] == "failed"
     failed_criteria = [

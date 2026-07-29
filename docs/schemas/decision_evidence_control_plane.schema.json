@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/decision-evidence-control-plane.v1.schema.json",
+  "title": "Blueprint Decision/Evidence control-plane artifact",
+  "oneOf": [
+    {"$ref": "#/$defs/testbed"},
+    {"$ref": "#/$defs/method_profile"},
+    {"$ref": "#/$defs/qualification"},
+    {"$ref": "#/$defs/plan"},
+    {"$ref": "#/$defs/physical_outcome"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$"},
+    "testbed": {
+      "type": "object",
+      "required": ["schema_version", "testbed_id", "version", "predecessor_testbed_digest", "source_capture_bundles", "artifact_references", "task_distribution", "supported_condition_ranges", "robot_sensor_controller_bindings", "governance", "evidence_inventory", "validation_envelope", "known_unsupported_conditions", "invalidation_triggers", "physical_outcome_history_refs", "lifecycle_state", "testbed_digest"],
+      "properties": {
+        "schema_version": {"const": "maintained_site_task_testbed.v1"},
+        "testbed_id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/identifier"},
+        "predecessor_testbed_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "source_capture_bundles": {"type": "array", "minItems": 1},
+        "artifact_references": {"type": "object", "minProperties": 6},
+        "task_distribution": {"type": "object", "minProperties": 1},
+        "supported_condition_ranges": {"type": "object", "minProperties": 1},
+        "robot_sensor_controller_bindings": {"type": "object", "minProperties": 1},
+        "governance": {"type": "object", "minProperties": 5},
+        "evidence_inventory": {"type": "array"},
+        "validation_envelope": {"type": "object", "minProperties": 1},
+        "known_unsupported_conditions": {"type": "array"},
+        "invalidation_triggers": {"type": "array"},
+        "physical_outcome_history_refs": {"type": "array"},
+        "lifecycle_state": {"enum": ["draft", "active", "invalidated", "superseded", "retired"]},
+        "testbed_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "method_profile": {
+      "type": "object",
+      "required": ["schema_version", "method_id", "version", "implementation_digest", "adapter_reference", "method_family", "supported_claim_types", "required_inputs", "applicability_envelope", "authority_tier", "proof_tier", "correlation_group", "shared_dependencies", "expected_cost_usd", "expected_latency_seconds", "reproducibility_level", "constraints", "provider_availability", "failure_modes", "abstention_modes", "disqualifying_conditions", "method_profile_digest"],
+      "properties": {
+        "schema_version": {"const": "evidence_method_profile.v1"},
+        "method_id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/identifier"},
+        "implementation_digest": {"$ref": "#/$defs/digest"},
+        "method_family": {"enum": ["analytic_geometry_kinematics", "captured_real_observation", "traditional_simulation", "learned_world_model", "external_provider_tool", "physical_evidence", "owner_attested_operational_input"]},
+        "authority_tier": {"type": "number", "minimum": 0, "maximum": 4},
+        "expected_cost_usd": {"type": "number", "minimum": 0},
+        "expected_latency_seconds": {"type": "number", "minimum": 0},
+        "method_profile_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "qualification": {
+      "type": "object",
+      "required": ["schema_version", "qualification_id", "method_id", "method_version", "method_profile_digest", "implementation_digest", "claim_type", "task_family", "site_domain_conditions", "embodiment", "sensors", "controller_action_representation", "evaluator", "evaluator_digest", "predictions", "accepted_real_outcomes", "calibration_partition", "confidence_intervals", "coverage", "abstention_rate", "false_safe_rate", "false_reject_rate", "provenance", "owner_evidence", "status", "self_grading", "qualification_digest"],
+      "properties": {
+        "schema_version": {"const": "evidence_method_qualification.v1"},
+        "method_profile_digest": {"$ref": "#/$defs/digest"},
+        "implementation_digest": {"$ref": "#/$defs/digest"},
+        "evaluator_digest": {"$ref": "#/$defs/digest"},
+        "calibration_partition": {"enum": ["calibration", "heldout"]},
+        "coverage": {"type": "number", "minimum": 0, "maximum": 1},
+        "abstention_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "false_safe_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "false_reject_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "status": {"enum": ["qualified", "not_qualified", "debug_only", "expired"]},
+        "self_grading": {"const": false},
+        "qualification_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "plan": {
+      "type": "object",
+      "required": ["schema_version", "plan_id", "request_id", "decision_id", "request_digest", "testbed_id", "testbed_version", "testbed_digest", "claim_plans", "execution_order", "stop_conditions", "escalation_conditions", "physical_evidence_requests", "compiled_evaluation_run_specs", "non_evaluation_run_steps", "budget_status", "prohibited_claims", "shared_dependency_warnings", "plan_digest"],
+      "properties": {
+        "schema_version": {"const": "evidence_plan.v1"},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "testbed_digest": {"$ref": "#/$defs/digest"},
+        "claim_plans": {"type": "array", "minItems": 1},
+        "execution_order": {"type": "array", "items": {"type": "string"}},
+        "compiled_evaluation_run_specs": {"type": "array"},
+        "budget_status": {"type": "object", "minProperties": 1},
+        "plan_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "physical_outcome": {
+      "type": "object",
+      "required": ["schema_version", "outcome_id", "testbed_id", "testbed_version", "testbed_digest", "site_id", "task_id", "scenario_id", "condition", "robot_embodiment", "sensors", "controller", "policy_checkpoint", "evaluator", "runtime_provider", "prediction_digest", "prediction", "observed_outcome", "owner_evidence", "timestamps", "runtime_digest", "evaluator_digest", "partition", "mismatch_taxonomy", "provenance", "physical_outcome_digest"],
+      "properties": {
+        "schema_version": {"const": "physical_outcome_join.v1"},
+        "testbed_digest": {"$ref": "#/$defs/digest"},
+        "prediction_digest": {"$ref": "#/$defs/digest"},
+        "runtime_digest": {"$ref": "#/$defs/digest"},
+        "evaluator_digest": {"$ref": "#/$defs/digest"},
+        "partition": {"enum": ["calibration", "heldout"]},
+        "physical_outcome_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

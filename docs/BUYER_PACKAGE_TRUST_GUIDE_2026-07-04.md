@@ -1,13 +1,13 @@
-# Buyer Package Trust Guide — Task Evaluation Runs & Post-Training Data Packages
+# Buyer Evidence Trust Guide — Task Evaluation Runs
 
 Audience: robot teams evaluating whether to buy, trust, and use a Blueprint Task
-Evaluation Run or Post-Training Data Package. This guide describes what every
-package must contain, how to verify it, and exactly what the package does and
-does not prove.
+Evaluation Run, including an optional rights-cleared evidence export. This guide
+describes what every export must contain, how to verify it, and exactly what it
+does and does not prove. The historical standalone package name is deprecated.
 
 ## What you receive
 
-Every Post-Training Data Package export ships with:
+Every qualifying evidence export from a Task Evaluation Run ships with:
 
 | Artifact | Purpose |
 |---|---|

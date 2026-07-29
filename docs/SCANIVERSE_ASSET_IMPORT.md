@@ -118,7 +118,7 @@ then verify:
 - mesh usefulness for spawn, placement, and collision review
 - whether metric scale survived the Scaniverse export
 - manual workflow time and failure points
-- buyer/PTDP readouts label Scaniverse assets separately from raw Blueprint
+- Task Evaluation Run and optional evidence-export readouts label Scaniverse assets separately from raw Blueprint
   capture evidence
 
 ## API And Plan Assumptions

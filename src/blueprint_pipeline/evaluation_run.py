@@ -25,10 +25,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-# The manifest compiler is kept beside the pack-oriented spec API because the
-# two contracts intentionally serve different callers. Re-export its stable
-# entrypoints here so existing robot-eval and G1 adapters retain the original
-# ``blueprint_pipeline.evaluation_run`` import surface.
+# ``evaluation_run_contract.EvaluationRunSpec`` is the canonical runtime leaf
+# contract.  This module predates that contract and owns static compatibility
+# packs for the historical kitchen/warehouse lanes.  Re-export the canonical
+# compiler entrypoints, but keep the pack type explicitly named so new callers
+# cannot accidentally build against a second runtime contract.
 from . import evaluation_run_contract as _contract
 
 DEFAULT_EVALUATION_RUN_ADAPTERS = _contract.DEFAULT_EVALUATION_RUN_ADAPTERS
@@ -293,8 +294,13 @@ _TUPLE_FIELDS = {
 
 
 @dataclass(frozen=True)
-class EvaluationRunSpec:
-    """One evaluation run = the six components, composed and validated together."""
+class LegacyEvaluationPackSpec:
+    """Deprecated static pack definition translated into a canonical leaf spec.
+
+    The wire schema remains ``evaluation_run_spec.v1`` for historical artifact
+    readability. New execution callers must use
+    :class:`evaluation_run_contract.EvaluationRunSpec` (``evaluation_run.v1``).
+    """
 
     spec_id: str
     scene: SceneBundle
@@ -314,7 +320,7 @@ class EvaluationRunSpec:
             blockers.extend(f"{attr}:{blocker}" for blocker in component.validation_blockers())
         return blockers
 
-    def assert_valid(self) -> "EvaluationRunSpec":
+    def assert_valid(self) -> "LegacyEvaluationPackSpec":
         blockers = self.validation_blockers()
         if blockers:
             raise EvaluationRunSpecError(blockers)
@@ -334,6 +340,12 @@ class EvaluationRunSpec:
             "blockers": blockers,
         }
         return manifest
+
+
+# Compatibility alias for existing imports and persisted pack builders.  The
+# distinct canonical name above is the migration signal; removing this alias
+# would break historical callers without improving the runtime boundary.
+EvaluationRunSpec = LegacyEvaluationPackSpec
 
 
 def _component_from_dict(component_type: type, payload: Mapping[str, Any], *, manifest_key: str):
@@ -391,6 +403,123 @@ def evaluation_run_spec_from_dict(payload: Mapping[str, Any]) -> EvaluationRunSp
 
 def evaluation_run_spec_from_json_file(path: str | Path) -> EvaluationRunSpec:
     return evaluation_run_spec_from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def legacy_evaluation_pack_to_leaf_spec(
+    pack: LegacyEvaluationPackSpec,
+    *,
+    run_id: str,
+    scene_uri: str,
+    scene_content_digest: str,
+    robot_asset_ref: str,
+    policy_id: str | None = None,
+    providers: Sequence[str] | None = None,
+    simulator: str = "isaac_sim",
+    max_spend_usd: float = 0.0,
+    required_evidence: Sequence[str] = ("adapter_execution_receipt",),
+) -> dict[str, Any]:
+    """Translate a legacy pack into the canonical six-part runtime leaf.
+
+    Runtime identity cannot be inferred from a static pack, so scene URI,
+    content digest, and robot asset reference are mandatory.  This prevents a
+    legacy default from silently becoming qualification or execution evidence.
+    """
+
+    pack.assert_valid()
+    if not _string(run_id):
+        raise EvaluationRunSpecError(["leaf_run_id_missing"])
+    if not _string(scene_uri):
+        raise EvaluationRunSpecError(["leaf_scene_uri_missing"])
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", _string(scene_content_digest)):
+        raise EvaluationRunSpecError(["leaf_scene_content_digest_invalid"])
+    if not _string(robot_asset_ref):
+        raise EvaluationRunSpecError(["leaf_robot_asset_ref_missing"])
+
+    scenario_rows: list[dict[str, Any]] = []
+    task_ids: list[str] = []
+    for index, raw in enumerate(pack.tasks.scenarios):
+        row = dict(raw)
+        task_id = _string(row.get("task_id")) or pack.tasks.pack_id
+        row["task_id"] = task_id
+        row.setdefault("scenario_id", f"{pack.tasks.pack_id}-{index + 1}")
+        scenario_rows.append(row)
+        if task_id not in task_ids:
+            task_ids.append(task_id)
+
+    selected_providers = [
+        _string(value)
+        for value in (providers or pack.runtime.default_providers)
+        if _string(value)
+    ]
+    leaf = {
+        "schema_version": EVALUATION_RUN_SCHEMA_VERSION,
+        "run_id": _string(run_id),
+        "mode": "evaluate",
+        "scene_bundle": {
+            "adapter_id": "openusd_scene_bundle",
+            "adapter_version": "1",
+            "bundle_id": pack.scene.scene_id,
+            "uri": _string(scene_uri),
+            "entrypoint": pack.scene.main_usd_relative,
+            "content_digest": _string(scene_content_digest),
+        },
+        "robot_adapter": {
+            "adapter_id": "isaac_robot_asset",
+            "adapter_version": "1",
+            "robot_profile_id": pack.robot.robot_profile_id,
+            "asset_ref": _string(robot_asset_ref),
+        },
+        "task_scenario_pack": {
+            "adapter_id": "manifest_task_scenario_pack",
+            "adapter_version": "1",
+            "pack_id": pack.tasks.pack_id,
+            "tasks": [{"task_id": task_id} for task_id in task_ids],
+            "scenarios": scenario_rows,
+        },
+        "policy_adapter": {
+            "adapter_id": "isaac_g1_deterministic_controller",
+            "adapter_version": "1",
+            "policy_id": _string(policy_id) or pack.policy.policy_id,
+            "observation_schema_ref": "legacy_pack_observation.v1",
+            "action_schema_ref": "legacy_pack_action.v1",
+        },
+        "runtime_provider_profile": {
+            "adapter_id": "isaac_provider_runtime",
+            "adapter_version": "1",
+            "profile_id": pack.runtime.lane_id,
+            "providers": selected_providers,
+            "simulator": _string(simulator),
+            "max_spend_usd": float(max_spend_usd),
+        },
+        "proof_contract": {
+            "adapter_id": "declared_evidence_proof_contract",
+            "adapter_version": "1",
+            "contract_id": pack.proof.job_schema,
+            "required_evidence": [
+                _string(value) for value in required_evidence if _string(value)
+            ],
+            "claim_ceiling": {
+                "level": "legacy_pack_execution_only",
+                "physical_success": False,
+                "deployment_readiness": False,
+                "safety_certification": False,
+            },
+            "prohibited_claims": [
+                "physical_success",
+                "deployment_readiness",
+                "safety_certification",
+            ],
+        },
+        "metadata": {
+            "translated_from_schema": SPEC_SCHEMA_VERSION,
+            "legacy_pack_id": pack.spec_id,
+            "legacy_defaults_are_qualification_evidence": False,
+        },
+    }
+    validation = validate_evaluation_run_spec(leaf)
+    if validation["status"] != "passed":
+        raise EvaluationRunSpecError(validation["errors"])
+    return leaf
 
 
 # ----------------------------- generic scene asset inspection -----------------------------

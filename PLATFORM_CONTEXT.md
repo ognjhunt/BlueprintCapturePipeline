@@ -6,12 +6,18 @@
 ### System Framing
 
 - `BlueprintCapture` is the capture client and supply-side evidence collection tool.
-- `BlueprintCapturePipeline` turns capture bundles into Site Cards, Task Cards, Scenario Cards, Eval Cards, Post-Training Data Package artifacts, generated/model-derived support assets, hosted-session artifacts, and proof boundaries.
-- `Blueprint-WebApp` is the buyer, licensing, ops, and hosted-access surface for Task Evaluation Runs and Post-Training Data Packages.
+- `BlueprintCapturePipeline` composes capture bundles, cards, evaluators, and reset
+  artifacts into maintained Site-Task Testbeds, then produces claim-level Task
+  Evaluation Run plans, evidence, decisions, or explicit abstentions.
+- `Blueprint-WebApp` is the buyer, licensing, ops, and hosted-access surface for
+  Task Evaluation Runs. It collects constraints and displays Pipeline-owned
+  results; it does not select providers or recompute scientific verdicts.
 - `BlueprintValidation` remains optional downstream infrastructure for benchmarking, runtime checks, robot evaluation support, and specialized validation after the primary package or run is scoped.
 
-This platform is capture-first and real-site robot-evaluation/data-package first.
-World models, site-world routes, simulation outputs, generated media, editing assets, and model-derived artifacts are allowed as internal compatibility names or support artifacts inside data packages. They are not the primary public offer.
+This platform is capture-first and real-site decision-evaluation first. World
+models, site-world routes, simulation outputs, generated media, editing assets,
+legacy data-package exports, and model-derived artifacts are evidence or support
+artifacts inside a run. They are not additional public offers.
 
 ### Product Center of Gravity
 
@@ -20,8 +26,11 @@ The center of gravity is:
 - broad real-world capture coverage
 - strong capture quality and provenance
 - Task Evaluation Runs for robot teams
-- Policy Improvement Runs — bounded, evidence-gated attempts to turn a failed or borderline site eval into a better policy candidate, with auditable before/after evidence; a run can complete without promoting a candidate, and improvement claims stay conditional on the evidence gates
-- Post-Training Data Packages with curated robot POV clips, labels, generated/model-derived variations, failure cases, task metadata, QA notes, and export manifests
+- maintained, immutable-version Site-Task Testbeds reused across successive runs
+- claim-level routing to the cheapest currently qualified evidence method or
+  combination, with explicit escalation and abstention
+- rights-cleared evidence-use determinations inside a run; post-training use is
+  allowed only after rights, provenance, action-alignment, quality, and leakage gates
 - hosted access for request-scoped review
 - rights, privacy, and commercialization controls
 - buyer-facing product surfaces that make real sites easy to browse, buy, run, and manage
@@ -39,7 +48,7 @@ The center of gravity is not:
 The core business engine is two-sided:
 
 - **Capturers** supply real-site evidence packages.
-- **Robot teams** buy Task Evaluation Runs, Policy Improvement Runs, and Post-Training Data Packages.
+- **Robot teams** buy Task Evaluation Runs.
 
 `Site operators` remain important, but they are an optional third lane at capture time, covering:
 
@@ -56,42 +65,44 @@ Optional at capture time is not the same as unimportant at adoption time. The lo
 - raw capture, timestamps, poses, device metadata, and provenance are authoritative
 - rights / privacy / consent metadata are authoritative
 - Site Cards, Task Cards, Scenario Cards, Eval Cards, package manifests, generated/model-derived support assets, and hosted-session artifacts are downstream artifacts with explicit proof boundaries
-- Task Evaluation Runs, Policy Improvement Runs, and Post-Training Data Packages are the primary sellable downstream products
+- Task Evaluation Run is the one primary sellable downstream product
+- maintained Site-Task Testbeds are reusable substrates, not a second product
+- post-training is a permitted use of qualifying run evidence, never proof that training occurred or a policy improved
 - qualification / readiness / review outputs are optional trust layers that can guide buying, commercialization, and deployment decisions
 - downstream outputs must not rewrite capture truth or provenance truth
 
 ### Product Stack
 
-1. primary product: capture supply and real-site coverage
-2. buyer product: Task Evaluation Runs
-3. buyer product: Policy Improvement Runs (a bounded, evidence-gated improvement attempt one step above the baseline eval; before/after evidence is auditable and no-promotion outcomes are explicit)
-4. buyer product: Post-Training Data Packages
-5. support layer: hosted review, generated/model-derived data, simulation, editing, augmentation, and world-model compatibility artifacts
-6. downstream support: validation, deeper benchmarking, managed tuning, licensing, and deployment support
+1. supply substrate: truthful capture and real-site coverage
+2. reusable substrate: maintained Site-Task Testbeds
+3. buyer product: Task Evaluation Runs
+4. evidence methods: geometry, captured observations, traditional simulation,
+   learned/world-model evaluation, provider tools, physical evidence, and bounded owner inputs
+5. support layer: hosted review, evidence export/use, legacy compatibility,
+   generated/model-derived data, editing, and augmentation
 
 ### Commercial Wedge Overlay
 
-The current PMF wedge is the Task Evaluation Run: a real captured site, a task
-suite, a robot profile, and explicit success / cycle-time / intervention
-thresholds, returning an evidence-backed policy ranking before field time is
-spent. Policy Improvement Runs sit one step above the wedge — a bounded,
-evidence-gated attempt to turn a failed or borderline eval into a better policy
-candidate, with auditable before/after evidence; a run can complete without a
-promoted candidate, and the improved-candidate claim is only made when the
-evidence gates support it. Post-Training Data Packages package the site,
-scenario, label, generated-variation, and failure-case data that the wedge
-produces.
+The current PMF wedge is the Task Evaluation Run: a decision request bound to an
+exact maintained testbed. The router decomposes the decision into claims,
+selects only qualified methods, and returns a partial or complete decision or an
+explicit abstention with the next cheapest experiment. A run may emit
+rights-cleared evidence for later evaluation or post-training use, but the
+evidence export is not another product and does not imply training or improvement.
 
-Wedge claims stay inside the proof boundary: rank fidelity and predicted success
-on captured tasks are estimates, never guaranteed field outcomes, and generated
-frames are review support, never real-world proof.
+Wedge claims stay inside the proof boundary. The current comparative
+policy-ranking scientific verdict is `thesis_not_supported`; physical success,
+deployment readiness, and safety claims require separately accepted physical
+evidence. Generated frames are support, never real-world proof.
 
 ### Default Lifecycle
 
 1. A capture is sourced proactively or through a buyer / site / ops request.
 2. `BlueprintCapture` records and uploads a truthful evidence bundle.
-3. `BlueprintCapturePipeline` materializes site/task/scenario/eval artifacts, post-training data artifacts, hosted artifacts, generated/model-derived support assets, and optional trust outputs.
-4. `Blueprint-WebApp` exposes Task Evaluation Runs, Policy Improvement Runs, Post-Training Data Packages, and those proof-bound artifacts through buyer, ops, licensing, and hosted-session surfaces.
+3. `BlueprintCapturePipeline` composes a versioned Site-Task Testbed and routes a
+   Task Evaluation Run at claim level through qualified evidence adapters.
+4. `Blueprint-WebApp` exposes the request, plan status, decision envelope,
+   abstentions, and proof-bound supporting artifacts.
 5. Optional world-model, simulation, deeper evaluation, validation, or managed support follows only when commercially useful and proof-bounded.
 
 ### Practical Rule For Agents
@@ -99,7 +110,7 @@ frames are review support, never real-world proof.
 When changing any Blueprint repo, optimize for:
 
 1. stronger real-site capture supply
-2. better Task Evaluation Runs, Policy Improvement Runs, and Post-Training Data Packages
+2. better Task Evaluation Runs, maintained testbeds, routing, abstention, and learning
 3. stable rights / privacy / provenance contracts
 4. buyer and ops surfaces that make those outputs easy to sell and use
 5. optional trust, readiness, world-model, simulation, generated-data, and validation layers that support the product without becoming the product story

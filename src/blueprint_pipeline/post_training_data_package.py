@@ -1,4 +1,4 @@
-"""Post-Training Data Package export, checksum, and archive builder."""
+"""Deprecated compatibility builder for a rights-gated run evidence export."""
 
 from __future__ import annotations
 
@@ -6187,6 +6187,8 @@ def _build_post_training_data_package_export(
 
     manifest = {
         "schema_version": POST_TRAINING_DATA_PACKAGE_EXPORT_SCHEMA_VERSION,
+        "deprecation": {"deprecated": True, "compatibility_only": True, "replacement_product": "Task Evaluation Run",
+                        "evidence_use_inside_run": True, "standalone_product": False, "training_occurred": False, "policy_improved": False},
         "generated_at": generated_at,
         "scene_id": context.scene_id,
         "capture_id": context.capture_id,
@@ -6689,9 +6691,7 @@ def build_post_training_data_package_export(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Build a Post-Training Data Package export, checksum, and archive"
-    )
+    parser = argparse.ArgumentParser(description="DEPRECATED compatibility command: export rights-gated Task Evaluation Run evidence; this is not a product or training claim.")
     parser.add_argument("--capture-root", required=True)
     parser.add_argument("--job-dir")
     parser.add_argument("--output-dir")

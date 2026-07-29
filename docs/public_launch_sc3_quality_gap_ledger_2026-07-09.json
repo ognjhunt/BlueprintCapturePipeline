@@ -1765,7 +1765,7 @@
             {
               "artifact_id": "DATA-05-AC-01-EV-02",
               "path": "src/blueprint_pipeline/post_training_data_package.py",
-              "sha256": "sha256:e5223daca331752d42886cc59446086340444e6003999be9a6183a1e915d83c4",
+              "sha256": "sha256:25c39da623dbaa68933f1612850565697dd18ebf397db92941fa3a3e2b3c7bc4",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2065,7 +2065,7 @@
             {
               "artifact_id": "DATA-07-AC-01-EV-02",
               "path": "src/blueprint_pipeline/post_training_data_package.py",
-              "sha256": "sha256:e5223daca331752d42886cc59446086340444e6003999be9a6183a1e915d83c4",
+              "sha256": "sha256:25c39da623dbaa68933f1612850565697dd18ebf397db92941fa3a3e2b3c7bc4",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2194,7 +2194,7 @@
             {
               "artifact_id": "DATA-08-AC-01-EV-01",
               "path": "src/blueprint_pipeline/post_training_data_package.py",
-              "sha256": "sha256:e5223daca331752d42886cc59446086340444e6003999be9a6183a1e915d83c4",
+              "sha256": "sha256:25c39da623dbaa68933f1612850565697dd18ebf397db92941fa3a3e2b3c7bc4",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -2210,7 +2210,7 @@
             {
               "artifact_id": "DATA-08-AC-01-EV-02",
               "path": "tests/test_post_training_data_package.py",
-              "sha256": "sha256:f2c969c6e6c9c01a00dfb8225d9fd65724b7fc9f923a22c01c1e34fa78ad93fd",
+              "sha256": "sha256:6971588fa8f14ece052267d357e56647cbcb4cf7ff9cd367a7868f89f983c605",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4855,7 +4855,7 @@
             {
               "artifact_id": "RUN-04-AC-01-EV-01",
               "path": "src/blueprint_pipeline/robot_eval_job_orchestrator.py",
-              "sha256": "sha256:225d34f50f2ce8501c8522de6b8c0b4eae0d3a81128d0330477722e2132bc2ac",
+              "sha256": "sha256:9599d1d489a6efb5459e3c420340f0f6aba515851dabfe8086d13e4ae0db3114",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4871,7 +4871,7 @@
             {
               "artifact_id": "RUN-04-AC-01-EV-02",
               "path": "tests/test_robot_eval_job_orchestrator.py",
-              "sha256": "sha256:c96473ace118edb4bfe410d08a3fdc45c29df6357eb5cae1900a093318ea81a1",
+              "sha256": "sha256:e137020d723f68e0674b71d6e0c65d4397cc7d970855eea150db632c56143d2c",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8481,7 +8481,7 @@
             {
               "artifact_id": "DATA-17-AC-01-EV-01",
               "path": "src/blueprint_pipeline/post_training_data_package.py",
-              "sha256": "sha256:e5223daca331752d42886cc59446086340444e6003999be9a6183a1e915d83c4",
+              "sha256": "sha256:25c39da623dbaa68933f1612850565697dd18ebf397db92941fa3a3e2b3c7bc4",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8513,7 +8513,7 @@
             {
               "artifact_id": "DATA-17-AC-01-EV-03",
               "path": "tests/test_post_training_data_package.py",
-              "sha256": "sha256:f2c969c6e6c9c01a00dfb8225d9fd65724b7fc9f923a22c01c1e34fa78ad93fd",
+              "sha256": "sha256:6971588fa8f14ece052267d357e56647cbcb4cf7ff9cd367a7868f89f983c605",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8626,7 +8626,7 @@
             {
               "artifact_id": "DATA-18-AC-01-EV-01",
               "path": "src/blueprint_pipeline/post_training_data_package.py",
-              "sha256": "sha256:e5223daca331752d42886cc59446086340444e6003999be9a6183a1e915d83c4",
+              "sha256": "sha256:25c39da623dbaa68933f1612850565697dd18ebf397db92941fa3a3e2b3c7bc4",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -8642,7 +8642,7 @@
             {
               "artifact_id": "DATA-18-AC-01-EV-02",
               "path": "tests/test_post_training_data_package.py",
-              "sha256": "sha256:f2c969c6e6c9c01a00dfb8225d9fd65724b7fc9f923a22c01c1e34fa78ad93fd",
+              "sha256": "sha256:6971588fa8f14ece052267d357e56647cbcb4cf7ff9cd367a7868f89f983c605",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -9183,7 +9183,7 @@
             {
               "artifact_id": "DATA-22-AC-01-EV-02",
               "path": "docs/PTDP_SCALABILITY_SLO.md",
-              "sha256": "sha256:7cfce873287ec49bae415e2dacf08685365a6d0d1094b5614bd4c4b96bd2212c",
+              "sha256": "sha256:41bf22d9e55a579c63d1b46ae451e805a7ceb56363ca8b876ac83d600d3fca74",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13345,7 +13345,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:d8495f325935d529022afdce4dda5b02100d7e62c5c7ea8ec824b20e2f9853b7",
+              "sha256": "sha256:eccaed70d509e6ab98e2caf900faafe6bc4ed0a3441d375c72040d10a88e1ee8",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13624,7 +13624,7 @@
             {
               "artifact_id": "P2-05-AC-01-EV-01",
               "path": "docs/RELEASE_SUPPLY_CHAIN_AND_RETENTION.md",
-              "sha256": "sha256:39442252157078866e6046d35cf1fcb20f13396fbd2674e685b28f992ea18ab0",
+              "sha256": "sha256:b044469f8c39733d6f19b370c357389ba5954777f8ddfd58efba3c99b633a223",
               "role": "policy_or_runbook",
               "authoritative": true,
               "authority": "repository_worktree_digest",

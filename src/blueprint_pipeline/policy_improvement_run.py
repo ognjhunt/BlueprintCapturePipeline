@@ -1,8 +1,8 @@
-"""Policy Improvement Run offer manifest builder.
+"""Deprecated internal policy-candidate experiment manifest builder.
 
-This module binds Blueprint's existing Task Evaluation Run, Post-Training Data
-Package, and policy-autoresearch artifacts into one customer-facing offer
-contract. It is intentionally model-agnostic and source-code-optional: robot
+This module preserves the historical Task Evaluation Run, data-export, and
+policy-autoresearch artifact composition as an internal compatibility contract.
+It is intentionally model-agnostic and source-code-optional: robot
 teams can start with a black-box policy API/container, a configurable adapter
 surface, or full source/training access.
 """
@@ -691,7 +691,9 @@ def _webapp_summary_projection(manifest: Mapping[str, Any]) -> dict[str, Any]:
     private_hardware = _mapping(manifest.get("private_hardware_integration"))
     return {
         "schema_version": "policy_improvement_run_webapp_summary.v1",
-        "product_family": "policy_improvement_run",
+        "product_family": "legacy_policy_improvement_run",
+        "deprecated": True,
+        "replacement_product": "task_evaluation_run",
         "scene_id": manifest.get("scene_id"),
         "capture_id": manifest.get("capture_id"),
         "status": manifest.get("status"),
@@ -1095,6 +1097,14 @@ def build_policy_improvement_run_offer(
 
     manifest: dict[str, Any] = {
         "schema_version": POLICY_IMPROVEMENT_RUN_SCHEMA_VERSION,
+        "deprecation": {
+            "deprecated": True,
+            "compatibility_only": True,
+            "replacement_product": "Task Evaluation Run",
+            "default_orchestration_enabled": False,
+            "candidate_generation_is_internal_experiment": True,
+            "training_or_improvement_implied": False,
+        },
         "generated_at": generated,
         "scene_id": context.scene_id,
         "capture_id": context.capture_id,
@@ -1259,7 +1269,12 @@ def build_policy_improvement_run_offer(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build a Policy Improvement Run offer manifest")
+    parser = argparse.ArgumentParser(
+        description=(
+            "DEPRECATED compatibility command: build an internal policy-candidate "
+            "experiment manifest. Use a Task Evaluation Run for customer decisions."
+        )
+    )
     parser.add_argument("--capture-root", required=True)
     parser.add_argument("--job-dir", required=True)
     parser.add_argument("--output-dir")

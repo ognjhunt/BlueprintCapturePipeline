@@ -658,6 +658,10 @@ def test_post_training_data_package_blocks_with_manifest_only_defaults(tmp_path:
     manifest = build_post_training_data_package_export(capture_root=capture_root)
 
     assert manifest["status"] == "blocked_missing_inputs"
+    assert manifest["deprecation"]["replacement_product"] == "Task Evaluation Run"
+    assert manifest["deprecation"]["standalone_product"] is False
+    assert manifest["deprecation"]["training_occurred"] is False
+    assert manifest["deprecation"]["policy_improved"] is False
     assert "missing_normalized_attempt_trace" in manifest["blockers"]
     output_dir = capture_root / "pipeline" / "post_training_data_package"
     assert (output_dir / "data" / "attempts.jsonl").is_file()

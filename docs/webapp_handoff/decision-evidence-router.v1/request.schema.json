@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/decision-evidence-router/v1/request.schema.json",
+  "title": "Blueprint Decision/Evidence Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "decision_id",
+    "testbed_id",
+    "testbed_version",
+    "testbed_digest",
+    "decision_question",
+    "candidates",
+    "claims",
+    "budget",
+    "deadline",
+    "available_physical_evidence",
+    "permitted_evidence_methods",
+    "restrictions",
+    "requested_result_audience",
+    "provenance",
+    "idempotency_key",
+    "request_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "decision_evidence_request.v1"},
+    "request_id": {"$ref": "#/$defs/identifier"},
+    "decision_id": {"$ref": "#/$defs/identifier"},
+    "testbed_id": {"$ref": "#/$defs/identifier"},
+    "testbed_version": {"$ref": "#/$defs/identifier"},
+    "testbed_digest": {"$ref": "#/$defs/digest"},
+    "decision_question": {"type": "string", "minLength": 1},
+    "candidates": {"type": "array", "items": {"type": "object"}},
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/claim"}
+    },
+    "budget": {
+      "type": "object",
+      "required": ["max_cost_usd"],
+      "properties": {
+        "max_cost_usd": {"type": "number", "minimum": 0},
+        "max_latency_seconds": {"type": "number", "minimum": 0},
+        "delay_cost_per_second": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "deadline": {"type": "string", "minLength": 1},
+    "available_physical_evidence": {"type": "array"},
+    "permitted_evidence_methods": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "restrictions": {"type": "object", "minProperties": 1},
+    "requested_result_audience": {"type": "string", "minLength": 1},
+    "provenance": {
+      "type": "object",
+      "required": ["caller_identity"],
+      "properties": {"caller_identity": {"type": "string", "minLength": 1}},
+      "additionalProperties": true
+    },
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "claim": {
+      "type": "object",
+      "required": [
+        "claim_id",
+        "claim_type",
+        "subject",
+        "measurable_threshold",
+        "false_safe_consequence",
+        "acceptable_false_safe_risk",
+        "desired_confidence_or_coverage",
+        "permitted_abstention_behavior"
+      ],
+      "properties": {
+        "claim_id": {"$ref": "#/$defs/identifier"},
+        "claim_type": {"type": "string", "minLength": 1},
+        "subject": {"type": ["string", "object"], "minLength": 1},
+        "measurable_threshold": {"type": ["object", "null"]},
+        "false_safe_consequence": {"type": "string", "minLength": 1},
+        "acceptable_false_safe_risk": {"type": "number", "minimum": 0, "maximum": 1},
+        "desired_confidence_or_coverage": {"type": "object", "minProperties": 1},
+        "permitted_abstention_behavior": {"type": "object"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,12 +1,23 @@
 # BlueprintCapturePipeline
 
-`BlueprintCapturePipeline` is the packaging, trust, and runtime service that turns raw Blueprint captures into real-site robot evaluation artifacts and Post-Training Data Package artifacts with provenance, privacy, and rights safety. World-model, generated, simulation, editing, and augmentation outputs remain support artifacts inside those packages unless a downstream contract explicitly labels them otherwise.
+`BlueprintCapturePipeline` turns truthful raw captures into maintained Site-Task
+Testbeds, then routes claim-level **Task Evaluation Runs** to qualified evidence
+methods. Every run returns a decision, a partial decision, or an explicit
+abstention. Rights-cleared evidence may be exported for evaluation or
+post-training use inside the run; that export is not another product and does
+not imply training or policy improvement.
 
 Two lanes are active today.
 
 The site/package lane is: `BlueprintCapture` output -> privacy-safe World Labs input prep -> World Labs API upload/request -> persisted provider manifests -> materialized World Labs output assets with checksums -> CPU/pre-GPU scene and episode preflight -> simulation automation manifest -> explicitly gated simulator runs.
 
-The robot-evaluation engine lane is: robot-eval job requests -> WAM/simulator evaluator execution behind the replaceable adapter boundary (Cosmos 3 family as the preferred configured learned-WAM candidate, OSCAR as the baseline/compatibility lane, MuJoCo/Isaac as classical fallback and stricter-physics cross-checks) -> policy ranking, benchmark-protocol runs, and Policy Improvement Runs on gated paid GPU providers. This lane is the current engineering center of mass (see the recent commit history and `WORLD_MODEL_STRATEGY_CONTEXT.md`).
+The decision/evidence lane is: a provider-neutral request bound to an exact
+testbed -> deterministic claim decomposition and qualification -> the cheapest
+sufficient combination of geometry, captured observations, traditional
+simulation, learned/world-model evaluation, provider tools, or accepted physical
+evidence -> normalized results -> a Decision Envelope. Cosmos, OSCAR, MuJoCo,
+Isaac, and future methods are candidates behind replaceable profiles; a default
+or runnable backend is not evidence that it is qualified.
 
 Older scene-memory, retrieval/alignment, Cosmos-Predict2.5 (`cosmos_wam`), single-VM GPU, SimReady, and Marble bridge lanes are legacy/advisory support paths unless a command or artifact explicitly requests them.
 
@@ -27,6 +38,25 @@ AI and engineer orientation maps live under [`docs/architecture/`](docs/architec
 - [`command-safety-matrix.md`](docs/architecture/command-safety-matrix.md)
 - [`refactor-hotspots.md`](docs/architecture/refactor-hotspots.md)
 - [`evaluation-run-interface.md`](docs/architecture/evaluation-run-interface.md)
+- [`decision-evidence-router.md`](docs/architecture/decision-evidence-router.md)
+
+Provider-neutral Task Evaluation Run control-plane commands:
+
+```bash
+blueprint-route-task-evaluation plan --request request.json --testbed testbed.json \
+  --method-profile method.json --qualification qualification.json --output-dir out/plan
+blueprint-route-task-evaluation execute --plan out/plan/evidence_plan.json \
+  --request request.json --testbed testbed.json --method-profile method.json \
+  --qualification qualification.json --fixture-adapter-registry fixture-adapters.json \
+  --allow-fixture-adapters --output-dir out/evidence
+blueprint-route-task-evaluation aggregate --request request.json --testbed testbed.json \
+  --plan out/plan/evidence_plan.json --result out/evidence/result-step.json \
+  --output-dir out/decision
+```
+
+`execute` is deliberately hermetic in v1: it requires explicit fixture-adapter
+authorization, performs no provider discovery, paid compute, or physical run,
+and fails closed otherwise.
 
 The model-neutral, fail-closed composition contract for scientific sim ranking,
 provider execution, buyer delivery, teardown, and billing is documented in
@@ -42,8 +72,8 @@ are documented in
 This evaluator work does not implement Step Forcing or inherit RoboWorld's
 published rank-correlation results.
 
-Robot-team buyers: what a Task Evaluation Run / Post-Training Data Package
-contains, how to verify it, and its claim boundaries are documented in
+Robot-team buyers: what a Task Evaluation Run and its optional evidence-use
+exports contain, how to verify them, and their claim boundaries are documented in
 [`docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md`](docs/BUYER_PACKAGE_TRUST_GUIDE_2026-07-04.md).
 Every package export writes a fail-closed `buyer_package_readout.json` +
 `buyer_package_summary.md` and `replay_review_instructions.md`.
@@ -69,14 +99,16 @@ Primary product path:
 - Gemini-backed multimodal capture review
 - capture evidence analysis and agent review
 - deterministic QA aggregation and trust/provenance assembly
-- robot-evaluation/data-package fit scoring and capturer payout recommendation
+- robot-evaluation/evidence-use fit scoring and capturer payout recommendation
 - optional provider preview routing
 - privacy-safe World Labs input preparation
 - World Labs upload/request/operation/world manifest persistence
 - World Labs output asset materialization into local checksum/provenance manifests
 - webapp sync for buyer-review surfaces
 - Site Cards, Task Cards, Scenario Cards, Eval Cards, rights packets, and proof boundaries
-- Post-Training Data Package artifacts such as curated clip/label/export support
+- optional rights-gated evidence-use exports such as curated clip/label support
+- Decision/Evidence Requests, Evidence Plans, normalized results, Decision
+  Envelopes, and append-only physical-outcome joins
 - CPU/pre-GPU scene asset inspection, episode specs, and simulator preflight setup
 - fail-closed simulation automation manifests
 - deterministic object indexing and scene semantics when deeper work is requested
@@ -346,7 +378,8 @@ Artifact families and advisory downstream outputs:
 - `robot_eval_jobs/<job_id>/policy_autoresearch/heldout_eval_result.json`
 - `robot_eval_jobs/<job_id>/policy_autoresearch/followup_real_world_validation_request.json`
 - `robot_eval_jobs/<job_id>/rl_post_training_handoff_packet.json`
-  when a Policy Improvement Run builds the Task Evaluation Run handoff packet
+  when the deprecated internal candidate-generation path builds a Task
+  Evaluation Run handoff packet
 - `robot_eval_jobs/<job_id>/policy_improvement_run/policy_improvement_run_offer.json`
 - `robot_eval_jobs/<job_id>/policy_improvement_run/policy_improvement_run_offer.md`
 - `robot_eval_jobs/<job_id>/policy_improvement_run/rl_post_training_handoff_packet.json`
@@ -1862,7 +1895,8 @@ Each robot-eval job also writes `scenario_eval_matrix.json`. It expands the
 requested site/task/scenario scope into concrete scenario-family variation runs
 from `simulation_automation/scenario_variation_instances.json`. Robot POV
 observations, policy adapter inputs, simulator command environments, live
-closure coverage checks, and Post-Training Data Package exports use that matrix
+closure coverage checks, and explicitly requested evidence exports inside a
+Task Evaluation Run use that matrix
 so lighting, object rotation, cart shift, blocked path, human crossing,
 forklift, occlusion, glare, missing label, wrong object, and narrow approach
 angle cases are not collapsed back into one base scenario.
@@ -1951,14 +1985,13 @@ blueprint-run-policy-autoresearch \
 Without this hook, the lane uses the built-in deterministic recipe evaluator
 for local contract tests and dry runs.
 
-Policy Improvement Runs package the commercial offer that sits one step above
-the baseline Task Evaluation Run and Post-Training Data Package. A robot team
-supplies its policy or base model, robot embodiment, action interface, target
-task, success threshold, and cycle-time threshold. Blueprint evaluates the
-baseline, diagnoses dominant failures, creates twin/cousin scenarios and a
-curriculum, post-trains or lifts a bounded candidate, tests that candidate on
-heldout/sealed scenarios, and emits an improved artifact plus evidence report.
-The contract stays model-agnostic and customer-supplied-policy friendly:
+The historical Policy Improvement Run builder is deprecated compatibility
+machinery, not a product or default orchestration path. If explicitly invoked
+as an internal candidate-generation experiment, it may diagnose failures,
+prepare curricula, or test a candidate, but only a new Task Evaluation Run may
+make decision claims and the frozen policy-ranking result remains
+`thesis_not_supported`. The legacy contract stays readable and
+customer-supplied-policy friendly:
 `black_box` accepts an API/container/action-trace surface, `config_adapter`
 accepts adapter or task-head access, and `source_training` is the only mode that
 requires source/training access.
@@ -1975,7 +2008,7 @@ environment, use `owner_evidence_bridge` and require camera/action/outcome
 evidence joined to exact `scenario_eval_run_id` values.
 
 ```bash
-blueprint-build-policy-improvement-run \
+python -m blueprint_pipeline.policy_improvement_run \
   --capture-root /path/to/<capture-root> \
   --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id> \
   --access-level config_adapter \
@@ -2201,22 +2234,23 @@ has already produced Isaac Lab-Arena result artifacts. That path can be ready
 for result ingest without opening the simulator-execution gate; it still does
 not prove simulator execution or generated-world rank fidelity by itself.
 
-Post-Training Data Package export and archive:
+Legacy evidence export and archive (deprecated compatibility command; not a SKU):
 
 ```bash
-blueprint-build-post-training-data-package \
+python -m blueprint_pipeline.post_training_data_package \
   --capture-root /path/to/<bucket>/scenes/<scene_id>/captures/<capture_id> \
   --job-dir /path/to/<capture-root>/pipeline/robot_eval_jobs/<job_id>
 ```
 
-The export also writes `rl_post_training_handoff_packet.json` into the package
+The export also writes `rl_post_training_handoff_packet.json` into the evidence bundle
 and archive so robot teams receive the same sparse reward, A/B reservation,
 bottleneck, speed curriculum, action-chunk QA, and intervention/safety support
-signals alongside the curated traces and labels. This is a post-training support
-contract, not proof that Blueprint trained the policy or validated physical robot
-safety.
+signals alongside curated traces and labels. Post-training use is permitted only
+when the Task Evaluation Run's rights, provenance, robot-action alignment,
+quality, and leakage gates pass. Export proves neither training, policy
+improvement, deployment readiness, nor physical safety.
 
-Visual augmentation support packet for Post-Training Data Packages and
+Visual augmentation support packet for optional evidence reuse and
 distribution-shift review:
 
 ```bash

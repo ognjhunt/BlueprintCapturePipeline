@@ -2099,11 +2099,9 @@ def _build_arena_result_ingest(
     )
     write_json(resolved_output_dir / "task_eval_run_report.json", task_eval_run_report)
 
-    from .post_training_data_package import build_post_training_data_package_export
-
-    package_export = build_post_training_data_package_export(
-        capture_root=context.capture_root,
-        job_dir=resolved_output_dir,
+    from .task_evaluation_evidence_use import build_legacy_evidence_export_if_requested
+    evidence_export_requested, package_export = build_legacy_evidence_export_if_requested(
+        request, capture_root=context.capture_root, job_dir=resolved_output_dir,
         output_dir=resolved_output_dir,
     )
     delivery = _build_delivery_artifacts(
@@ -2136,7 +2134,7 @@ def _build_arena_result_ingest(
         "clip_count": clips.get("clip_count"),
         "policy_adapter_status": policy_manifest.get("status"),
         "ingest_ledger_status": ingest_ledger.get("status"),
-        "post_training_data_package_export_status": package_export.get("status"),
+        "evidence_use_export_status": package_export.get("status"),
         "customer_handoff_status": handoff_report.get("status"),
         "task_eval_run_report_status": task_eval_run_report.get("status"),
         "task_eval_run_report_evidence_level": task_eval_run_report.get(

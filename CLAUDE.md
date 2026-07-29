@@ -16,8 +16,9 @@ Key rules (full text and precedents in `AGENTS.md`):
 
 - Keep world-model backends swappable behind stable contracts.
 - Protect provenance, rights, privacy, and raw capture truth.
-- Optimize for Task Evaluation Runs, Policy Improvement Runs, Post-Training
-  Data Packages, and hosted runtime outputs.
+- Optimize for the single customer-facing Task Evaluation Run. Treat the
+  maintained Site-Task Testbed as its reusable substrate and any rights-cleared
+  evaluation or post-training export as an evidence use inside the run.
 - Readiness and review *outputs* are optional support layers. The module
   historically named for them — now
   `src/blueprint_pipeline/site_package_orchestrator.py` (formerly

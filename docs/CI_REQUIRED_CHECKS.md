@@ -45,7 +45,7 @@ the release lock implicitly.
 Critical capability lanes are defined in
 `docs/critical_capability_lanes.json`. CPU and container evidence is mandatory
 for every release scope. Native LeRobot round-trip evidence is mandatory for
-PTDP/SC3/paid/live scopes, the pinned GPU provider canary is mandatory for
+the legacy `PTDP` evidence-export scope and SC3/paid/live scopes, the pinned GPU provider canary is mandatory for
 SC3/paid/live scopes, and Pub/Sub emulator integration is mandatory for
 paid/live scopes. A missing, skipped, wrong-SHA, or non-passing critical lane is
 a blocker only for scopes that depend on it. The sim-only lane does not invent

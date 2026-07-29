@@ -5,10 +5,10 @@ This map is for new engineers and AI agents (Claude, Codex, or other) entering
 `WORLD_MODEL_STRATEGY_CONTEXT.md`, `VISION.md`, and `AGENTS.md`; when documents
 disagree, apply [`../DOCTRINE_PRECEDENCE.md`](../DOCTRINE_PRECEDENCE.md).
 
-The repo turns a raw capture bundle into a site-specific package, provider-ready
-adapter inputs, hosted/review artifacts, and optional trust outputs. Raw capture
-evidence remains authoritative. Generated, derived, provider, and hosted outputs
-must stay labeled as projections or support artifacts.
+The repo turns raw capture into a maintained Site-Task Testbed, then routes one
+customer-facing Task Evaluation Run at claim level to qualified evidence. Raw
+capture remains authoritative; generated, derived, provider, and hosted outputs
+remain projections or support evidence.
 
 ## Route At A Glance
 
@@ -17,12 +17,13 @@ must stay labeled as projections or support artifacts.
 | Raw capture materialization | `src/blueprint_pipeline/materialization.py`, `scripts/stage_capture_bundle.py` | `capture_descriptor.json`, `qa_report.json`, `frames/index.jsonl` | Capture-grounded descriptor of raw evidence |
 | Capture->package orchestration and trust support | `src/blueprint_pipeline/site_package_orchestrator.py` (formerly `qualification.py`) | `pipeline/qualification_summary.json`, `buyer_trust_score.json`, `rights_and_compliance_summary.json`, `world_model_fit_summary.json` | Core orchestration spine; the qualification/trust *outputs* it writes are support artifacts, not the product center |
 | Canonical site package | `src/blueprint_pipeline/canonical_site_package.py` | `pipeline/site_package/canonical_site_package.json` | Derived package contract grounded in raw capture |
+| Decision/evidence control plane | `decision_evidence_contracts.py`, `decision_evidence_router.py`, `decision_evidence_execution.py`, `physical_outcome_learning.py` | maintained testbed, request, plan, normalized results, Decision Envelope, physical-outcome join | Claim-level qualified decision or explicit abstention |
 | Provider adapter inputs | `src/blueprint_pipeline/canonical_site_package.py`, `src/blueprint_pipeline/provider_preview.py` | `pipeline/site_package/provider_adapter_inputs/world_labs_marble.json`, `worldlabs_request_manifest.json` | Provider-specific projection from canonical package |
 | Privacy-safe media | `src/blueprint_pipeline/privacy_processing.py`, `docs/PRIVACY_RUNNER_SERVICES.md` | `privacy/final_walkthrough.*`, `pipeline/privacy_processing_manifest.json`, `pipeline/worldlabs_input_manifest.json` | Derived privacy-cleared media |
 | Geometry and runtime | `src/blueprint_pipeline/geometry_stage.py`, `src/blueprint_pipeline/evaluation_prep_stage.py`, `src/blueprint_pipeline/native_runtime_backend.py` | `pipeline/geometry/*`, `pipeline/evaluation_prep/*`, hosted runtime records | Derived runtime support, live only when proof labels say so |
 | Retrieval memory | `src/blueprint_pipeline/retrieval_index_stage.py` | `world_model_export/*`, `sites/<site_id>/reference_memory/*` | Derived site memory, privacy-safe by default |
 | WebApp sync | `src/blueprint_pipeline/webapp_sync.py`, `src/blueprint_pipeline/alpha_readiness.py` | `pipeline/webapp_sync_result.json`, `pipeline/alpha_readiness_summary.json` | Projection to buyer/control-plane surfaces |
-| Paid marketplace gate | `scripts/run_paid_marketplace_launch_gate.py`, `docs/PAID_MARKETPLACE_BETA_LAUNCH_GATE.md` | `output/paid_marketplace_launch_gate.md`, `.json` | Evidence snapshot of automated checks |
+| Legacy paid-provider gate | `scripts/run_paid_marketplace_launch_gate.py`, `docs/PAID_MARKETPLACE_BETA_LAUNCH_GATE.md` | `output/paid_marketplace_launch_gate.md`, `.json` | Compatibility evidence snapshot; not a marketplace product |
 
 ## Capture Materialization Path
 

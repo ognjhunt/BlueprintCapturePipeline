@@ -1,0 +1,38 @@
+{
+  "schema_version": "decision_evidence_status_state_machine.v1",
+  "initial_state": "request_received",
+  "terminal_states": ["decision_available", "abstention_available", "cancelled"],
+  "states": {
+    "request_received": {"public": true},
+    "request_rejected": {"public": true},
+    "planning": {"public": true},
+    "plan_blocked": {"public": true},
+    "awaiting_evidence": {"public": true},
+    "executing": {"public": true},
+    "aggregating": {"public": true},
+    "decision_available": {"public": true},
+    "abstention_available": {"public": true},
+    "cancelled": {"public": true}
+  },
+  "transitions": [
+    ["request_received", "request_rejected"],
+    ["request_received", "planning"],
+    ["planning", "plan_blocked"],
+    ["planning", "awaiting_evidence"],
+    ["planning", "executing"],
+    ["planning", "aggregating"],
+    ["plan_blocked", "abstention_available"],
+    ["awaiting_evidence", "planning"],
+    ["awaiting_evidence", "cancelled"],
+    ["executing", "aggregating"],
+    ["executing", "awaiting_evidence"],
+    ["aggregating", "decision_available"],
+    ["aggregating", "abstention_available"]
+  ],
+  "rules": {
+    "partial_decision_terminal_state": "decision_available",
+    "invalid_or_uncertain_result": "awaiting_evidence_or_abstention",
+    "physical_evidence_request_starts_robot_run": false,
+    "webapp_may_override_pipeline_verdict": false
+  }
+}

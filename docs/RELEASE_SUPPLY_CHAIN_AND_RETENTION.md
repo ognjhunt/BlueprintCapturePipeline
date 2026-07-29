@@ -66,7 +66,7 @@ does not create or weaken bucket policy. A missing credential, version ID,
 checksum, full-object restore readback, `COMPLIANCE` lock, or sufficiently long
 retention date blocks.
 
-For PTDP, SC3, paid, or live scopes, assemble the additional groups declared in
+For the legacy `PTDP` evidence-export scope, SC3, paid, or live scopes, assemble the additional groups declared in
 `docs/release_evidence_retention_policy.json` with
 `scripts/build_release_evidence_bundle.py`; absent provider, restore, Pub/Sub,
 native LeRobot, or deployment evidence remains a scope-specific blocker.

@@ -1,9 +1,9 @@
 # Vision: Working Up the Stack
 
 > Repo role in this vision: **`BlueprintCapturePipeline`** turns capture bundles into the
-> Task Evaluation Runs, Policy Improvement Runs, and Post-Training Data Package artifacts
-> that are the engine of every rung below. It is where the eval ranking and the site-specific
-> data moat are actually manufactured.
+> maintained Site-Task Testbeds and claim-level Task Evaluation Runs that are
+> the engine of every rung below. Policy improvement and post-training remain
+> optional internal experiments or permitted evidence uses inside a run, not products.
 
 This document is **shared, byte-identical, across `BlueprintCapture`, `BlueprintCapturePipeline`,
 and `Blueprint-WebApp`** (inside the shared block). It is the long-horizon strategy. It sits on
@@ -60,21 +60,23 @@ Three curves make this the right decade to build a measurement-and-data layer un
 
 ## The ladder
 
-Each rung is a product we can sell, a moat we deepen, and a launchpad for the next. We do not skip
-rungs; we earn each one with the data the previous rung produces.
+Each rung is a capability and moat built through the Task Evaluation Run product,
+plus a launchpad for the next. We do not create a new SKU for each rung, and we
+earn each claim with evidence from the previous rung.
 
 ---
 
 ### Rung 1 — The wedge: eval ranking that correlates to real-world performance
 
-**What it is (shipping today).** Blueprint's **Task Evaluation Runs**: take a real captured site, a
-task suite, a robot profile, and success/cycle-time/intervention thresholds, and return an
-**evidence-backed ranking** of which policy is most likely to hit them — *before* anyone spends field
-time. This is the current PMF wedge (see the [Commercial Wedge Overlay](PLATFORM_CONTEXT.md#commercial-wedge-overlay)).
+**What it is (shipping today).** Blueprint's one product is the **Task Evaluation
+Run**: bind a decision to an exact maintained Site-Task Testbed, decompose it into
+claims, route each claim to qualified evidence, and return a decision, a partial
+decision, or an explicit abstention with the next cheapest experiment. Comparative
+policy ranking is one possible claim, not the product definition.
 
-**Why it is credible, not hand-waving — the two papers our case rests on.** Evaluating a policy
-inside a *generated world* can now predict its real-world ranking, and as of June 2026 two results
-make the case concrete:
+**Research direction, not Blueprint proof.** Published generated-world results
+motivate a learned-evaluator evidence method, but do not qualify it for a Blueprint
+claim or domain. As of June 2026 two results make that research direction concrete:
 
 - **SC3-Eval** (NVIDIA · Physical Intelligence · Toronto/Vector · Stanford · UC Berkeley,
   arXiv:2606.18610) adapts a pre-trained video foundation model into a *closed-loop* policy evaluator
@@ -107,10 +109,12 @@ online split its Pearson edge over its own Cosmos-Predict2.5 baseline is a stati
 (0.870 vs 0.871; it keeps only an MMRV edge, 0.171 vs 0.195). The consistency recipe's advantage is
 largely an in-distribution result today — precisely the gap rung 3b has to close.
 
-**Proof boundary (non-negotiable).** We sell **rank fidelity and predicted success on captured
-tasks** — an estimate. We do **not** sell a guaranteed field outcome, an off-scope validation, or a
-claim that we ran the buyer's real robot unless request-scoped owner-system proof exists. Generated
-frames are review support, never real-world proof.
+**Proof boundary (non-negotiable).** Blueprint's current preregistered
+policy-ranking verdict is `thesis_not_supported`. A Task Evaluation Run may still
+resolve geometry, perception, collision, or other qualified claims and abstain on
+ranking. We do **not** sell a guaranteed field outcome, deployment readiness, safety
+certification, or a claim that we ran the buyer's robot without separately accepted
+physical proof. Generated frames are support, never real-world proof.
 
 ---
 
@@ -151,8 +155,11 @@ conflict-of-interest firewall** — the same discipline that keeps a ratings age
 
 Two capabilities grow out of the data rungs 1–2 produce. They are **partly shipping, partly bets.**
 
-**3a — Post-training data generation & policy improvement (shipping as Policy Improvement Runs /
-Post-Training Data Packages).** Robotics is data-starved in a way language never was: usable
+**3a — Evidence reuse and optional policy experiments (inside Task Evaluation
+Runs).** Rights-cleared run evidence may become eligible for evaluation or
+post-training use after provenance, robot-action alignment, quality, and leakage
+gates. Policy improvement may be an internal candidate-generation experiment; no
+export implies training occurred or a policy improved. Robotics is data-starved in a way language never was: usable
 open-source real-world interaction data is **<5,000 hours** vs. trillions of text tokens; Bessemer
 calls robot data **"~a billion times smaller than internet text"** and projects **>$3B** of industry
 data spend in two years. High-quality teleoperation still costs **~$118–340/hour**. Two things follow:
@@ -161,7 +168,7 @@ and generated **780k trajectories (~6,500 human-hours-equivalent) in 11 hours** 
 physics sim, it doesn't yet replace real data; and (ii) — the load-bearing fact for us — **policy
 generalization scales with the *diversity of real environments*, not raw demo count** ("Data Scaling
 Laws in Imitation Learning," 2024). **That is exactly what proprietary multi-site capture is.** Every
-site we capture makes our data packages more valuable; Scale AI's own framing is that strict data
+site we capture makes qualifying evidence more valuable; Scale AI's own framing is that strict data
 lineage is **"a moat that grows with every deployment."**
 
 **3b — Calibrated real-world prediction ("95% on our eval ≈ 95% in real life").** This is the
@@ -341,5 +348,5 @@ figures beyond the ~40% one-year drop are lower-confidence.*
 ---
 
 *Maintained as a shared cross-repo doctrine. Edit the shared block in one place and mirror to all
-three repos. Last updated 2026-07-28 (shared block edited in `BlueprintCapturePipeline`; mirror to
+three repos. Last updated 2026-07-29 (shared block edited in `BlueprintCapturePipeline`; mirror to
 `BlueprintCapture` and `Blueprint-WebApp` pending).*

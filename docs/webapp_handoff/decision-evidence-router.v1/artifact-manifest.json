@@ -1,0 +1,43 @@
+{
+  "schema_version": "decision_evidence_webapp_handoff_manifest.v1",
+  "handoff_version": "1",
+  "artifacts": [
+    {
+      "path": "README.md",
+      "sha256": "3b37159dbea959c495d9a4c8fd38c2c9a924ac90690f271806dda1c7eb40a2a3"
+    },
+    {
+      "path": "compatibility-policy.json",
+      "sha256": "95def21d9e7e1f52f151959001fbfa885b4c1e03d4fec7d581daea0f1f0da6fc"
+    },
+    {
+      "path": "examples.json",
+      "sha256": "d373fc9465365e916828ab5155cc83157a4ef4eeeb7c975527af391c3f8b627e"
+    },
+    {
+      "path": "legacy-field-translations.json",
+      "sha256": "1f46c4d4ccd281afa3ed2aae27c7a35f963e16ab62aa9783283e0f3992cf6cc8"
+    },
+    {
+      "path": "normalized-evidence-result.schema.json",
+      "sha256": "b409463ea55108dd29d05971c01d51bb2c36b7288ce75e2eef1cbefc70c3881c"
+    },
+    {
+      "path": "request.schema.json",
+      "sha256": "7b0b842ad2735962727578bdc2c23f47fc52b248682e736e5baab5d200b2fd3b"
+    },
+    {
+      "path": "result.schema.json",
+      "sha256": "bc034d99f71682977f123c28ff6433e946aa10913935c0177b65af24b1a4cbc3"
+    },
+    {
+      "path": "security-redaction-rules.json",
+      "sha256": "10e64fdc75593992db70c4de192959c20bf6515858c7e24c16af16432d4847db"
+    },
+    {
+      "path": "status-state-machine.json",
+      "sha256": "cc5a4e86335a5792373b1b2726010e442965a82b104949c15e3b651f82aa3429"
+    }
+  ],
+  "manifest_self_excluded": true
+}
