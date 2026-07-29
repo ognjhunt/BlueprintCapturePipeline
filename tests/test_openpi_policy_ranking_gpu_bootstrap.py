@@ -7,6 +7,7 @@ from PIL import Image
 
 from blueprint_pipeline import openpi_policy_ranking_gpu_bootstrap as bootstrap_module
 from blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap import (
+    EXECUTION_MODE_NEW_SITE_CANARY,
     _download_signed_input,
     _upload_output,
     build_multi_scene_private_input_bundle,
@@ -14,6 +15,11 @@ from blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap import (
     extract_private_input_bundle,
     run_signed_gpu_bootstrap,
 )
+from blueprint_pipeline.new_site_diagnostic_canary_gpu import build_canary_input_bundle
+from blueprint_pipeline.new_site_diagnostic_smoke import build_protocol
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_private_bundle_roundtrip_and_hash_binding(tmp_path: Path) -> None:
@@ -131,3 +137,71 @@ def test_bootstrap_uploads_terminal_failure_envelope_for_early_runtime_error(
     assert observed["status"] == "blocked"
     assert observed["blockers"] == ["openpi_gpu_bootstrap_failed:RuntimeError"]
     assert "secret detail" not in json.dumps(observed)
+
+
+def test_bootstrap_routes_canary_bundle_to_one_arm_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    protocol = build_protocol(ROOT, experiment_id="bootstrap_canary_test_v1")
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224), color=(8, 9, 10)).save(background)
+    bundle = tmp_path / "canary-input.zip"
+    receipt = build_canary_input_bundle(
+        protocol_path=protocol_path,
+        background_path=background,
+        output_zip=bundle,
+        arm_id="skeleton_only",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL",
+        "https://storage.example/input?signature=secret",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256", receipt["bundle_sha256"]
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL",
+        "https://storage.example/output?signature=secret",
+    )
+    monkeypatch.setenv("BLUEPRINT_OPENPI_EXECUTION_MODE", EXECUTION_MODE_NEW_SITE_CANARY)
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_download_signed_input",
+        lambda _url, destination, **_kwargs: destination.write_bytes(bundle.read_bytes()),
+    )
+    observed = {}
+
+    def run_canary(**kwargs):
+        observed.update(kwargs)
+        manifest = {
+            "schema_version": "new_site_diagnostic_canary_gpu.v1",
+            "status": "completed",
+            "canary": {"status": "passed"},
+            "manifest_sha256": "c" * 64,
+        }
+        Path(kwargs["output_dir"]).mkdir(parents=True)
+        (Path(kwargs["output_dir"]) / "new_site_diagnostic_canary_gpu.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        return manifest
+
+    archive_names = []
+
+    def upload(_url: str, archive_path: Path) -> int:
+        with zipfile.ZipFile(archive_path) as archive:
+            archive_names.extend(archive.namelist())
+        return 200
+
+    monkeypatch.setattr(bootstrap_module, "run_skeleton_only_canary", run_canary)
+    monkeypatch.setattr(bootstrap_module, "_upload_output", upload)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    result = run_signed_gpu_bootstrap(workspace=workspace)
+
+    assert result["status"] == "completed"
+    assert result["execution_mode"] == EXECUTION_MODE_NEW_SITE_CANARY
+    assert Path(observed["protocol_path"]).read_bytes() == protocol_path.read_bytes()
+    assert "new_site_diagnostic_canary_gpu.json" in archive_names

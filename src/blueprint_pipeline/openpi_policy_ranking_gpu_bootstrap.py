@@ -15,6 +15,14 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .common import write_json
+from .new_site_diagnostic_canary_gpu import (
+    INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
+    MAX_INPUT_BYTES as CANARY_MAX_INPUT_BYTES,
+    build_canary_input_bundle,
+    extract_canary_input_bundle,
+    materialize_canary_background,
+    run_skeleton_only_canary,
+)
 from .openpi_policy_ranking_gpu_job import run_openpi_policy_ranking_gpu_campaign
 from .policy_ranking_thesis import canonical_sha256
 
@@ -31,6 +39,9 @@ POLICY_IDS = (
     "pi0_droid_jointpos_polaris",
     "pi0_droid_jointpos_100k_polaris",
 )
+EXECUTION_MODE_FULL_CAMPAIGN = "full_campaign"
+EXECUTION_MODE_NEW_SITE_CANARY = "new_site_diagnostic_canary"
+EXECUTION_MODES = {EXECUTION_MODE_FULL_CAMPAIGN, EXECUTION_MODE_NEW_SITE_CANARY}
 
 
 def _sha256(path: Path) -> str:
@@ -208,7 +219,9 @@ def extract_private_input_bundle(
     }
 
 
-def _download_signed_input(url: str, destination: Path) -> None:
+def _download_signed_input(
+    url: str, destination: Path, *, max_bytes: int = MAX_INPUT_BYTES
+) -> None:
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("gpu_input_url_not_safe_https")
@@ -221,7 +234,7 @@ def _download_signed_input(url: str, destination: Path) -> None:
         total = 0
         while chunk := response.read(1024 * 1024):
             total += len(chunk)
-            if total > MAX_INPUT_BYTES:
+            if total > max_bytes:
                 raise ValueError("gpu_input_download_exceeds_size_cap")
             handle.write(chunk)
 
@@ -255,6 +268,9 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
     output_url = os.getenv(
         "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL", ""
     ).strip()
+    execution_mode = os.getenv(
+        "BLUEPRINT_OPENPI_EXECUTION_MODE", EXECUTION_MODE_FULL_CAMPAIGN
+    ).strip()
     bundle = root / "policy-ranking-input.zip"
     extracted = root / "policy-ranking-input"
     campaign_output = root / "policy-ranking-output"
@@ -264,37 +280,69 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
     try:
         if not input_url or not output_url or len(input_sha) != 64:
             raise ValueError("signed_gpu_bootstrap_environment_missing")
-        _download_signed_input(input_url, bundle)
-        extracted_input = extract_private_input_bundle(
-            bundle_path=bundle,
-            expected_bundle_sha256=input_sha,
-            output_dir=extracted,
+        if execution_mode not in EXECUTION_MODES:
+            raise ValueError("signed_gpu_bootstrap_execution_mode_invalid")
+        _download_signed_input(
+            input_url,
+            bundle,
+            max_bytes=(
+                CANARY_MAX_INPUT_BYTES
+                if execution_mode == EXECUTION_MODE_NEW_SITE_CANARY
+                else MAX_INPUT_BYTES
+            ),
         )
-        campaign = run_openpi_policy_ranking_gpu_campaign(
-            cohort_path="/opt/blueprint/frozen/warehouse_policy_cohort_v2_joint_position.json",
-            checkpoint_inventory_path="/opt/blueprint/frozen/openpi_polaris_checkpoint_inventory.json",
-            captured_site_background_path=extracted_input["background_path"],
-            scene_backgrounds=extracted_input["scene_backgrounds"],
-            menagerie_root="/opt/mujoco-menagerie/franka_emika_panda",
-            output_dir=campaign_output,
-            policy_ids=POLICY_IDS,
-        )
+        if execution_mode == EXECUTION_MODE_NEW_SITE_CANARY:
+            extracted_input = extract_canary_input_bundle(
+                bundle_path=bundle,
+                expected_bundle_sha256=input_sha,
+                output_dir=extracted,
+            )
+            campaign = run_skeleton_only_canary(
+                protocol_path=extracted_input["protocol_path"],
+                background_path=extracted_input["background_path"],
+                cohort_path=(
+                    "/opt/blueprint/frozen/warehouse_policy_cohort_v2_joint_position.json"
+                ),
+                checkpoint_inventory_path=(
+                    "/opt/blueprint/frozen/openpi_polaris_checkpoint_inventory.json"
+                ),
+                menagerie_root="/opt/mujoco-menagerie/franka_emika_panda",
+                output_dir=campaign_output,
+            )
+        else:
+            extracted_input = extract_private_input_bundle(
+                bundle_path=bundle,
+                expected_bundle_sha256=input_sha,
+                output_dir=extracted,
+            )
+            campaign = run_openpi_policy_ranking_gpu_campaign(
+                cohort_path=(
+                    "/opt/blueprint/frozen/warehouse_policy_cohort_v2_joint_position.json"
+                ),
+                checkpoint_inventory_path=(
+                    "/opt/blueprint/frozen/openpi_polaris_checkpoint_inventory.json"
+                ),
+                captured_site_background_path=extracted_input["background_path"],
+                scene_backgrounds=extracted_input["scene_backgrounds"],
+                menagerie_root="/opt/mujoco-menagerie/franka_emika_panda",
+                output_dir=campaign_output,
+                policy_ids=POLICY_IDS,
+            )
     except Exception as exc:  # noqa: BLE001 - upload a secret-safe terminal envelope
         failure_type = type(exc).__name__
         campaign_output.mkdir(parents=True, exist_ok=True)
-        failure_manifest: dict[str, Any] = {
-            "schema_version": "openpi_policy_ranking_gpu_job.v1",
-            "status": "blocked",
-            "inputs": {
-                "scenes": list(
-                    (extracted_input.get("manifest") or {}).get("scenes") or []
-                ),
-                "policy_ids": list(POLICY_IDS),
-            },
-            "policy_runs": [],
-            "rankings": {},
-            "blockers": [f"openpi_gpu_bootstrap_failed:{failure_type}"],
-            "claim_boundary": {
+        is_canary = execution_mode == EXECUTION_MODE_NEW_SITE_CANARY
+        failure_claim_boundary = (
+            {
+                "ranking_accuracy": False,
+                "physical_success": False,
+                "captured_site_transfer_validation": False,
+                "phase_b_confirmation": False,
+                "independently_attributable_matching_physical_outcomes_present": False,
+                "result_type": "bounded_nonconfirmatory_technical_diagnostic",
+            }
+            if is_canary
+            else {
                 "learned_policy_simulator_execution": False,
                 "prospective_captured_site_ranking": False,
                 "prospective_controlled_warehouse_ranking": False,
@@ -303,11 +351,50 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
                 "physical_robot_endpoint_contacted": False,
                 "physical_robot_operated": False,
                 "wam_executed": False,
-            },
+            }
+        )
+        failure_manifest: dict[str, Any] = {
+            "schema_version": (
+                "new_site_diagnostic_canary_gpu.v1"
+                if is_canary
+                else "openpi_policy_ranking_gpu_job.v1"
+            ),
+            "status": "blocked",
+            "execution_mode": execution_mode,
+            "blockers": [f"openpi_gpu_bootstrap_failed:{failure_type}"],
+            "claim_boundary": failure_claim_boundary,
         }
+        if is_canary:
+            failure_manifest.update(
+                {
+                    "arm_id": (extracted_input.get("manifest") or {}).get("arm_id"),
+                    "protocol_sha256": (
+                        extracted_input.get("manifest") or {}
+                    ).get("protocol_sha256"),
+                    "canary": None,
+                }
+            )
+        else:
+            failure_manifest.update(
+                {
+                    "inputs": {
+                        "scenes": list(
+                            (extracted_input.get("manifest") or {}).get("scenes") or []
+                        ),
+                        "policy_ids": list(POLICY_IDS),
+                    },
+                    "policy_runs": [],
+                    "rankings": {},
+                }
+            )
         failure_manifest["manifest_sha256"] = canonical_sha256(failure_manifest)
         write_json(
-            campaign_output / "openpi_policy_ranking_gpu_job.json",
+            campaign_output
+            / (
+                "new_site_diagnostic_canary_gpu.json"
+                if is_canary
+                else "openpi_policy_ranking_gpu_job.json"
+            ),
             failure_manifest,
         )
         campaign = failure_manifest
@@ -321,6 +408,7 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "completed" if campaign.get("status") == "completed" else "blocked",
+        "execution_mode": execution_mode,
         "input_bundle_sha256": input_sha,
         "input_manifest": extracted_input.get("manifest"),
         "campaign_manifest_sha256": campaign.get("manifest_sha256"),
@@ -353,6 +441,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     multi = subparsers.add_parser("build-multi-input")
     multi.add_argument("--spec", required=True)
     multi.add_argument("--output", required=True)
+    canary = subparsers.add_parser("build-canary-input")
+    canary.add_argument("--protocol", required=True)
+    canary.add_argument("--background", required=True)
+    canary.add_argument("--output", required=True)
+    canary.add_argument("--arm", choices=("skeleton_only",), required=True)
+    background = subparsers.add_parser("materialize-canary-background")
+    background.add_argument("--source", required=True)
+    background.add_argument("--output", required=True)
     run = subparsers.add_parser("run")
     run.add_argument("--workspace", default="/workspace")
     args = parser.parse_args(argv)
@@ -378,6 +474,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         write_json(Path(args.output).with_suffix(".receipt.json"), receipt)
         return 0
+    if args.command == "build-canary-input":
+        receipt = build_canary_input_bundle(
+            protocol_path=args.protocol,
+            background_path=args.background,
+            output_zip=args.output,
+            arm_id=args.arm,
+        )
+        if receipt.get("schema_version") != CANARY_INPUT_RECEIPT_SCHEMA_VERSION:
+            raise RuntimeError("canary_input_receipt_schema_invalid")
+        write_json(Path(args.output).with_suffix(".receipt.json"), receipt)
+        return 0
+    if args.command == "materialize-canary-background":
+        receipt = materialize_canary_background(
+            source_path=args.source,
+            output_path=args.output,
+        )
+        write_json(Path(args.output).with_suffix(".receipt.json"), receipt)
+        return 0
     result = run_signed_gpu_bootstrap(workspace=args.workspace)
     return 0 if result["status"] == "completed" else 2
 
@@ -387,6 +501,7 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "build_canary_input_bundle",
     "build_multi_scene_private_input_bundle",
     "build_private_input_bundle",
     "extract_private_input_bundle",

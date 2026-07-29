@@ -8,6 +8,7 @@ from pathlib import Path
 from blueprint_pipeline import openpi_policy_ranking_runpod as runpod_module
 from blueprint_pipeline import paid_provider_lane_lease as lease_module
 from blueprint_pipeline.openpi_policy_ranking_runpod import (
+    EXECUTION_MODE_ENV,
     GENERIC_OUTPUT_SECRET_URL_ENV,
     INPUT_SECRET_URL_ENV,
     INPUT_SHA256_ENV,
@@ -81,6 +82,43 @@ def test_completed_output_archive_binds_all_24_episodes() -> None:
     assert result["campaign_status"] == "completed"
     assert result["episode_record_count"] == 24
     assert result["scene_ids"] == ["captured", "warehouse"]
+
+
+def test_completed_canary_output_requires_individual_camera_media() -> None:
+    manifest = {
+        "schema_version": "new_site_diagnostic_canary_gpu.v1",
+        "status": "completed",
+        "arm_id": "skeleton_only",
+        "protocol_sha256": "a" * 64,
+        "canary": {
+            "status": "passed",
+            "label_free": True,
+            "model_invoked": True,
+            "freeze_bindings": {"scene_id": "interiorgs_0787"},
+        },
+        "claim_boundary": {
+            "ranking_accuracy": False,
+            "physical_success": False,
+            "captured_site_transfer_validation": False,
+            "phase_b_confirmation": False,
+        },
+    }
+    manifest["manifest_sha256"] = canonical_sha256(manifest)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("new_site_diagnostic_canary_gpu.json", json.dumps(manifest))
+        archive.writestr("loop/query_000_external_skeleton.mp4", b"external")
+        archive.writestr("loop/query_000_wrist_skeleton.mp4", b"wrist")
+
+    result = _validate_output_archive(buffer.getvalue())
+
+    assert result["status"] == "completed"
+    assert result["execution_mode"] == "new_site_diagnostic_canary"
+    assert result["episode_record_count"] == 0
+    assert result["individual_camera_media_present"] == {
+        "external": True,
+        "wrist": True,
+    }
 
 
 def test_monitor_collects_output_then_proves_provider_and_budget_terminal(
@@ -230,6 +268,7 @@ def test_openpi_request_shape_is_redacted_and_one_gpu(tmp_path: Path) -> None:
     ]
     assert body["env"][INPUT_SECRET_URL_ENV] == "<redacted:secret-env>"
     assert body["env"][OUTPUT_SECRET_PUT_URL_ENV] == "<redacted:secret-env>"
+    assert body["env"][EXECUTION_MODE_ENV] == "full_campaign"
     persisted = output.read_text(encoding="utf-8")
     assert input_url not in persisted
     assert output_url not in persisted
@@ -287,6 +326,7 @@ def test_vast_launch_request_uses_frozen_floor_and_args_entrypoint(
     assert "openpi_policy_ranking_gpu_bootstrap run" in payload["args_str"]
     assert payload["env"][INPUT_SECRET_URL_ENV] == input_url
     assert payload["env"][INPUT_SHA256_ENV] == bundle["bundle_sha256"]
+    assert payload["env"][EXECUTION_MODE_ENV] == "full_campaign"
     assert payload["env"][OUTPUT_SECRET_PUT_URL_ENV] == output_url
     assert payload["env"][GENERIC_OUTPUT_SECRET_URL_ENV] == output_url
     # Request construction is in-memory only.  The returned provider-native
