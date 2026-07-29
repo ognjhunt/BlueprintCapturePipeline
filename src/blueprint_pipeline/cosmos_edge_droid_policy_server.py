@@ -44,6 +44,25 @@ class NativeActionShapeGuard:
         return result
 
 
+def _disable_policy_guardrails(setup_args: Any) -> Any:
+    """Disable optional generated-media guardrails for action-only policy serving.
+
+    The pinned NVIDIA RoboLab service inherits the Cosmos inference default of
+    loading ``nvidia/Cosmos-Guardrail1`` even when the endpoint is used only to
+    return structured robot actions. NVIDIA's setup model exposes this as a
+    supported setting, so keep the stock service and change only that explicit
+    setup field. Blueprint's own action validation, uncertainty, and
+    abstention gates remain in force.
+    """
+
+    if not hasattr(setup_args, "model_copy"):
+        raise TypeError("cosmos_edge_policy_setup_args_model_copy_unavailable")
+    updated = setup_args.model_copy(update={"guardrails": False})
+    if getattr(updated, "guardrails", None) is not False:
+        raise ValueError("cosmos_edge_policy_guardrails_disable_failed")
+    return updated
+
+
 def serve_identity_bound_policy(
     *,
     checkpoint_path: str | Path,
@@ -98,8 +117,12 @@ def serve_identity_bound_policy(
             format_prompt_as_json=True,
         )
 
+        class BlueprintRobolabPolicyService(RobolabPolicyService):
+            def _build_setup_args(self, service_args: Any) -> Any:
+                return _disable_policy_guardrails(super()._build_setup_args(service_args))
+
         def _official_service_factory() -> Any:
-            return RobolabPolicyService(args)
+            return BlueprintRobolabPolicyService(args)
 
         server_cls = _load_openpi_websocket_policy_server()
 
@@ -118,6 +141,12 @@ def serve_identity_bound_policy(
         "metadata": metadata,
         "native_action_shape": [NATIVE_ACTION_CHUNK_ROWS, 8],
         "wam_prefix_adapter_runs_client_side": True,
+        "nvidia_guardrails_enabled": False,
+        "guardrail_mode_reason": (
+            "action_only_policy_endpoint_has_no_generated_media_and_the_optional_"
+            "gated_cosmos_guardrail_checkpoint_is_not_required"
+        ),
+        "blueprint_action_and_abstention_gates_remain_enabled": True,
         "raw_credentials_written": False,
     }
     startup_path = Path(output_dir).expanduser().resolve() / "policy_server_startup.json"

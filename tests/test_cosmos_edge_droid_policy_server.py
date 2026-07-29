@@ -10,6 +10,7 @@ import pytest
 from blueprint_pipeline.cosmos_edge_droid_policy_runtime import CosmosEdgeDroidPolicySpec
 from blueprint_pipeline.cosmos_edge_droid_policy_server import (
     NativeActionShapeGuard,
+    _disable_policy_guardrails,
     serve_identity_bound_policy,
 )
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256, file_sha256
@@ -46,6 +47,20 @@ def test_native_shape_guard_rejects_non_native_horizon() -> None:
         NativeActionShapeGuard(BadService()).infer({})
 
 
+def test_policy_setup_disables_optional_generated_media_guardrails() -> None:
+    class Setup:
+        guardrails = True
+
+        def model_copy(self, *, update: dict[str, Any]) -> Any:
+            copied = Setup()
+            copied.guardrails = update["guardrails"]
+            return copied
+
+    updated = _disable_policy_guardrails(Setup())
+
+    assert updated.guardrails is False
+
+
 def test_server_binds_verified_identity_and_native_shape(tmp_path: Path) -> None:
     snapshot, manifest_path = _snapshot(tmp_path)
     captured = {}
@@ -78,5 +93,7 @@ def test_server_binds_verified_identity_and_native_shape(tmp_path: Path) -> None
     assert captured["metadata"]["local_snapshot_verified"] is True
     assert captured["response"]["action"].shape == (32, 8)
     assert startup["native_action_shape"] == [32, 8]
+    assert startup["nvidia_guardrails_enabled"] is False
+    assert startup["blueprint_action_and_abstention_gates_remain_enabled"] is True
     written = json.loads((tmp_path / "out" / "policy_server_startup.json").read_text())
     assert written["raw_credentials_written"] is False

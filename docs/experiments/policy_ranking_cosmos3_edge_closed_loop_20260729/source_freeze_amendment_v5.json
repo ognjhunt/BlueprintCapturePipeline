@@ -1,0 +1,37 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_amendment.v5",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T09:31:00-0500",
+  "supersedes_amendment": "source_freeze_amendment_v4.json",
+  "former_bundle_freeze_sha256": "1a9e3568f4529fcc2c78fe3d8dca35cc86ac96b917e739807fe70ff007ce9379",
+  "triggering_evidence": "Allocation 3 proved that the pinned stock RoboLab service attempts to load nvidia/Cosmos-Guardrail1 before an action-only request unless the supported inference guardrails field is disabled.",
+  "prospective_change": "Subclass only the pinned service setup builder to return the same NVIDIA setup model with guardrails=false; fail closed unless startup evidence records that exact mode.",
+  "scientific_legitimacy": "This removes an orthogonal gated generated-media safety dependency from an endpoint that emits structured robot actions. It does not alter the policy checkpoint, observation, task prompt, action decoding, deterministic seed, WAM, evaluator, labels, or Blueprint reliability gates.",
+  "official_primary_source": {
+    "url": "https://github.com/NVIDIA/cosmos-framework/blob/2f603cb114ff8b335e116060444d0b6caee3a85e/cosmos_framework/inference/common/args.py",
+    "revision": "2f603cb114ff8b335e116060444d0b6caee3a85e",
+    "field": "GuardrailOverrides.guardrails",
+    "supported_disabled_value": false
+  },
+  "paid_execution_admitted": false,
+  "provider_called_for_v7": false,
+  "physical_outcome_labels_accessed": false,
+  "changed_fields": [
+    "policy service setup guardrails=true to false",
+    "startup guardrail-mode provenance required",
+    "runtime guardrail-mode provenance required"
+  ],
+  "unchanged_fields": [
+    "policy checkpoint and revision",
+    "Cosmos Framework revision",
+    "three policy observation views",
+    "joint and gripper state",
+    "task prompt",
+    "native 32x8 action contract",
+    "16-row WAM prefix",
+    "8 executed prefix steps",
+    "deterministic seed and decoder settings",
+    "all physical outcomes"
+  ],
+  "manifest_sha256": "144cdd88d468e6926bf480859d3fe7f2192d2fda36897d39950a89413332cda5"
+}

@@ -48,6 +48,9 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
         prompt="Pick up the bottle.",
         oscar_fixture_first_frame=first,
         oscar_fixture_skeleton=skeleton,
+        source_first_frame_sha256_by_view={
+            key: f"{index + 1:064x}" for index, key in enumerate(keys)
+        },
         generated_at="2026-07-29T00:00:00Z",
     )
 
@@ -75,12 +78,15 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
         assert 'uv_bin = uv / "bin/uv"' in runner
         assert "policy_server_client_readiness_timeout" in runner
         assert "policy_server_load_seconds" in runner
+        assert "policy_server_action_only_guardrail_mode_not_proven" in runner
         assert "gpu_memory_after_inference_mb" in runner
         assert "commanded_state_advance_proven" in runner
         assert "BLUEPRINT_EDGE_POLICY_WORK_DIR" in runner
         assert 'legacy_work = output / "runtime_work"' in runner
         manifest = json.loads(archive.read("provider_runtime/wam_provider_runtime_manifest.json"))
         assert manifest["experiment_id"] == ("policy_ranking_cosmos3_edge_closed_loop_20260729")
+        assert manifest["nvidia_guardrails_enabled"] is False
+        assert manifest["blueprint_action_and_abstention_gates_remain_enabled"] is True
         assert "@sha256:" in manifest["public_image"]
     receipt_payload = dict(receipt)
     recorded = receipt_payload.pop("receipt_sha256")

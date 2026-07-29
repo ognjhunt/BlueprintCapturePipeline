@@ -335,18 +335,19 @@ EDGE_CLOSED_LOOP_PROFILE = SuccessorGPUProfile(
         1: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-1",
         2: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-2",
         3: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-3",
+        4: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-4",
     },
     cost_authorization_binding_sha256=(
         "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
     ),
-    expected_bundle_sha256="50acb4b26a52f5d05c80023463f8240c3c8175d917adb4000e6f1aedb5111f68",
-    expected_bundle_size_bytes=765_906,
+    expected_bundle_sha256="706e3d0e6d94667fee221bee1b8ce94dab086b89e046d05daf70e374df5cda3d",
+    expected_bundle_size_bytes=766_572,
     expected_embedded_input_hashes={
         "runtime_manifest_sha256": (
-            "4de5f233ae6577c49ceed8b5342ee74621ac56d5454a1cfa6a6b922f2ef80ef1"
+            "cc21cc3784999bf2edc3174cd7996561e001dd34ad3db6356a00700a9e7b6b2f"
         ),
         "canary_input_sha256": ("0dc1b72a90dace038a8b9ea3b444fffa8daf51b0db6ef3228e5fe1a8010a2974"),
-        "runner_sha256": ("d8f3b2c9a175d3b9ac99644ae8255e1e3ec47d627aa31957ecd0453907f27639"),
+        "runner_sha256": ("3279e1281b47542921c3aeda21e60e15d6c79a0bb8e81660769db21af8863759"),
         "entrypoint_sha256": ("f104ef7f92d9af3f1f79cea025c6d6eaf81705df80ee0c1ff5b033147526fa3e"),
     },
     qualification_canary_request_count=1,
