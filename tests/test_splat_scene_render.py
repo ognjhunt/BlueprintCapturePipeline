@@ -7,11 +7,44 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
+from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from blueprint_pipeline.splat_scene_render import (
     RENDERED_BY,
+    _decimate_to_standard_ply,
     _encode_mp4,
     render_splat_scene,
 )
+
+
+def test_valid_standard_ply_needs_no_decoder_when_decimation_disabled(
+    tmp_path: Path,
+) -> None:
+    count = 4
+    source = write_standard_3dgs_ply(
+        SplatData(
+            count=count,
+            xyz=np.zeros((count, 3), dtype=np.float32),
+            opacity=np.zeros(count, dtype=np.float32),
+            f_dc=np.zeros((count, 3), dtype=np.float32),
+            scales=np.zeros((count, 3), dtype=np.float32),
+            quats=np.zeros((count, 4), dtype=np.float32),
+            properties=(),
+        ),
+        tmp_path / "source.ply",
+    )
+    result = _decimate_to_standard_ply(
+        source,
+        tmp_path / "out" / "scene_standard.ply",
+        0,
+        repo_root=tmp_path,
+        node="node",
+        timeout=10,
+    )
+    assert result["status"] == "completed"
+    assert result["decoder"] == "validated_standard_3dgs_copy"
+    assert result["vertex_count"] == count
 
 
 def test_blocked_when_source_missing(tmp_path: Path) -> None:

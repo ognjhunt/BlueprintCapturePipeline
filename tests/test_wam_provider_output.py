@@ -98,3 +98,21 @@ def test_provider_output_video_probe_is_injected(tmp_path: Path) -> None:
     assert result["video_smoke_proven"] is True
     assert len(observed) == 1
     assert observed[0].name == "000_camera.mp4"
+
+
+def test_provider_output_preserves_entrypoint_terminal_diagnostic(tmp_path: Path) -> None:
+    output_zip = tmp_path / "provider-terminal.zip"
+    diagnostic = {
+        "schema_version": "wam_provider_entrypoint_diagnostic.v1",
+        "status": "blocked",
+        "provider_entrypoint_exit_code": 143,
+        "provider_entrypoint_terminated_by_signal": 15,
+    }
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("provider_entrypoint_diagnostic.json", json.dumps(diagnostic))
+
+    result = inspect_provider_runtime_output_zip(output_zip)
+
+    assert result["entrypoint_diagnostic_present"] is True
+    assert result["entrypoint_diagnostic"] == diagnostic
+    assert result["runtime_result_present"] is False
