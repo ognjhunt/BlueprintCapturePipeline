@@ -1,0 +1,198 @@
+{
+  "schema_version": "policy_ranking_roboarena_powered_droid_terminal_result.v1",
+  "experiment_id": "policy_ranking_roboarena_powered_droid_confirmation_20260729",
+  "recorded_at": "2026-07-29T07:00:21-0500",
+  "overall_verdict": "thesis_not_supported",
+  "decision_rule_basis": "The frozen tested stack has two adequately executed necessary-component failures: the complete Phase-A GPT-5 mini known-answer calibration missed its registered ranking and selective-use gates, and the powered 17-session native-Cosmos causal screen passed zero windows and zero sessions. Missing captured-site and economics evidence does not erase those direct failures.",
+  "components": {
+    "cosmos_wam_qualification": {
+      "verdict": "not_supported",
+      "basis": "Native nvidia/Cosmos3-Nano failed every registered session-level causal and reliability gate. Blueprint abstained.",
+      "claim_ceiling": "same_snapshot_disjoint_session_open_loop_replay_causal_screen"
+    },
+    "frozen_benchmark_calibration": {
+      "verdict": "not_supported",
+      "basis": "The completed 441-episode GPT-5 mini known-answer reproduction achieved Spearman 0.357143, Kendall tau-b 0.238095, policy pairwise accuracy 0.619048, selective coverage 0.050182, and selective pairwise accuracy 0.600000, missing the registered gates. The stronger Gemini result was post-unseal diagnostic evidence and had zero abstentions.",
+      "claim_ceiling": "known_answer_reproduction_and_post_unseal_diagnostics_only"
+    },
+    "captured_site_transfer": {
+      "verdict": "inconclusive",
+      "basis": "Not admitted or measured because the prerequisite WAM causal and frozen benchmark calibration gates failed. No independently attributable site/task physical outcomes exist in this experiment."
+    },
+    "economics_and_speed": {
+      "verdict": "inconclusive",
+      "basis": "Digital causal-screen GPU cost and runtime were measured, but no useful completed ranking passed fidelity gates and no attributable exhaustive-physical baseline was joined."
+    }
+  },
+  "powered_native_cosmos_execution": {
+    "provider": "vast",
+    "gpu": "RTX PRO 6000 Blackwell Server Edition",
+    "instance_id": 46187244,
+    "runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "checkpoint": "nvidia/Cosmos3-Nano",
+    "checkpoint_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "execution_source_commit": "25b878ce1a8dd03e8147d7f458a65f6d3dc1d177",
+    "provider_bundle_sha256": "bae438e48fa4ac2544840c91e713cdfc1274334820f1d7649d0c772876f1831a",
+    "provider_packet_manifest_sha256": "e9eceb32f9875cf2399877b91d43a709fb58222c944f0a16ed35c2f33120d9ee",
+    "structured_canary_passed": true,
+    "untouched_matrix_admitted": true,
+    "provider_attempt_count": 613,
+    "valid_scientific_response_count": 612,
+    "valid_scientific_video_count": 612,
+    "complete_matrix_generated": true,
+    "model_load_seconds": 440.2295669130981,
+    "provider_runtime_seconds": 3207.550049006939,
+    "provider_output_zip_bytes": 200594982,
+    "provider_output_zip_sha256": "889e997ee61b26c8ca4cef50a5c31b84504f280314bdd70ee5ff6537a799c190",
+    "provider_runtime_result_sha256": "1856b55889f014a474fb85f54e16395402cbf39898b0b75dbbc003ea1ed755d4",
+    "immutable_request_journal_tail_sha256": "aa174c05a4a770d16a1b8d326702f9006ba34b88ebbe2afa0b88089155202ec4"
+  },
+  "causal_and_reliability_result": {
+    "independent_session_count": 17,
+    "window_count": 51,
+    "conditions": [
+      "recorded",
+      "zero",
+      "shuffled",
+      "reversed",
+      "shifted",
+      "policy_swapped"
+    ],
+    "seeds": [
+      0,
+      1
+    ],
+    "camera_views": [
+      "wrist",
+      "left",
+      "right"
+    ],
+    "passed_window_count": 0,
+    "reliable_session_count": 0,
+    "session_clustered_causal_validity": {
+      "estimate": 0.0,
+      "lower95": 0.0,
+      "upper95": 0.0,
+      "bootstrap_replicates": 10000
+    },
+    "session_reliability": {
+      "estimate": 0.0,
+      "lower95": 0.0,
+      "upper95": 0.0,
+      "bootstrap_replicates": 10000
+    },
+    "static_under_command_window_count": 46,
+    "median_action_effect_to_cross_seed_noise_ratio": {
+      "wrist": 0.5242661154656528,
+      "left": 0.4883988021968204,
+      "right": 0.4952616906216503
+    },
+    "median_recorded_vs_zero_scene_distance": {
+      "wrist": 0.004063388099893928,
+      "left": 0.00391959585249424,
+      "right": 0.00440461584366858
+    },
+    "registered_minimum_scene_distance": 0.01,
+    "registered_minimum_action_effect_to_cross_seed_noise_ratio": 1.0,
+    "cosmos_wam_qualification": "failed",
+    "blueprint_abstained": true,
+    "abstention_correct": true,
+    "analysis_self_sha256": "2b6c6ecda6e1a0213878d6d63979ae76a2a1eab4986357e0ca6ba605d3e0f7a5",
+    "analysis_file_sha256": "87a8a5ced3c6ca189a0edc2a989e0983493b876e5253caf819eca9400ee542ce"
+  },
+  "phase_a_reproduction": {
+    "model": "gpt-5-mini-2025-08-07",
+    "sessions": 63,
+    "policies": 7,
+    "episodes": 441,
+    "spearman_rho": 0.357143,
+    "kendall_tau_b": 0.238095,
+    "policy_pairwise_accuracy": 0.619048,
+    "policy_pairwise_clustered_95_interval": [
+      0.428571,
+      0.857143
+    ],
+    "selective_coverage": 0.050182,
+    "selective_pairwise_accuracy": 0.6,
+    "all_registered_gates_passed": false,
+    "claim_ceiling": "non_independent_known_answer_reproduction"
+  },
+  "phase_b": {
+    "design_achieved": "fallback_3_frozen_replayed_real_candidate_policy_traces",
+    "closed_loop_executed": false,
+    "full_terminal_episodes_generated": false,
+    "policy_ranking_run": false,
+    "admission_result": "not_admitted_after_causal_failure",
+    "claim_ceiling": "open_loop_replay_qualification_only"
+  },
+  "historical_oscar_baseline": {
+    "experiment": "policy_ranking_thesis_experiment_2_20260727",
+    "overall_verdict": "thesis_not_supported",
+    "heldout_session_clusters": 49,
+    "visible_skeleton_overlay_mean_excess_action_correlation": 0.296703,
+    "skeleton_masked_scene_mean_excess_action_correlation": 0.039976,
+    "skeleton_masked_scene_95_interval": [
+      0.012196,
+      0.067883
+    ],
+    "skeleton_masked_clustered_lower_validity_bound": 0.387755,
+    "registered_lower_bound_required": 0.8,
+    "interpretation": "The visible skeleton carried intended-trajectory signal; the scene-masked output did not establish useful world dynamics."
+  },
+  "wam_arms": {
+    "skeleton_only": "not rerun in this powered experiment; retained historical intended-trajectory baseline only",
+    "oscar_purpose_built_wam": "not rerun; historical Experiment 2 remains separate and negative for its frozen stack",
+    "native_cosmos3_nano": "powered causal screen failed",
+    "cosmos3_oscar_skeleton_hybrid": "not built or run"
+  },
+  "economics": {
+    "gpu_attempt_count": 2,
+    "gpu_live_runtime_seconds_total": 4615.573571,
+    "gpu_cost_usd_total": 2.226112,
+    "successful_complete_allocation_cost_usd": 1.748783,
+    "failed_transport_attempt_cost_usd": 0.477329,
+    "evaluator_api_cost_usd_this_stage": 0.0,
+    "policy_api_cost_usd_this_stage": 0.0,
+    "storage_and_transfer_cost_usd": null,
+    "storage_and_transfer_cost_status": "not_separately_attributable",
+    "physical_evaluation_cost_time_anchor": null,
+    "completed_useful_ranking": false,
+    "substantially_faster_or_cheaper_claim_allowed": false
+  },
+  "operational_recovery": {
+    "outer_adapter_status": "failed",
+    "outer_adapter_blocker": "vast_heartbeat_container_missing",
+    "cause": "Vast removed the completed args container between log polls after the durable callback archive had uploaded.",
+    "scientific_archive_lost": false,
+    "fresh_completed_callback_recovery_passed": true,
+    "object_last_modified_at": "2026-07-29T11:37:36+00:00",
+    "allocation_started_at": "2026-07-29T10:37:05.708072+00:00",
+    "recovery_manifest_sha256": "20659634517f8673ed749730fc8cdf45cc89c84ea93d7b8c08f372eb97a2ecf4",
+    "reusable_fix_commit": "eb043e85e648f25227a0546807f2851b91c03d3d"
+  },
+  "provider_zero": {
+    "authenticated_live_instance_count": 0,
+    "continuing_hourly_burn_usd": 0.0,
+    "spend_guard_status": "passed",
+    "spend_guard_sha256": "b25b476f9309a92791fac75b96ccaa821c7329fcb202264c0c66fc3dfc2cff79",
+    "provider_zero_does_not_prove_invoice_settlement_or_scientific_validity": true
+  },
+  "review_gallery": {
+    "external_path": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-powered-droid-confirmation-evidence-20260729/live_run_v5/review_gallery_v2",
+    "manifest_sha256": "1d1ee91486448d2db90acff1a7e0b5d3305b8fd047df669fe59a110f0437bee4",
+    "video_count": 48,
+    "selection_uses_physical_outcomes": false,
+    "contains_all_action_conditions_both_seeds_and_all_views": true
+  },
+  "claim_ceiling": {
+    "native_cosmos_same_snapshot_disjoint_session_open_loop_causal_qualification": false,
+    "independent_new_snapshot_confirmation": false,
+    "live_policy_wam_policy_closed_loop": false,
+    "policy_ranking_fidelity": false,
+    "captured_site_transfer": false,
+    "physical_performance": false,
+    "economics_and_speed": false
+  },
+  "cheapest_scientifically_valid_next_experiment": "Freeze a separate Cosmos plus OSCAR-skeleton adapter and skeleton-only baseline, select 17 untouched label-sealed sessions, and repeat only the causal/control matrix before any evaluator spend. Score visible-skeleton and skeleton-masked scene response separately. Do not rerun native Cosmos unchanged and do not enter ranking unless the new arm passes.",
+  "manifest_sha256": "1bf152472aa59f902f7ca7fc08d64daad15c2888abc7adb876c562e36fccefbd"
+}

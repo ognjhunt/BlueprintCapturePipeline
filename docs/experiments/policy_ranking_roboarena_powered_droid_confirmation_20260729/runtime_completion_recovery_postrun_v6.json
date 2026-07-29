@@ -1,0 +1,41 @@
+{
+  "schema_version": "policy_ranking_roboarena_powered_droid_runtime_completion_recovery_postrun.v6",
+  "experiment_id": "policy_ranking_roboarena_powered_droid_confirmation_20260729",
+  "recorded_at": "2026-07-29T07:00:21-0500",
+  "status": "postrun_operational_recovery_validated",
+  "scientific_protocol_changed": false,
+  "scientific_outputs_changed": false,
+  "provider_recalled": false,
+  "problem": {
+    "outer_adapter_status": "failed",
+    "outer_adapter_blocker": "vast_heartbeat_container_missing",
+    "explanation": "The outer startup/log observer polled for a final marker. The provider container exited after uploading its durable callback between polls, so the final tail was unavailable even though the inner runtime had completed."
+  },
+  "recovery_evidence": {
+    "callback_http_status": 200,
+    "callback_size_bytes": 200594982,
+    "callback_sha256": "889e997ee61b26c8ca4cef50a5c31b84504f280314bdd70ee5ff6537a799c190",
+    "callback_last_modified_at": "2026-07-29T11:37:36+00:00",
+    "allocation_started_at": "2026-07-29T10:37:05.708072+00:00",
+    "fresh_for_allocation": true,
+    "zip_integrity_passed": true,
+    "runtime_result_status": "completed",
+    "runtime_result_sha256": "1856b55889f014a474fb85f54e16395402cbf39898b0b75dbbc003ea1ed755d4",
+    "video_count": 613,
+    "valid_scientific_matrix_response_count": 612,
+    "recovery_manifest_sha256": "20659634517f8673ed749730fc8cdf45cc89c84ea93d7b8c08f372eb97a2ecf4"
+  },
+  "reusable_fix": {
+    "commit": "eb043e85e648f25227a0546807f2851b91c03d3d",
+    "behavior": "The authorized WAM runner may recover only observation-layer failures after provider teardown, and only when the callback object is fresh for the current allocation, is a valid archive, contains a completed runtime result without runtime blockers, and contains WAM media.",
+    "stale_callback_rejected": true,
+    "transport_completion_does_not_imply_scientific_validity": true,
+    "focused_tests_passed": 29,
+    "lint_passed": true
+  },
+  "provider_zero": {
+    "authenticated_live_instance_count": 0,
+    "continuing_hourly_burn_usd": 0.0
+  },
+  "manifest_sha256": "ac4d39590a9270b4df412edf230a5538d86d3b0dc3faaf12e5ce3a4cbed6749c"
+}

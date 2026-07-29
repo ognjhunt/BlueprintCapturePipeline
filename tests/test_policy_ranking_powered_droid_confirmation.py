@@ -118,3 +118,40 @@ def test_replacement_cost_amendment_preserves_hard_caps_and_science() -> None:
     assert amendment["change"]["scientific_fields_changed"] is False
     assert amendment["timing"]["allocation_2_provider_called"] is False
     assert environment["execution"]["target_spend_usd"] == 6.7
+
+
+def test_terminal_result_keeps_component_verdicts_and_claim_ceilings_separate() -> None:
+    result = _artifact("terminal_result_v1.json")
+
+    assert result["overall_verdict"] == "thesis_not_supported"
+    assert result["components"]["cosmos_wam_qualification"]["verdict"] == "not_supported"
+    assert result["components"]["frozen_benchmark_calibration"]["verdict"] == (
+        "not_supported"
+    )
+    assert result["components"]["captured_site_transfer"]["verdict"] == "inconclusive"
+    assert result["components"]["economics_and_speed"]["verdict"] == "inconclusive"
+    assert result["powered_native_cosmos_execution"]["structured_canary_passed"] is True
+    assert result["powered_native_cosmos_execution"]["valid_scientific_response_count"] == 612
+    assert result["causal_and_reliability_result"]["passed_window_count"] == 0
+    assert result["causal_and_reliability_result"]["reliable_session_count"] == 0
+    assert result["causal_and_reliability_result"]["blueprint_abstained"] is True
+    assert result["causal_and_reliability_result"]["abstention_correct"] is True
+    assert result["phase_b"]["closed_loop_executed"] is False
+    assert result["phase_b"]["policy_ranking_run"] is False
+    assert result["claim_ceiling"]["captured_site_transfer"] is False
+    assert result["claim_ceiling"]["economics_and_speed"] is False
+
+
+def test_postrun_completion_recovery_does_not_promote_scientific_claims() -> None:
+    recovery = _artifact("runtime_completion_recovery_postrun_v6.json")
+
+    assert recovery["status"] == "postrun_operational_recovery_validated"
+    assert recovery["scientific_protocol_changed"] is False
+    assert recovery["scientific_outputs_changed"] is False
+    assert recovery["provider_recalled"] is False
+    assert recovery["recovery_evidence"]["fresh_for_allocation"] is True
+    assert recovery["recovery_evidence"]["runtime_result_status"] == "completed"
+    assert recovery["recovery_evidence"]["valid_scientific_matrix_response_count"] == 612
+    assert recovery["reusable_fix"]["stale_callback_rejected"] is True
+    assert recovery["reusable_fix"]["transport_completion_does_not_imply_scientific_validity"] is True
+    assert recovery["provider_zero"]["authenticated_live_instance_count"] == 0

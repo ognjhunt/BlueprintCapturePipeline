@@ -1,0 +1,55 @@
+{
+  "schema_version": "policy_ranking_powered_droid_allocation_execution_receipt.v1",
+  "generated_at": "2026-07-29T07:00:23-0500",
+  "allocation_index": 2,
+  "experiment_id": "policy_ranking_roboarena_powered_droid_confirmation_20260729",
+  "source_commit": "25b878ce1a8dd03e8147d7f458a65f6d3dc1d177",
+  "provider": "vast",
+  "provider_instance_id": 46187244,
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "all_in_hourly_rate_usd": 1.8259,
+  "estimated_cost_usd": 1.748783,
+  "checkpoint": "nvidia/Cosmos3-Nano",
+  "checkpoint_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+  "provider_bundle_sha256": "bae438e48fa4ac2544840c91e713cdfc1274334820f1d7649d0c772876f1831a",
+  "provider_packet_manifest_sha256": "e9eceb32f9875cf2399877b91d43a709fb58222c944f0a16ed35c2f33120d9ee",
+  "provider_output_zip_sha256": "889e997ee61b26c8ca4cef50a5c31b84504f280314bdd70ee5ff6537a799c190",
+  "provider_output_zip_size_bytes": 200594982,
+  "provider_runtime_result_sha256": "1856b55889f014a474fb85f54e16395402cbf39898b0b75dbbc003ea1ed755d4",
+  "structured_canary": {
+    "passed": true,
+    "frame_count": 17,
+    "width": 640,
+    "height": 528,
+    "fps": 15.0,
+    "duration_seconds": 1.134,
+    "temporal_absolute_difference_mean": 1.6676554679870605,
+    "first_to_last_absolute_difference_mean": 14.270931243896484,
+    "inference_time_seconds": 4.787636965513229,
+    "peak_memory_mb": 36548.0,
+    "output_sha256": "cde69521aebdc4cec6a9d12a3a92dd38e82986317f51822d4670494a3480a32d"
+  },
+  "scientific_matrix": {
+    "untouched_matrix_admitted": true,
+    "complete_action_condition_seed_matrix_generated": true,
+    "provider_generation_requests_attempted": 613,
+    "provider_scientific_matrix_responses_valid": 612,
+    "response_count": 612,
+    "video_count": 612,
+    "model_load_seconds": 440.2295669130981,
+    "runtime_seconds": 3207.550049006939
+  },
+  "outer_allocator_observation": {
+    "reported_status": "failed",
+    "reported_blocker": "vast_heartbeat_container_missing",
+    "interpretation": "false operational failure after the completed runtime archive had been uploaded; it does not invalidate or qualify the scientific result",
+    "reusable_fix_required": true
+  },
+  "provider_zero": {
+    "authenticated_inventory_live_instances": 0,
+    "continuing_hourly_burn_usd": 0.0,
+    "watchdog_status": "provider_terminal",
+    "provider_absence_confirmed": true
+  },
+  "claim_boundary": "Successful generation and archive recovery prove execution only. Native-Cosmos causal qualification is decided separately by the frozen analyzer."
+}

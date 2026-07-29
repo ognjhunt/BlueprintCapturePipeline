@@ -1,0 +1,63 @@
+{
+  "schema_version": "policy_ranking_powered_droid_causal_result.v1",
+  "generated_at": "2026-07-29T07:00:23-0500",
+  "status": "completed",
+  "cosmos_wam_qualification": "failed",
+  "blueprint_abstains": true,
+  "abstention_correct": true,
+  "causal_gates_passed": false,
+  "reliability_gates_passed": false,
+  "independent_session_count": 17,
+  "window_count": 51,
+  "response_count": 612,
+  "video_count": 612,
+  "passed_window_count": 0,
+  "reliable_session_count": 0,
+  "abstaining_session_count": 17,
+  "session_clustered_causal_validity": {
+    "estimate": 0.0,
+    "lower95": 0.0,
+    "upper95": 0.0,
+    "bootstrap_replicates": 10000,
+    "bootstrap_seed": 20260729
+  },
+  "session_reliability": {
+    "estimate": 0.0,
+    "lower95": 0.0,
+    "upper95": 0.0,
+    "bootstrap_replicates": 10000,
+    "bootstrap_seed": 20260729
+  },
+  "hard_flags": {
+    "static_under_command_windows": 46,
+    "sessions_with_static_under_command": 17,
+    "sessions_with_timing_evidence_insufficient": 10,
+    "sessions_with_timing_disagreement": 5
+  },
+  "action_effect_to_cross_seed_noise": {
+    "wrist_median": 0.5242661154656528,
+    "wrist_maximum": 1.081246615318762,
+    "wrist_windows_at_or_above_one": 1,
+    "left_median": 0.4883988021968204,
+    "left_maximum": 0.9256844632437289,
+    "left_windows_at_or_above_one": 0,
+    "right_median": 0.4952616906216503,
+    "right_maximum": 0.7436439778348655,
+    "right_windows_at_or_above_one": 0
+  },
+  "analysis_sha256": "2b6c6ecda6e1a0213878d6d63979ae76a2a1eab4986357e0ca6ba605d3e0f7a5",
+  "packet_file_sha256": "bbd6a11525289ea8410f25bf60653eb0893a40881070b770163315cea57057ef",
+  "packet_manifest_sha256": "e9eceb32f9875cf2399877b91d43a709fb58222c944f0a16ed35c2f33120d9ee",
+  "protocol_file_sha256": "d04bbcff952f7d61552d2d382953a98841202b333af65b2dc488986d68d1cc71",
+  "protocol_manifest_sha256": "6a7486b8eda01057934106206c5ecf3de808d19f3b3124a4a829c7a144f4c689",
+  "claim_ceiling": {
+    "same_snapshot_disjoint_session_open_loop_causal_qualification_only": true,
+    "independent_new_snapshot_confirmation": false,
+    "live_policy_wam_policy_closed_loop": false,
+    "policy_ranking_fidelity": false,
+    "captured_site_transfer": false,
+    "economics_and_speed": false
+  },
+  "phase_b_admission_for_native_cosmos": false,
+  "interpretation": "The frozen native Cosmos3-Nano arm did not produce action effects that reliably exceeded temporal placebos and cross-seed variation. Blueprint correctly rejected the arm rather than advancing it into policy ranking."
+}
