@@ -57,12 +57,22 @@ dependent step as blocked instead of guessing.
 - Preserve raw bundle truth and downstream compatibility with other Blueprint repos.
 - Do not hardwire the company to one model family, checkpoint, or provider.
 - Keep cross-repo contracts explicit when changing bundle, runtime, or sync behavior.
-- Never resolve a failure by hand or by one-off workaround. Every fix must land
-  as code on main with a hermetic fast-lane test pinning the contract and,
-  where a paid path exists, a fail-closed gate in front of it. A manual action
-  taken to save a live run is a stopgap; the same session must land the
-  encoded equivalent (precedents: PR #180 builder swap, PR #181 compute-cap
-  ceiling — each replaced a repeatedly hand-applied workaround).
+- Never resolve a failure only by hand or by a one-off workaround. Use two
+  verification lanes:
+  - **Experimental/canary lane:** before paid mutation, bind the run to a clean
+    immutable commit (a protected experiment branch or `main`) and immutable
+    input hashes; run focused hermetic tests for every changed scientific,
+    launch, spend, watchdog, teardown, and provider-zero contract; and require
+    the canonical fail-closed paid-resource gate. A repository-wide fast lane,
+    hosted-check completion, and merge to `main` are not prerequisites for the
+    canary. Preserve failures and publish the encoded fix before a production
+    release or terminal scientific claim.
+  - **Release/production lane:** run the repository fast lane once per coherent
+    release candidate, treat hosted checks as integration diagnostics, and run
+    exactly one full suite on the final publication SHA.
+  A manual action taken to save a live run remains a stopgap; encode and focus-
+  test the equivalent in the same session (precedents: PR #180 builder swap,
+  PR #181 compute-cap ceiling).
 - Keep WAM rollout execution, generated-video success labels, and forward/inverse
   episode-consistency scoring separate. The WAM/evaluator may prepare
   `wam_episode_consistency_request.json` and normalize an external scorer result,
@@ -93,7 +103,7 @@ Install:
 python -m pip install -e .[dev]
 ```
 
-Run tests:
+Run release tests:
 
 ```bash
 pytest                    # fast lane (<90s): slow/gpu tests deselected via addopts
@@ -102,7 +112,9 @@ scripts/pytest_full.sh    # full suite including slow/gpu tests (equivalent: pyt
 
 Test lanes (PIPE-05): heavy subprocess/Isaac/render/module-entrypoint tests are tagged
 `@pytest.mark.slow` (and `gpu`); bare `pytest` deselects them, so it is the hermetic
-pre-push gate. The success-claim contract truth tests always run against the committed
+release pre-push gate. Experimental canaries may instead run the focused hermetic
+tests required by the canary-lane rule above. The success-claim contract truth tests
+always run against the committed
 fixture in `tests/fixtures/kitchen_task_min/`; set `BLUEPRINT_TEST_LOCAL_ARTIFACTS=1`
 to additionally sweep real `output/kitchen_task_scaling_preflight_*` artifacts.
 
