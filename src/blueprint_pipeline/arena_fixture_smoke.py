@@ -254,6 +254,10 @@ def _write_job_request(path: Path) -> None:
         {
             "schema_version": ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
             "job_id": "arena-fixture-smoke-job",
+            "evidence_use": {
+                "export_requested": True,
+                "requested_uses": ["evaluation"],
+            },
             "policy_package": {
                 "policy_api_endpoint": {"endpoint_url": "https://robot.example/policy"},
                 "docker_container": {
