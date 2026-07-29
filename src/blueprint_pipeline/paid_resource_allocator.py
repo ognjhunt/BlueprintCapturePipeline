@@ -184,23 +184,75 @@ def _current_remote_main_commit() -> str:
     return commit
 
 
-def _source_checkout_blockers(expected_source_commit: str) -> tuple[list[str], str]:
+def _current_branch_name() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "branch", "--show-current"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _current_remote_branch_commit(branch: str) -> str:
+    if not branch or not branch.startswith("codex/"):
+        return ""
+    reference = f"refs/heads/{branch}"
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-remote", "--exit-code", "origin", reference],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    fields = result.stdout.strip().split()
+    commit = fields[0].lower() if len(fields) == 2 else ""
+    if (
+        result.returncode != 0
+        or fields[1:] != [reference]
+        or len(commit) != 40
+        or any(character not in "0123456789abcdef" for character in commit)
+    ):
+        return ""
+    return commit
+
+
+def _source_checkout_blockers(
+    expected_source_commit: str, *, allow_pushed_branch_diagnostic: bool = False
+) -> tuple[list[str], str]:
     checkout_commit, checkout_clean = _current_checkout_source_state()
-    origin_main_commit = _current_origin_main_commit()
-    remote_main_commit = _current_remote_main_commit()
     blockers: list[str] = []
     if not checkout_commit:
         blockers.append("gpu_canary_checkout_source_commit_unavailable")
     elif expected_source_commit.strip().lower() != checkout_commit:
         blockers.append("gpu_canary_expected_source_commit_not_current_checkout")
-    if not origin_main_commit:
-        blockers.append("gpu_canary_origin_main_commit_unavailable")
-    elif checkout_commit != origin_main_commit:
-        blockers.append("gpu_canary_checkout_not_origin_main")
-    if not remote_main_commit:
-        blockers.append("gpu_canary_remote_main_commit_unavailable")
-    elif checkout_commit != remote_main_commit:
-        blockers.append("gpu_canary_checkout_not_remote_main")
+    if allow_pushed_branch_diagnostic:
+        branch = _current_branch_name()
+        remote_branch_commit = _current_remote_branch_commit(branch)
+        if not branch.startswith("codex/"):
+            blockers.append("gpu_canary_experimental_branch_not_codex_namespaced")
+        if not remote_branch_commit:
+            blockers.append("gpu_canary_remote_experimental_branch_commit_unavailable")
+        elif checkout_commit != remote_branch_commit:
+            blockers.append("gpu_canary_checkout_not_pushed_experimental_branch")
+    else:
+        origin_main_commit = _current_origin_main_commit()
+        remote_main_commit = _current_remote_main_commit()
+        if not origin_main_commit:
+            blockers.append("gpu_canary_origin_main_commit_unavailable")
+        elif checkout_commit != origin_main_commit:
+            blockers.append("gpu_canary_checkout_not_origin_main")
+        if not remote_main_commit:
+            blockers.append("gpu_canary_remote_main_commit_unavailable")
+        elif checkout_commit != remote_main_commit:
+            blockers.append("gpu_canary_checkout_not_remote_main")
     if not checkout_clean:
         blockers.append("gpu_canary_checkout_not_clean")
     return blockers, checkout_commit
@@ -487,6 +539,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--adapter-output", required=True)
     gpu.add_argument("--pod-name", required=True)
     gpu.add_argument("--expected-source-commit")
+    gpu.add_argument(
+        "--experimental-branch-diagnostic",
+        action="store_true",
+        help=(
+            "Allow a clean exact commit on its pushed codex/ branch for diagnostic canaries. "
+            "Release and production evidence still require exact main."
+        ),
+    )
     gpu.add_argument(
         "--expected-image-source-commit",
         help=(
@@ -821,7 +881,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 write_json(Path(args.admission_out), result)
             else:
                 source_blockers, checkout_commit = _source_checkout_blockers(
-                    args.expected_source_commit or ""
+                    args.expected_source_commit or "",
+                    allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
                 )
                 if source_blockers:
                     result = {
@@ -963,7 +1024,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 write_json(Path(args.admission_out), result)
             else:
                 source_blockers, checkout_commit = _source_checkout_blockers(
-                    args.expected_source_commit or ""
+                    args.expected_source_commit or "",
+                    allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
                 )
                 if source_blockers:
                     result = {
@@ -1036,7 +1098,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 write_json(Path(args.admission_out), result)
             else:
                 source_blockers, checkout_commit = _source_checkout_blockers(
-                    args.expected_source_commit or ""
+                    args.expected_source_commit or "",
+                    allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
                 )
                 if source_blockers:
                     result = {
@@ -1442,7 +1505,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             checkout_commit = ""
             if not missing:
                 source_blockers, checkout_commit = _source_checkout_blockers(
-                    args.expected_source_commit or ""
+                    args.expected_source_commit or "",
+                    allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
                 )
                 if source_blockers:
                     result = {
@@ -1534,7 +1598,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"success": False}, sort_keys=True))
             return 2
         source_blockers, checkout_commit = _source_checkout_blockers(
-            args.expected_source_commit or ""
+            args.expected_source_commit or "",
+            allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
         )
         if source_blockers:
             result = {

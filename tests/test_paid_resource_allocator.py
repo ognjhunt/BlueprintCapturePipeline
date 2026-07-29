@@ -631,7 +631,7 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
 
     monkeypatch.setattr(allocator, "run_canary", fake_run_canary)
     monkeypatch.setattr(
-        allocator, "_source_checkout_blockers", lambda _expected: ([], "c" * 40)
+        allocator, "_source_checkout_blockers", lambda _expected, **_kwargs: ([], "c" * 40)
     )
     exit_code = allocator.main(
         [
@@ -681,7 +681,7 @@ def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator
         allocator, "run_openpi_policy_ranking_campaign", fake_run_openpi
     )
     monkeypatch.setattr(
-        allocator, "_source_checkout_blockers", lambda _expected: ([], "c" * 40)
+        allocator, "_source_checkout_blockers", lambda _expected, **_kwargs: ([], "c" * 40)
     )
     exit_code = allocator.main(
         [
@@ -954,7 +954,7 @@ def test_gpu_canary_defaults_bind_authorized_strict_staged_plan(
 
     monkeypatch.setattr(allocator, "run_canary", fake_run_canary)
     monkeypatch.setattr(
-        allocator, "_source_checkout_blockers", lambda _expected: ([], "c" * 40)
+        allocator, "_source_checkout_blockers", lambda _expected, **_kwargs: ([], "c" * 40)
     )
     exit_code = allocator.main(
         [
@@ -1081,7 +1081,7 @@ def test_gpu_allocator_dispatches_authorized_persistent_carrier_campaign(
 
     monkeypatch.setattr(allocator, "run_persistent_carrier_campaign", fake_campaign)
     monkeypatch.setattr(
-        allocator, "_source_checkout_blockers", lambda _expected: ([], "c" * 40)
+        allocator, "_source_checkout_blockers", lambda _expected, **_kwargs: ([], "c" * 40)
     )
     out = tmp_path / "persistent"
     exit_code = allocator.main(
@@ -1201,6 +1201,72 @@ def test_gpu_canary_source_checkout_binding_requires_live_remote_main_parity(
     monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "")
     assert allocator._source_checkout_blockers("c" * 40) == (
         ["gpu_canary_remote_main_commit_unavailable"],
+        "c" * 40,
+    )
+
+
+def test_gpu_canary_experimental_lane_accepts_clean_pushed_codex_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_current_checkout_source_state",
+        lambda: ("c" * 40, True),
+    )
+    monkeypatch.setattr(allocator, "_current_branch_name", lambda: "codex/diagnostic")
+    monkeypatch.setattr(
+        allocator,
+        "_current_remote_branch_commit",
+        lambda _branch: "c" * 40,
+    )
+
+    assert allocator._source_checkout_blockers(
+        "c" * 40, allow_pushed_branch_diagnostic=True
+    ) == ([], "c" * 40)
+
+
+def test_gpu_canary_experimental_lane_requires_matching_remote_branch_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_current_checkout_source_state",
+        lambda: ("c" * 40, True),
+    )
+    monkeypatch.setattr(allocator, "_current_branch_name", lambda: "codex/diagnostic")
+    monkeypatch.setattr(
+        allocator,
+        "_current_remote_branch_commit",
+        lambda _branch: "b" * 40,
+    )
+
+    assert allocator._source_checkout_blockers(
+        "c" * 40, allow_pushed_branch_diagnostic=True
+    ) == (["gpu_canary_checkout_not_pushed_experimental_branch"], "c" * 40)
+
+
+def test_gpu_canary_experimental_lane_rejects_non_codex_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "_current_checkout_source_state",
+        lambda: ("c" * 40, True),
+    )
+    monkeypatch.setattr(allocator, "_current_branch_name", lambda: "feature/diagnostic")
+    monkeypatch.setattr(
+        allocator,
+        "_current_remote_branch_commit",
+        lambda _branch: "",
+    )
+
+    assert allocator._source_checkout_blockers(
+        "c" * 40, allow_pushed_branch_diagnostic=True
+    ) == (
+        [
+            "gpu_canary_experimental_branch_not_codex_namespaced",
+            "gpu_canary_remote_experimental_branch_commit_unavailable",
+        ],
         "c" * 40,
     )
 
