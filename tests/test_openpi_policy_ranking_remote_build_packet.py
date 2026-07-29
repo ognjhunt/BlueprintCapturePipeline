@@ -129,6 +129,16 @@ def test_openpi_cloud_init_uses_governed_docker_builder() -> None:
     assert text.index("mkswap") < text.index("touch /root/blueprint-builder-ready")
 
 
+def test_openpi_runtime_installs_and_verifies_camera_render_thread_library() -> None:
+    dockerfile = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/docker/policy_ranking_openpi/Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    assert "libglib2.0-0" in dockerfile
+    assert 'ldconfig -p | grep -F "libgthread-2.0.so.0"' in dockerfile
+
+
 def test_remote_openpi_result_binds_digest_source_and_frozen_revisions(
     tmp_path: Path,
 ) -> None:

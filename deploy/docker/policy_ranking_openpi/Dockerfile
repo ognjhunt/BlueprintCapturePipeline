@@ -24,7 +24,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates clang curl git git-lfs \
-      libegl1 libgl1 libglvnd0 libosmesa6 linux-headers-generic \
+      libegl1 libgl1 libglib2.0-0 libglvnd0 libosmesa6 linux-headers-generic \
+    && ldconfig \
+    && ldconfig -p | grep -F "libgthread-2.0.so.0" \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --filter=blob:none --recurse-submodules "${OPENPI_SOURCE_URL}" /opt/openpi \
