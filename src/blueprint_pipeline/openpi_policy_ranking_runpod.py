@@ -29,7 +29,11 @@ from .groot_oscar_runpod_watchdog import (
     terminate_canary_resources,
     write_owner_teardown_cancel_request,
 )
-from .openpi_policy_ranking_gpu_bootstrap import POLICY_IDS
+from .openpi_policy_ranking_gpu_bootstrap import (
+    EXECUTION_MODE_FULL_CAMPAIGN,
+    EXECUTION_MODE_NEW_SITE_CANARY,
+    POLICY_IDS,
+)
 from .openpi_policy_ranking_gpu_admission import (
     build_openpi_policy_ranking_gpu_admission,
     collect_openpi_policy_ranking_runpod_preflight,
@@ -64,6 +68,7 @@ from .safe_outbound_http import request as safe_http_request
 SCHEMA_VERSION = "openpi_policy_ranking_runpod_launch.v1"
 INPUT_SECRET_URL_ENV = "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL"
 INPUT_SHA256_ENV = "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256"
+EXECUTION_MODE_ENV = "BLUEPRINT_OPENPI_EXECUTION_MODE"
 OUTPUT_SECRET_PUT_URL_ENV = "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL"
 GENERIC_OUTPUT_SECRET_URL_ENV = "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"
 FORWARD_SECRET_ENV_NAMES_ENV = "BLUEPRINT_RUNPOD_FORWARD_SECRET_ENV_VARS"
@@ -181,6 +186,76 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
             total_uncompressed += int(member.file_size)
         if total_uncompressed > MAX_OUTPUT_UNCOMPRESSED_BYTES:
             blockers.append("openpi_output_archive_uncompressed_size_exceeded")
+        canary_manifest_name = "new_site_diagnostic_canary_gpu.json"
+        if canary_manifest_name in names:
+            try:
+                value = json.loads(archive.read(canary_manifest_name).decode("utf-8"))
+            except (UnicodeError, ValueError, json.JSONDecodeError):
+                value = {}
+                blockers.append("openpi_output_canary_manifest_unreadable")
+            manifest = dict(value) if isinstance(value, Mapping) else {}
+            if manifest.get("schema_version") != "new_site_diagnostic_canary_gpu.v1":
+                blockers.append("openpi_output_canary_schema_invalid")
+            declared_sha = str(manifest.get("manifest_sha256") or "")
+            digest_payload = dict(manifest)
+            digest_payload.pop("manifest_sha256", None)
+            from .policy_ranking_thesis import canonical_sha256
+
+            if declared_sha != canonical_sha256(digest_payload):
+                blockers.append("openpi_output_canary_manifest_sha256_mismatch")
+            canary_status = str(manifest.get("status") or "")
+            canary = manifest.get("canary")
+            canary = canary if isinstance(canary, Mapping) else {}
+            if canary_status == "completed":
+                if (
+                    manifest.get("arm_id") != "skeleton_only"
+                    or canary.get("status") not in {"passed", "failed"}
+                    or canary.get("label_free") is not True
+                    or canary.get("model_invoked") is not True
+                ):
+                    blockers.append("openpi_output_completed_canary_invalid")
+                expected_media = {
+                    "external": any(
+                        name.endswith("query_000_external_skeleton.mp4") for name in names
+                    ),
+                    "wrist": any(
+                        name.endswith("query_000_wrist_skeleton.mp4") for name in names
+                    ),
+                }
+                if not all(expected_media.values()):
+                    blockers.append("openpi_output_canary_individual_camera_media_missing")
+            elif canary_status == "blocked":
+                if not manifest.get("blockers"):
+                    blockers.append("openpi_output_blocked_canary_reason_missing")
+                expected_media = {}
+            else:
+                expected_media = {}
+                blockers.append("openpi_output_canary_not_terminal")
+            claim = manifest.get("claim_boundary")
+            claim = claim if isinstance(claim, Mapping) else {}
+            if (
+                claim.get("ranking_accuracy") is not False
+                or claim.get("physical_success") is not False
+                or claim.get("captured_site_transfer_validation") is not False
+                or claim.get("phase_b_confirmation") is not False
+            ):
+                blockers.append("openpi_output_canary_claim_boundary_invalid")
+            return {
+                "schema_version": "openpi_policy_ranking_output_validation.v1",
+                "status": "completed" if not blockers else "blocked",
+                "execution_mode": EXECUTION_MODE_NEW_SITE_CANARY,
+                "blockers": sorted(set(blockers)),
+                "terminal_output_present": True,
+                "campaign_status": manifest.get("status"),
+                "campaign_manifest": manifest,
+                "episode_record_count": 0,
+                "scene_ids": [str((canary.get("freeze_bindings") or {}).get("scene_id") or "")],
+                "individual_camera_media_present": expected_media,
+                "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                "archive_size_bytes": len(archive_bytes),
+                "archive_member_count": len(members),
+                "raw_secret_values_recorded": False,
+            }
         manifest_name = "openpi_policy_ranking_gpu_job.json"
         if manifest_name not in names:
             blockers.append("openpi_output_campaign_manifest_missing")
@@ -281,6 +356,7 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
     return {
         "schema_version": "openpi_policy_ranking_output_validation.v1",
         "status": "completed" if not blockers else "blocked",
+        "execution_mode": EXECUTION_MODE_FULL_CAMPAIGN,
         "blockers": sorted(set(blockers)),
         "terminal_output_present": True,
         "campaign_status": manifest.get("status"),
@@ -491,12 +567,19 @@ def _build_vast_launch_request(
     capacity_request = (
         capacity_request if isinstance(capacity_request, Mapping) else {}
     )
+    execution_mode = (
+        EXECUTION_MODE_NEW_SITE_CANARY
+        if input_bundle.get("schema_version")
+        == "new_site_diagnostic_canary_input_receipt.v1"
+        else EXECUTION_MODE_FULL_CAMPAIGN
+    )
     spec = RenderLaunchSpec(
         name=pod_name,
         image=str(release["resolved_digest_ref"]),
         env={
             INPUT_SECRET_URL_ENV: input_secret_url,
             INPUT_SHA256_ENV: str(input_bundle["bundle_sha256"]),
+            EXECUTION_MODE_ENV: execution_mode,
             OUTPUT_SECRET_PUT_URL_ENV: output_secret_put_url,
             GENERIC_OUTPUT_SECRET_URL_ENV: output_secret_put_url,
         },
@@ -565,12 +648,18 @@ def build_openpi_policy_ranking_provider_request(
     bundle_sha = str(input_bundle["bundle_sha256"])
     gpu_type_id = str(preflight["gpu_type_id"])
     provider_name = str(preflight["provider"])
+    execution_mode = str(admission["execution_mode"])
+    operation = (
+        "execute_frozen_new_site_diagnostic_canary"
+        if execution_mode == EXECUTION_MODE_NEW_SITE_CANARY
+        else "execute_frozen_openpi_policy_ranking_campaign"
+    )
     request: dict[str, Any] = {
         "schema_version": "robot_eval_gpu_provider_launch_request.v1",
         "job_id": job_id,
         "provider": provider_name,
         "status": "request_manifest_ready",
-        "operation": "execute_frozen_openpi_policy_ranking_campaign",
+        "operation": operation,
         "prelaunch_spend_guard": {
             "required_before_provider_launch": True,
             "can_launch": True,
@@ -579,7 +668,7 @@ def build_openpi_policy_ranking_provider_request(
         "provider_request_shape": {
             "api_payload_is_provider_adapter_template": True,
             "api_payload_values_are_redacted": True,
-            "operation": "execute_frozen_openpi_policy_ranking_campaign",
+            "operation": operation,
             "image": {
                 "configured_image_ref": image_ref,
                 "configured_image_ref_is_versioned": True,
@@ -598,8 +687,11 @@ def build_openpi_policy_ranking_provider_request(
                     OUTPUT_SECRET_PUT_URL_ENV,
                     GENERIC_OUTPUT_SECRET_URL_ENV,
                 ],
-                "plaintext_env_var_names": [INPUT_SHA256_ENV],
-                "plaintext_env_values": {INPUT_SHA256_ENV: bundle_sha},
+                "plaintext_env_var_names": [INPUT_SHA256_ENV, EXECUTION_MODE_ENV],
+                "plaintext_env_values": {
+                    INPUT_SHA256_ENV: bundle_sha,
+                    EXECUTION_MODE_ENV: execution_mode,
+                },
                 "secret_values_in_artifact": False,
                 "customer_visible_secret_values_allowed": False,
             },

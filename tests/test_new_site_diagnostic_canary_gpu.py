@@ -1,0 +1,207 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from blueprint_pipeline import new_site_diagnostic_canary_gpu as canary_module
+from blueprint_pipeline.droid_oscar_closed_loop_adapter import EXTERIOR_VIEW, WRIST_VIEW
+from blueprint_pipeline.new_site_diagnostic_canary_gpu import (
+    MultiViewCanaryReliabilityGate,
+    build_canary_input_bundle,
+    extract_canary_input_bundle,
+    materialize_canary_background,
+    run_skeleton_only_canary,
+)
+from blueprint_pipeline.new_site_diagnostic_smoke import build_protocol
+from blueprint_pipeline.wam_rollout_reliability import (
+    ReliabilityThresholds,
+    RolloutReliabilityReport,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _write_protocol(path: Path) -> dict:
+    protocol = build_protocol(ROOT, experiment_id="new_site_canary_test_v1")
+    path.write_text(json.dumps(protocol), encoding="utf-8")
+    return protocol
+
+
+def test_background_materialization_is_deterministic_and_does_not_crop(tmp_path: Path) -> None:
+    source = tmp_path / "task_focus.png"
+    Image.new("RGBA", (1920, 1440), color=(12, 34, 56, 255)).save(source)
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+
+    first_receipt = materialize_canary_background(
+        source_path=source, output_path=first
+    )
+    second_receipt = materialize_canary_background(
+        source_path=source, output_path=second
+    )
+
+    assert first.read_bytes() == second.read_bytes()
+    assert first_receipt["output_sha256"] == second_receipt["output_sha256"]
+    assert first_receipt["source_size_px"] == [1920, 1440]
+    assert first_receipt["crop_applied"] is False
+    assert first_receipt["camera_selection_changed"] is False
+
+
+def test_canary_input_roundtrip_is_protocol_bound_and_label_free(tmp_path: Path) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    protocol = _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224), color=(12, 34, 56)).save(background)
+    bundle = tmp_path / "canary.zip"
+
+    receipt = build_canary_input_bundle(
+        protocol_path=protocol_path,
+        background_path=background,
+        output_zip=bundle,
+        arm_id="skeleton_only",
+    )
+    extracted = extract_canary_input_bundle(
+        bundle_path=bundle,
+        expected_bundle_sha256=receipt["bundle_sha256"],
+        output_dir=tmp_path / "extracted",
+    )
+
+    assert extracted["manifest"]["protocol_sha256"] == protocol["protocol_sha256"]
+    assert extracted["manifest"]["label_free"] is True
+    assert extracted["manifest"]["policy_id"] == protocol["canary_rule"]["frozen_policy_id"]
+    assert Path(extracted["background_path"]).read_bytes() == background.read_bytes()
+
+    with pytest.raises(ValueError, match="input_sha256_mismatch"):
+        extract_canary_input_bundle(
+            bundle_path=bundle,
+            expected_bundle_sha256="0" * 64,
+            output_dir=tmp_path / "tampered",
+        )
+
+
+def test_canary_input_rejects_mutated_protocol_identity(tmp_path: Path) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    protocol = _write_protocol(protocol_path)
+    protocol["scene"]["task_instruction"] = "mutated after freeze"
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224)).save(background)
+
+    with pytest.raises(ValueError, match="protocol_sha256_invalid"):
+        build_canary_input_bundle(
+            protocol_path=protocol_path,
+            background_path=background,
+            output_zip=tmp_path / "invalid.zip",
+            arm_id="skeleton_only",
+        )
+
+
+def test_multiview_gate_checks_both_individual_camera_videos(tmp_path: Path) -> None:
+    videos = {}
+    for view_id in (EXTERIOR_VIEW, WRIST_VIEW):
+        path = tmp_path / f"{view_id.rsplit('/', 1)[-1]}.mp4"
+        path.write_bytes(b"test-video")
+        videos[view_id] = str(path)
+    calls = []
+
+    def assessor(video_path, actions, thresholds, **kwargs):
+        calls.append((Path(video_path), np.asarray(actions).shape, thresholds, kwargs))
+        return RolloutReliabilityReport(
+            video_path=str(video_path),
+            n_frames=9,
+            n_action_steps=8,
+            flags=(),
+            reliable=True,
+            command_energy_mean=0.2,
+            command_energy_std=0.1,
+            motion_mean=0.2,
+            motion_max=0.3,
+            timing_correlation=0.5,
+            timing_flag_scope="session",
+            spatial_std_mean=20.0,
+        )
+
+    thresholds = ReliabilityThresholds()
+    result = MultiViewCanaryReliabilityGate(thresholds, assessor=assessor).assess(
+        previous_observation={},
+        prepared_transition={"reliability_actions_10d": np.zeros((8, 10))},
+        wam_prediction={"generated_videos_by_view": videos},
+        query_index=0,
+        output_dir=tmp_path,
+    )
+
+    assert result["status"] == "passed"
+    assert result["label_free"] is True
+    assert set(result["reports_by_view"]) == {EXTERIOR_VIEW, WRIST_VIEW}
+    assert {call[0] for call in calls} == {Path(path) for path in videos.values()}
+
+
+def test_skeleton_canary_runs_exactly_one_policy_query_without_ranking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    protocol = _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224)).save(background)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    spec = SimpleNamespace(
+        checkpoint_uri="s3://example/checkpoint",
+        action_chunk_rows=15,
+    )
+    monkeypatch.setattr(canary_module, "load_policy_spec", lambda *_args, **_kwargs: spec)
+    monkeypatch.setattr(canary_module, "verify_local_checkpoint", lambda **_kwargs: {"status": "verified"})
+    monkeypatch.setattr(canary_module, "LocalOpenPIDroidPolicyClient", lambda **_kwargs: object())
+    monkeypatch.setattr(canary_module, "prepare_franka_droid_runtime", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        canary_module,
+        "_initial_observation",
+        lambda **_kwargs: {
+            EXTERIOR_VIEW: np.zeros((224, 224, 3), dtype=np.uint8),
+            WRIST_VIEW: np.zeros((224, 224, 3), dtype=np.uint8),
+            "observation/joint_position": np.zeros(7),
+            "observation/gripper_position": np.zeros(1),
+            "prompt": protocol["scene"]["task_instruction"],
+            "_diagnostic_interaction_pixel_count": 10,
+        },
+    )
+
+    def fake_loop(**kwargs):
+        trace = Path(kwargs["output_dir"]) / "closed_loop_trace.jsonl"
+        trace.parent.mkdir(parents=True)
+        trace.write_text(
+            json.dumps({"status": "completed", "reliability": {"status": "passed", "reasons": []}})
+            + "\n",
+            encoding="utf-8",
+        )
+        return {
+            "status": "max_horizon",
+            "trace_path": str(trace),
+            "policy_call_count": 1,
+            "blockers": [],
+        }
+
+    monkeypatch.setattr(canary_module, "run_policy_wam_closed_loop", fake_loop)
+
+    result = run_skeleton_only_canary(
+        protocol_path=protocol_path,
+        background_path=background,
+        cohort_path=tmp_path / "cohort.json",
+        checkpoint_inventory_path=tmp_path / "inventory.json",
+        menagerie_root=tmp_path / "menagerie",
+        output_dir=tmp_path / "output",
+        checkpoint_downloader=lambda _uri: checkpoint,
+        policy_loader=lambda _spec, _checkpoint: object(),
+    )
+
+    assert result["status"] == "completed"
+    assert result["canary"]["status"] == "passed"
+    assert result["loop_manifest"]["policy_call_count"] == 1
+    assert "rankings" not in result
+    assert result["claim_boundary"]["physical_success"] is False

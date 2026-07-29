@@ -27,6 +27,11 @@ def test_freeze_uses_development_scene_and_excludes_confirmation_sessions() -> N
     assert protocol["confirmation_exclusion"]["diagnostic_scene_outside_reserved_split"]
     assert protocol["arms"]["cosmos"]["admitted_arm_id"] is None
     assert protocol["paid_execution_admitted"] is False
+    implementation_paths = {
+        row["path"] for row in protocol["implementation"]["files"]
+    }
+    assert "src/blueprint_pipeline/new_site_diagnostic_canary_gpu.py" in implementation_paths
+    assert "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py" in implementation_paths
 
 
 def test_freeze_hash_links_local_decoded_scene(tmp_path: Path) -> None:

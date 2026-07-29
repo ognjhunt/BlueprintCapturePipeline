@@ -146,6 +146,33 @@ def build_protocol(
                         root / "src/blueprint_pipeline/ctrl_world_droid_action_adapter.py"
                     ),
                 },
+                {
+                    "path": "src/blueprint_pipeline/new_site_diagnostic_canary_gpu.py",
+                    "sha256": file_sha256(
+                        root
+                        / "src/blueprint_pipeline/new_site_diagnostic_canary_gpu.py"
+                    ),
+                },
+                {
+                    "path": "src/blueprint_pipeline/openpi_policy_ranking_gpu_bootstrap.py",
+                    "sha256": file_sha256(
+                        root
+                        / "src/blueprint_pipeline/openpi_policy_ranking_gpu_bootstrap.py"
+                    ),
+                },
+                {
+                    "path": "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py",
+                    "sha256": file_sha256(
+                        root
+                        / "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py"
+                    ),
+                },
+                {
+                    "path": "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
+                    "sha256": file_sha256(
+                        root / "src/blueprint_pipeline/openpi_policy_ranking_runpod.py"
+                    ),
+                },
             ],
             "uncommitted_implementation_permitted_for_diagnostic_only": True,
         },

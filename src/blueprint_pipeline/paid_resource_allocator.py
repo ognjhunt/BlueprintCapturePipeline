@@ -61,6 +61,7 @@ from .g1_microwave_finetune_provider_job import (
 )
 from .paid_resource_admission import require_paid_resource_admission
 from .openpi_policy_ranking_gpu_admission import (
+    NEW_SITE_CANARY_PROBE_KIND,
     PROBE_KIND as OPENPI_POLICY_RANKING_PROBE_KIND,
 )
 from .openpi_policy_ranking_runpod import run_openpi_policy_ranking_campaign
@@ -570,6 +571,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
             G1_MICROWAVE_FINETUNE_PROBE_KIND,
             OPENPI_POLICY_RANKING_PROBE_KIND,
+            NEW_SITE_CANARY_PROBE_KIND,
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
         ),
@@ -1064,7 +1066,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
-        if args.probe_kind == OPENPI_POLICY_RANKING_PROBE_KIND:
+        if args.probe_kind in {
+            OPENPI_POLICY_RANKING_PROBE_KIND,
+            NEW_SITE_CANARY_PROBE_KIND,
+        }:
             missing = [
                 name
                 for name in (

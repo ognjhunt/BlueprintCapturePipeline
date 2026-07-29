@@ -13,12 +13,17 @@ from typing import Any
 
 from .common import write_json
 from .gpu_render_providers import get_render_provider
+from .new_site_diagnostic_canary_gpu import (
+    INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
+    INPUT_SCHEMA_VERSION as CANARY_INPUT_SCHEMA_VERSION,
+)
 from .paid_resource_admission import build_paid_lane_admission
 from .policy_ranking_thesis import canonical_sha256
 
 
 SCHEMA_VERSION = "openpi_policy_ranking_gpu_admission.v1"
 PROBE_KIND = "openpi-policy-ranking"
+NEW_SITE_CANARY_PROBE_KIND = "new-site-diagnostic-canary"
 OPENPI_REVISION = "15a9616a00943ada6c20a0f158e3adb39df2ccac"
 MENAGERIE_REVISION = "71f066ad0be9cd271f7ed58c030243ef157af9f4"
 CHECKPOINT_BYTES = 47_286_181_297
@@ -241,49 +246,81 @@ def build_openpi_policy_ranking_gpu_admission(
     if release.get("interiorgs_assets_embedded") is not False:
         blockers.append("openpi_gpu_release_embeds_interiorgs")
 
-    if input_bundle.get("schema_version") != (
-        "openpi_policy_ranking_gpu_input_bundle_receipt.v1"
-    ):
+    receipt_schema = input_bundle.get("schema_version")
+    is_canary = receipt_schema == CANARY_INPUT_RECEIPT_SCHEMA_VERSION
+    if receipt_schema not in {
+        "openpi_policy_ranking_gpu_input_bundle_receipt.v1",
+        CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
+    }:
         blockers.append("openpi_gpu_input_bundle_receipt_schema_invalid")
     bundle_sha = str(input_bundle.get("bundle_sha256") or "")
     if not _SHA256.fullmatch(bundle_sha):
         blockers.append("openpi_gpu_input_bundle_sha256_invalid")
     manifest = input_bundle.get("manifest")
     manifest = manifest if isinstance(manifest, Mapping) else {}
-    if manifest.get("schema_version") != "openpi_policy_ranking_gpu_input_bundle.v2":
+    expected_manifest_schema = (
+        CANARY_INPUT_SCHEMA_VERSION
+        if is_canary
+        else "openpi_policy_ranking_gpu_input_bundle.v2"
+    )
+    if manifest.get("schema_version") != expected_manifest_schema:
         blockers.append("openpi_gpu_input_bundle_manifest_schema_invalid")
     if manifest.get("raw_3dgs_included") is not False:
         blockers.append("openpi_gpu_input_bundle_contains_raw_3dgs")
     if manifest.get("redistribution_authorized") is not False:
         blockers.append("openpi_gpu_input_bundle_rights_boundary_invalid")
-    if manifest.get("purpose") != "private_internal_noncommercial_research_gpu_execution":
+    expected_purpose = (
+        "private_internal_noncommercial_new_site_diagnostic_canary"
+        if is_canary
+        else "private_internal_noncommercial_research_gpu_execution"
+    )
+    if manifest.get("purpose") != expected_purpose:
         blockers.append("openpi_gpu_input_bundle_purpose_invalid")
     if not _SHA256.fullmatch(str(manifest.get("background_sha256") or "")):
         blockers.append("openpi_gpu_input_background_sha256_invalid")
-    scenes = manifest.get("scenes")
-    scenes = scenes if isinstance(scenes, list) else []
-    scene_ids = {
-        str(row.get("source_scene_id") or "")
-        for row in scenes
-        if isinstance(row, Mapping)
-    }
-    scene_kinds = {
-        str(row.get("source_scene_kind") or "")
-        for row in scenes
-        if isinstance(row, Mapping)
-    }
-    if (
-        manifest.get("scene_count") != 2
-        or len(scenes) != 2
-        or len(scene_ids) != 2
-        or scene_kinds != {"captured_3dgs", "controlled_nvidia_usd"}
-    ):
-        blockers.append("openpi_gpu_input_scene_cohort_invalid")
-    for index, row in enumerate(scenes):
-        if not isinstance(row, Mapping) or not _SHA256.fullmatch(
-            str(row.get("background_sha256") or "")
+    if is_canary:
+        if (
+            manifest.get("arm_id") != "skeleton_only"
+            or manifest.get("label_free") is not True
+            or manifest.get("variant") != "center"
+            or not str(manifest.get("scene_id") or "")
+            or not str(manifest.get("task_instruction") or "")
+            or not str(manifest.get("policy_id") or "")
+            or not _SHA256.fullmatch(str(manifest.get("protocol_sha256") or ""))
         ):
-            blockers.append(f"openpi_gpu_input_scene_background_sha256_invalid:{index}")
+            blockers.append("openpi_gpu_input_canary_freeze_invalid")
+        declared_manifest_sha = str(manifest.get("manifest_sha256") or "")
+        manifest_payload = dict(manifest)
+        manifest_payload.pop("manifest_sha256", None)
+        if declared_manifest_sha != canonical_sha256(manifest_payload):
+            blockers.append("openpi_gpu_input_canary_manifest_sha256_invalid")
+    else:
+        scenes = manifest.get("scenes")
+        scenes = scenes if isinstance(scenes, list) else []
+        scene_ids = {
+            str(row.get("source_scene_id") or "")
+            for row in scenes
+            if isinstance(row, Mapping)
+        }
+        scene_kinds = {
+            str(row.get("source_scene_kind") or "")
+            for row in scenes
+            if isinstance(row, Mapping)
+        }
+        if (
+            manifest.get("scene_count") != 2
+            or len(scenes) != 2
+            or len(scene_ids) != 2
+            or scene_kinds != {"captured_3dgs", "controlled_nvidia_usd"}
+        ):
+            blockers.append("openpi_gpu_input_scene_cohort_invalid")
+        for index, row in enumerate(scenes):
+            if not isinstance(row, Mapping) or not _SHA256.fullmatch(
+                str(row.get("background_sha256") or "")
+            ):
+                blockers.append(
+                    f"openpi_gpu_input_scene_background_sha256_invalid:{index}"
+                )
 
     if preflight.get("schema_version") not in {
         "openpi_policy_ranking_runpod_preflight.v1",
@@ -348,7 +385,10 @@ def build_openpi_policy_ranking_gpu_admission(
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "admitted" if not blockers and shared["status"] == "admitted" else "blocked",
-        "probe_kind": PROBE_KIND,
+        "probe_kind": NEW_SITE_CANARY_PROBE_KIND if is_canary else PROBE_KIND,
+        "execution_mode": (
+            "new_site_diagnostic_canary" if is_canary else "full_campaign"
+        ),
         "blockers": sorted(set(blockers)),
         "source_commit": source_commit or None,
         "release_image_ref": image_ref or None,

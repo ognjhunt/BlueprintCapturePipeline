@@ -667,7 +667,15 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+@pytest.mark.parametrize(
+    "probe_kind",
+    [
+        allocator.OPENPI_POLICY_RANKING_PROBE_KIND,
+        allocator.NEW_SITE_CANARY_PROBE_KIND,
+    ],
+)
 def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator(
+    probe_kind: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -705,7 +713,7 @@ def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator
             "--expected-source-commit",
             "c" * 40,
             "--probe-kind",
-            allocator.OPENPI_POLICY_RANKING_PROBE_KIND,
+            probe_kind,
             "--openpi-input-bundle-receipt",
             "input-receipt.json",
             "--openpi-input-secret-url-file",

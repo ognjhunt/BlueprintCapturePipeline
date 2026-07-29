@@ -3,6 +3,7 @@ from blueprint_pipeline.openpi_policy_ranking_gpu_admission import (
     collect_openpi_policy_ranking_runpod_preflight,
     collect_openpi_policy_ranking_vast_preflight,
 )
+from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
 
 
 def _inputs():
@@ -78,6 +79,48 @@ def test_openpi_gpu_admission_passes_exact_contract() -> None:
     )
     assert result["status"] == "admitted"
     assert result["shared_paid_lane_admission"]["status"] == "admitted"
+
+
+def test_openpi_gpu_admission_accepts_one_arm_label_free_canary_receipt() -> None:
+    release, _bundle, preflight, spend = _inputs()
+    manifest = {
+        "schema_version": "new_site_diagnostic_canary_input.v1",
+        "experiment_id": "diagnostic_v6",
+        "protocol_filename": "protocol.json",
+        "protocol_file_sha256": "f" * 64,
+        "protocol_sha256": "1" * 64,
+        "arm_id": "skeleton_only",
+        "scene_id": "interiorgs_0787",
+        "task_instruction": "Pick up the spray can and place it inside the marked tray.",
+        "policy_id": "pi05_droid_jointpos_polaris",
+        "variant": "center",
+        "background_filename": "captured_site_background.png",
+        "background_sha256": "d" * 64,
+        "background_size_bytes": 123,
+        "raw_3dgs_included": False,
+        "redistribution_authorized": False,
+        "label_free": True,
+        "purpose": "private_internal_noncommercial_new_site_diagnostic_canary",
+    }
+    manifest["manifest_sha256"] = canonical_sha256(manifest)
+    bundle = {
+        "schema_version": "new_site_diagnostic_canary_input_receipt.v1",
+        "bundle_sha256": "c" * 64,
+        "manifest": manifest,
+    }
+
+    result = build_openpi_policy_ranking_gpu_admission(
+        release=release,
+        input_bundle=bundle,
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit="a" * 40,
+        observed_now_epoch=1001.0,
+    )
+
+    assert result["status"] == "admitted"
+    assert result["probe_kind"] == "new-site-diagnostic-canary"
+    assert result["execution_mode"] == "new_site_diagnostic_canary"
 
 
 def test_openpi_gpu_admission_blocks_rights_robot_and_budget_regressions() -> None:
