@@ -6,12 +6,18 @@ import zipfile
 from dataclasses import replace
 from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
 from PIL import Image
 
 from blueprint_pipeline.policy_ranking_phase_b_cosmos_bundle import (
     build_phase_b_cosmos_canary_bundle,
 )
+from blueprint_pipeline.policy_ranking_phase_b_high_motion_selection import (
+    build_high_motion_selection,
+)
+from blueprint_pipeline.policy_ranking_phase_b_replay import build_selected_replay_canary
 from blueprint_pipeline.policy_ranking_successor_gpu_admission import (
     PHASE_B_PROFILE,
     inspect_successor_bundle,
@@ -23,6 +29,9 @@ from blueprint_pipeline.policy_ranking_successor_cosmos import (
     validate_smoke_inventory_manifest,
 )
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256, file_sha256
+from blueprint_pipeline.policy_ranking_task_instruction_extraction import (
+    extract_task_instruction,
+)
 
 
 def _stream(offset: float) -> dict:
@@ -78,6 +87,7 @@ def test_native_cosmos_canary_bundle_is_immutable_and_label_blind(tmp_path: Path
         observation_gripper_hold=1.0,
         shuffle_seed=20260728,
     )
+    controls["shifted"] = _stream(0.02)
     observation = tmp_path / "observation.png"
     Image.new("RGB", (640, 540), color=(10, 20, 30)).save(observation)
     canary = {
@@ -115,7 +125,7 @@ def test_native_cosmos_canary_bundle_is_immutable_and_label_blind(tmp_path: Path
         assert validate_smoke_inventory_manifest(inventory)["status"] == "passed"
         assert inventory["outcome_labels_accessed"] is False
         assert inventory["task_instruction"] == "Pick up the bottle and place it in the bin."
-        assert len(inventory["requests"]) == 10
+        assert len(inventory["requests"]) == 12
         action_streams = json.loads(
             archive.read("provider_runtime/cosmos3_input/action_streams.json")
         )
@@ -125,6 +135,7 @@ def test_native_cosmos_canary_bundle_is_immutable_and_label_blind(tmp_path: Path
             "shuffled",
             "reversed",
             "policy_swapped",
+            "shifted",
         }
     profile = replace(
         PHASE_B_PROFILE,
@@ -144,3 +155,106 @@ def test_native_cosmos_canary_bundle_is_immutable_and_label_blind(tmp_path: Path
     )
     assert inspection["status"] == "passed"
     assert inspection["blockers"] == []
+
+    with pytest.raises(ValueError, match="task_instruction_does_not_match_replay_canary"):
+        canary["task_instruction"] = "Put the bottle in the other bin."
+        canary["manifest_sha256"] = canonical_sha256(
+            {key: value for key, value in canary.items() if key != "manifest_sha256"}
+        )
+        canary_path.write_text(json.dumps(canary), encoding="utf-8")
+        build_phase_b_cosmos_canary_bundle(
+            replay_canary_path=canary_path,
+            output_bundle=bundle,
+            receipt_path=receipt,
+            task_instruction="Pick up the bottle and place it in the bin.",
+        )
+
+
+def _replay_npz(path: Path, scale: float) -> None:
+    path.parent.mkdir(parents=True)
+    rows = []
+    position = 0.0
+    for index in range(18):
+        position += scale * (1.0 + index / 20.0)
+        rows.append(
+            {
+                "cartesian_position": [position, 0.0, 0.0, 0.0, 0.0, index / 1000.0],
+                "joint_position": [0.0] * 7,
+                "gripper_position": [0.0],
+                "action": [0.0] * 7 + [float(index >= 9)],
+            }
+        )
+    np.savez(path, data=np.asarray(rows, dtype=object))
+
+
+def _replay_video(path: Path, color: tuple[int, int, int]) -> None:
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15, (64, 48))
+    assert writer.isOpened()
+    for index in range(3):
+        frame = np.full((48, 64, 3), color, dtype=np.uint8)
+        frame[:, : index + 1] = 255
+        writer.write(frame)
+    writer.release()
+
+
+def test_selected_replay_canary_binds_motion_prompt_views_and_controls(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    session = root / "evaluation_sessions" / "session-a"
+    for prefix, policy, scale in (
+        ("A", "policy-one", 0.005),
+        ("B", "policy-two", 0.003),
+    ):
+        directory = session / f"{prefix}_{policy}"
+        _replay_npz(directory / f"{policy}_npz_file.npz", scale)
+        for view, color in (
+            ("left", (10, 20, 30)),
+            ("right", (40, 50, 60)),
+            ("wrist", (70, 80, 90)),
+        ):
+            _replay_video(directory / f"{policy}_video_{view}.mp4", color)
+    metadata = session / "metadata.yaml"
+    metadata.write_text(
+        "session_id: session-a\n"
+        "language_instruction: put the bowl in the plate\n"
+        "success: true\n",
+        encoding="utf-8",
+    )
+    split = {
+        "schema_version": "policy_ranking_disjoint_session_candidate_split_amendment.v2",
+        "dataset": {"id": "fixture", "revision": "frozen", "license": "mit"},
+        "required_policy_ids": ["policy-one", "policy-two"],
+        "selection": {"metadata_yaml_opened": False, "session_ids": ["session-a"]},
+    }
+    split["manifest_sha256"] = canonical_sha256(split)
+    split_path = tmp_path / "split.json"
+    split_path.write_text(json.dumps(split), encoding="utf-8")
+    selection = build_high_motion_selection(split_manifest_path=split_path, dataset_root=root)
+    selection_path = tmp_path / "selection.json"
+    selection_path.write_text(json.dumps(selection), encoding="utf-8")
+    task_receipt = extract_task_instruction(metadata, session_id="session-a")
+    receipt_path = tmp_path / "task.json"
+    receipt_path.write_text(json.dumps(task_receipt), encoding="utf-8")
+
+    result = build_selected_replay_canary(
+        high_motion_selection_path=selection_path,
+        task_instruction_receipt_path=receipt_path,
+        dataset_root=root,
+        output_dir=tmp_path / "canary",
+    )
+
+    assert result["status"] == "passed"
+    assert result["task_instruction"] == "put the bowl in the plate"
+    assert result["recorded_policy_id_internal_only"] == "policy-one"
+    assert set(result["initial_views"]) == {"left", "right", "wrist"}
+    assert Path(result["initial_observation"]["path"]).is_file()
+    assert set(result["controls"]) == {
+        "recorded",
+        "zero",
+        "shuffled",
+        "reversed",
+        "policy_swapped",
+        "shifted",
+    }
+    assert len(set(result["control_action_sha256"].values())) == 6
+    assert result["access_contract"]["physical_future_pixels_in_provider_input"] is False
+    assert result["conditioning_modes"]["starter_video_supported_by_pinned_native_action_api"] is False

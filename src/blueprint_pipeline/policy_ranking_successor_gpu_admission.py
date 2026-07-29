@@ -142,27 +142,28 @@ PHASE_B_PROFILE = SuccessorGPUProfile(
     preflight_schema="policy_ranking_phase_b_native_cosmos_vast_preflight.v1",
     receipt_schema="policy_ranking_phase_b_native_cosmos_bundle_receipt.v1",
     authorization_ids_by_allocation_index={
-        1: "policy-ranking-roboarena-phase-b-native-cosmos-20260728-allocation-1"
+        1: "policy-ranking-roboarena-phase-b-native-cosmos-20260728-allocation-1",
+        2: "policy-ranking-roboarena-phase-b-high-motion-cosmos-20260728-allocation-2",
     },
     cost_authorization_binding_sha256=(
-        "0c9cab83b263e7710b37d9d6391bc910590cf78eeb36cc0ed7e60bd3bed9698c"
+        "b2411e5981af473ff992b13f253253674a33293fa396012e9cf633695f3aa196"
     ),
-    expected_bundle_sha256="08a64c2a1829aee0a91a5bd787530eeff2dd7b00205ab308649ce08735a8c53e",
-    expected_bundle_size_bytes=459_832,
+    expected_bundle_sha256="56e0b86e1070140587b132bbe04178382a4f1478b200c282958e59d7d935f823",
+    expected_bundle_size_bytes=452_403,
     expected_embedded_input_hashes={
         "initial_observation_sha256": (
-            "1a0543cac751b1f7d53f72907321f0130714a2ee6af20bed3a6603d70e058620"
+            "c1d89dd07b597796ad7620661dd2eacd4d4f58aad03d8860a52e13612bf0d99a"
         ),
         "smoke_inventory_sha256": (
-            "15cf2a10c9a3ed1b618f88e681c84a580296f6f0ae085ce4597d5a9b6db2c4cb"
+            "9acdfb578d1c595970e3d33a0daade2ecfa1fc0ea6b87cddd163a8bf374747fb"
         ),
         "action_streams_sha256": (
-            "7d4cae6817295c686abd8cdb2ed85c2d9a3cf2034ec61db0a6d9d1fa0cd62d38"
+            "12b572607ec3f4f68c2514f15553dfd1ef8c420fa0e7e601cefe8e12447a59b4"
         ),
     },
     qualification_canary_request_count=2,
-    scientific_matrix_request_count=10,
-    total_initial_generation_request_count=12,
+    scientific_matrix_request_count=12,
+    total_initial_generation_request_count=14,
     request_budget_amendment_sha256=None,
     max_compute_cap_usd=5.0,
     max_hourly_rate_usd=1.25,

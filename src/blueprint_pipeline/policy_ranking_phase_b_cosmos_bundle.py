@@ -13,8 +13,8 @@ from PIL import Image
 
 from .common import write_json
 from .policy_ranking_successor_cosmos import (
-    ALLOWED_CONDITIONS,
     CHECKPOINT_REVISION,
+    PHASE_B_REQUIRED_CONDITIONS,
     VLLM_IMAGE,
     VLLM_IMAGE_DIGEST,
     canonical_sha256,
@@ -56,12 +56,28 @@ def build_phase_b_cosmos_canary_bundle(
         {key: value for key, value in canary.items() if key != "manifest_sha256"}
     ):
         raise ValueError("replay_canary_manifest_sha256_mismatch")
+    canary_task = str(canary.get("task_instruction") or "").strip()
+    if canary_task and canary_task != task_instruction:
+        raise ValueError("task_instruction_does_not_match_replay_canary")
+    access = canary.get("access_contract")
+    label_seal = canary.get("label_seal")
+    label_blind = (
+        isinstance(access, dict)
+        and access.get("selection_used_outcomes") is False
+        and access.get("outcome_fields_parsed_for_task_prompt") is False
+        and access.get("physical_future_pixels_in_provider_input") is False
+        and access.get("policy_identity_in_provider_payload") is False
+    ) or (
+        isinstance(label_seal, dict) and label_seal.get("outcome_labels_accessed") is False
+    )
+    if not label_blind:
+        raise ValueError("replay_canary_label_blind_contract_missing")
     controls = canary.get("controls")
     if not isinstance(controls, dict):
         raise ValueError("replay_canary_controls_missing")
     conditions = {
         condition: validate_droid_action_stream(controls.get(condition))
-        for condition in ALLOWED_CONDITIONS
+        for condition in PHASE_B_REQUIRED_CONDITIONS
     }
     observation_source = Path(canary["initial_observation"]["path"]).resolve()
     if file_sha256(observation_source) != canary["initial_observation"]["sha256"]:
@@ -87,7 +103,7 @@ def build_phase_b_cosmos_canary_bundle(
             condition: payload["action_sha256"] for condition, payload in conditions.items()
         }
         rows: list[dict[str, Any]] = []
-        for condition in ALLOWED_CONDITIONS:
+        for condition in PHASE_B_REQUIRED_CONDITIONS:
             for seed in (0, 1):
                 request_material = {
                     "initial_observation_sha256": observation_sha,
@@ -120,6 +136,7 @@ def build_phase_b_cosmos_canary_bundle(
             "initial_observation_sha256": observation_sha,
             "task_instruction": task_instruction,
             "action_hashes": action_hashes,
+            "required_conditions": list(PHASE_B_REQUIRED_CONDITIONS),
             "requests": rows,
             "inventory_sha256": canonical_sha256(inventory_rows),
             "policy_identity_in_provider_payload": False,
@@ -153,8 +170,8 @@ def build_phase_b_cosmos_canary_bundle(
             "raw_action_dim": 10,
             "action_space": "midtrain",
             "qualification_canary_request_count": 2,
-            "scientific_matrix_request_count": 10,
-            "total_initial_generation_request_count": 12,
+            "scientific_matrix_request_count": 12,
+            "total_initial_generation_request_count": 14,
             "precision": "bf16",
             "trust_remote_code": False,
             "post_training_or_lora": False,
@@ -176,7 +193,7 @@ def build_phase_b_cosmos_canary_bundle(
             "initial_observation_sha256": observation_sha,
             "action_streams_sha256": canonical_sha256(action_streams),
             "smoke_inventory_sha256": canonical_sha256(inventory),
-            "request_count": 10,
+            "request_count": 12,
             "real_recorded_trace": True,
             "real_policy_swapped_trace": True,
             "valid_identity_rot6d_no_motion": True,

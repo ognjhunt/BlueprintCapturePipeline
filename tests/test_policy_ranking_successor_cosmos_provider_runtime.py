@@ -229,6 +229,16 @@ def test_frozen_action_condition_validation_accepts_sorted_bundle_key_order() ->
     assert runtime._action_conditions_match_frozen_contract(sorted_conditions)
 
 
+def test_phase_b_condition_declaration_requires_shifted_control() -> None:
+    inventory = {"required_conditions": list(runtime.PHASE_B_EXPECTED_CONDITIONS)}
+    expected = runtime._declared_expected_conditions(inventory)
+    assert expected == runtime.PHASE_B_EXPECTED_CONDITIONS
+    conditions = {condition: {} for condition in runtime.PHASE_B_EXPECTED_CONDITIONS}
+    assert runtime._action_conditions_match_frozen_contract(conditions, expected)
+    conditions.pop("shifted")
+    assert not runtime._action_conditions_match_frozen_contract(conditions, expected)
+
+
 @pytest.mark.parametrize(
     "conditions",
     [

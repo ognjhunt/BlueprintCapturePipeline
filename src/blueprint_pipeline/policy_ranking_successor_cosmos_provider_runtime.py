@@ -41,6 +41,7 @@ ACTION_SPACE = "midtrain"
 CANARY_INFERENCE_STEPS = 4
 PUBLICATION_INFERENCE_STEPS = 30
 EXPECTED_CONDITIONS = ("recorded", "zero", "shuffled", "reversed", "policy_swapped")
+PHASE_B_EXPECTED_CONDITIONS = (*EXPECTED_CONDITIONS, "shifted")
 EXPECTED_SEEDS = (0, 1)
 QUALIFICATION_CANARY_REQUEST_COUNT = 2
 SCIENTIFIC_MATRIX_REQUEST_COUNT = 10
@@ -586,11 +587,25 @@ def _classify_retryable(exc: BaseException) -> bool:
     )
 
 
-def _action_conditions_match_frozen_contract(value: Any) -> bool:
+def _declared_expected_conditions(inventory: dict[str, Any]) -> tuple[str, ...] | None:
+    declared = inventory.get("required_conditions")
+    if declared is None:
+        return EXPECTED_CONDITIONS
+    if not isinstance(declared, list):
+        return None
+    normalized = tuple(str(value) for value in declared)
+    if normalized not in {EXPECTED_CONDITIONS, PHASE_B_EXPECTED_CONDITIONS}:
+        return None
+    return normalized
+
+
+def _action_conditions_match_frozen_contract(
+    value: Any, expected_conditions: tuple[str, ...] = EXPECTED_CONDITIONS
+) -> bool:
     return (
         isinstance(value, dict)
-        and len(value) == len(EXPECTED_CONDITIONS)
-        and frozenset(value) == frozenset(EXPECTED_CONDITIONS)
+        and len(value) == len(expected_conditions)
+        and frozenset(value) == frozenset(expected_conditions)
     )
 
 
@@ -620,14 +635,22 @@ def run() -> dict[str, Any]:
     if task_instruction == "A robot manipulates an object.":
         blockers.append("generic_robot_manipulation_prompt_forbidden")
     conditions = action_streams.get("conditions")
-    if not _action_conditions_match_frozen_contract(conditions):
+    expected_conditions = _declared_expected_conditions(inventory)
+    if expected_conditions is None:
+        blockers.append("required_conditions_invalid")
+        expected_conditions = EXPECTED_CONDITIONS
+    if not _action_conditions_match_frozen_contract(conditions, expected_conditions):
         blockers.append("action_stream_condition_order_invalid")
     expected_pairs = {
-        (condition, seed) for condition in EXPECTED_CONDITIONS for seed in EXPECTED_SEEDS
+        (condition, seed) for condition in expected_conditions for seed in EXPECTED_SEEDS
     }
+    scientific_matrix_request_count = len(expected_conditions) * len(EXPECTED_SEEDS)
+    total_initial_generation_request_count = (
+        QUALIFICATION_CANARY_REQUEST_COUNT + scientific_matrix_request_count
+    )
     rows = inventory.get("requests") if isinstance(inventory.get("requests"), list) else []
     observed_pairs = {(row.get("condition"), row.get("seed")) for row in rows}
-    if observed_pairs != expected_pairs or len(rows) != SCIENTIFIC_MATRIX_REQUEST_COUNT:
+    if observed_pairs != expected_pairs or len(rows) != scientific_matrix_request_count:
         blockers.append("smoke_request_matrix_invalid")
     if blockers:
         result = {
@@ -890,7 +913,7 @@ def run() -> dict[str, Any]:
         hashes = [row["response"]["output_sha256"] for row in rollout_records]
         duplicate_output_hashes = len(hashes) - len(set(hashes))
         runtime_status = (
-            "completed" if len(rollout_records) == SCIENTIFIC_MATRIX_REQUEST_COUNT else "blocked"
+            "completed" if len(rollout_records) == scientific_matrix_request_count else "blocked"
         )
         result = {
             "schema_version": "policy_ranking_successor_cosmos_runtime.v1",
@@ -910,9 +933,9 @@ def run() -> dict[str, Any]:
             "exact_action_conditioned_stack_preflight": exact_stack_preflight,
             "qualification_canary_request_count_frozen": QUALIFICATION_CANARY_REQUEST_COUNT,
             "qualification_canary_responses_valid": qualification_canary_responses_valid,
-            "scientific_matrix_request_count_frozen": SCIENTIFIC_MATRIX_REQUEST_COUNT,
+            "scientific_matrix_request_count_frozen": scientific_matrix_request_count,
             "total_initial_generation_request_count_frozen": (
-                TOTAL_INITIAL_GENERATION_REQUEST_COUNT
+                total_initial_generation_request_count
             ),
             "provider_generation_requests_attempted_total": (
                 provider_generation_requests_attempted
@@ -922,7 +945,7 @@ def run() -> dict[str, Any]:
             "output_duplicate_hash_count": duplicate_output_hashes,
             "action_conditioned_video_rollout_generated": bool(rollout_records),
             "complete_action_condition_seed_matrix_generated": (
-                len(rollout_records) == SCIENTIFIC_MATRIX_REQUEST_COUNT
+                len(rollout_records) == scientific_matrix_request_count
             ),
             "runtime_seconds": time.monotonic() - started_at,
             "immutable_request_journal_tail_sha256": journal.previous,

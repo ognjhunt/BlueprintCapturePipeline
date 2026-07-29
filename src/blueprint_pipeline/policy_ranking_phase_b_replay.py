@@ -96,6 +96,193 @@ def compose_initial_observation(policy_dir: Path, output: Path) -> dict[str, Any
     }
 
 
+def materialize_initial_view_frames(policy_dir: Path, output_dir: Path) -> dict[str, Any]:
+    """Preserve reviewable per-camera first frames beside the native composite."""
+
+    ensure_dir(output_dir)
+    result: dict[str, Any] = {}
+    for view in ("left", "right", "wrist"):
+        matches = sorted(policy_dir.glob(f"*_video_{view}.mp4"))
+        if len(matches) != 1:
+            raise ValueError(f"video_resolution:{view}:{len(matches)}")
+        source = matches[0]
+        output = output_dir / f"initial_{view}.png"
+        if not cv2.imwrite(str(output), _first_frame(source)):
+            raise ValueError(f"initial_view_write_failed:{view}")
+        result[view] = {
+            "path": str(output.resolve()),
+            "sha256": file_sha256(output),
+            "source_video_sha256": file_sha256(source),
+            "source_video_bytes": source.stat().st_size,
+        }
+    return result
+
+
+def _validated_manifest(path: Path, *, digest_field: str) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    recorded = str(payload.get(digest_field) or "")
+    canonical = canonical_sha256(
+        {key: value for key, value in payload.items() if key != digest_field}
+    )
+    if not recorded or recorded != canonical:
+        raise ValueError(f"{digest_field}_mismatch")
+    return payload
+
+
+def build_selected_replay_canary(
+    *,
+    high_motion_selection_path: str | Path,
+    task_instruction_receipt_path: str | Path,
+    dataset_root: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Materialize the selected fairer canary without loading outcome fields."""
+
+    selection_path = Path(high_motion_selection_path).resolve()
+    receipt_path = Path(task_instruction_receipt_path).resolve()
+    selection_manifest = _validated_manifest(selection_path, digest_field="manifest_sha256")
+    task_receipt = _validated_manifest(receipt_path, digest_field="receipt_sha256")
+    if selection_manifest.get("status") != "passed":
+        raise ValueError("high_motion_selection_not_passed")
+    access = selection_manifest.get("input_access")
+    if not isinstance(access, Mapping) or any(
+        access.get(field) is not False
+        for field in (
+            "metadata_yaml_opened",
+            "outcome_labels_accessed",
+            "video_pixels_opened",
+            "generated_media_accessed",
+            "evaluator_predictions_accessed",
+        )
+    ):
+        raise ValueError("high_motion_selection_not_label_blind")
+    if task_receipt.get("status") != "passed":
+        raise ValueError("task_instruction_receipt_not_passed")
+    task_access = task_receipt.get("access_contract")
+    if not isinstance(task_access, Mapping) or any(
+        task_access.get(field) is not False
+        for field in ("yaml_document_deserialized", "outcome_fields_parsed", "outcome_values_returned")
+    ):
+        raise ValueError("task_instruction_receipt_access_contract_invalid")
+
+    selected = selection_manifest.get("selection")
+    if not isinstance(selected, Mapping):
+        raise ValueError("high_motion_selection_payload_missing")
+    recorded = selected.get("recorded")
+    swapped = selected.get("policy_swapped")
+    if not isinstance(recorded, Mapping) or not isinstance(swapped, Mapping):
+        raise ValueError("high_motion_selected_pair_missing")
+    session_id = str(recorded.get("session_id_internal_only") or "")
+    recorded_policy = str(recorded.get("policy_id_internal_only") or "")
+    swapped_policy = str(swapped.get("policy_id_internal_only") or "")
+    if (
+        not session_id
+        or session_id != str(swapped.get("session_id_internal_only") or "")
+        or session_id != str(task_receipt.get("session_id_internal_only") or "")
+        or not recorded_policy
+        or not swapped_policy
+        or recorded_policy == swapped_policy
+    ):
+        raise ValueError("selected_pair_or_task_session_binding_invalid")
+
+    root = Path(dataset_root).resolve()
+    session_dir = root / "evaluation_sessions" / session_id
+    recorded_dir = _policy_dir(session_dir, recorded_policy)
+    swapped_dir = _policy_dir(session_dir, swapped_policy)
+    recorded_npz_files = sorted(recorded_dir.glob("*_npz_file.npz"))
+    swapped_npz_files = sorted(swapped_dir.glob("*_npz_file.npz"))
+    if len(recorded_npz_files) != 1 or len(swapped_npz_files) != 1:
+        raise ValueError("selected_replay_npz_resolution_invalid")
+    recorded_npz, swapped_npz = recorded_npz_files[0], swapped_npz_files[0]
+    recorded_arrays = load_restricted_roboarena_npz(recorded_npz)
+    swapped_arrays = load_restricted_roboarena_npz(swapped_npz)
+    if len(recorded_arrays["action"]) < DROID_HORIZON + 1:
+        raise ValueError("recorded_trace_too_short_for_temporal_shift")
+    if len(swapped_arrays["action"]) < DROID_HORIZON:
+        raise ValueError("policy_swapped_trace_too_short")
+
+    recorded_stream = _action_stream(recorded_arrays, 0)
+    swapped_stream = _action_stream(swapped_arrays, 0)
+    if recorded_stream["action_sha256"] != recorded.get("action_stream", {}).get(
+        "action_sha256"
+    ):
+        raise ValueError("recorded_action_does_not_match_selection")
+    if swapped_stream["action_sha256"] != swapped.get("action_stream", {}).get(
+        "action_sha256"
+    ):
+        raise ValueError("policy_swapped_action_does_not_match_selection")
+
+    hold = 1.0 - float(recorded_arrays["gripper_position"][0, 0])
+    controls = build_action_controls(
+        recorded_stream,
+        swapped_stream,
+        observation_gripper_hold=hold,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    shifted = _action_stream(recorded_arrays, 1)
+    if shifted["action_sha256"] in {
+        payload["action_sha256"] for payload in controls.values()
+    }:
+        raise ValueError("temporally_shifted_action_not_distinct")
+    controls["shifted"] = validate_droid_action_stream(shifted)
+    if len({payload["action_sha256"] for payload in controls.values()}) != len(controls):
+        raise ValueError("action_controls_not_pairwise_distinct")
+
+    out = Path(output_dir).resolve()
+    ensure_dir(out)
+    initial_views = materialize_initial_view_frames(recorded_dir, out / "initial_views")
+    observation = compose_initial_observation(recorded_dir, out / "initial_observation.png")
+    result: dict[str, Any] = {
+        "schema_version": "policy_ranking_phase_b_selected_replay_canary.v2",
+        "status": "passed",
+        "high_motion_selection_manifest_sha256": selection_manifest["manifest_sha256"],
+        "high_motion_selection_file_sha256": file_sha256(selection_path),
+        "task_instruction_receipt_sha256": task_receipt["receipt_sha256"],
+        "task_instruction_receipt_file_sha256": file_sha256(receipt_path),
+        "task_instruction": task_receipt["task_instruction"],
+        "task_instruction_sha256": task_receipt["task_instruction_sha256"],
+        "session_id_internal_only": session_id,
+        "recorded_policy_id_internal_only": recorded_policy,
+        "swapped_policy_id_internal_only": swapped_policy,
+        "source": {
+            "recorded_npz_sha256": file_sha256(recorded_npz),
+            "swapped_npz_sha256": file_sha256(swapped_npz),
+            "roboarena_action_space": "joint_velocity_7_plus_binary_gripper_1",
+            "cosmos_conversion": "recorded_cartesian_states_to_backward_framewise_rot6d_10d",
+            "source_gripper_index": 7,
+            "source_gripper_action_flipped_for_cosmos": True,
+            "no_motion_gripper_hold_source": "one_minus_initial_observation_gripper_position",
+        },
+        "selected_action_metrics": {
+            "recorded": recorded.get("metrics"),
+            "policy_swapped": swapped.get("metrics"),
+        },
+        "initial_views": initial_views,
+        "initial_observation": observation,
+        "controls": controls,
+        "control_action_sha256": {
+            name: payload["action_sha256"] for name, payload in controls.items()
+        },
+        "conditioning_modes": {
+            "native_cosmos": "three_camera_composite_first_frame_only",
+            "oscar_matched": "individual_camera_first_frame_plus_camera_aligned_skeleton_video",
+            "starter_video_supported_by_pinned_native_action_api": False,
+        },
+        "access_contract": {
+            "selection_used_outcomes": False,
+            "outcome_fields_parsed_for_task_prompt": False,
+            "physical_future_pixels_in_provider_input": False,
+            "policy_identity_in_provider_payload": False,
+        },
+        "claim_boundary": (
+            "already_exposed_same_snapshot_diagnostic causal canary; not independent Phase B, "
+            "policy ranking, task success, or physical deployment"
+        ),
+    }
+    result["manifest_sha256"] = canonical_sha256(result)
+    return result
+
+
 def build_replay_canary(
     *, split_manifest_path: str | Path, dataset_root: str | Path, output_dir: str | Path
 ) -> dict[str, Any]:
@@ -188,16 +375,35 @@ def build_replay_canary(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--split-manifest", required=True)
+    parser.add_argument("--split-manifest")
+    parser.add_argument("--high-motion-selection")
+    parser.add_argument("--task-instruction-receipt")
     parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args(argv)
     output_dir = Path(args.output_dir)
-    report = build_replay_canary(
-        split_manifest_path=args.split_manifest,
-        dataset_root=args.dataset_root,
-        output_dir=output_dir,
-    )
+    selected_mode = bool(args.high_motion_selection or args.task_instruction_receipt)
+    if selected_mode:
+        if not args.high_motion_selection or not args.task_instruction_receipt:
+            parser.error(
+                "--high-motion-selection and --task-instruction-receipt are required together"
+            )
+        if args.split_manifest:
+            parser.error("--split-manifest cannot be combined with selected-canary inputs")
+        report = build_selected_replay_canary(
+            high_motion_selection_path=args.high_motion_selection,
+            task_instruction_receipt_path=args.task_instruction_receipt,
+            dataset_root=args.dataset_root,
+            output_dir=output_dir,
+        )
+    else:
+        if not args.split_manifest:
+            parser.error("--split-manifest is required for the legacy frozen-first-row mode")
+        report = build_replay_canary(
+            split_manifest_path=args.split_manifest,
+            dataset_root=args.dataset_root,
+            output_dir=output_dir,
+        )
     write_json(output_dir / "replay_canary.json", report)
     return 0
 

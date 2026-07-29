@@ -24,15 +24,14 @@ from .policy_ranking_successor_cosmos import canonical_sha256, validate_smoke_in
 from .policy_ranking_thesis import file_sha256
 
 
-SCHEMA_VERSION = "policy_ranking_cosmos_causal_screen.v1"
+SCHEMA_VERSION = "policy_ranking_cosmos_causal_screen.v2"
 CONDITIONS = ("recorded", "zero", "shuffled", "reversed", "policy_swapped")
-ACTIVE_CONDITIONS = tuple(condition for condition in CONDITIONS if condition != "zero")
+PHASE_B_CONDITIONS = (*CONDITIONS, "shifted")
 EXPECTED_SEEDS = (0, 1)
 TEMPORAL_CORRELATION_MINIMUM = 0.10
 TEMPORAL_EXCESS_MARGIN = 0.05
 SAME_SEED_SCENE_DIFFERENCE_MINIMUM = 0.01
 MINIMUM_INDEPENDENT_SESSIONS = 17
-FOLLOWUP_EXPERIMENT_ID = "policy_ranking_cosmos3_followup_20260728"
 
 
 def _correlation(left: np.ndarray, right: np.ndarray) -> float:
@@ -114,10 +113,29 @@ def build_causal_screen(
     root = Path(runtime_output_root).resolve()
     conditions = action_streams.get("conditions")
     blockers: list[str] = []
-    if action_streams.get("experiment_id") != FOLLOWUP_EXPERIMENT_ID:
-        blockers.append("action_streams_experiment_invalid")
-    if smoke_inventory.get("experiment_id") != FOLLOWUP_EXPERIMENT_ID:
-        blockers.append("smoke_inventory_experiment_invalid")
+    action_experiment_id = str(action_streams.get("experiment_id") or "").strip()
+    inventory_experiment_id = str(smoke_inventory.get("experiment_id") or "").strip()
+    experiment_id = inventory_experiment_id
+    if not action_experiment_id or not inventory_experiment_id:
+        blockers.append("experiment_id_missing")
+    elif action_experiment_id != inventory_experiment_id:
+        blockers.append("action_inventory_experiment_mismatch")
+    declared_conditions = smoke_inventory.get("required_conditions")
+    if declared_conditions is None:
+        expected_conditions = CONDITIONS
+    elif isinstance(declared_conditions, Sequence) and not isinstance(
+        declared_conditions, (str, bytes, bytearray)
+    ):
+        expected_conditions = tuple(str(value) for value in declared_conditions)
+        if expected_conditions not in {CONDITIONS, PHASE_B_CONDITIONS}:
+            blockers.append("required_conditions_invalid")
+            expected_conditions = CONDITIONS
+    else:
+        blockers.append("required_conditions_invalid")
+        expected_conditions = CONDITIONS
+    active_conditions = tuple(
+        condition for condition in expected_conditions if condition != "zero"
+    )
     try:
         validate_smoke_inventory_manifest(smoke_inventory)
     except ValueError as exc:
@@ -128,14 +146,14 @@ def build_causal_screen(
         for row in inventory_rows
         if isinstance(row, Mapping) and row.get("request_id")
     } if isinstance(inventory_rows, Sequence) else {}
-    if len(expected_by_id) != 10:
+    if len(expected_by_id) != len(expected_conditions) * len(EXPECTED_SEEDS):
         blockers.append("smoke_inventory_request_matrix_invalid")
-    if not isinstance(conditions, Mapping) or set(conditions) != set(CONDITIONS):
+    if not isinstance(conditions, Mapping) or set(conditions) != set(expected_conditions):
         blockers.append("action_conditions_invalid")
         conditions = {}
     action_signals: dict[str, np.ndarray] = {}
     frozen_action_hashes = smoke_inventory.get("action_hashes")
-    for condition in CONDITIONS:
+    for condition in expected_conditions:
         try:
             row = conditions[condition]
             action_sha256 = canonical_sha256(row["actions"])
@@ -166,7 +184,7 @@ def build_causal_screen(
             if not isinstance(expected_row, Mapping):
                 raise ValueError("request_id_not_in_frozen_inventory")
             expected_bindings = {
-                "experiment_id": FOLLOWUP_EXPERIMENT_ID,
+                "experiment_id": experiment_id,
                 "request_id": request_id,
                 "condition": str(expected_row.get("condition")),
                 "seed": int(expected_row.get("seed")),
@@ -204,7 +222,9 @@ def build_causal_screen(
             blockers.append(
                 f"response_invalid:{response_path.name}:{type(exc).__name__}:{str(exc)[:120]}"
             )
-    expected = {(condition, seed) for condition in CONDITIONS for seed in EXPECTED_SEEDS}
+    expected = {
+        (condition, seed) for condition in expected_conditions for seed in EXPECTED_SEEDS
+    }
     if set(records) != expected:
         blockers.append(f"response_matrix_invalid:{len(records)}")
     if observed_request_ids != set(expected_by_id):
@@ -215,7 +235,7 @@ def build_causal_screen(
     if not blockers:
         for seed in EXPECTED_SEEDS:
             zero = records[("zero", seed)]["color"]
-            for condition in ACTIVE_CONDITIONS:
+            for condition in active_conditions:
                 item = records[(condition, seed)]
                 difference = np.mean(np.abs(item["color"] - zero), axis=(1, 2, 3))
                 mean_difference = float(np.mean(difference))
@@ -235,7 +255,7 @@ def build_causal_screen(
                 own = _correlation(action_signals[condition], item["motion"])
                 placebo = {
                     other: _correlation(action_signals[other], item["motion"])
-                    for other in ACTIVE_CONDITIONS
+                    for other in active_conditions
                     if other != condition
                 }
                 strongest = max(placebo.values())
@@ -266,12 +286,14 @@ def build_causal_screen(
             row["temporal_placebo_rejection_pass"] for row in rows if row["condition"] == condition
         )
         and len([row for row in rows if row["condition"] == condition]) == 2
-        for condition in ACTIVE_CONDITIONS
+        for condition in active_conditions
     }
     all_seed_robust = bool(seed_robustness) and all(seed_robustness.values())
     screen_passed = not blockers and scene_response_pass and temporal_pass and all_seed_robust
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        "experiment_id": experiment_id,
+        "required_conditions": list(expected_conditions),
         "status": "completed" if not blockers else "blocked",
         "role": "screening_not_confirmatory",
         "thresholds_frozen_before_paid_output": {
