@@ -10,6 +10,7 @@ import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import policy_ranking_successor_gpu_admission as admission
+from blueprint_pipeline.benchmark_protocol import canonical_sha256
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 
 
@@ -18,6 +19,11 @@ EXPERIMENT = ROOT / "docs/experiments/policy_ranking_cosmos3_followup_20260728"
 HISTORICAL_EXPERIMENT = ROOT / "docs/experiments/policy_ranking_successor_experiment_20260727"
 BUNDLE_NAME = "cosmos3_followup_provider_bundle.zip"
 BUNDLE_RECEIPT_NAME = "cosmos3_followup_provider_bundle_receipt.json"
+OSCAR_PROTOCOL_AMENDMENT_V6 = (
+    ROOT
+    / "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729"
+    / "protocol_amendment_v6.json"
+)
 
 
 def _load(name: str) -> dict[str, Any]:
@@ -42,6 +48,20 @@ def _preflight_path(tmp_path: Path) -> Path:
     path = tmp_path / "vast_compute_preflight.json"
     path.write_text(json.dumps(_load("vast_compute_preflight.json")), encoding="utf-8")
     return path
+
+
+def test_oscar_public_replay_budget_amendment_and_profile_are_consistent() -> None:
+    amendment = json.loads(OSCAR_PROTOCOL_AMENDMENT_V6.read_text(encoding="utf-8"))
+    recorded = amendment.pop("amendment_sha256")
+    profile = admission.OSCAR_PUBLIC_REPLAY_PROFILE
+
+    assert recorded == canonical_sha256(amendment)
+    assert amendment["failed_attempt_evidence"]["provider_mutations_performed"] == 0
+    assert amendment["prospective_change"]["target_spend_usd_after"] == 5.0
+    assert profile.target_spend_usd == 5.0
+    assert profile.max_hourly_rate_usd * profile.hard_ttl_seconds / 3_600 <= (
+        profile.target_spend_usd
+    )
 
 
 def test_frozen_successor_bundle_passes_integrity_inspection() -> None:
