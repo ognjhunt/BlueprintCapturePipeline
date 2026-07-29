@@ -258,3 +258,12 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
     ] == canonical_sha256(former_authorization)
     assert successor_authorization["bundle_version"] == 8
     assert successor_authorization["source_commit"] == "74132bb03423746fa6b8a88b7c552f64fac9bc45"
+    assert successor_authorization["paid_mutation_authorized"] is False
+
+    allocation_5 = json.loads(
+        (root / "compute_authorization_allocation_5.json").read_text(encoding="utf-8")
+    )
+    assert allocation_5["allocation_index"] == 5
+    assert allocation_5["bundle_version"] == 9
+    assert allocation_5["source_commit"] == "79911f43c1033e9981dc946ae7d254dc94a37a6f"
+    assert allocation_5["paid_mutation_authorized"] is True
