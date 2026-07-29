@@ -53,6 +53,8 @@ RETAINED_ROOT_ENV = "BLUEPRINT_COSMOS_RETAINED_ROOT"
 DEFAULT_RETAINED_ROOT = "/workspace/blueprint_vast_probe/cosmos3_retained"
 EXPECTED_VIDEO_WIDTH = 640
 EXPECTED_VIDEO_HEIGHT = 544
+POSITIVE_CONTROL_DIRECTORY = "cosmos3_positive_control"
+POSITIVE_CONTROL_REQUEST_COUNT = 4
 
 
 def canonical_sha256(value: Any) -> str:
@@ -238,6 +240,8 @@ def _decode_video_metrics(
     *,
     expected_width: int = EXPECTED_VIDEO_WIDTH,
     expected_height: int = EXPECTED_VIDEO_HEIGHT,
+    expected_frames: int = 17,
+    expected_fps: float = 15.0,
 ) -> dict[str, Any]:
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
@@ -318,13 +322,13 @@ def _decode_video_metrics(
     structural_blockers: list[str] = []
     if (width, height) != (expected_width, expected_height):
         structural_blockers.append(f"unexpected_video_dimensions:{width}x{height}")
-    if declared_frames != 17 or len(frames) != 17:
+    if declared_frames != expected_frames or len(frames) != expected_frames:
         structural_blockers.append(
             f"unexpected_video_frame_count:declared={declared_frames}:decoded={len(frames)}"
         )
-    if not np.isclose(frame_rate, 15.0, rtol=0.0, atol=1e-6):
+    if not np.isclose(frame_rate, expected_fps, rtol=0.0, atol=1e-6):
         structural_blockers.append(f"unexpected_video_frame_rate:{frame_rate}")
-    expected_duration_seconds = 17.0 / 15.0
+    expected_duration_seconds = expected_frames / expected_fps
     if not np.isclose(duration_seconds, expected_duration_seconds, rtol=0.0, atol=0.05):
         structural_blockers.append(f"unexpected_video_duration:{duration_seconds}")
     blank = bool(float(frame_stds.max(initial=0.0)) < 2.0)
@@ -346,6 +350,9 @@ def _decode_video_metrics(
         "spatial_std_max": float(frame_stds.max(initial=0.0)),
         "temporal_absolute_difference_mean": float(temporal.mean()) if len(temporal) else 0.0,
         "temporal_absolute_difference_max": float(temporal.max(initial=0.0)),
+        "first_to_last_absolute_difference_mean": float(
+            np.abs(frames[-1].astype(np.float32) - frames[0].astype(np.float32)).mean()
+        ),
         "blank_detected": blank,
         "static_detected": static,
         "ffprobe": probe_payload,
@@ -548,6 +555,213 @@ def _serialize_blueprint_wrapper_request(
     }
 
 
+def _serialize_positive_control_request(
+    *, action_chunk: list[list[float]], action_spec: dict[str, Any]
+) -> dict[str, Any]:
+    action_chunk_size = int(action_spec.get("action_chunk_size") or 0)
+    if action_chunk_size != 16 or len(action_chunk) != action_chunk_size:
+        raise ValueError("positive_control_action_chunk_length_invalid")
+    if any(not isinstance(row, list) or len(row) != 29 for row in action_chunk):
+        raise ValueError("positive_control_action_dimension_invalid")
+    prompt = str(action_spec.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("positive_control_prompt_missing")
+    extra_params = {
+        "action_mode": "forward_dynamics",
+        "domain_name": str(action_spec.get("domain_name") or "agibotworld"),
+        "action_chunk_size": action_chunk_size,
+        "image_size": int(action_spec.get("image_size") or 480),
+        "view_point": str(action_spec.get("view_point") or "concat_view"),
+        "action": action_chunk,
+        # The frozen public-robotics runtime starts with --no-guardrails.  This
+        # is recorded as the sole model-card request deviation; the visual and
+        # action conditioning path is otherwise the published example.
+        "guardrails": False,
+    }
+    return {
+        "model": CHECKPOINT,
+        "prompt": prompt,
+        "num_frames": "17",
+        "fps": str(int(action_spec.get("fps") or 10)),
+        "size": "640x720",
+        "num_inference_steps": "30",
+        "guidance_scale": "1.0",
+        "flow_shift": "10.0",
+        "seed": "0",
+        "extra_params": json.dumps(extra_params, separators=(",", ":")),
+    }
+
+
+def _extract_last_frame(video_path: Path, output_path: Path, *, frame_index: int = 16) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("positive_control_ffmpeg_missing")
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-i",
+            str(video_path),
+            "-vf",
+            f"select=eq(n\\,{frame_index})",
+            "-vsync",
+            "0",
+            "-frames:v",
+            "1",
+            "-y",
+            str(output_path),
+        ],
+        check=False,
+        capture_output=True,
+        timeout=120,
+    )
+    if completed.returncode != 0 or not output_path.is_file():
+        raise RuntimeError("positive_control_last_frame_extract_failed")
+
+
+def _run_positive_control(
+    *,
+    input_dir: Path,
+    output_dir: Path,
+    journal: HashChainedJournal,
+    attempt_counter: list[int] | None = None,
+) -> dict[str, Any] | None:
+    control_dir = input_dir.parent / POSITIVE_CONTROL_DIRECTORY
+    manifest_path = control_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_sha256 = canonical_sha256(
+        {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    )
+    if manifest.get("manifest_sha256") != manifest_sha256:
+        raise ValueError("positive_control_manifest_sha256_mismatch")
+    if (
+        manifest.get("schema_version")
+        != "policy_ranking_cosmos_official_positive_control.v1"
+        or manifest.get("request_count") != POSITIVE_CONTROL_REQUEST_COUNT
+    ):
+        raise ValueError("positive_control_manifest_contract_invalid")
+    action_path = control_dir / "action_chunks.json"
+    first_frame = control_dir / "first_frame.png"
+    reference_output = control_dir / "reference_output.mp4"
+    files = {
+        "action_chunks": action_path,
+        "first_frame": first_frame,
+        "reference_output": reference_output,
+    }
+    blockers: list[str] = []
+    for name, path in files.items():
+        expected = str((manifest.get("asset_sha256") or {}).get(name) or "")
+        if not path.is_file() or not expected or sha256_file(path) != expected:
+            blockers.append(f"positive_control_asset_hash_mismatch:{name}")
+    if blockers:
+        raise ValueError(";".join(blockers))
+    action_spec = json.loads(action_path.read_text(encoding="utf-8"))
+    chunks = action_spec.get("action_chunks")
+    if not isinstance(chunks, list) or len(chunks) != POSITIVE_CONTROL_REQUEST_COUNT:
+        raise ValueError("positive_control_action_chunk_count_invalid")
+    reference_metrics = _decode_video_metrics(
+        reference_output,
+        expected_width=640,
+        expected_height=720,
+        expected_frames=64,
+        expected_fps=10.0,
+    )
+    if reference_metrics.get("structural_status") != "passed":
+        raise ValueError("positive_control_reference_media_invalid")
+    gates = manifest.get("frozen_gates") if isinstance(manifest.get("frozen_gates"), dict) else {}
+    required_gates = {
+        "chunk_temporal_absolute_difference_mean_minimum",
+        "chunk_first_to_last_absolute_difference_mean_minimum",
+        "minimum_dynamic_chunks",
+    }
+    if set(gates) != required_gates or any(float(gates[key]) <= 0 for key in required_gates):
+        raise ValueError("positive_control_frozen_gates_invalid")
+    generated_dir = output_dir / "positive_control"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    current_frame = first_frame
+    records: list[dict[str, Any]] = []
+    for chunk_index, action_chunk in enumerate(chunks):
+        request = _serialize_positive_control_request(
+            action_chunk=action_chunk,
+            action_spec=action_spec,
+        )
+        output_path = generated_dir / f"chunk_{chunk_index:02d}.mp4"
+        started = time.monotonic()
+        if attempt_counter is not None:
+            attempt_counter[0] += 1
+        response = _submit_rollout(
+            serialized_request=request,
+            initial_observation=current_frame,
+            output_path=output_path,
+        )
+        metrics = _decode_video_metrics(
+            output_path,
+            expected_width=640,
+            expected_height=720,
+            expected_frames=17,
+            expected_fps=10.0,
+        )
+        next_frame = generated_dir / f"conditioning_{chunk_index + 1:02d}.png"
+        _extract_last_frame(output_path, next_frame)
+        record = {
+            "chunk_index": chunk_index,
+            "request": request,
+            "request_sha256": canonical_sha256(request),
+            "response": response,
+            "metrics": metrics,
+            "elapsed_seconds": time.monotonic() - started,
+            "next_conditioning_frame_sha256": sha256_file(next_frame),
+        }
+        records.append(record)
+        write_json(generated_dir / f"chunk_{chunk_index:02d}.json", record)
+        journal.append(
+            {
+                "event": "official_positive_control_chunk_recorded",
+                "chunk_index": chunk_index,
+                "request_sha256": record["request_sha256"],
+                "output_sha256": response["output_sha256"],
+            }
+        )
+        current_frame = next_frame
+    structural_pass = all(
+        record["metrics"].get("structural_status") == "passed" for record in records
+    )
+    dynamic_chunks = sum(
+        1
+        for record in records
+        if float(record["metrics"].get("temporal_absolute_difference_mean") or 0.0)
+        >= float(gates.get("chunk_temporal_absolute_difference_mean_minimum") or 0.0)
+        and float(record["metrics"].get("first_to_last_absolute_difference_mean") or 0.0)
+        >= float(gates.get("chunk_first_to_last_absolute_difference_mean_minimum") or 0.0)
+    )
+    passed = structural_pass and dynamic_chunks >= int(gates.get("minimum_dynamic_chunks") or 4)
+    result = {
+        "schema_version": "policy_ranking_cosmos_official_positive_control_result.v1",
+        "status": "passed" if passed else "failed",
+        "model": CHECKPOINT,
+        "checkpoint_revision": CHECKPOINT_REVISION,
+        "source_manifest_sha256": manifest_sha256,
+        "published_reference_metrics": reference_metrics,
+        "records": records,
+        "structural_pass": structural_pass,
+        "dynamic_chunk_count": dynamic_chunks,
+        "request_count": len(records),
+        "frozen_gates": gates,
+        "droid_matrix_admitted": passed,
+        "claim_boundary": (
+            "A pass proves only that the pinned deployment can reproduce visible "
+            "action-conditioned motion on NVIDIA's AgiBotWorld example; it does "
+            "not qualify DROID, policy ranking, or physical task success."
+        ),
+    }
+    result["result_sha256"] = canonical_sha256(result)
+    write_json(generated_dir / "positive_control_result.json", result)
+    return result
+
+
 def _submit_rollout(
     *,
     serialized_request: dict[str, Any],
@@ -646,7 +860,13 @@ def run() -> dict[str, Any]:
     }
     scientific_matrix_request_count = len(expected_conditions) * len(EXPECTED_SEEDS)
     total_initial_generation_request_count = (
-        QUALIFICATION_CANARY_REQUEST_COUNT + scientific_matrix_request_count
+        QUALIFICATION_CANARY_REQUEST_COUNT
+        + scientific_matrix_request_count
+        + (
+            POSITIVE_CONTROL_REQUEST_COUNT
+            if (input_dir.parent / POSITIVE_CONTROL_DIRECTORY / "manifest.json").is_file()
+            else 0
+        )
     )
     rows = inventory.get("requests") if isinstance(inventory.get("requests"), list) else []
     observed_pairs = {(row.get("condition"), row.get("seed")) for row in rows}
@@ -725,6 +945,9 @@ def run() -> dict[str, Any]:
     failure_class: str | None = None
     provider_generation_requests_attempted = 0
     qualification_canary_responses_valid = 0
+    positive_control_attempt_counter = [0]
+    positive_control: dict[str, Any] | None = None
+    force_server_shutdown = False
     try:
         _wait_for_server(process)
         model_load_seconds = 0.0 if reused_retained_server else time.monotonic() - started_at
@@ -739,6 +962,64 @@ def run() -> dict[str, Any]:
                 "reused_retained_server": reused_retained_server,
             }
         )
+        positive_control = _run_positive_control(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            journal=journal,
+            attempt_counter=positive_control_attempt_counter,
+        )
+        provider_generation_requests_attempted += positive_control_attempt_counter[0]
+        if positive_control is not None:
+            journal.append(
+                {
+                    "event": "official_positive_control_completed",
+                    "status": positive_control["status"],
+                    "request_count": positive_control["request_count"],
+                    "result_sha256": positive_control["result_sha256"],
+                    "droid_matrix_admitted": positive_control["droid_matrix_admitted"],
+                }
+            )
+            if positive_control["status"] != "passed":
+                force_server_shutdown = True
+                result = {
+                    "schema_version": "policy_ranking_successor_cosmos_runtime.v1",
+                    "experiment_id": EXPERIMENT_ID,
+                    "status": "completed",
+                    "failure_class": "official_positive_control_scientific_failure",
+                    "checkpoint": CHECKPOINT,
+                    "checkpoint_revision": CHECKPOINT_REVISION,
+                    "precision": "bf16",
+                    "pipeline_class": PIPELINE_CLASS,
+                    "vllm_omni_source_revision": VLLM_OMNI_SOURCE_REVISION,
+                    "server_identity": server_identity,
+                    "model_load_seconds": model_load_seconds,
+                    "reused_retained_server": reused_retained_server,
+                    "official_positive_control": positive_control,
+                    "positive_control_request_count_frozen": POSITIVE_CONTROL_REQUEST_COUNT,
+                    "positive_control_responses_valid": positive_control["request_count"],
+                    "qualification_canary_responses_valid": 0,
+                    "provider_generation_requests_attempted_total": (
+                        provider_generation_requests_attempted
+                    ),
+                    "provider_scientific_matrix_responses_valid": 0,
+                    "droid_matrix_admitted": False,
+                    "action_conditioned_video_rollout_generated": True,
+                    "droid_action_conditioned_video_rollout_generated": False,
+                    "runtime_seconds": time.monotonic() - started_at,
+                    "immutable_request_journal_tail_sha256": journal.previous,
+                    "evaluator_eligible": False,
+                    "claims": {
+                        "runtime": True,
+                        "generated_media": True,
+                        "official_positive_control": False,
+                        "wam_causal_validity": False,
+                        "evaluator_validity": False,
+                        "ranking_fidelity": False,
+                        "physical_performance": False,
+                    },
+                }
+                write_json(result_path, result)
+                return result
         canary_row = next(
             row for row in rows if row.get("condition") == "recorded" and row.get("seed") == 0
         )
@@ -928,6 +1209,13 @@ def run() -> dict[str, Any]:
             "server_identity": server_identity,
             "model_load_seconds": model_load_seconds,
             "reused_retained_server": reused_retained_server,
+            "official_positive_control": positive_control,
+            "positive_control_request_count_frozen": (
+                POSITIVE_CONTROL_REQUEST_COUNT if positive_control is not None else 0
+            ),
+            "positive_control_responses_valid": (
+                positive_control["request_count"] if positive_control is not None else 0
+            ),
             "direct_canary_passed": True,
             "blueprint_wrapper_same_process_canary_passed": True,
             "exact_action_conditioned_stack_preflight": exact_stack_preflight,
@@ -955,6 +1243,9 @@ def run() -> dict[str, Any]:
             "claims": {
                 "runtime": True,
                 "generated_media": bool(rollout_records),
+                "official_positive_control": (
+                    positive_control is None or positive_control["status"] == "passed"
+                ),
                 "wam_causal_validity": False,
                 "evaluator_validity": False,
                 "ranking_fidelity": False,
@@ -964,6 +1255,10 @@ def run() -> dict[str, Any]:
         write_json(result_path, result)
         return result
     except Exception as exc:
+        provider_generation_requests_attempted = max(
+            provider_generation_requests_attempted,
+            positive_control_attempt_counter[0],
+        )
         result = {
             "schema_version": "policy_ranking_successor_cosmos_runtime.v1",
             "experiment_id": EXPERIMENT_ID,
@@ -984,7 +1279,11 @@ def run() -> dict[str, Any]:
         write_json(result_path, result)
         return result
     finally:
-        retained = _env_truthy(RETAIN_SERVER_ENV) and process.poll() is None
+        retained = (
+            _env_truthy(RETAIN_SERVER_ENV)
+            and not force_server_shutdown
+            and process.poll() is None
+        )
         write_json(
             output_dir / "cosmos_server_retention.json",
             {

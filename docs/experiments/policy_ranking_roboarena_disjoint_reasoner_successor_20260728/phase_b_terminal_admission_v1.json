@@ -1,0 +1,62 @@
+{
+  "schema_version": "policy_ranking_phase_b_terminal_admission.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "status": "terminal_not_admitted",
+  "paid_execution_admitted": false,
+  "current_frozen_evidence": {
+    "phase_a_registered_gates_passed": false,
+    "native_cosmos_causal_screen_passed": false,
+    "native_cosmos_session_reliable": false,
+    "selected_session_count": 17,
+    "selected_sessions_used_for_prediction": 1,
+    "selected_sessions_still_label_sealed": 16,
+    "runnable_seven_policy_endpoints_connected": false,
+    "policy_to_wam_action_state_adapter_validated": false,
+    "selected_session_camera_calibration_available_for_oscar_projection": false,
+    "captured_site_adapter_and_matching_physical_outcomes_available": false
+  },
+  "short_horizon_screen_interpretation": {
+    "generated_frames": 17,
+    "fps": 15,
+    "duration_seconds": 1.1333333333333333,
+    "question_answered": "Whether the frozen native-Cosmos configuration produced short-horizon action-conditioned scene response distinguishable from valid no-motion and temporal placebo controls.",
+    "question_not_answered": "Full-episode task completion, long-horizon stability, policy re-query behavior, seven-policy ranking, captured-site transfer, or end-to-end economics.",
+    "pass_meaning": "Admission to longer full-episode testing only, not thesis support.",
+    "observed_result": "The frozen screen failed and the reliability gate required abstention."
+  },
+  "phase_b_design_achieved": "fallback_level_3_single_chunk_open_loop_replay_causal_diagnostic",
+  "phase_b_design_not_achieved": "disjoint_whole_stack_policy_wam_policy_closed_loop_confirmation",
+  "arm_status": {
+    "skeleton_only": "not_run_missing_selected_session_camera_calibration",
+    "oscar_purpose_built_wam": "not_run_missing_selected_session_camera_calibration_and_full_episode_conditioning_adapter",
+    "native_cosmos3_nano": "one_session_short_horizon_screen_failed_and_abstained",
+    "cosmos3_oscar_skeleton_hybrid": "not_run_no_frozen_valid_adapter",
+    "reasoner_evaluator": "structured_transport_passed_semantic_consistency_failed"
+  },
+  "blocking_conditions": [
+    "frozen_phase_a_failed_registered_calibration_and_selective_use_gates",
+    "native_cosmos_failed_registered_short_horizon_causal_and_reliability_gates",
+    "no_validated_policy_observation_state_action_adapter_connects_public_checkpoints_to_wam_outputs",
+    "selected_sessions_lack_frozen_camera_calibration_for_oscar_skeleton_projection",
+    "no_new_independently_published_labeled_snapshot_was_available"
+  ],
+  "decision": {
+    "additional_gpu_or_evaluator_spend_admitted": false,
+    "remaining_label_sealed_sessions_preserved": true,
+    "reason": "A full episode or ranking matrix would bypass failed prerequisite gates and could not earn confirmatory Phase-B credit.",
+    "future_reopen_conditions": [
+      "Freeze a genuinely new disjoint labeled snapshot or equivalent independently frozen confirmation set.",
+      "Freeze runnable policy checkpoints or endpoints and validate the observation, state, and action adapter.",
+      "Obtain attributable camera calibration for OSCAR and skeleton-capable arms.",
+      "Pass a prospectively frozen WAM causal and reliability canary before full-episode evaluator spend."
+    ]
+  },
+  "superseded_for_future_execution_by": {
+    "artifact": "phase_b_positive_control_bisection_amendment_v1.json",
+    "manifest_sha256": "ff587fa17d215c97e4c834e233b699524c13cba5295539b0cacc9426a94b312f",
+    "scope": "Only the future-execution decision is superseded. The completed high-motion result, failed causal screen, abstention, and claim ceiling remain unchanged.",
+    "reason": "A later independent first-principles audit identified a missing known-good deployment positive control. The new diagnostic is allowed to locate deployment versus DROID-contract failure but cannot earn independent qualification credit."
+  },
+  "claim_ceiling": "No live closed-loop, full-episode ranking, independent confirmation, captured-site transfer, or thesis economics credit.",
+  "manifest_sha256": "c7551af84f6284e40d8ee80c430ecd8dda405286b90faaf048079f9f6cc4e1e2"
+}

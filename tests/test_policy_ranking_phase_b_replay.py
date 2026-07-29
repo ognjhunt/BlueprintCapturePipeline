@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
+import subprocess
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -14,11 +16,13 @@ from PIL import Image
 from blueprint_pipeline.policy_ranking_phase_b_cosmos_bundle import (
     build_phase_b_cosmos_canary_bundle,
 )
+from blueprint_pipeline import policy_ranking_phase_b_cosmos_bundle as cosmos_bundle
 from blueprint_pipeline.policy_ranking_phase_b_high_motion_selection import (
     build_high_motion_selection,
 )
 from blueprint_pipeline.policy_ranking_phase_b_replay import build_selected_replay_canary
 from blueprint_pipeline.policy_ranking_successor_gpu_admission import (
+    PHASE_B_POSITIVE_CONTROL_PROFILE,
     PHASE_B_PROFILE,
     inspect_successor_bundle,
 )
@@ -168,6 +172,135 @@ def test_native_cosmos_canary_bundle_is_immutable_and_label_blind(tmp_path: Path
             receipt_path=receipt,
             task_instruction="Pick up the bottle and place it in the bin.",
         )
+
+
+def test_native_cosmos_bundle_embeds_hash_pinned_official_positive_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg unavailable")
+    controls = build_action_controls(
+        _stream(0.0),
+        _stream(0.01),
+        observation_gripper_hold=1.0,
+        shuffle_seed=20260728,
+    )
+    controls["shifted"] = _stream(0.02)
+    observation = tmp_path / "observation.png"
+    Image.new("RGB", (640, 540), color=(10, 20, 30)).save(observation)
+    canary = {
+        "schema_version": "policy_ranking_phase_b_replay_canary.v1",
+        "status": "passed",
+        "controls": controls,
+        "initial_observation": {
+            "path": str(observation),
+            "sha256": file_sha256(observation),
+        },
+        "label_seal": {"outcome_labels_accessed": False},
+    }
+    canary["manifest_sha256"] = canonical_sha256(canary)
+    canary_path = tmp_path / "canary.json"
+    canary_path.write_text(json.dumps(canary), encoding="utf-8")
+    first_frame = tmp_path / "first.png"
+    Image.new("RGB", (640, 720), color=(20, 30, 40)).save(first_frame)
+    action_chunks = tmp_path / "actions.json"
+    action_chunks.write_text(
+        json.dumps(
+            {
+                "prompt": "Pickup items in the supermarket",
+                "fps": 10,
+                "action_chunk_size": 16,
+                "domain_name": "agibotworld",
+                "image_size": 480,
+                "view_point": "concat_view",
+                "num_chunks": 4,
+                "action_chunks": [[[0.0] * 29 for _ in range(16)] for _ in range(4)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    reference = tmp_path / "reference.mp4"
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=640x720:r=10:d=6.4",
+            "-frames:v",
+            "64",
+            "-pix_fmt",
+            "yuv420p",
+            str(reference),
+        ],
+        check=False,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    monkeypatch.setattr(
+        cosmos_bundle,
+        "OFFICIAL_POSITIVE_CONTROL_ASSET_SHA256",
+        {
+            "first_frame": file_sha256(first_frame),
+            "action_chunks": file_sha256(action_chunks),
+            "reference_output": file_sha256(reference),
+        },
+    )
+    bundle = tmp_path / "positive-control-bundle.zip"
+    result = build_phase_b_cosmos_canary_bundle(
+        replay_canary_path=canary_path,
+        output_bundle=bundle,
+        receipt_path=tmp_path / "receipt.json",
+        task_instruction="Pick up the bottle and place it in the bin.",
+        positive_control_first_frame_path=first_frame,
+        positive_control_action_chunks_path=action_chunks,
+        positive_control_reference_output_path=reference,
+    )
+
+    assert result["positive_control_included"] is True
+    assert result["positive_control_manifest_sha256"]
+    with zipfile.ZipFile(bundle) as archive:
+        manifest = json.loads(
+            archive.read("provider_runtime/cosmos3_positive_control/manifest.json")
+        )
+        runtime_manifest = json.loads(
+            archive.read("provider_runtime/wam_provider_runtime_manifest.json")
+        )
+        assert manifest["frozen_gates"] == cosmos_bundle.POSITIVE_CONTROL_FROZEN_GATES
+        assert runtime_manifest["positive_control_request_count"] == 4
+        assert runtime_manifest["total_initial_generation_request_count"] == 18
+        assert (
+            runtime_manifest["request_budget_amendment_sha256"]
+            == result["positive_control_manifest_sha256"]
+        )
+        inventory = json.loads(
+            archive.read("provider_runtime/cosmos3_input/smoke_request_inventory.json")
+        )
+    profile = replace(
+        PHASE_B_POSITIVE_CONTROL_PROFILE,
+        expected_bundle_sha256=file_sha256(bundle),
+        expected_bundle_size_bytes=bundle.stat().st_size,
+        expected_embedded_input_hashes={
+            "initial_observation_sha256": result["initial_observation_sha256"],
+            "smoke_inventory_sha256": result["smoke_inventory_sha256"],
+            "action_streams_sha256": result["action_streams_sha256"],
+            "positive_control_manifest_sha256": result[
+                "positive_control_manifest_sha256"
+            ],
+        },
+        request_budget_amendment_sha256=result["positive_control_manifest_sha256"],
+    )
+    inspection = inspect_successor_bundle(
+        bundle,
+        receipt=result,
+        smoke_inventory=inventory,
+        profile=profile,
+    )
+    assert inspection["status"] == "passed"
+    assert inspection["blockers"] == []
 
 
 def _replay_npz(path: Path, scale: float) -> None:

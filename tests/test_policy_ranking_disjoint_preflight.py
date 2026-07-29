@@ -142,7 +142,82 @@ def test_committed_disjoint_preflight_artifact_digests_are_canonical() -> None:
         "phase_b_native_cosmos_environment_v1.json",
         "phase_b_native_cosmos_canary_preparation_v1.json",
         "phase_b_open_loop_replay_protocol_v1.json",
+        "phase_b_high_motion_native_cosmos_result_v1.json",
+        "phase_b_high_motion_native_cosmos_cost_provider_zero_v1.json",
+        "phase_b_high_motion_native_cosmos_gallery_manifest_v1.json",
+        "phase_b_positive_control_bisection_amendment_v1.json",
+        "phase_b_terminal_admission_v1.json",
+        "terminal_verdict_v1.json",
     ):
         payload = json.loads((EXPERIMENT_DOCS / filename).read_text(encoding="utf-8"))
         recorded = payload.pop("manifest_sha256")
         assert recorded == canonical_sha256(payload)
+
+
+def test_committed_native_cosmos_result_preserves_failure_and_claim_ceiling() -> None:
+    result = json.loads(
+        (EXPERIMENT_DOCS / "phase_b_high_motion_native_cosmos_result_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result["status"] == "completed_causal_screen_failed_product_abstention"
+    assert result["causal_screen"]["screen_passed"] is False
+    assert result["tier_1_rollout_reliability"]["session_reliable"] is False
+    assert result["abstention"]["product_abstention_required"] is True
+    assert result["abstention"]["native_cosmos_full_episode_matrix_admitted"] is False
+    assert result["phase_b_design_achieved"].startswith("fallback_level_3")
+    assert result["label_unseal"]["remaining_selected_sessions_still_label_sealed"] == 16
+
+
+def test_committed_native_cosmos_cost_receipt_proves_zero_without_overclaiming() -> None:
+    receipt = json.loads(
+        (
+            EXPERIMENT_DOCS
+            / "phase_b_high_motion_native_cosmos_cost_provider_zero_v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["gpu"]["estimated_cost_usd"] == 0.088401
+    assert receipt["gpu"]["continuing_spend_from_this_run"] is False
+    assert receipt["provider_zero"]["task_live_instance_count"] == 0
+    assert receipt["provider_zero"]["all_live_instance_count"] == 0
+    assert receipt["provider_zero"][
+        "provider_zero_does_not_prove_invoice_settlement_or_scientific_validity"
+    ] is True
+    assert "not a completed ranking cost" in receipt["claim_boundary"]
+
+
+def test_terminal_admission_does_not_promote_short_screen_to_phase_b() -> None:
+    admission = json.loads(
+        (EXPERIMENT_DOCS / "phase_b_terminal_admission_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert admission["status"] == "terminal_not_admitted"
+    assert admission["paid_execution_admitted"] is False
+    assert admission["short_horizon_screen_interpretation"]["generated_frames"] == 17
+    assert admission["current_frozen_evidence"]["selected_sessions_still_label_sealed"] == 16
+    assert admission["decision"]["additional_gpu_or_evaluator_spend_admitted"] is False
+    assert admission["superseded_for_future_execution_by"]["artifact"] == (
+        "phase_b_positive_control_bisection_amendment_v1.json"
+    )
+    assert "No live closed-loop" in admission["claim_ceiling"]
+
+
+def test_terminal_verdict_keeps_all_components_separate() -> None:
+    verdict = json.loads(
+        (EXPERIMENT_DOCS / "terminal_verdict_v1.json").read_text(encoding="utf-8")
+    )
+    assert verdict["overall_verdict"] == "inconclusive"
+    assert set(verdict["components"]) == {
+        "cosmos_wam_qualification",
+        "frozen_benchmark_calibration",
+        "captured_site_transfer",
+        "economics_and_speed",
+    }
+    assert verdict["components"]["cosmos_wam_qualification"]["qualified"] is False
+    assert verdict["phase_b"]["full_episode_executed"] is False
+    assert verdict["phase_b"]["policy_requery_executed"] is False
+    assert verdict["phase_b"]["selected_sessions_remaining_label_sealed"] == 16
+    assert verdict["abstention"]["native_cosmos_product_abstention_correct_for_frozen_gates"] is True
+    assert verdict["cost_and_time"]["completed_useful_digital_ranking"] is False
+    assert verdict["provider_zero"]["all_live_instance_count"] == 0

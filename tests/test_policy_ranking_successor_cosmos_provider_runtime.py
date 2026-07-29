@@ -130,6 +130,46 @@ def test_request_serializer_rejects_generic_or_missing_task_prompt() -> None:
                 num_inference_steps=4,
                 task_instruction=prompt,
             )
+
+
+def test_positive_control_serializer_matches_frozen_official_contract() -> None:
+    action_spec = {
+        "prompt": "Pickup items in the supermarket",
+        "fps": 10,
+        "action_chunk_size": 16,
+        "domain_name": "agibotworld",
+        "image_size": 480,
+        "view_point": "concat_view",
+    }
+    request = runtime._serialize_positive_control_request(
+        action_chunk=[[0.0] * 29 for _ in range(16)],
+        action_spec=action_spec,
+    )
+
+    assert request["fps"] == "10"
+    assert request["size"] == "640x720"
+    assert request["num_frames"] == "17"
+    assert request["guidance_scale"] == "1.0"
+    assert request["flow_shift"] == "10.0"
+    extra = runtime.json.loads(request["extra_params"])
+    assert extra["domain_name"] == "agibotworld"
+    assert extra["action_chunk_size"] == 16
+    assert len(extra["action"]) == 16
+    assert all(len(row) == 29 for row in extra["action"])
+
+
+def test_positive_control_serializer_rejects_wrong_action_shape() -> None:
+    with pytest.raises(ValueError, match="positive_control_action_dimension_invalid"):
+        runtime._serialize_positive_control_request(
+            action_chunk=[[0.0] * 10 for _ in range(16)],
+            action_spec={
+                "prompt": "Pickup items in the supermarket",
+                "fps": 10,
+                "action_chunk_size": 16,
+            },
+        )
+
+
 def test_static_video_can_pass_structural_canary_without_passing_motion(
     tmp_path: Path,
 ) -> None:

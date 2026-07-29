@@ -1,0 +1,28 @@
+{
+  "schema_version": "policy_ranking_phase_b_high_motion_native_cosmos_gallery_manifest.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "external_gallery_root": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_first_frame_high_motion_v2/live_v2/review_gallery",
+  "presentation": "single left-camera crops for review; raw three-camera Cosmos outputs remain immutable in the provider output bundle",
+  "physical_reference": {
+    "file": "REAL_PHYSICAL_left_first_17_frames.mp4",
+    "sha256": "e48707589a3ca5fefae849d5f4284f880cddf9076f27e64ed0abbb39980e4788",
+    "provider_or_evaluator_input": false
+  },
+  "generated": [
+    {"condition": "recorded", "seed": 0, "file": "COSMOS_recorded_seed0_left_only.mp4", "sha256": "a19524ccdf6df0a691d6341a66ad8133132b66979b8eb1c32c0fc0a92e46f50f"},
+    {"condition": "recorded", "seed": 1, "file": "COSMOS_recorded_seed1_left_only.mp4", "sha256": "f65c284450cafc9f739bcc582bd2b8ad3bcd33cac52b657bf6430846ad6c69da"},
+    {"condition": "zero", "seed": 0, "file": "COSMOS_zero_seed0_left_only.mp4", "sha256": "2c8260e947a7a4681b52d151fe5886f9861aa274d96b0bfaf808c34e969b9432"},
+    {"condition": "zero", "seed": 1, "file": "COSMOS_zero_seed1_left_only.mp4", "sha256": "de79beaf0753e4be18c37c33522df44d30fdb7070e3365b2c87766f82e563d90"},
+    {"condition": "shuffled", "seed": 0, "file": "COSMOS_shuffled_seed0_left_only.mp4", "sha256": "fb4d2871bac3a7e0db43daaac17dd73649b7699f3986d17ba15a2160322d969d"},
+    {"condition": "shuffled", "seed": 1, "file": "COSMOS_shuffled_seed1_left_only.mp4", "sha256": "3db867347d32d4e0c0a1558a8be2988347ac9407095fb07dfdd5f44c431c2fb4"},
+    {"condition": "reversed", "seed": 0, "file": "COSMOS_reversed_seed0_left_only.mp4", "sha256": "1be2e4abeb5508fdcc7d37a4cdecb9d9be34a9fbfdb5884cf7d8ac96cfd7f76e"},
+    {"condition": "reversed", "seed": 1, "file": "COSMOS_reversed_seed1_left_only.mp4", "sha256": "88df36e5e621356ad9ef3ba1575a4109f39c11c980c973af51bb9a74409d93d4"},
+    {"condition": "policy_swapped", "seed": 0, "file": "COSMOS_policy_swapped_seed0_left_only.mp4", "sha256": "d8fefa0830747a32e81abed8d35d29aacc6b61838b86ef9b3a113285f194cb34"},
+    {"condition": "policy_swapped", "seed": 1, "file": "COSMOS_policy_swapped_seed1_left_only.mp4", "sha256": "905fa3f98703c8d9d71244ec2b8d7be56c778fef756a551f63fedb0af2df2d97"},
+    {"condition": "shifted", "seed": 0, "file": "COSMOS_shifted_seed0_left_only.mp4", "sha256": "b22404d459d2d41d4c51dcd813f3bb78b2267ab5cc7fbc6f1a60b48b5a601277"},
+    {"condition": "shifted", "seed": 1, "file": "COSMOS_shifted_seed1_left_only.mp4", "sha256": "9722d38d253f60fdb42fc6f6731a6f21d81b94b3e3381a761e92862d5b5225c2"}
+  ],
+  "raw_provider_output_bundle_sha256": "0ec1fda0d996ea6d583d27438a44ccd4480f290324284387be63a3cd733d0859",
+  "cherry_pick_policy": "all controls and both seeds retained; no output selected by attractiveness",
+  "manifest_sha256": "fea1f1a6c7b2bf27dad96326e0addd12de16748086d790d397135d603ebb469e"
+}

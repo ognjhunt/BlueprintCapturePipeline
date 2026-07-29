@@ -1,0 +1,92 @@
+{
+  "schema_version": "policy_ranking_phase_b_positive_control_bisection_amendment.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "status": "prospectively_frozen_before_paid_execution",
+  "supersedes_for_future_execution": {
+    "phase_b_high_motion_native_cosmos_diagnostic_amendment_v2_sha256": "b2411e5981af473ff992b13f253253674a33293fa396012e9cf633695f3aa196",
+    "reason": "The frozen high-motion DROID configuration completed but did not separate own-action output from temporal placebos. An independent first-principles audit identified that the deployment had never been checked against a known-good published forward-dynamics pathway. The completed result remains immutable; this amendment governs only a new diagnostic allocation."
+  },
+  "scientific_legitimacy": {
+    "outcome_labels_used_to_choose_thresholds": false,
+    "droid_policy_ranking_labels_accessed_for_this_amendment": false,
+    "official_positive_control_selected_because_of_result": true,
+    "selection_effect": "diagnostic_only",
+    "claim_credit": "The positive control can diagnose the pinned deployment but cannot earn DROID WAM qualification, ranking, or independent-confirmation credit.",
+    "new_untouched_droid_sessions_required_after_any_pass": true
+  },
+  "official_positive_control": {
+    "source_repository": "https://github.com/NVIDIA/cosmos-framework",
+    "source_revision": "09f23119ea92c707207bba55565e7a09d16896a2",
+    "model": "nvidia/Cosmos3-Nano",
+    "model_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "runtime_source_revision": "9c1b7504b178afcf541867c1a2d30db48c69cda8",
+    "example": "AgiBotWorld forward-dynamics four-chunk example",
+    "asset_sha256": {
+      "first_frame": "78b7288846b05c2265f4aa9a31b7aa905d75e0154c2126adcf8472432a81053c",
+      "action_chunks": "ba8408f727f9c77d4450b239069f81e9cdd9d099bf05da7f33f5bfb4cb2d55cd",
+      "reference_output": "9b01266b6cd27478514133b00ada9c33db3f9444167f09942c11f880c629c8c0"
+    },
+    "request_contract": {
+      "prompt": "Pickup items in the supermarket",
+      "fps": 10,
+      "action_chunk_size": 16,
+      "action_dimension": 29,
+      "domain_name": "agibotworld",
+      "image_size": 480,
+      "view_point": "concat_view",
+      "num_chunks": 4,
+      "num_frames_per_chunk": 17,
+      "size": "640x720",
+      "num_inference_steps": 30,
+      "guidance_scale": 1.0,
+      "flow_shift": 10.0,
+      "seed": 0,
+      "chaining": "condition each later chunk on the final generated frame from the preceding chunk"
+    },
+    "known_deviation": "The frozen public robotics server uses --no-guardrails, so each request records guardrails=false. No other request-contract deviation is allowed."
+  },
+  "frozen_gates": {
+    "media_structure": "all four outputs must decode as 640x720, 17 frames, 10 fps",
+    "chunk_temporal_absolute_difference_mean_minimum_gray_0_255": 1.0,
+    "chunk_first_to_last_absolute_difference_mean_minimum_gray_0_255": 3.0,
+    "minimum_dynamic_chunks": 3,
+    "published_reference_adjacent_difference_mean_gray_0_255_approx": 2.7335,
+    "published_reference_chunk_first_to_last_range_gray_0_255_approx": [10.664, 13.254]
+  },
+  "decision_tree": {
+    "positive_control_fails": "Submit zero DROID requests, shut down the model server, teardown the GPU, and classify the pinned deployment pathway as failed.",
+    "positive_control_passes": "Run the already-frozen 12-request DROID control matrix in the same loaded process.",
+    "droid_matrix_fails": "Preserve outputs, abstain, teardown, and do not admit full-episode Phase B.",
+    "droid_matrix_passes": "Require the prospective powered independent-session gate before full-episode ranking. The already-exposed diagnostic session cannot supply independent confirmation."
+  },
+  "request_budget": {
+    "official_positive_control_requests": 4,
+    "droid_wrapper_equivalence_canaries_if_admitted": 2,
+    "droid_control_matrix_requests_if_admitted": 12,
+    "maximum_initial_generation_requests": 18
+  },
+  "cost_authority": {
+    "maximum_concurrent_gpus": 1,
+    "maximum_gpu_cost_usd_this_allocation": 5.0,
+    "target_gpu_cost_usd_this_allocation": 2.5,
+    "maximum_hourly_rate_usd": 1.25,
+    "hard_ttl_seconds": 7200,
+    "campaign_gpu_category_ceiling_usd": 50.0,
+    "campaign_total_ceiling_usd": 100.0,
+    "canonical_paid_resource_allocator_required": true,
+    "spend_watchdog_required": true,
+    "teardown_and_provider_zero_required": true
+  },
+  "frozen_bundle": {
+    "bundle_sha256": "dd9c7ec2b05ea4185502cfb1be01d2933a679bcb8fcd3e398d4076bc0307ed72",
+    "bundle_size_bytes": 1776106,
+    "initial_observation_sha256": "c1d89dd07b597796ad7620661dd2eacd4d4f58aad03d8860a52e13612bf0d99a",
+    "smoke_inventory_sha256": "9acdfb578d1c595970e3d33a0daade2ecfa1fc0ea6b87cddd163a8bf374747fb",
+    "action_streams_sha256": "12b572607ec3f4f68c2514f15553dfd1ef8c420fa0e7e601cefe8e12447a59b4",
+    "positive_control_manifest_sha256": "326efd06d1659c57b86e979eee7a7b30611fd22eda00f37c11e0f3ddbd0c3584"
+  },
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "outcome_labels_accessed": false,
+  "manifest_sha256": "ff587fa17d215c97e4c834e233b699524c13cba5295539b0cacc9426a94b312f"
+}

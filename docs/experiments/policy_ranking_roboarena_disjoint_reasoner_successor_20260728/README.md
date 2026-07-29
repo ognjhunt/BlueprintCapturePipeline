@@ -77,3 +77,47 @@ a shared TensorRT compute-cap ceiling being applied to this non-TensorRT Cosmos
 lane. The code now explicitly admits Blackwell for this profile and a regression
 test pins that contract. The second preflight verified authenticated zero
 inventory and one compatible advisory offer; it did not reserve or launch it.
+
+## High-motion native-Cosmos result
+
+The amended high-motion canary completed on source commit `c04ce132` using one
+RTX Pro 6000 WS. Both structural requests returned byte-identical direct and
+Blueprint-wrapper videos, and all 12 frozen condition/seed requests completed.
+Estimated GPU cost was `$0.088401` for `317.302998` live seconds. Authenticated
+post-run inventory found zero task instances and zero total instances.
+
+The scientific screen failed. Only 1/10 active same-seed comparisons visibly
+separated from the no-motion future at the frozen threshold, only 2/10 active
+rows rejected their strongest temporal placebo, and 0/5 active conditions were
+robust across both seeds. The separate tier-1 gate found five hard-failure
+windows and a session-median timing correlation of `0.02194`, below the frozen
+`0.15` threshold. Blueprint therefore abstains from native Cosmos and does not
+admit the full-episode matrix or evaluator spend.
+
+This is a one-session, 17-frame open-loop causal diagnostic. It did not re-query
+a policy and is underpowered for WAM qualification. The matching physical video
+was retained outside provider and evaluator inputs and is published only as a
+post-generation review reference. The selected session's metadata was later
+opened while checking for camera calibration; the resulting one-session label
+unseal is recorded explicitly, and the remaining 16 selected sessions remain
+sealed. `phase_b_high_motion_native_cosmos_result_v1.json`, the cost/provider-zero
+receipt, and the gallery manifest preserve the complete claim boundary.
+
+## Interim closeout and positive-control amendment
+
+`phase_b_terminal_admission_v1.json` records why 17 frames can resolve only the
+short-horizon causal prerequisite and why that failed result did not admit a
+full Phase-B matrix. A subsequent independent first-principles audit identified
+a narrower missing gate: the exact deployment had never been tested against a
+known-good published forward-dynamics pathway. The prospective
+`phase_b_positive_control_bisection_amendment_v1.json` therefore supersedes only
+the future-execution recommendation, not the completed result.
+
+The amended run uses NVIDIA's hash-pinned four-chunk AgiBotWorld example first.
+At least three chunks must pass frozen visible-motion thresholds. Failure stops
+the run with zero DROID requests and forces teardown; a pass admits only the
+already-frozen 12-request DROID diagnostic in the same loaded process. Neither
+outcome by itself earns DROID WAM qualification, ranking, or independent
+confirmation credit. `terminal_verdict_v1.json` and `terminal_report_v1.md`
+remain interim `inconclusive` evidence snapshots until that finite bisection and
+any admitted successor stages finish.

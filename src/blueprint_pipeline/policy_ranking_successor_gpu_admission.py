@@ -170,6 +170,49 @@ PHASE_B_PROFILE = SuccessorGPUProfile(
     target_spend_usd=2.5,
     hard_ttl_seconds=7_200,
 )
+PHASE_B_POSITIVE_CONTROL_PROFILE = SuccessorGPUProfile(
+    experiment_id="policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+    admission_schema="policy_ranking_phase_b_native_cosmos_positive_control_gpu_admission.v1",
+    authorization_schema=(
+        "policy_ranking_phase_b_native_cosmos_positive_control_compute_authorization.v1"
+    ),
+    preflight_schema="policy_ranking_phase_b_native_cosmos_positive_control_vast_preflight.v1",
+    receipt_schema=(
+        "policy_ranking_phase_b_native_cosmos_positive_control_bundle_receipt.v1"
+    ),
+    authorization_ids_by_allocation_index={
+        3: "policy-ranking-roboarena-phase-b-positive-control-20260728-allocation-3",
+    },
+    cost_authorization_binding_sha256=(
+        "ff587fa17d215c97e4c834e233b699524c13cba5295539b0cacc9426a94b312f"
+    ),
+    expected_bundle_sha256="dd9c7ec2b05ea4185502cfb1be01d2933a679bcb8fcd3e398d4076bc0307ed72",
+    expected_bundle_size_bytes=1_776_106,
+    expected_embedded_input_hashes={
+        "initial_observation_sha256": (
+            "c1d89dd07b597796ad7620661dd2eacd4d4f58aad03d8860a52e13612bf0d99a"
+        ),
+        "smoke_inventory_sha256": (
+            "9acdfb578d1c595970e3d33a0daade2ecfa1fc0ea6b87cddd163a8bf374747fb"
+        ),
+        "action_streams_sha256": (
+            "12b572607ec3f4f68c2514f15553dfd1ef8c420fa0e7e601cefe8e12447a59b4"
+        ),
+        "positive_control_manifest_sha256": (
+            "326efd06d1659c57b86e979eee7a7b30611fd22eda00f37c11e0f3ddbd0c3584"
+        ),
+    },
+    qualification_canary_request_count=2,
+    scientific_matrix_request_count=12,
+    total_initial_generation_request_count=18,
+    request_budget_amendment_sha256=(
+        "326efd06d1659c57b86e979eee7a7b30611fd22eda00f37c11e0f3ddbd0c3584"
+    ),
+    max_compute_cap_usd=5.0,
+    max_hourly_rate_usd=1.25,
+    target_spend_usd=2.5,
+    hard_ttl_seconds=7_200,
+)
 RTX_ALLOWED_KEYWORDS = ("RTX PRO 6000",)
 RTX_SELECTION_POLICY: Mapping[str, Any] = {
     "policy_id": "policy_ranking_successor_rtx_pro_6000_blackwell_preflight",
@@ -344,6 +387,28 @@ def inspect_successor_bundle(
                         )
                     ),
                 }
+                positive_control_manifest_entry = (
+                    "provider_runtime/cosmos3_positive_control/manifest.json"
+                )
+                if positive_control_manifest_entry in names:
+                    positive_control_manifest = json.loads(
+                        archive.read(positive_control_manifest_entry).decode("utf-8")
+                    )
+                    recorded_positive_control_sha256 = positive_control_manifest.get(
+                        "manifest_sha256"
+                    )
+                    computed_positive_control_sha256 = canonical_sha256(
+                        {
+                            key: value
+                            for key, value in positive_control_manifest.items()
+                            if key != "manifest_sha256"
+                        }
+                    )
+                    if recorded_positive_control_sha256 != computed_positive_control_sha256:
+                        blockers.append("successor_positive_control_manifest_hash_invalid")
+                    embedded_hashes["positive_control_manifest_sha256"] = (
+                        computed_positive_control_sha256
+                    )
         except (
             OSError,
             KeyError,
@@ -353,6 +418,14 @@ def inspect_successor_bundle(
         ):
             blockers.append("successor_cosmos_provider_bundle_unreadable")
     missing = sorted(REQUIRED_BUNDLE_ENTRIES - names)
+    if "positive_control_manifest_sha256" in profile.expected_embedded_input_hashes:
+        positive_control_entries = {
+            "provider_runtime/cosmos3_positive_control/manifest.json",
+            "provider_runtime/cosmos3_positive_control/first_frame.png",
+            "provider_runtime/cosmos3_positive_control/action_chunks.json",
+            "provider_runtime/cosmos3_positive_control/reference_output.mp4",
+        }
+        missing.extend(sorted(positive_control_entries - names))
     if missing:
         blockers.append("successor_cosmos_provider_bundle_entries_missing")
     blockers.extend(
@@ -735,11 +808,13 @@ def run_successor_gpu_lane(
     smoke_inventory = load_input("smoke_inventory", smoke_inventory_path)
     provider_preflight = load_input("provider_preflight", provider_preflight_path)
     bundle_receipt = load_input("bundle_receipt", provider_bundle_receipt_path)
-    profile = (
-        PHASE_B_PROFILE
-        if bundle_receipt.get("schema_version") == PHASE_B_PROFILE.receipt_schema
-        else LEGACY_PROFILE
-    )
+    receipt_schema = bundle_receipt.get("schema_version")
+    if receipt_schema == PHASE_B_POSITIVE_CONTROL_PROFILE.receipt_schema:
+        profile = PHASE_B_POSITIVE_CONTROL_PROFILE
+    elif receipt_schema == PHASE_B_PROFILE.receipt_schema:
+        profile = PHASE_B_PROFILE
+    else:
+        profile = LEGACY_PROFILE
     bundle = inspect_successor_bundle(
         provider_bundle_path,
         receipt=bundle_receipt,
@@ -969,6 +1044,7 @@ __all__ = [
     "MAX_COMPUTE_CAP_USD",
     "PREFLIGHT_SCHEMA",
     "PHASE_B_PROFILE",
+    "PHASE_B_POSITIVE_CONTROL_PROFILE",
     "PROBE_KIND",
     "PUBLIC_IMAGE",
     "SuccessorGPUProfile",
