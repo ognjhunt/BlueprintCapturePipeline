@@ -1,0 +1,34 @@
+{
+  "schema_version": "policy_ranking_roboarena_droid_reference_allocation_result.v1",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "allocation_id": "policy-ranking-droid-reference-20260729-allocation-3",
+  "status": "provider_create_rejected_before_allocation",
+  "source_sha": "70a71475516e236a73479a451525922e14c7a4b5",
+  "provider": "runpod",
+  "provider_http_status_code": 500,
+  "provider_blocker": "runpod_create_pod_http_error",
+  "provider_instance_id": null,
+  "provider_mutations_performed": 0,
+  "provider_generation_requests_attempted": 0,
+  "scientific_output_produced": false,
+  "scientific_credit": false,
+  "estimated_gpu_cost_usd": 0.0,
+  "cumulative_estimated_gpu_cost_usd": 0.5088180256657865,
+  "authorization_consumed": true,
+  "provider_zero": {
+    "task_inventory_api_confirmed": true,
+    "task_inventory_live_count": 0,
+    "global_inventory_api_confirmed": true,
+    "global_inventory_live_count": 0,
+    "continuing_hourly_burn": false,
+    "watchdog_process_alive": false,
+    "pending_teardown_status": "cancelled_no_allocation"
+  },
+  "external_evidence": {
+    "adapter_output": "external-evidence-store://policy-ranking-roboarena-droid-reference-confirmation-evidence-20260729/live_run_v4/adapter_output.json",
+    "adapter_output_sha256": "c95d7da83687f5cce53d529d8b3c26c485204fc6ee028e33aca97a768c0ef8fd",
+    "create_manifest": "external-evidence-store://policy-ranking-roboarena-droid-reference-confirmation-evidence-20260729/live_run_v4/job/runpod_wam_async_create_manifest.json",
+    "create_manifest_sha256": "a79c45004bcc63becdea830133ea39ef99e4ae1768d0dce633a4af0d4ce8c630"
+  },
+  "claim_boundary": "This is a provider infrastructure rejection, not evidence for or against Cosmos action following."
+}

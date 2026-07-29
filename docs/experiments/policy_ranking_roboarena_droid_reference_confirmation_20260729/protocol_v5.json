@@ -1,0 +1,48 @@
+{
+  "schema_version": "policy_ranking_roboarena_droid_reference_confirmation_protocol.v5",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "status": "prospectively_frozen_before_provider_create_retry",
+  "supersedes": {
+    "protocol": "protocol_v4.json",
+    "protocol_v4_manifest_sha256": "806b76ed1a2cc8b07d9da2746349c908bb7b2a59f88ccba7cba2b76f62fe8f45",
+    "protocol_v4_file_sha256": "91d83ed7f45401c9e1b25d93e32f3b5479f7de610d2f01007dab119120d85371",
+    "protocol_v4_rewritten": false,
+    "reason": "RunPod returned HTTP 500 before allocating a pod. Authenticated task and global inventory remained zero, no model request was sent, no scientific output was produced, and no GPU cost accrued. This amendment authorizes one bounded retry without changing the scientific or runtime bundle."
+  },
+  "allocation_3_closeout": {
+    "evidence": "allocation_3_provider_rejection_v1.json",
+    "classification": "provider_create_rejection_no_allocation_no_scientific_credit",
+    "provider_http_status_code": 500,
+    "provider_mutations_performed": 0,
+    "provider_generation_requests_attempted": 0,
+    "estimated_gpu_cost_usd": 0.0,
+    "provider_zero": true
+  },
+  "unchanged_contract": {
+    "protocol_v4_scientific_fields_unchanged": true,
+    "bundle_sha256": "d8378dda5c21757c35cb010506615cdb2886c11fbe4c6c9dbd97ff7aef8b044f",
+    "reference_manifest_sha256": "7d7ec85a0976ed5ede44db53a8566bd50f6596b99f2bf22f0383593d20b08ffe",
+    "request_size": "640x540",
+    "decoded_output_geometry": "640x528",
+    "recorded_action_unchanged": true,
+    "valid_no_motion_action_unchanged": true,
+    "seed": 0,
+    "motion_thresholds_unchanged": true,
+    "request_maximum": 2,
+    "untouched_data_not_admitted": true,
+    "evaluator_not_admitted": true,
+    "physical_robot_access_forbidden": true
+  },
+  "cost_authority": {
+    "prior_cumulative_estimated_gpu_cost_usd": 0.5088180256657865,
+    "replacement_allocation_target_usd": 2.5,
+    "replacement_allocation_hard_cap_usd": 5.0,
+    "gpu_category_ceiling_usd": 50.0,
+    "campaign_total_ceiling_usd": 100.0,
+    "maximum_concurrent_gpus": 1,
+    "hard_ttl_seconds": 7200
+  },
+  "replacement_provider_called": false,
+  "outcome_labels_accessed": false,
+  "manifest_sha256": "6acc514931c378c2d49d4fdaffdafc4e31bb715c21f3841e9606a5d146305984"
+}

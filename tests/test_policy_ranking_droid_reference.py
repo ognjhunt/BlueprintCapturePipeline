@@ -138,6 +138,23 @@ def test_protocol_v4_geometry_amendment_is_prospective_and_does_not_reclassify()
     assert unchanged["same_output_may_be_retroactively_passed"] is False
 
 
+def test_protocol_v5_provider_retry_changes_no_scientific_field() -> None:
+    protocol = json.loads((EXPERIMENT / "protocol_v5.json").read_text(encoding="utf-8"))
+    recorded = protocol.pop("manifest_sha256")
+
+    assert recorded == canonical_sha256(protocol)
+    assert protocol["supersedes"]["protocol_v4_rewritten"] is False
+    assert protocol["allocation_3_closeout"]["provider_mutations_performed"] == 0
+    assert protocol["allocation_3_closeout"]["provider_generation_requests_attempted"] == 0
+    unchanged = protocol["unchanged_contract"]
+    assert unchanged["protocol_v4_scientific_fields_unchanged"] is True
+    assert unchanged["bundle_sha256"] == (
+        "d8378dda5c21757c35cb010506615cdb2886c11fbe4c6c9dbd97ff7aef8b044f"
+    )
+    assert unchanged["motion_thresholds_unchanged"] is True
+    assert protocol["replacement_provider_called"] is False
+
+
 def test_allocation_2_result_preserves_failed_gate_and_provider_zero() -> None:
     result = json.loads(
         (EXPERIMENT / "allocation_2_geometry_gate_result_v1.json").read_text(encoding="utf-8")
