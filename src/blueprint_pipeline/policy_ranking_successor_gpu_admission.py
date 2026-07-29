@@ -334,6 +334,7 @@ EDGE_CLOSED_LOOP_PROFILE = SuccessorGPUProfile(
     authorization_ids_by_allocation_index={
         1: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-1",
         2: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-2",
+        3: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-3",
     },
     cost_authorization_binding_sha256=(
         "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"

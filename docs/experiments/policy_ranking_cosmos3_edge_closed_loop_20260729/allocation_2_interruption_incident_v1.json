@@ -1,0 +1,21 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_interruption_incident.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-29T09:12:00-0500",
+  "allocation_index": 2,
+  "source_commit": "b0126153152945f38ca83c31286a884dae9ed3ee",
+  "bundle_version": 5,
+  "provider_instance_id": 46199812,
+  "status": "interrupted_before_container_readiness",
+  "interrupt_detail": "vast_probe_signal:15",
+  "live_runtime_seconds": 13.768943667411804,
+  "estimated_gpu_cost_usd": 0.006641,
+  "policy_inference_ran": false,
+  "model_download_ran": false,
+  "wam_generation_ran": false,
+  "provider_zero_verified": true,
+  "continuing_spend": false,
+  "cause_established": false,
+  "next_attempt_control": "Keep the unified exec session actively polled from allocation through terminal result so the local controller is not treated as abandoned.",
+  "claim_boundary": "Infrastructure interruption only; no scientific policy or WAM evidence."
+}
