@@ -453,7 +453,11 @@ def validate_smoke_inventory_manifest(manifest: Mapping[str, Any]) -> dict[str, 
     instruction = str(manifest.get("task_instruction") or "").strip()
     actions = manifest.get("action_hashes")
     requests = manifest.get("requests")
-    if not isinstance(actions, Mapping) or tuple(actions) != ALLOWED_CONDITIONS:
+    if (
+        not isinstance(actions, Mapping)
+        or len(actions) != len(ALLOWED_CONDITIONS)
+        or set(actions) != set(ALLOWED_CONDITIONS)
+    ):
         raise SuccessorContractError("smoke_inventory_action_conditions_invalid")
     if not isinstance(requests, Sequence) or isinstance(requests, (str, bytes, bytearray)):
         raise SuccessorContractError("smoke_inventory_requests_invalid")
