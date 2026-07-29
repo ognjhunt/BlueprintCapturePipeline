@@ -792,6 +792,11 @@ def _submit_rollout(
     initial_observation: Path,
     output_path: Path,
 ) -> dict[str, Any]:
+    # Every caller may choose a condition/request-specific output path.  The
+    # transport owns materializing that path so a fresh runtime cannot fail
+    # before the first provider request merely because its parent directory
+    # has not been created yet.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with initial_observation.open("rb") as image_file:
         response = requests.post(
             f"{SERVER_BASE_URL}/v1/videos/sync",

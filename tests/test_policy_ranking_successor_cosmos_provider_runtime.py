@@ -454,12 +454,13 @@ def test_request_serialization_fails_closed_on_wrong_action_shape(
         )
 
 
-def test_sync_submit_writes_direct_mp4_response(
+def test_sync_submit_materializes_parent_and_writes_direct_mp4_response(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     observation = tmp_path / "observation.png"
     observation.write_bytes(b"png")
-    output = tmp_path / "output.mp4"
+    output = tmp_path / "fresh" / "condition" / "output.mp4"
+    assert not output.parent.exists()
     observed: dict[str, object] = {}
 
     class Response:
@@ -491,6 +492,7 @@ def test_sync_submit_writes_direct_mp4_response(
 
     assert observed["url"] == "http://127.0.0.1:8001/v1/videos/sync"
     assert observed["data"] == request
+    assert output.parent.is_dir()
     assert output.read_bytes() == b"mp4-payload"
     assert result["endpoint"] == "/v1/videos/sync"
     assert result["content_type"] == "video/mp4"
