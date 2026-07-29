@@ -36,11 +36,11 @@
     "arm": "native_cosmos3_nano_forward_dynamics",
     "allowed_gpu": "single compatible preflight-approved RTX PRO 6000 Blackwell or H100 with at least 80 GB",
     "maximum_hourly_rate_usd": 2.05,
-    "target_spend_usd": 6.0,
+    "target_spend_usd": 6.2,
     "hard_cap_usd": 10.0,
     "hard_ttl_seconds": 10800,
     "maximum_concurrent_gpus": 1
   },
   "raw_secret_values_recorded": false,
-  "manifest_sha256": "88724af6996c0be6113f8b83cae04459e631d366410b034b9700d8c3c7cc9cef"
+  "manifest_sha256": "0e5f1d39166e18b8116c7aff9ab9b9749dee23df28335f411a64041ba11bffde"
 }

@@ -66,6 +66,7 @@ def test_powered_environment_and_compute_authority_preserve_campaign_caps() -> N
     )
 
     assert environment["execution"]["maximum_concurrent_gpus"] == 1
+    assert environment["execution"]["target_spend_usd"] == 6.2
     assert environment["execution"]["hard_cap_usd"] == 10.0
     assert authorization["maximum_provider_allocations"] == 1
     assert authorization["authorized_compute_cap_usd"] == 10.0
@@ -73,3 +74,9 @@ def test_powered_environment_and_compute_authority_preserve_campaign_caps() -> N
     assert authorization["campaign_total_ceiling_usd"] == 100.0
     assert authorization["physical_robot_endpoint_access_allowed"] is False
     assert authorization["evaluator_or_vlm_spend_authorized_by_this_record"] is False
+
+    amendment = _artifact("cost_admission_amendment_v3.json")
+    assert amendment["trigger"]["provider_mutations_performed"] == 0
+    assert amendment["change"]["target_spend_usd_after"] == 6.2
+    assert amendment["change"]["allocation_hard_cap_usd_unchanged"] == 10.0
+    assert amendment["change"]["scientific_fields_changed"] is False
