@@ -517,6 +517,88 @@ def test_runpod_wam_direct_url_files_block_on_launch_gates_without_leaking_urls(
     assert parsed["provider_bundle_url_redacted"].endswith("?REDACTED_QUERY")
 
 
+def test_runpod_direct_presigned_bundle_is_verified_with_get(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = tmp_path / "provider_bundle.zip"
+    bundle.write_bytes(b"bundle")
+    captured: dict[str, object] = {}
+
+    def fake_verify(**kwargs):
+        captured.update(kwargs)
+        return {"status": "passed", "blockers": []}
+
+    monkeypatch.setattr(runner, "verify_public_staging_urls", fake_verify)
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+
+    manifest = runner.create_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        provider_bundle_url="https://spaces.example/bundle.zip?signature=secret",
+        provider_output_put_url="https://spaces.example/output.zip?signature=secret",
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert captured["bundle_probe_method"] == "GET"
+    assert captured["required_consecutive_successes"] == 1
+
+
+def test_runpod_local_tunnel_bundle_keeps_head_verification(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = tmp_path / "provider_bundle.zip"
+    bundle.write_bytes(b"bundle")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        runner,
+        "prepare_vast_bundle_staging",
+        lambda **_kwargs: {"status": "ready", "blockers": []},
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_local_staging_self_test",
+        lambda **_kwargs: {"status": "passed", "blockers": []},
+    )
+
+    def fake_verify(**kwargs):
+        captured.update(kwargs)
+        return {"status": "passed", "blockers": []}
+
+    monkeypatch.setattr(runner, "verify_public_staging_urls", fake_verify)
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+
+    manifest = runner.create_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        public_base_url="https://tunnel.example",
+        token_file=tmp_path / "token",
+        secret_env_file=tmp_path / "staging.env",
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert captured["bundle_probe_method"] == "HEAD"
+    assert captured["required_consecutive_successes"] == 2
+
+
 def test_runpod_create_allows_unitree_groot_sonic_full_loop_bundle_without_override(
     tmp_path: Path,
     monkeypatch,
