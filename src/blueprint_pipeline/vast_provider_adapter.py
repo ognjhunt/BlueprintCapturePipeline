@@ -2022,7 +2022,60 @@ def _blueprint_bundle_preflight(
                     "action_streams.json",
                 )
             )
-            if missing_entries and not (provider_bundle_kind == "wam" and cosmos3_inputs_present):
+            cosmos3_reference_inputs_present = all(
+                f"provider_runtime/cosmos3_droid_reference/{name}" in zip_entries
+                for name in (
+                    "canary_manifest.json",
+                    "initial_observation.png",
+                    "action_streams.json",
+                )
+            )
+            powered_packet_name = "provider_runtime/cosmos3_powered_droid/packet.json"
+            cosmos3_powered_inputs_present = False
+            if powered_packet_name in zip_entries:
+                try:
+                    with zipfile.ZipFile(bundle_path) as powered_archive:
+                        powered_packet = json.loads(
+                            powered_archive.read(powered_packet_name).decode("utf-8")
+                        )
+                    powered_rows = powered_packet.get("rows")
+                    powered_images = (
+                        {
+                            "provider_runtime/cosmos3_powered_droid/"
+                            + str(row.get("initial_observation_relative_path") or "")
+                            for row in powered_rows
+                            if isinstance(row, Mapping)
+                        }
+                        if isinstance(powered_rows, list)
+                        else set()
+                    )
+                    cosmos3_powered_inputs_present = (
+                        powered_packet.get("schema_version")
+                        == "policy_ranking_powered_droid_provider_packet.v1"
+                        and len(powered_rows or []) == 51
+                        and powered_images.issubset(set(zip_entries))
+                        and all(
+                            name in zip_entries
+                            for name in (
+                                "provider_runtime/cosmos3_powered_droid/official_canary/"
+                                "canary_manifest.json",
+                                "provider_runtime/cosmos3_powered_droid/official_canary/"
+                                "initial_observation.png",
+                                "provider_runtime/cosmos3_powered_droid/official_canary/"
+                                "action_streams.json",
+                            )
+                        )
+                    )
+                except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
+                    cosmos3_powered_inputs_present = False
+            wam_registered_alternative_present = (
+                cosmos3_inputs_present
+                or cosmos3_reference_inputs_present
+                or cosmos3_powered_inputs_present
+            )
+            if missing_entries and not (
+                provider_bundle_kind == "wam" and wam_registered_alternative_present
+            ):
                 blockers.append("provider_runtime_bundle_required_entries_missing")
             if zip_testzip_result is not None:
                 blockers.append("provider_runtime_bundle_zip_integrity_failed")
@@ -2425,7 +2478,11 @@ def _resolve_launch_mode(
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     if requested == "auto":
-        if enable_blueprint_bundle and provider_bundle_kind in {"wam", "evaluator", "unitree_unifolm"}:
+        if enable_blueprint_bundle and provider_bundle_kind in {
+            "wam",
+            "evaluator",
+            "unitree_unifolm",
+        }:
             return "ssh_direct"
         return "args" if enable_isaac_smoke else "ssh_direct"
     return requested
@@ -3878,9 +3935,11 @@ def run_vast_provider_adapter(
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
-    resolved_image_login_mode = _string(ngc_image_login_mode) or _string(
-        os.getenv(VAST_IMAGE_LOGIN_MODE_ENV)
-    ) or DEFAULT_NGC_IMAGE_LOGIN_MODE
+    resolved_image_login_mode = (
+        _string(ngc_image_login_mode)
+        or _string(os.getenv(VAST_IMAGE_LOGIN_MODE_ENV))
+        or DEFAULT_NGC_IMAGE_LOGIN_MODE
+    )
     if resolved_image_login_mode not in NGC_IMAGE_LOGIN_MODES:
         raise ValueError(f"unsupported_ngc_image_login_mode:{resolved_image_login_mode}")
     resolved_job_dir = Path(job_dir).expanduser().resolve()
@@ -5078,9 +5137,7 @@ def run_vast_provider_adapter(
                     pre_provider_mutation_result = dict(pre_provider_mutation_hook())
                     base_result["pre_provider_mutation_hook_result"] = pre_provider_mutation_result
                     if pre_provider_mutation_result.get("status") != "consumed":
-                        hook_blockers = _string_list(
-                            pre_provider_mutation_result.get("blockers")
-                        )
+                        hook_blockers = _string_list(pre_provider_mutation_result.get("blockers"))
                         raise RuntimeError(
                             hook_blockers[0]
                             if hook_blockers
@@ -5283,15 +5340,13 @@ def run_vast_provider_adapter(
             if heartbeat_no_progress_seconds is None
             else heartbeat_no_progress_seconds
         )
-        resolved_heartbeat_no_progress_seconds = (
-            cold_pull_aware_heartbeat_no_progress_seconds(
-                configured_seconds=resolved_heartbeat_no_progress_seconds,
-                provider_bundle_kind=provider_bundle_kind,
-                allow_cold_image_pull=allow_cold_isaac_image_pull,
-                min_cold_image_pull_live_minutes=min_cold_isaac_pull_live_minutes,
-                startup_timeout_seconds=startup_timeout_seconds,
-                max_live_minutes=max_live_minutes,
-            )
+        resolved_heartbeat_no_progress_seconds = cold_pull_aware_heartbeat_no_progress_seconds(
+            configured_seconds=resolved_heartbeat_no_progress_seconds,
+            provider_bundle_kind=provider_bundle_kind,
+            allow_cold_image_pull=allow_cold_isaac_image_pull,
+            min_cold_image_pull_live_minutes=min_cold_isaac_pull_live_minutes,
+            startup_timeout_seconds=startup_timeout_seconds,
+            max_live_minutes=max_live_minutes,
         )
         onstart_logs = _request_logs_and_fetch(
             instance_id=instance_id,

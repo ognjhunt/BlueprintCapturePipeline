@@ -313,8 +313,7 @@ def test_vast_session_budget_ledger_path_defaults_beside_api_key_file(
     monkeypatch.setenv(VAST_API_KEY_FILE_ENV, str(key_file))
 
     assert (
-        vpa._vast_session_budget_ledger_path()
-        == key_file.parent / "vast_session_cost_summary.json"
+        vpa._vast_session_budget_ledger_path() == key_file.parent / "vast_session_cost_summary.json"
     )
     explicit = tmp_path / "explicit-session-cost.json"
     monkeypatch.setenv(vpa.VAST_SESSION_BUDGET_LEDGER_FILE_ENV, str(explicit))
@@ -379,7 +378,9 @@ def _write_valid_unitree_unifolm_provider_bundle(path: Path) -> None:
         "ready_for_fresh_model_execution": True,
         "runtime_execution_blockers": [],
     }
-    readiness_path = path.parent / "provider_runtime" / "unitree_unifolm_policy_provider_manifest.json"
+    readiness_path = (
+        path.parent / "provider_runtime" / "unitree_unifolm_policy_provider_manifest.json"
+    )
     readiness_path.parent.mkdir(parents=True, exist_ok=True)
     readiness_path.write_text(json.dumps(readiness), encoding="utf-8")
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -419,9 +420,7 @@ def _write_valid_unitree_groot_n17_sonic_provider_bundle(path: Path) -> None:
         "runtime_execution_blockers": [],
     }
     readiness_path = (
-        path.parent
-        / "provider_runtime"
-        / "unitree_groot_n17_sonic_policy_provider_manifest.json"
+        path.parent / "provider_runtime" / "unitree_groot_n17_sonic_policy_provider_manifest.json"
     )
     readiness_path.parent.mkdir(parents=True, exist_ok=True)
     readiness_path.write_text(json.dumps(readiness), encoding="utf-8")
@@ -554,10 +553,7 @@ def test_isaac_image_startup_preflight_blocks_short_template_path_without_cache_
     )
 
     assert manifest["status"] == "blocked"
-    assert (
-        "vast_template_image_cache_not_proven_for_short_live_window"
-        in manifest["blockers"]
-    )
+    assert "vast_template_image_cache_not_proven_for_short_live_window" in manifest["blockers"]
     assert manifest["template_image_cache_proven"] is False
     assert manifest["template_image_cache_evidence"] == "not_proven_by_vast_template_hash"
 
@@ -707,12 +703,12 @@ def test_inline_wam_provider_bundle_payload_is_redacted_in_request_summary(
         provider_bundle_inline_base64=str(inline["inline_provider_bundle_base64"]),
         provider_bundle_inline_sha256=str(inline["inline_provider_bundle_sha256"]),
     )
-    assert env[vpa.VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV] == inline[
-        "inline_provider_bundle_base64"
-    ]
-    assert env[vpa.VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV] == inline[
-        "inline_provider_bundle_sha256"
-    ]
+    assert (
+        env[vpa.VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV] == inline["inline_provider_bundle_base64"]
+    )
+    assert (
+        env[vpa.VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV] == inline["inline_provider_bundle_sha256"]
+    )
 
     payload = vpa._create_payload(
         image="image",
@@ -728,13 +724,15 @@ def test_inline_wam_provider_bundle_payload_is_redacted_in_request_summary(
     )
 
     assert summary["inline_provider_bundle_transport_present"] is True
-    assert summary["inline_provider_bundle_base64_length"] == inline[
-        "inline_provider_bundle_base64_length"
-    ]
+    assert (
+        summary["inline_provider_bundle_base64_length"]
+        == inline["inline_provider_bundle_base64_length"]
+    )
     assert summary["inline_provider_bundle_sha256_present"] is True
-    assert summary["raw_payload_redacted"]["env"][
-        vpa.VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV
-    ] == vpa.REDACTED_INLINE_PROVIDER_BUNDLE
+    assert (
+        summary["raw_payload_redacted"]["env"][vpa.VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV]
+        == vpa.REDACTED_INLINE_PROVIDER_BUNDLE
+    )
     assert str(inline["inline_provider_bundle_base64"]) not in json.dumps(summary)
 
 
@@ -884,9 +882,7 @@ def test_vast_adapter_blocks_stale_isaac_bundle_prefixed_paths_without_resolver(
             json.dumps(
                 {
                     "relative_paths": {
-                        "generated_site_scene_usda": (
-                            "provider_runtime/generated_site_scene.usda"
-                        ),
+                        "generated_site_scene_usda": ("provider_runtime/generated_site_scene.usda"),
                         "camera_manifest": "provider_runtime/camera_manifest.json",
                     }
                 }
@@ -913,13 +909,11 @@ def test_vast_adapter_blocks_stale_isaac_bundle_prefixed_paths_without_resolver(
     )
 
     assert manifest["status"] == "blocked"
+    assert "provider_runtime_bundle_stale_prefixed_paths_without_resolver" in manifest["blockers"]
     assert (
-        "provider_runtime_bundle_stale_prefixed_paths_without_resolver"
-        in manifest["blockers"]
+        manifest["provider_eval_manifest_relative_paths"]["generated_site_scene_usda"]
+        == "provider_runtime/generated_site_scene.usda"
     )
-    assert manifest["provider_eval_manifest_relative_paths"][
-        "generated_site_scene_usda"
-    ] == "provider_runtime/generated_site_scene.usda"
 
 
 def test_bundle_preflight_uses_public_dns_fallback_when_normal_head_dns_fails(
@@ -963,14 +957,9 @@ def test_bundle_preflight_uses_public_dns_fallback_when_normal_head_dns_fails(
     assert manifest["status"] == "passed"
     assert manifest["blockers"] == []
     assert manifest["bundle_url_probe"]["status"] == "passed"
-    assert (
-        manifest["bundle_url_probe"]["method"]
-        == "HEAD_WITH_PUBLIC_DNS_FALLBACK"
-    )
+    assert manifest["bundle_url_probe"]["method"] == "HEAD_WITH_PUBLIC_DNS_FALLBACK"
     assert manifest["bundle_url_probe"]["normal_head_error_type"] == "URLError"
-    persisted = (tmp_path / "vast_blueprint_bundle_preflight.json").read_text(
-        encoding="utf-8"
-    )
+    persisted = (tmp_path / "vast_blueprint_bundle_preflight.json").read_text(encoding="utf-8")
     assert "secret-token" not in persisted
 
 
@@ -1116,9 +1105,7 @@ def test_request_logs_retries_transient_missing_container_marker(
     assert result["log_poll_attempts"][0]["container_missing_marker_observed"] is True
     assert result["log_poll_attempts"][1]["container_missing_observed_count"] == 2
     assert result["log_poll_attempts"][2]["success_marker_found"] is True
-    assert "BLUEPRINT_VAST_ONSTART_DONE" in (tmp_path / "onstart.log").read_text(
-        encoding="utf-8"
-    )
+    assert "BLUEPRINT_VAST_ONSTART_DONE" in (tmp_path / "onstart.log").read_text(encoding="utf-8")
 
 
 def test_request_logs_records_api_url_error_without_raising(
@@ -1247,9 +1234,7 @@ def test_request_logs_dud_container_flicker_is_not_progress(
         "_api_json",
         lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
     )
-    flicker = iter(
-        ["", "Error response from daemon: No such container: C.123"] * 50
-    )
+    flicker = iter(["", "Error response from daemon: No such container: C.123"] * 50)
     monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: next(flicker))
 
     result = vpa._request_logs_and_fetch(
@@ -2209,7 +2194,10 @@ def test_vast_adapter_mocked_isaac_uses_args_mode_required_env_and_disk(
     assert "ACCEPT_EULA" in summary["env_keys"]
     assert summary["isaac_required_env_present"]["ACCEPT_EULA"] is True
     assert summary["image_login_supplied"] is False
-    assert startup["image_login_summary"]["reason"] == "public_official_isaac_image_without_registry_login"
+    assert (
+        startup["image_login_summary"]["reason"]
+        == "public_official_isaac_image_without_registry_login"
+    )
     assert startup["image_login_summary"]["ngc_secret_file_present"] is False
     assert startup["container_image"] == DEFAULT_ISAAC_IMAGE
     isaac = _read_json(tmp_path / "vast_isaac_smoke_result.json")
@@ -2780,9 +2768,7 @@ def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
             assert "BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED" in payload["args_str"]
             env = payload["env"]
             assert env["BLUEPRINT_EVAL_MANIFEST_URI"].endswith(tunnel_token)
-            assert env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"].endswith(
-                tunnel_token
-            )
+            assert env["BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"].endswith(tunnel_token)
             return 200, {"success": True, "new_contract": 888}
         if method == "GET" and path == "/instances/888/":
             return 200, {"instances": {"actual_status": "exited", "cur_state": "exited"}}
@@ -2806,7 +2792,7 @@ def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
             "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:2\n"
             "BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:512\n"
             "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK\n"
-            "{\"ok\": true, \"bytes\": 512}\n"
+            '{"ok": true, "bytes": 512}\n'
             "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED\n"
             "BLUEPRINT_VAST_ONSTART_DONE\n"
         )
@@ -2843,9 +2829,10 @@ def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
     assert provider["blueprint_provider_bundle_execution_proven"] is True
     assert provider["video_smoke_proven"] is False
     assert provider["runtime_result_status"] == "blocked_controller_runtime_unavailable"
-    assert "real_unitree_g1_controller_policy_stack_not_packaged" in provider[
-        "runtime_result_blockers"
-    ]
+    assert (
+        "real_unitree_g1_controller_policy_stack_not_packaged"
+        in provider["runtime_result_blockers"]
+    )
     video = _read_json(tmp_path / "vast_video_smoke_result.json")
     assert video["status"] == "blocked"
     assert video["video_smoke_proven"] is False
@@ -3333,9 +3320,7 @@ def test_vast_adapter_accepts_downstream_markers_when_heartbeat_url_fails(
     assert startup["status"] == "completed"
     assert startup["heartbeat_completed"] is False
     assert startup["startup_probe_proof_source"] == "downstream_provider_marker"
-    assert startup["warnings"] == [
-        "vast_heartbeat_url_failed_but_downstream_provider_marker_seen"
-    ]
+    assert startup["warnings"] == ["vast_heartbeat_url_failed_but_downstream_provider_marker_seen"]
 
 
 def test_vast_adapter_records_machine_avoidlist_on_probe_interrupt(
@@ -3453,19 +3438,12 @@ def test_vast_adapter_private_helper_edges(
     }
 
     assert vpa._offers_from_response({"offers": {"id": 11}}) == [{"id": 11}]
-    assert vpa._offers_from_response({"offers": {"a": {"id": 12}, "bad": []}}) == [
-        {"id": 12}
-    ]
+    assert vpa._offers_from_response({"offers": {"a": {"id": 12}, "bad": []}}) == [{"id": 12}]
     assert vpa._offers_from_response({"response": [{"id": 13}, "bad"]}) == [{"id": 13}]
     assert vpa._offers_from_response({}) == []
     assert vpa._offer_id({"ask_contract_id": 0, "id": "42"}) == 42
     assert vpa._offer_id({"id": "bad"}) is None
-    assert (
-        vpa._offer_hourly_rate(
-            {"pricing": {"machine": {"discountTotalHour": "0.33"}}}
-        )
-        == 0.33
-    )
+    assert vpa._offer_hourly_rate({"pricing": {"machine": {"discountTotalHour": "0.33"}}}) == 0.33
     assert vpa._offer_hourly_rate({}) is None
 
     avoidlist = tmp_path / "avoidlist.json"
@@ -3511,16 +3489,22 @@ def test_vast_adapter_private_helper_edges(
         )
         == "ssh_direct"
     )
-    assert vpa._resolve_launch_mode(requested="jupyter_direct", enable_isaac_smoke=True) == "jupyter_direct"
+    assert (
+        vpa._resolve_launch_mode(requested="jupyter_direct", enable_isaac_smoke=True)
+        == "jupyter_direct"
+    )
     assert vpa._resolve_disk_gb(requested=42, enable_isaac_smoke=True) == 42
 
     with pytest.raises(ValueError, match="unsupported_ngc_image_login_mode"):
         vpa._resolve_image_login(image="nvcr.io/private/image:1", ngc_key="", mode="bad")
-    assert vpa._resolve_image_login(
-        image="ubuntu:22.04",
-        ngc_key="secret-ngc",
-        mode="always",
-    )[1]["reason"] == "non_ngc_image"
+    assert (
+        vpa._resolve_image_login(
+            image="ubuntu:22.04",
+            ngc_key="secret-ngc",
+            mode="always",
+        )[1]["reason"]
+        == "non_ngc_image"
+    )
     login, summary = vpa._resolve_image_login(
         image="docker.io/nijelhunt/blueprint-unitree-unifolm:20260622-cu124-sdpa3",
         ngc_key="",
@@ -3561,16 +3545,22 @@ def test_vast_adapter_private_helper_edges(
         )[1]["reason"]
         == "non_ngc_image"
     )
-    assert vpa._resolve_image_login(
-        image="nvcr.io/private/image:1",
-        ngc_key="",
-        mode="always",
-    )[1]["reason"] == "ngc_key_missing"
-    assert vpa._resolve_image_login(
-        image="nvcr.io/private/image:1",
-        ngc_key="secret-ngc",
-        mode="never",
-    )[1]["reason"] == "ngc_image_login_disabled"
+    assert (
+        vpa._resolve_image_login(
+            image="nvcr.io/private/image:1",
+            ngc_key="",
+            mode="always",
+        )[1]["reason"]
+        == "ngc_key_missing"
+    )
+    assert (
+        vpa._resolve_image_login(
+            image="nvcr.io/private/image:1",
+            ngc_key="secret-ngc",
+            mode="never",
+        )[1]["reason"]
+        == "ngc_image_login_disabled"
+    )
     login, summary = vpa._resolve_image_login(
         image="nvcr.io/private/image:1",
         ngc_key="secret-ngc",
@@ -3613,9 +3603,7 @@ def test_vast_adapter_private_helper_edges(
     assert vpa._instance_id_from_create_response({}) is None
     assert vpa._instance_status({"status": "queued"}) == "queued"
     assert vpa._instance_status({"instances": {"cur_state": "loading"}}) == "loading"
-    assert vpa._instance_list_rows({"instances": {"a": {"id": 1}, "bad": []}}) == [
-        {"id": 1}
-    ]
+    assert vpa._instance_list_rows({"instances": {"a": {"id": 1}, "bad": []}}) == [{"id": 1}]
     assert vpa._instance_list_rows({"instances": {"id": 2, "status": "running"}}) == [
         {"id": 2, "status": "running"}
     ]
@@ -3664,9 +3652,7 @@ def test_vast_adapter_private_helper_edges(
 
     assert vpa._attempt_runtime_seconds({"runtime_seconds_observed_by_adapter": -5}) == 0.0
     assert (
-        vpa._attempt_runtime_seconds(
-            {"estimated_cost_usd": 0.5, "selected_hourly_rate_usd": 1.0}
-        )
+        vpa._attempt_runtime_seconds({"estimated_cost_usd": 0.5, "selected_hourly_rate_usd": 1.0})
         == 1800.0
     )
     assert vpa._attempt_runtime_seconds({}) == 0.0
@@ -3813,7 +3799,9 @@ def test_vast_adapter_public_dns_socket_and_url_probe_edges(
     monkeypatch.setattr(vpa.time, "time", lambda: next(time_values))
     monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(vpa, "_resolve_public_dns_a_records", lambda *_, **__: [])
-    no_dns = vpa._head_with_public_dns_fallback("https://example.com/runtime.zip", timeout_seconds=0)
+    no_dns = vpa._head_with_public_dns_fallback(
+        "https://example.com/runtime.zip", timeout_seconds=0
+    )
     assert no_dns["blockers"] == ["provider_bundle_fetch_url_public_dns_fallback_failed"]
 
     monkeypatch.setattr(vpa, "_resolve_public_dns_a_records", lambda *_, **__: ["8.8.8.8"])
@@ -3843,7 +3831,9 @@ def test_vast_adapter_public_dns_socket_and_url_probe_edges(
 
     http_sock = HeaderSocket([b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n"])
     monkeypatch.setattr(vpa.socket, "create_connection", lambda *_, **__: http_sock)
-    http_head = vpa._head_with_public_dns_fallback("http://example.com/runtime.zip", timeout_seconds=1)
+    http_head = vpa._head_with_public_dns_fallback(
+        "http://example.com/runtime.zip", timeout_seconds=1
+    )
     assert http_head["http_status_code"] == 201
     assert http_sock.closed is True
 
@@ -3855,7 +3845,9 @@ def test_vast_adapter_public_dns_socket_and_url_probe_edges(
 
     monkeypatch.setattr(vpa.socket, "create_connection", lambda *_, **__: raw_error_sock)
     monkeypatch.setattr(vpa.ssl, "create_default_context", lambda: FailingContext())
-    failed = vpa._head_with_public_dns_fallback("https://example.com/runtime.zip", timeout_seconds=1)
+    failed = vpa._head_with_public_dns_fallback(
+        "https://example.com/runtime.zip", timeout_seconds=1
+    )
     assert failed["status"] == "blocked"
     assert failed["connection_errors"][0]["error_type"] == "OSError"
     assert raw_error_sock.closed is True
@@ -4021,6 +4013,55 @@ def test_vast_adapter_blueprint_preflight_branch_matrix(
     )
     assert "provider_runtime_bundle_required_entries_missing" in incomplete["blockers"]
 
+    powered_zip = tmp_path / "powered-wam.zip"
+    powered_rows = [
+        {"initial_observation_relative_path": f"images/session-{index:02d}/window.png"}
+        for index in range(51)
+    ]
+    with zipfile.ZipFile(powered_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "provider_runtime/run_wam_provider_runtime.sh",
+            "write_missing_result\nwam_runner_process_exited_without_runtime_result\n"
+            "blocked_wam_process_exited_without_result\n",
+        )
+        archive.writestr(
+            "provider_runtime/wam_provider_runtime_runner.py",
+            "wam_runtime_result.json\nCosmos3-Nano\naction_conditioned_video_rollout_generated\n",
+        )
+        archive.writestr("provider_runtime/wam_provider_runtime_manifest.json", "{}")
+        archive.writestr("provider_runtime/wam_rollout_input_manifest.json", "{}")
+        archive.writestr(
+            "provider_runtime/cosmos3_powered_droid/packet.json",
+            json.dumps(
+                {
+                    "schema_version": "policy_ranking_powered_droid_provider_packet.v1",
+                    "rows": powered_rows,
+                }
+            ),
+        )
+        for row in powered_rows:
+            archive.writestr(
+                "provider_runtime/cosmos3_powered_droid/"
+                + row["initial_observation_relative_path"],
+                b"png",
+            )
+        for name in ("canary_manifest.json", "initial_observation.png", "action_streams.json"):
+            archive.writestr(
+                "provider_runtime/cosmos3_powered_droid/official_canary/" + name,
+                b"{}" if name.endswith(".json") else b"png",
+            )
+    powered = vpa._blueprint_bundle_preflight(
+        job_dir=tmp_path / "powered",
+        generated_at="2026-07-29T00:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="wam",
+        bundle_path=powered_zip,
+        provider_bundle_url="https://example.invalid/powered.zip",
+        provider_output_put_url="https://example.invalid/out.zip",
+    )
+    assert "provider_runtime_bundle_required_entries_missing" not in powered["blockers"]
+
     integrity_zip = tmp_path / "integrity.zip"
     integrity_zip.write_text("placeholder", encoding="utf-8")
 
@@ -4178,7 +4219,9 @@ def test_vast_adapter_blueprint_preflight_branch_matrix(
             ),
         ]
     )
-    head_size_mismatch = run_preflight_with_urlopen(lambda *_a, **_k: next(responses), allow_put=False)
+    head_size_mismatch = run_preflight_with_urlopen(
+        lambda *_a, **_k: next(responses), allow_put=False
+    )
     assert "provider_bundle_fetch_url_size_mismatch" in head_size_mismatch["blockers"]
     assert head_size_mismatch["output_put_probe"]["status"] == "skipped"
 
@@ -4301,19 +4344,22 @@ def test_vast_adapter_small_provider_helper_edges(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert vpa._isaac_image_startup_preflight(
-        job_dir=tmp_path / "image-not-required",
-        generated_at="2026-06-20T00:00:00Z",
-        enable_isaac_smoke=False,
-        enable_blueprint_bundle=True,
-        provider_bundle_kind="wam",
-        selected_container_image=DEFAULT_ISAAC_IMAGE,
-        vast_template_hash_id=None,
-        use_vast_template_image=False,
-        max_live_minutes=5,
-        allow_cold_isaac_image_pull=True,
-        min_cold_isaac_pull_live_minutes=10,
-    )["status"] == "not_required"
+    assert (
+        vpa._isaac_image_startup_preflight(
+            job_dir=tmp_path / "image-not-required",
+            generated_at="2026-06-20T00:00:00Z",
+            enable_isaac_smoke=False,
+            enable_blueprint_bundle=True,
+            provider_bundle_kind="wam",
+            selected_container_image=DEFAULT_ISAAC_IMAGE,
+            vast_template_hash_id=None,
+            use_vast_template_image=False,
+            max_live_minutes=5,
+            allow_cold_isaac_image_pull=True,
+            min_cold_isaac_pull_live_minutes=10,
+        )["status"]
+        == "not_required"
+    )
     with pytest.raises(ValueError, match="unsupported_provider_bundle_kind"):
         vpa._isaac_image_startup_preflight(
             job_dir=tmp_path / "bad-image-kind",
@@ -4365,13 +4411,16 @@ def test_vast_adapter_small_provider_helper_edges(
             enable_blueprint_bundle=False,
             provider_bundle_kind="bad",
         )
-    assert vpa._resolve_probe_image(
-        public_image="public",
-        isaac_image="isaac",
-        enable_isaac_smoke=False,
-        enable_blueprint_bundle=True,
-        provider_bundle_kind="wam",
-    ) == "public"
+    assert (
+        vpa._resolve_probe_image(
+            public_image="public",
+            isaac_image="isaac",
+            enable_isaac_smoke=False,
+            enable_blueprint_bundle=True,
+            provider_bundle_kind="wam",
+        )
+        == "public"
+    )
     for env_name in (
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER",
         "BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE",
@@ -4451,14 +4500,11 @@ def test_vast_adapter_small_provider_helper_edges(
         "900",
     )
     unitree_env = vpa._probe_env(job_dir=tmp_path / "unitree", enable_isaac_smoke=False)
-    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"].startswith(
-        "python3 -m"
-    )
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_COMMAND"].startswith("python3 -m")
     assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_CHECKPOINT"] == "LucaFrat/groot-bs16"
     assert unitree_env["BLUEPRINT_UNITREE_G1_SONIC_CHECKPOINT"] == "nvidia/GEAR-SONIC"
     assert (
-        unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL"]
-        == "tcp://127.0.0.1:5550"
+        unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_POLICY_SERVER_URL"] == "tcp://127.0.0.1:5550"
     )
     assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_AUTO_START_POLICY_SERVER"] == "true"
     assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_BOOTSTRAP_MODE"] == (
@@ -4476,10 +4522,7 @@ def test_vast_adapter_small_provider_helper_edges(
     )
     assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_REPO_REF"] == "main"
     assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_UV_SYNC_TIMEOUT_SECONDS"] == "1800"
-    assert (
-        unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS"]
-        == "900"
-    )
+    assert unitree_env["BLUEPRINT_UNITREE_GROOT_N17_SONIC_SERVER_STARTUP_TIMEOUT_SECONDS"] == "900"
     payload = vpa._create_payload(
         image="image",
         label="label",
@@ -4496,15 +4539,18 @@ def test_vast_adapter_small_provider_helper_edges(
     }
     assert summary["raw_payload_redacted"]["env"]["TOKEN"] == vpa.REDACTED_SECRET_FIELD
     assert vpa._instance_id_from_create_response({"new_contract": "123"}) == 123
-    assert vpa._sanitized_instance_row(
-        {
-            "instance_id": 77,
-            "machine_id": 88,
-            "gpu_display_name": "RTX 4090",
-            "actual_status": "running",
-            "price_per_hour": 0.2,
-        }
-    )["machine_id"] == 88
+    assert (
+        vpa._sanitized_instance_row(
+            {
+                "instance_id": 77,
+                "machine_id": 88,
+                "gpu_display_name": "RTX 4090",
+                "actual_status": "running",
+                "price_per_hour": 0.2,
+            }
+        )["machine_id"]
+        == 88
+    )
     script = vpa._probe_shell_script(
         "https://heartbeat.example",
         enable_isaac_smoke=True,
@@ -4639,9 +4685,10 @@ def test_vast_adapter_small_provider_helper_edges(
         video_extract_dir=tmp_path / "blocked-extract",
         expected_video_count=1,
     )
-    assert "ffprobe_validation_failed_for_one_or_more_mp4s" in blocked_inspection[
-        "mp4_validation"
-    ]["blockers"]
+    assert (
+        "ffprobe_validation_failed_for_one_or_more_mp4s"
+        in blocked_inspection["mp4_validation"]["blockers"]
+    )
     no_extract_inspection = vpa._inspect_provider_runtime_output_zip(blocked_video_zip)
     assert no_extract_inspection["mp4_validation"]["blockers"] == [
         "mp4_ffprobe_validation_not_requested"
@@ -4915,12 +4962,15 @@ def test_vast_adapter_io_zip_poll_and_validation_edges(
 
     poll_calls = iter([(200, {"status": "queued"}), (200, {"status": "running"})])
     monkeypatch.setattr(vpa, "_api_json", lambda **_: next(poll_calls))
-    assert vpa._poll_instance(
-        instance_id=2,
-        api_key="k",
-        timeout_seconds=10,
-        poll_interval_seconds=0,
-    )[0] == "running"
+    assert (
+        vpa._poll_instance(
+            instance_id=2,
+            api_key="k",
+            timeout_seconds=10,
+            poll_interval_seconds=0,
+        )[0]
+        == "running"
+    )
 
     monkeypatch.setattr(
         vpa,
@@ -4929,8 +4979,7 @@ def test_vast_adapter_io_zip_poll_and_validation_edges(
             200,
             {
                 "result_url": (
-                    "https://logs.invalid/result?"
-                    "X-Amz-Signature=abc123&X-Amz-Credential=credential"
+                    "https://logs.invalid/result?X-Amz-Signature=abc123&X-Amz-Credential=credential"
                 )
             },
         ),
@@ -5324,10 +5373,7 @@ def test_vast_adapter_blocks_isaac_image_preflight_before_offer_search(
     assert result["reason"] == "vast_isaac_image_startup_preflight_blocked"
     assert result["api_call_performed"] is False
     assert "vast_template_hash_required_when_using_template_image" in result["blockers"]
-    assert (
-        "vast_template_image_cache_not_proven_for_short_live_window"
-        in result["blockers"]
-    )
+    assert "vast_template_image_cache_not_proven_for_short_live_window" in result["blockers"]
     teardown = _read_json(tmp_path / "image-preflight-blocked" / "vast_teardown_manifest.json")
     assert teardown["status"] == "not_required_isaac_image_startup_preflight_blocked"
 
@@ -5415,9 +5461,9 @@ def test_vast_adapter_signal_handler_ignore_raise_and_registration_edges(
     monkeypatch.setattr(
         vpa,
         "_api_json",
-        lambda **kwargs: (200, {"instances": []})
-        if kwargs["method"] == "GET"
-        else (200, {"offers": []}),
+        lambda **kwargs: (
+            (200, {"instances": []}) if kwargs["method"] == "GET" else (200, {"offers": []})
+        ),
     )
     registration_failed = run_vast_provider_adapter(
         job_dir=tmp_path / "signal-registration-failed",
@@ -5914,46 +5960,49 @@ def test_vast_adapter_main_prints_success_and_blocked_statuses(
         return {"status": "completed", "vast_instance_ids": [1, 2]}
 
     monkeypatch.setattr(vpa, "run_vast_provider_adapter", fake_success)
-    assert vpa.main(
-        [
-            "--job-dir",
-            str(tmp_path / "cli-success"),
-            "--mode",
-            "live-startup-probe",
-            "--allow-vast-api-call",
-            "--allow-vast-instance-launch",
-            "--provider-bundle",
-            str(tmp_path / "bundle.zip"),
-            "--provider-bundle-url",
-            "https://example.invalid/bundle.zip?token=abc",
-            "--provider-output-put-url",
-            "https://example.invalid/out.zip?token=abc",
-            "--provider-runtime-output-zip",
-            str(tmp_path / "out.zip"),
-            "--enable-isaac-smoke",
-            "--enable-blueprint-bundle",
-            "--vast-launch-mode",
-            "args",
-            "--ngc-image-login-mode",
-            "never",
-            "--disk-gb",
-            "64",
-            "--poll-interval-seconds",
-            "0",
-            "--startup-timeout-seconds",
-            "1",
-            "--heartbeat-no-progress-seconds",
-            "2",
-            "--machine-avoidlist",
-            str(tmp_path / "avoid.json"),
-            "--session-budget-ledger",
-            str(tmp_path / "session-cost.json"),
-            "--session-max-live-minutes",
-            "12",
-            "--verify-staging-urls",
-            "--allow-staging-output-put-probe",
-        ]
-    ) == 2
+    assert (
+        vpa.main(
+            [
+                "--job-dir",
+                str(tmp_path / "cli-success"),
+                "--mode",
+                "live-startup-probe",
+                "--allow-vast-api-call",
+                "--allow-vast-instance-launch",
+                "--provider-bundle",
+                str(tmp_path / "bundle.zip"),
+                "--provider-bundle-url",
+                "https://example.invalid/bundle.zip?token=abc",
+                "--provider-output-put-url",
+                "https://example.invalid/out.zip?token=abc",
+                "--provider-runtime-output-zip",
+                str(tmp_path / "out.zip"),
+                "--enable-isaac-smoke",
+                "--enable-blueprint-bundle",
+                "--vast-launch-mode",
+                "args",
+                "--ngc-image-login-mode",
+                "never",
+                "--disk-gb",
+                "64",
+                "--poll-interval-seconds",
+                "0",
+                "--startup-timeout-seconds",
+                "1",
+                "--heartbeat-no-progress-seconds",
+                "2",
+                "--machine-avoidlist",
+                str(tmp_path / "avoid.json"),
+                "--session-budget-ledger",
+                str(tmp_path / "session-cost.json"),
+                "--session-max-live-minutes",
+                "12",
+                "--verify-staging-urls",
+                "--allow-staging-output-put-probe",
+            ]
+        )
+        == 2
+    )
     captured = capsys.readouterr()
     assert "legacy_vast_provider_mutation_cli_disabled" in captured.err
     assert calls == []
@@ -5972,9 +6021,7 @@ def test_vast_adapter_remaining_small_helper_branches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert vpa._redact_runtime_value(["token=abc"], ["abc"]) == [
-        f"token={vpa.REDACTED_SECRET}"
-    ]
+    assert vpa._redact_runtime_value(["token=abc"], ["abc"]) == [f"token={vpa.REDACTED_SECRET}"]
     assert vpa._provider_url_public_blocker("https://8.8.8.8/bundle.zip", "bundle") is None
 
     class HeaderSocket:
@@ -6042,8 +6089,7 @@ def test_vast_adapter_remaining_small_helper_branches(
     )
     assert "vast_template_hash_required_when_using_template_image" in missing_template["blockers"]
     assert (
-        "vast_template_image_cache_not_proven_for_short_live_window"
-        in missing_template["blockers"]
+        "vast_template_image_cache_not_proven_for_short_live_window" in missing_template["blockers"]
     )
     short_pull = vpa._isaac_image_startup_preflight(
         job_dir=tmp_path / "short-pull",
@@ -6257,13 +6303,18 @@ def test_vast_adapter_bundle_ffprobe_instance_and_validation_edges(
     mp4_zip = tmp_path / "mp4s.zip"
     with zipfile.ZipFile(mp4_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("camera.mp4", b"fake")
-    monkeypatch.setattr(vpa, "_ffprobe_video", lambda path: {"status": "blocked", "blockers": ["bad"]})
+    monkeypatch.setattr(
+        vpa, "_ffprobe_video", lambda path: {"status": "blocked", "blockers": ["bad"]}
+    )
     invalid_mp4 = vpa._inspect_provider_runtime_output_zip(
         mp4_zip,
         video_extract_dir=tmp_path / "extract",
         expected_video_count=2,
     )
-    assert "ffprobe_validation_failed_for_one_or_more_mp4s" in invalid_mp4["mp4_validation"]["blockers"]
+    assert (
+        "ffprobe_validation_failed_for_one_or_more_mp4s"
+        in invalid_mp4["mp4_validation"]["blockers"]
+    )
     no_extract = vpa._inspect_provider_runtime_output_zip(mp4_zip)
     assert no_extract["mp4_validation"]["blockers"] == ["mp4_ffprobe_validation_not_requested"]
 
@@ -6371,10 +6422,7 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     original_write_json = vpa.write_json
 
     def reject_write_between_consumption_and_create(*args, **kwargs):  # type: ignore[no-untyped-def]
-        if (
-            "authorization_consumed" in mutation_order
-            and "provider_create" not in mutation_order
-        ):
+        if "authorization_consumed" in mutation_order and "provider_create" not in mutation_order:
             raise AssertionError("fallible evidence write occurred after authorization consumption")
         return original_write_json(*args, **kwargs)
 
@@ -6417,7 +6465,10 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
     assert mutation_order.index("offer_search") < mutation_order.index("authorization_consumed")
     assert mutation_order.index("authorization_consumed") < mutation_order.index("provider_create")
     assert wam["pre_provider_mutation_hook_result"]["status"] == "consumed"
-    assert _read_json(tmp_path / "wam-live" / "vast_isaac_smoke_result.json")["status"] == "not_required"
+    assert (
+        _read_json(tmp_path / "wam-live" / "vast_isaac_smoke_result.json")["status"]
+        == "not_required"
+    )
 
     monkeypatch.setenv("NGC_API_KEY_FILE", str(tmp_path / "missing-ngc-key"))
     ngc_missing = run_vast_provider_adapter(
