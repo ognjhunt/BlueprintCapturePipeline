@@ -137,3 +137,19 @@ the pinned public Cosmos3-Nano revision was verified to be anonymously
 downloadable. It changes no prompt, action, control, seed, threshold, request
 order, or decision gate. This is an infrastructure repair only and earns no
 scientific credit by itself.
+
+## Positive-control bisection and terminal closeout
+
+The replacement completed on source commit `8364c2f2`. The official
+AgiBotWorld positive control passed: 3/4 chunks cleared the frozen motion gate.
+The same loaded Cosmos3-Nano runtime then completed all 12 frozen DROID requests,
+but the DROID causal screen failed at 1/10 scene-response comparisons, 2/10
+temporal-placebo rejections, and 0/5 both-seed robustness conditions. The tier-1
+gate classified the session as unreliable and Blueprint correctly abstained.
+
+`phase_b_positive_control_bisection_result_v2.json`, `terminal_verdict_v2.json`,
+and `terminal_report_v2.md` supersede the interim closeout for reporting without
+rewriting it. Overall verdict remains `inconclusive`: the deployment works, the
+frozen DROID conditioning path does not qualify, and the one-session diagnostic
+is underpowered. No full closed loop, new policy ranking, captured-site transfer,
+or useful physical economics comparison was admitted.

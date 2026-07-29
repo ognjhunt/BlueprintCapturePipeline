@@ -147,8 +147,10 @@ def test_committed_disjoint_preflight_artifact_digests_are_canonical() -> None:
         "phase_b_high_motion_native_cosmos_gallery_manifest_v1.json",
         "phase_b_positive_control_bisection_amendment_v1.json",
         "phase_b_positive_control_download_transport_amendment_v2.json",
+        "phase_b_positive_control_bisection_result_v2.json",
         "phase_b_terminal_admission_v1.json",
         "terminal_verdict_v1.json",
+        "terminal_verdict_v2.json",
     ):
         payload = json.loads((EXPERIMENT_DOCS / filename).read_text(encoding="utf-8"))
         recorded = payload.pop("manifest_sha256")
@@ -237,5 +239,26 @@ def test_terminal_verdict_keeps_all_components_separate() -> None:
     assert verdict["phase_b"]["policy_requery_executed"] is False
     assert verdict["phase_b"]["selected_sessions_remaining_label_sealed"] == 16
     assert verdict["abstention"]["native_cosmos_product_abstention_correct_for_frozen_gates"] is True
+    assert verdict["cost_and_time"]["completed_useful_digital_ranking"] is False
+    assert verdict["provider_zero"]["all_live_instance_count"] == 0
+
+
+def test_terminal_verdict_v2_preserves_positive_control_and_droid_failure() -> None:
+    verdict = json.loads(
+        (EXPERIMENT_DOCS / "terminal_verdict_v2.json").read_text(encoding="utf-8")
+    )
+    assert verdict["overall_verdict"] == "inconclusive"
+    assert set(verdict["components"]) == {
+        "cosmos_wam_qualification",
+        "frozen_benchmark_calibration",
+        "captured_site_transfer",
+        "economics_and_speed",
+    }
+    assert verdict["components"]["cosmos_wam_qualification"]["qualified"] is False
+    assert verdict["phase_b"]["policy_requery_executed"] is False
+    assert verdict["phase_b"]["ranking_executed"] is False
+    assert verdict["abstention"][
+        "native_cosmos_product_abstention_correct_for_frozen_gates"
+    ] is True
     assert verdict["cost_and_time"]["completed_useful_digital_ranking"] is False
     assert verdict["provider_zero"]["all_live_instance_count"] == 0

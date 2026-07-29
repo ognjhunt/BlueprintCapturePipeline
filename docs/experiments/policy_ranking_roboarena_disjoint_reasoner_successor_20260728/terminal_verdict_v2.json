@@ -1,0 +1,113 @@
+{
+  "schema_version": "policy_ranking_roboarena_disjoint_successor_terminal_verdict.v2",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "overall_verdict": "inconclusive",
+  "decision_basis": "The official Cosmos3-Nano positive control passed, proving the pinned deployment could produce dynamic forward predictions, but the frozen DROID action-conditioning pathway failed the causal and rollout-reliability gates in one underpowered session. Blueprint correctly abstained. No valid whole-stack closed-loop ranking, independently anchored captured-site transfer, or useful end-to-end physical economics comparison was completed.",
+  "components": {
+    "cosmos_wam_qualification": {
+      "verdict": "inconclusive",
+      "qualified": false,
+      "basis": "The NVIDIA AgiBotWorld positive control passed 3/4 frozen motion gates. On the frozen DROID matrix, native Cosmos passed 1/10 active scene-response comparisons, 2/10 temporal-placebo comparisons, and 0/5 both-seed robustness conditions. The tier-1 gate found five static-under-command failures and session-median timing correlation 0.022880 versus 0.15 required. One independent session is below the prospective 17-session target."
+    },
+    "frozen_benchmark_calibration": {
+      "verdict": "not_supported_for_frozen_gpt5_mini_phase_a_stack",
+      "registered_gates_passed": false,
+      "basis": "Across 63 sessions, seven policies, and 441 episodes, GPT-5 mini achieved Spearman 0.357143, Kendall tau-b 0.238095, policy pairwise accuracy 0.619048 with clustered interval [0.428571, 0.857143], selective coverage 0.050182, and selective pairwise accuracy 0.600000. Gemini 3.6 Flash achieved 0.75, 0.619048, and 0.809524 respectively, but only after label unseal and with zero abstentions."
+    },
+    "captured_site_transfer": {
+      "verdict": "inconclusive",
+      "measured": false,
+      "basis": "Phase C was not admitted. No Blueprint 3DGS/site adapter was run through this frozen stack and no independently attributable physical outcomes existed for the same site, task, embodiment, and policies."
+    },
+    "economics_and_speed": {
+      "verdict": "inconclusive",
+      "qualified_comparison_completed": false,
+      "basis": "Attributable digital costs were measured, but no WAM arm completed a useful ranking and no defensible physical monetary or robot-hour baseline was available. No speed ratio, cost ratio, or break-even policy count is claimed."
+    }
+  },
+  "phase_a": {
+    "design": "non_independent_known_answer_reproduction",
+    "episodes": 441,
+    "sessions": 63,
+    "policies": 7,
+    "gpt5_mini_registered_gate_set_passed": false,
+    "claim_ceiling": "known-answer instrument reproduction only"
+  },
+  "phase_b": {
+    "design_achieved": "fallback_level_3_single_session_frozen_real_action_trace_replay",
+    "full_episode_executed": false,
+    "policy_requery_executed": false,
+    "ranking_executed": false,
+    "independent_confirmation_credit": false,
+    "selected_sessions_remaining_label_sealed": 16,
+    "claim_ceiling": "open-loop deployment and DROID causal diagnostics with correct product abstention only"
+  },
+  "wam_arms": {
+    "historical_oscar": "Experiment 2 remains thesis_not_supported for its frozen OSCAR-derived stack.",
+    "skeleton_only_new_phase_b": "not run because required camera calibration was unavailable",
+    "visible_skeleton_new_phase_b": "not run",
+    "skeleton_masked_new_phase_b": "not run",
+    "native_cosmos": "official positive control passed; frozen DROID causal and reliability screens failed",
+    "cosmos_oscar_skeleton_hybrid": "not run; no hybrid result claimed"
+  },
+  "abstention": {
+    "native_cosmos_product_abstention_required": true,
+    "native_cosmos_product_abstention_correct_for_frozen_gates": true,
+    "gemini_calibrated_abstention_established": false,
+    "phase_a_selective_use_passed": false
+  },
+  "cost_and_time": {
+    "api_evaluator_estimated_usd": 6.175862375,
+    "gpu_estimated_usd_before_positive_control_bisection": 1.070155,
+    "positive_control_failed_download_attempt_usd": 0.463386,
+    "positive_control_successful_attempt_usd": 0.146992,
+    "known_conservative_provider_total_usd": 7.856395375,
+    "storage_and_transfer_invoice_line_available": false,
+    "phase_a_matrix_wall_seconds": 2001.047457832843,
+    "gemini_submission_to_collection_seconds": 1514.0,
+    "positive_control_model_load_seconds": 190.06276773102582,
+    "positive_control_runtime_seconds": 258.26910016778857,
+    "positive_control_successful_provider_seconds": 492.6707,
+    "completed_useful_digital_ranking": false,
+    "physical_playback_lower_bound_hours": 3.576,
+    "physical_monetary_baseline_available": false,
+    "speed_ratio": null,
+    "cost_ratio": null,
+    "break_even_policy_count": null
+  },
+  "identities": {
+    "execution_source_commit": "8364c2f2b811f9db1142b9a5c86839a6b6b01a80",
+    "oscar_code_revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "roboarena_data": "RoboArena/DataDump_07-17-2026",
+    "roboarena_data_revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "cosmos3_nano_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "vllm_omni_revision": "9c1b7504b178afcf541867c1a2d30db48c69cda8",
+    "native_cosmos_runtime_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "phase_a_evaluator": "gpt-5-mini-2025-08-07",
+    "gemini_diagnostic_evaluator": "gemini-3.6-flash"
+  },
+  "protocols": {
+    "superseded_v1_digest": "eab9e7868bcc7cbd774c940c781e8c3a8faac3270cbc942f1248966ba037f683",
+    "governing_v2_digest": "6b41ea618ec290f1c080573e093d26cae03d14a0ecb06b3bb2a4bd016e469066",
+    "positive_control_bisection_amendment_sha256": "ff587fa17d215c97e4c834e233b699524c13cba5295539b0cacc9426a94b312f",
+    "download_transport_amendment_sha256": "ae034d9ebd976c4f4d5540d340182d69568555bf772b18fd4b6bc6544bfbc7fc",
+    "positive_control_result_sha256": "96e45e6f724ba510cd4a74a2f9856137ce5c4907b8031f3cd0c05b0823599850"
+  },
+  "provider_zero": {
+    "task_live_instance_count": 0,
+    "all_live_instance_count": 0,
+    "continuing_hourly_burn_usd": 0.0,
+    "temporary_task_object_prefix_closed": true,
+    "signed_url_files_removed": 6,
+    "persistent_evaluator_resource_created": false,
+    "does_not_prove_invoice_settlement_or_scientific_validity": true
+  },
+  "review_gallery": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_positive_control_v2/review_gallery_v1",
+  "historical_evidence_immutability": {
+    "oscar_experiment_2_verdict": "thesis_not_supported",
+    "cosmos3_followup_verdict": "inconclusive",
+    "rewritten": false
+  },
+  "cheapest_scientifically_valid_next_experiment": "Complete the exact upstream Cosmos3 DROID normalization and preprocessing audit. If ambiguity remains, run the preregistered label-free action-scale dose-response diagnostic, freeze any selected transform, then use new untouched independent DROID sessions for a powered causal confirmation before full-episode ranking.",
+  "manifest_sha256": "5d480cadb34e15c41f1c5742d45c2d0a01fa6e35ee146443b10e24e4b2913dfa"
+}
