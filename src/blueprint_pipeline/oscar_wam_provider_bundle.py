@@ -1035,6 +1035,15 @@ def _conditioning_video_model_input_useful(
 ) -> bool:
     visual_signal = _mapping(skeleton_video.get("visual_signal"))
     visual_signal_blockers = list(visual_signal.get("blockers") or [])
+    texture_free_signal = _mapping(skeleton_video.get("texture_free_signal"))
+    if (
+        skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and skeleton_video.get("skeleton_stream_texture_free")
+        and texture_free_signal.get("status") == "completed"
+        and float(texture_free_signal.get("maximum_visible_pixel_fraction") or 0.0)
+        >= 0.0005
+    ):
+        return True
     if (
         _is_oscar_projected_gripper_axes_stream(skeleton_video)
         and skeleton_video.get("skeleton_stream_separate_from_rgb")
@@ -1067,6 +1076,64 @@ def _conditioning_video_model_input_useful(
             "visual_rollout_useful_for_task_success_review"
         )
     )
+
+
+def _measure_texture_free_skeleton_signal(path: Path) -> dict[str, Any]:
+    """Measure a texture-free conditioning stream without applying scene-video gates."""
+    try:
+        import cv2
+        import numpy as np
+
+        capture = cv2.VideoCapture(str(path))
+        frame_count = 0
+        maximum_visible_pixel_fraction = 0.0
+        maximum_adjacent_mean_absolute_difference = 0.0
+        previous: Any = None
+        while True:
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                break
+            frame_count += 1
+            maximum_visible_pixel_fraction = max(
+                maximum_visible_pixel_fraction,
+                float((np.max(frame, axis=2) > 16).mean()),
+            )
+            if previous is not None:
+                maximum_adjacent_mean_absolute_difference = max(
+                    maximum_adjacent_mean_absolute_difference,
+                    float(
+                        np.abs(frame.astype(np.float32) - previous.astype(np.float32)).mean()
+                    ),
+                )
+            previous = frame
+        capture.release()
+    except Exception as exc:
+        return {
+            "status": "blocked",
+            "blockers": [f"texture_free_skeleton_signal_measurement_failed:{type(exc).__name__}"],
+        }
+    blockers: list[str] = []
+    if frame_count < 2:
+        blockers.append("texture_free_skeleton_frame_count_below_two")
+    if maximum_visible_pixel_fraction < 0.0005:
+        blockers.append("texture_free_skeleton_visible_pixel_fraction_too_low")
+    return {
+        "schema_version": "oscar_texture_free_skeleton_signal.v1",
+        "status": "completed" if not blockers else "blocked",
+        "frame_count": frame_count,
+        "maximum_visible_pixel_fraction": round(maximum_visible_pixel_fraction, 9),
+        "maximum_adjacent_mean_absolute_difference": round(
+            maximum_adjacent_mean_absolute_difference, 9
+        ),
+        "active_motion_threshold_mean_absolute_difference": 0.1,
+        "active_motion_present": maximum_adjacent_mean_absolute_difference >= 0.1,
+        "blockers": blockers,
+        "claim_boundary": {
+            "conditioning_signal_only": True,
+            "not_generated_world_video_quality": True,
+            "static_signal_may_be_valid_for_registered_no_motion_control": True,
+        },
+    }
 
 
 def _omit_local_path_field(section: dict[str, Any], key: str) -> None:
@@ -2087,6 +2154,10 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
         or skeleton_video.get("projected_g1_skeleton_rendered")
     )
     projected_gripper_axes_stream = _is_oscar_projected_gripper_axes_stream(skeleton_video)
+    texture_free_skeleton_stream = bool(
+        skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and skeleton_video.get("skeleton_stream_texture_free")
+    )
     pure_projected_skeleton_stream = bool(
         projected_conditioning_used
         and not projected_gripper_axes_stream
@@ -2107,6 +2178,7 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
         visual_smoke.get("status") != "passed_visual_quality_smoke"
         and not pure_projected_skeleton_stream
         and not pure_projected_gripper_axes_stream
+        and not texture_free_skeleton_stream
     ):
         blockers.append("oscar_input_skeleton_conditioning_video_visual_smoke_failed")
     if input_package.get("conditioning_video_visually_useful_for_model_input") is not True:
@@ -2121,6 +2193,15 @@ def _conditioning_video_input_blockers(input_package: Mapping[str, Any]) -> list
         for blocker in visual_signal.get("blockers", []) or []:
             if isinstance(blocker, str) and blocker:
                 blockers.append(f"oscar_input_{blocker}")
+    texture_free_signal = _mapping(skeleton_video.get("texture_free_signal"))
+    if texture_free_skeleton_stream and texture_free_signal.get("status") != "completed":
+        blockers.append("oscar_input_texture_free_skeleton_signal_invalid")
+    if (
+        texture_free_skeleton_stream
+        and action_conditioned_required
+        and texture_free_signal.get("active_motion_present") is not True
+    ):
+        blockers.append("oscar_input_active_texture_free_skeleton_is_static")
     if projected_conditioning_used:
         projected_path = Path(_string(projected_trace.get("path"))).expanduser()
         if not projected_path.is_file():
@@ -2846,6 +2927,12 @@ def _materialized_package_from_existing(
         conditioning_validation.get("status") == "completed"
     )
     skeleton_video = _mapping(manifest.get("skeleton_video"))
+    if (
+        skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and skeleton_video.get("skeleton_stream_texture_free")
+    ):
+        skeleton_video["texture_free_signal"] = _measure_texture_free_skeleton_signal(skeleton)
+        manifest["skeleton_video"] = skeleton_video
     if not _mapping(skeleton_video.get("visual_signal")):
         smoke_passed = any(
             _mapping(rollout).get("status") == "passed_visual_quality_smoke"

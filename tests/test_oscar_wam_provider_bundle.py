@@ -708,6 +708,8 @@ def test_existing_droid_oscar_input_preserves_recorded_joint_provenance(
                     "true_robot_proprioceptive_skeleton_available": True,
                 },
                 "skeleton_video": {
+                    "skeleton_stream_separate_from_rgb": True,
+                    "skeleton_stream_texture_free": True,
                     "visual_signal": {"status": "completed", "blockers": []}
                 },
             }
@@ -733,6 +735,12 @@ def test_existing_droid_oscar_input_preserves_recorded_joint_provenance(
     assert boundary["true_robot_proprioceptive_skeleton_available"] is True
     assert "skeleton_conditioning_is_proxy_from_mujoco_trace" not in boundary
     assert boundary["existing_input_package_used"] is True
+    texture_signal = runtime_manifest["input_package"]["skeleton_video"][
+        "texture_free_signal"
+    ]
+    assert texture_signal["status"] == "completed"
+    assert texture_signal["maximum_visible_pixel_fraction"] > 0.0005
+    assert texture_signal["active_motion_present"] is True
 
 
 def test_build_oscar_wam_provider_bundle_blocks_unpinned_official_source(
