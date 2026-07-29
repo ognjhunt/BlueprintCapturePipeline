@@ -283,12 +283,13 @@ POWERED_DROID_PROFILE = SuccessorGPUProfile(
     receipt_schema="policy_ranking_powered_droid_bundle_receipt.v1",
     authorization_ids_by_allocation_index={
         1: "policy-ranking-powered-droid-20260729-allocation-1",
+        2: "policy-ranking-powered-droid-20260729-allocation-2",
     },
     cost_authorization_binding_sha256=(
         "6a7486b8eda01057934106206c5ecf3de808d19f3b3124a4a829c7a144f4c689"
     ),
-    expected_bundle_sha256="7909049ad3f8d879d245e32b7d4515fbf22123b1b0a5a3f26965b71b8ebcdffc",
-    expected_bundle_size_bytes=17_985_987,
+    expected_bundle_sha256="bae438e48fa4ac2544840c91e713cdfc1274334820f1d7649d0c772876f1831a",
+    expected_bundle_size_bytes=17_986_110,
     expected_embedded_input_hashes={
         "provider_packet_sha256": (
             "e9eceb32f9875cf2399877b91d43a709fb58222c944f0a16ed35c2f33120d9ee"
@@ -300,7 +301,7 @@ POWERED_DROID_PROFILE = SuccessorGPUProfile(
             "7d7ec85a0976ed5ede44db53a8566bd50f6596b99f2bf22f0383593d20b08ffe"
         ),
         "provider_runtime_runner_sha256": (
-            "4403048b858a1e9628510ff43ab3edd4873fd7189b68e3713c2ec2e28f5837a2"
+            "53b3627ecc444dd6ca3cc1468b1ac7149ce674c7966fdb64e89303114343fcbc"
         ),
     },
     qualification_canary_request_count=1,

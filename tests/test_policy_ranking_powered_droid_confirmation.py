@@ -80,3 +80,28 @@ def test_powered_environment_and_compute_authority_preserve_campaign_caps() -> N
     assert amendment["change"]["target_spend_usd_after"] == 6.2
     assert amendment["change"]["allocation_hard_cap_usd_unchanged"] == 10.0
     assert amendment["change"]["scientific_fields_changed"] is False
+
+
+def test_runtime_fix_amendment_preserves_science_and_binds_replacement_bundle() -> None:
+    amendment = _artifact("runtime_fix_amendment_v4.json")
+    authorization = json.loads(
+        (EXPERIMENT_DOCS / "compute_authorization_allocation_2.json").read_text(encoding="utf-8")
+    )
+    environment = _artifact("environment_and_source_manifest_v2.json")
+
+    assert amendment["allocation_1_result"]["structured_canary"]["status"] == "passed"
+    assert (
+        amendment["allocation_1_result"]["untouched_matrix"]["scientific_result_available"] is False
+    )
+    assert amendment["prospective_change"]["request_serialization_changed"] is False
+    assert amendment["prospective_change"]["outcome_label_accessed"] is False
+    assert amendment["replacement_execution"]["replacement_provider_called"] is False
+    assert amendment["claim_boundary"]["cosmos_wam_qualification_proven"] is False
+    assert authorization["allocation_index"] == 2
+    assert authorization["runtime_fix_amendment_sha256"] == (
+        "d64a338a232119881e24e00ef6193df6031f398eb2dc2be23c86c8c300017b82"
+    )
+    assert authorization["authorized_compute_cap_usd"] == 10.0
+    assert environment["replacement_bundle"]["bundle_sha256"] == (
+        "bae438e48fa4ac2544840c91e713cdfc1274334820f1d7649d0c772876f1831a"
+    )

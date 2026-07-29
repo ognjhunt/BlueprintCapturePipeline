@@ -1,0 +1,96 @@
+{
+  "schema_version": "policy_ranking_roboarena_powered_droid_runtime_fix_amendment.v4",
+  "experiment_id": "policy_ranking_roboarena_powered_droid_confirmation_20260729",
+  "frozen_at": "2026-07-29T05:29:34-0500",
+  "status": "prospective_replacement_after_transport_implementation_failure",
+  "supersedes": {
+    "protocol_v1_manifest_sha256": "6a7486b8eda01057934106206c5ecf3de808d19f3b3124a4a829c7a144f4c689",
+    "protocol_amendment_v2_manifest_sha256": "4cb9c3c5e64a97c9afba833378bed3cf05466a21a67a6a174858ed6124a9fac4",
+    "cost_admission_amendment_v3_manifest_sha256": "454b3f778a1ef49ba4f0186babbee3e67761273d489ea5feca819d57e12e85af",
+    "prior_records_rewritten": false
+  },
+  "allocation_1_result": {
+    "provider": "vast",
+    "provider_instance_id": 46185596,
+    "execution_source_commit": "a1f5b1b2d112d755d44e793056320cd069dd601b",
+    "bundle_sha256": "7909049ad3f8d879d245e32b7d4515fbf22123b1b0a5a3f26965b71b8ebcdffc",
+    "estimated_gpu_cost_usd": 0.477329,
+    "live_runtime_seconds": 989.683591,
+    "structured_canary": {
+      "status": "passed",
+      "provider_response_id_present": true,
+      "frame_count": 17,
+      "width": 640,
+      "height": 528,
+      "fps": 15.0,
+      "temporal_absolute_difference_mean": 1.669921875,
+      "first_to_last_absolute_difference_mean": 14.270636558532715,
+      "inference_time_seconds": 11.434416,
+      "output_sha256": "caa07018bc2c5773af1a051c971d67f5217fc648a19a4a72c8407f2092d523a5"
+    },
+    "untouched_matrix": {
+      "admitted": true,
+      "provider_requests_attempted_after_canary": 1,
+      "valid_responses_preserved": 0,
+      "scientific_result_available": false
+    },
+    "failure": {
+      "class": "powered_droid_runtime_or_transport_failure",
+      "exception": "FileNotFoundError",
+      "cause": "the synchronous response writer attempted to write a request-specific video path whose parent directory had not been materialized",
+      "failure_occurred_after_the_first_untouched_request_was_attempted": true,
+      "request_payload_or_scientific_input_defect": false,
+      "canary_failure": false,
+      "cosmos_model_failure": false
+    },
+    "provider_zero": {
+      "authenticated_inventory_live_count": 0,
+      "continuing_hourly_burn_usd": 0.0,
+      "confirmed_at": "2026-07-29T10:26:09.208382+00:00"
+    }
+  },
+  "prospective_change": {
+    "implementation_commit": "e1524f5bd06d00877128086368ff9a4ddbc3814e",
+    "changed_function": "policy_ranking_successor_cosmos_provider_runtime._submit_rollout",
+    "change": "create output_path.parent recursively before issuing the synchronous request",
+    "regression_test": "test_sync_submit_materializes_parent_and_writes_direct_mp4_response",
+    "focused_tests_passed": 40,
+    "request_serialization_changed": false,
+    "model_or_checkpoint_changed": false,
+    "input_observation_changed": false,
+    "action_or_control_changed": false,
+    "seed_changed": false,
+    "threshold_changed": false,
+    "outcome_label_accessed": false
+  },
+  "replacement_bundle": {
+    "bundle_sha256": "bae438e48fa4ac2544840c91e713cdfc1274334820f1d7649d0c772876f1831a",
+    "bundle_size_bytes": 17986110,
+    "receipt_manifest_sha256": "0b4a83f8140368ed98fc29843fbacde5ba9d2ae213095cf5f48e7bbb50a3d2e5",
+    "provider_packet_sha256": "e9eceb32f9875cf2399877b91d43a709fb58222c944f0a16ed35c2f33120d9ee",
+    "image_manifest_sha256": "1804981b2c05695a04dc1816dd0d3e3bba0c59333dd3058db18b55463804c4cc",
+    "official_canary_manifest_sha256": "7d7ec85a0976ed5ede44db53a8566bd50f6596b99f2bf22f0383593d20b08ffe",
+    "provider_runtime_runner_sha256": "53b3627ecc444dd6ca3cc1468b1ac7149ce674c7966fdb64e89303114343fcbc",
+    "zip_entry_count": 60,
+    "changed_entries_from_v1": [
+      "provider_runtime/wam_provider_runtime_manifest.json",
+      "provider_runtime/wam_provider_runtime_runner.py"
+    ]
+  },
+  "replacement_execution": {
+    "repeat_structured_canary_before_matrix": true,
+    "resume_or_reuse_lost_first_matrix_response": false,
+    "complete_frozen_612_request_matrix_required": true,
+    "replacement_provider_called": false,
+    "new_replacement_output_seen": false
+  },
+  "claim_boundary": {
+    "allocation_1_canary_runtime_proven": true,
+    "allocation_1_causal_matrix_measured": false,
+    "cosmos_wam_qualification_proven": false,
+    "policy_ranking_fidelity_proven": false,
+    "captured_site_transfer_proven": false,
+    "physical_performance_proven": false
+  },
+  "manifest_sha256": "d64a338a232119881e24e00ef6193df6031f398eb2dc2be23c86c8c300017b82"
+}
