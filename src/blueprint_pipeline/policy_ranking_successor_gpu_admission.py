@@ -1131,7 +1131,8 @@ def _run_successor_runpod(
 ) -> dict[str, Any]:
     root = Path(job_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    deadline = time.time() + int(session_max_live_minutes) * 60
+    authorized_live_minutes = min(int(session_max_live_minutes), profile.hard_ttl_seconds // 60)
+    deadline = time.time() + authorized_live_minutes * 60
     watchdog, process, watchdog_dir = _arm_runpod_successor_watchdog(
         job_dir=root, deadline_epoch=deadline
     )
@@ -1203,7 +1204,7 @@ def _run_successor_runpod(
     pod_id = str(state.get("pod_id") or create.get("pod_id") or "")
     poll = poll_runpod_wam_async_run(
         job_dir=root,
-        max_wait_seconds=max(60, int(session_max_live_minutes) * 60),
+        max_wait_seconds=max(60, authorized_live_minutes * 60),
         retry_interval_seconds=5,
         teardown=True,
     )

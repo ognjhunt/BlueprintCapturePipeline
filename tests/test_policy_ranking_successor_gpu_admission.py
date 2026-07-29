@@ -322,18 +322,20 @@ def test_droid_reference_runpod_executor_binds_watchdog_public_model_and_teardow
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: dict[str, Any] = {}
+    watchdog_captured: dict[str, Any] = {}
+    poll_captured: dict[str, Any] = {}
     process = object()
     monkeypatch.delenv(admission.RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV, raising=False)
 
-    monkeypatch.setattr(
-        admission,
-        "_arm_runpod_successor_watchdog",
-        lambda **_kwargs: (
+    def fake_arm(**kwargs: Any):
+        watchdog_captured.update(kwargs)
+        return (
             {"status": "armed", "independent_process": True},
             process,
             tmp_path / "watchdog",
-        ),
-    )
+        )
+
+    monkeypatch.setattr(admission, "_arm_runpod_successor_watchdog", fake_arm)
 
     def fake_create(**kwargs: Any) -> dict[str, Any]:
         captured.update(kwargs)
@@ -347,15 +349,16 @@ def test_droid_reference_runpod_executor_binds_watchdog_public_model_and_teardow
         return {"status": "pod_created", "pod_id": "pod-123"}
 
     monkeypatch.setattr(admission, "create_runpod_wam_async_run", fake_create)
-    monkeypatch.setattr(
-        admission,
-        "poll_runpod_wam_async_run",
-        lambda **_kwargs: {
+
+    def fake_poll(**kwargs: Any) -> dict[str, Any]:
+        poll_captured.update(kwargs)
+        return {
             "status": "completed",
             "continuing_spend_from_this_run": False,
             "blockers": [],
-        },
-    )
+        }
+
+    monkeypatch.setattr(admission, "poll_runpod_wam_async_run", fake_poll)
 
     class Provider:
         def billable_inventory(self, *, name_prefix: str) -> dict[str, Any]:
@@ -391,7 +394,7 @@ def test_droid_reference_runpod_executor_binds_watchdog_public_model_and_teardow
             "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
             "hourly_rate_usd": 1.99,
         },
-        session_max_live_minutes=120,
+        session_max_live_minutes=132,
         paid_resource_admission_grant=object(),
         pre_provider_mutation_hook=lambda: {"status": "consumed"},
     )
@@ -404,6 +407,8 @@ def test_droid_reference_runpod_executor_binds_watchdog_public_model_and_teardow
     assert captured["cloud_type"] == "SECURE"
     assert captured["pre_provider_mutation_hook"] is not None
     assert admission.RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV not in admission.os.environ
+    assert watchdog_captured["deadline_epoch"] == 1060.0 + 7200
+    assert poll_captured["max_wait_seconds"] == 7200
 
 
 def test_successor_gpu_admission_rejects_mismatched_retry_identity() -> None:
