@@ -42,3 +42,34 @@ def test_powered_protocol_freezes_complete_causal_matrix_and_claim_ceiling() -> 
     assert protocol["provider_called"] is False
     assert protocol["claim_ceiling"]["policy_ranking_fidelity"] is False
     assert protocol["claim_ceiling"]["live_policy_wam_policy_closed_loop"] is False
+
+
+def test_powered_protocol_amendment_adds_only_preexisting_dynamic_canary_gate() -> None:
+    amendment = _artifact("protocol_amendment_v2.json")
+
+    assert amendment["amendment_basis"]["provider_called"] is False
+    assert amendment["amendment_basis"]["new_generated_output_seen"] is False
+    gates = amendment["changed_fields"]["structured_canary_gates"]
+    assert gates["temporal_absolute_difference_mean_minimum_gray_0_255"] == 1.0
+    assert gates["first_to_last_absolute_difference_mean_minimum_gray_0_255"] == 3.0
+    assert gates["all_required"] is True
+    assert (
+        amendment["changed_fields"]["execution"]["canary_failure_submits_zero_untouched_requests"]
+        is True
+    )
+
+
+def test_powered_environment_and_compute_authority_preserve_campaign_caps() -> None:
+    environment = _artifact("environment_and_source_manifest_v1.json")
+    authorization = json.loads(
+        (EXPERIMENT_DOCS / "compute_authorization_allocation_1.json").read_text(encoding="utf-8")
+    )
+
+    assert environment["execution"]["maximum_concurrent_gpus"] == 1
+    assert environment["execution"]["hard_cap_usd"] == 10.0
+    assert authorization["maximum_provider_allocations"] == 1
+    assert authorization["authorized_compute_cap_usd"] == 10.0
+    assert authorization["gpu_category_ceiling_usd"] == 50.0
+    assert authorization["campaign_total_ceiling_usd"] == 100.0
+    assert authorization["physical_robot_endpoint_access_allowed"] is False
+    assert authorization["evaluator_or_vlm_spend_authorized_by_this_record"] is False

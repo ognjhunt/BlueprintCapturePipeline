@@ -236,6 +236,28 @@ def test_droid_reference_serializer_fails_closed_on_contract_drift() -> None:
         runtime._serialize_droid_reference_request(manifest=manifest, action_stream=_stream())
 
 
+def test_powered_droid_serializer_matches_official_blank_prompt_contract() -> None:
+    request = runtime._serialize_powered_droid_request(action_stream=_stream(), seed=1)
+
+    assert request["prompt"] == " "
+    assert request["size"] == "640x540"
+    assert request["fps"] == "15"
+    assert request["num_inference_steps"] == "30"
+    assert request["seed"] == "1"
+    extra = json.loads(request["extra_params"])
+    assert extra["domain_name"] == "droid_lerobot"
+    assert extra["action_chunk_size"] == 16
+    assert extra["guardrails"] is False
+    assert len(extra["action"]) == 16
+
+
+def test_powered_droid_serializer_rejects_wrong_action_shape() -> None:
+    stream = _stream()
+    stream["actions"] = stream["actions"][:-1]
+    with pytest.raises(ValueError, match="powered_droid_action_shape_invalid"):
+        runtime._serialize_powered_droid_request(action_stream=stream, seed=0)
+
+
 def test_server_environment_disables_xet_for_all_runtime_launches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -497,3 +519,30 @@ def test_run_dispatches_reference_bundle_before_legacy_input_loading(
     assert result == {"status": "reference-dispatched"}
     assert observed["runtime_dir"] == runtime_root
     assert observed["output_dir"] == (tmp_path / "output").resolve()
+
+
+def test_run_dispatches_powered_bundle_before_reference_or_legacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "provider_runtime"
+    powered = runtime_root / runtime.POWERED_DROID_DIRECTORY
+    powered.mkdir(parents=True)
+    (powered / "packet.json").write_text("{}", encoding="utf-8")
+    reference = runtime_root / runtime.DROID_REFERENCE_DIRECTORY
+    reference.mkdir()
+    (reference / "canary_manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(runtime, "__file__", str(runtime_root / "runner.py"))
+    monkeypatch.setenv("BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR", str(tmp_path / "output"))
+    observed: dict[str, Path] = {}
+
+    def fake_powered_run(*, runtime_dir: Path, output_dir: Path) -> dict[str, object]:
+        observed["runtime_dir"] = runtime_dir
+        observed["output_dir"] = output_dir
+        return {"status": "powered-dispatched"}
+
+    monkeypatch.setattr(runtime, "_run_powered_droid", fake_powered_run)
+
+    result = runtime.run()
+
+    assert result == {"status": "powered-dispatched"}
+    assert observed["runtime_dir"] == runtime_root
