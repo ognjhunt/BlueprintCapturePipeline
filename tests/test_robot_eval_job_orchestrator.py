@@ -9702,7 +9702,6 @@ def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_
         "robot_pov_frame_sequence_manifest.json",
         "live_eval_closure_manifest.json",
         "proof_boundary.json",
-        "post_training_data_package_export_manifest.json",
         "webapp_robot_eval_status_projection.json",
     ):
         _write_json(job_dir / name, {"status": "present"})
@@ -9825,7 +9824,11 @@ def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_
             "provider_complexity_hidden": True,
             "provider_details_exposed": False,
         },
-        data_package_export={"status": "export_ready_review_required"},
+        data_package_export={
+            "schema_version": "task_evaluation_evidence_use.v1",
+            "status": "not_requested",
+            "standalone_product_created": False,
+        },
         generated_at="2026-06-15T00:00:00Z",
     )
 
@@ -9846,6 +9849,10 @@ def test_robot_team_grade_closure_real_world_calibration_absence_keeps_sim_only_
         "robot_team_grade_blocked_requirement_ids"
     ]
     assert "package_delivery_handoff" not in closure["sim_only_beta_blocked_requirement_ids"]
+    assert (
+        "post_training_data_package_export_manifest"
+        not in closure["closure_audit_summary"]["missing_required_artifacts"]
+    )
     assert closure["sim_only_customer_handoff_blocked_requirement_ids"] == [
         "package_delivery_handoff"
     ]

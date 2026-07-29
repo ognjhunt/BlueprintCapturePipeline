@@ -792,7 +792,6 @@ def _robot_team_grade_eval_closure_manifest(
         "scenario_eval_matrix",
         "live_eval_closure_manifest",
         "proof_boundary",
-        "post_training_data_package_export_manifest",
     }
     missing_closure_artifacts = sorted(
         key for key in required_closure_artifacts if not artifact_paths.get(key)
@@ -992,7 +991,6 @@ def _robot_team_grade_eval_closure_manifest(
             evidence_paths=[
                 artifact_paths.get("live_eval_closure_manifest"),
                 artifact_paths.get("proof_boundary"),
-                artifact_paths.get("post_training_data_package_export_manifest"),
             ],
         ),
         requirement(
