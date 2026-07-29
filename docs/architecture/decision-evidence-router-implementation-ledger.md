@@ -41,15 +41,15 @@ it is not completion evidence by itself.
 | Learning loop | implemented | Exact prediction/outcome join is append-only; duplicate and calibration/held-out leakage fail closed; new testbed/qualification versions keep transfer disabled. |
 | WebApp handoff | verified | Versioned schemas, state machine, translations, redaction, compatibility policy, checksum manifest, and decision/abstention/partial fixtures pass `python -m blueprint_pipeline.decision_evidence_handoff`. |
 | Focused verification | verified | 160 router/contract/legacy tests and 33 WAM/default-orchestration tests pass; Ruff, source governance, WebApp handoff verification, and `git diff --check` pass. |
-| Fast lane | incomplete | The single local bare lane ran all 5,597 selected tests: 5,596 passed and the quality-gap ledger alone detected changed source digests. The repository rebind tool refreshed 13 digest bindings and the exact failing governance test then passed. Hosted CI must provide the final-candidate fast-lane pass; the local bare lane is not repeated. |
-| Verification/publication | incomplete | Exactly one final `scripts/pytest_full.sh` on the published final SHA, hosted checks, protected-main merge, and `HEAD == main == origin/main` parity. |
+| Fast lane | verified | The single local bare lane ran all 5,597 selected tests: 5,596 passed and the quality-gap ledger alone detected changed source digests. The repository rebind tool refreshed 13 digest bindings and the exact failing governance test then passed. On router implementation candidate `3a77f3ab`, hosted run `30478926371` then selected 5,599 tests and passed 5,591 with 8 skipped and 1,664 deselected. The local bare lane was not repeated. |
+| Verification/publication | verified | Router implementation run `30478926884` executed `scripts/pytest_full.sh`: 7,263 passed in 954.94 seconds and the fail-closed CPU evidence builder reported `status=passed`. All 16 hosted checks passed; protected-main PR #243 merged as `98484a591ec5c29e957248b65390b7c62a662b1a`. After fetch, the primary checkout proved `HEAD == main == origin/main`, matching tree `bf034335032af9f7400308b6c7a4ecb3c493fe96`, and `0 0` divergence while preserving the user-owned `docs/CHANGELOG.md` edit. |
 | Live/provider/physical execution | intentionally_deferred | Explicitly unauthorized and unnecessary for the hermetic control-plane slice. This does not block sim-only functionality and cannot upgrade physical/deployment/safety claims. |
 
-## Next implementation sequence
+## Closeout
 
-1. Commit and publish the candidate through a protected-main pull request.
-2. Wait for required hosted checks and merge without weakening any gate.
-3. Run the single final `scripts/pytest_full.sh` on the published main SHA and
-   preserve its SHA-bound evidence.
-4. Prove local
-   `HEAD == main == origin/main` with a clean worktree.
+The control-plane migration was published through protected-main PR #243. The
+exact tested candidate was `3a77f3ab14504d112603b816c20560ab12d5b6b2`; the
+squash merge is `98484a591ec5c29e957248b65390b7c62a662b1a`. No paid
+compute, provider execution, production deployment, live robot operation, or
+physical-success claim was performed. Those remain evidence-dependent claim
+upgrade lanes rather than repo-local implementation gaps.
