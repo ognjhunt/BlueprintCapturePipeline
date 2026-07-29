@@ -71,6 +71,7 @@ def start_cloudflared_tunnel(
     job_dir: str | Path,
     local_base_url: str,
     cloudflared_path: str | Path | None = None,
+    transport_protocol: str = "auto",
     startup_timeout_seconds: float = 45.0,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -85,6 +86,7 @@ def start_cloudflared_tunnel(
     ensure_dir(resolved_job_dir)
     executable_hint = _string(str(cloudflared_path)) if cloudflared_path else "cloudflared"
     executable = shutil.which(executable_hint) or str(Path(executable_hint).expanduser())
+    normalized_transport = _string(transport_protocol).lower() or "auto"
     blockers: list[str] = []
     if not executable or not Path(executable).exists():
         blockers.append("cloudflared_binary_missing")
@@ -92,6 +94,8 @@ def start_cloudflared_tunnel(
         blockers.append("local_base_url_missing")
     elif urlparse(local_base_url).scheme not in {"http", "https"}:
         blockers.append("local_base_url_scheme_not_http")
+    if normalized_transport not in {"auto", "http2", "quic"}:
+        blockers.append("cloudflared_transport_protocol_invalid")
     if blockers:
         manifest = {
             "schema_version": VAST_CLOUDFLARED_TUNNEL_SCHEMA_VERSION,
@@ -100,6 +104,7 @@ def start_cloudflared_tunnel(
             "job_dir": str(resolved_job_dir),
             "local_base_url": local_base_url,
             "cloudflared_path": executable,
+            "transport_protocol": normalized_transport,
             "public_base_url": None,
             "pid": None,
             "blockers": blockers,
@@ -110,7 +115,10 @@ def start_cloudflared_tunnel(
 
     assert executable is not None
     log_path = resolved_job_dir / "vast_cloudflared_tunnel.log"
-    argv = [executable, "tunnel", "--url", local_base_url, "--no-autoupdate"]
+    argv = [executable, "tunnel"]
+    if normalized_transport != "auto":
+        argv.extend(["--protocol", normalized_transport])
+    argv.extend(["--url", local_base_url, "--no-autoupdate"])
     public_base_url = ""
     observed_lines: list[str] = []
     with log_path.open("w", encoding="utf-8") as log:
@@ -120,6 +128,7 @@ def start_cloudflared_tunnel(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
     deadline = time.monotonic() + max(1.0, float(startup_timeout_seconds))
     while time.monotonic() < deadline:
@@ -153,7 +162,16 @@ def start_cloudflared_tunnel(
         "public_base_url": public_base_url or None,
         "pid": process.pid if status == "running" else None,
         "cloudflared_path": executable,
-        "command": ["cloudflared", "tunnel", "--url", "<local_base_url>", "--no-autoupdate"],
+        "transport_protocol": normalized_transport,
+        "command": [
+            "cloudflared",
+            "tunnel",
+            *([] if normalized_transport == "auto" else ["--protocol", normalized_transport]),
+            "--url",
+            "<local_base_url>",
+            "--no-autoupdate",
+        ],
+        "detached_process_session": True,
         "log_path": str(log_path),
         "observed_line_count": len(observed_lines),
         "blockers": blockers,
@@ -459,6 +477,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     cloudflared.add_argument("--job-dir", required=True)
     cloudflared.add_argument("--local-base-url", required=True)
     cloudflared.add_argument("--cloudflared-path")
+    cloudflared.add_argument(
+        "--transport-protocol",
+        choices=("auto", "http2", "quic"),
+        default="auto",
+    )
     cloudflared.add_argument("--startup-timeout-seconds", type=float, default=45.0)
 
     serve = subparsers.add_parser("serve")
@@ -526,6 +549,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             job_dir=args.job_dir,
             local_base_url=args.local_base_url,
             cloudflared_path=args.cloudflared_path,
+            transport_protocol=args.transport_protocol,
             startup_timeout_seconds=args.startup_timeout_seconds,
         )
         print(

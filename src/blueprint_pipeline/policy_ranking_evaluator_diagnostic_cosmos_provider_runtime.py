@@ -173,6 +173,11 @@ def _validate_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("stable_success_a", "stable_success_b"):
         if type(value[key]) is not bool:
             raise ValueError(f"{key}_invalid")
+    for episode in ("a", "b"):
+        progress = value[f"episode_{episode}_progress_0_to_5"]
+        stable_success = value[f"stable_success_{episode}"]
+        if stable_success and progress != 5:
+            raise ValueError(f"stable_success_{episode}_progress_inconsistent")
     for key in ("comparison_confidence", "uncertainty"):
         number = value[key]
         if (
@@ -224,6 +229,10 @@ def _request_payload(
                 "episode_a": "first complete chronological generated-only video",
                 "episode_b": "second complete chronological generated-only video",
                 "claim_boundary": "generated_episode_pair_diagnostic_not_physical_success",
+                "stable_success_contract": (
+                    "stable_success may be true only when task progress is 5 and success "
+                    "persists across multiple adjacent frames"
+                ),
             },
             sort_keys=True,
         )

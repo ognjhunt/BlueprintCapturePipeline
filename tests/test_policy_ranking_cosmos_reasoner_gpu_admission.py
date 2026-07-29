@@ -4,6 +4,8 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.policy_ranking_cosmos_reasoner_gpu_admission import (
     ADMISSION_SCHEMA,
     AUTHORIZATION_ID,
@@ -74,6 +76,18 @@ def test_reasoner_successor_frozen_contract_matches_runtime_and_digests():
         recorded = payload[digest_field]
         canonical_payload = {
             key: value for key, value in payload.items() if key != digest_field
+        }
+        assert recorded == canonical_sha256(canonical_payload)
+
+    for filename in (
+        "reasoner_schema_canary_result_v1.json",
+        "reasoner_semantic_validation_amendment_v2.json",
+        "reasoner_schema_canary_evidence_manifest_v1.json",
+    ):
+        payload = json.loads((EXPERIMENT_DOCS / filename).read_text(encoding="utf-8"))
+        recorded = payload["manifest_sha256"]
+        canonical_payload = {
+            key: value for key, value in payload.items() if key != "manifest_sha256"
         }
         assert recorded == canonical_sha256(canonical_payload)
 
@@ -206,6 +220,17 @@ def test_reasoner_payload_extracts_after_reasoning_prefix():
     assert _validate_payload(_extract_json_object(text)) == _payload()
 
 
+def test_reasoner_payload_rejects_stable_success_without_complete_progress():
+    for episode in ("a", "b"):
+        payload = _payload()
+        payload[f"stable_success_{episode}"] = True
+        payload[f"episode_{episode}_progress_0_to_5"] = 0
+        with pytest.raises(
+            ValueError, match=f"stable_success_{episode}_progress_inconsistent"
+        ):
+            _validate_payload(payload)
+
+
 def test_reasoner_request_enforces_registered_json_schema(tmp_path):
     row = {
         "episode_a_video": "a.mp4",
@@ -223,6 +248,7 @@ def test_reasoner_request_enforces_registered_json_schema(tmp_path):
     }
     prompt = request["messages"][0]["content"][-1]["text"]
     assert "Required JSON schema:" in prompt
+    assert "stable_success may be true only when task progress is 5" in prompt
     assert all(key in prompt for key in PAIR_OUTPUT_SCHEMA["required"])
 
 

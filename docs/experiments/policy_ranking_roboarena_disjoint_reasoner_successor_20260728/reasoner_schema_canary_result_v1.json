@@ -1,0 +1,81 @@
+{
+  "schema_version": "policy_ranking_reasoner_schema_canary_result.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "run_id": "reasoner_schema_canary_v1",
+  "source_commit": "a67f6077e648d13b1b3781d6df02c5739dee8138",
+  "protocol_sha256": "7d742760268c0324d06232912924b13cd9ff79e67f524818dbc1f0806f47d1f1",
+  "status": "completed_with_semantic_consistency_failure",
+  "registered_technical_gate": {
+    "passed": true,
+    "model_loaded": true,
+    "provider_http_result_count": 1,
+    "structured_result_count": 1,
+    "runtime_error_count": 0,
+    "exact_schema_passed": true,
+    "redaction_passed": true,
+    "provider_zero_passed": true
+  },
+  "runtime": {
+    "provider": "vast",
+    "instance_id": 46151564,
+    "gpu": "H100 NVL",
+    "gpu_ram_mb": 95830,
+    "driver_version": "570.211.01",
+    "cuda_max_good": 12.8,
+    "model": "nvidia/Cosmos3-Nano",
+    "model_revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "native_architecture": "Cosmos3ForConditionalGeneration",
+    "public_image": "docker.io/vllm/vllm-omni:cosmos3@sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+    "model_load_seconds": 365.03593767248094,
+    "inference_latency_seconds": 4.861854191869497,
+    "runtime_wall_seconds": 370.66419553756714,
+    "provider_live_seconds": 418.51343641709536,
+    "estimated_gpu_cost_usd": 0.24818,
+    "actual_invoice_cost_available": false
+  },
+  "structured_result": {
+    "preferred_episode": "tie",
+    "episode_a_progress_0_to_5": 0,
+    "episode_b_progress_0_to_5": 0,
+    "stable_success_a": true,
+    "stable_success_b": true,
+    "comparison_confidence": 1.0,
+    "uncertainty": 0.0,
+    "abstention_factor_count": 0,
+    "model_evidence_summary": "Both episodes were described as stationary with no object motion, no task progression, and no visible attempt to complete the task."
+  },
+  "semantic_consistency": {
+    "passed": false,
+    "failure_codes": [
+      "stable_success_a_progress_inconsistent",
+      "stable_success_b_progress_inconsistent"
+    ],
+    "reason": "The response declared stable success for both episodes while assigning zero progress and explicitly describing no task action or progression.",
+    "future_evaluator_admission": "reject_and_retain_row"
+  },
+  "privacy_and_attribution": {
+    "policy_identity_sent": false,
+    "physical_outcome_sent": false,
+    "physical_ground_truth_pixels_sent": false,
+    "physical_robot_endpoint_accessed": false,
+    "action_conditioned_wam_rollout_generated": false
+  },
+  "claim_credit": {
+    "structured_transport_compatibility": "passed",
+    "reasoner_judge_qualification": "not_awarded_semantic_failure",
+    "cosmos_wam_qualification": "not_measured",
+    "frozen_benchmark_calibration": "not_measured",
+    "phase_b_admission": "not_awarded",
+    "captured_site_transfer": "not_measured",
+    "economics_and_speed": "single_canary_measurement_only"
+  },
+  "provider_zero": {
+    "authenticated_live_instance_count": 0,
+    "continuing_hourly_burn_usd": 0.0,
+    "watchdog_stopped": true,
+    "local_staging_stopped": true,
+    "temporary_staging_secrets_removed": true,
+    "invoice_settlement_proven": false
+  },
+  "manifest_sha256": "2c6a1d424e41edb665929a85ce581466b5de8ba9f77c0ad3f22fc012b5977568"
+}

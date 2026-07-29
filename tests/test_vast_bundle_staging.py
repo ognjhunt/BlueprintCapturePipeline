@@ -197,10 +197,13 @@ def test_start_cloudflared_tunnel_records_public_url_without_secret(
     cloudflared.write_text("#!/bin/sh\n", encoding="utf-8")
     cloudflared.chmod(0o755)
 
+    popen_calls: list[tuple[list[str], dict[str, object]]] = []
+
     class FakeProcess:
         pid = 4242
 
         def __init__(self, *_args: object, **kwargs: object) -> None:
+            popen_calls.append((list(_args[0]), dict(kwargs)))
             stdout = kwargs["stdout"]
             stdout.write("INF starting quick tunnel\n")
             stdout.write("INF https://stable-unit-test.trycloudflare.com\n")
@@ -218,6 +221,7 @@ def test_start_cloudflared_tunnel_records_public_url_without_secret(
         job_dir=tmp_path,
         local_base_url="http://127.0.0.1:8819",
         cloudflared_path=cloudflared,
+        transport_protocol="http2",
         startup_timeout_seconds=5,
         generated_at="2026-06-20T00:00:00+00:00",
     )
@@ -225,6 +229,10 @@ def test_start_cloudflared_tunnel_records_public_url_without_secret(
     assert manifest["status"] == "running"
     assert manifest["public_base_url"] == "https://stable-unit-test.trycloudflare.com"
     assert manifest["pid"] == 4242
+    assert manifest["transport_protocol"] == "http2"
+    assert manifest["detached_process_session"] is True
+    assert popen_calls[0][0][1:4] == ["tunnel", "--protocol", "http2"]
+    assert popen_calls[0][1]["start_new_session"] is True
     assert manifest["cleanup_command"] == "kill 4242"
     persisted = (tmp_path / "vast_cloudflared_tunnel_manifest.json").read_text(
         encoding="utf-8"
