@@ -55,6 +55,7 @@ def test_client_verifies_identity_three_views_and_action_shape() -> None:
 
         def infer(self, observation):
             assert set(DROID_ROBOARENA_CONCAT_VIEWS).issubset(observation)
+            assert "blueprint/wam_source_view_paths" not in observation
             return {"action": np.zeros((16, 8))}
 
     client = CosmosEdgeDroidPolicyClient(
@@ -63,7 +64,9 @@ def test_client_verifies_identity_three_views_and_action_shape() -> None:
         port=8000,
         client_factory=FakeClient,
     )
-    response = client.infer(_observation())
+    observation = _observation()
+    observation["blueprint/wam_source_view_paths"] = {"local": "only"}
+    response = client.infer(observation)
 
     assert response["action"].shape == (16, 8)
     assert len(response["policy_request_receipt"]["receipt_sha256"]) == 64
@@ -146,6 +149,8 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
         ("source_freeze_v1.json", "manifest_sha256"),
         ("source_freeze_v2.json", "manifest_sha256"),
         ("source_freeze_amendment_v2.json", "amendment_sha256"),
+        ("diagnostic_session_unseal_v1.json", "record_sha256"),
+        ("calibration_availability_v1.json", "record_sha256"),
         ("protocol_v1.json", "protocol_sha256"),
     )
     payloads = {}
@@ -171,3 +176,9 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
     ]
     assert amendment["paid_execution_admitted"] is False
     assert amendment["provider_called"] is False
+    assert payloads["diagnostic_session_unseal_v1.json"][
+        "outcome_labels_accessed_before_predictions_were_frozen"
+    ] is True
+    assert payloads["calibration_availability_v1.json"]["public_session_files"][
+        "camera_intrinsics"
+    ] is False

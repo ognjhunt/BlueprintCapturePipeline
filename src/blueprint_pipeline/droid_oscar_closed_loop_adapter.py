@@ -28,6 +28,7 @@ RIGHT_EXTERIOR_VIEW = DROID_EXTERIOR_VIEW_2
 WRIST_VIEW = DROID_WRIST_VIEW
 REQUIRED_POLICY_VIEWS = DROID_OPENPI_POLICY_VIEWS
 ROBOARENA_CONCAT_POLICY_VIEWS = DROID_ROBOARENA_CONCAT_VIEWS
+WAM_SOURCE_VIEW_PATHS = "blueprint/wam_source_view_paths"
 
 
 def _safe_file(value: Any, *, reason: str) -> Path:
@@ -80,6 +81,17 @@ class DroidOscarSkeletonTransitionAdapter:
             raise ValueError(f"droid_policy_action_invalid:{action_blockers[0]}")
         if executed_prefix_steps > self.action_chunk_rows:
             raise ValueError("executed_prefix_exceeds_policy_action_chunk")
+        source_view_paths = observation.get(WAM_SOURCE_VIEW_PATHS)
+        if source_view_paths is not None:
+            if not isinstance(source_view_paths, Mapping) or set(source_view_paths) != set(
+                self.required_policy_views
+            ):
+                raise ValueError("wam_source_view_paths_mismatch")
+            for view_id in self.required_policy_views:
+                _safe_file(
+                    source_view_paths[view_id],
+                    reason=f"wam_source_view_frame_missing:{view_id}",
+                )
         built = self.conditioning_builder(
             observation=observation,
             policy_action=np.asarray(policy_action, dtype=np.float64),
@@ -173,6 +185,7 @@ class DroidOscarSkeletonTransitionAdapter:
             "prompt": str(
                 prepared_transition["wam_request"]["task_prompt"]
             ),
+            WAM_SOURCE_VIEW_PATHS: {},
         }
         generated_hashes: dict[str, str] = {}
         for view_id in self.required_policy_views:
@@ -180,6 +193,7 @@ class DroidOscarSkeletonTransitionAdapter:
                 generated[view_id], reason=f"oscar_generated_view_frame_missing:{view_id}"
             )
             observation[view_id] = _load_policy_image(frame)
+            observation[WAM_SOURCE_VIEW_PATHS][view_id] = str(frame)
             generated_hashes[view_id] = file_sha256(frame)
         blockers = validate_droid_observation(
             observation, required_views=self.required_policy_views
@@ -271,4 +285,5 @@ __all__ = [
     "ROBOARENA_CONCAT_POLICY_VIEWS",
     "REQUIRED_POLICY_VIEWS",
     "WRIST_VIEW",
+    "WAM_SOURCE_VIEW_PATHS",
 ]

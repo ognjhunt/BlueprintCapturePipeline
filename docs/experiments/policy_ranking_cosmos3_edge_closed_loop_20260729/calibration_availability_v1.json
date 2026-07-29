@@ -1,0 +1,34 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_calibration_availability.v1",
+  "recorded_at": "2026-07-29T07:51:51-05:00",
+  "dataset": "RoboArena/DataDump_07-17-2026",
+  "dataset_revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+  "diagnostic_session_id": "3610ff4d-43bd-4c98-af69-32369d1ca258",
+  "public_session_files": {
+    "three_rgb_views_per_policy": true,
+    "recorded_joint_gripper_and_action_rows": true,
+    "task_instruction": true,
+    "camera_intrinsics": false,
+    "camera_to_robot_extrinsics": false
+  },
+  "observed_video_contract": {
+    "width": 512,
+    "height": 288,
+    "fps": 10.0,
+    "representative_frame_count": 401
+  },
+  "oscar_public_method": {
+    "source": "OSCAR Policy-Rollout Videos README at dataset revision db5edfaef285c15d0a41d5115177a983c08b4f5f",
+    "intrinsics_method": "MoGe-v2 estimate",
+    "camera_to_base_method": "CtRNet-X estimate",
+    "reported_limitation": "residual calibration misalignment remains visible in some rollouts"
+  },
+  "blueprint_disposition": {
+    "exact_session_calibration_available": false,
+    "reuse_other_lab_calibration_forbidden": true,
+    "invent_or_guess_calibration_forbidden": true,
+    "engineering_path": "freeze a separately attributable OSCAR-inspired MoGe-v2 plus CtRNet-X calibration adapter and validate projected-skeleton alignment before WAM inference",
+    "scientific_admission": "camera projection must pass frozen overlay alignment and calibration provenance gates; otherwise Blueprint abstains"
+  },
+  "record_sha256": "0989217b0123d333677f1f4528b909d7a115671489f36112826083569d90c3f0"
+}

@@ -13,6 +13,7 @@ from blueprint_pipeline.droid_oscar_closed_loop_adapter import (
     WRIST_VIEW,
     CallableMultiViewOscarWamArm,
     DroidOscarSkeletonTransitionAdapter,
+    WAM_SOURCE_VIEW_PATHS,
 )
 from blueprint_pipeline.policy_wam_closed_loop import (
     ClosedLoopConfig,
@@ -88,6 +89,10 @@ def test_adapter_builds_two_view_oscar_request_and_never_uses_real_future(tmp_pa
     assert advanced["observation"][WRIST_VIEW].shape == (224, 224, 3)
     assert advanced["provenance"]["visual_source"] == "wam_prediction"
     assert advanced["provenance"]["physical_future_observation_used"] is False
+    assert set(advanced["observation"][WAM_SOURCE_VIEW_PATHS]) == {
+        EXTERIOR_VIEW,
+        WRIST_VIEW,
+    }
 
 
 def test_multiview_wam_uses_same_generator_for_each_view(tmp_path: Path) -> None:
@@ -184,6 +189,9 @@ def test_roboarena_policy_observation_advances_all_three_generated_views(
     assert all(
         advanced["observation"][view_id].shape == (224, 224, 3)
         for view_id in ROBOARENA_CONCAT_POLICY_VIEWS
+    )
+    assert set(advanced["observation"][WAM_SOURCE_VIEW_PATHS]) == set(
+        ROBOARENA_CONCAT_POLICY_VIEWS
     )
 
 

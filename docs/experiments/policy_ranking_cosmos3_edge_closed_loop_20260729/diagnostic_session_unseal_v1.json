@@ -1,0 +1,16 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_diagnostic_session_unseal.v1",
+  "recorded_at": "2026-07-29T07:51:51-05:00",
+  "dataset": "RoboArena/DataDump_07-17-2026",
+  "dataset_revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+  "session_id": "3610ff4d-43bd-4c98-af69-32369d1ca258",
+  "metadata_sha256": "3c492e3b3ea45e27b0c8955fa14c6c18c0c0f9c73dcc4ccd3b726e4cd9f2b96c",
+  "outcome_labels_accessed_before_predictions_were_frozen": true,
+  "reason": "The metadata file was opened while verifying the public NPZ and media layout, and its published policy outcome fields were displayed.",
+  "disposition": "This session is permanently restricted to engineering and diagnostic use. It cannot contribute independent Phase-B ranking confirmation, calibration fitting, threshold selection, or confirmatory claims.",
+  "paid_execution_occurred": false,
+  "provider_called": false,
+  "predictions_generated": false,
+  "future_confirmation_rule": "Select and freeze a different cohort from file paths and policy identities only. Do not read metadata.yaml until all predictions and evaluator outputs for that cohort are frozen and hashed.",
+  "record_sha256": "b73f3b3a1705705bd6007be058b66f6dbb5d9e2715c0f042913c4111aed189c7"
+}

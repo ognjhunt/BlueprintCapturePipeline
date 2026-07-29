@@ -260,7 +260,19 @@ class CosmosEdgeDroidPolicyClient:
         )
         if blockers:
             raise ValueError(f"cosmos_edge_policy_observation_invalid:{blockers[0]}")
-        raw_response = self._client.infer(dict(observation))
+        transport_observation = {
+            view: observation[view] for view in self.required_policy_views
+        }
+        transport_observation.update(
+            {
+                "observation/joint_position": observation["observation/joint_position"],
+                "observation/gripper_position": observation[
+                    "observation/gripper_position"
+                ],
+                "prompt": observation["prompt"],
+            }
+        )
+        raw_response = self._client.infer(transport_observation)
         if not isinstance(raw_response, Mapping):
             raise ValueError("cosmos_edge_policy_response_not_object")
         action = raw_response.get("action", raw_response.get("actions"))
