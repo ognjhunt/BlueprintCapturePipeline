@@ -1,0 +1,81 @@
+{
+  "schema_version": "decision_evidence_vertical_slice_fixture.v1",
+  "fixture_id": "rigid-object-site-task-v1",
+  "testbed": {
+    "testbed_id": "rigid-object-site-task",
+    "version": "1",
+    "task_family": "rigid_object_pick_place",
+    "site_id": "fixture-site",
+    "embodiment": "fixture-arm",
+    "sensor": "fixture-rgb-v1",
+    "controller": "joint_position",
+    "raw_capture_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "immutable": true
+  },
+  "request": {
+    "request_id": "request-1",
+    "decision_id": "decision-1",
+    "claim_types": [
+      "reachability",
+      "perception_visibility",
+      "collision_contact",
+      "cycle_time",
+      "comparative_policy_ranking",
+      "deployment_readiness"
+    ],
+    "provider_selected_by_request": false
+  },
+  "method_cases": [
+    {
+      "method_id": "analytic-reach",
+      "family": "analytic_geometry_kinematics",
+      "claim_type": "reachability",
+      "expected_disposition": "selected"
+    },
+    {
+      "method_id": "captured-visibility",
+      "family": "captured_real_observation",
+      "claim_type": "perception_visibility",
+      "expected_disposition": "selected"
+    },
+    {
+      "method_id": "fixture-mujoco",
+      "family": "traditional_simulation",
+      "claim_type": "collision_contact",
+      "expected_disposition": "selected_only_when_qualified"
+    },
+    {
+      "method_id": "uncalibrated-world-model",
+      "family": "learned_world_model",
+      "claim_type": "comparative_policy_ranking",
+      "expected_disposition": "rejected_unqualified"
+    },
+    {
+      "method_id": "physical-outcome",
+      "family": "physical_evidence",
+      "claim_type": "deployment_readiness",
+      "expected_disposition": "bounded_evidence_request"
+    }
+  ],
+  "expected_plan": {
+    "minimum_leaf_evaluation_run_specs": 2,
+    "minimum_non_leaf_steps": 2,
+    "ranking_verdict": "abstention",
+    "deployment_verdict": "abstention",
+    "ranking_science_boundary": "thesis_not_supported"
+  },
+  "expected_decision": {
+    "overall_outcome": "partial_decision",
+    "supported_claim_ids": ["collision", "cycle", "reach", "visible"],
+    "abstained_claim_ids": ["deploy", "ranking"],
+    "deployment_approval": false,
+    "safety_certification": false
+  },
+  "later_physical_outcome": {
+    "partition": "calibration",
+    "creates_new_testbed_version": "2",
+    "mutates_historical_testbed": false,
+    "mutates_historical_decision": false,
+    "cross_domain_transfer_enabled": false
+  }
+}

@@ -2,7 +2,9 @@
 
 ## Purpose
 
-This document explains, in one place, what Blueprint is building, how the current iPhone capture path works today, why that capture path can support Seoul World Model style generated assets, and what minimum contract changes are required to make Blueprint iPhone captures usable for real-site robot evaluation runs and Post-Training Data Packages.
+This document explains what Blueprint is building, how the current iPhone
+capture path works, and what minimum contract changes make captures usable for
+maintained testbeds, Task Evaluation Runs, and optional evidence reuse.
 
 This is written as a handoff document for a new agent or engineer. It assumes no prior context beyond access to the `BlueprintCapture` and `BlueprintCapturePipeline` checkouts. Cross-repo paths in this document use the conventional `$HOME/workspace/<repo>` layout; resolve them against wherever the sibling repos are checked out in your environment (see the sibling-checkout convention in `AGENTS.md`).
 
@@ -15,13 +17,15 @@ Blueprint is not trying to build a generic unconstrained world model that invent
 Blueprint is building a capture-first, real-site robot-evaluation/data-package-first system around real sites:
 
 - `BlueprintCapture` captures raw evidence from real facilities.
-- `BlueprintCapturePipeline` turns that evidence into Task Evaluation Run artifacts, Post-Training Data Package artifacts, hosted-session artifacts, provider adapter inputs, generated/model-derived support assets, and optional trust / review outputs.
+- `BlueprintCapturePipeline` turns that evidence into maintained testbeds, Task
+  Evaluation Run artifacts, optional rights-gated evidence exports, hosted
+  artifacts, provider-adapter inputs, and support outputs.
 - `Blueprint-WebApp` is the operational and buyer-facing surface where packages, hosted access, licensing, and support artifacts appear.
 
 The product doctrine is:
 
 - raw capture, rights, privacy, provenance, timestamps, poses, and device metadata are authoritative evidence
-- Task Evaluation Runs and Post-Training Data Packages are the primary downstream product contracts
+- Task Evaluation Run is the primary downstream product contract
 - canonical site packages, site-world records, generated worlds, and provider assets are support artifacts inside those contracts
 - qualification and readiness records are support artifacts for trust, review, pricing, and launch gating
 - generated previews, hosted-review surfaces, and provider worlds are downstream projections
@@ -56,7 +60,7 @@ The current iPhone pipeline already captures much more than plain video:
 - mesh exports
 - IMU / motion logs
 
-That is already enough to support prototype site-grounded retrieval and generated support assets inside a Post-Training Data Package.
+That is already enough to support prototype site-grounded retrieval and generated support evidence inside a run.
 
 However, the current contract still carries qualification-era naming and preview-generation assumptions. Those records remain compatibility and support artifacts; they were not designed specifically for:
 
@@ -70,7 +74,8 @@ So the question is not "do we have enough raw signal?" The answer there is mostl
 
 The real question is:
 
-"What minimum contract changes are needed so these captures become a reliable, reusable site-memory substrate for real-site robot evaluation and Post-Training Data Package support?"
+"What minimum contract changes are needed so these captures become a reliable,
+reusable Site-Task Testbed substrate for Task Evaluation Runs and evidence reuse?"
 
 This spec answers that question.
 

@@ -660,10 +660,10 @@ blueprint-run-robot-eval-job \
   --simulator fixture
 ```
 
-Post-Training Data Package export and archive:
+Deprecated compatibility evidence export and archive (explicit opt-in; not a product):
 
 ```bash
-blueprint-build-post-training-data-package \
+python -m blueprint_pipeline.post_training_data_package \
   --capture-root /path/to/capture-root \
   --job-dir /path/to/capture-root/pipeline/robot_eval_jobs/<job_id>
 ```

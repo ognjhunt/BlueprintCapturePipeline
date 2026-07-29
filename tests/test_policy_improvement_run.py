@@ -210,6 +210,14 @@ def test_policy_improvement_run_offer_binds_eval_post_training_and_candidate_art
     )
 
     assert result["status"] == "improvement_candidate_ready_for_customer_review"
+    assert result["deprecation"] == {
+        "deprecated": True,
+        "compatibility_only": True,
+        "replacement_product": "Task Evaluation Run",
+        "default_orchestration_enabled": False,
+        "candidate_generation_is_internal_experiment": True,
+        "training_or_improvement_implied": False,
+    }
     assert result["product"]["extends"] == ["Task Evaluation Run", "Post-Training Data Package"]
     assert result["access_model"]["source_code_required"] is False
     assert result["customer_inputs"]["base_policy_or_model"]["value"] == "customer-tote-policy"
@@ -246,6 +254,10 @@ def test_policy_improvement_run_offer_binds_eval_post_training_and_candidate_art
         job_dir / "policy_improvement_run" / "policy_improvement_run_webapp_summary.json"
     )
     assert result["webapp_summary_projection"]["safe_for_firestore"] is True
+    assert result["webapp_summary_projection"]["deprecated"] is True
+    assert result["webapp_summary_projection"]["product_family"] == (
+        "legacy_policy_improvement_run"
+    )
     assert result["webapp_summary_projection"]["dense_or_secret_payloads_included"] is False
     assert result["webapp_summary_projection"]["private_hardware_integration"] == {
         "integration_mode": "customer_hosted_sealed_eval_capsule",

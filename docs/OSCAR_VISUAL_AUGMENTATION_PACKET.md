@@ -1,7 +1,7 @@
 # OSCAR Visual Augmentation Packet
 
 `oscar_visual_augmentation_packet` prepares model-derived visual variants for
-Post-Training Data Packages and visual distribution-shift evaluation. It keeps
+rights-gated evidence reuse inside Task Evaluation Runs and visual distribution-shift evaluation. It keeps
 motion and camera geometry fixed, requires camera and skeleton provenance, and
 lets replaceable video backends such as OSCAR, Cosmos, or future WAM providers
 generate realistic appearance variants.
@@ -84,7 +84,7 @@ blueprint-run-oscar-visual-augmentation-generation \
 Fixture videos are decodable MP4s for exercising the artifact and QA path only.
 They are not OSCAR/Cosmos outputs and are not training data.
 
-The Post-Training Data Package exporter discovers this packet automatically when
+The legacy evidence exporter discovers this packet automatically when explicitly requested and
 it exists under the job directory and indexes it as model-derived support.
 
 ## Artifacts

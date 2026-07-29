@@ -60,7 +60,6 @@ from .failure_diagnosis_contract import (
 from .local_capture import resolve_local_capture_context
 from .live_robot_eval_closure import build_live_robot_eval_closure_manifest
 from .core.pipeline_settings import PipelineSettings
-from .post_training_data_package import build_post_training_data_package_export
 from .canonical_training_quality_pipeline import (
     run_canonical_training_quality_from_request,
 )
@@ -8806,9 +8805,9 @@ def build_robot_eval_job(
         job_dir=job_dir,
         request=request,
     )
-    data_package_export = build_post_training_data_package_export(
-        capture_root=context.capture_root,
-        job_dir=job_dir,
+    from .task_evaluation_evidence_use import build_legacy_evidence_export_if_requested
+    evidence_export_requested, data_package_export = build_legacy_evidence_export_if_requested(
+        request, capture_root=context.capture_root, job_dir=job_dir
     )
     webapp_status_projection = _webapp_robot_eval_status_projection(
         job_dir=job_dir,
@@ -9008,7 +9007,7 @@ def build_robot_eval_job(
         "task_eval_run_report_path": "task_eval_run_report.json",
         "robot_eval_report_status": robot_eval_report.get("status"),
         "robot_eval_report_path": "robot_eval_report.json",
-        "post_training_data_package_export_status": data_package_export.get("status"),
+        "evidence_use_export_status": data_package_export.get("status"),
         "webapp_robot_eval_status_projection_status": webapp_status_projection.get("status"),
         "webapp_robot_eval_buyer_display_state": webapp_status_projection.get(
             "buyer_display_state"
@@ -9227,6 +9226,10 @@ def build_robot_eval_job(
             ),
         },
     }
+    if not evidence_export_requested:
+        run_manifest["cpu_preflight_artifacts"].pop(
+            "post_training_data_package_export_manifest", None
+        )
     evaluator_qualification_request = request.get("evaluator_qualification_request")
     evaluator_qualification: Dict[str, Any] | None = None
     if evaluator_qualification_request is not None:

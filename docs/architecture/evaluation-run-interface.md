@@ -1,6 +1,9 @@
 # Evaluation Run Interface
 
-`evaluation_run.v1` is the provider-neutral front door for robot evaluation.
+`evaluation_run.v1` is the provider-neutral **leaf execution boundary** for robot
+evaluation. The Decision/Evidence Router is the Task Evaluation Run front door
+and may emit zero, one, or many leaves; analytic geometry, captured observations,
+and recorded physical evidence do not pretend to be simulator runs.
 It describes one run using exactly six replaceable parts:
 
 1. `scene_bundle`
@@ -9,6 +12,14 @@ It describes one run using exactly six replaceable parts:
 4. `policy_adapter`
 5. `runtime_provider_profile`
 6. `proof_contract`
+
+The canonical Python leaf contract is
+`blueprint_pipeline.evaluation_run_contract.EvaluationRunSpec`. The class
+historically exported from `blueprint_pipeline.evaluation_run` represented a
+static built-in pack rather than this runtime contract. It is retained as the
+deprecated alias `EvaluationRunSpec = LegacyEvaluationPackSpec`; callers can use
+`legacy_evaluation_pack_to_leaf_spec` for explicit translation. Built-in pack,
+simulator, or provider defaults never constitute qualification evidence.
 
 The interface is compiled by
 `python -m blueprint_pipeline.evaluation_run --spec ... --output-dir ...` into

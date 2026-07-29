@@ -21,7 +21,7 @@ If this file drifts from those, update this file immediately rather than inventi
 Blueprint remains:
 
 - capture-first
-- Task-Evaluation-Run and Post-Training-Data-Package product-first
+- one-product Task-Evaluation-Run posture over maintained Site-Task Testbeds
 - world-model backends remain replaceable support infrastructure
 - exact-site package and hosted-access focused
 - rights-safe, privacy-safe, provenance-safe
@@ -128,8 +128,10 @@ For the exact current task and routine inventory, read (in the
 
 When autonomous-org work touches `BlueprintCapturePipeline`, keep these constraints explicit:
 
-- optimize for stronger site-specific package quality and hosted-session truth
-- keep backend/model choices swappable behind stable package and runtime contracts
+- optimize for stronger maintained-testbed quality, claim routing, decisions,
+  abstentions, and hosted-session truth
+- keep geometry, simulator, world-model/provider, and physical-evidence choices
+  swappable behind stable request, plan, result, and leaf-run contracts
 - preserve rights, privacy, and provenance metadata as first-class truth
 - route blockers, delegation, and validation through Paperclip issues, not prose alone
 - do not let buyer, launch, or growth pressure overstate package quality beyond what artifacts and contracts support

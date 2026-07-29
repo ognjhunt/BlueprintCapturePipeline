@@ -1412,6 +1412,10 @@ def _full_job_request(
         "operation": operation,
         "simulator_preference": "fixture",
         "cosmos_training_preference": {"mode": "export_only"},
+        "evidence_use": {
+            "export_requested": True,
+            "requested_uses": ["evaluation"],
+        },
         "budget": {"budget_usd": 5.0, "timeout_seconds": 30},
         "rights_privacy_scope": {
             "status": "cleared_for_robot_eval" if rights_allowed else "blocked",
@@ -2007,6 +2011,36 @@ def test_robot_eval_job_fixture_path_runs_end_to_end_without_claim_upgrade(
     assert archive_manifest["status"] == "blocked_identity_signing"
     assert archive_manifest["archive"] is None
     assert archive_manifest["identity_signature_present"] is False
+
+
+def test_robot_eval_job_does_not_emit_legacy_data_product_without_explicit_evidence_use_request(
+    tmp_path: Path,
+) -> None:
+    capture_root = _build_capture_root(tmp_path)
+    _write_robot_eval_cards(capture_root)
+    _write_fixture_attempts(capture_root, success=True)
+    request = _full_job_request(capture_root)
+    request.pop("evidence_use")
+    request_path = tmp_path / "job-request-no-evidence-export.json"
+    _write_json(request_path, request)
+
+    build_robot_eval_job(
+        capture_root=capture_root,
+        job_request=request_path,
+        job_id="job-no-default-evidence-export",
+        agent_adapter=FakeRobotEvalJobAgentAdapter(),
+        provisioner="fixture_local",
+        simulator="fixture",
+    )
+
+    job_dir = capture_root / "pipeline" / "robot_eval_jobs" / "job-no-default-evidence-export"
+    assert not (job_dir / "post_training_data_package_export_manifest.json").exists()
+    run_manifest = _read_json(job_dir / "job_run_manifest.json")
+    assert run_manifest["evidence_use_export_status"] == "not_requested"
+    assert (
+        "post_training_data_package_export_manifest"
+        not in run_manifest["cpu_preflight_artifacts"]
+    )
 
 
 def test_evaluation_run_is_authoritative_front_door_for_generic_fixture_execution(

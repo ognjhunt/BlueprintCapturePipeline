@@ -106,6 +106,7 @@ def test_arena_result_ingest_writes_package_and_surfaces_buyer_readout_blockers(
         arena_results_dir=results_dir,
         output_dir=output_dir,
         job_request={
+            "evidence_use": {"export_requested": True, "requested_uses": ["evaluation"]},
             "policy_package": {
                 "policy_api_endpoint": {"endpoint_url": "https://robot.example/policy"}
             }
@@ -181,6 +182,26 @@ def test_arena_result_ingest_writes_package_and_surfaces_buyer_readout_blockers(
     assert audit["summary"]["clip_count"] == 1
     assert audit["proof_boundary_violations"] == []
     assert (output_dir / "arena_package_proof_boundary_audit.json").is_file()
+
+
+def test_arena_ingest_does_not_emit_legacy_evidence_product_by_default(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    results_dir = _arena_results(tmp_path)
+    output_dir = tmp_path / "arena-no-export"
+
+    result = build_arena_result_ingest(
+        capture_root=capture_root,
+        arena_results_dir=results_dir,
+        output_dir=output_dir,
+        scenario_count=1,
+        shard_size=1,
+    )
+
+    assert not (output_dir / "post_training_data_package_export_manifest.json").exists()
+    run_manifest = result["run_manifest"]
+    assert run_manifest["evidence_use_export_status"] == "not_requested"
 
 
 def test_arena_package_audit_blocks_illegal_proof_upgrade(tmp_path: Path) -> None:

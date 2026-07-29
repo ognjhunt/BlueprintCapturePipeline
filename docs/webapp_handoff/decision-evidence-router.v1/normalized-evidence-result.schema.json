@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/decision-evidence-router/v1/normalized-evidence-result.schema.json",
+  "title": "Blueprint Normalized Evidence Result",
+  "type": "object",
+  "required": [
+    "schema_version", "result_id", "request_id", "request_digest", "plan_id",
+    "plan_digest", "claim_id", "testbed_id", "testbed_version", "testbed_digest",
+    "method_profile_snapshot", "method_profile_digest", "status", "validity",
+    "uncertainty", "coverage", "applicability_envelope", "raw_artifact_references",
+    "provenance", "cost_usd", "duration_seconds", "blockers",
+    "invalid_rollout_reasons", "claim_ceiling", "result_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "normalized_evidence_result.v1"},
+    "result_id": {"type": "string", "minLength": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "request_digest": {"$ref": "#/$defs/digest"},
+    "plan_id": {"type": "string", "minLength": 1},
+    "plan_digest": {"$ref": "#/$defs/digest"},
+    "claim_id": {"type": "string", "minLength": 1},
+    "testbed_id": {"type": "string", "minLength": 1},
+    "testbed_version": {"type": "string", "minLength": 1},
+    "testbed_digest": {"$ref": "#/$defs/digest"},
+    "method_profile_snapshot": {"type": "object", "minProperties": 1},
+    "method_profile_digest": {"$ref": "#/$defs/digest"},
+    "status": {"enum": ["valid", "invalid", "uncertain", "contradictory", "unavailable", "evidence_requested"]},
+    "validity": {"type": "boolean"},
+    "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+    "coverage": {"type": "number", "minimum": 0, "maximum": 1},
+    "applicability_envelope": {"type": "object", "minProperties": 1},
+    "raw_artifact_references": {"type": "array", "items": {"type": "object"}},
+    "provenance": {"type": "object", "minProperties": 1},
+    "cost_usd": {"type": "number", "minimum": 0},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "invalid_rollout_reasons": {"type": "array", "items": {"type": "string"}},
+    "claim_ceiling": {"type": "object", "minProperties": 1},
+    "result_digest": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": true,
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

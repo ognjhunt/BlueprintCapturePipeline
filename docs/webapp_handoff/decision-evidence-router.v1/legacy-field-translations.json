@@ -1,0 +1,51 @@
+{
+  "schema_version": "decision_evidence_legacy_translation.v1",
+  "translations": [
+    {
+      "legacy_input": "robot_eval_job_request.v1",
+      "target": "decision_evidence_request.v1",
+      "mode": "explicit_adapter",
+      "rules": {
+        "site_package": "exact_testbed_reference",
+        "task_scope": "claims_and_task_distribution",
+        "robot_profile": "candidate_and_claim_subject",
+        "budget": "budget",
+        "simulator_preference": "permitted_evidence_methods_only"
+      },
+      "forbidden_inference": "simulator_preference_is_not_qualification"
+    },
+    {
+      "legacy_input": "policy_improvement_run",
+      "target": "decision_evidence_request.v1",
+      "mode": "deprecated_internal_experiment",
+      "rules": {
+        "baseline_and_candidate": "candidates",
+        "promotion_threshold": "claim.measurable_threshold",
+        "heldout_result": "evidence_reference"
+      },
+      "product_name_exposed": false,
+      "policy_improvement_implied": false
+    },
+    {
+      "legacy_input": "post_training_data_package",
+      "target": "task_evaluation_run_evidence_use",
+      "mode": "deprecated_export_adapter",
+      "rules": {
+        "rights_manifest": "restrictions_and_evidence_use_gate",
+        "provenance": "provenance",
+        "holdout_split": "leakage_gate",
+        "export_manifest": "eligible_evidence_export"
+      },
+      "standalone_product_exposed": false,
+      "training_implied": false
+    },
+    {
+      "legacy_input": "evaluation_run_spec.v1",
+      "target": "evaluation_run.v1",
+      "mode": "legacy_pack_to_leaf_adapter",
+      "implementation": "blueprint_pipeline.evaluation_run.legacy_evaluation_pack_to_leaf_spec",
+      "runtime_identity_required": true,
+      "legacy_defaults_are_qualification": false
+    }
+  ]
+}

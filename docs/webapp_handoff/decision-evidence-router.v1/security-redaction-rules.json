@@ -1,0 +1,33 @@
+{
+  "schema_version": "decision_evidence_security_redaction.v1",
+  "forbidden_persisted_values": [
+    "api_key",
+    "authorization",
+    "credential",
+    "password",
+    "secret",
+    "token",
+    "raw_proprietary_policy_values"
+  ],
+  "allowed_references": [
+    "secret_environment_variable_name",
+    "opaque_policy_id",
+    "policy_checkpoint_digest",
+    "redacted_artifact_uri",
+    "checksum"
+  ],
+  "webapp_rules": {
+    "display_raw_policy_actions": false,
+    "display_provider_credentials": false,
+    "display_owner_evidence_without_entitlement": false,
+    "recompute_claim_ceiling": false,
+    "recompute_scientific_verdict": false,
+    "select_runtime_provider": false
+  },
+  "pipeline_rules": {
+    "reject_nonempty_secret_fields": true,
+    "persist_ephemeral_context_values": false,
+    "raw_capture_authority_rewritten": false,
+    "generated_artifact_upgrades_physical_claim": false
+  }
+}

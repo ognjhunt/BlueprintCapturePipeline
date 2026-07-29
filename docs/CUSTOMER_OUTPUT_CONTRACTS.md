@@ -104,7 +104,7 @@ shipped with a token one.
 
 ## 4. One integrity contract across all customer roots
 
-The Post-Training Data Package had real integrity machinery — a package index,
+The legacy Post-Training Data Package evidence export had real integrity machinery — a package index,
 per-member checksums, and a self-excluded root signature. The other three
 customer-facing manifest builders (`build_rights_provenance_review`,
 `build_site_package_manifest`, `build_proof_pack_manifest`) accepted
@@ -115,7 +115,7 @@ they were, so anything swapped, truncated, or regenerated between manifest time
 and download time was undetectable — and two customers handed "the same" package
 had no way to establish they received the same thing.
 
-`blueprint_pipeline.signed_delivery_bundle` lifts the PTDP pattern into a form
+`blueprint_pipeline.signed_delivery_bundle` lifts that legacy export pattern into a form
 any root can use. All three builders now emit a `delivery_integrity` block. A
 member without a digest is a **blocker**, not a warning, so the gap is visible in
 the manifest rather than invisible to the recipient. The root digest covers the

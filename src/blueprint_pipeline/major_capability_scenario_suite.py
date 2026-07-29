@@ -194,19 +194,19 @@ _SCENARIOS: list[dict[str, Any]] = [
         ],
     },
     {
-        "scenario_id": "post_training_data_package_export",
-        "title": "Post-Training Data Package Export",
-        "major_capability": "Post-Training Data Package artifact export",
+        "scenario_id": "task_evaluation_evidence_use_export",
+        "title": "Task Evaluation Evidence Use Export",
+        "major_capability": "rights-gated evidence use inside a Task Evaluation Run",
         "realistic_context": (
-            "A robot-eval job emits a package export with dataset metadata, rights, "
-            "checksums, package index, and bounded training-use claims."
+            "A Task Evaluation Run emits an optional evidence-use export with dataset "
+            "metadata, rights, checksums, and bounded use claims."
         ),
         "evaluation_method_id": EVALUATION_METHOD_ID,
         "success_criteria": [
             "Dataset, rights, index, checksum, and export manifests exist.",
             "The export contains at least one episode.",
-            "The package remains a data package and does not claim training completion.",
-            "The package does not imply generated-world rank fidelity or public launch readiness.",
+            "The export is evidence inside the run and does not claim training completion.",
+            "The export does not imply policy improvement, rank fidelity, or launch readiness.",
         ],
         "criteria": [
             {
@@ -371,11 +371,11 @@ _SCENARIOS: list[dict[str, Any]] = [
         ],
     },
     {
-        "scenario_id": "support_assets_trust_and_policy_improvement",
-        "title": "Support Assets, Trust, And Policy Improvement",
+        "scenario_id": "support_assets_trust_and_candidate_experiments",
+        "title": "Support Assets, Trust, And Candidate Experiments",
         "major_capability": (
             "generated/model-derived support assets, optional trust outputs, and "
-            "policy-improvement support"
+            "optional internal candidate-generation support"
         ),
         "realistic_context": (
             "Simulation support artifacts, provider preview QA, production handoff readiness, "

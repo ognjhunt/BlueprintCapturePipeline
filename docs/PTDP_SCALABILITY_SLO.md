@@ -1,4 +1,9 @@
-# PTDP scalability SLO
+# Legacy evidence-export scalability SLO
+
+`PTDP` in file names, commands, schemas, and release-scope identifiers below is
+a compatibility identifier for the historical export implementation. It is not
+a customer-facing product. The export is available only as a rights-cleared
+evidence use inside a Task Evaluation Run.
 
 The declared package ceiling is 100,000 clips per run. The implementation must
 fail before materialization when clip count, estimated output quota, free-space
@@ -28,6 +33,6 @@ python scripts/benchmark_ptdp_scalability.py \
 ```
 
 This synthetic benchmark validates bounded index and writer behavior. It does
-not claim that a maximum-size representative real-media PTDP run, buyer package
+not claim that a maximum-size representative real-media evidence-export run, buyer package
 quality, or production hardware SLO has passed. Those require a release-bound
 real-media workload and retained evidence at the exact code/image digest.

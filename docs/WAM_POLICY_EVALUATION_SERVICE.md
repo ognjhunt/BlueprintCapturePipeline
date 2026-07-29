@@ -3,8 +3,8 @@
 ## Purpose
 
 Blueprint's robot-team service is capture-first and substrate-agnostic. A real
-capture package produces Task Evaluation Run and Post-Training Data Package
-artifacts; an evaluation substrate then generates support evidence for ranking
+maintained testbed supports a Task Evaluation Run; an evaluation substrate may
+then generate claim-scoped support evidence for comparing
 customer policies or checkpoints.
 
 World-action-model evaluation is first-class as a support/evaluator substrate.
@@ -77,7 +77,7 @@ itself a task-success label or policy-ranking outcome.
 
 ## Backend Strategy
 
-The preferred new learned-WAM evaluator candidate is `cosmos3_wam`, modeled as
+One configured learned-WAM evaluator candidate is `cosmos3_wam`, modeled as
 Cosmos3-Nano behind the same replaceable adapter contract as the older
 OSCAR/Cosmos lanes. That preference is a backend strategy, not a permanent
 company dependency and not a public accuracy claim. It still requires an
@@ -468,7 +468,7 @@ Critical claim boundaries:
   support artifacts; ranking claims require a scoped generated-world
   policy-evaluation rank-fidelity gate.
 - WAM/harness outputs remain support artifacts for Task Evaluation Runs and
-  Post-Training Data Packages grounded in capture truth.
+  rights-gated evidence-use exports inside Task Evaluation Runs, grounded in capture truth.
 
 Scene WAM episode packets can also prepare capture-derived robot POV seed
 frames through the depth-splat synthesis path. For each task and robot profile,
@@ -682,7 +682,8 @@ decisive scenarios where candidates diverged, high-uncertainty scenarios, OOD
 blockers, visual-review blockers, dominant failure modes, exemplar evidence
 refs, failure clusters, and sim-ranking rerun recommendations.
 
-Failure clusters are post-training data package hooks, not root-cause
+Failure clusters are optional post-training evidence-use hooks inside a Task
+Evaluation Run, not root-cause
 certification. Each cluster should say what data to collect, which scenario
 variants to add, and which policy adapter or checkpoint to retry. When failure
 evidence is weak, the report must use `unknown_needs_review` instead of

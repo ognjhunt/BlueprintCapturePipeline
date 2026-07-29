@@ -4,7 +4,7 @@ Status: active Pipeline-side companion to the cross-repo beta incident runbook
 in `../Blueprint-WebApp/docs/beta-ops-incident-runbook-2026-07-08.md`.
 
 This runbook covers Pipeline containment and rollback evidence for incidents
-that affect Task Evaluation Runs, Post-Training Data Packages, capture truth,
+that affect Task Evaluation Runs, optional evidence-use exports, capture truth,
 privacy/takedown handling, provider spend, or WebApp delivery handoff. It does
 not replace counsel/security review for regulated notification decisions.
 
