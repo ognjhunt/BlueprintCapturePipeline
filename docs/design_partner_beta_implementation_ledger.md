@@ -29,7 +29,7 @@ remain user-owned and are not inspected, absorbed, or modified by this branch.
 | --- | --- |
 | New Pipeline intake/materialization focused lane | `45 passed` (`tests/test_capture_intake.py` plus `tests/test_materialization_edges.py`) |
 | Pipeline fast/full release lanes | Not run yet; this is not a coherent release candidate. |
-| Capture retained-frame/decoded-PTS focused lane | `26 passed`, 0 failed, 0 skipped on an iPhone 17 Pro iOS 26.0 simulator. Result bundle: `Test-BlueprintCapture-2026.07.29_15-08-28--0500.xcresult`. A separate overlapping invocation failed on a locked build database and a later isolated-cache attempt failed for insufficient local disk; neither is counted as test evidence. |
+| Capture retained-frame/decoded-PTS focused lane | `53 passed`, 0 failed, 0 skipped on an iPhone 17 Pro iOS 26.0 simulator. The explicit result bundle is `build/CaptureSyncFocused.xcresult` in the Capture beta worktree and covers synchronization, strict Raw Contract 3.2 validation, finalizer/raw-bundle regressions, Pipeline contract constants, and adjacent capture-bundle/inference behavior. Earlier overlapping invocations failed on a locked build database or insufficient local disk; neither is counted as test evidence. |
 | Capture release lanes | Not run yet; the focused simulator lane is not the final device or release gate. |
 | WebApp release lanes | Not run yet. |
 | WebApp live readiness | `GET https://tryblueprint.io/health/ready` returned HTTP 200 and `status=ready`, `blocker_count=0` at `2026-07-29T19:35:02.092Z`. This does not expose or prove the deployed commit. |
