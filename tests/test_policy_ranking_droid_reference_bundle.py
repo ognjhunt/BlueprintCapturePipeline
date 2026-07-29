@@ -71,6 +71,10 @@ def test_reference_bundle_is_deterministic_and_contains_only_registered_path(
         assert "provider_runtime/cosmos3_droid_reference/initial_observation.png" in names
         assert not any(name.startswith("provider_runtime/cosmos3_input/") for name in names)
         assert "provider_runtime/wam_provider_runtime_runner.py" in names
+        entrypoint = archive.read("provider_runtime/run_wam_provider_runtime.sh").decode("utf-8")
+        assert "BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR" in entrypoint
+        assert 'export BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR="$OUTPUT_DIR"' in entrypoint
+        assert 'export BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR="$OUTPUT_DIR"' in entrypoint
 
 
 def test_reference_bundle_rejects_mutated_observation(tmp_path: Path) -> None:

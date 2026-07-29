@@ -1,0 +1,83 @@
+{
+  "schema_version": "policy_ranking_roboarena_droid_reference_confirmation_protocol.v3",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "status": "prospectively_frozen_before_allocation_2_provider_mutation",
+  "supersedes": {
+    "protocol": "protocol_v2.json",
+    "protocol_v2_manifest_sha256": "35039583984c045dcfb6e31116b63cd3b90d72181ce7fd64a37f268e1fc0d1dc",
+    "protocol_v2_file_sha256": "a35ad87cf27eff9bf2b31ee2583110b0940ec6fc7acd4bfa15318840ba873fb6",
+    "protocol_v2_rewritten": false,
+    "reason": "Allocation 1 exposed a provider-neutral output-directory mismatch and terminal-upload restart race. The run produced no recoverable scientific artifact and received no scientific credit. This amendment freezes reusable collection fixes before a replacement allocation."
+  },
+  "amendment_timing": {
+    "recorded_at": "2026-07-29T02:15:44-0500",
+    "allocation_1_provider_called": true,
+    "allocation_1_paid_execution": true,
+    "allocation_1_scientific_output_recoverable": false,
+    "allocation_1_outcome_labels_accessed": false,
+    "allocation_1_evaluator_called": false,
+    "allocation_1_provider_zero_proven": true,
+    "allocation_2_paid_execution_admitted": false,
+    "allocation_2_provider_mutation_created": false
+  },
+  "allocation_1_closeout": {
+    "evidence": "allocation_1_infrastructure_failure_v1.json",
+    "classification": "infrastructure_failure_no_scientific_credit",
+    "estimated_gpu_cost_usd": 0.387084,
+    "provider_generation_request_count": "not_recoverable_within_frozen_maximum_of_2",
+    "cosmos_wam_qualification_credit": false,
+    "provider_zero": true
+  },
+  "changed_fields": [
+    {
+      "field": "provider_bundle_sha256",
+      "old": "7e422f002ec206ce1a7b603d83f618c548f384e53eca7b84812d9d2d7b3779e3",
+      "new": "e729340c2eb8b1eb45f9b35add822fea97c5060b0c1c593831f921d38a4612fc"
+    },
+    {
+      "field": "provider_output_directory_contract",
+      "old": "provider_wrapper_and_runtime_names_not_explicitly_unified",
+      "new": "BLUEPRINT_WAM_PROVIDER_OUTPUT_DIR_and_BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR_bound_to_the_same_directory"
+    },
+    {
+      "field": "terminal_container_lifecycle",
+      "old": "container_exited_after_terminal_upload_and_runpod_restarted_it",
+      "new": "container_holds_after_terminal_upload_until_control_plane_or_watchdog_teardown"
+    },
+    {
+      "field": "compute_authorization",
+      "old": "allocation_1_consumed_and_closed",
+      "new": "allocation_2_single_use_after_provider_zero"
+    }
+  ],
+  "unchanged_scientific_contract": {
+    "reference_manifest_sha256": "3f29f83f6698543bd7ce13e23b632e355031e54e2a123f0d439868bac3906f04",
+    "recorded_action_request_maximum": 1,
+    "no_motion_request_maximum": 1,
+    "no_motion_admitted_only_after_recorded_structural_motion_pass": true,
+    "frozen_motion_thresholds_unchanged": true,
+    "official_droid_action_and_camera_contract_unchanged": true,
+    "untouched_data_not_admitted": true,
+    "evaluator_not_admitted": true,
+    "physical_robot_access_forbidden": true
+  },
+  "bundle_v2": {
+    "external_artifact": "external-evidence-store://policy-ranking-roboarena-droid-reference-confirmation-evidence-20260729/bundle_v2/provider_bundle.zip",
+    "bundle_sha256": "e729340c2eb8b1eb45f9b35add822fea97c5060b0c1c593831f921d38a4612fc",
+    "bundle_size_bytes": 419881,
+    "receipt_file_sha256": "a0bcf859af5d38eed5c4bdbeff246165c123d1f35ee355dcf2275650342fffd2"
+  },
+  "cost_authority": {
+    "prior_estimated_gpu_cost_usd": 0.387084,
+    "allocation_2_target_usd": 2.5,
+    "allocation_2_hard_cap_usd": 5.0,
+    "gpu_category_ceiling_usd": 50.0,
+    "campaign_total_ceiling_usd": 100.0,
+    "maximum_concurrent_gpus": 1,
+    "hard_ttl_seconds": 7200
+  },
+  "allocation_2_provider_called": false,
+  "allocation_2_paid_execution_admitted": false,
+  "outcome_labels_accessed": false,
+  "manifest_sha256": "c200d6c36c10387f5357457500705b8c5db52c1964f9432f4c0d3ab0569b02d3"
+}

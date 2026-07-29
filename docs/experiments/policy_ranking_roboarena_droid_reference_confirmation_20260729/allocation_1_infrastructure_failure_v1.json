@@ -1,0 +1,48 @@
+{
+  "schema_version": "policy_ranking_cosmos3_droid_allocation_failure.v1",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "allocation_index": 1,
+  "provider": "runpod",
+  "provider_resource_id": "k4rshjw2lpetu3",
+  "source_commit": "cb5f4b5b84225bca2c455b8011f4bc35b56844aa",
+  "provider_bundle_sha256": "7e422f002ec206ce1a7b603d83f618c548f384e53eca7b84812d9d2d7b3779e3",
+  "status": "infrastructure_failure_no_scientific_credit",
+  "observed_failure": {
+    "provider_runtime_stdout_reported_completed_cycle": true,
+    "terminal_archive_contained_wam_runtime_result": false,
+    "terminal_archive_contained_generated_videos": false,
+    "root_cause": "provider_runtime_and_runpod_wrapper_used_different_output_directory_environment_variables_and_the_pod_restarted_after_terminal_upload",
+    "provider_generation_request_count_recoverable": false,
+    "scientific_output_recoverable": false,
+    "cosmos_result_interpretable": false
+  },
+  "reusable_fixes": {
+    "provider_neutral_output_directory_binding": true,
+    "terminal_archive_hold_until_control_plane_teardown": true,
+    "one_off_only_workaround_used_as_final_fix": false
+  },
+  "cost": {
+    "gpu_rate_usd_per_hour": 1.99,
+    "estimated_live_seconds": 700.3,
+    "estimated_gpu_cost_usd": 0.387084,
+    "storage_cost_usd_measured": null,
+    "evaluator_api_cost_usd": 0.0
+  },
+  "teardown": {
+    "delete_manifest_sha256": "a7b7638824751623991eb745568d0d9c1c6f7a4917e054d299c8656dd1a38dc5",
+    "watchdog_terminal_manifest_sha256": "34d6cfac9650b979b63325fd2c262e28ac3fa2a9da9e2e7c7d38be23354d2f4f",
+    "task_live_resources": 0,
+    "global_live_resources": 0,
+    "provider_absence_confirmed": true,
+    "continuing_hourly_burn": false
+  },
+  "claim_boundary": {
+    "runtime": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "ranking_fidelity": false,
+    "captured_site_transfer": false,
+    "physical_performance": false
+  },
+  "raw_secret_values_recorded": false
+}
