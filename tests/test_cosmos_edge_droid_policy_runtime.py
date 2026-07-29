@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from blueprint_pipeline.cosmos_edge_droid_policy_runtime import (
+    CosmosEdgeDroidPolicyClient,
+    CosmosEdgeDroidPolicySpec,
+    validate_server_metadata,
+    verify_local_policy_snapshot,
+)
+from blueprint_pipeline.droid_policy_bridge import DROID_ROBOARENA_CONCAT_VIEWS
+from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
+
+
+def _spec(manifest_sha256: str = "a" * 64) -> CosmosEdgeDroidPolicySpec:
+    return CosmosEdgeDroidPolicySpec(snapshot_manifest_sha256=manifest_sha256)
+
+
+def _metadata(spec: CosmosEdgeDroidPolicySpec) -> dict:
+    return {
+        **spec.server_metadata(),
+        "local_snapshot_verified": True,
+        "local_snapshot_manifest_sha256": spec.snapshot_manifest_sha256,
+        "local_snapshot_file_count": 7,
+        "local_snapshot_size_bytes": 100,
+        "local_snapshot_verification_sha256": "b" * 64,
+    }
+
+
+def _observation() -> dict:
+    return {
+        **{
+            view: np.zeros((224, 224, 3), dtype=np.uint8)
+            for view in DROID_ROBOARENA_CONCAT_VIEWS
+        },
+        "observation/joint_position": np.zeros(7),
+        "observation/gripper_position": np.zeros(1),
+        "prompt": "Pick up the bottle.",
+    }
+
+
+def test_client_verifies_identity_three_views_and_action_shape() -> None:
+    spec = _spec()
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            assert kwargs == {"host": "127.0.0.1", "port": 8000, "api_key": None}
+
+        def get_server_metadata(self):
+            return _metadata(spec)
+
+        def infer(self, observation):
+            assert set(DROID_ROBOARENA_CONCAT_VIEWS).issubset(observation)
+            return {"action": np.zeros((16, 8))}
+
+    client = CosmosEdgeDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=FakeClient,
+    )
+    response = client.infer(_observation())
+
+    assert response["action"].shape == (16, 8)
+    assert len(response["policy_request_receipt"]["receipt_sha256"]) == 64
+    assert client.evidence_summary()["request_count"] == 1
+
+
+def test_client_fails_before_transport_on_missing_third_view() -> None:
+    spec = _spec()
+
+    class FakeClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def get_server_metadata(self):
+            return _metadata(spec)
+
+        def infer(self, _observation):
+            raise AssertionError("transport must not be called")
+
+    client = CosmosEdgeDroidPolicyClient(
+        spec=spec, host="127.0.0.1", port=8000, client_factory=FakeClient
+    )
+    observation = _observation()
+    del observation[DROID_ROBOARENA_CONCAT_VIEWS[-1]]
+    with pytest.raises(ValueError, match="cosmos_edge_policy_observation_invalid"):
+        client.infer(observation)
+
+
+def test_server_metadata_rejects_empty_stock_metadata() -> None:
+    with pytest.raises(ValueError, match="cosmos_edge_policy_server_identity_mismatch"):
+        validate_server_metadata({}, expected=_spec())
+
+
+def test_local_snapshot_verification_hashes_every_frozen_file(tmp_path: Path) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    config = snapshot / "config.json"
+    weights = snapshot / "weights.safetensors"
+    config.write_bytes(b"config")
+    weights.write_bytes(b"weights")
+    from blueprint_pipeline.policy_ranking_thesis import file_sha256
+
+    manifest = {
+        "schema_version": "cosmos_edge_droid_policy_snapshot_manifest.v1",
+        "model_id": "nvidia/Cosmos3-Edge-Policy-DROID",
+        "model_revision": "3ea407af3e156c0af3b4bb6edd85842cc9a58777",
+        "required_files": [
+            {
+                "path": path.name,
+                "size_bytes": path.stat().st_size,
+                "sha256": file_sha256(path),
+            }
+            for path in (config, weights)
+        ],
+    }
+    manifest["manifest_sha256"] = canonical_sha256(manifest)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    receipt = verify_local_policy_snapshot(
+        spec=_spec(manifest["manifest_sha256"]),
+        snapshot_dir=snapshot,
+        snapshot_manifest_path=manifest_path,
+    )
+
+    assert receipt["local_snapshot_verified"] is True
+    assert receipt["local_snapshot_file_count"] == 2
+    assert receipt["local_snapshot_size_bytes"] == len(b"configweights")
+
+
+def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
+    root = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "experiments"
+        / "policy_ranking_cosmos3_edge_closed_loop_20260729"
+    )
+    checks = (
+        ("policy_snapshot_manifest_v1.json", "manifest_sha256"),
+        ("source_freeze_v1.json", "manifest_sha256"),
+        ("protocol_v1.json", "protocol_sha256"),
+    )
+    payloads = {}
+    for filename, digest_field in checks:
+        payload = json.loads((root / filename).read_text(encoding="utf-8"))
+        recorded = payload.pop(digest_field)
+        assert recorded == canonical_sha256(payload)
+        payloads[filename] = {**payload, digest_field: recorded}
+
+    CosmosEdgeDroidPolicySpec(
+        snapshot_manifest_sha256=payloads["policy_snapshot_manifest_v1.json"][
+            "manifest_sha256"
+        ]
+    ).validate()
+    assert payloads["protocol_v1.json"]["paid_execution_admitted"] is False
+    assert payloads["protocol_v1.json"]["provider_called"] is False

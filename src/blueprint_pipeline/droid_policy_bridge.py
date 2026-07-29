@@ -13,13 +13,28 @@ DROID_ACTION_CHUNK_SHAPE = (10, 8)
 DROID_MAX_JOINT_DELTA_RAD = 0.2
 DROID_SOURCE_REVISION = "33ae6a67274f36d2e29525b86f23a56616ef43a7"
 OPENPI_SOURCE_REVISION = "15a9616a00943ada6c20a0f158e3adb39df2ccac"
+DROID_WRIST_VIEW = "observation/wrist_image_left"
+DROID_EXTERIOR_VIEW_1 = "observation/exterior_image_1_left"
+DROID_EXTERIOR_VIEW_2 = "observation/exterior_image_2_left"
+DROID_OPENPI_POLICY_VIEWS = (DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW)
+DROID_ROBOARENA_CONCAT_VIEWS = (
+    DROID_WRIST_VIEW,
+    DROID_EXTERIOR_VIEW_1,
+    DROID_EXTERIOR_VIEW_2,
+)
 
 
-def validate_droid_observation(observation: Mapping[str, Any]) -> list[str]:
+def validate_droid_observation(
+    observation: Mapping[str, Any],
+    *,
+    required_views: Sequence[str] = DROID_OPENPI_POLICY_VIEWS,
+) -> list[str]:
     import numpy as np
 
     blockers: list[str] = []
-    for key in ("observation/exterior_image_1_left", "observation/wrist_image_left"):
+    if not required_views or len(set(required_views)) != len(required_views):
+        blockers.append("invalid_required_policy_views")
+    for key in required_views:
         image = np.asarray(observation.get(key))
         if image.shape != (224, 224, 3):
             blockers.append(f"invalid_image_shape:{key}")
@@ -115,7 +130,12 @@ __all__ = [
     "DROID_INNER_CONTROL_HZ",
     "DROID_MAX_JOINT_DELTA_RAD",
     "DROID_OPEN_LOOP_HORIZON",
+    "DROID_OPENPI_POLICY_VIEWS",
+    "DROID_ROBOARENA_CONCAT_VIEWS",
     "DROID_SOURCE_REVISION",
+    "DROID_EXTERIOR_VIEW_1",
+    "DROID_EXTERIOR_VIEW_2",
+    "DROID_WRIST_VIEW",
     "OPENPI_SOURCE_REVISION",
     "droid_joint_position_action_to_mujoco_targets",
     "droid_action_to_mujoco_targets",

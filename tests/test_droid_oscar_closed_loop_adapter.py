@@ -8,6 +8,8 @@ from PIL import Image
 
 from blueprint_pipeline.droid_oscar_closed_loop_adapter import (
     EXTERIOR_VIEW,
+    RIGHT_EXTERIOR_VIEW,
+    ROBOARENA_CONCAT_POLICY_VIEWS,
     WRIST_VIEW,
     CallableMultiViewOscarWamArm,
     DroidOscarSkeletonTransitionAdapter,
@@ -117,6 +119,72 @@ def test_multiview_wam_uses_same_generator_for_each_view(tmp_path: Path) -> None
     assert set(result["generated_view_frames"]) == {EXTERIOR_VIEW, WRIST_VIEW}
     assert result["same_frozen_wam_generated_all_views"] is True
     assert result["wam_to_wam_chaining"] is False
+
+
+def test_roboarena_policy_observation_advances_all_three_generated_views(
+    tmp_path: Path,
+) -> None:
+    observation = _observation()
+    observation[RIGHT_EXTERIOR_VIEW] = np.zeros((224, 224, 3), dtype=np.uint8)
+
+    def builder(**kwargs: Any) -> dict[str, Any]:
+        views = {}
+        for view_id in ROBOARENA_CONCAT_POLICY_VIEWS:
+            safe = view_id.split("/")[-1]
+            first = kwargs["output_dir"] / f"{safe}.png"
+            skeleton = kwargs["output_dir"] / f"{safe}.mp4"
+            Image.fromarray(kwargs["observation"][view_id]).save(first)
+            skeleton.write_bytes(b"skeleton")
+            views[view_id] = {
+                "first_frame_path": first,
+                "skeleton_video_path": skeleton,
+                "camera_calibration_sha256": "c" * 64,
+            }
+        actions = np.zeros((16, 10))
+        actions[:, 3] = 1.0
+        actions[:, 7] = 1.0
+        return {
+            "views": views,
+            "reliability_actions_10d": actions,
+            "next_joint_position": np.ones(7) * 0.1,
+            "next_gripper_position": np.asarray([1.0]),
+        }
+
+    adapter = DroidOscarSkeletonTransitionAdapter(
+        conditioning_builder=builder,
+        action_chunk_rows=16,
+        required_policy_views=ROBOARENA_CONCAT_POLICY_VIEWS,
+    )
+    prepared = adapter.prepare_transition(
+        observation=observation,
+        policy_action=np.zeros((16, 8)),
+        task_prompt="Pick up the bottle.",
+        executed_prefix_steps=8,
+        query_index=0,
+        output_dir=tmp_path,
+    )
+    generated = {}
+    for index, view_id in enumerate(ROBOARENA_CONCAT_POLICY_VIEWS, start=1):
+        path = tmp_path / f"generated-{index}.png"
+        Image.new("RGB", (64, 64), color=(index,) * 3).save(path)
+        generated[view_id] = path
+
+    advanced = adapter.advance_policy_observation(
+        previous_observation=observation,
+        prepared_transition=prepared,
+        wam_prediction={"generated_view_frames": generated},
+        executed_prefix_steps=8,
+        query_index=0,
+        output_dir=tmp_path,
+    )
+
+    assert set(advanced["provenance"]["generated_view_frame_sha256"]) == set(
+        ROBOARENA_CONCAT_POLICY_VIEWS
+    )
+    assert all(
+        advanced["observation"][view_id].shape == (224, 224, 3)
+        for view_id in ROBOARENA_CONCAT_POLICY_VIEWS
+    )
 
 
 def test_full_policy_oscar_wam_policy_loop_requeries_from_generated_views(

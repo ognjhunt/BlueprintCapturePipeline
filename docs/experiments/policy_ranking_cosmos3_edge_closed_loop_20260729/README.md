@@ -1,0 +1,34 @@
+# Cosmos3 Edge policy-to-WAM closed-loop continuation
+
+This namespace starts the first live product-facing Blueprint loop after the
+native Cosmos3-Nano DROID causal arm failed and correctly abstained. It does not
+rewrite that terminal result.
+
+The frozen candidate policy is NVIDIA's 4B
+`nvidia/Cosmos3-Edge-Policy-DROID`. It consumes a DROID observation containing
+wrist, left-exterior, right-exterior, joint, gripper, and task information and
+returns a 16-step, 8-D absolute joint-position action chunk. It is a policy, not
+the neutral world model.
+
+Blueprint advances eight action steps, asks exactly one independently named WAM
+arm to predict all three next camera observations, binds the commanded joint and
+gripper state, and then re-queries the same policy. The camera streams remain
+separate inside the WAM arm and are composed into NVIDIA's documented three-view
+layout only for the policy request.
+
+The first live run is an engineering smoke with no scientific-credit claim. A
+scientific loop is admitted only after the selected WAM backend earns a matching
+conditioning-fidelity certificate. Native Cosmos3-Edge forward dynamics remains
+a parallel diagnostic because its pinned DROID path expects a 10-D end-effector
+representation while the policy emits 8-D joint positions. Blueprint will not
+invent that conversion.
+
+The immediate finite gates are:
+
+1. verify the exact local policy snapshot and one identity-bound action canary;
+2. run up to three policy-to-OSCAR-to-policy transitions across all three views;
+3. freeze and run the OSCAR causal certificate;
+4. only then run a complete episode and independent evaluator;
+5. use a disjoint labeled snapshot for any policy-ranking confirmation claim.
+
+No physical robot is operated or contacted in this experiment.
