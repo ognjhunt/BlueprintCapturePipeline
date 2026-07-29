@@ -28,6 +28,7 @@ remain user-owned and are not inspected, absorbed, or modified by this branch.
 | Evidence | Result |
 | --- | --- |
 | New Pipeline intake/materialization focused lane | `45 passed` (`tests/test_capture_intake.py` plus `tests/test_materialization_edges.py`) |
+| Pipeline capture-QA focused lane | `59 passed` (`tests/test_capture_qa.py`, intake, and materialization regressions), plus a real local H.264 `ffprobe` smoke: 90 decoded frames, strictly monotonic decoded-frame PTS, and an accepted reduced-authority monocular QA report. Synthetic test media is tool-path evidence only, not the required real-capture vertical slice. |
 | Pipeline fast/full release lanes | Not run yet; this is not a coherent release candidate. |
 | Capture retained-frame/decoded-PTS focused lane | `53 passed`, 0 failed, 0 skipped on an iPhone 17 Pro iOS 26.0 simulator. The explicit result bundle is `build/CaptureSyncFocused.xcresult` in the Capture beta worktree and covers synchronization, strict Raw Contract 3.2 validation, finalizer/raw-bundle regressions, Pipeline contract constants, and adjacent capture-bundle/inference behavior. Earlier overlapping invocations failed on a locked build database or insufficient local disk; neither is counted as test evidence. |
 | Capture release lanes | Not run yet; the focused simulator lane is not the final device or release gate. |
@@ -53,7 +54,7 @@ remain user-owned and are not inspected, absorbed, or modified by this branch.
 | Rights/privacy/provider admission | Partially completed | Intake fails closed for declared gates and provider conflicts; redaction, retention execution, revocation deletion/tombstone, org auth, and audit logging remain. |
 | 360 secure import | Incomplete | Profiles/contracts exist; signed resumable Web upload and native-container normalization do not. |
 | Monocular reduced-authority lane | Partially completed | Intake/materialization preserves reduced ceiling; reconstruction/task/testbed flow remains. |
-| Media/capture QA | Incomplete | Structural stream recapture exists; decoded PTS continuity, blur/exposure/overlap/coverage/occlusion checks remain. |
+| Media/capture QA | Partially completed | Versioned QA/report schemas and CLI re-verify source bytes, independently probe media/decoded PTS, require digest-bound quality observations, preserve unmeasured evidence, and return exact recapture instructions. A checked-in real-frame quality analyzer, task-aware spatial coverage, privacy-review integration, and real-capture proof remain. |
 | Task candidate discovery and approval | Incomplete | Existing task-hypothesis machinery is not yet the required observed-fact/candidate/approval contract. |
 | Reconstruction capability graph/result | Incomplete | Existing geometry/provider paths need normalized method/result contracts and claim-driven planning. |
 | Robot placement and SimReady decision | Incomplete | Existing support modules are not yet compiled through this intake/testbed flow. |

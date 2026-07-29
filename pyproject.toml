@@ -166,6 +166,7 @@ dev = [
 
 [project.scripts]
 blueprint-intake-capture = "blueprint_pipeline.capture_intake:main"
+blueprint-qa-capture = "blueprint_pipeline.capture_qa:main"
 blueprint-capture-pipeline = "blueprint_pipeline.capture_orchestrator:main"
 blueprint-render-splat-scene = "blueprint_pipeline.splat_scene_render:main"
 blueprint-render-splat-isaac = "blueprint_pipeline.isaac_particlefield_render_job:main"

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/capture_qa_report.v1.json",
+  "title": "Blueprint Capture QA Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "intake_id",
+    "envelope_digest",
+    "capture_authority_profile",
+    "status",
+    "state",
+    "checks",
+    "recapture_plan",
+    "missing_evidence",
+    "next_cheapest_experiment",
+    "quality_observations_digest",
+    "claim_ceiling",
+    "prohibited_claims",
+    "comparative_policy_ranking_verdict",
+    "qa_report_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "capture_qa_report.v1"},
+    "intake_id": {"type": "string", "minLength": 1},
+    "envelope_digest": {"$ref": "#/$defs/sha256"},
+    "capture_authority_profile": {"type": "string", "minLength": 1},
+    "status": {"enum": ["accepted", "recapture_required", "rejected"]},
+    "state": {
+      "enum": ["capture_accepted", "rejected_or_recapture_required", "failed"]
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check_id",
+          "status",
+          "evidence_source",
+          "measurement",
+          "threshold",
+          "claim_impact",
+          "recapture_code",
+          "recapture_instruction"
+        ],
+        "properties": {
+          "check_id": {"type": "string", "minLength": 1},
+          "status": {"enum": ["pass", "fail", "not_measured", "not_applicable"]},
+          "evidence_source": {"type": "string", "minLength": 1},
+          "measurement": {},
+          "threshold": {},
+          "claim_impact": {"type": "array", "items": {"type": "string"}},
+          "recapture_code": {"type": ["string", "null"]},
+          "recapture_instruction": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "recapture_plan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "instruction", "reason"],
+        "properties": {
+          "code": {"type": "string", "minLength": 1},
+          "instruction": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "missing_evidence": {"type": "array", "items": {"type": "string"}},
+    "next_cheapest_experiment": {"type": ["object", "null"]},
+    "quality_observations_digest": {"type": ["string", "null"]},
+    "claim_ceiling": {"type": "object"},
+    "prohibited_claims": {"type": "array", "items": {"type": "string"}},
+    "comparative_policy_ranking_verdict": {"const": "thesis_not_supported"},
+    "qa_report_digest": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
