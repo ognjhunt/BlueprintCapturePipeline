@@ -166,6 +166,15 @@ def validate_droid_action_stream(stream: Mapping[str, Any] | None) -> dict[str, 
     if not math.isclose(frequency, DROID_FREQUENCY_HZ, rel_tol=0.0, abs_tol=1e-9):
         raise SuccessorContractError("action_frequency_must_be_15_hz")
     actions = _finite_matrix(stream.get("actions"))
+    rot6d = np.asarray(actions, dtype=np.float64)[:, 3:9]
+    first_column = rot6d[:, :3]
+    second_column = rot6d[:, 3:]
+    if not np.allclose(np.linalg.norm(first_column, axis=1), 1.0, rtol=0.0, atol=1e-4):
+        raise SuccessorContractError("rot6d_first_column_not_unit")
+    if not np.allclose(np.linalg.norm(second_column, axis=1), 1.0, rtol=0.0, atol=1e-4):
+        raise SuccessorContractError("rot6d_second_column_not_unit")
+    if not np.allclose(np.sum(first_column * second_column, axis=1), 0.0, rtol=0.0, atol=1e-4):
+        raise SuccessorContractError("rot6d_columns_not_orthogonal")
     gripper = [row[-1] for row in actions]
     if any(value < 0.0 or value > 1.0 for value in gripper):
         raise SuccessorContractError("gripper_value_outside_closed_unit_interval")
@@ -317,6 +326,7 @@ def build_action_controls(
     recorded: Mapping[str, Any],
     policy_swapped: Mapping[str, Any],
     *,
+    observation_gripper_hold: float,
     shuffle_seed: int,
 ) -> dict[str, dict[str, Any]]:
     """Build all smoke-canary controls while preserving action identity."""
@@ -325,6 +335,9 @@ def build_action_controls(
     swapped = validate_droid_action_stream(policy_swapped)
     if source["action_sha256"] == swapped["action_sha256"]:
         raise SuccessorContractError("policy_swapped_action_must_be_distinct")
+    hold = float(observation_gripper_hold)
+    if not math.isfinite(hold) or hold < 0.0 or hold > 1.0:
+        raise SuccessorContractError("observation_gripper_hold_outside_closed_unit_interval")
     actions = source["actions"]
     order = list(range(DROID_HORIZON))
     random.Random(int(shuffle_seed)).shuffle(order)
@@ -332,7 +345,9 @@ def build_action_controls(
         order = order[1:] + order[:1]
     controls = {
         "recorded": droid_action_stream(actions),
-        "zero": droid_action_stream([[0.0] * DROID_ACTION_DIM for _ in actions]),
+        "zero": droid_action_stream(
+            [[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, hold] for _ in actions]
+        ),
         "shuffled": droid_action_stream([actions[index] for index in order]),
         "reversed": droid_action_stream(list(reversed(actions))),
         "policy_swapped": droid_action_stream(swapped["actions"]),

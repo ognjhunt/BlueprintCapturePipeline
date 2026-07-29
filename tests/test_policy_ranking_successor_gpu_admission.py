@@ -112,6 +112,97 @@ def test_successor_gpu_admission_accepts_signed_allocation_3_retry() -> None:
     assert result["blockers"] == []
 
 
+def test_phase_b_profile_reuses_admission_with_its_own_frozen_limits() -> None:
+    profile = admission.PHASE_B_PROFILE
+    environment = _load("environment_and_source_manifest.json")
+    environment["experiment_id"] = profile.experiment_id
+    preflight = _load("vast_compute_preflight.json")
+    preflight.update(
+        {
+            "schema_version": profile.preflight_schema,
+            "experiment_id": profile.experiment_id,
+            "status": "verified",
+            "provider": "vast",
+            "provider_inventory_verified_zero": True,
+            "provider_mutations_performed": 0,
+        }
+    )
+    authorization = {
+        "schema_version": profile.authorization_schema,
+        "experiment_id": profile.experiment_id,
+        "authorization_id": profile.authorization_ids_by_allocation_index[1],
+        "allocation_index": 1,
+        "maximum_provider_allocations": 1,
+        "single_use_consumption_required": True,
+        "paid_mutation_authorized": True,
+        "authorized_compute_cap_usd": profile.max_compute_cap_usd,
+        "per_allocation_maximum_spend_required": True,
+        "prior_cumulative_compute_cap_superseded": True,
+        "goal_cost_authorization_amendment_sha256": (
+            profile.cost_authorization_binding_sha256
+        ),
+        "hard_ttl_seconds": profile.hard_ttl_seconds,
+        "one_resource_limit": True,
+        "independent_teardown_watchdog": True,
+        "watchdog_armed_before_allocation": True,
+        "automatic_spend_cutoff": True,
+        "teardown_required": True,
+        "provider_zero_verification_required": True,
+        "physical_robot_endpoint_access_allowed": False,
+    }
+    result = admission.build_successor_gpu_admission(
+        authorization=authorization,
+        environment=environment,
+        smoke_inventory=_load("smoke_request_inventory.json"),
+        provider_preflight=preflight,
+        bundle_inspection={"status": "passed", "blockers": [], "bundle_sha256": "a" * 64},
+        expected_source_commit="b" * 40,
+        execute=True,
+        observed_now_epoch=float(preflight["observed_at_epoch"]) + 1,
+        profile=profile,
+    )
+
+    assert result["status"] == "admitted"
+    assert result["experiment_id"] == profile.experiment_id
+    assert result["limits"]["hard_cap_usd"] == 5.0
+    assert result["limits"]["hard_ttl_seconds"] == 7_200
+    assert result["request_budget"]["amendment_sha256"] is None
+
+
+def test_phase_b_vast_preflight_explicitly_admits_blackwell_compute_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class Provider:
+        def capacity_preflight(self, request: dict[str, Any]) -> dict[str, Any]:
+            captured.update(request)
+            return {
+                "status": "available",
+                "viable_gpu_types": [
+                    {
+                        "ask_contract_id": 1,
+                        "gpu_name": "RTX PRO 6000 WS",
+                        "num_gpus": 1,
+                        "gpu_ram_mb": 97_887,
+                        "hourly_rate_usd": 0.88,
+                        "reliability": 0.99,
+                    }
+                ],
+            }
+
+        def billable_inventory(self, *, name_prefix: str) -> dict[str, Any]:
+            return {"api_confirmed": True, "live_resource_count": 0}
+
+    monkeypatch.setattr(admission, "get_render_provider", lambda provider: Provider())
+    result = admission.collect_successor_vast_preflight(name_prefix="phase-b-")
+
+    assert result["status"] == "verified"
+    assert captured["min_compute_cap"] == 1200
+    assert captured["max_compute_cap"] == 0
+    assert captured["prefer_isaac_rt"] is False
+
+
 def test_successor_gpu_admission_rejects_mismatched_retry_identity() -> None:
     preflight = _load("vast_compute_preflight.json")
     authorization = _load("compute_authorization_allocation_3.json")

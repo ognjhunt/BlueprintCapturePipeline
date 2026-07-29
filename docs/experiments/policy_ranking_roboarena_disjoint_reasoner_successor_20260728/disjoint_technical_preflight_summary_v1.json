@@ -1,0 +1,30 @@
+{
+  "schema_version": "policy_ranking_disjoint_technical_preflight_summary.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "first_preflight": {
+    "status": "blocked",
+    "passed_rows": 91,
+    "expected_rows": 119,
+    "view_counts": {"left": 119, "right": 91, "wrist": 119},
+    "blocker_count": 28,
+    "manifest_sha256": "09ca7e18580e36f105cf0eba1457339b77afcc7db6531988b5848041e070d31e",
+    "external_file_sha256": "6384c51fb3f35c6875ca166939ff5ea6fe4c2444ca682697e70304207122e66c"
+  },
+  "prospective_amended_preflight": {
+    "status": "passed",
+    "passed_rows": 119,
+    "expected_rows": 119,
+    "view_counts": {"left": 119, "right": 119, "wrist": 119},
+    "blocker_count": 0,
+    "manifest_sha256": "fbb458a017cea0b248fb6a91ec9fea57f467ff15fa8c073231b4ad14ea847b5f",
+    "external_file_sha256": "8653da4256a7974cdf880220414d3f279ebad644e98efc95dbbecd981541502b"
+  },
+  "label_seal": {
+    "metadata_yaml_opened": false,
+    "outcome_labels_accessed": false,
+    "task_instructions_accessed": false
+  },
+  "external_evidence_directory": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/disjoint_preflight_v1",
+  "claim_boundary": "technical_media_and_action_completeness_only; no task outcomes, ranking, WAM qualification, or closed-loop execution",
+  "manifest_sha256": "2905e6969333cef17fa6ec28d45c4cbe421500e066ffcbf6e7fb74f2711b4b7b"
+}

@@ -1,0 +1,57 @@
+{
+  "schema_version": "policy_ranking_phase_b_native_cosmos_canary_preparation.v1",
+  "experiment_id": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+  "status": "preflight_verified_no_provider_mutation",
+  "protocol_manifest_sha256": "0c9cab83b263e7710b37d9d6391bc910590cf78eeb36cc0ed7e60bd3bed9698c",
+  "environment_manifest_sha256": "7f976b9f9e5180d1def18648aed85f787911dbff67eb4d1a5cf81210c158ff3f",
+  "replay_canary": {
+    "manifest_sha256": "b0b20d9521f3adbe71e7e6aa0cda071a25bf8983ea4f145632729f5152059312",
+    "file_sha256": "7fc97dd4fc37794e418d9afac65c034aa44e52b790c79d0cffa5ae50d87433f7"
+  },
+  "provider_bundle": {
+    "sha256": "08a64c2a1829aee0a91a5bd787530eeff2dd7b00205ab308649ce08735a8c53e",
+    "size_bytes": 459832,
+    "receipt_manifest_sha256": "2b231149631cc432b05efc711485641f7b12e01a1abe414d8a67cc03e341d78a",
+    "receipt_file_sha256": "a8b5096f024a8158ce949ac17aa5f381ee4ec5c23c6333ca4e89dd6eb236f0e6"
+  },
+  "preflight_attempt_1": {
+    "status": "blocked",
+    "reason": "generic TensorRT compute-cap ceiling excluded Blackwell from a non-TensorRT Cosmos lane",
+    "retained_file_sha256": "e949f2b1ede5886b057245281df0a7268674b93cdbd4bb99763862f2753f8cf7",
+    "provider_mutations_performed": 0
+  },
+  "preflight_attempt_2": {
+    "status": "verified",
+    "manifest_sha256": "a95c1bdb2b2bb17301c2168fccd901c10eda38652a72b8f82b987c0effe57a8e",
+    "file_sha256": "ec672c9916d79d4a004201f900abffdb811cac51dd9094901eb6e0a4f6797029",
+    "provider_api_verified": true,
+    "provider_inventory_verified_zero": true,
+    "selected_offer": {
+      "ask_contract_id": 32511628,
+      "gpu_name": "RTX PRO 6000 WS",
+      "gpu_ram_mb": 97887,
+      "compute_cap": 1200,
+      "cuda_max_good": 12.8,
+      "hourly_rate_usd": 0.8822222222222222,
+      "reliability": 0.9930205,
+      "reservation_proven": false
+    },
+    "provider_mutations_performed": 0
+  },
+  "implementation_fix": {
+    "scope": "all successor Cosmos Vast capacity preflights using the Phase-B profile",
+    "contract": "explicitly opt out of the TensorRT sm_90 ceiling and require Blackwell compute capability 1200",
+    "regression_test_added": true
+  },
+  "claims": {
+    "gpu_allocated": false,
+    "spend_occurred": false,
+    "model_loaded": false,
+    "generated_media": false,
+    "wam_causal_validity": false,
+    "ranking_fidelity": false
+  },
+  "external_evidence_root": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-disjoint-reasoner-successor-evidence-20260728/phase_b_replay_canary_v1",
+  "raw_secret_values_recorded": false,
+  "manifest_sha256": "35b16515e73402dca83d688185d3d5a75fbfc2778def510d8281a41ace58630f"
+}
