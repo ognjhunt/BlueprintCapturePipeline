@@ -1007,6 +1007,11 @@ def test_exact_public_sparse_texture_free_skeleton_uses_model_input_signal_gate(
                     "skeleton_stream_image_aligned_to_rgb": True,
                     "visual_signal": {"status": "completed", "blockers": []},
                 },
+                "claim_boundary": {
+                    "skeleton_conditioning_is_proxy_from_mujoco_trace": False,
+                    "true_robot_proprioceptive_skeleton_available": True,
+                    "runtime_uses_frozen_official_droid_assets": True,
+                },
             }
         ),
         encoding="utf-8",
@@ -1033,6 +1038,10 @@ def test_exact_public_sparse_texture_free_skeleton_uses_model_input_signal_gate(
     ]
     assert sparse_signal["status"] == "passed_sparse_texture_free_skeleton"
     assert sparse_signal["minimum_foreground_fraction"] > 0
+    runtime_claims = runtime_manifest["input_package"]["claim_boundary"]
+    assert runtime_claims["skeleton_conditioning_is_proxy_from_mujoco_trace"] is False
+    assert runtime_claims["true_robot_proprioceptive_skeleton_available"] is True
+    assert runtime_claims["runtime_uses_frozen_official_droid_assets"] is True
 
     _write_dark_conditioning_mp4(skeleton)
     blocked = build_oscar_wam_provider_bundle(

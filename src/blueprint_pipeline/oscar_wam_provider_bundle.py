@@ -2947,10 +2947,11 @@ def _materialized_package_from_existing(
             visual_smoke=conditioning_visual_smoke,
         )
     )
+    claim_boundary = _mapping(manifest.get("claim_boundary"))
+    claim_boundary.setdefault("skeleton_conditioning_is_proxy_from_mujoco_trace", True)
+    claim_boundary.setdefault("true_robot_proprioceptive_skeleton_available", False)
     manifest["claim_boundary"] = {
-        **_mapping(manifest.get("claim_boundary")),
-        "skeleton_conditioning_is_proxy_from_mujoco_trace": True,
-        "true_robot_proprioceptive_skeleton_available": False,
+        **claim_boundary,
         "generated_input_is_not_model_output": True,
         "conditioning_video_visual_smoke_is_not_wam_output_success": True,
     }

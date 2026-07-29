@@ -1,0 +1,24 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v8",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T10:51:00-0500",
+  "supersedes_amendment_sha256": "675dd0627686dd7bb51b9c37b3c20cf9f58593a865b33929deef740a2b05ac52",
+  "phase": "phase_2_exact_public_oscar_compatibility",
+  "triggering_failure": "The v3 pre-provider bundle passed input validation but its runtime manifest overwrote exact-public skeleton provenance with legacy MuJoCo-proxy defaults.",
+  "prospective_provenance_correction": {
+    "former_behavior": "unconditionally set generic proxy provenance defaults",
+    "successor_behavior": "preserve explicit input provenance and apply legacy defaults only when fields are absent",
+    "exact_public_skeleton_proxy_from_mujoco": false,
+    "exact_public_skeleton_from_recorded_robot_proprioception": true,
+    "source_or_checkpoint_changed": false,
+    "input_bytes_changed": false,
+    "sampling_settings_changed": false,
+    "physical_future_rgb_admitted": false
+  },
+  "maximum_successor_allocations_without_another_amendment": 1,
+  "paid_execution_admitted": false,
+  "provider_called_for_successor_bundle": false,
+  "physical_outcome_labels_accessed": false,
+  "claim_boundary": "Correct provenance is required for attribution but does not itself prove WAM execution, world consequence prediction, causal validity, ranking, captured-site transfer, economics, physical success, or thesis support.",
+  "amendment_sha256": "c8a52f5ebbadcd66492f788d0453fa3c0c1ee2660d4350324994f560c9070111"
+}
