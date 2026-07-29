@@ -14,6 +14,9 @@ import json
 import math
 import os
 import re
+import signal
+import subprocess
+import sys
 import time
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -40,6 +43,13 @@ from .policy_ranking_successor_cosmos import (
 )
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .gpu_render_providers import get_render_provider
+from .groot_oscar_runpod_watchdog import EVIDENCE_NAME as RUNPOD_WATCHDOG_EVIDENCE_NAME
+from .runpod_wam_async_runner import (
+    RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV,
+    RUNPOD_WAM_TEARDOWN_ACTION_ENV,
+    create_runpod_wam_async_run,
+    poll_runpod_wam_async_run,
+)
 from .vast_wam_authorized_runner import run_vast_wam_authorized_runner
 from .vast_provider_adapter import (
     VAST_API_GATE_ENV,
@@ -50,6 +60,7 @@ from .vast_session_budget_contract import (
     build_vast_session_budget_guard,
     successor_session_live_limit_minutes,
 )
+from .watchdog_owner_teardown_contract import write_owner_teardown_cancel_request
 
 
 PROBE_KIND = "policy-ranking-successor-cosmos"
@@ -83,6 +94,13 @@ class SuccessorGPUProfile:
     max_hourly_rate_usd: float
     target_spend_usd: float
     hard_ttl_seconds: int
+    reference_bundle: bool = False
+    cosmos_revision: str = COSMOS_REVISION
+    cosmos_framework_revision: str = COSMOS_FRAMEWORK_REVISION
+    vllm_omni_revision: str | None = None
+    allowed_providers: tuple[str, ...] = ("vast",)
+    compatible_gpu_keywords: tuple[str, ...] = ("RTX PRO 6000",)
+
 
 MAX_COMPUTE_CAP_USD = 6.0
 MAX_HOURLY_RATE_USD = 1.05
@@ -96,9 +114,7 @@ AUTHORIZATION_IDS_BY_ALLOCATION_INDEX = {
     2: "policy-ranking-cosmos3-followup-20260728-allocation-2",
     3: "policy-ranking-cosmos3-followup-20260728-allocation-3",
 }
-GOAL_COST_AUTHORIZATION_SHA256 = (
-    "7f2ebe7ae1d176f9eea6b97a2b2f0ce235e7c5ff6af0ddd3baaef9000ab92cc0"
-)
+GOAL_COST_AUTHORIZATION_SHA256 = "7f2ebe7ae1d176f9eea6b97a2b2f0ce235e7c5ff6af0ddd3baaef9000ab92cc0"
 AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 EXPECTED_BUNDLE_SHA256 = "0e938e1674ff2efc043363ab9b7e2724ae2f9bc264e289895d7759a9eb8173fd"
 EXPECTED_BUNDLE_SIZE_BYTES = 301_649
@@ -177,9 +193,7 @@ PHASE_B_POSITIVE_CONTROL_PROFILE = SuccessorGPUProfile(
         "policy_ranking_phase_b_native_cosmos_positive_control_compute_authorization.v1"
     ),
     preflight_schema="policy_ranking_phase_b_native_cosmos_positive_control_vast_preflight.v1",
-    receipt_schema=(
-        "policy_ranking_phase_b_native_cosmos_positive_control_bundle_receipt.v1"
-    ),
+    receipt_schema=("policy_ranking_phase_b_native_cosmos_positive_control_bundle_receipt.v1"),
     authorization_ids_by_allocation_index={
         4: "policy-ranking-roboarena-phase-b-positive-control-20260728-allocation-4",
     },
@@ -213,6 +227,49 @@ PHASE_B_POSITIVE_CONTROL_PROFILE = SuccessorGPUProfile(
     target_spend_usd=2.5,
     hard_ttl_seconds=7_200,
 )
+DROID_REFERENCE_PROFILE = SuccessorGPUProfile(
+    experiment_id="policy_ranking_roboarena_droid_reference_confirmation_20260729",
+    admission_schema="policy_ranking_cosmos3_droid_reference_gpu_admission.v1",
+    authorization_schema="policy_ranking_cosmos3_droid_reference_compute_authorization.v1",
+    preflight_schema="policy_ranking_cosmos3_droid_reference_vast_preflight.v1",
+    receipt_schema="policy_ranking_cosmos3_droid_reference_bundle_receipt.v1",
+    authorization_ids_by_allocation_index={
+        1: "policy-ranking-droid-reference-20260729-allocation-1",
+    },
+    cost_authorization_binding_sha256=(
+        "305668fe34d4524caa0d7dc5ce301e44a1a04e0b66176719c02a8cab76373cb4"
+    ),
+    expected_bundle_sha256="7e422f002ec206ce1a7b603d83f618c548f384e53eca7b84812d9d2d7b3779e3",
+    expected_bundle_size_bytes=419_867,
+    expected_embedded_input_hashes={
+        "reference_manifest_sha256": (
+            "3f29f83f6698543bd7ce13e23b632e355031e54e2a123f0d439868bac3906f04"
+        ),
+        "initial_observation_sha256": (
+            "e8f2735942986934a77a47a9c1f50fd5b55ade03bc241e3950193aaf1137004f"
+        ),
+        "action_streams_sha256": (
+            "acbccfdbea8a645cd8b211109dba5ab434f530427087ea3a3b1301eff71a8263"
+        ),
+        "provider_runtime_runner_sha256": (
+            "bd613b8067abe010b92e5e7215c2e8a4998aa4a92a9beb3a77f4e9ef1135cb09"
+        ),
+    },
+    qualification_canary_request_count=2,
+    scientific_matrix_request_count=0,
+    total_initial_generation_request_count=2,
+    request_budget_amendment_sha256=None,
+    max_compute_cap_usd=5.0,
+    max_hourly_rate_usd=2.05,
+    target_spend_usd=2.5,
+    hard_ttl_seconds=7_200,
+    reference_bundle=True,
+    cosmos_revision="0299468993d8bcd8f6a95b0d8427b1221fccfced",
+    cosmos_framework_revision="9726697a83315540c6885baefd2fe353d9c74920",
+    vllm_omni_revision="1c6e7313394923000215a3299f4f79ede3873ecc",
+    allowed_providers=("vast", "runpod"),
+    compatible_gpu_keywords=("RTX PRO 6000", "H100"),
+)
 RTX_ALLOWED_KEYWORDS = ("RTX PRO 6000",)
 RTX_SELECTION_POLICY: Mapping[str, Any] = {
     "policy_id": "policy_ranking_successor_rtx_pro_6000_blackwell_preflight",
@@ -234,6 +291,18 @@ REQUIRED_BUNDLE_ENTRIES = frozenset(
         "provider_runtime/cosmos3_input/initial_observation.png",
         "provider_runtime/cosmos3_input/smoke_request_inventory.json",
         "provider_runtime/cosmos3_input/action_streams.json",
+    }
+)
+REFERENCE_BUNDLE_ENTRIES = frozenset(
+    {
+        "provider_runtime/wam_provider_runtime_runner.py",
+        "provider_runtime/run_wam_provider_runtime.sh",
+        "provider_runtime/successor_retained_control.py",
+        "provider_runtime/wam_provider_runtime_manifest.json",
+        "provider_runtime/wam_rollout_input_manifest.json",
+        "provider_runtime/cosmos3_droid_reference/canary_manifest.json",
+        "provider_runtime/cosmos3_droid_reference/initial_observation.png",
+        "provider_runtime/cosmos3_droid_reference/action_streams.json",
     }
 )
 
@@ -330,6 +399,88 @@ def collect_successor_vast_preflight(
     return result
 
 
+def collect_successor_runpod_preflight(
+    *,
+    name_prefix: str,
+    profile: SuccessorGPUProfile = DROID_REFERENCE_PROFILE,
+    gpu_type_ids: Sequence[str] = (
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA H100 PCIe",
+    ),
+) -> dict[str, Any]:
+    """Read-only RunPod capacity and provider-zero preflight for Cosmos inference."""
+
+    provider = get_render_provider("runpod")
+    request = {
+        "gpuTypeIds": list(gpu_type_ids),
+        "cloudType": "SECURE",
+        "min_gpu_ram_mb": 80_000,
+        "requires_rtx": False,
+    }
+    capacity = provider.capacity_preflight(request)
+    task_inventory = provider.billable_inventory(name_prefix=name_prefix)
+    inventory = provider.billable_inventory(name_prefix="")
+    viable = []
+    for row in capacity.get("viable_gpu_types", []):
+        if not isinstance(row, Mapping):
+            continue
+        gpu_name = str(row.get("gpu_type_id") or row.get("display_name") or "")
+        memory_gb = int(row.get("memory_in_gb") or 0)
+        price = float(row.get("on_demand_price_usd_per_hour") or 0.0)
+        if (
+            any(keyword in gpu_name.upper() for keyword in ("RTX PRO 6000", "H100"))
+            and memory_gb >= 80
+            and 0.0 < price <= profile.max_hourly_rate_usd
+            and row.get("capacity_confidence") == "advisory"
+        ):
+            viable.append(
+                {
+                    **dict(row),
+                    "gpu_name": gpu_name,
+                    "gpu_ram_mb": memory_gb * 1000,
+                    "hourly_rate_usd": price,
+                }
+            )
+    viable.sort(key=lambda row: float(row["hourly_rate_usd"]))
+    selected = viable[0] if viable else {}
+    inventory_zero = bool(
+        inventory.get("api_confirmed") is True and inventory.get("live_resource_count") == 0
+    )
+    api_verified = bool(
+        capacity.get("status") == "available"
+        and inventory.get("api_confirmed") is True
+        and task_inventory.get("api_confirmed") is True
+    )
+    blockers: list[str] = []
+    if not api_verified:
+        blockers.append("successor_runpod_api_not_verified")
+    if not inventory_zero:
+        blockers.append("successor_runpod_inventory_not_zero")
+    if not selected:
+        blockers.append("successor_compatible_runpod_offer_unavailable")
+    result: dict[str, Any] = {
+        "schema_version": profile.preflight_schema,
+        "status": "verified" if not blockers else "blocked",
+        "experiment_id": profile.experiment_id,
+        "provider": "runpod",
+        "observed_at_epoch": time.time(),
+        "blockers": blockers,
+        "provider_api_verified": api_verified,
+        "provider_inventory_verified_zero": inventory_zero,
+        "selected_offer": selected or None,
+        "capacity_request": request,
+        "capacity_snapshot": capacity,
+        "task_billable_inventory": task_inventory,
+        "billable_inventory": inventory,
+        "provider_mutations_performed": 0,
+        "reservation_proven": False,
+        "raw_secret_values_recorded": False,
+    }
+    result["manifest_sha256"] = canonical_sha256(result)
+    return result
+
+
 def inspect_successor_bundle(
     path: str | Path,
     *,
@@ -368,25 +519,60 @@ def inspect_successor_bundle(
                     runner_text = archive.read(
                         "provider_runtime/wam_provider_runtime_runner.py"
                     ).decode("utf-8")
-                embedded_hashes = {
-                    "initial_observation_sha256": hashlib.sha256(
-                        archive.read("provider_runtime/cosmos3_input/initial_observation.png")
-                    ).hexdigest(),
-                    "smoke_inventory_sha256": canonical_sha256(
-                        json.loads(
+                if profile.reference_bundle:
+                    reference_manifest = json.loads(
+                        archive.read(
+                            "provider_runtime/cosmos3_droid_reference/canary_manifest.json"
+                        ).decode("utf-8")
+                    )
+                    recorded_reference_sha256 = reference_manifest.get("manifest_sha256")
+                    computed_reference_sha256 = canonical_sha256(
+                        {
+                            key: value
+                            for key, value in reference_manifest.items()
+                            if key != "manifest_sha256"
+                        }
+                    )
+                    if recorded_reference_sha256 != computed_reference_sha256:
+                        blockers.append("successor_droid_reference_manifest_hash_invalid")
+                    embedded_hashes = {
+                        "reference_manifest_sha256": computed_reference_sha256,
+                        "initial_observation_sha256": hashlib.sha256(
                             archive.read(
-                                "provider_runtime/cosmos3_input/smoke_request_inventory.json"
-                            ).decode("utf-8")
-                        )
-                    ),
-                    "action_streams_sha256": canonical_sha256(
-                        json.loads(
-                            archive.read(
-                                "provider_runtime/cosmos3_input/action_streams.json"
-                            ).decode("utf-8")
-                        )
-                    ),
-                }
+                                "provider_runtime/cosmos3_droid_reference/initial_observation.png"
+                            )
+                        ).hexdigest(),
+                        "action_streams_sha256": canonical_sha256(
+                            json.loads(
+                                archive.read(
+                                    "provider_runtime/cosmos3_droid_reference/action_streams.json"
+                                ).decode("utf-8")
+                            )
+                        ),
+                        "provider_runtime_runner_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_provider_runtime_runner.py")
+                        ).hexdigest(),
+                    }
+                else:
+                    embedded_hashes = {
+                        "initial_observation_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/cosmos3_input/initial_observation.png")
+                        ).hexdigest(),
+                        "smoke_inventory_sha256": canonical_sha256(
+                            json.loads(
+                                archive.read(
+                                    "provider_runtime/cosmos3_input/smoke_request_inventory.json"
+                                ).decode("utf-8")
+                            )
+                        ),
+                        "action_streams_sha256": canonical_sha256(
+                            json.loads(
+                                archive.read(
+                                    "provider_runtime/cosmos3_input/action_streams.json"
+                                ).decode("utf-8")
+                            )
+                        ),
+                    }
                 positive_control_manifest_entry = (
                     "provider_runtime/cosmos3_positive_control/manifest.json"
                 )
@@ -417,7 +603,10 @@ def inspect_successor_bundle(
             json.JSONDecodeError,
         ):
             blockers.append("successor_cosmos_provider_bundle_unreadable")
-    missing = sorted(REQUIRED_BUNDLE_ENTRIES - names)
+    required_entries = (
+        REFERENCE_BUNDLE_ENTRIES if profile.reference_bundle else REQUIRED_BUNDLE_ENTRIES
+    )
+    missing = sorted(required_entries - names)
     if "positive_control_manifest_sha256" in profile.expected_embedded_input_hashes:
         positive_control_entries = {
             "provider_runtime/cosmos3_positive_control/manifest.json",
@@ -472,9 +661,11 @@ def inspect_successor_bundle(
     for key, expected in profile.expected_embedded_input_hashes.items():
         if embedded_hashes.get(key) != expected or receipt_value.get(key) != expected:
             blockers.append(f"successor_cosmos_provider_bundle_receipt_{key}_mismatch")
-    if smoke_inventory is not None and receipt_value.get(
-        "smoke_inventory_sha256"
-    ) != canonical_sha256(smoke_inventory):
+    if (
+        not profile.reference_bundle
+        and smoke_inventory is not None
+        and receipt_value.get("smoke_inventory_sha256") != canonical_sha256(smoke_inventory)
+    ):
         blockers.append("successor_cosmos_external_smoke_inventory_hash_mismatch")
     return {
         "status": "passed" if not blockers else "blocked",
@@ -482,7 +673,7 @@ def inspect_successor_bundle(
         "bundle_path": str(resolved),
         "bundle_sha256": bundle_sha256,
         "bundle_size_bytes": bundle_size_bytes,
-        "required_entry_count": len(REQUIRED_BUNDLE_ENTRIES),
+        "required_entry_count": len(required_entries),
         "manifest": dict(manifest),
         "embedded_input_hashes": embedded_hashes,
     }
@@ -509,9 +700,9 @@ def build_successor_gpu_admission(
     vllm = _mapping(upstream.get("vllm_omni"))
     if environment.get("experiment_id") != profile.experiment_id:
         blockers.append("successor_environment_experiment_mismatch")
-    if cosmos.get("revision") != COSMOS_REVISION:
+    if cosmos.get("revision") != profile.cosmos_revision:
         blockers.append("successor_cosmos_revision_mismatch")
-    if framework.get("revision") != COSMOS_FRAMEWORK_REVISION:
+    if framework.get("revision") != profile.cosmos_framework_revision:
         blockers.append("successor_framework_revision_mismatch")
     if checkpoint.get("repository") != CHECKPOINT_REPOSITORY:
         blockers.append("successor_checkpoint_repository_mismatch")
@@ -519,35 +710,49 @@ def build_successor_gpu_admission(
         blockers.append("successor_checkpoint_revision_mismatch")
     if vllm.get("runtime_image") != PUBLIC_IMAGE:
         blockers.append("successor_runtime_image_mismatch")
+    if (
+        profile.vllm_omni_revision is not None
+        and vllm.get("revision") != profile.vllm_omni_revision
+    ):
+        blockers.append("successor_vllm_omni_revision_mismatch")
     if checkpoint.get("remote_code_policy") != (
         "no_unpinned_remote_code_and_trust_remote_code_false"
     ):
         blockers.append("successor_remote_code_policy_invalid")
 
-    try:
-        inventory_validation = validate_smoke_inventory_manifest(smoke_inventory)
-    except ValueError as exc:
-        inventory_validation = {"status": "blocked", "reason": str(exc)}
-        blockers.append("successor_smoke_inventory_invalid")
+    if profile.reference_bundle:
+        inventory_validation = {
+            "status": "not_applicable",
+            "reason": "official_droid_reference_inputs_are_frozen_inside_the_bundle",
+        }
+    else:
+        try:
+            inventory_validation = validate_smoke_inventory_manifest(smoke_inventory)
+        except ValueError as exc:
+            inventory_validation = {"status": "blocked", "reason": str(exc)}
+            blockers.append("successor_smoke_inventory_invalid")
     if bundle_inspection.get("status") != "passed":
         blockers.extend(str(item) for item in bundle_inspection.get("blockers") or [])
 
+    provider_name = str(provider_preflight.get("provider") or "").strip().lower()
     if provider_preflight.get("schema_version") != profile.preflight_schema:
-        blockers.append("successor_vast_preflight_schema_invalid")
+        blockers.append("successor_provider_preflight_schema_invalid")
     if provider_preflight.get("experiment_id") != profile.experiment_id:
-        blockers.append("successor_vast_preflight_experiment_mismatch")
+        blockers.append("successor_provider_preflight_experiment_mismatch")
     if provider_preflight.get("status") != "verified":
-        blockers.append("successor_vast_preflight_not_verified")
-    if provider_preflight.get("provider") != "vast":
-        blockers.append("successor_vast_preflight_provider_invalid")
+        blockers.append("successor_provider_preflight_not_verified")
+    if provider_name not in profile.allowed_providers:
+        blockers.append("successor_provider_preflight_provider_invalid")
     if provider_preflight.get("provider_inventory_verified_zero") is not True:
-        blockers.append("successor_vast_inventory_not_zero")
+        blockers.append("successor_provider_inventory_not_zero")
     if provider_preflight.get("provider_mutations_performed") != 0:
-        blockers.append("successor_vast_preflight_mutation_boundary_invalid")
+        blockers.append("successor_provider_preflight_mutation_boundary_invalid")
     offer = _mapping(provider_preflight.get("selected_offer"))
-    gpu_name = str(offer.get("gpu_name") or offer.get("gpu_type_id") or "")
-    if "RTX PRO 6000" not in gpu_name.upper():
-        blockers.append("successor_vast_preflight_gpu_not_rtx_pro_6000")
+    gpu_name = str(
+        offer.get("gpu_name") or offer.get("gpu_type_id") or offer.get("display_name") or ""
+    )
+    if not any(keyword in gpu_name.upper() for keyword in profile.compatible_gpu_keywords):
+        blockers.append("successor_provider_preflight_gpu_not_compatible")
     try:
         gpu_ram_mb = int(offer.get("gpu_ram_mb") or 0)
         hourly_rate = float(
@@ -556,18 +761,23 @@ def build_successor_gpu_admission(
         reliability = float(offer.get("reliability") or 0.0)
     except (TypeError, ValueError):
         gpu_ram_mb, hourly_rate, reliability = 0, 0.0, 0.0
-    if gpu_ram_mb < MIN_GPU_RAM_MB:
-        blockers.append("successor_vast_preflight_gpu_ram_below_95gb")
+    minimum_gpu_ram_mb = 80_000 if provider_name == "runpod" else MIN_GPU_RAM_MB
+    if gpu_ram_mb < minimum_gpu_ram_mb:
+        blockers.append("successor_provider_preflight_gpu_ram_below_minimum")
     if not 0.0 < hourly_rate <= profile.max_hourly_rate_usd:
-        blockers.append("successor_vast_preflight_hourly_rate_above_frozen_ceiling")
-    if reliability < MIN_RELIABILITY:
+        blockers.append("successor_provider_preflight_hourly_rate_above_frozen_ceiling")
+    if provider_name == "vast" and reliability < MIN_RELIABILITY:
         blockers.append("successor_vast_preflight_reliability_below_frozen_floor")
+    if provider_name == "runpod" and (
+        offer.get("cloud_type") != "SECURE" or offer.get("capacity_confidence") != "advisory"
+    ):
+        blockers.append("successor_runpod_secure_advisory_capacity_missing")
     observed = provider_preflight.get("observed_at_epoch")
     now = time.time() if observed_now_epoch is None else float(observed_now_epoch)
     if type(observed) not in {int, float} or not math.isfinite(float(observed)):
-        blockers.append("successor_vast_preflight_timestamp_invalid")
+        blockers.append("successor_provider_preflight_timestamp_invalid")
     elif execute and not 0.0 <= now - float(observed) <= MAX_PREFLIGHT_AGE_SECONDS:
-        blockers.append("successor_vast_preflight_stale_or_future")
+        blockers.append("successor_provider_preflight_stale_or_future")
 
     authorization_blockers: list[str] = []
     if authorization.get("schema_version") != profile.authorization_schema:
@@ -623,7 +833,8 @@ def build_successor_gpu_admission(
     if len(source_commit) != 40 or any(c not in "0123456789abcdef" for c in source_commit):
         blockers.append("successor_expected_source_commit_invalid")
 
-    shared = build_paid_lane_admission(resource_class="vast_provider_adapter", blockers=blockers)
+    resource_class = "runpod_wam_async" if provider_name == "runpod" else "vast_provider_adapter"
+    shared = build_paid_lane_admission(resource_class=resource_class, blockers=blockers)
     result: dict[str, Any] = {
         "schema_version": profile.admission_schema,
         "status": "admitted" if not blockers else "blocked",
@@ -645,6 +856,7 @@ def build_successor_gpu_admission(
             "amendment_sha256": profile.request_budget_amendment_sha256,
         },
         "selected_offer": dict(offer),
+        "provider": provider_name or None,
         "authorization": {
             "status": "accepted" if not authorization_blockers else "blocked",
             "authorized_compute_cap_usd": (
@@ -659,9 +871,9 @@ def build_successor_gpu_admission(
             "hard_ttl_seconds": profile.hard_ttl_seconds,
             "one_resource": True,
             "disk_gb": DISK_GB,
-            "min_gpu_ram_mb": MIN_GPU_RAM_MB,
-            "min_reliability": MIN_RELIABILITY,
-            "allowed_gpu_keywords": list(RTX_ALLOWED_KEYWORDS),
+            "min_gpu_ram_mb": minimum_gpu_ram_mb,
+            "min_reliability": MIN_RELIABILITY if provider_name == "vast" else None,
+            "allowed_gpu_keywords": list(profile.compatible_gpu_keywords),
         },
         "shared_paid_lane_admission": shared,
         "provider_mutations_performed": 0,
@@ -720,13 +932,11 @@ def _consume_authorization_once(
         "consumed_at_epoch": time.time(),
         "maximum_provider_allocations": 1,
     }
-    record_bytes = (
-        json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode("utf-8")
-    record_sha256 = hashlib.sha256(record_bytes).hexdigest()
-    temporary_path = root / (
-        f".{authorization_id}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+    record_bytes = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "utf-8"
     )
+    record_sha256 = hashlib.sha256(record_bytes).hexdigest()
+    temporary_path = root / (f".{authorization_id}.{os.getpid()}.{time.monotonic_ns()}.tmp")
     try:
         descriptor = os.open(
             temporary_path,
@@ -770,6 +980,281 @@ def _consume_authorization_once(
     }
 
 
+RUNPOD_DROID_REFERENCE_PREFIX = "blueprint-groot-oscar-canary-droid-reference-"
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _arm_runpod_successor_watchdog(
+    *, job_dir: Path, deadline_epoch: float
+) -> tuple[dict[str, Any], subprocess.Popen[str] | None, Path]:
+    out_dir = job_dir / "independent_runpod_watchdog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        "-m",
+        "blueprint_pipeline.groot_oscar_runpod_watchdog",
+        "--out-dir",
+        str(out_dir),
+        "--pod-name-prefix",
+        RUNPOD_DROID_REFERENCE_PREFIX,
+        "--deadline-epoch",
+        str(deadline_epoch),
+        "--provider",
+        "runpod",
+    ]
+    try:
+        process = subprocess.Popen(  # noqa: S603  # nosec B603 - fixed module argv
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError as exc:
+        return (
+            {
+                "status": "blocked",
+                "blockers": ["successor_runpod_watchdog_process_start_failed"],
+                "error_type": type(exc).__name__,
+                "provider_mutations_performed": 0,
+            },
+            None,
+            out_dir,
+        )
+    evidence_path = out_dir / RUNPOD_WATCHDOG_EVIDENCE_NAME
+    until = time.monotonic() + 10.0
+    evidence: dict[str, Any] = {}
+    while time.monotonic() < until:
+        evidence = _read_json_object(evidence_path)
+        if (
+            evidence.get("status") == "armed"
+            and evidence.get("independent_process") is True
+            and evidence.get("pid") == process.pid
+            and evidence.get("provider") == "runpod"
+            and evidence.get("pod_name_prefix") == RUNPOD_DROID_REFERENCE_PREFIX
+            and process.poll() is None
+        ):
+            return evidence, process, out_dir
+        if process.poll() is not None:
+            break
+        time.sleep(0.1)
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    return (
+        {
+            "status": "blocked",
+            "blockers": ["successor_runpod_watchdog_not_confirmed_armed"],
+            "provider_mutations_performed": 0,
+        },
+        None,
+        out_dir,
+    )
+
+
+def _stop_unallocated_runpod_watchdog(process: subprocess.Popen[str] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.send_signal(signal.SIGTERM)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _close_runpod_watchdog_after_provider_zero(
+    *,
+    process: subprocess.Popen[str],
+    out_dir: Path,
+    pod_id: str,
+    provider_zero: bool,
+) -> dict[str, Any]:
+    if not pod_id or not provider_zero:
+        return {
+            "status": "retained_until_hard_ttl",
+            "provider_absence_confirmed": False,
+            "watchdog_process_alive": process.poll() is None,
+        }
+    write_owner_teardown_cancel_request(
+        root=out_dir,
+        pod_name_prefix=RUNPOD_DROID_REFERENCE_PREFIX,
+        provider_name="runpod",
+        instance_id=pod_id,
+    )
+    until = time.monotonic() + 45.0
+    while process.poll() is None and time.monotonic() < until:
+        time.sleep(0.2)
+    terminal = _read_json_object(out_dir / RUNPOD_WATCHDOG_EVIDENCE_NAME)
+    passed = bool(
+        terminal.get("status") == "provider_terminal"
+        and terminal.get("provider_absence_confirmed") is True
+    )
+    return {
+        "status": "provider_terminal" if passed else "retained_until_hard_ttl",
+        "provider_absence_confirmed": passed,
+        "watchdog_process_exit_code": process.poll(),
+        "watchdog_process_alive": process.poll() is None,
+    }
+
+
+def _run_successor_runpod(
+    *,
+    job_dir: str | Path,
+    provider_bundle_path: str | Path,
+    public_base_url: str | None,
+    token_file: str | Path | None,
+    secret_env_file: str | Path | None,
+    provider_bundle_url_file: str | Path | None,
+    provider_output_put_url_file: str | Path | None,
+    provider_output_get_url_file: str | Path | None,
+    output_path: str | Path | None,
+    profile: SuccessorGPUProfile,
+    selected_offer: Mapping[str, Any],
+    session_max_live_minutes: int,
+    paid_resource_admission_grant: Any,
+    pre_provider_mutation_hook: Any,
+) -> dict[str, Any]:
+    root = Path(job_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    deadline = time.time() + int(session_max_live_minutes) * 60
+    watchdog, process, watchdog_dir = _arm_runpod_successor_watchdog(
+        job_dir=root, deadline_epoch=deadline
+    )
+    write_json(root / "runpod_successor_watchdog_handoff.json", watchdog)
+    if watchdog.get("status") != "armed" or process is None:
+        return {
+            "status": "blocked",
+            "blockers": list(watchdog.get("blockers") or []),
+            "provider_mutations_performed": 0,
+            "independent_watchdog_handoff": watchdog,
+        }
+    gpu_name = str(selected_offer.get("gpu_name") or selected_offer.get("gpu_type_id") or "")
+    pod_name = f"{RUNPOD_DROID_REFERENCE_PREFIX}{int(time.time())}"
+    prior_disable_warm = os.environ.get(RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV)
+    prior_teardown = os.environ.get(RUNPOD_WAM_TEARDOWN_ACTION_ENV)
+    os.environ[RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV] = "1"
+    os.environ[RUNPOD_WAM_TEARDOWN_ACTION_ENV] = "delete"
+    try:
+        create = create_runpod_wam_async_run(
+            job_dir=root,
+            bundle_path=provider_bundle_path,
+            public_base_url=public_base_url or "",
+            provider_bundle_url_file=provider_bundle_url_file,
+            provider_output_put_url_file=provider_output_put_url_file,
+            provider_output_get_url_file=provider_output_get_url_file,
+            token_file=token_file,
+            secret_env_file=secret_env_file,
+            output_path=output_path,
+            max_spend_usd=profile.max_compute_cap_usd,
+            allow_paid_runpod_launch=True,
+            gpu_type_ids=(gpu_name,),
+            image_name=PUBLIC_IMAGE,
+            provider_bundle_kind="wam",
+            container_disk_gb=100,
+            volume_gb=20,
+            cloud_type="SECURE",
+            min_vcpu_per_gpu=8,
+            min_ram_per_gpu=32,
+            pod_name=pod_name,
+            paid_resource_admission_grant=paid_resource_admission_grant,
+            forward_model_secret_env=False,
+            pre_provider_mutation_hook=pre_provider_mutation_hook,
+        )
+    finally:
+        if prior_disable_warm is None:
+            os.environ.pop(RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV, None)
+        else:
+            os.environ[RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV] = prior_disable_warm
+        if prior_teardown is None:
+            os.environ.pop(RUNPOD_WAM_TEARDOWN_ACTION_ENV, None)
+        else:
+            os.environ[RUNPOD_WAM_TEARDOWN_ACTION_ENV] = prior_teardown
+    if create.get("status") != "pod_created":
+        _stop_unallocated_runpod_watchdog(process)
+        return {
+            "status": "blocked",
+            "blockers": list(create.get("blockers") or ["successor_runpod_create_failed"]),
+            "provider_mutations_performed": int(create.get("provider_mutations_performed") or 0),
+            "runpod_create": create,
+            "independent_watchdog_handoff": watchdog,
+        }
+    state = _read_json_object(root / "runpod_wam_async_state.json")
+    pod_id = str(state.get("pod_id") or create.get("pod_id") or "")
+    poll = poll_runpod_wam_async_run(
+        job_dir=root,
+        max_wait_seconds=max(60, int(session_max_live_minutes) * 60),
+        retry_interval_seconds=5,
+        teardown=True,
+    )
+    provider = get_render_provider("runpod")
+    task_inventory = provider.billable_inventory(name_prefix=RUNPOD_DROID_REFERENCE_PREFIX)
+    global_inventory = provider.billable_inventory(name_prefix="")
+    provider_zero = bool(
+        task_inventory.get("api_confirmed") is True
+        and task_inventory.get("live_resource_count") == 0
+        and global_inventory.get("api_confirmed") is True
+        and global_inventory.get("live_resource_count") == 0
+    )
+    watchdog_close = _close_runpod_watchdog_after_provider_zero(
+        process=process,
+        out_dir=watchdog_dir,
+        pod_id=pod_id,
+        provider_zero=provider_zero,
+    )
+    created_at = float(state.get("created_at_epoch") or time.time())
+    runtime_seconds = max(0.0, time.time() - created_at)
+    hourly_rate = float(selected_offer.get("hourly_rate_usd") or 0.0)
+    estimated_cost = runtime_seconds * hourly_rate / 3600.0
+    completed = bool(
+        poll.get("status") == "completed"
+        and poll.get("continuing_spend_from_this_run") is False
+        and provider_zero
+        and watchdog_close.get("status") == "provider_terminal"
+    )
+    return {
+        "status": "completed" if completed else "blocked",
+        "blockers": []
+        if completed
+        else [
+            *list(poll.get("blockers") or []),
+            *([] if provider_zero else ["successor_runpod_provider_zero_not_proven"]),
+            *(
+                []
+                if watchdog_close.get("status") == "provider_terminal"
+                else ["successor_runpod_watchdog_not_terminal"]
+            ),
+        ],
+        "provider": "runpod",
+        "pod_id": pod_id or None,
+        "runpod_create": create,
+        "runpod_poll": poll,
+        "task_inventory": task_inventory,
+        "global_inventory": global_inventory,
+        "provider_zero_verified": provider_zero,
+        "continuing_hourly_burn": not provider_zero,
+        "runtime_seconds": runtime_seconds,
+        "selected_hourly_rate_usd": hourly_rate,
+        "estimated_gpu_cost_usd": estimated_cost,
+        "independent_watchdog_handoff": watchdog,
+        "independent_watchdog_close": watchdog_close,
+        "provider_mutations_performed": 1,
+        "raw_secret_values_recorded": False,
+    }
+
+
 def run_successor_gpu_lane(
     *,
     authorization_path: str | Path,
@@ -809,7 +1294,9 @@ def run_successor_gpu_lane(
     provider_preflight = load_input("provider_preflight", provider_preflight_path)
     bundle_receipt = load_input("bundle_receipt", provider_bundle_receipt_path)
     receipt_schema = bundle_receipt.get("schema_version")
-    if receipt_schema == PHASE_B_POSITIVE_CONTROL_PROFILE.receipt_schema:
+    if receipt_schema == DROID_REFERENCE_PROFILE.receipt_schema:
+        profile = DROID_REFERENCE_PROFILE
+    elif receipt_schema == PHASE_B_POSITIVE_CONTROL_PROFILE.receipt_schema:
         profile = PHASE_B_POSITIVE_CONTROL_PROFILE
     elif receipt_schema == PHASE_B_PROFILE.receipt_schema:
         profile = PHASE_B_PROFILE
@@ -883,7 +1370,7 @@ def run_successor_gpu_lane(
         "status": "bound" if admission["status"] == "admitted" else "blocked",
         "experiment_id": profile.experiment_id,
         "source_commit": expected_source_commit,
-        "provider": "vast",
+        "provider": str(provider_preflight.get("provider") or "").strip().lower(),
         "probe_kind": PROBE_KIND,
         "public_image": PUBLIC_IMAGE,
         "provider_bundle_sha256": bundle.get("bundle_sha256"),
@@ -914,9 +1401,13 @@ def run_successor_gpu_lane(
         write_json(Path(adapter_output), result)
         return result
     try:
+        provider_name = str(provider_preflight.get("provider") or "").strip().lower()
+        resource_class = (
+            "runpod_wam_async" if provider_name == "runpod" else "vast_provider_adapter"
+        )
         grant = require_paid_resource_admission(
             admission["shared_paid_lane_admission"],
-            resource_class="vast_provider_adapter",
+            resource_class=resource_class,
             expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
         )
     except PaidResourceAdmissionBlocked as exc:
@@ -924,6 +1415,85 @@ def run_successor_gpu_lane(
             "status": "blocked",
             "reason": "shared_paid_resource_admission_blocked",
             "blockers": [*admission["blockers"], *exc.blockers],
+            "provider_mutations_performed": 0,
+        }
+        write_json(Path(adapter_output), result)
+        return result
+    if provider_name == "runpod":
+        consumption: dict[str, Any] = {
+            "status": "not_consumed",
+            "reason": "awaiting_verified_staging_and_selected_offer",
+            "provider_mutations_performed": 0,
+        }
+
+        def consume_immediately_before_runpod_mutation() -> Mapping[str, Any]:
+            nonlocal consumption
+            observed_preflight_epoch = provider_preflight.get("observed_at_epoch")
+            mutation_now_epoch = time.time()
+            if (
+                type(observed_preflight_epoch) not in {int, float}
+                or not math.isfinite(float(observed_preflight_epoch))
+                or not 0.0
+                <= mutation_now_epoch - float(observed_preflight_epoch)
+                <= MAX_PREFLIGHT_AGE_SECONDS
+            ):
+                consumption = {
+                    "status": "blocked",
+                    "blockers": ["successor_runpod_preflight_stale_or_future_at_provider_mutation"],
+                    "provider_mutations_performed": 0,
+                }
+                return consumption
+            consumption = _consume_authorization_once(
+                authorization,
+                expected_source_commit=expected_source_commit,
+                profile=profile,
+            )
+            return consumption
+
+        result = _run_successor_runpod(
+            job_dir=job_dir,
+            provider_bundle_path=provider_bundle_path,
+            public_base_url=public_base_url,
+            token_file=token_file,
+            secret_env_file=secret_env_file,
+            provider_bundle_url_file=provider_bundle_url_file,
+            provider_output_put_url_file=provider_output_put_url_file,
+            provider_output_get_url_file=provider_output_get_url_file,
+            output_path=output_path,
+            profile=profile,
+            selected_offer=_mapping(admission.get("selected_offer")),
+            session_max_live_minutes=int(session_limit["session_max_live_runtime_minutes"]),
+            paid_resource_admission_grant=grant,
+            pre_provider_mutation_hook=consume_immediately_before_runpod_mutation,
+        )
+        if consumption["status"] != "consumed":
+            blockers = [str(item) for item in result.get("blockers") or []]
+            if result.get("status") in {"completed", "retained_owned"}:
+                blockers.append(
+                    "successor_compute_authorization_not_consumed_before_provider_mutation"
+                )
+                result["status"] = "blocked"
+            result["blockers"] = sorted(set(blockers))
+        else:
+            admission["authorization_consumption"] = consumption
+            admission["manifest_sha256"] = canonical_sha256(
+                {key: value for key, value in admission.items() if key != "manifest_sha256"}
+            )
+            write_json(Path(admission_out), admission)
+            bound["authorization_consumption"] = consumption
+            bound["manifest_sha256"] = canonical_sha256(
+                {key: value for key, value in bound.items() if key != "manifest_sha256"}
+            )
+            write_json(Path(bound_request_out), bound)
+        result["authorization_consumption"] = consumption
+        write_json(Path(adapter_output), result)
+        return result
+    if provider_name != "vast":
+        result = {
+            "status": "blocked",
+            "reason": "successor_provider_executor_not_supported",
+            "blockers": ["successor_provider_executor_not_supported"],
+            "authorization_consumed": False,
             "provider_mutations_performed": 0,
         }
         write_json(Path(adapter_output), result)
@@ -1047,6 +1617,7 @@ __all__ = [
     "HARD_TTL_SECONDS",
     "MAX_COMPUTE_CAP_USD",
     "PREFLIGHT_SCHEMA",
+    "DROID_REFERENCE_PROFILE",
     "PHASE_B_PROFILE",
     "PHASE_B_POSITIVE_CONTROL_PROFILE",
     "PROBE_KIND",
@@ -1054,6 +1625,7 @@ __all__ = [
     "SuccessorGPUProfile",
     "build_successor_gpu_admission",
     "collect_successor_vast_preflight",
+    "collect_successor_runpod_preflight",
     "inspect_successor_bundle",
     "run_successor_gpu_lane",
 ]

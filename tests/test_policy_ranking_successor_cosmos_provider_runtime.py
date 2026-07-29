@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import shutil
 import subprocess
 
@@ -15,6 +16,32 @@ def _row() -> dict[str, object]:
 
 def _stream() -> dict[str, object]:
     return {"actions": [[float(column) for column in range(10)] for _ in range(16)]}
+
+
+def _droid_reference_manifest() -> dict[str, object]:
+    return {
+        "request_contract": {
+            "model": runtime.CHECKPOINT,
+            "checkpoint_revision": runtime.CHECKPOINT_REVISION,
+            "endpoint": "/v1/videos",
+            "prompt": " ",
+            "num_frames": 17,
+            "fps": 15,
+            "size": "640x540",
+            "num_inference_steps": 30,
+            "guidance_scale": 1.0,
+            "flow_shift": 10.0,
+            "seed": 0,
+            "extra_params": {
+                "action_mode": "forward_dynamics",
+                "domain_name": "droid_lerobot",
+                "action_chunk_size": 16,
+                "image_size": 480,
+                "view_point": "concat_view",
+                "guardrails": False,
+            },
+        }
+    }
 
 
 def test_server_command_pins_pipeline_revision_dtype_and_guardrail_mode(
@@ -97,11 +124,15 @@ def test_retained_server_rejects_changed_checkpoint_identity(
 
 def test_direct_and_wrapper_requests_match_exact_pinned_forward_dynamics_contract() -> None:
     direct = runtime._serialize_rollout_request(
-        request_row=_row(), action_stream=_stream(), num_inference_steps=4,
+        request_row=_row(),
+        action_stream=_stream(),
+        num_inference_steps=4,
         task_instruction="Pick up the bottle.",
     )
     wrapper = runtime._serialize_blueprint_wrapper_request(
-        request_row=_row(), action_stream=_stream(), num_inference_steps=4,
+        request_row=_row(),
+        action_stream=_stream(),
+        num_inference_steps=4,
         task_instruction="Pick up the bottle.",
     )
 
@@ -168,6 +199,37 @@ def test_positive_control_serializer_rejects_wrong_action_shape() -> None:
                 "action_chunk_size": 16,
             },
         )
+
+
+def test_droid_reference_serializer_matches_current_official_async_contract() -> None:
+    request = runtime._serialize_droid_reference_request(
+        manifest=_droid_reference_manifest(), action_stream=_stream()
+    )
+
+    assert request["model"] == "nvidia/Cosmos3-Nano"
+    assert request["prompt"] == " "
+    assert request["size"] == "640x540"
+    assert request["num_inference_steps"] == "30"
+    extra = json.loads(request["extra_params"])
+    assert set(extra) == {
+        "action_mode",
+        "domain_name",
+        "action_chunk_size",
+        "image_size",
+        "view_point",
+        "guardrails",
+        "action",
+    }
+    assert "raw_action_dim" not in extra
+    assert "action_space" not in extra
+
+
+def test_droid_reference_serializer_fails_closed_on_contract_drift() -> None:
+    manifest = _droid_reference_manifest()
+    manifest["request_contract"]["size"] = "640x544"  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="request_contract_changed"):
+        runtime._serialize_droid_reference_request(manifest=manifest, action_stream=_stream())
 
 
 def test_server_environment_disables_xet_for_all_runtime_launches(
@@ -257,7 +319,9 @@ def test_wrapper_serializer_is_independent_of_direct_serializer(
     monkeypatch.setattr(runtime, "_serialize_rollout_request", fail_if_called)
 
     wrapper = runtime._serialize_blueprint_wrapper_request(
-        request_row=_row(), action_stream=_stream(), num_inference_steps=4,
+        request_row=_row(),
+        action_stream=_stream(),
+        num_inference_steps=4,
         task_instruction="Pick up the bottle.",
     )
 
@@ -350,7 +414,9 @@ def test_sync_submit_writes_direct_mp4_response(
 
     monkeypatch.setattr(runtime.requests, "post", fake_post)
     request = runtime._serialize_rollout_request(
-        request_row=_row(), action_stream=_stream(), num_inference_steps=4,
+        request_row=_row(),
+        action_stream=_stream(),
+        num_inference_steps=4,
         task_instruction="Pick up the bottle.",
     )
 
@@ -365,3 +431,28 @@ def test_sync_submit_writes_direct_mp4_response(
     assert output.read_bytes() == b"mp4-payload"
     assert result["endpoint"] == "/v1/videos/sync"
     assert result["content_type"] == "video/mp4"
+
+
+def test_run_dispatches_reference_bundle_before_legacy_input_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "provider_runtime"
+    reference = runtime_root / runtime.DROID_REFERENCE_DIRECTORY
+    reference.mkdir(parents=True)
+    (reference / "canary_manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(runtime, "__file__", str(runtime_root / "runner.py"))
+    monkeypatch.setenv("BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR", str(tmp_path / "output"))
+    observed: dict[str, Path] = {}
+
+    def fake_reference_run(*, runtime_dir: Path, output_dir: Path) -> dict[str, object]:
+        observed["runtime_dir"] = runtime_dir
+        observed["output_dir"] = output_dir
+        return {"status": "reference-dispatched"}
+
+    monkeypatch.setattr(runtime, "_run_droid_reference_only", fake_reference_run)
+
+    result = runtime.run()
+
+    assert result == {"status": "reference-dispatched"}
+    assert observed["runtime_dir"] == runtime_root
+    assert observed["output_dir"] == (tmp_path / "output").resolve()

@@ -1,0 +1,63 @@
+{
+  "schema_version": "policy_ranking_cosmos3_droid_source_freeze.v1",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "frozen_at": "2026-07-29",
+  "sources": {
+    "cosmos": {
+      "url": "https://github.com/NVIDIA/cosmos",
+      "revision": "0299468993d8bcd8f6a95b0d8427b1221fccfced",
+      "license": "OpenMDW-1.1",
+      "license_sha256": "2ab44b68365473c112f5092211a38f231cb23e50de68b75a13369adbd76a74df",
+      "action_readme_sha256": "48df78f0531c6faa05c1435dcbcfc538163fbd8e94d5f59b5d9f2d1bd29e0ec2",
+      "vllm_notebook_sha256": "a5219902c1780311f1b987ca4ed84f6a8d13f3f4866f11ddc6edfe2b6d44966d"
+    },
+    "cosmos_framework": {
+      "url": "https://github.com/NVIDIA/cosmos-framework",
+      "revision": "9726697a83315540c6885baefd2fe353d9c74920",
+      "droid_posttrain_doc_sha256": "fc2e2f16d2e8a2b768b0fead57b53ab3811319d0b561755edcee2298380e028a",
+      "droid_dataset_adapter_sha256": "418fc30908ff485a0f1f23cf021339247b58c90b40790f0e53f21833c65ba5bb",
+      "droid_posttrain_config_sha256": "0c7bb5c7c3fc9b8998d3594ca80710da24d16c724d8855bf3adb15f568dc03eb"
+    },
+    "vllm_omni": {
+      "url": "https://github.com/vllm-project/vllm-omni",
+      "revision": "1c6e7313394923000215a3299f4f79ede3873ecc"
+    },
+    "cosmos3_nano": {
+      "id": "nvidia/Cosmos3-Nano",
+      "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa"
+    },
+    "cosmos3_droid": {
+      "id": "nvidia/Cosmos3-DROID",
+      "revision": "5c11a20accb11497270a5247a7f1e66ad04c956c",
+      "license": "OpenMDW-1.1"
+    },
+    "runtime_image": {
+      "id": "docker.io/vllm/vllm-omni:cosmos3",
+      "manifest_list_digest": "sha256:6d2630c7d637b699557573f2c3fee8df5d4d0cd718977aa22549ed6a6ef30587",
+      "linux_amd64_digest": "sha256:970dee6658ea223f615b2438ce41e47f1d5322225482546e6e6bc5d8134f757c"
+    }
+  },
+  "resolved_contract": {
+    "fps": 15,
+    "chunk_length": 16,
+    "action_dimension": 10,
+    "action_space": "ee_pose_internal_alias_midtrain",
+    "action_layout": "position_delta_3_rot6d_delta_6_gripper_1",
+    "pose_convention": "backward_framewise",
+    "coordinate_conversion": "droid_to_opencv",
+    "external_action_normalization": null,
+    "view_layout": "wrist_640x360_top_left_and_right_shoulder_320x180_bottom",
+    "composite_resolution": "640x540",
+    "request_endpoint": "/v1/videos",
+    "num_inference_steps": 30,
+    "guidance_scale": 1.0,
+    "flow_shift": 10.0
+  },
+  "prior_hypotheses_resolved": {
+    "ten_fps_required_for_droid": false,
+    "three_panel_layout_was_wrong": false,
+    "external_normalizer_was_required": false
+  },
+  "provider_called": false,
+  "paid_resources_used": false
+}
