@@ -10,7 +10,9 @@ contract uncertainties prospectively:
   gripper]` with no external normalizer;
 - the visual input is wrist view on top and left/right shoulder views below;
 - the official vLLM-Omni request uses a 640x540 first frame, 30 steps,
-  guidance 1.0, flow shift 10.0, and the asynchronous `/v1/videos` endpoint.
+  guidance 1.0, flow shift 10.0, and the asynchronous `/v1/videos` endpoint;
+- the pinned Cosmos3 VAE has a 16-pixel spatial factor, so the pinned runtime
+  deterministically decodes a 640x540 request as 640x528.
 
 The first paid gate is exactly one structured recorded-action request from the
 published DROID sample. Only a structurally valid, dynamic result admits its
@@ -33,10 +35,14 @@ stored at
 - `protocol_v1.json`
 - `protocol_v2.json`
 - `protocol_v3.json`
+- `protocol_v4.json`
 - `environment_and_source_manifest_v1.json`
 - `goal_cost_authorization_amendment_v1.json`
 - `compute_authorization_allocation_1.json`
 - `compute_authorization_allocation_2.json`
+- `compute_authorization_allocation_3.json`
 - `allocation_1_infrastructure_failure_v1.json`
+- `allocation_2_geometry_gate_result_v1.json`
+- `geometry_amendment_evidence_v1.json`
 - external canary manifest digest:
   `3f29f83f6698543bd7ce13e23b632e355031e54e2a123f0d439868bac3906f04`

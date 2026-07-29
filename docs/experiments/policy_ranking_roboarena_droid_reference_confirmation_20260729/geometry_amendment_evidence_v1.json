@@ -1,0 +1,35 @@
+{
+  "schema_version": "policy_ranking_cosmos3_geometry_amendment_evidence.v1",
+  "status": "primary_source_contract_verified",
+  "recorded_at": "2026-07-29T02:31:50-0500",
+  "vllm_omni": {
+    "repository": "https://github.com/vllm-project/vllm-omni",
+    "revision": "1c6e7313394923000215a3299f4f79ede3873ecc",
+    "source_file": "vllm_omni/diffusion/models/cosmos3/pipeline_cosmos3.py",
+    "source_file_sha256": "d6cff51acc9c56a84c56274ddfd1e2d9580f26c2e72e0d5a9b3f813cc232b2c0",
+    "relevant_contract": {
+      "vae_spatial_factor_lines": [885, 891],
+      "latent_spatial_floor_lines": [1909, 1925],
+      "decode_lines": [2003, 2014],
+      "formula": "decoded_dimension = (requested_dimension // vae_scale_factor_spatial) * vae_scale_factor_spatial"
+    }
+  },
+  "model_config": {
+    "model": "nvidia/Cosmos3-Nano",
+    "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "url": "https://huggingface.co/nvidia/Cosmos3-Nano/resolve/411f42a8fdfb8c5b2583cb8786e0938f49796eaa/vae/config.json",
+    "sha256": "1d3312edfb30b8486720ea29f3532f89c5b5fc05cc571d7664c6f5162effc23e",
+    "scale_factor_spatial": 16,
+    "scale_factor_temporal": 4
+  },
+  "derivation": {
+    "requested_width": 640,
+    "requested_height": 540,
+    "decoded_width": 640,
+    "decoded_height": 528,
+    "width_equation": "(640 // 16) * 16 = 640",
+    "height_equation": "(540 // 16) * 16 = 528",
+    "observed_output_matches_pinned_derivation": true
+  },
+  "claim_boundary": "This proves deterministic output geometry for the pinned runtime. It does not retroactively pass allocation 2, prove causal action following, or qualify Cosmos."
+}

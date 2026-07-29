@@ -1,0 +1,91 @@
+{
+  "schema_version": "policy_ranking_roboarena_droid_reference_confirmation_protocol.v4",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "status": "prospectively_frozen_before_replacement_paired_reference_allocation",
+  "supersedes": {
+    "protocol": "protocol_v3.json",
+    "protocol_v3_manifest_sha256": "c200d6c36c10387f5357457500705b8c5db52c1964f9432f4c0d3ab0569b02d3",
+    "protocol_v3_file_sha256": "17c7731d189c2975cc1fc21f8da804fbff7716c501e020edea219bb2c4a6ab03",
+    "protocol_v3_rewritten": false,
+    "reason": "Allocation 2 returned 640x528 after a 640x540 request. Exact pinned vLLM-Omni code and the pinned model VAE config prove that decoded spatial dimensions are deterministically floored to the 16-pixel VAE factor. The prior decoded-output expectation was an implementation error in Blueprint's gate."
+  },
+  "amendment_timing": {
+    "recorded_at": "2026-07-29T02:31:50-0500",
+    "allocation_2_provider_called": true,
+    "allocation_2_output_accessed": true,
+    "allocation_2_scientific_gate_passed": false,
+    "allocation_2_output_retroactively_reclassified": false,
+    "allocation_2_outcome_labels_accessed": false,
+    "allocation_2_evaluator_called": false,
+    "allocation_2_provider_zero_proven": true,
+    "replacement_allocation_provider_called": false,
+    "replacement_allocation_paid_execution_admitted": false
+  },
+  "allocation_2_closeout": {
+    "evidence": "allocation_2_geometry_gate_result_v1.json",
+    "classification": "dynamic_output_but_frozen_geometry_gate_failed",
+    "estimated_gpu_cost_usd": 0.12173402566578653,
+    "cumulative_estimated_gpu_cost_usd": 0.5088180256657865,
+    "provider_generation_requests": 1,
+    "no_motion_request_submitted": false,
+    "cosmos_wam_qualification_credit": false,
+    "provider_zero": true
+  },
+  "primary_source_basis": "geometry_amendment_evidence_v1.json",
+  "changed_fields": [
+    {
+      "field": "official_droid_reference_manifest_schema",
+      "old": "policy_ranking_cosmos3_official_droid_reference_canary.v1",
+      "new": "policy_ranking_cosmos3_official_droid_reference_canary.v2"
+    },
+    {
+      "field": "structured_canary_decoded_output_height",
+      "old": 540,
+      "new": 528,
+      "derivation": "(requested_height 540 // pinned VAE spatial factor 16) * 16"
+    },
+    {
+      "field": "structured_canary_output_geometry_validation",
+      "old": "hard-coded 640x540",
+      "new": "manifest-bound decoded geometry derived from the pinned VAE spatial factor"
+    }
+  ],
+  "unchanged_scientific_contract": {
+    "request_size": "640x540",
+    "initial_observation_unchanged": true,
+    "recorded_action_unchanged": true,
+    "valid_no_motion_action_unchanged": true,
+    "seed": 0,
+    "recorded_action_request_maximum": 1,
+    "no_motion_request_maximum": 1,
+    "no_motion_admitted_only_after_recorded_structural_motion_pass": true,
+    "motion_thresholds_unchanged": true,
+    "same_output_may_be_retroactively_passed": false,
+    "untouched_data_not_admitted": true,
+    "evaluator_not_admitted": true,
+    "physical_robot_access_forbidden": true
+  },
+  "next_gate": {
+    "run": "fresh replacement paired-reference allocation using a newly built and hashed v2 canary manifest",
+    "pass": "recorded output passes structure and motion, no-motion output passes structure, and offline tier-1 plus timing analysis supports causal separation",
+    "fail": "retain both outputs, abstain, teardown, and do not admit untouched DROID data"
+  },
+  "bundle_v3": {
+    "external_artifact": "external-evidence-store://policy-ranking-roboarena-droid-reference-confirmation-evidence-20260729/bundle_v3/provider_bundle.zip",
+    "bundle_sha256": "d8378dda5c21757c35cb010506615cdb2886c11fbe4c6c9dbd97ff7aef8b044f",
+    "bundle_size_bytes": 420221,
+    "receipt_manifest_sha256": "95f3ff0f9c59633bb69b5075e3bcbc0f1d4e91cb37f2e1d45b48dd4c34bcd236",
+    "reference_manifest_sha256": "7d7ec85a0976ed5ede44db53a8566bd50f6596b99f2bf22f0383593d20b08ffe"
+  },
+  "cost_authority": {
+    "prior_cumulative_estimated_gpu_cost_usd": 0.5088180256657865,
+    "replacement_allocation_target_usd": 2.5,
+    "replacement_allocation_hard_cap_usd": 5.0,
+    "gpu_category_ceiling_usd": 50.0,
+    "campaign_total_ceiling_usd": 100.0,
+    "maximum_concurrent_gpus": 1,
+    "hard_ttl_seconds": 7200
+  },
+  "outcome_labels_accessed": false,
+  "manifest_sha256": "806b76ed1a2cc8b07d9da2746349c908bb7b2a59f88ccba7cba2b76f62fe8f45"
+}

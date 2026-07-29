@@ -10,6 +10,7 @@ outcome labels.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -29,7 +30,7 @@ from .policy_ranking_successor_cosmos import (
 from .policy_ranking_thesis import file_sha256
 
 
-SCHEMA_VERSION = "policy_ranking_cosmos3_official_droid_reference_canary.v1"
+SCHEMA_VERSION = "policy_ranking_cosmos3_official_droid_reference_canary.v2"
 EXPERIMENT_ID = "policy_ranking_roboarena_droid_reference_confirmation_20260729"
 COSMOS_REPOSITORY = "https://github.com/NVIDIA/cosmos"
 COSMOS_REVISION = "0299468993d8bcd8f6a95b0d8427b1221fccfced"
@@ -40,6 +41,7 @@ VLLM_OMNI_CURRENT_REVISION = "1c6e7313394923000215a3299f4f79ede3873ecc"
 COSMOS3_DROID_DATASET = "nvidia/Cosmos3-DROID"
 COSMOS3_DROID_DATASET_REVISION = "5c11a20accb11497270a5247a7f1e66ad04c956c"
 LICENSE_ID = "OpenMDW-1.1"
+COSMOS3_VAE_SPATIAL_FACTOR = 16
 
 UPSTREAM_ASSET_SHA256: Mapping[str, str] = {
     "data/chunk-000/file-000.parquet": (
@@ -67,6 +69,92 @@ VIEW_PATHS: Mapping[str, str] = {
     "left": "videos/observation.image.exterior_image_1_left/chunk-000/file-000.mp4",
     "right": "videos/observation.image.exterior_image_2_left/chunk-000/file-000.mp4",
 }
+
+
+def _decoded_dimension(requested: int, *, spatial_factor: int = COSMOS3_VAE_SPATIAL_FACTOR) -> int:
+    """Return the decoded size produced by the pinned Cosmos3 latent geometry.
+
+    vLLM-Omni constructs the spatial latent with integer division and the VAE
+    decodes each latent cell to ``spatial_factor`` pixels.  Keeping this
+    derivation explicit prevents future canaries from assuming that a
+    non-divisible requested dimension is preserved byte-for-byte.
+    """
+
+    if requested <= 0 or spatial_factor <= 0:
+        raise ValueError("cosmos3_decoded_dimension_requires_positive_integers")
+    return (requested // spatial_factor) * spatial_factor
+
+
+def amend_reference_canary_geometry(
+    *, source_dir: str | Path, output_dir: str | Path
+) -> dict[str, Any]:
+    """Prospectively migrate an unpaid v1 packet to the pinned v2 geometry contract."""
+
+    source = Path(source_dir).expanduser().resolve()
+    output = Path(output_dir).expanduser().resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ValueError("official_droid_geometry_amendment_output_not_empty")
+    prior = json.loads((source / "canary_manifest.json").read_text(encoding="utf-8"))
+    prior_digest = str(prior.get("manifest_sha256") or "")
+    if prior_digest != canonical_sha256(
+        {key: value for key, value in prior.items() if key != "manifest_sha256"}
+    ):
+        raise ValueError("official_droid_geometry_amendment_prior_digest_invalid")
+    if prior.get("schema_version") != ("policy_ranking_cosmos3_official_droid_reference_canary.v1"):
+        raise ValueError("official_droid_geometry_amendment_prior_schema_invalid")
+    runtime = prior.get("runtime") or {}
+    if (
+        runtime.get("paid_execution_admitted") is not False
+        or runtime.get("provider_called") is not False
+    ):
+        raise ValueError("official_droid_geometry_amendment_requires_unpaid_packet")
+    initial = source / "initial_observation.png"
+    actions_path = source / "action_streams.json"
+    actions = json.loads(actions_path.read_text(encoding="utf-8"))
+    provider_inputs = prior.get("provider_inputs") or {}
+    if file_sha256(initial) != provider_inputs.get("initial_observation_sha256"):
+        raise ValueError("official_droid_geometry_amendment_initial_sha256_mismatch")
+    if canonical_sha256(actions) != provider_inputs.get("action_streams_sha256"):
+        raise ValueError("official_droid_geometry_amendment_actions_sha256_mismatch")
+    contract = prior.get("request_contract") or {}
+    gates = (prior.get("frozen_gates") or {}).get("structured_canary") or {}
+    if contract.get("size") != "640x540" or (
+        int(gates.get("output_width") or 0),
+        int(gates.get("output_height") or 0),
+    ) != (640, 540):
+        raise ValueError("official_droid_geometry_amendment_prior_geometry_invalid")
+
+    amended = json.loads(json.dumps(prior))
+    amended.pop("manifest_sha256", None)
+    amended["schema_version"] = SCHEMA_VERSION
+    amended["status"] = "prospectively_geometry_amended_before_replacement_provider_execution"
+    amended["supersedes"] = {
+        "schema_version": prior["schema_version"],
+        "manifest_sha256": prior_digest,
+        "prior_packet_rewritten": False,
+        "prior_paid_output_reclassified": False,
+    }
+    amended_gates = amended["frozen_gates"]["structured_canary"]
+    amended_gates.update(
+        {
+            "requested_width": 640,
+            "requested_height": 540,
+            "output_width": _decoded_dimension(640),
+            "output_height": _decoded_dimension(540),
+            "output_geometry_derivation": {
+                "method": "floor_to_pinned_cosmos3_vae_spatial_factor",
+                "vae_spatial_factor": COSMOS3_VAE_SPATIAL_FACTOR,
+                "vllm_omni_revision": VLLM_OMNI_CURRENT_REVISION,
+                "source_file": "vllm_omni/diffusion/models/cosmos3/pipeline_cosmos3.py",
+            },
+        }
+    )
+    amended["manifest_sha256"] = canonical_sha256(amended)
+    ensure_dir(output)
+    shutil.copy2(initial, output / initial.name)
+    shutil.copy2(actions_path, output / actions_path.name)
+    write_json(output / "canary_manifest.json", amended)
+    return amended
 
 
 def _validated_source(root: Path) -> dict[str, str]:
@@ -278,8 +366,20 @@ def build_official_droid_reference_canary(
             "structured_canary": {
                 "provider_response_id_required": True,
                 "terminal_status": "completed",
-                "output_width": 640,
-                "output_height": 540,
+                "requested_width": 640,
+                "requested_height": 540,
+                "output_width": _decoded_dimension(640),
+                "output_height": _decoded_dimension(540),
+                "output_geometry_derivation": {
+                    "method": "floor_to_pinned_cosmos3_vae_spatial_factor",
+                    "vae_spatial_factor": COSMOS3_VAE_SPATIAL_FACTOR,
+                    "vllm_omni_revision": VLLM_OMNI_CURRENT_REVISION,
+                    "source_file": "vllm_omni/diffusion/models/cosmos3/pipeline_cosmos3.py",
+                    "source_contract": (
+                        "latent spatial dimensions are height // factor and width // factor; "
+                        "the VAE decodes those integer latent dimensions"
+                    ),
+                },
                 "output_frames": 17,
                 "output_fps": 15,
                 "temporal_absolute_difference_mean_minimum_gray_0_255": 1.0,
@@ -316,5 +416,6 @@ __all__ = [
     "EXPERIMENT_ID",
     "SCHEMA_VERSION",
     "UPSTREAM_ASSET_SHA256",
+    "amend_reference_canary_geometry",
     "build_official_droid_reference_canary",
 ]

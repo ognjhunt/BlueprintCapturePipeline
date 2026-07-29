@@ -56,6 +56,7 @@ EXPECTED_VIDEO_HEIGHT = 544
 POSITIVE_CONTROL_DIRECTORY = "cosmos3_positive_control"
 POSITIVE_CONTROL_REQUEST_COUNT = 4
 DROID_REFERENCE_DIRECTORY = "cosmos3_droid_reference"
+DROID_REFERENCE_SCHEMA_VERSION = "policy_ranking_cosmos3_official_droid_reference_canary.v2"
 
 
 def canonical_sha256(value: Any) -> str:
@@ -930,9 +931,7 @@ def _run_droid_reference_only(*, runtime_dir: Path, output_dir: Path) -> dict[st
     )
     if not recorded_digest or recorded_digest != computed_digest:
         raise ValueError("official_droid_reference_manifest_sha256_mismatch")
-    if manifest.get("schema_version") != (
-        "policy_ranking_cosmos3_official_droid_reference_canary.v1"
-    ):
+    if manifest.get("schema_version") != DROID_REFERENCE_SCHEMA_VERSION:
         raise ValueError("official_droid_reference_manifest_schema_invalid")
     initial_observation = control / "initial_observation.png"
     actions_path = control / "action_streams.json"
@@ -970,6 +969,12 @@ def _run_droid_reference_only(*, runtime_dir: Path, output_dir: Path) -> dict[st
         _wait_for_server(process)
         model_load_seconds = 0.0 if reused else time.monotonic() - started
         gates = (manifest.get("frozen_gates") or {}).get("structured_canary") or {}
+        expected_width = int(gates.get("output_width") or 0)
+        expected_height = int(gates.get("output_height") or 0)
+        expected_frames = int(gates.get("output_frames") or 0)
+        expected_fps = float(gates.get("output_fps") or 0.0)
+        if min(expected_width, expected_height, expected_frames) <= 0 or expected_fps <= 0:
+            raise ValueError("official_droid_reference_output_geometry_gate_invalid")
         for name in ("recorded", "no_motion"):
             if name == "no_motion" and not records[0]["gate_passed"]:
                 break
@@ -985,10 +990,10 @@ def _run_droid_reference_only(*, runtime_dir: Path, output_dir: Path) -> dict[st
             )
             metrics = _decode_video_metrics(
                 output_path,
-                expected_width=640,
-                expected_height=540,
-                expected_frames=17,
-                expected_fps=15.0,
+                expected_width=expected_width,
+                expected_height=expected_height,
+                expected_frames=expected_frames,
+                expected_fps=expected_fps,
             )
             motion_pass = float(metrics.get("temporal_absolute_difference_mean") or 0.0) >= float(
                 gates.get("temporal_absolute_difference_mean_minimum_gray_0_255") or 0.0

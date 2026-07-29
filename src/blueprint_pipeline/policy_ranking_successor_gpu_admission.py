@@ -237,15 +237,16 @@ DROID_REFERENCE_PROFILE = SuccessorGPUProfile(
     authorization_ids_by_allocation_index={
         1: "policy-ranking-droid-reference-20260729-allocation-1",
         2: "policy-ranking-droid-reference-20260729-allocation-2",
+        3: "policy-ranking-droid-reference-20260729-allocation-3",
     },
     cost_authorization_binding_sha256=(
         "305668fe34d4524caa0d7dc5ce301e44a1a04e0b66176719c02a8cab76373cb4"
     ),
-    expected_bundle_sha256="e729340c2eb8b1eb45f9b35add822fea97c5060b0c1c593831f921d38a4612fc",
-    expected_bundle_size_bytes=419_881,
+    expected_bundle_sha256="d8378dda5c21757c35cb010506615cdb2886c11fbe4c6c9dbd97ff7aef8b044f",
+    expected_bundle_size_bytes=420_221,
     expected_embedded_input_hashes={
         "reference_manifest_sha256": (
-            "3f29f83f6698543bd7ce13e23b632e355031e54e2a123f0d439868bac3906f04"
+            "7d7ec85a0976ed5ede44db53a8566bd50f6596b99f2bf22f0383593d20b08ffe"
         ),
         "initial_observation_sha256": (
             "e8f2735942986934a77a47a9c1f50fd5b55ade03bc241e3950193aaf1137004f"
@@ -254,7 +255,7 @@ DROID_REFERENCE_PROFILE = SuccessorGPUProfile(
             "acbccfdbea8a645cd8b211109dba5ab434f530427087ea3a3b1301eff71a8263"
         ),
         "provider_runtime_runner_sha256": (
-            "bd613b8067abe010b92e5e7215c2e8a4998aa4a92a9beb3a77f4e9ef1135cb09"
+            "0e7ea3d4de04c50a548d7f6b1a65f515a0de126cd51df6863bab4e341b9eeabd"
         ),
     },
     qualification_canary_request_count=2,
