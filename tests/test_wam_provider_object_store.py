@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -20,6 +21,27 @@ def test_presigned_url_expiry_metadata_uses_generated_at() -> None:
     assert meta["expires_at"] == "2026-06-29T12:10:00Z"
     assert meta["expiry_warning"] is True
     assert meta["raw_url_values_recorded"] is False
+
+
+def test_staging_binding_reservation_is_exclusive_and_preserves_first_writer(
+    tmp_path: Path,
+) -> None:
+    binding_path = tmp_path / object_store.STAGING_BINDING_FILENAME
+    first = {"staging_binding_sha256": "a" * 64}
+    second = {"staging_binding_sha256": "b" * 64}
+
+    object_store._write_staging_binding_exclusive(binding_path, first)
+    first_bytes = binding_path.read_bytes()
+    try:
+        object_store._write_staging_binding_exclusive(binding_path, second)
+    except FileExistsError:
+        pass
+    else:  # pragma: no cover - contract failure made explicit
+        raise AssertionError("second staging writer replaced the first binding")
+
+    assert binding_path.read_bytes() == first_bytes
+    assert json.loads(first_bytes)["staging_binding_sha256"] == "a" * 64
+    assert oct(binding_path.stat().st_mode & 0o777) == "0o600"
 
 
 def test_wam_provider_object_store_blocks_without_file_based_credentials(
@@ -45,6 +67,12 @@ def test_wam_provider_object_store_blocks_without_file_based_credentials(
     assert all(row["path_redacted"] is True for row in access_candidates)
     assert all("path" not in row for row in access_candidates)
     assert manifest["secret_artifact_policy"]["local_secret_file_paths_recorded"] is False
+    assert manifest["bundle_key"] is None
+    assert manifest["output_key"] is None
+    assert manifest["bundle_key_content_addressed"] is False
+    assert manifest["output_key_run_unique"] is False
+    assert not (tmp_path / "job" / object_store.STAGING_BINDING_FILENAME).exists()
+    assert object_store._existing_staging_initialization(tmp_path / "job")["initialized"] is False
     persisted = (tmp_path / "job" / "wam_provider_object_store_staging_manifest.json").read_text(
         encoding="utf-8"
     )
@@ -233,26 +261,35 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
     assert manifest["object_store"]["expires_at"]
     assert manifest["provider_bundle_url_file"]["mode_is_0600"] is True
     assert manifest["provider_output_put_url_file"]["mode_is_0600"] is True
+    bundle_sha256 = hashlib.sha256(b"bundle").hexdigest()
+    expected_bundle_key = (
+        f"blueprint/wam-test/{object_store._job_key_component((tmp_path / 'job').resolve())}/"
+        f"bundles/sha256/{bundle_sha256}.zip"
+    )
     bundle_get_params = [
         params
         for operation, params in fake_client.presign_params
-        if operation == "get_object" and params.get("Key", "").endswith("/provider_bundle.zip")
+        if operation == "get_object" and params.get("ResponseCacheControl")
     ]
     assert bundle_get_params == [
         {
             "Bucket": "blueprint-wam",
-            "Key": (
-                f"blueprint/wam-test/"
-                f"{object_store._job_key_component((tmp_path / 'job').resolve())}/"
-                "provider_bundle.zip"
-            ),
+            "Key": expected_bundle_key,
             "ResponseCacheControl": "no-store, max-age=0",
         }
     ]
     uploaded_keys = [row[2] for row in fake_client.uploads]
-    assert uploaded_keys == [
-        f"blueprint/wam-test/{object_store._job_key_component((tmp_path / 'job').resolve())}/provider_bundle.zip"
-    ]
+    assert uploaded_keys == [expected_bundle_key]
+    assert manifest["bundle_sha256"] == bundle_sha256
+    assert manifest["bundle_key"] == expected_bundle_key
+    assert manifest["bundle_key_content_addressed"] is True
+    assert manifest["staging_binding_file"]["mode_is_0600"] is True
+    binding = json.loads(
+        (tmp_path / "job" / object_store.STAGING_BINDING_FILENAME).read_text(encoding="utf-8")
+    )
+    assert binding["bundle_sha256"] == bundle_sha256
+    assert binding["bundle_key"] == expected_bundle_key
+    assert binding["staging_binding_sha256"] == manifest["staging_binding_sha256"]
     assert re.fullmatch(
         f"blueprint/wam-test/{object_store._job_key_component((tmp_path / 'job').resolve())}"
         r"/runpod_provider_runtime_output_[0-9a-f]{32}\.zip",
@@ -279,6 +316,53 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
     assert "fake-signature" in (tmp_path / "job" / "provider_bundle_url.txt").read_text(
         encoding="utf-8"
     )
+
+    canonical_manifest_path = tmp_path / "job" / object_store.STAGING_MANIFEST_FILENAME
+    canonical_manifest_before = canonical_manifest_path.read_bytes()
+    signed_urls_before = {
+        name: (tmp_path / "job" / name).read_bytes() for name in object_store.SIGNED_URL_FILENAMES
+    }
+    mutation_counts_before = (
+        len(fake_client.uploads),
+        len(fake_client.presign_params),
+        len(fake_client.deletes),
+    )
+    replacement_bytes = b"different bundle"
+    bundle.write_bytes(replacement_bytes)
+
+    rejected = object_store.stage_wam_provider_bundle_object_store(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        access_key_id_file=access,
+        secret_access_key_file=secret,
+        endpoint_url="https://nyc3.digitaloceanspaces.com",
+        bucket_file=bucket_file,
+        region="nyc3",
+        key_prefix="blueprint/wam-test",
+        expiration_seconds=600,
+        generated_at="later",
+    )
+
+    assert rejected["status"] == "blocked"
+    assert rejected["blockers"] == ["wam_provider_staging_job_dir_already_initialized"]
+    assert rejected["requested_bundle_sha256"] == hashlib.sha256(replacement_bytes).hexdigest()
+    assert rejected["provider_mutations_performed"] is False
+    assert rejected["canonical_staging_manifest_preserved"] is True
+    assert rejected["signed_url_files_preserved"] is True
+    assert mutation_counts_before == (
+        len(fake_client.uploads),
+        len(fake_client.presign_params),
+        len(fake_client.deletes),
+    )
+    assert canonical_manifest_path.read_bytes() == canonical_manifest_before
+    assert {
+        name: (tmp_path / "job" / name).read_bytes() for name in object_store.SIGNED_URL_FILENAMES
+    } == signed_urls_before
+    rejection_files = list(
+        (tmp_path / "job").glob("wam_provider_object_store_staging_reuse_rejection_*.json")
+    )
+    assert len(rejection_files) == 1
+    assert json.loads(rejection_files[0].read_text(encoding="utf-8")) == rejected
 
 
 def test_signed_output_round_trip_blocks_mismatch_but_still_proves_cleanup(

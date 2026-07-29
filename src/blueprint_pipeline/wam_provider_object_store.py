@@ -31,6 +31,14 @@ SIGNED_OUTPUT_SENTINEL_BYTES = 96
 SIGNED_OUTPUT_HTTP_TIMEOUT_SECONDS = 30
 SIGNED_OUTPUT_MAX_RESPONSE_BYTES = 64 * 1024
 OBJECT_CLEANUP_SCHEMA_VERSION = "wam_provider_object_store_cleanup.v1"
+STAGING_BINDING_SCHEMA_VERSION = "wam_provider_object_store_binding.v1"
+STAGING_BINDING_FILENAME = "wam_provider_object_store_staging_binding.json"
+STAGING_MANIFEST_FILENAME = "wam_provider_object_store_staging_manifest.json"
+SIGNED_URL_FILENAMES = (
+    "provider_bundle_url.txt",
+    "provider_output_put_url.txt",
+    "provider_output_get_url.txt",
+)
 DEFAULT_ACCESS_KEY_FILES = (
     "~/.blueprint-secrets/digitalocean_spaces_access_key_id",
     "~/.blueprint-secrets/runpod_s3_access_key",
@@ -120,6 +128,111 @@ def _safe_key_component(value: str) -> str:
 def _job_key_component(path: Path) -> str:
     parts = [part for part in path.parts[-3:] if part and part != "/"]
     return _safe_key_component("__".join(parts))
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _staging_binding_sha256(
+    *,
+    bundle_sha256: str,
+    bundle_key: str,
+    output_key: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "bundle_key": bundle_key,
+            "bundle_sha256": bundle_sha256,
+            "output_key": output_key,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _existing_staging_initialization(job_dir: Path) -> dict[str, Any]:
+    binding_path = job_dir / STAGING_BINDING_FILENAME
+    manifest_path = job_dir / STAGING_MANIFEST_FILENAME
+    signed_url_paths = [job_dir / name for name in SIGNED_URL_FILENAMES]
+    manifest: dict[str, Any] = {}
+    manifest_readable = False
+    if manifest_path.is_file():
+        try:
+            value = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = dict(value) if isinstance(value, Mapping) else {}
+            manifest_readable = isinstance(value, Mapping)
+        except (OSError, json.JSONDecodeError):
+            manifest_readable = False
+    manifest_status = _string(manifest.get("status"))
+    manifest_has_remote_binding = bool(
+        _string(manifest.get("bundle_key")) or _string(manifest.get("output_key"))
+    )
+    initialized = bool(
+        binding_path.exists()
+        or any(path.exists() for path in signed_url_paths)
+        or (manifest_path.exists() and not manifest_readable)
+        or manifest_status == "completed"
+        or manifest_has_remote_binding
+    )
+    return {
+        "initialized": initialized,
+        "binding_file_present": binding_path.is_file(),
+        "binding_file_sha256": _sha256_file(binding_path) if binding_path.is_file() else None,
+        "staging_manifest_present": manifest_path.is_file(),
+        "staging_manifest_readable": manifest_readable,
+        "staging_manifest_status": manifest_status or None,
+        "staging_manifest_sha256": _sha256_file(manifest_path) if manifest_path.is_file() else None,
+        "signed_url_files_present": sorted(path.name for path in signed_url_paths if path.exists()),
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _write_staging_binding_exclusive(path: Path, payload: Mapping[str, Any]) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            json.dump(dict(payload), handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _write_staging_reuse_rejection(
+    *,
+    job_dir: Path,
+    generated_at: str,
+    requested_binding_sha256: str,
+    requested_bundle_sha256: str,
+    existing: Mapping[str, Any],
+) -> dict[str, Any]:
+    result = {
+        "schema_version": STAGING_BINDING_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "status": "blocked",
+        "job_dir": str(job_dir),
+        "requested_binding_sha256": requested_binding_sha256,
+        "requested_bundle_sha256": requested_bundle_sha256 or None,
+        "existing_initialization": dict(existing),
+        "provider_mutations_performed": False,
+        "canonical_staging_manifest_preserved": True,
+        "signed_url_files_preserved": True,
+        "blockers": ["wam_provider_staging_job_dir_already_initialized"],
+        "raw_secret_values_recorded": False,
+    }
+    suffix = requested_binding_sha256[:16]
+    write_json(job_dir / f"wam_provider_object_store_staging_reuse_rejection_{suffix}.json", result)
+    return result
 
 
 def _file_status(path: Path, *, label: str, value_present: bool = False) -> dict[str, Any]:
@@ -599,6 +712,29 @@ def stage_wam_provider_bundle_object_store(
     resolved_job_dir = Path(job_dir).expanduser().resolve()
     resolved_bundle = Path(bundle_path).expanduser().resolve()
     ensure_dir(resolved_job_dir)
+    bundle_sha256 = _sha256_file(resolved_bundle) if resolved_bundle.is_file() else ""
+    safe_prefix = key_prefix.strip("/ ") or "blueprint/wam-provider"
+    job_key = _job_key_component(resolved_job_dir)
+    run_nonce = secrets.token_hex(16)
+    bundle_key = (
+        f"{safe_prefix}/{job_key}/bundles/sha256/{bundle_sha256}.zip" if bundle_sha256 else ""
+    )
+    output_key = f"{safe_prefix}/{job_key}/runpod_provider_runtime_output_{run_nonce}.zip"
+    sentinel_key = f"{safe_prefix}/{job_key}/preflight/signed_output_round_trip_{run_nonce}.bin"
+    staging_binding_sha256 = _staging_binding_sha256(
+        bundle_sha256=bundle_sha256,
+        bundle_key=bundle_key,
+        output_key=output_key,
+    )
+    existing_initialization = _existing_staging_initialization(resolved_job_dir)
+    if existing_initialization["initialized"]:
+        return _write_staging_reuse_rejection(
+            job_dir=resolved_job_dir,
+            generated_at=generated,
+            requested_binding_sha256=staging_binding_sha256,
+            requested_bundle_sha256=bundle_sha256,
+            existing=existing_initialization,
+        )
     access_key, access_meta = _read_first_file(
         explicit_path=access_key_id_file,
         env_name="BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID",
@@ -679,8 +815,6 @@ def stage_wam_provider_bundle_object_store(
     bundle_url = ""
     output_put_url = ""
     output_get_url = ""
-    bundle_key = ""
-    output_key = ""
     upload_detail: dict[str, Any] = {"status": "not_run"}
     output_key_absence: dict[str, Any] = {
         "status": "not_run",
@@ -694,15 +828,33 @@ def stage_wam_provider_bundle_object_store(
         "raw_secret_values_recorded": False,
     }
     output_url_object_binding_sha256 = ""
+    binding_initialized = False
     if not blockers:
         assert boto3 is not None
         assert Config is not None
-        safe_prefix = key_prefix.strip("/ ") or "blueprint/wam-provider"
-        job_key = _job_key_component(resolved_job_dir)
-        run_nonce = secrets.token_hex(16)
-        bundle_key = f"{safe_prefix}/{job_key}/{resolved_bundle.name}"
-        output_key = f"{safe_prefix}/{job_key}/runpod_provider_runtime_output_{run_nonce}.zip"
-        sentinel_key = f"{safe_prefix}/{job_key}/preflight/signed_output_round_trip_{run_nonce}.bin"
+        binding_path = resolved_job_dir / STAGING_BINDING_FILENAME
+        binding = {
+            "schema_version": STAGING_BINDING_SCHEMA_VERSION,
+            "generated_at": generated,
+            "job_dir": str(resolved_job_dir),
+            "bundle_sha256": bundle_sha256,
+            "bundle_key": bundle_key,
+            "output_key": output_key,
+            "staging_binding_sha256": staging_binding_sha256,
+            "bundle_key_content_addressed": True,
+            "raw_secret_values_recorded": False,
+        }
+        try:
+            _write_staging_binding_exclusive(binding_path, binding)
+            binding_initialized = True
+        except FileExistsError:
+            return _write_staging_reuse_rejection(
+                job_dir=resolved_job_dir,
+                generated_at=generated,
+                requested_binding_sha256=staging_binding_sha256,
+                requested_bundle_sha256=bundle_sha256,
+                existing=_existing_staging_initialization(resolved_job_dir),
+            )
         client_kwargs: dict[str, Any] = {
             "aws_access_key_id": access_key,
             "aws_secret_access_key": secret_key,
@@ -788,9 +940,9 @@ def stage_wam_provider_bundle_object_store(
                 "error_type": type(exc).__name__,
                 "raw_secret_values_recorded": False,
             }
-    bundle_url_file = resolved_job_dir / "provider_bundle_url.txt"
-    output_put_url_file = resolved_job_dir / "provider_output_put_url.txt"
-    output_get_url_file = resolved_job_dir / "provider_output_get_url.txt"
+    bundle_url_file, output_put_url_file, output_get_url_file = (
+        resolved_job_dir / name for name in SIGNED_URL_FILENAMES
+    )
     bundle_url_file_status = (
         _write_sensitive_file(bundle_url_file, bundle_url, label="provider_bundle_url")
         if bundle_url
@@ -818,6 +970,15 @@ def stage_wam_provider_bundle_object_store(
         "bundle_path": str(resolved_bundle),
         "bundle_present": resolved_bundle.is_file(),
         "bundle_size_bytes": resolved_bundle.stat().st_size if resolved_bundle.is_file() else 0,
+        "bundle_sha256": bundle_sha256 or None,
+        "bundle_key_content_addressed": bool(
+            binding_initialized and bundle_sha256 and bundle_key.endswith(f"/{bundle_sha256}.zip")
+        ),
+        "staging_binding_sha256": staging_binding_sha256,
+        "staging_binding_file": _file_status(
+            resolved_job_dir / STAGING_BINDING_FILENAME,
+            label="wam_provider_object_store_staging_binding",
+        ),
         "object_store": {
             "access_key_id": access_meta,
             "secret_access_key": secret_meta,
@@ -833,10 +994,10 @@ def stage_wam_provider_bundle_object_store(
         "upload_detail": upload_detail,
         "signed_output_round_trip": signed_output_round_trip,
         "fresh_output_key_absence": output_key_absence,
-        "output_key_run_unique": bool(output_key),
+        "output_key_run_unique": bool(binding_initialized and output_key),
         "output_url_object_binding_sha256": (output_url_object_binding_sha256 or None),
-        "bundle_key": bundle_key or None,
-        "output_key": output_key or None,
+        "bundle_key": bundle_key if binding_initialized else None,
+        "output_key": output_key if binding_initialized else None,
         "provider_bundle_url_file": bundle_url_file_status,
         "provider_output_put_url_file": output_put_url_file_status,
         "provider_output_get_url_file": output_get_url_file_status,
@@ -864,7 +1025,7 @@ def stage_wam_provider_bundle_object_store(
         "secret_hashes_recorded": False,
         "secret_artifact_policy": secret_path_disclosure_policy(),
     }
-    write_json(resolved_job_dir / "wam_provider_object_store_staging_manifest.json", manifest)
+    write_json(resolved_job_dir / STAGING_MANIFEST_FILENAME, manifest)
     return manifest
 
 
