@@ -28,7 +28,7 @@ remain user-owned and are not inspected, absorbed, or modified by this branch.
 | Evidence | Result |
 | --- | --- |
 | New Pipeline intake/materialization focused lane | `45 passed` (`tests/test_capture_intake.py` plus `tests/test_materialization_edges.py`) |
-| Pipeline capture-QA focused lane | `59 passed` (`tests/test_capture_qa.py`, intake, and materialization regressions), plus a real local H.264 `ffprobe` smoke: 90 decoded frames, strictly monotonic decoded-frame PTS, and an accepted reduced-authority monocular QA report. Synthetic test media is tool-path evidence only, not the required real-capture vertical slice. |
+| Pipeline capture-QA focused lane | `59 passed` (`tests/test_capture_qa.py`, intake, and materialization regressions), plus a real local H.264 `ffprobe` smoke: 90 decoded frames, strictly monotonic decoded-frame PTS, and an honest `analysis_required` / `validating` result until frame-quality measurements exist. Synthetic test media is tool-path evidence only, not the required real-capture vertical slice. |
 | Pipeline fast/full release lanes | Not run yet; this is not a coherent release candidate. |
 | Capture retained-frame/decoded-PTS focused lane | `53 passed`, 0 failed, 0 skipped on an iPhone 17 Pro iOS 26.0 simulator. The explicit result bundle is `build/CaptureSyncFocused.xcresult` in the Capture beta worktree and covers synchronization, strict Raw Contract 3.2 validation, finalizer/raw-bundle regressions, Pipeline contract constants, and adjacent capture-bundle/inference behavior. Earlier overlapping invocations failed on a locked build database or insufficient local disk; neither is counted as test evidence. |
 | Capture release lanes | Not run yet; the focused simulator lane is not the final device or release gate. |

@@ -14,6 +14,7 @@
     "checks",
     "recapture_plan",
     "missing_evidence",
+    "required_analysis",
     "next_cheapest_experiment",
     "quality_observations_digest",
     "claim_ceiling",
@@ -26,9 +27,16 @@
     "intake_id": {"type": "string", "minLength": 1},
     "envelope_digest": {"$ref": "#/$defs/sha256"},
     "capture_authority_profile": {"type": "string", "minLength": 1},
-    "status": {"enum": ["accepted", "recapture_required", "rejected"]},
+    "status": {
+      "enum": ["accepted", "analysis_required", "recapture_required", "rejected"]
+    },
     "state": {
-      "enum": ["capture_accepted", "rejected_or_recapture_required", "failed"]
+      "enum": [
+        "capture_accepted",
+        "validating",
+        "rejected_or_recapture_required",
+        "failed"
+      ]
     },
     "checks": {
       "type": "array",
@@ -70,6 +78,7 @@
       }
     },
     "missing_evidence": {"type": "array", "items": {"type": "string"}},
+    "required_analysis": {"type": "array", "items": {"type": "string"}},
     "next_cheapest_experiment": {"type": ["object", "null"]},
     "quality_observations_digest": {"type": ["string", "null"]},
     "claim_ceiling": {"type": "object"},

@@ -227,7 +227,7 @@ def test_media_contract_failures_produce_exact_recapture_code(
     assert code in {row["code"] for row in report["recapture_plan"]}
 
 
-def test_unmeasured_quality_is_explicit_and_never_becomes_a_pass(tmp_path: Path) -> None:
+def test_unmeasured_quality_requires_analysis_and_never_becomes_a_pass(tmp_path: Path) -> None:
     payload = b"unmeasured-video"
     report = build_capture_qa_report(
         _envelope(payload, profile="monocular_video", streams=["retained_video"]),
@@ -235,10 +235,14 @@ def test_unmeasured_quality_is_explicit_and_never_becomes_a_pass(tmp_path: Path)
         media_probe=_probe(payload),
     )
 
-    assert report["status"] == "accepted"
+    assert report["status"] == "analysis_required"
+    assert report["state"] == "validating"
     assert _check(report, "sharp_frame_fraction")["status"] == "not_measured"
     assert "sharp_frame_fraction" in report["missing_evidence"]
     assert report["next_cheapest_experiment"]["code"].startswith("measure_")
+    assert report["next_cheapest_experiment"]["kind"] == "local_quality_analysis"
+    assert "sharp_frame_fraction" in report["required_analysis"]
+    assert report["claim_ceiling"]["capture_admitted"] is False
     assert report["claim_ceiling"]["metric_geometry"] is False
 
 

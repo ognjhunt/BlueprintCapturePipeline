@@ -50,6 +50,13 @@ _BOOLEAN_MEASUREMENTS = {
     "robot_placement_area_covered",
     "scale_anchor_verified",
 }
+_REQUIRED_QUALITY_MEASUREMENTS = {
+    "sharp_frame_fraction",
+    "well_exposed_frame_fraction",
+    "visual_overlap_fraction",
+    "compression_quality_fraction",
+    "rolling_shutter_symptom_fraction",
+}
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
@@ -637,12 +644,16 @@ def build_capture_qa_report(
     missing_evidence = sorted(
         {row["check_id"] for row in checks if row["status"] == "not_measured"}
     )
+    required_analysis = sorted(_REQUIRED_QUALITY_MEASUREMENTS & set(missing_evidence))
     if admission["status"] == "rejected":
         status = "rejected"
         state = "failed"
     elif recapture_plan:
         status = "recapture_required"
         state = "rejected_or_recapture_required"
+    elif required_analysis:
+        status = "analysis_required"
+        state = "validating"
     else:
         status = "accepted"
         state = "capture_accepted"
@@ -654,6 +665,11 @@ def build_capture_qa_report(
         claim_ceiling["calibrated_camera_poses"] = False
         claim_ceiling["metric_scale"] = False
         claim_ceiling["metric_geometry"] = False
+    next_measurement = (
+        required_analysis[0]
+        if required_analysis
+        else (missing_evidence[0] if missing_evidence else None)
+    )
     next_experiment = (
         {
             "kind": "targeted_recapture",
@@ -663,11 +679,19 @@ def build_capture_qa_report(
         if recapture_plan
         else (
             {
-                "kind": "local_or_operator_measurement",
-                "code": f"measure_{missing_evidence[0]}",
-                "instruction": f"Measure and record {missing_evidence[0]} with a provenance-labeled local analyzer or operator review before making claims that depend on it.",
+                "kind": (
+                    "local_quality_analysis"
+                    if next_measurement in required_analysis
+                    else "local_or_operator_measurement"
+                ),
+                "code": f"measure_{next_measurement}",
+                "instruction": (
+                    f"Measure and record {next_measurement} with a provenance-labeled local analyzer before making claims that depend on it."
+                    if next_measurement in required_analysis
+                    else f"Measure and record {next_measurement} with a provenance-labeled local analyzer or bounded operator review before making claims that depend on it."
+                ),
             }
-            if missing_evidence
+            if next_measurement
             else None
         )
     )
@@ -681,6 +705,7 @@ def build_capture_qa_report(
         "checks": sorted(checks, key=lambda row: row["check_id"]),
         "recapture_plan": sorted(recapture_plan, key=lambda row: str(row.get("code") or "")),
         "missing_evidence": missing_evidence,
+        "required_analysis": required_analysis,
         "next_cheapest_experiment": next_experiment,
         "quality_observations_digest": observations.get("observations_digest"),
         "claim_ceiling": claim_ceiling,

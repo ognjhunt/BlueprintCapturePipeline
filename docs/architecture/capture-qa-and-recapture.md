@@ -13,8 +13,8 @@ source-file SHA-256.
 
 The QA result is not a reconstruction, qualification record, or Task
 Evaluation Run decision. It may accept the capture for its named authority
-profile, request bounded recapture, or reject the intake. It cannot upgrade the
-intake claim ceiling.
+profile, remain `analysis_required` in the `validating` state, request bounded
+recapture, or reject the intake. It cannot upgrade the intake claim ceiling.
 
 ## Evidence sources
 
@@ -27,7 +27,9 @@ The report distinguishes:
 
 An observations packet from another intake or another source-file digest fails
 closed. Missing measurements remain `not_measured`; they are never converted
-to passes. The report returns the cheapest local measurement or operator review
+to passes. Missing blur, exposure, overlap, compression, or rolling-shutter
+measurements keep the capture in `validating` rather than accepting it. The
+report returns the cheapest local measurement or operator review
 when the capture is otherwise acceptable but a later claim could need that
 evidence. Operator-attested packets may record bounded boolean review findings,
 but cannot supply quantified blur, exposure, overlap, compression, or
