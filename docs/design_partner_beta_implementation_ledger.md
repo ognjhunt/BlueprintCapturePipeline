@@ -11,7 +11,7 @@ evidence are tracked separately.
 | Repository | HEAD / local main / origin main | State and handling |
 | --- | --- | --- |
 | BlueprintCapturePipeline | `21e49c3df1d4be7bacffda87bc9d78ce08e20bb4` | Primary checkout had the preserved user-owned `docs/CHANGELOG.md` edit. Work continues in `codex/design-partner-beta-20260729` from `origin/main`; the primary checkout was not changed. |
-| BlueprintCapture | `a5f84c8c7875396c6e787bc00bed48fb717d1091` | Clean, zero divergence. No beta-goal edits yet. |
+| BlueprintCapture | `a5f84c8c7875396c6e787bc00bed48fb717d1091` | Primary checkout was clean and remains untouched. Capture work continues in `codex/design-partner-beta-20260729`; retained-frame/decoded-PTS changes are committed at `5e4cb5bb`. |
 | Blueprint-WebApp | `92e4eacdcecb4b733b45998df8a8864bddebe2d4` | Clean, zero divergence. No beta-goal edits yet. |
 
 Open Pipeline PRs were inspected at startup. PR #226 is a separate World Labs
@@ -29,7 +29,8 @@ remain user-owned and are not inspected, absorbed, or modified by this branch.
 | --- | --- |
 | New Pipeline intake/materialization focused lane | `45 passed` (`tests/test_capture_intake.py` plus `tests/test_materialization_edges.py`) |
 | Pipeline fast/full release lanes | Not run yet; this is not a coherent release candidate. |
-| Capture release lanes | Not run yet. |
+| Capture retained-frame/decoded-PTS focused lane | `26 passed`, 0 failed, 0 skipped on an iPhone 17 Pro iOS 26.0 simulator. Result bundle: `Test-BlueprintCapture-2026.07.29_15-08-28--0500.xcresult`. A separate overlapping invocation failed on a locked build database and a later isolated-cache attempt failed for insufficient local disk; neither is counted as test evidence. |
+| Capture release lanes | Not run yet; the focused simulator lane is not the final device or release gate. |
 | WebApp release lanes | Not run yet. |
 | WebApp live readiness | `GET https://tryblueprint.io/health/ready` returned HTTP 200 and `status=ready`, `blocker_count=0` at `2026-07-29T19:35:02.092Z`. This does not expose or prove the deployed commit. |
 | Pipeline live intake | The attempted unauthenticated `GET https://paperclip.tryblueprint.io/api/live-pipeline/health` returned HTTP 404. The public route/commit and authenticated intake reachability remain unverified; this is not yet evidence of an outage. |
@@ -48,7 +49,7 @@ remain user-owned and are not inspected, absorbed, or modified by this branch.
 | Area | Status | Current evidence / next gate |
 | --- | --- | --- |
 | Unified profile-aware capture intake | Completed on this branch | Executable byte verification, content-addressed storage, idempotency, admission, recapture, and materialization bridge. |
-| iPhone retained-frame to decoded-PTS truth | Incomplete | Intake now requires both streams for iPhone authority; capture-side emission and corpus verification still require audit and tests. |
+| iPhone retained-frame to decoded-PTS truth | Implemented; real-device proof pending | Capture schema `3.2.0` logs every shared-ARKit encoder write attempt, binds retained frames to independently decoded sample PTS, labels dropped backpressure frames, and fails strict finalization on mismatch. Legacy/screen-recorder paths remain at `3.1.0` and cannot claim the stronger proof. Focused simulator tests pass; a rights-cleared physical-device bundle has not yet proven the emitted corpus. |
 | Rights/privacy/provider admission | Partially completed | Intake fails closed for declared gates and provider conflicts; redaction, retention execution, revocation deletion/tombstone, org auth, and audit logging remain. |
 | 360 secure import | Incomplete | Profiles/contracts exist; signed resumable Web upload and native-container normalization do not. |
 | Monocular reduced-authority lane | Partially completed | Intake/materialization preserves reduced ceiling; reconstruction/task/testbed flow remains. |
