@@ -9,6 +9,7 @@ runtime before attempting inference.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -51,6 +52,7 @@ DEFAULT_OSCAR_HF_REPO = OFFICIAL_OSCAR_HF_REPO
 DEFAULT_OSCAR_HF_REVISION = OFFICIAL_OSCAR_HF_REVISION
 DEFAULT_BUNDLE_FILENAME = "oscar_wam_provider_runtime_bundle.zip"
 ALLOW_EXPERIMENTAL_OSCAR_VERSION_ENV = "BLUEPRINT_ALLOW_EXPERIMENTAL_OSCAR_WAM_VERSION"
+OFFICIAL_CASE_FROZEN_INPUTS_ENV = "BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_FROZEN_INPUTS"
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -87,6 +89,18 @@ def _safe_error_text(exc: Exception) -> str:
     if "/" in text or "\\" in text:
         return Path(text).name or type(exc).__name__
     return text[:240]
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _source_frame_from_wam_generation_step(step_input: Mapping[str, Any]) -> Path:
@@ -2283,6 +2297,11 @@ def _oscar_input_contract_diagnostic(
     first_frame = _mapping(input_package.get("first_frame"))
     skeleton_video = _mapping(input_package.get("skeleton_video"))
     skeleton_signal = _mapping(skeleton_video.get("visual_signal"))
+    texture_free_skeleton_signal = _mapping(skeleton_video.get("texture_free_signal"))
+    texture_free_skeleton_stream = bool(
+        skeleton_video.get("skeleton_stream_separate_from_rgb")
+        and skeleton_video.get("skeleton_stream_texture_free")
+    )
     rgb_video = _mapping(input_package.get("rgb_video"))
     rgb_signal = _mapping(rgb_video.get("visual_signal"))
     projected_trace = _mapping(input_package.get("projected_skeleton_trace"))
@@ -2290,6 +2309,8 @@ def _oscar_input_contract_diagnostic(
     policy_action_to_skeleton_contract = _mapping(
         input_package.get("policy_action_to_skeleton_contract")
     )
+    official_case_provenance = _mapping(input_package.get("official_case_provenance"))
+    official_replay_inputs = bool(official_case_provenance.get("case_id"))
     prompt = _string(input_package.get("prompt"))
     blockers: list[str] = []
     warnings: list[str] = []
@@ -2310,20 +2331,36 @@ def _oscar_input_contract_diagnostic(
     }
     if first_size["width"] <= 0 or first_size["height"] <= 0:
         warnings.append("oscar_contract_first_frame_size_metadata_missing")
-    elif first_size != {"width": expected_width, "height": expected_height}:
+    elif not official_replay_inputs and first_size != {
+        "width": expected_width,
+        "height": expected_height,
+    }:
         blockers.append("oscar_contract_first_frame_size_mismatch")
     if skeleton_size["width"] <= 0 or skeleton_size["height"] <= 0:
         warnings.append("oscar_contract_skeleton_video_size_metadata_missing")
-    elif skeleton_size != {"width": expected_width, "height": expected_height}:
+    elif not official_replay_inputs and skeleton_size != {
+        "width": expected_width,
+        "height": expected_height,
+    }:
         blockers.append("oscar_contract_skeleton_video_size_mismatch")
+    if (
+        official_replay_inputs
+        and first_size["width"] > 0
+        and skeleton_size["width"] > 0
+        and first_size != skeleton_size
+    ):
+        blockers.append("oscar_contract_official_replay_first_frame_skeleton_size_mismatch")
     skeleton_frame_count = _int_value(skeleton_video.get("frame_count"))
     if skeleton_frame_count <= 0:
         warnings.append("oscar_contract_skeleton_video_frame_count_metadata_missing")
     elif skeleton_frame_count < expected_frames:
         blockers.append("oscar_contract_skeleton_video_too_short")
-    if skeleton_signal.get("status") not in {"completed", "ok"}:
+    effective_skeleton_signal = (
+        texture_free_skeleton_signal if texture_free_skeleton_stream else skeleton_signal
+    )
+    if effective_skeleton_signal.get("status") not in {"completed", "ok"}:
         blockers.append("oscar_contract_skeleton_visual_signal_not_completed")
-    if skeleton_signal.get("blockers"):
+    if effective_skeleton_signal.get("blockers"):
         blockers.append("oscar_contract_skeleton_visual_signal_has_blockers")
     if not prompt:
         warnings.append("oscar_contract_prompt_missing_runtime_default_will_be_used")
@@ -2497,8 +2534,11 @@ def _oscar_input_contract_diagnostic(
             "projected_g1_skeleton_clipped_landmark_count": _int_value(
                 skeleton_video.get("projected_g1_skeleton_clipped_landmark_count")
             ),
-            "visual_signal_status": skeleton_signal.get("status"),
-            "visual_signal_blockers": skeleton_signal.get("blockers") or [],
+            "visual_signal_status": effective_skeleton_signal.get("status"),
+            "visual_signal_blockers": effective_skeleton_signal.get("blockers") or [],
+            "visual_signal_source": "texture_free_signal"
+            if texture_free_skeleton_stream
+            else "scene_visual_signal",
         },
         "source_action": {
             "action_type": source_action.get("action_type"),
@@ -3024,6 +3064,15 @@ def _redacted_tail(text: str, *, limit: int = 4000) -> str:
         if value:
             redacted = redacted.replace(value, "<redacted-secret>")
     return redacted
+
+
+def _safe_error_code(exc: Exception) -> str | None:
+    text = str(exc).strip()
+    if not text or len(text) > 160:
+        return None
+    if all(ch.isalnum() or ch in "_:-." for ch in text):
+        return text
+    return None
 
 
 def _validate_generated_video(path: Path) -> dict[str, Any]:
@@ -4953,6 +5002,11 @@ def main() -> int:
         or os.environ.get("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_USE_SCRIPT")
         or ""
     ).strip().lower() in {"1", "true", "yes", "on"}
+    official_case_frozen_inputs = str(
+        runtime_manifest.get("official_case_frozen_inputs")
+        or os.environ.get("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_FROZEN_INPUTS")
+        or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
     if source_root is not None and not blockers:
         _phase("dependency_setup_started")
         dependency_detail = _ensure_dependencies(python, source_root)
@@ -5006,7 +5060,36 @@ def main() -> int:
         prompt = runtime_manifest.get("prompt") or "Predict the next robot-scene frames from Blueprint action conditioning."
         start_frame = "0"
         seed = str(runtime_manifest.get("seed") or 42)
-        if official_case_smoke:
+        if official_case_smoke and official_case_frozen_inputs:
+            start_frame = str(int(runtime_manifest.get("official_case_start_frame") or 0))
+            frozen_hashes = _mapping(runtime_manifest.get("official_case_frozen_input_sha256"))
+            frozen_inputs = {
+                "first_frame.png": first_frame,
+                "blueprint_proxy_skeleton_conditioning.mp4": skeleton_video,
+            }
+            for name, path in frozen_inputs.items():
+                expected = str(frozen_hashes.get(name) or "").strip().lower()
+                if not path.is_file():
+                    blockers.append(f"official_oscar_frozen_input_missing:{name}")
+                    continue
+                digest = hashlib.sha256()
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                if len(expected) != 64 or digest.hexdigest() != expected:
+                    blockers.append(f"official_oscar_frozen_input_digest_mismatch:{name}")
+            expected_prompt_sha256 = str(
+                runtime_manifest.get("official_case_safe_caption_sha256") or ""
+            ).strip().lower()
+            observed_prompt_sha256 = hashlib.sha256(str(prompt).encode("utf-8")).hexdigest()
+            if len(expected_prompt_sha256) != 64 or observed_prompt_sha256 != expected_prompt_sha256:
+                blockers.append("official_oscar_frozen_caption_digest_mismatch")
+            checkpoint_detail["official_case_smoke"] = official_case_smoke
+            checkpoint_detail["official_case_input_mode"] = (
+                "frozen_bundle_first_frame_skeleton_and_safe_caption"
+            )
+            checkpoint_detail["official_case_start_frame"] = int(start_frame)
+        elif official_case_smoke:
             checkpoint_roots = [
                 checkpoint_path,
                 checkpoint_path.parent,
@@ -5091,7 +5174,16 @@ def main() -> int:
                     checkpoint_detail["official_case_asset_dir"] = str(asset_dir)
                     checkpoint_detail["official_case_start_frame"] = int(start_frame)
                 except Exception as exc:
-                    blockers.append(f"official_oscar_case_prepare_failed:{type(exc).__name__}")
+                    safe_code = _safe_error_code(exc)
+                    checkpoint_detail["official_case_prepare_error"] = {
+                        "type": type(exc).__name__,
+                        "code": safe_code,
+                        "raw_error_text_recorded": False,
+                    }
+                    blocker = f"official_oscar_case_prepare_failed:{type(exc).__name__}"
+                    if safe_code:
+                        blocker += f":{safe_code}"
+                    blockers.append(blocker)
         argv = [
             python,
             "-m",
@@ -5151,6 +5243,7 @@ def main() -> int:
             official_case_smoke=official_case_smoke or None,
             official_case_rgb_video=official_case_rgb_video,
             official_case_use_script=official_case_use_script,
+            official_case_frozen_inputs=official_case_frozen_inputs,
         )
         if blockers:
             inference_detail = {
@@ -5596,6 +5689,18 @@ def _write_runtime_files(
         "official_case_use_script": os.environ.get(
             "BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_USE_SCRIPT", ""
         ).strip(),
+        "official_case_frozen_inputs": _env_truthy(OFFICIAL_CASE_FROZEN_INPUTS_ENV),
+        "official_case_frozen_input_sha256": {
+            "first_frame.png": _sha256_path(runtime_first_frame),
+            "blueprint_proxy_skeleton_conditioning.mp4": _sha256_path(runtime_skeleton),
+        },
+        "official_case_safe_caption_sha256": hashlib.sha256(
+            str(input_package.get("prompt") or "").encode("utf-8")
+        ).hexdigest(),
+        "official_case_start_frame": _int_count(
+            _mapping(input_package.get("official_case_provenance")).get("start_frame"), 0
+        ),
+        "official_case_provenance": _mapping(input_package.get("official_case_provenance")),
         "timeout_seconds": timeout_seconds,
         "remote_secret_contract": {
             "hf_token_env_supported": ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"],
@@ -5781,6 +5886,46 @@ def build_oscar_wam_provider_bundle(
     if not blockers:
         conditioning_video_blockers = _conditioning_video_input_blockers(input_package)
         blockers.extend(conditioning_video_blockers)
+    official_case_smoke = os.environ.get("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_SMOKE", "").strip()
+    official_case_use_script = _env_truthy("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_USE_SCRIPT")
+    official_case_frozen_inputs = _env_truthy(OFFICIAL_CASE_FROZEN_INPUTS_ENV)
+    if official_case_frozen_inputs:
+        prompt = _string(input_package.get("prompt"))
+        official_case_provenance = _mapping(input_package.get("official_case_provenance"))
+        official_asset_sha256 = _mapping(official_case_provenance.get("asset_sha256"))
+        generic_prompts = {
+            "robot manipulates an object",
+            "predict the next robot-scene frames from blueprint action conditioning.",
+        }
+        if not official_case_smoke:
+            blockers.append("official_oscar_frozen_inputs_case_id_missing")
+        if official_case_use_script:
+            blockers.append("official_oscar_frozen_inputs_require_direct_entrypoint")
+        if not prompt or prompt.lower() in generic_prompts:
+            blockers.append("official_oscar_frozen_inputs_task_caption_missing_or_generic")
+        if official_case_provenance.get("case_id") != official_case_smoke:
+            blockers.append("official_oscar_frozen_inputs_case_provenance_mismatch")
+        if official_case_provenance.get("checkpoint_revision") != oscar_hf_revision:
+            blockers.append("official_oscar_frozen_inputs_checkpoint_revision_mismatch")
+        start_frame = official_case_provenance.get("start_frame")
+        if isinstance(start_frame, bool) or not isinstance(start_frame, int) or start_frame < 0:
+            blockers.append("official_oscar_frozen_inputs_start_frame_invalid")
+        expected_first_frame = _string(official_asset_sha256.get("derived_first_frame.png"))
+        expected_skeleton = _string(official_asset_sha256.get("gripper_scenario.mp4"))
+        first_frame = Path(_string(_mapping(input_package.get("first_frame")).get("path")))
+        skeleton_video = Path(_string(_mapping(input_package.get("skeleton_video")).get("path")))
+        if len(expected_first_frame) != 64 or (
+            first_frame.is_file() and _sha256_path(first_frame) != expected_first_frame
+        ):
+            blockers.append("official_oscar_frozen_inputs_first_frame_provenance_digest_mismatch")
+        if len(expected_skeleton) != 64 or (
+            skeleton_video.is_file() and _sha256_path(skeleton_video) != expected_skeleton
+        ):
+            blockers.append("official_oscar_frozen_inputs_skeleton_provenance_digest_mismatch")
+        if official_case_provenance.get("caption_extraction") != (
+            "pickletools_strict_primitive_dict_without_pickle_load"
+        ):
+            blockers.append("official_oscar_frozen_inputs_safe_caption_provenance_missing")
     if not blockers:
         _write_runtime_files(
             runtime_dir=runtime_dir,

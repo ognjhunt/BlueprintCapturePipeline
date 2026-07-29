@@ -24,6 +24,12 @@ OSCAR_PROTOCOL_AMENDMENT_V6 = (
     / "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729"
     / "protocol_amendment_v6.json"
 )
+OSCAR_PROTOCOL_AMENDMENT_V7 = OSCAR_PROTOCOL_AMENDMENT_V6.with_name(
+    "protocol_amendment_v7.json"
+)
+OSCAR_BUNDLE_FREEZE_V2 = OSCAR_PROTOCOL_AMENDMENT_V6.with_name(
+    "oscar_public_replay_bundle_freeze_v2.json"
+)
 
 
 def _load(name: str) -> dict[str, Any]:
@@ -62,6 +68,20 @@ def test_oscar_public_replay_budget_amendment_and_profile_are_consistent() -> No
     assert profile.max_hourly_rate_usd * profile.hard_ttl_seconds / 3_600 <= (
         profile.target_spend_usd
     )
+
+
+def test_oscar_public_replay_provenance_amendment_and_receipt_digests_are_valid() -> None:
+    amendment = json.loads(OSCAR_PROTOCOL_AMENDMENT_V7.read_text(encoding="utf-8"))
+    receipt = json.loads(OSCAR_BUNDLE_FREEZE_V2.read_text(encoding="utf-8"))
+    recorded_amendment = amendment.pop("amendment_sha256")
+    recorded_receipt = receipt.pop("receipt_sha256")
+    profile = admission.OSCAR_PUBLIC_REPLAY_PROFILE
+
+    assert recorded_amendment == canonical_sha256(amendment)
+    assert recorded_receipt == canonical_sha256(receipt)
+    assert receipt["bundle_sha256"] == profile.expected_bundle_sha256
+    assert receipt["bundle_size_bytes"] == profile.expected_bundle_size_bytes
+    assert profile.authorization_ids_by_allocation_index[7].endswith("allocation-7")
 
 
 def test_frozen_successor_bundle_passes_integrity_inspection() -> None:

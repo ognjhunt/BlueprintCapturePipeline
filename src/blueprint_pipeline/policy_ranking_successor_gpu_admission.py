@@ -387,27 +387,28 @@ OSCAR_PUBLIC_REPLAY_PROFILE = SuccessorGPUProfile(
     receipt_schema="oscar_public_replay_bundle_receipt.v1",
     authorization_ids_by_allocation_index={
         6: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-6",
+        7: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-7",
     },
     cost_authorization_binding_sha256=(
         "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
     ),
-    expected_bundle_sha256="f505f7516e65e7faff13fd8b6868f599c23cea79bee586b40ce14323b8de4a24",
-    expected_bundle_size_bytes=565_588,
+    expected_bundle_sha256="25c141c7b9563bc792bddfec37824e91ae9fb12a43e1c59bab5455b5780b8adf",
+    expected_bundle_size_bytes=1_206_593,
     expected_embedded_input_hashes={
         "runtime_manifest_file_sha256": (
-            "1167746ebbc15a99edb41a8077a082862f395b548fb5443bedb41dc914271afd"
+            "bc3691f2e09c00549ad6f90d74886cd049f3fd0bcaecb3f3b9b041f3a5698b2c"
         ),
         "rollout_manifest_file_sha256": (
-            "81d6f3b0260611afa28336f1b7fa7fe284fba421b03fef585d890b7b91296d49"
+            "fc86a089df8d290ed88f4a69358ee5c55c9d6a120a9c058a27c122a28b1132ec"
         ),
         "first_frame_sha256": (
-            "e253f141bc5490e36622c78e8c37a687cbad815140507d6729ceb4520abf0777"
+            "fbfb7f2d3c91360764b2dc32f21dea77c6f014c76eefc400bd401fd8da56a6a4"
         ),
         "skeleton_video_sha256": (
-            "7a49d643a2740ec508bd1d0cd1fc6594b022c7dae1f20afd310219c9eda89bd7"
+            "4ad9dd1c6cf2acd2bd62fd51a4e5c0744ee0a077b8ea06b7a0a35af24418d08c"
         ),
         "runner_sha256": (
-            "fcbbe0bf0512cd30b43208713b9479bfa82ff77c5215b0ad142a7a21ef372343"
+            "2fd386420ca1fe01beb57abdefc90acab1748e48a6015756080700472afcff07"
         ),
         "entrypoint_sha256": (
             "194f4809624cc82e1f3a88f64e12304451708986dad5880695af0518a0efb19c"
@@ -958,6 +959,16 @@ def inspect_successor_bundle(
             blockers.append("successor_oscar_bundle_source_mismatch")
         if manifest.get("official_case_smoke") != "droid_TRI":
             blockers.append("successor_oscar_bundle_official_case_mismatch")
+        if manifest.get("official_case_frozen_inputs") is not True:
+            blockers.append("successor_oscar_bundle_official_inputs_not_frozen")
+        if str(manifest.get("official_case_use_script") or "").strip():
+            blockers.append("successor_oscar_bundle_unsafe_official_script_enabled")
+        if manifest.get("official_case_start_frame") != 116:
+            blockers.append("successor_oscar_bundle_official_start_frame_mismatch")
+        if manifest.get("official_case_safe_caption_sha256") != (
+            "a9b0b9089bfaf919eb0afa36fc05e634a85bcdbb6b93a85dd54598c7ad78b12b"
+        ):
+            blockers.append("successor_oscar_bundle_official_caption_mismatch")
         if str(manifest.get("official_case_rgb_video") or "").strip():
             blockers.append("successor_oscar_bundle_physical_future_rgb_enabled")
     elif manifest.get("checkpoint_revision") != profile.checkpoint_revision:

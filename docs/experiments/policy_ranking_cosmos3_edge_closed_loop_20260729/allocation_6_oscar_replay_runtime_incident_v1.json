@@ -1,0 +1,36 @@
+{
+  "schema_version": "policy_ranking_oscar_public_replay_runtime_incident.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-29T11:08:09-0500",
+  "allocation_index": 6,
+  "authorization_id": "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-6",
+  "provider_instance_id": 46206843,
+  "provider": "vast",
+  "gpu": "RTX PRO 6000 S",
+  "estimated_cost_usd": 0.116064,
+  "authorization_consumed": true,
+  "provider_zero_verified": true,
+  "continuing_spend": false,
+  "runtime_layers": {
+    "gpu_cuda_sanity": "passed",
+    "checkpoint_download": "passed_4.25_GB_pinned_checkpoint",
+    "model_inference_started": false,
+    "generated_video_count": 0,
+    "provider_output_bundle_recovered": true
+  },
+  "blockers": [
+    "official_oscar_case_prepare_failed:RuntimeError",
+    "oscar_inference_command_nonzero",
+    "blocked_no_generated_oscar_mp4"
+  ],
+  "root_cause_evidence": {
+    "official_checkpoint_caption_asset": "assets/droid_TRI/caption.pickle",
+    "safe_runtime_accepts_only_caption_json_or_caption_txt": true,
+    "safe_caption_missing_caused_pre_inference_runtime_error": true,
+    "checkpoint_case_map_has_asset_hashes": false,
+    "old_bundle_prompt_was_generic": true,
+    "old_bundle_first_frame_was_not_from_droid_TRI": true
+  },
+  "claim_boundary": "This attempt proves GPU, CUDA, pinned checkpoint download, provider output recovery, teardown, and two independent input-provenance defects. It is not an OSCAR generation result and provides no WAM, ranking, transfer, or physical-success credit.",
+  "raw_secret_values_recorded": false
+}

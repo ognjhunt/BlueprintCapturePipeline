@@ -855,8 +855,178 @@ def test_build_oscar_wam_provider_bundle_records_official_case_smoke_env(
         smoke_inventory={},
         profile=profile,
     )
-    assert inspection["status"] == "passed"
     assert inspection["blockers"] == []
+    assert inspection["status"] == "passed"
+
+
+def test_build_oscar_wam_provider_bundle_freezes_direct_official_case_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_SMOKE", "droid_TRI")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_FROZEN_INPUTS", "true")
+    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_USE_SCRIPT", raising=False)
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    rollout_input.write_text(
+        json.dumps({"schema_version": "wam_rollout_input_manifest.v1"}),
+        encoding="utf-8",
+    )
+    oscar_input = tmp_path / "oscar_input"
+    oscar_input.mkdir()
+    _write_review_png(oscar_input / "first_frame.png")
+    _write_useful_conditioning_mp4(oscar_input / "blueprint_proxy_skeleton_conditioning.mp4")
+    task_caption = (
+        "A white robotic arm with black joints and cables extends from a base on a wooden "
+        "table, positioned near a closed white door. The arm's gripper, equipped with a small "
+        "black device, slowly moves toward the door's handle, adjusting its angle as it "
+        "approaches. The background includes a wall with a framed picture and a mounted "
+        "camera, suggesting a tech-focused environment. The robotic arm’s movements are "
+        "smooth and deliberate, showcasing precision and control. A medium shot captures the "
+        "entire setup, emphasizing the interaction between the robot and the door."
+    )
+    first_frame_sha256 = hashlib.sha256((oscar_input / "first_frame.png").read_bytes()).hexdigest()
+    skeleton_sha256 = hashlib.sha256(
+        (oscar_input / "blueprint_proxy_skeleton_conditioning.mp4").read_bytes()
+    ).hexdigest()
+    (tmp_path / "oscar_wam_input_package_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint_oscar_wam_input_package.v1",
+                "status": "completed",
+                "prompt": task_caption,
+                "num_frames": 81,
+                "fps": 15.0,
+                "height": 480,
+                "width": 640,
+                "first_frame": {"width": 1280, "height": 720},
+                "skeleton_video": {
+                    "width": 1280,
+                    "height": 720,
+                    "frame_count": 298,
+                    "skeleton_stream_separate_from_rgb": True,
+                    "skeleton_stream_texture_free": True,
+                },
+                "official_case_provenance": {
+                    "case_id": "droid_TRI",
+                    "checkpoint_revision": OFFICIAL_OSCAR_HF_REVISION,
+                    "start_frame": 116,
+                    "caption_extraction": (
+                        "pickletools_strict_primitive_dict_without_pickle_load"
+                    ),
+                    "asset_sha256": {
+                        "derived_first_frame.png": first_frame_sha256,
+                        "gripper_scenario.mp4": skeleton_sha256,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_oscar_wam_provider_bundle(
+        job_dir=tmp_path / "bundle-job",
+        wam_rollout_input_manifest=rollout_input,
+        oscar_input_dir=oscar_input,
+        generated_at="2026-07-29T00:00:00+00:00",
+        experiment_id=OSCAR_PUBLIC_REPLAY_PROFILE.experiment_id,
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["input_package_contract_diagnostic"]["status"] == "ready"
+    with zipfile.ZipFile(Path(str(manifest["bundle_path"]))) as archive:
+        runtime_manifest_bytes = archive.read("provider_runtime/wam_provider_runtime_manifest.json")
+        runtime_manifest = json.loads(runtime_manifest_bytes.decode("utf-8"))
+        rollout_manifest_bytes = archive.read(
+            "provider_runtime/wam_rollout_input_manifest.json"
+        )
+        first_frame = archive.read("provider_runtime/oscar_input/first_frame.png")
+        skeleton = archive.read(
+            "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4"
+        )
+        runner = archive.read("provider_runtime/wam_provider_runtime_runner.py")
+        entrypoint = archive.read("provider_runtime/run_wam_provider_runtime.sh")
+    assert runtime_manifest["official_case_smoke"] == "droid_TRI"
+    assert runtime_manifest["official_case_frozen_inputs"] is True
+    assert runtime_manifest["official_case_use_script"] == ""
+    assert runtime_manifest["official_case_start_frame"] == 116
+    assert runtime_manifest["prompt"] == task_caption
+    assert runtime_manifest["official_case_safe_caption_sha256"] == hashlib.sha256(
+        task_caption.encode("utf-8")
+    ).hexdigest()
+    assert runtime_manifest["official_case_frozen_input_sha256"] == {
+        "first_frame.png": hashlib.sha256(first_frame).hexdigest(),
+        "blueprint_proxy_skeleton_conditioning.mp4": hashlib.sha256(skeleton).hexdigest(),
+    }
+    bundle_path = Path(str(manifest["bundle_path"]))
+    embedded = {
+        "runtime_manifest_file_sha256": hashlib.sha256(runtime_manifest_bytes).hexdigest(),
+        "rollout_manifest_file_sha256": hashlib.sha256(rollout_manifest_bytes).hexdigest(),
+        "first_frame_sha256": hashlib.sha256(first_frame).hexdigest(),
+        "skeleton_video_sha256": hashlib.sha256(skeleton).hexdigest(),
+        "runner_sha256": hashlib.sha256(runner).hexdigest(),
+        "entrypoint_sha256": hashlib.sha256(entrypoint).hexdigest(),
+    }
+    profile = replace(
+        OSCAR_PUBLIC_REPLAY_PROFILE,
+        expected_bundle_sha256=hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+        expected_bundle_size_bytes=bundle_path.stat().st_size,
+        expected_embedded_input_hashes=embedded,
+    )
+    receipt = {
+        "schema_version": profile.receipt_schema,
+        "experiment_id": profile.experiment_id,
+        "bundle_sha256": profile.expected_bundle_sha256,
+        "bundle_size_bytes": profile.expected_bundle_size_bytes,
+        **embedded,
+    }
+
+    inspection = inspect_successor_bundle(
+        bundle_path,
+        receipt=receipt,
+        smoke_inventory={},
+        profile=profile,
+    )
+
+    assert inspection["blockers"] == []
+    assert inspection["status"] == "passed"
+
+
+def test_build_oscar_wam_provider_bundle_blocks_generic_frozen_official_caption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_SMOKE", "droid_TRI")
+    monkeypatch.setenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_FROZEN_INPUTS", "true")
+    monkeypatch.delenv("BLUEPRINT_OSCAR_WAM_OFFICIAL_CASE_USE_SCRIPT", raising=False)
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    rollout_input.write_text(
+        json.dumps({"schema_version": "wam_rollout_input_manifest.v1"}),
+        encoding="utf-8",
+    )
+    oscar_input = tmp_path / "oscar_input"
+    oscar_input.mkdir()
+    _write_review_png(oscar_input / "first_frame.png")
+    _write_useful_conditioning_mp4(oscar_input / "blueprint_proxy_skeleton_conditioning.mp4")
+    (tmp_path / "oscar_wam_input_package_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint_oscar_wam_input_package.v1",
+                "status": "completed",
+                "prompt": "robot manipulates an object",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_oscar_wam_provider_bundle(
+        job_dir=tmp_path / "bundle-job",
+        wam_rollout_input_manifest=rollout_input,
+        oscar_input_dir=oscar_input,
+        generated_at="2026-07-29T00:00:00+00:00",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert "official_oscar_frozen_inputs_task_caption_missing_or_generic" in manifest["blockers"]
 
 
 def test_build_oscar_wam_provider_bundle_packages_projected_g1_overlay_rgb_context(
