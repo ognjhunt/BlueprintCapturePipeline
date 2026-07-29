@@ -97,10 +97,12 @@ def test_retained_server_rejects_changed_checkpoint_identity(
 
 def test_direct_and_wrapper_requests_match_exact_pinned_forward_dynamics_contract() -> None:
     direct = runtime._serialize_rollout_request(
-        request_row=_row(), action_stream=_stream(), num_inference_steps=4
+        request_row=_row(), action_stream=_stream(), num_inference_steps=4,
+        task_instruction="Pick up the bottle.",
     )
     wrapper = runtime._serialize_blueprint_wrapper_request(
-        request_row=_row(), action_stream=_stream(), num_inference_steps=4
+        request_row=_row(), action_stream=_stream(), num_inference_steps=4,
+        task_instruction="Pick up the bottle.",
     )
 
     assert direct == wrapper
@@ -108,6 +110,7 @@ def test_direct_and_wrapper_requests_match_exact_pinned_forward_dynamics_contrac
     assert direct["num_frames"] == "17"
     assert direct["size"] == "640x544"
     assert direct["num_inference_steps"] == "4"
+    assert direct["prompt"] == "Pick up the bottle."
     extra = runtime.json.loads(direct["extra_params"])
     assert extra["action_mode"] == "forward_dynamics"
     assert extra["domain_name"] == "droid_lerobot"
@@ -118,6 +121,15 @@ def test_direct_and_wrapper_requests_match_exact_pinned_forward_dynamics_contrac
     assert all(len(row) == 10 for row in extra["action"])
 
 
+def test_request_serializer_rejects_generic_or_missing_task_prompt() -> None:
+    for prompt in ("", "A robot manipulates an object."):
+        with pytest.raises(ValueError, match="task_specific|generic_robot"):
+            runtime._serialize_rollout_request(
+                request_row=_row(),
+                action_stream=_stream(),
+                num_inference_steps=4,
+                task_instruction=prompt,
+            )
 def test_static_video_can_pass_structural_canary_without_passing_motion(
     tmp_path: Path,
 ) -> None:
@@ -194,7 +206,8 @@ def test_wrapper_serializer_is_independent_of_direct_serializer(
     monkeypatch.setattr(runtime, "_serialize_rollout_request", fail_if_called)
 
     wrapper = runtime._serialize_blueprint_wrapper_request(
-        request_row=_row(), action_stream=_stream(), num_inference_steps=4
+        request_row=_row(), action_stream=_stream(), num_inference_steps=4,
+        task_instruction="Pick up the bottle.",
     )
 
     assert wrapper["model"] == "nvidia/Cosmos3-Nano"
@@ -249,6 +262,7 @@ def test_request_serialization_fails_closed_on_wrong_action_shape(
             request_row=_row(),
             action_stream={"actions": actions},
             num_inference_steps=4,
+            task_instruction="Pick up the bottle.",
         )
 
 
@@ -275,7 +289,8 @@ def test_sync_submit_writes_direct_mp4_response(
 
     monkeypatch.setattr(runtime.requests, "post", fake_post)
     request = runtime._serialize_rollout_request(
-        request_row=_row(), action_stream=_stream(), num_inference_steps=4
+        request_row=_row(), action_stream=_stream(), num_inference_steps=4,
+        task_instruction="Pick up the bottle.",
     )
 
     result = runtime._submit_rollout(

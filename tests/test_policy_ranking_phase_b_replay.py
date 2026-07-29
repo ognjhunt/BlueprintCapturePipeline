@@ -99,6 +99,7 @@ def test_native_cosmos_canary_bundle_is_immutable_and_label_blind(tmp_path: Path
         replay_canary_path=canary_path,
         output_bundle=bundle,
         receipt_path=receipt,
+        task_instruction="Pick up the bottle and place it in the bin.",
     )
     assert result["status"] == "built"
     assert result["paid_resources_used"] is False
@@ -113,6 +114,7 @@ def test_native_cosmos_canary_bundle_is_immutable_and_label_blind(tmp_path: Path
         )
         assert validate_smoke_inventory_manifest(inventory)["status"] == "passed"
         assert inventory["outcome_labels_accessed"] is False
+        assert inventory["task_instruction"] == "Pick up the bottle and place it in the bin."
         assert len(inventory["requests"]) == 10
         action_streams = json.loads(
             archive.read("provider_runtime/cosmos3_input/action_streams.json")

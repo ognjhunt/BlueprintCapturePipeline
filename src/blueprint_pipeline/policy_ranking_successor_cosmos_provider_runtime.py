@@ -465,7 +465,13 @@ def _serialize_rollout_request(
     request_row: dict[str, Any],
     action_stream: dict[str, Any],
     num_inference_steps: int,
+    task_instruction: str,
 ) -> dict[str, Any]:
+    task_instruction = str(task_instruction).strip()
+    if not task_instruction:
+        raise ValueError("task_specific_instruction_missing")
+    if task_instruction == "A robot manipulates an object.":
+        raise ValueError("generic_robot_manipulation_prompt_forbidden")
     actions = action_stream.get("actions")
     if not isinstance(actions, list) or len(actions) != ACTION_CHUNK_SIZE:
         raise ValueError("action_chunk_row_count_invalid")
@@ -486,7 +492,7 @@ def _serialize_rollout_request(
     }
     return {
         "model": CHECKPOINT,
-        "prompt": "A robot manipulates an object.",
+        "prompt": task_instruction,
         "num_frames": "17",
         "fps": "15",
         "size": f"{EXPECTED_VIDEO_WIDTH}x{EXPECTED_VIDEO_HEIGHT}",
@@ -503,8 +509,14 @@ def _serialize_blueprint_wrapper_request(
     request_row: dict[str, Any],
     action_stream: dict[str, Any],
     num_inference_steps: int,
+    task_instruction: str,
 ) -> dict[str, Any]:
     """Serialize the Blueprint wrapper contract without calling the direct serializer."""
+    task_instruction = str(task_instruction).strip()
+    if not task_instruction:
+        raise ValueError("task_specific_instruction_missing")
+    if task_instruction == "A robot manipulates an object.":
+        raise ValueError("generic_robot_manipulation_prompt_forbidden")
     actions = action_stream.get("actions")
     if not isinstance(actions, list) or len(actions) != ACTION_CHUNK_SIZE:
         raise ValueError("action_chunk_row_count_invalid")
@@ -523,7 +535,7 @@ def _serialize_blueprint_wrapper_request(
     }
     return {
         "model": "nvidia/Cosmos3-Nano",
-        "prompt": "A robot manipulates an object.",
+        "prompt": task_instruction,
         "num_frames": "17",
         "fps": "15",
         "size": f"{EXPECTED_VIDEO_WIDTH}x{EXPECTED_VIDEO_HEIGHT}",
@@ -602,6 +614,11 @@ def run() -> dict[str, Any]:
     blockers: list[str] = []
     if input_checks["initial_observation_sha256"] != inventory.get("initial_observation_sha256"):
         blockers.append("initial_observation_sha256_mismatch")
+    task_instruction = str(inventory.get("task_instruction") or "").strip()
+    if not task_instruction:
+        blockers.append("task_specific_instruction_missing")
+    if task_instruction == "A robot manipulates an object.":
+        blockers.append("generic_robot_manipulation_prompt_forbidden")
     conditions = action_streams.get("conditions")
     if not _action_conditions_match_frozen_contract(conditions):
         blockers.append("action_stream_condition_order_invalid")
@@ -707,11 +724,13 @@ def run() -> dict[str, Any]:
             request_row=canary_row,
             action_stream=canary_action,
             num_inference_steps=CANARY_INFERENCE_STEPS,
+            task_instruction=task_instruction,
         )
         wrapper_request = _serialize_blueprint_wrapper_request(
             request_row=canary_row,
             action_stream=canary_action,
             num_inference_steps=CANARY_INFERENCE_STEPS,
+            task_instruction=task_instruction,
         )
         if direct_request != wrapper_request:
             raise RuntimeError("blueprint_wrapper_direct_request_mismatch")
@@ -777,7 +796,8 @@ def run() -> dict[str, Any]:
                 "condition": condition,
                 "seed": int(row["seed"]),
                 "initial_observation_sha256": input_checks["initial_observation_sha256"],
-                "task_instruction": "A robot manipulates an object.",
+                "task_instruction": task_instruction,
+                "vision_conditioning_mode": "first_pixel_frame_only",
                 "action_sha256": row["action_sha256"],
                 "checkpoint": CHECKPOINT,
                 "checkpoint_revision": CHECKPOINT_REVISION,
@@ -804,6 +824,7 @@ def run() -> dict[str, Any]:
                         request_row=row,
                         action_stream=action_stream,
                         num_inference_steps=PUBLICATION_INFERENCE_STEPS,
+                        task_instruction=task_instruction,
                     )
                     provider_generation_requests_attempted += 1
                     response = _submit_rollout(

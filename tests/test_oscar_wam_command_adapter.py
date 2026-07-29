@@ -583,6 +583,9 @@ def test_oscar_wam_command_adapter_private_helper_edges(
     assert adapter._projected_skeleton_projectable_row_count(projected_rows) == 4
     assert adapter._configured_conditioning_mode(projected_rows) == "projected_g1_skeleton"
     assert adapter._configured_conditioning_mode([]) == "oscar_gripper_scenario_proxy"
+    assert adapter._projected_skeleton_rows(
+        {"inputs": {"projected_robot_skeleton_trace_jsonl": str(projected_trace)}}
+    ) == projected_rows
     assert adapter._sample_rows([], 3) == []
     assert adapter._sample_rows([{"row": 1}], 3) == [{"row": 1}, {"row": 1}, {"row": 1}]
     assert adapter._point_from_root({"root_position": "bad"}) == (0.0, 0.0, 0.8)

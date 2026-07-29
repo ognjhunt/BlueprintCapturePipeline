@@ -80,11 +80,15 @@ PROJECTED_G1_SKELETON_CONDITIONING_MODES = {
     "g1_projected_skeleton",
     "unitree_g1_projected_skeleton",
     "projected_g1_arm_hand_skeleton",
+    "projected_robot_skeleton",
+    "camera_aligned_robot_skeleton",
 }
 PROJECTED_G1_SKELETON_RGB_OVERLAY_MODES = {
     "projected_g1_skeleton_rgb_overlay",
     "projected_g1_skeleton_scene_overlay",
     "unitree_g1_projected_skeleton_rgb_overlay",
+    "projected_robot_skeleton_rgb_overlay",
+    "camera_aligned_robot_skeleton_rgb_overlay",
 }
 ALL_PROJECTED_G1_SKELETON_MODES = (
     PROJECTED_G1_SKELETON_CONDITIONING_MODES
@@ -357,7 +361,12 @@ def _trace_rows(rollout_manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def _projected_skeleton_rows(rollout_manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
     inputs = _mapping(rollout_manifest.get("inputs"))
-    trace_path = Path(_string(inputs.get("g1_projected_skeleton_trace_jsonl"))).expanduser()
+    trace_path = Path(
+        _string(
+            inputs.get("projected_robot_skeleton_trace_jsonl")
+            or inputs.get("g1_projected_skeleton_trace_jsonl")
+        )
+    ).expanduser()
     rows = _read_jsonl(trace_path)
     selected_episode = ""
     try:
@@ -382,8 +391,10 @@ def _package_uses_projected_g1_skeleton(package_manifest: Mapping[str, Any]) -> 
     claim_boundary = _mapping(package_manifest.get("claim_boundary"))
     return bool(
         skeleton_video.get("projected_g1_skeleton_rendered")
+        or skeleton_video.get("projected_robot_skeleton_rendered")
         or projected_trace.get("used_for_conditioning")
         or claim_boundary.get("projected_g1_skeleton_conditioning_used")
+        or claim_boundary.get("projected_robot_skeleton_conditioning_used")
     )
 
 
@@ -960,6 +971,7 @@ def _render_proxy_skeleton_video(
         "first_person_review_video_passthrough": first_person_passthrough,
         "egocentric_arm_skeleton_rendered": egocentric_arm_skeleton,
         "projected_g1_skeleton_rendered": projected_g1_skeleton,
+        "projected_robot_skeleton_rendered": projected_g1_skeleton,
         "oscar_gripper_scenario_proxy_rendered": oscar_gripper_scenario_proxy,
         "texture_free_egocentric_arm_skeleton_rendered": (
             texture_free_egocentric_arm_skeleton
@@ -1013,9 +1025,8 @@ def _render_proxy_skeleton_video(
             else 0.0,
             "preprocessing_applies_only_to_generated_conditioning_asset": True,
         },
-        "simulated_g1_projected_kinematic_skeleton_available": bool(
-            projected_g1_skeleton
-        ),
+        "simulated_g1_projected_kinematic_skeleton_available": bool(projected_g1_skeleton),
+        "projected_robot_kinematic_skeleton_available": bool(projected_g1_skeleton),
         "true_robot_proprioceptive_skeleton_available": False,
         "projected_g1_skeleton_trace_row_count": len(projected_rows),
         "projected_g1_skeleton_projectable_row_count": _projected_skeleton_projectable_row_count(
@@ -1310,7 +1321,11 @@ def _materialize_oscar_input_package(
         },
         "source_review_video": selected_video,
         "projected_skeleton_trace": {
-            "path": _string(inputs.get("g1_projected_skeleton_trace_jsonl")) or None,
+            "path": _string(
+                inputs.get("projected_robot_skeleton_trace_jsonl")
+                or inputs.get("g1_projected_skeleton_trace_jsonl")
+            )
+            or None,
             "available": bool(projected_skeleton_rows),
             "used_for_conditioning": bool(
                 skeleton_video.get("projected_g1_skeleton_rendered")
@@ -1338,6 +1353,9 @@ def _materialize_oscar_input_package(
             ),
             "projected_g1_skeleton_conditioning_used": bool(
                 skeleton_video.get("projected_g1_skeleton_rendered")
+            ),
+            "projected_robot_skeleton_conditioning_used": bool(
+                skeleton_video.get("projected_robot_skeleton_rendered")
             ),
             "projected_g1_skeleton_conditioning_is_simulated_mujoco_state": bool(
                 skeleton_video.get("projected_g1_skeleton_rendered")

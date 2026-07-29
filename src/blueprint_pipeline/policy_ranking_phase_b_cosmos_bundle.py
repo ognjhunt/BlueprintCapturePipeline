@@ -38,8 +38,17 @@ def _runtime_sources() -> tuple[bytes, bytes]:
 
 
 def build_phase_b_cosmos_canary_bundle(
-    *, replay_canary_path: str | Path, output_bundle: str | Path, receipt_path: str | Path
+    *,
+    replay_canary_path: str | Path,
+    output_bundle: str | Path,
+    receipt_path: str | Path,
+    task_instruction: str,
 ) -> dict[str, Any]:
+    task_instruction = str(task_instruction).strip()
+    if not task_instruction:
+        raise ValueError("task_specific_instruction_required")
+    if task_instruction == "A robot manipulates an object.":
+        raise ValueError("generic_robot_manipulation_prompt_forbidden")
     canary_path = Path(replay_canary_path).resolve()
     canary = json.loads(canary_path.read_text(encoding="utf-8"))
     recorded = str(canary.get("manifest_sha256") or "")
@@ -77,7 +86,6 @@ def build_phase_b_cosmos_canary_bundle(
         action_hashes = {
             condition: payload["action_sha256"] for condition, payload in conditions.items()
         }
-        task_instruction = "A robot manipulates an object."
         rows: list[dict[str, Any]] = []
         for condition in ALLOWED_CONDITIONS:
             for seed in (0, 1):
@@ -137,6 +145,11 @@ def build_phase_b_cosmos_canary_bundle(
             "forward_dynamics_endpoint": "/v1/videos/sync",
             "pipeline_class": "Cosmos3OmniDiffusersPipeline",
             "vllm_omni_source_revision": "9c1b7504b178afcf541867c1a2d30db48c69cda8",
+            "vision_conditioning_mode": "first_pixel_frame_only",
+            "additional_starter_video_frames_condition_model": False,
+            "vision_conditioning_source": (
+                "pinned_vllm_omni__prepare_latents_action_video_and_upstream_test"
+            ),
             "raw_action_dim": 10,
             "action_space": "midtrain",
             "qualification_canary_request_count": 2,
@@ -168,6 +181,9 @@ def build_phase_b_cosmos_canary_bundle(
             "real_policy_swapped_trace": True,
             "valid_identity_rot6d_no_motion": True,
             "outcome_labels_accessed": False,
+            "task_specific_instruction_used": True,
+            "task_instruction_sha256": canonical_sha256(task_instruction),
+            "vision_conditioning_mode": "first_pixel_frame_only",
         }
         with zipfile.ZipFile(output, "w") as archive:
             _zip_write(
@@ -234,11 +250,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--replay-canary", required=True)
     parser.add_argument("--output-bundle", required=True)
     parser.add_argument("--receipt", required=True)
+    parser.add_argument("--task-instruction", required=True)
     args = parser.parse_args(argv)
     result = build_phase_b_cosmos_canary_bundle(
         replay_canary_path=args.replay_canary,
         output_bundle=args.output_bundle,
         receipt_path=args.receipt,
+        task_instruction=args.task_instruction,
     )
     print(json.dumps({"status": result["status"]}, sort_keys=True))
     return 0
