@@ -1,0 +1,38 @@
+{
+  "schema_version": "policy_ranking_cosmos3_droid_environment_and_source.v1",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "source_freeze": {
+    "path": "source_freeze_v1.json",
+    "scientific_contract_frozen_before_paid_execution": true
+  },
+  "upstream_source": {
+    "cosmos": {
+      "url": "https://github.com/NVIDIA/cosmos",
+      "revision": "0299468993d8bcd8f6a95b0d8427b1221fccfced"
+    },
+    "cosmos_framework": {
+      "url": "https://github.com/NVIDIA/cosmos-framework",
+      "revision": "9726697a83315540c6885baefd2fe353d9c74920"
+    },
+    "vllm_omni": {
+      "url": "https://github.com/vllm-project/vllm-omni",
+      "revision": "1c6e7313394923000215a3299f4f79ede3873ecc",
+      "runtime_image": "docker.io/vllm/vllm-omni@sha256:970dee6658ea223f615b2438ce41e47f1d5322225482546e6e6bc5d8134f757c"
+    }
+  },
+  "checkpoint": {
+    "repository": "nvidia/Cosmos3-Nano",
+    "revision": "411f42a8fdfb8c5b2583cb8786e0938f49796eaa",
+    "remote_code_policy": "no_unpinned_remote_code_and_trust_remote_code_false"
+  },
+  "dataset": {
+    "repository": "nvidia/Cosmos3-DROID",
+    "revision": "5c11a20accb11497270a5247a7f1e66ad04c956c"
+  },
+  "execution_source_binding": {
+    "mode": "clean_pushed_experimental_branch_commit_passed_to_canonical_allocator",
+    "exact_commit_recorded_in_admission_and_bound_request": true,
+    "dirty_worktree_execution_forbidden": true
+  },
+  "raw_secret_values_recorded": false
+}

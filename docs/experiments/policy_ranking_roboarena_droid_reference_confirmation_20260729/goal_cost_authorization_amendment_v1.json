@@ -1,0 +1,30 @@
+{
+  "schema_version": "policy_ranking_cosmos3_droid_reference_goal_cost_authorization.v1",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "authorized_at": "2026-07-29T01:26:56-0500",
+  "authorization_source": "user_in_current_persistent_goal_and_current_thread",
+  "authorization_text": "I authorize vast / gpu usage for this experiment/goal",
+  "campaign_category_ceiling_usd": 50.0,
+  "campaign_total_ceiling_usd": 100.0,
+  "this_allocation_maximum_spend_usd": 5.0,
+  "maximum_live_gpus": 1,
+  "scope": "one compatible preflight-approved GPU for the exact official-DROID structured recorded-action canary and, only after its structural motion gate passes, one valid identity-rotation no-motion follow-up",
+  "controls_retained": {
+    "canonical_paid_resource_allocator_only": true,
+    "single_use_admission": true,
+    "one_resource_limit": true,
+    "live_rate_bound_ttl": true,
+    "independent_watchdog_before_create": true,
+    "automatic_spend_cutoff": true,
+    "teardown_on_failure": true,
+    "provider_zero_required": true
+  },
+  "authorization_does_not_change": [
+    "scientific_gates",
+    "untouched_data_seal",
+    "evaluator_independence",
+    "claim_boundaries",
+    "physical_robot_prohibition"
+  ],
+  "status": "accepted_before_paid_execution"
+}

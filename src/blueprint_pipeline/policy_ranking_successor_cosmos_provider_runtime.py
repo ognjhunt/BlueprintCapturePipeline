@@ -55,6 +55,7 @@ EXPECTED_VIDEO_WIDTH = 640
 EXPECTED_VIDEO_HEIGHT = 544
 POSITIVE_CONTROL_DIRECTORY = "cosmos3_positive_control"
 POSITIVE_CONTROL_REQUEST_COUNT = 4
+DROID_REFERENCE_DIRECTORY = "cosmos3_droid_reference"
 
 
 def canonical_sha256(value: Any) -> str:
@@ -660,8 +661,7 @@ def _run_positive_control(
     if manifest.get("manifest_sha256") != manifest_sha256:
         raise ValueError("positive_control_manifest_sha256_mismatch")
     if (
-        manifest.get("schema_version")
-        != "policy_ranking_cosmos_official_positive_control.v1"
+        manifest.get("schema_version") != "policy_ranking_cosmos_official_positive_control.v1"
         or manifest.get("request_count") != POSITIVE_CONTROL_REQUEST_COUNT
     ):
         raise ValueError("positive_control_manifest_contract_invalid")
@@ -812,6 +812,271 @@ def _submit_rollout(
     }
 
 
+def _serialize_droid_reference_request(
+    *, manifest: dict[str, Any], action_stream: dict[str, Any]
+) -> dict[str, Any]:
+    """Match NVIDIA's published DROID vLLM-Omni request exactly."""
+
+    request = manifest.get("request_contract")
+    if not isinstance(request, dict):
+        raise ValueError("official_droid_reference_request_contract_missing")
+    actions = action_stream.get("actions")
+    if (
+        not isinstance(actions, list)
+        or len(actions) != 16
+        or any(not isinstance(row, list) or len(row) != 10 for row in actions)
+    ):
+        raise ValueError("official_droid_reference_action_shape_invalid")
+    extra = request.get("extra_params")
+    expected_extra = {
+        "action_mode": "forward_dynamics",
+        "domain_name": "droid_lerobot",
+        "action_chunk_size": 16,
+        "image_size": 480,
+        "view_point": "concat_view",
+        "guardrails": False,
+    }
+    if extra != expected_extra:
+        raise ValueError("official_droid_reference_extra_params_invalid")
+    expected = {
+        "model": CHECKPOINT,
+        "checkpoint_revision": CHECKPOINT_REVISION,
+        "endpoint": "/v1/videos",
+        "prompt": " ",
+        "num_frames": 17,
+        "fps": 15,
+        "size": "640x540",
+        "num_inference_steps": 30,
+        "guidance_scale": 1.0,
+        "flow_shift": 10.0,
+        "seed": 0,
+        "extra_params": expected_extra,
+    }
+    if request != expected:
+        raise ValueError("official_droid_reference_request_contract_changed")
+    return {
+        "model": CHECKPOINT,
+        "prompt": " ",
+        "num_frames": "17",
+        "fps": "15",
+        "size": "640x540",
+        "num_inference_steps": "30",
+        "guidance_scale": "1.0",
+        "flow_shift": "10.0",
+        "seed": "0",
+        "extra_params": json.dumps({**expected_extra, "action": actions}, separators=(",", ":")),
+    }
+
+
+def _submit_rollout_async(
+    *, serialized_request: dict[str, Any], initial_observation: Path, output_path: Path
+) -> dict[str, Any]:
+    """Submit and collect the structured asynchronous NVIDIA cookbook endpoint."""
+
+    with initial_observation.open("rb") as image_file:
+        response = requests.post(
+            f"{SERVER_BASE_URL}/v1/videos",
+            data=serialized_request,
+            files={"input_reference": (initial_observation.name, image_file, "image/png")},
+            timeout=120,
+        )
+    response.raise_for_status()
+    initial = response.json()
+    request_id = str(initial.get("id") or "") if isinstance(initial, dict) else ""
+    if not request_id:
+        raise RuntimeError("official_droid_reference_response_id_missing")
+    deadline = time.monotonic() + REQUEST_POLL_TIMEOUT_SECONDS
+    final: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        status_response = requests.get(f"{SERVER_BASE_URL}/v1/videos/{request_id}", timeout=30)
+        status_response.raise_for_status()
+        payload = status_response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("official_droid_reference_status_not_object")
+        final = payload
+        status = str(final.get("status") or "")
+        if status == "completed":
+            break
+        if status in {"failed", "cancelled"}:
+            raise RuntimeError(f"official_droid_reference_terminal_status:{status}")
+        time.sleep(2)
+    else:
+        raise TimeoutError("official_droid_reference_poll_timeout")
+    content = requests.get(f"{SERVER_BASE_URL}/v1/videos/{request_id}/content", timeout=300)
+    content.raise_for_status()
+    if not content.content:
+        raise RuntimeError("official_droid_reference_video_empty")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(content.content)
+    return {
+        "endpoint": "/v1/videos",
+        "provider_response_id": request_id,
+        "initial_response": initial,
+        "terminal_response": final,
+        "terminal_status": final.get("status"),
+        "output_sha256": sha256_file(output_path),
+        "output_size_bytes": output_path.stat().st_size,
+    }
+
+
+def _run_droid_reference_only(*, runtime_dir: Path, output_dir: Path) -> dict[str, Any]:
+    """Run the prospectively frozen official DROID reference and nothing else."""
+
+    control = runtime_dir / DROID_REFERENCE_DIRECTORY
+    manifest = json.loads((control / "canary_manifest.json").read_text(encoding="utf-8"))
+    recorded_digest = str(manifest.get("manifest_sha256") or "")
+    computed_digest = canonical_sha256(
+        {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    )
+    if not recorded_digest or recorded_digest != computed_digest:
+        raise ValueError("official_droid_reference_manifest_sha256_mismatch")
+    if manifest.get("schema_version") != (
+        "policy_ranking_cosmos3_official_droid_reference_canary.v1"
+    ):
+        raise ValueError("official_droid_reference_manifest_schema_invalid")
+    initial_observation = control / "initial_observation.png"
+    actions_path = control / "action_streams.json"
+    actions = json.loads(actions_path.read_text(encoding="utf-8"))
+    provider_inputs = manifest.get("provider_inputs") or {}
+    if sha256_file(initial_observation) != provider_inputs.get("initial_observation_sha256"):
+        raise ValueError("official_droid_reference_initial_sha256_mismatch")
+    if canonical_sha256(actions) != provider_inputs.get("action_streams_sha256"):
+        raise ValueError("official_droid_reference_actions_sha256_mismatch")
+
+    journal = HashChainedJournal(output_dir / "immutable_request_journal.jsonl")
+    result_path = output_dir / "wam_runtime_result.json"
+    try:
+        cuda_preflight = _run_cuda_preflight()
+    except Exception as exc:
+        result = {
+            "schema_version": "policy_ranking_cosmos3_droid_reference_runtime.v1",
+            "status": "blocked",
+            "failure_class": "cuda_driver_or_runtime_failure",
+            "blockers": [f"{type(exc).__name__}:{str(exc)[:300]}"],
+            "provider_generation_requests_attempted": 0,
+        }
+        write_json(result_path, result)
+        return result
+    write_json(output_dir / "gpu_preflight.json", cuda_preflight)
+
+    process, server_identity, server_log, reused = _acquire_server(
+        output_dir=output_dir, environment=_server_environment()
+    )
+    started = time.monotonic()
+    attempted = 0
+    records: list[dict[str, Any]] = []
+    force_shutdown = False
+    try:
+        _wait_for_server(process)
+        model_load_seconds = 0.0 if reused else time.monotonic() - started
+        gates = (manifest.get("frozen_gates") or {}).get("structured_canary") or {}
+        for name in ("recorded", "no_motion"):
+            if name == "no_motion" and not records[0]["gate_passed"]:
+                break
+            serialized = _serialize_droid_reference_request(
+                manifest=manifest, action_stream=actions[name]
+            )
+            attempted += 1
+            output_path = output_dir / "reference_canary" / f"{name}.mp4"
+            response = _submit_rollout_async(
+                serialized_request=serialized,
+                initial_observation=initial_observation,
+                output_path=output_path,
+            )
+            metrics = _decode_video_metrics(
+                output_path,
+                expected_width=640,
+                expected_height=540,
+                expected_frames=17,
+                expected_fps=15.0,
+            )
+            motion_pass = float(metrics.get("temporal_absolute_difference_mean") or 0.0) >= float(
+                gates.get("temporal_absolute_difference_mean_minimum_gray_0_255") or 0.0
+            ) and float(metrics.get("first_to_last_absolute_difference_mean") or 0.0) >= float(
+                gates.get("first_to_last_absolute_difference_mean_minimum_gray_0_255") or 0.0
+            )
+            gate_passed = metrics.get("structural_status") == "passed" and (
+                motion_pass if name == "recorded" else True
+            )
+            record = {
+                "name": name,
+                "request": serialized,
+                "request_sha256": canonical_sha256(serialized),
+                "response": response,
+                "metrics": metrics,
+                "gate_passed": gate_passed,
+            }
+            records.append(record)
+            write_json(output_dir / "reference_canary" / f"{name}.json", record)
+            journal.append(
+                {
+                    "event": "official_droid_reference_response_recorded",
+                    "name": name,
+                    "provider_response_id": response["provider_response_id"],
+                    "output_sha256": response["output_sha256"],
+                    "gate_passed": gate_passed,
+                }
+            )
+        recorded_pass = bool(records and records[0]["gate_passed"])
+        paired_complete = len(records) == 2 and records[1]["gate_passed"]
+        result = {
+            "schema_version": "policy_ranking_cosmos3_droid_reference_runtime.v1",
+            "status": "completed",
+            "experiment_id": manifest.get("experiment_id"),
+            "manifest_sha256": recorded_digest,
+            "checkpoint": CHECKPOINT,
+            "checkpoint_revision": CHECKPOINT_REVISION,
+            "server_identity": server_identity,
+            "model_load_seconds": model_load_seconds,
+            "reused_retained_server": reused,
+            "provider_generation_requests_attempted": attempted,
+            "records": records,
+            "structured_canary_passed": recorded_pass,
+            "paired_reference_complete": paired_complete,
+            "causal_adjudication": "pending_offline_tier1_and_timing_analysis",
+            "untouched_data_admitted": False,
+            "evaluator_eligible": False,
+            "runtime_seconds": time.monotonic() - started,
+            "claim_boundary": manifest.get("claim_boundary"),
+        }
+        result["result_sha256"] = canonical_sha256(result)
+        write_json(result_path, result)
+        return result
+    except Exception as exc:
+        force_shutdown = True
+        result = {
+            "schema_version": "policy_ranking_cosmos3_droid_reference_runtime.v1",
+            "status": "blocked",
+            "failure_class": "reference_canary_runtime_or_transport_failure",
+            "blockers": [f"{type(exc).__name__}:{str(exc)[:300]}"],
+            "provider_generation_requests_attempted": attempted,
+            "untouched_data_admitted": False,
+        }
+        write_json(result_path, result)
+        return result
+    finally:
+        retained = _env_truthy(RETAIN_SERVER_ENV) and not force_shutdown and process.poll() is None
+        write_json(
+            output_dir / "cosmos_server_retention.json",
+            {
+                "status": "retained_loaded" if retained else "terminal_shutdown",
+                "server_identity": server_identity,
+                "process_alive": process.poll() is None,
+                "server_remained_loaded": retained,
+                "reused_retained_server": reused,
+            },
+        )
+        if not retained:
+            process.terminate()
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=30)
+        if server_log is not None:
+            server_log.close()
+
+
 def _classify_retryable(exc: BaseException) -> bool:
     return isinstance(
         exc,
@@ -847,11 +1112,14 @@ def _action_conditions_match_frozen_contract(
 
 def run() -> dict[str, Any]:
     runtime_dir = Path(__file__).resolve().parent
-    input_dir = runtime_dir / "cosmos3_input"
     output_dir = Path(
         os.environ.get("BLUEPRINT_VAST_PROVIDER_OUTPUT_DIR", runtime_dir.parent / "runtime_output")
     ).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    if (runtime_dir / DROID_REFERENCE_DIRECTORY / "canary_manifest.json").is_file():
+        return _run_droid_reference_only(runtime_dir=runtime_dir, output_dir=output_dir)
+
+    input_dir = runtime_dir / "cosmos3_input"
     journal = HashChainedJournal(output_dir / "immutable_request_journal.jsonl")
     result_path = output_dir / "wam_runtime_result.json"
     initial_observation = input_dir / "initial_observation.png"
@@ -1295,9 +1563,7 @@ def run() -> dict[str, Any]:
         return result
     finally:
         retained = (
-            _env_truthy(RETAIN_SERVER_ENV)
-            and not force_server_shutdown
-            and process.poll() is None
+            _env_truthy(RETAIN_SERVER_ENV) and not force_server_shutdown and process.poll() is None
         )
         write_json(
             output_dir / "cosmos_server_retention.json",

@@ -585,6 +585,115 @@ def test_runpod_create_allows_unitree_groot_sonic_full_loop_bundle_without_overr
     assert "output-secret" not in persisted
 
 
+def test_runpod_public_model_disables_secret_forwarding_and_blocks_before_mutation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = tmp_path / "wam_bundle.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("provider_runtime/run_wam_provider_runtime.sh", "echo hi\n")
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
+    monkeypatch.setenv(runner.RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV, "true")
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_read_model_secret_env",
+        lambda: (_ for _ in ()).throw(AssertionError("model secret must not be read")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_runpod_request",
+        lambda **kwargs: calls.append(dict(kwargs)),
+    )
+
+    manifest = runner.create_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        provider_bundle_url="https://spaces.example/bundle.zip",
+        provider_output_put_url="https://spaces.example/output.zip",
+        allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
+        skip_public_staging_verification=True,
+        forward_model_secret_env=False,
+        pre_provider_mutation_hook=lambda: {
+            "status": "blocked",
+            "blockers": ["prospective_authorization_not_consumed"],
+        },
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "blocked"
+    assert manifest["provider_mutations_performed"] == 0
+    assert manifest["blockers"] == ["prospective_authorization_not_consumed"]
+    assert manifest["pre_provider_mutation_hook"]["status"] == "blocked"
+    assert calls == []
+    assert not (tmp_path / "job" / "runpod_wam_async_state.json").exists()
+
+
+def test_runpod_public_model_payload_contains_no_account_token(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle = tmp_path / "wam_bundle.zip"
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("provider_runtime/run_wam_provider_runtime.sh", "echo hi\n")
+    calls: list[dict[str, object]] = []
+
+    def fake_runpod_request(**kwargs):
+        calls.append(dict(kwargs))
+        return 200, {"id": "pod-public-model"}
+
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_POD_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(runner.RUNPOD_WAM_MAX_SPEND_USD_ENV, "0.75")
+    monkeypatch.setenv(runner.RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV, "true")
+    monkeypatch.setattr(runner, "_runpod_request", fake_runpod_request)
+    monkeypatch.setattr(
+        runner,
+        "_read_runpod_api_key",
+        lambda: (
+            "runpod-secret-not-persisted",
+            {"api_key_configured": True, "raw_secret_values_recorded": False},
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_read_model_secret_env",
+        lambda: (_ for _ in ()).throw(AssertionError("model secret must not be read")),
+    )
+
+    manifest = runner.create_runpod_wam_async_run(
+        job_dir=tmp_path / "job",
+        bundle_path=bundle,
+        provider_bundle_url="https://spaces.example/bundle.zip",
+        provider_output_put_url="https://spaces.example/output.zip",
+        allow_paid_runpod_launch=True,
+        paid_resource_admission_grant=_paid_grant(),
+        skip_public_staging_verification=True,
+        forward_model_secret_env=False,
+        pre_provider_mutation_hook=lambda: {"status": "consumed"},
+        generated_at="now",
+    )
+
+    assert manifest["status"] == "pod_created"
+    assert manifest["model_secret_env_status"]["status"] == "disabled"
+    assert manifest["pre_provider_mutation_hook"]["status"] == "consumed"
+    env = calls[0]["payload"]["env"]
+    assert "HF_TOKEN" not in env
+    assert "HUGGING_FACE_HUB_TOKEN" not in env
+
+
 def test_runpod_create_reuses_dynamic_existing_pod_candidate(
     tmp_path: Path,
     monkeypatch,

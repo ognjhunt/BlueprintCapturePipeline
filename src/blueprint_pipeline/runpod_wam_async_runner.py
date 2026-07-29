@@ -13,7 +13,7 @@ import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
 from .common import ensure_dir, parse_bool, utc_now_iso, write_json
@@ -238,9 +238,7 @@ UNITREE_UNIFOLM_RUNTIME_CONFIG_ALIASES = {
         "BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT",
         "BLUEPRINT_UNITREE_UNIFOLM_POLICY_CHECKPOINT",
     ),
-    "BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT": (
-        "BLUEPRINT_UNITREE_UNIFOLM_VLA_SOURCE_ROOT",
-    ),
+    "BLUEPRINT_UNITREE_UNIFOLM_SOURCE_ROOT": ("BLUEPRINT_UNITREE_UNIFOLM_VLA_SOURCE_ROOT",),
 }
 UNITREE_UNIFOLM_RUNTIME_CONFIG_DEFAULTS = {
     "BLUEPRINT_UNITREE_UNIFOLM_MODE": "vla",
@@ -421,8 +419,7 @@ def _read_runpod_api_key() -> tuple[str, dict[str, Any]]:
             "raw_secret_values_recorded": False,
         }
     key_file = Path(
-        _string(os.getenv(RUNPOD_API_KEY_FILE_ENV))
-        or "~/.blueprint-secrets/runpod_api_key"
+        _string(os.getenv(RUNPOD_API_KEY_FILE_ENV)) or "~/.blueprint-secrets/runpod_api_key"
     ).expanduser()
     mode = oct(key_file.stat().st_mode & 0o777) if key_file.exists() else None
     try:
@@ -433,26 +430,30 @@ def _read_runpod_api_key() -> tuple[str, dict[str, Any]]:
             env_name=RUNPOD_API_KEY_FILE_ENV,
             raw_secret_field="raw_secret_values_recorded",
         )
-        status.update({
-            "api_key_configured": False,
-            "api_key_source": RUNPOD_API_KEY_FILE_ENV,
-            "api_key_file_configured": True,
-            "api_key_file_mode": mode,
-            "api_key_file_read_error": type(exc).__name__,
-        })
+        status.update(
+            {
+                "api_key_configured": False,
+                "api_key_source": RUNPOD_API_KEY_FILE_ENV,
+                "api_key_file_configured": True,
+                "api_key_file_mode": mode,
+                "api_key_file_read_error": type(exc).__name__,
+            }
+        )
         return "", status
     status = redacted_secret_file_status(
         key_file,
         env_name=RUNPOD_API_KEY_FILE_ENV,
         raw_secret_field="raw_secret_values_recorded",
     )
-    status.update({
-        "api_key_configured": bool(key),
-        "api_key_source": RUNPOD_API_KEY_FILE_ENV if key else None,
-        "api_key_file_configured": True,
-        "api_key_file_mode": mode,
-        "api_key_file_mode_is_0600": mode == "0o600",
-    })
+    status.update(
+        {
+            "api_key_configured": bool(key),
+            "api_key_source": RUNPOD_API_KEY_FILE_ENV if key else None,
+            "api_key_file_configured": True,
+            "api_key_file_mode": mode,
+            "api_key_file_mode_is_0600": mode == "0o600",
+        }
+    )
     return key, status
 
 
@@ -469,12 +470,14 @@ def _secret_file_meta(path: Path, *, label: str, source: str) -> dict[str, Any]:
             value_present = bool(path.read_text(encoding="utf-8").strip())
         except OSError as exc:
             read_error = type(exc).__name__
-    status.update({
-        "label": label,
-        "source": source,
-        "value_present": value_present,
-        "read_error": read_error,
-    })
+    status.update(
+        {
+            "label": label,
+            "source": source,
+            "value_present": value_present,
+            "read_error": read_error,
+        }
+    )
     return status
 
 
@@ -487,9 +490,7 @@ def _read_model_secret_env() -> tuple[dict[str, str], dict[str, Any]]:
         ("BLUEPRINT_HF_TOKEN_FILE", _string(os.getenv("BLUEPRINT_HF_TOKEN_FILE"))),
     ]
     file_candidates: list[tuple[str, Path]] = [
-        (label, Path(value).expanduser())
-        for label, value in explicit_files
-        if value
+        (label, Path(value).expanduser()) for label, value in explicit_files if value
     ]
     file_candidates.extend(
         ("default_secret_file", Path(item).expanduser()) for item in DEFAULT_HF_TOKEN_FILES
@@ -553,13 +554,9 @@ def _provider_runtime_config_keys(provider_bundle_kind: str) -> tuple[str, ...]:
         return UNITREE_UNIFOLM_RUNTIME_CONFIG_ENV_KEYS
     if provider_bundle_kind == "unitree_groot_n17_sonic":
         return UNITREE_GROOT_SONIC_RUNTIME_CONFIG_ENV_KEYS
-    if (
-        provider_bundle_kind == "wam"
-        and os.getenv("BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC", "")
-        .strip()
-        .lower()
-        in {"1", "true", "yes", "on"}
-    ):
+    if provider_bundle_kind == "wam" and os.getenv(
+        "BLUEPRINT_RUNPOD_WAM_CARRIER_UNITREE_GROOT_N17_SONIC", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}:
         return UNITREE_GROOT_SONIC_RUNTIME_CONFIG_ENV_KEYS
     return PROVIDER_RUNTIME_CONFIG_ENV_KEYS
 
@@ -1254,9 +1251,7 @@ def _write_running_warm_candidate(
         "container_disk_gb": state.get("container_disk_gb"),
         "volume_gb": state.get("volume_gb"),
         "source_job_dir": str(job_dir),
-        "source_keepalive_poll_manifest_path": str(
-            job_dir / "runpod_wam_async_poll_manifest.json"
-        ),
+        "source_keepalive_poll_manifest_path": str(job_dir / "runpod_wam_async_poll_manifest.json"),
         "running_pod_preserved_for_hot_reuse": True,
         "raw_secret_values_recorded": False,
     }
@@ -1405,16 +1400,12 @@ def _validate_running_warm_candidate_runtime(
         and age_seconds >= max_runtime_absent_seconds
     )
     selected["reuse_probe"] = {
-        "status": "stale_runtime_absent_rejected"
-        if stale_runtime_absent
-        else "passed",
+        "status": "stale_runtime_absent_rejected" if stale_runtime_absent else "passed",
         "pod_status_http_status_code": status_code,
         "pod_status": pod_status,
         "runtime_present": runtime_present,
         "public_ip_present": public_ip_present,
-        "candidate_age_seconds": round(age_seconds, 6)
-        if age_seconds is not None
-        else None,
+        "candidate_age_seconds": round(age_seconds, 6) if age_seconds is not None else None,
         "max_runtime_absent_seconds": max_runtime_absent_seconds,
         "raw_secret_values_recorded": False,
     }
@@ -1471,6 +1462,8 @@ def create_runpod_wam_async_run(
     carrier_volume_admission: Mapping[str, Any] | None = None,
     pod_name: str = "",
     provider_lane_handoff_receipt_path: str | Path | None = None,
+    forward_model_secret_env: bool = True,
+    pre_provider_mutation_hook: Callable[[], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     if provider_bundle_kind not in RUNPOD_PROVIDER_BUNDLE_KINDS:
@@ -1566,7 +1559,9 @@ def create_runpod_wam_async_run(
             "explicit_provider_urls_used": True,
             "raw_secret_values_recorded": False,
         }
-        write_json(resolved_job_dir / "runpod_wam_direct_provider_urls_manifest.json", staging_manifest)
+        write_json(
+            resolved_job_dir / "runpod_wam_direct_provider_urls_manifest.json", staging_manifest
+        )
         self_test = {
             "schema_version": "runpod_wam_local_staging_self_test.v1",
             "generated_at": generated,
@@ -1625,7 +1620,18 @@ def create_runpod_wam_async_run(
             generated_at=generated,
         )
     api_key, api_key_meta = _read_runpod_api_key()
-    model_secret_env, model_secret_env_status = _read_model_secret_env()
+    if forward_model_secret_env:
+        model_secret_env, model_secret_env_status = _read_model_secret_env()
+    else:
+        model_secret_env = {}
+        model_secret_env_status = {
+            "schema_version": "runpod_wam_model_secret_env.v1",
+            "status": "disabled",
+            "reason": "public_model_does_not_require_provider_visible_account_credential",
+            "env_keys_forwarded": [],
+            "raw_secret_values_recorded": False,
+            "secret_hashes_recorded": False,
+        }
     provider_runtime_config_env, provider_runtime_config_env_status = (
         _read_provider_runtime_config_env(provider_bundle_kind)
     )
@@ -1667,7 +1673,9 @@ def create_runpod_wam_async_run(
     if not direct_provider_urls and self_test.get("status") != "passed":
         blockers.append("runpod_wam_local_staging_self_test_failed")
     if public_verification.get("status") not in {"passed", "skipped"}:
-        blockers.extend(public_verification.get("blockers") or ["runpod_wam_public_staging_not_verified"])
+        blockers.extend(
+            public_verification.get("blockers") or ["runpod_wam_public_staging_not_verified"]
+        )
     if not direct_provider_urls and not _string(public_base_url).startswith("https://"):
         blockers.append("runpod_wam_public_base_url_must_be_https")
     if direct_provider_urls:
@@ -1803,15 +1811,19 @@ def create_runpod_wam_async_run(
             "raw_secret_values_recorded": False,
         }
         if explicit_existing_pod_id
-        else ({
-            "status": "not_considered",
-            "reason": "carrier_network_volume_requires_fresh_pod_create",
-            "raw_secret_values_recorded": False,
-        } if carrier_volume_admission is not None else _read_compatible_warm_candidate(
-            provider_bundle_kind=provider_bundle_kind,
-            image_name=image_name,
-            cloud_type=cloud_type,
-        ))
+        else (
+            {
+                "status": "not_considered",
+                "reason": "carrier_network_volume_requires_fresh_pod_create",
+                "raw_secret_values_recorded": False,
+            }
+            if carrier_volume_admission is not None
+            else _read_compatible_warm_candidate(
+                provider_bundle_kind=provider_bundle_kind,
+                image_name=image_name,
+                cloud_type=cloud_type,
+            )
+        )
     )
     if not explicit_existing_pod_id:
         warm_candidate = _validate_running_warm_candidate_runtime(
@@ -1820,9 +1832,7 @@ def create_runpod_wam_async_run(
             generated_at=generated,
         )
     selected_existing_pod_id = explicit_existing_pod_id or (
-        _string(warm_candidate.get("pod_id"))
-        if warm_candidate.get("status") == "selected"
-        else ""
+        _string(warm_candidate.get("pod_id")) if warm_candidate.get("status") == "selected" else ""
     )
     warm_start_http_error: dict[str, Any] | None = None
     # Teardown obligation goes on disk BEFORE any billable RunPod call: if this
@@ -1831,8 +1841,7 @@ def create_runpod_wam_async_run(
     pending_teardown = open_pending_teardown(
         provider="runpod",
         lane=RUNPOD_WAM_LANE,
-        run_id=resolved_pod_name
-        or f"wam-{provider_bundle_kind}-{int(time.time() * 1000)}",
+        run_id=resolved_pod_name or f"wam-{provider_bundle_kind}-{int(time.time() * 1000)}",
         resource_kind="compute_instance",
         resource_name=resolved_pod_name,
         job_dir=str(resolved_job_dir),
@@ -1862,14 +1871,10 @@ def create_runpod_wam_async_run(
                 "provider_mutations_performed": 0,
                 "raw_secret_values_recorded": False,
             }
-            write_json(
-                resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest
-            )
+            write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
             return manifest
 
-    def _cancel_unallocated_create(
-        *, reason: str, evidence: Mapping[str, Any]
-    ) -> dict[str, Any]:
+    def _cancel_unallocated_create(*, reason: str, evidence: Mapping[str, Any]) -> dict[str, Any]:
         cancelled = cancel_pending_teardown(
             pending_teardown["path"], reason=reason, evidence=evidence
         )
@@ -1893,6 +1898,35 @@ def create_runpod_wam_async_run(
                 "blocker": str(exc),
                 "raw_secret_values_recorded": False,
             }
+
+    mutation_admission = (
+        dict(pre_provider_mutation_hook())
+        if pre_provider_mutation_hook is not None
+        else {"status": "not_required"}
+    )
+    if mutation_admission.get("status") not in {"consumed", "not_required"}:
+        handoff_receipt_update = _cancel_unallocated_create(
+            reason="pre_provider_mutation_hook_blocked",
+            evidence={
+                "status": mutation_admission.get("status"),
+                "blockers": list(mutation_admission.get("blockers") or []),
+            },
+        )
+        manifest = {
+            "schema_version": RUNPOD_WAM_CREATE_SCHEMA_VERSION,
+            "generated_at": generated,
+            "status": "blocked",
+            "job_dir": str(resolved_job_dir),
+            "provider_bundle_kind": provider_bundle_kind,
+            "blockers": list(mutation_admission.get("blockers") or [])
+            or ["runpod_pre_provider_mutation_hook_blocked"],
+            "pre_provider_mutation_hook": mutation_admission,
+            "provider_lane_handoff_receipt_update": handoff_receipt_update,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+        write_json(resolved_job_dir / "runpod_wam_async_create_manifest.json", manifest)
+        return manifest
     try:
         if selected_existing_pod_id:
             update_payload = _existing_pod_update_payload(payload)
@@ -1984,9 +2018,7 @@ def create_runpod_wam_async_run(
                 }
             warm_start_http_error = {
                 "http_status_code": exc.code,
-                "runpod_error_preview": "REDACTED_SECRET"
-                if api_key in error_body
-                else error_body,
+                "runpod_error_preview": "REDACTED_SECRET" if api_key in error_body else error_body,
                 "fallback_reason": "stopped_warm_candidate_start_failed",
                 "warm_candidate_retirement": warm_candidate_retirement,
                 "raw_secret_values_recorded": False,
@@ -2073,7 +2105,9 @@ def create_runpod_wam_async_run(
                 "runpod_error_preview": "REDACTED_SECRET" if api_key in error_body else error_body,
                 "model_secret_env_status": model_secret_env_status,
                 "provider_runtime_config_env_status": provider_runtime_config_env_status,
-                "pod_launch_mode": "existing_pod_start" if selected_existing_pod_id else "fresh_pod_create",
+                "pod_launch_mode": "existing_pod_start"
+                if selected_existing_pod_id
+                else "fresh_pod_create",
                 "warm_existing_pod": {
                     "requested": bool(selected_existing_pod_id),
                     "existing_pod_id": selected_existing_pod_id,
@@ -2155,6 +2189,7 @@ def create_runpod_wam_async_run(
         "full_loop_guard": full_loop_guard,
         "prelaunch_spend_guard": prelaunch_spend_guard,
         "pre_spend_preflight": pre_spend_preflight,
+        "pre_provider_mutation_hook": mutation_admission,
         "pending_teardown_record": pending_teardown["path"],
         "provider_lane_handoff_receipt_update": handoff_receipt_update,
         "token_file_path_redacted": True,
@@ -2204,6 +2239,7 @@ def create_runpod_wam_async_run(
         "full_loop_guard": full_loop_guard,
         "prelaunch_spend_guard": prelaunch_spend_guard,
         "pre_spend_preflight": pre_spend_preflight,
+        "pre_provider_mutation_hook": mutation_admission,
         "pending_teardown_record": pending_teardown["path"],
         "provider_lane_handoff_receipt_update": handoff_receipt_update,
         "model_secret_env_status": model_secret_env_status,
@@ -2318,7 +2354,10 @@ def _teardown_proof_from_runpod_poll(
         else:
             # Legacy self-reported completion — recorded, but cannot prove teardown.
             terminal_status = "deleted" if teardown_action == "delete" else "stopped"
-    elif pod_status in RUNPOD_TERMINAL_POD_STATUSES or pod_status.upper() in RUNPOD_TERMINAL_POD_STATUSES:
+    elif (
+        pod_status in RUNPOD_TERMINAL_POD_STATUSES
+        or pod_status.upper() in RUNPOD_TERMINAL_POD_STATUSES
+    ):
         # pod_status comes from the poll's own GET /pods/{id} query — API evidence.
         terminal_status = "not_found" if pod_status == "not_found" else pod_status.lower()
         terminate_requested = True
@@ -2399,7 +2438,8 @@ def _write_wam_provider_reliability_manifest(
         runtime_blockers.extend(f"runner_failed:{blocker}" for blocker in runtime_result_blockers)
     runtime = _reliability_phase(
         not runtime_blockers and (output_present or active_without_terminal_output),
-        runtime_blockers or ([] if output_present or active_without_terminal_output else ["runtime_not_observed"]),
+        runtime_blockers
+        or ([] if output_present or active_without_terminal_output else ["runtime_not_observed"]),
         provider_command_status=poll_manifest.get("provider_command_status"),
         runtime_result_status=runtime_result_status or None,
     )
@@ -3091,14 +3131,11 @@ def poll_runpod_wam_async_run(
         else None
     )
     runtime_output_success = provider_runtime_operational
-    runtime_result_failed = (
-        runtime_result_status in RUNPOD_WAM_PROVIDER_OUTPUT_FAILURE_STATUSES
-    )
+    runtime_result_failed = runtime_result_status in RUNPOD_WAM_PROVIDER_OUTPUT_FAILURE_STATUSES
     elapsed_wait_seconds = poll_deadline.elapsed_seconds()
     wait_deadline_expired = poll_deadline.expired()
     pod_status_is_active = (
-        pod_status in RUNPOD_ACTIVE_POD_STATUSES
-        or pod_status.upper() in RUNPOD_ACTIVE_POD_STATUSES
+        pod_status in RUNPOD_ACTIVE_POD_STATUSES or pod_status.upper() in RUNPOD_ACTIVE_POD_STATUSES
     )
     pod_status_is_terminal = (
         pod_status in RUNPOD_TERMINAL_POD_STATUSES
@@ -3137,8 +3174,7 @@ def poll_runpod_wam_async_run(
                 pod_status_is_active and not runtime_present
             )
             runtime_healthy_for_hot_reuse = bool(
-                pod_status_is_active
-                and (runtime_present or active_status_without_runtime_metadata)
+                pod_status_is_active and (runtime_present or active_status_without_runtime_metadata)
             )
             keepalive_runtime_health = {
                 "status": "healthy_for_hot_reuse"
@@ -3182,9 +3218,7 @@ def poll_runpod_wam_async_run(
         runtime_stall_observed or runtime_result_failed or provider_output_validation_failed
     )
     nonterminal_running_output = bool(
-        last_nonterminal_output
-        and not output_present
-        and pod_status_is_active
+        last_nonterminal_output and not output_present and pod_status_is_active
     )
     keep_running_on_success = bool(
         requested_keep_running_on_success
@@ -3237,9 +3271,7 @@ def poll_runpod_wam_async_run(
     )
     provider_blockers: list[str] = []
     if runtime_stall_observed:
-        provider_blockers.extend(
-            str(blocker) for blocker in stall_evaluation.get("blockers") or []
-        )
+        provider_blockers.extend(str(blocker) for blocker in stall_evaluation.get("blockers") or [])
     if output_zip_present and not provider_output_usable:
         provider_blockers.extend(
             str(blocker) for blocker in provider_output_validation.get("blockers") or []
@@ -3352,9 +3384,7 @@ def poll_runpod_wam_async_run(
             )
             and not pod_status_is_terminal
         )
-        manifest["teardown_performed"] = bool(
-            teardown_manifest and teardown_completed
-        )
+        manifest["teardown_performed"] = bool(teardown_manifest and teardown_completed)
         manifest["continuing_spend_from_this_run"] = continuing_spend
         manifest["status"] = (
             "blocked"
@@ -3390,7 +3420,9 @@ def poll_runpod_wam_async_run(
             "warm_candidate_path": warm_candidate.get("path"),
             "raw_secret_values_recorded": False,
         }
-        write_json(resolved_job_dir / "runpod_wam_async_keepalive_manifest.json", keepalive_manifest)
+        write_json(
+            resolved_job_dir / "runpod_wam_async_keepalive_manifest.json", keepalive_manifest
+        )
         continuing_spend = True
         manifest["keepalive_performed"] = True
         manifest["continuing_spend_from_this_run"] = True
@@ -3459,9 +3491,7 @@ def stop_runpod_wam_async_run(
         **state,
         "last_polled_at": generated,
         "last_pod_status": "stop_requested",
-        "continuing_spend_from_this_run": bool(
-            manifest.get("continuing_spend_from_this_run")
-        ),
+        "continuing_spend_from_this_run": bool(manifest.get("continuing_spend_from_this_run")),
         "raw_secret_values_recorded": False,
     }
     write_json(_state_path(resolved_job_dir), state_update)
@@ -3490,7 +3520,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     create.add_argument("--verify-output-put-url", action="store_true")
     create.add_argument("--gpu-type-id", action="append", default=[])
     create.add_argument("--image-name", default=DEFAULT_WAM_PUBLIC_IMAGE)
-    create.add_argument("--provider-bundle-kind", choices=RUNPOD_PROVIDER_BUNDLE_KINDS, default="wam")
+    create.add_argument(
+        "--provider-bundle-kind", choices=RUNPOD_PROVIDER_BUNDLE_KINDS, default="wam"
+    )
     create.add_argument("--container-disk-gb", type=int, default=80)
     create.add_argument("--volume-gb", type=int, default=20)
     create.add_argument("--cloud-type", choices=("SECURE", "COMMUNITY"), default="SECURE")
@@ -3514,9 +3546,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             job_dir=args.job_dir,
             max_wait_seconds=args.max_wait_seconds,
             retry_interval_seconds=args.retry_interval_seconds,
-            post_marker_no_progress_timeout_seconds=(
-                args.post_marker_no_progress_timeout_seconds
-            ),
+            post_marker_no_progress_timeout_seconds=(args.post_marker_no_progress_timeout_seconds),
             teardown=args.teardown,
         )
     else:

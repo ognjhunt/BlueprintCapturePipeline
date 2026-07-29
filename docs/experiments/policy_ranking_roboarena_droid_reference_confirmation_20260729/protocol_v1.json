@@ -1,0 +1,91 @@
+{
+  "schema_version": "policy_ranking_roboarena_droid_reference_confirmation_protocol.v1",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "status": "prospectively_frozen_before_provider_execution",
+  "supersession": {
+    "prior_terminal_experiment": "policy_ranking_roboarena_disjoint_reasoner_successor_20260728",
+    "prior_terminal_verdict_sha256": "7ecfd7f976a41ec1b6f4d3192f509693890e89c843950e58096a1b2e666ff57c",
+    "prior_evidence_rewritten": false,
+    "reason": "NVIDIA subsequently published an exact DROID forward-dynamics example and post-training contract. This new experiment tests that newly available reference prospectively."
+  },
+  "source_freeze": "source_freeze_v1.json",
+  "external_canary": {
+    "uri": "external-evidence-store://policy-ranking-roboarena-droid-reference-confirmation-evidence-20260729/preflight_v1",
+    "manifest_sha256": "3f29f83f6698543bd7ce13e23b632e355031e54e2a123f0d439868bac3906f04",
+    "selected_start_frame": 64,
+    "selection_rule": "maximum matched-real adjacent-frame motion among official notebook chunk starts; earliest start breaks ties",
+    "model_outputs_seen_before_selection": false,
+    "policy_ranking_labels_accessed": false
+  },
+  "stage_1_structured_canary": {
+    "maximum_provider_requests": 1,
+    "input": "official DROID start frame 64 plus its recorded 16x10 action chunk",
+    "response_contract": {
+      "provider_response_id_required": true,
+      "terminal_status": "completed",
+      "video_width": 640,
+      "video_height": 540,
+      "video_frames": 17,
+      "video_fps": 15
+    },
+    "motion_gates_gray_0_255": {
+      "temporal_absolute_difference_mean_minimum": 1.0,
+      "first_to_last_absolute_difference_mean_minimum": 3.0
+    },
+    "pass": "admit the paired no-motion request in the same loaded process",
+    "fail": "retain output, abstain, teardown, and submit no new-data requests"
+  },
+  "stage_2_reference_causal_followup": {
+    "maximum_provider_requests": 1,
+    "input": "same official DROID frame and seed with valid identity-rot6d no-motion action",
+    "gates": {
+      "recorded_must_exceed_no_motion_timing_correlation": true,
+      "recorded_must_not_trigger_static_under_command": true,
+      "tier_1_session_reliability_required": true
+    },
+    "pass": "admit untouched public DROID qualification",
+    "fail": "retain both outputs, abstain, teardown, and do not test untouched data"
+  },
+  "stage_3_untouched_droid_qualification": {
+    "source": "nvidia/Cosmos3-DROID@5c11a20accb11497270a5247a7f1e66ad04c956c",
+    "minimum_independent_episodes": 17,
+    "selection": "hash-ordered episode IDs after media/action validity filtering; freeze before any WAM output",
+    "controls": [
+      "recorded",
+      "valid_no_motion",
+      "shuffled",
+      "reversed",
+      "shifted",
+      "real_distinct_episode_swapped"
+    ],
+    "claim_ceiling": "DROID open-loop causal and rollout-reliability qualification only; the dataset does not supply a seven-policy ranking benchmark"
+  },
+  "stage_4_ranking_admission": {
+    "requirements": [
+      "stage_3 causal and reliability gates pass",
+      "genuinely new independently frozen multi-policy RoboArena/DROID outcomes exist",
+      "runnable frozen candidate-policy endpoints or checkpoints exist",
+      "policy observation/state/action adapter passes parity",
+      "camera calibration exists for skeleton-capable arms"
+    ],
+    "currently_admitted": false
+  },
+  "cost_authority": {
+    "maximum_concurrent_gpus": 1,
+    "gpu_category_ceiling_usd": 50.0,
+    "campaign_total_ceiling_usd": 100.0,
+    "initial_reference_allocation_target_usd": 2.5,
+    "initial_reference_allocation_hard_cap_usd": 5.0,
+    "hard_ttl_seconds": 7200,
+    "canonical_paid_resource_allocator_required": true,
+    "watchdog_and_teardown_required": true
+  },
+  "credential_state": {
+    "provider_execution_admitted": false,
+    "reason": "The local Vast credential lacks rotation proof after prior secret-bearing provider output. It must not be reused."
+  },
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "outcome_labels_accessed": false,
+  "manifest_sha256": "2e68f9c7d56a354fd0cb58a706155a672789f1fe726e1ef83df40f529fd4b38e"
+}

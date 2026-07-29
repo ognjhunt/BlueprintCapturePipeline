@@ -138,9 +138,7 @@ def test_phase_b_profile_reuses_admission_with_its_own_frozen_limits() -> None:
         "authorized_compute_cap_usd": profile.max_compute_cap_usd,
         "per_allocation_maximum_spend_required": True,
         "prior_cumulative_compute_cap_superseded": True,
-        "goal_cost_authorization_amendment_sha256": (
-            profile.cost_authorization_binding_sha256
-        ),
+        "goal_cost_authorization_amendment_sha256": (profile.cost_authorization_binding_sha256),
         "hard_ttl_seconds": profile.hard_ttl_seconds,
         "one_resource_limit": True,
         "independent_teardown_watchdog": True,
@@ -197,10 +195,209 @@ def test_phase_b_vast_preflight_explicitly_admits_blackwell_compute_cap(
     monkeypatch.setattr(admission, "get_render_provider", lambda provider: Provider())
     result = admission.collect_successor_vast_preflight(name_prefix="phase-b-")
 
-    assert result["status"] == "verified"
+    assert result["status"] == "verified", result["blockers"]
     assert captured["min_compute_cap"] == 1200
     assert captured["max_compute_cap"] == 0
     assert captured["prefer_isaac_rt"] is False
+
+
+def test_droid_reference_runpod_preflight_selects_compatible_secure_offer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class Provider:
+        def capacity_preflight(self, request: dict[str, Any]) -> dict[str, Any]:
+            captured.update(request)
+            return {
+                "status": "available",
+                "viable_gpu_types": [
+                    {
+                        "gpu_type_id": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                        "display_name": "RTX PRO 6000 Blackwell",
+                        "memory_in_gb": 96,
+                        "cloud_type": "SECURE",
+                        "capacity_confidence": "advisory",
+                        "on_demand_price_usd_per_hour": 1.99,
+                    }
+                ],
+            }
+
+        def billable_inventory(self, *, name_prefix: str) -> dict[str, Any]:
+            return {"api_confirmed": True, "live_resource_count": 0}
+
+    monkeypatch.setattr(admission, "get_render_provider", lambda provider: Provider())
+
+    result = admission.collect_successor_runpod_preflight(
+        name_prefix="blueprint-groot-oscar-canary-droid-reference-"
+    )
+
+    assert result["status"] == "verified", result
+    assert result["provider"] == "runpod"
+    assert result["selected_offer"]["gpu_ram_mb"] == 96_000
+    assert result["selected_offer"]["hourly_rate_usd"] == 1.99
+    assert captured["cloudType"] == "SECURE"
+    assert captured["requires_rtx"] is False
+
+
+def test_droid_reference_admission_accepts_runpod_without_smoke_inventory() -> None:
+    profile = admission.DROID_REFERENCE_PROFILE
+    environment = {
+        "experiment_id": profile.experiment_id,
+        "upstream_source": {
+            "cosmos": {"revision": profile.cosmos_revision},
+            "cosmos_framework": {"revision": profile.cosmos_framework_revision},
+            "vllm_omni": {
+                "revision": profile.vllm_omni_revision,
+                "runtime_image": admission.PUBLIC_IMAGE,
+            },
+        },
+        "checkpoint": {
+            "repository": admission.CHECKPOINT_REPOSITORY,
+            "revision": admission.CHECKPOINT_REVISION,
+            "remote_code_policy": "no_unpinned_remote_code_and_trust_remote_code_false",
+        },
+    }
+    authorization = {
+        "schema_version": profile.authorization_schema,
+        "experiment_id": profile.experiment_id,
+        "authorization_id": profile.authorization_ids_by_allocation_index[1],
+        "allocation_index": 1,
+        "maximum_provider_allocations": 1,
+        "single_use_consumption_required": True,
+        "paid_mutation_authorized": True,
+        "authorized_compute_cap_usd": profile.max_compute_cap_usd,
+        "per_allocation_maximum_spend_required": True,
+        "prior_cumulative_compute_cap_superseded": True,
+        "goal_cost_authorization_amendment_sha256": (profile.cost_authorization_binding_sha256),
+        "hard_ttl_seconds": profile.hard_ttl_seconds,
+        "one_resource_limit": True,
+        "independent_teardown_watchdog": True,
+        "watchdog_armed_before_allocation": True,
+        "automatic_spend_cutoff": True,
+        "teardown_required": True,
+        "provider_zero_verification_required": True,
+        "physical_robot_endpoint_access_allowed": False,
+    }
+    observed = 1234.0
+    preflight = {
+        "schema_version": profile.preflight_schema,
+        "experiment_id": profile.experiment_id,
+        "status": "verified",
+        "provider": "runpod",
+        "provider_inventory_verified_zero": True,
+        "provider_mutations_performed": 0,
+        "observed_at_epoch": observed,
+        "selected_offer": {
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            "gpu_ram_mb": 96_000,
+            "hourly_rate_usd": 1.99,
+            "cloud_type": "SECURE",
+            "capacity_confidence": "advisory",
+        },
+    }
+
+    result = admission.build_successor_gpu_admission(
+        authorization=authorization,
+        environment=environment,
+        smoke_inventory={},
+        provider_preflight=preflight,
+        bundle_inspection={"status": "passed", "blockers": [], "bundle_sha256": "a" * 64},
+        expected_source_commit="b" * 40,
+        execute=True,
+        observed_now_epoch=observed + 1,
+        profile=profile,
+    )
+
+    assert result["status"] == "admitted", result["blockers"]
+    assert result["provider"] == "runpod"
+    assert result["smoke_inventory_validation"]["status"] == "not_applicable"
+    assert result["shared_paid_lane_admission"]["resource_class"] == "runpod_wam_async"
+
+
+def test_droid_reference_runpod_executor_binds_watchdog_public_model_and_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+    process = object()
+
+    monkeypatch.setattr(
+        admission,
+        "_arm_runpod_successor_watchdog",
+        lambda **_kwargs: (
+            {"status": "armed", "independent_process": True},
+            process,
+            tmp_path / "watchdog",
+        ),
+    )
+
+    def fake_create(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        assert kwargs["pre_provider_mutation_hook"]()["status"] == "consumed"
+        (tmp_path / "job").mkdir(exist_ok=True)
+        (tmp_path / "job" / "runpod_wam_async_state.json").write_text(
+            json.dumps({"pod_id": "pod-123", "created_at_epoch": 1000.0}),
+            encoding="utf-8",
+        )
+        return {"status": "pod_created", "pod_id": "pod-123"}
+
+    monkeypatch.setattr(admission, "create_runpod_wam_async_run", fake_create)
+    monkeypatch.setattr(
+        admission,
+        "poll_runpod_wam_async_run",
+        lambda **_kwargs: {
+            "status": "completed",
+            "continuing_spend_from_this_run": False,
+            "blockers": [],
+        },
+    )
+
+    class Provider:
+        def billable_inventory(self, *, name_prefix: str) -> dict[str, Any]:
+            return {
+                "api_confirmed": True,
+                "live_resource_count": 0,
+                "name_prefix": name_prefix,
+            }
+
+    monkeypatch.setattr(admission, "get_render_provider", lambda _provider: Provider())
+    monkeypatch.setattr(
+        admission,
+        "_close_runpod_watchdog_after_provider_zero",
+        lambda **_kwargs: {
+            "status": "provider_terminal",
+            "provider_absence_confirmed": True,
+        },
+    )
+    monkeypatch.setattr(admission.time, "time", lambda: 1060.0)
+
+    result = admission._run_successor_runpod(
+        job_dir=tmp_path / "job",
+        provider_bundle_path=tmp_path / "bundle.zip",
+        public_base_url=None,
+        token_file=None,
+        secret_env_file=None,
+        provider_bundle_url_file=tmp_path / "bundle-url",
+        provider_output_put_url_file=tmp_path / "output-put-url",
+        provider_output_get_url_file=tmp_path / "output-get-url",
+        output_path=tmp_path / "output.zip",
+        profile=admission.DROID_REFERENCE_PROFILE,
+        selected_offer={
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            "hourly_rate_usd": 1.99,
+        },
+        session_max_live_minutes=120,
+        paid_resource_admission_grant=object(),
+        pre_provider_mutation_hook=lambda: {"status": "consumed"},
+    )
+
+    assert result["status"] == "completed"
+    assert result["provider_zero_verified"] is True
+    assert result["estimated_gpu_cost_usd"] == pytest.approx(1.99 / 60.0)
+    assert captured["gpu_type_ids"] == ("NVIDIA RTX PRO 6000 Blackwell Server Edition",)
+    assert captured["forward_model_secret_env"] is False
+    assert captured["cloud_type"] == "SECURE"
+    assert captured["pre_provider_mutation_hook"] is not None
 
 
 def test_successor_gpu_admission_rejects_mismatched_retry_identity() -> None:
@@ -247,13 +444,7 @@ def test_successor_gpu_lane_passes_opaque_grant_and_hardware_limits(
     )
     budget = tmp_path / "budget.json"
     budget.write_text(
-        json.dumps(
-            {
-                "attempts": [
-                    {"actual_live_runtime_seconds_observed_by_adapter": 97.485577}
-                ]
-            }
-        ),
+        json.dumps({"attempts": [{"actual_live_runtime_seconds_observed_by_adapter": 97.485577}]}),
         encoding="utf-8",
     )
     preflight = _load("vast_compute_preflight.json")
@@ -423,9 +614,7 @@ def test_successor_lane_rechecks_preflight_age_before_consumption(
 
     assert result["status"] == "blocked"
     assert result["authorization_consumption"]["status"] == "blocked"
-    assert result["blockers"] == [
-        "successor_vast_preflight_stale_or_future_at_provider_mutation"
-    ]
+    assert result["blockers"] == ["successor_vast_preflight_stale_or_future_at_provider_mutation"]
     assert not consumption_root.exists()
 
 

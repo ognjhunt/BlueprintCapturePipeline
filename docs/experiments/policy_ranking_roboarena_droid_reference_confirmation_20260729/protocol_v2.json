@@ -1,0 +1,76 @@
+{
+  "schema_version": "policy_ranking_roboarena_droid_reference_confirmation_protocol.v2",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "status": "prospectively_frozen_before_paid_allocation_or_model_request",
+  "supersedes": {
+    "protocol": "protocol_v1.json",
+    "protocol_v1_manifest_sha256": "2e68f9c7d56a354fd0cb58a706155a672789f1fe726e1ef83df40f529fd4b38e",
+    "protocol_v1_rewritten": false,
+    "reason": "The Vast credential remains ineligible under the prior exposure rule, while an unexposed RunPod credential and a compatible secure-cloud GPU were authenticated read-only. Adding a provider-neutral launch arm changes infrastructure availability only, before any model output or paid allocation."
+  },
+  "amendment_timing": {
+    "recorded_at": "2026-07-29T01:26:56-0500",
+    "paid_execution_admitted": false,
+    "paid_provider_allocation_created": false,
+    "model_provider_called": false,
+    "wam_outputs_accessed": false,
+    "policy_ranking_labels_accessed": false,
+    "read_only_provider_preflight_already_performed": true
+  },
+  "changed_fields": [
+    {
+      "field": "eligible_compute_providers",
+      "old": ["vast_after_secure_rotation_proof"],
+      "new": ["vast_after_secure_rotation_proof", "runpod_with_current_valid_task_scoped_credential"]
+    },
+    {
+      "field": "initial_allocation_max_hourly_rate_usd",
+      "old": 1.25,
+      "new": 2.05,
+      "reason": "prospectively bounds the authenticated $1.99/hour secure RunPod offer while retaining the unchanged $5 allocation cap"
+    },
+    {
+      "field": "provider_preflight",
+      "old": "vast_rotation_blocked",
+      "new": "runpod_authenticated_zero_inventory_and_compatible_offer_verified"
+    }
+  ],
+  "unchanged_scientific_contract": {
+    "reference_manifest_sha256": "3f29f83f6698543bd7ce13e23b632e355031e54e2a123f0d439868bac3906f04",
+    "provider_bundle_sha256": "7e422f002ec206ce1a7b603d83f618c548f384e53eca7b84812d9d2d7b3779e3",
+    "recorded_action_request_maximum": 1,
+    "no_motion_request_maximum": 1,
+    "no_motion_admitted_only_after_recorded_structural_motion_pass": true,
+    "stage_1_and_stage_2_gates_unchanged": true,
+    "untouched_data_not_admitted": true,
+    "evaluator_not_admitted": true,
+    "physical_robot_access_forbidden": true
+  },
+  "runpod_preflight": {
+    "external_artifact": "external-evidence-store://policy-ranking-roboarena-droid-reference-confirmation-evidence-20260729/runpod_preflight_v1/provider_preflight.json",
+    "manifest_sha256": "6dddf745128b8f225c262875193884dc9e519c4b9ae9ca23ccf896e1b8c6118a",
+    "provider": "runpod",
+    "provider_inventory_verified_zero": true,
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "gpu_ram_mb": 96000,
+    "secure_cloud": true,
+    "capacity_confidence": "advisory_not_reservation",
+    "hourly_rate_usd": 1.99,
+    "provider_mutations_performed": 0
+  },
+  "cost_authority": {
+    "maximum_concurrent_gpus": 1,
+    "initial_allocation_target_usd": 2.5,
+    "initial_allocation_hard_cap_usd": 5.0,
+    "gpu_category_ceiling_usd": 50.0,
+    "campaign_total_ceiling_usd": 100.0,
+    "hard_ttl_seconds": 7200,
+    "canonical_paid_resource_allocator_required": true,
+    "independent_watchdog_before_allocation_required": true,
+    "automatic_teardown_and_provider_zero_required": true
+  },
+  "provider_called": false,
+  "paid_execution_admitted": false,
+  "outcome_labels_accessed": false,
+  "manifest_sha256": "35039583984c045dcfb6e31116b63cd3b90d72181ce7fd64a37f268e1fc0d1dc"
+}
