@@ -60,8 +60,9 @@ qualification boundaries remain unchanged.
 
 The current implementation now hands admitted bytes to the separately versioned
 `capture_qa_report.v1` boundary for decoded media/PTS checks and provenance-bound
-quality observations. It does not yet provide Pipeline handoff from the WebApp
-resumable upload session, 360 native-container normalization, task-candidate
-approval, reconstruction planning, testbed
-compilation, or the hosted WebApp state machine. Those remain launch gates and
+quality observations. The separately versioned task-candidate contract now
+requires digest-bound customer/operator approval before inferred intent can
+reach the router. Pipeline handoff from the WebApp resumable upload session, 360
+native-container normalization, WebApp approval UX, reconstruction planning,
+testbed compilation, and the hosted WebApp state machine remain launch gates and
 must not be inferred from intake admission.
