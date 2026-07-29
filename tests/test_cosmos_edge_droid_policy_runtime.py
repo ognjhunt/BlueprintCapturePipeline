@@ -144,6 +144,8 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
     checks = (
         ("policy_snapshot_manifest_v1.json", "manifest_sha256"),
         ("source_freeze_v1.json", "manifest_sha256"),
+        ("source_freeze_v2.json", "manifest_sha256"),
+        ("source_freeze_amendment_v2.json", "amendment_sha256"),
         ("protocol_v1.json", "protocol_sha256"),
     )
     payloads = {}
@@ -160,3 +162,12 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
     ).validate()
     assert payloads["protocol_v1.json"]["paid_execution_admitted"] is False
     assert payloads["protocol_v1.json"]["provider_called"] is False
+    amendment = payloads["source_freeze_amendment_v2.json"]
+    assert amendment["former_manifest_sha256"] == payloads["source_freeze_v1.json"][
+        "manifest_sha256"
+    ]
+    assert amendment["successor_manifest_sha256"] == payloads["source_freeze_v2.json"][
+        "manifest_sha256"
+    ]
+    assert amendment["paid_execution_admitted"] is False
+    assert amendment["provider_called"] is False
