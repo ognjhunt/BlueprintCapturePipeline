@@ -169,6 +169,7 @@ def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
         ("policy_canary_bundle_overwrite_incident_v1.json", "record_sha256"),
         ("policy_canary_bundle_concurrent_supersession_v1.json", "record_sha256"),
         ("allocation_4_pre_provider_gate_v1.json", "record_sha256"),
+        ("allocation_5_policy_canary_result_v1.json", "record_sha256"),
         ("policy_canary_bundle_freeze_v2.json", "freeze_sha256"),
         ("policy_canary_bundle_freeze_v4.json", "freeze_sha256"),
         ("policy_canary_bundle_freeze_v5.json", "freeze_sha256"),
