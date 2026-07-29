@@ -155,3 +155,21 @@ def test_postrun_completion_recovery_does_not_promote_scientific_claims() -> Non
     assert recovery["reusable_fix"]["stale_callback_rejected"] is True
     assert recovery["reusable_fix"]["transport_completion_does_not_imply_scientific_validity"] is True
     assert recovery["provider_zero"]["authenticated_live_instance_count"] == 0
+
+
+def test_terminal_provider_zero_closes_exact_objects_and_signed_urls() -> None:
+    closure = _artifact("provider_zero_and_object_closure_v1.json")
+
+    assert closure["authenticated_live_instance_count"] == 0
+    assert closure["continuing_hourly_burn_usd"] == 0.0
+    assert closure["fleet_guard_passed"] is True
+    assert closure["background_processes"] == {
+        "independent_watchdogs": 0,
+        "gpu_spend_guards": 0,
+        "paid_resource_allocators": 0,
+    }
+    assert closure["object_store"]["exact_object_count_deleted"] == 4
+    assert closure["object_store"]["all_objects_absent"] is True
+    assert closure["object_store"]["signed_url_file_count_removed"] == 6
+    assert closure["object_store"]["signed_url_files_remaining"] == 0
+    assert closure["persistent_evaluator_resource_created"] is False

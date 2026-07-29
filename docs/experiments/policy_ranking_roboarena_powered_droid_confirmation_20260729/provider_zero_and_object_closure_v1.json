@@ -1,0 +1,29 @@
+{
+  "schema_version": "policy_ranking_powered_droid_provider_zero_and_object_closure.v1",
+  "recorded_at": "2026-07-29T07:11:08-0500",
+  "provider": "vast",
+  "authenticated_live_instance_count": 0,
+  "continuing_hourly_burn_usd": 0.0,
+  "fleet_guard_passed": true,
+  "orphan_reap_candidate_count": 0,
+  "provider_zero_report_sha256": "7cb118bb09c295f1d5c2894a4e3a824fc10d20765ab3a91403ff157258b98b77",
+  "background_processes": {
+    "independent_watchdogs": 0,
+    "gpu_spend_guards": 0,
+    "paid_resource_allocators": 0
+  },
+  "object_store": {
+    "staging_generation_count": 2,
+    "exact_object_count_deleted": 4,
+    "all_objects_absent": true,
+    "all_absence_checks_http_status": 404,
+    "signed_url_file_count_removed": 6,
+    "signed_url_files_remaining": 0,
+    "allocation_1_cleanup_sha256": "ee79a77490675acd42414702b37316d4247959c8ab2cf71b2162164c0e72fbc9",
+    "allocation_2_cleanup_sha256": "f79b93120251172d7629c6e4737164e0513f3e205bbc0a714a05bf6948622530"
+  },
+  "persistent_evaluator_resource_created": false,
+  "evaluator_api_call_count_this_stage": 0,
+  "claim_boundary": "Provider zero and object-prefix closure prove no continuing task-owned burn or staged-object retention. They do not prove invoice settlement or scientific validity.",
+  "manifest_sha256": "1a86738922b93b24085bb7ba00707c1f253963050c0f5a053a470e7c389af93a"
+}

@@ -125,6 +125,12 @@ Authenticated Vast inventory after teardown showed zero live instances and
 `$0/hour` continuing burn. Provider zero does not prove invoice settlement or
 scientific validity.
 
+Terminal object-store closure then deleted the four exact bundle/output objects
+recorded across the two allocations, received HTTP 404 absence confirmation for
+all four, removed all six signed-URL files, and confirmed that no task watchdog,
+spend guard, or paid allocator process remained. The machine-readable receipt is
+`provider_zero_and_object_closure_v1.json`.
+
 No “substantially faster” or “substantially cheaper” claim is allowed: the
 experiment did not complete a useful ranking or join a defensible exhaustive
 physical-evaluation cost/time anchor.
