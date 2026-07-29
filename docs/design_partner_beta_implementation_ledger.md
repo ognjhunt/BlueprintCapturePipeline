@@ -18,6 +18,11 @@ Open Pipeline PRs were inspected at startup. PR #226 is a separate World Labs
 analysis; older integration/audit and Dependabot PRs are not absorbed into this
 branch.
 
+After this branch was isolated, another writer added uncommitted primary-checkout
+changes to `decision_evidence_cli.py`, a Task Evaluation Supervisor architecture
+document/module/test set, and retained the existing changelog edit. Those files
+remain user-owned and are not inspected, absorbed, or modified by this branch.
+
 ## Baseline and deployment evidence
 
 | Evidence | Result |
