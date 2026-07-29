@@ -78,6 +78,7 @@ PAID_LANE = "openpi_policy_ranking_gpu_canary"
 MAX_OUTPUT_ARCHIVE_BYTES = 2 * 1024**3
 MAX_OUTPUT_ARCHIVE_MEMBERS = 50_000
 MAX_OUTPUT_UNCOMPRESSED_BYTES = 12 * 1024**3
+MAX_CONSECUTIVE_TRANSIENT_OUTPUT_ERRORS = 3
 
 
 def _read_object(path: str | Path) -> dict[str, Any]:
@@ -406,6 +407,7 @@ def _monitor_openpi_output_and_teardown(
     output_path = root / "openpi_policy_ranking_provider_output.zip"
     response_bytes: bytes | None = None
     http_status: int | None = None
+    consecutive_transient_errors = 0
     while time.time() < deadline_epoch - 60:
         try:
             response = safe_http_request(
@@ -419,13 +421,28 @@ def _monitor_openpi_output_and_teardown(
                 max_response_bytes=MAX_OUTPUT_ARCHIVE_BYTES,
             )
             http_status = response.status
+            consecutive_transient_errors = 0
             if response.status == 200 and response.body:
                 response_bytes = response.body
                 break
         except urllib.error.HTTPError as exc:
             http_status = exc.code
+            consecutive_transient_errors = 0
             if exc.code not in {403, 404}:
                 break
+        except urllib.error.URLError as exc:
+            consecutive_transient_errors += 1
+            if consecutive_transient_errors >= MAX_CONSECUTIVE_TRANSIENT_OUTPUT_ERRORS:
+                return {
+                    "status": "monitor_failed_watchdog_retained",
+                    "blockers": [
+                        f"openpi_output_monitor_failed:{type(exc).__name__}"
+                    ],
+                    "transient_error_attempts": consecutive_transient_errors,
+                    "continuing_spend": True,
+                    "watchdog_deadline_epoch": deadline_epoch,
+                    "raw_secret_values_recorded": False,
+                }
         except Exception as exc:  # noqa: BLE001 - teardown still owns the deadline
             return {
                 "status": "monitor_failed_watchdog_retained",
