@@ -291,6 +291,8 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         return DEFAULT_VIDEO_SMOKE_CAMERA_COUNT
     if provider_bundle_kind == "wam":
         return DEFAULT_WAM_ROLLOUT_VIDEO_COUNT
+    if provider_bundle_kind == "policy":
+        return 0
     if provider_bundle_kind == "evaluator":
         return 0
     if provider_bundle_kind == "unitree_unifolm":
@@ -4078,7 +4080,8 @@ def run_vast_provider_adapter(
         enable_blueprint_bundle=enable_blueprint_bundle,
     )
     if (
-        provider_bundle_kind in {"wam", "evaluator", "unitree_unifolm", "unitree_groot_n17_sonic"}
+        provider_bundle_kind
+        in {"wam", "policy", "evaluator", "unitree_unifolm", "unitree_groot_n17_sonic"}
         and _string(provider_bundle_url)
         and inline_bundle_transport.get("inline_provider_bundle_transport_used") is True
     ):
@@ -5367,7 +5370,7 @@ def run_vast_provider_adapter(
                             VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
                             DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
                         )
-                        if provider_bundle_kind in {"wam", "evaluator"}
+                        if provider_bundle_kind in {"wam", "policy", "evaluator"}
                         else 60
                     ),
                 )

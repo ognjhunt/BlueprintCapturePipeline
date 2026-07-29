@@ -1,0 +1,20 @@
+{
+  "schema_version": "policy_ranking_provider_policy_bundle_classification_amendment.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-29T10:14:14-0500",
+  "triggering_evidence": "Allocation 5 returned a completed structured Policy-DROID canary with a valid 32x8 action receipt, but the outer generic adapter required MP4 media and labeled the provider result blocked.",
+  "generic_fix": [
+    "register policy as a first-class provider bundle kind",
+    "validate structured policy runtime markers independently of WAM video markers",
+    "set expected policy video count to zero",
+    "propagate the profile-specific provider bundle kind through paid admission and the provider adapter"
+  ],
+  "future_run_scope": "All provider policy bundles using the shared runtime contract and Vast adapter; not only this experiment.",
+  "scientific_inputs_changed": false,
+  "provider_output_changed": false,
+  "post_result_threshold_changed": false,
+  "paid_execution_admitted": false,
+  "provider_called_for_fix_validation": false,
+  "physical_outcome_labels_accessed": false,
+  "claim_boundary": "Implementation classification correction only; it does not upgrade the completed canary to WAM, ranking, transfer, economics, or physical evidence."
+}

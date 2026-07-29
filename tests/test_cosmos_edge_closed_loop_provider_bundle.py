@@ -20,6 +20,8 @@ from blueprint_pipeline.policy_ranking_successor_gpu_admission import (
     inspect_successor_bundle,
 )
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
+from blueprint_pipeline.provider_runtime_bundle_contract import PROVIDER_RUNTIME_BUNDLE_KINDS
+from blueprint_pipeline.vast_provider_adapter import _provider_expected_video_count
 
 
 def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) -> None:
@@ -127,6 +129,9 @@ def test_policy_canary_bundle_is_identity_bound_and_secret_free(tmp_path: Path) 
     )
     assert inspection["status"] == "passed"
     assert inspection["blockers"] == []
+    assert profile.provider_bundle_kind == "policy"
+    assert "policy" in PROVIDER_RUNTIME_BUNDLE_KINDS
+    assert _provider_expected_video_count("policy") == 0
 
     import_root = tmp_path / "import-check"
     with zipfile.ZipFile(bundle) as archive:

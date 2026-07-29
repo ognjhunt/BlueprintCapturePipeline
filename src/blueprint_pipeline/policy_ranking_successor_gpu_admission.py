@@ -98,6 +98,7 @@ class SuccessorGPUProfile:
     reference_bundle: bool = False
     powered_bundle: bool = False
     edge_policy_canary_bundle: bool = False
+    provider_bundle_kind: str = "wam"
     bundle_schema: str = BUNDLE_SCHEMA
     checkpoint_repository: str = CHECKPOINT_REPOSITORY
     checkpoint_revision: str = CHECKPOINT_REVISION
@@ -360,6 +361,7 @@ EDGE_CLOSED_LOOP_PROFILE = SuccessorGPUProfile(
     target_spend_usd=5.0,
     hard_ttl_seconds=7_200,
     edge_policy_canary_bundle=True,
+    provider_bundle_kind="policy",
     bundle_schema="cosmos_edge_closed_loop_provider_bundle.v1",
     checkpoint_repository="nvidia/Cosmos3-Edge-Policy-DROID",
     checkpoint_revision="3ea407af3e156c0af3b4bb6edd85842cc9a58777",
@@ -832,7 +834,7 @@ def inspect_successor_bundle(
         blockers.append("successor_cosmos_provider_bundle_entries_missing")
     blockers.extend(
         provider_runtime_contract_blockers(
-            provider_bundle_kind="wam",
+            provider_bundle_kind=profile.provider_bundle_kind,
             entrypoint_text=entrypoint_text,
             runner_text=runner_text,
         )
@@ -1833,6 +1835,7 @@ def run_successor_gpu_lane(
         },
         paid_resource_admission_grant=grant,
         pre_provider_mutation_hook=consume_immediately_before_provider_mutation,
+        provider_bundle_kind=profile.provider_bundle_kind,
     )
     if consumption["status"] != "consumed":
         blockers = [str(item) for item in result.get("blockers") or []]

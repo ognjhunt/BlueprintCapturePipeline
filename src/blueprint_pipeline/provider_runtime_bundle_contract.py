@@ -6,6 +6,7 @@ from __future__ import annotations
 PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "isaac",
     "wam",
+    "policy",
     "evaluator",
     "unitree_unifolm",
     "unitree_groot_n17_sonic",
@@ -68,6 +69,19 @@ def provider_runtime_contract_blockers(
             and "post_unseal_diagnostic_only" in runner_text
         )
         runner_blocker = "provider_runner_missing_evaluator_runtime_contract"
+    elif provider_bundle_kind == "policy":
+        entrypoint_valid = (
+            "write_missing_result" in entrypoint_text
+            and "wam_runner_process_exited_without_runtime_result" in entrypoint_text
+            and "blocked_wam_process_exited_without_result" in entrypoint_text
+        )
+        runner_valid = (
+            "policy_structured_canary.json" in runner_text
+            and "structured_policy_canary_passed" in runner_text
+            and "native_action_shape" in runner_text
+            and "commanded_state_advance_proven" in runner_text
+        )
+        runner_blocker = "provider_runner_missing_policy_runtime_contract"
     else:
         entrypoint_valid = (
             "write_missing_result" in entrypoint_text
