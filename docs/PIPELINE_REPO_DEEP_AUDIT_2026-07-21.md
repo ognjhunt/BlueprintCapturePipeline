@@ -3,6 +3,13 @@
 Status: point-in-time audit (actionable backlog). Supersedes nothing; complements
 `PIPELINE_CURRENT_PROCESS_AUDIT_2026-06-06.md` (now stale) and the July launch ledgers.
 
+Product-doctrine status (2026-07-29): superseded by the claim-level
+Decision/Evidence Router migration in PR #243. References below to multiple
+sellable products describe the July 21 snapshot and are not current doctrine.
+The current product is the Task Evaluation Run over a maintained Site-Task
+Testbed; legacy Policy Improvement Run and Post-Training Data Package contracts
+are compatibility/internal evidence machinery only.
+
 Goal: make this repo navigable and trustworthy for AI agents and human engineers at a
 Series-A bar — remove what successive pivots left behind, consolidate what drifted apart,
 and name the gaps in the product core. Every removal below states **why** and the evidence.
