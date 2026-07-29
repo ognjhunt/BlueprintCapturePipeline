@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/capture_intake_envelope.v1.json",
+  "title": "Blueprint Capture Intake Envelope v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "intake_id",
+    "idempotency_key",
+    "capture_authority_profile",
+    "source_type",
+    "original_files",
+    "scene_id",
+    "customer_id",
+    "organization_id",
+    "capture_device",
+    "timing_declaration",
+    "coordinate_frame_declaration",
+    "available_sensor_streams",
+    "governance",
+    "requested_task_evaluation_run_audience",
+    "operator_notes",
+    "permitted_reconstruction_providers",
+    "permitted_evidence_uses",
+    "upload_validation",
+    "malware_content_validation"
+  ],
+  "properties": {
+    "schema_version": {"const": "capture_intake_envelope.v1"},
+    "envelope_digest": {"$ref": "#/$defs/sha256"},
+    "intake_id": {"type": "string", "minLength": 1},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "capture_authority_profile": {"$ref": "#/$defs/authority_profile"},
+    "source_type": {"$ref": "#/$defs/authority_profile"},
+    "original_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["original_filename", "relative_path", "sha256", "size_bytes"],
+        "properties": {
+          "original_filename": {"type": "string", "minLength": 1},
+          "relative_path": {"type": "string", "minLength": 1},
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "size_bytes": {"type": "integer", "minimum": 1, "maximum": 53687091200},
+          "media_type": {"type": "string"}
+        }
+      }
+    },
+    "scene_id": {"type": "string", "minLength": 1},
+    "customer_id": {"type": "string", "minLength": 1},
+    "organization_id": {"type": "string", "minLength": 1},
+    "capture_device": {"type": "object", "minProperties": 1},
+    "timing_declaration": {"type": "object", "minProperties": 1},
+    "coordinate_frame_declaration": {"type": "object", "minProperties": 1},
+    "available_sensor_streams": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["stream_type", "status"],
+        "properties": {
+          "stream_type": {"type": "string", "minLength": 1},
+          "status": {"enum": ["available", "diagnostic", "unavailable"]},
+          "source_relative_path": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "required": [
+        "rights",
+        "consent",
+        "privacy",
+        "retention",
+        "revocation",
+        "provider_constraints",
+        "allowed_uses"
+      ],
+      "properties": {
+        "rights": {"type": "string"},
+        "consent": {"type": "string"},
+        "privacy": {"type": "string"},
+        "retention": {"type": "object"},
+        "revocation": {"type": "object"},
+        "provider_constraints": {"type": "object"},
+        "allowed_uses": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "requested_task_evaluation_run_audience": {"type": "string", "minLength": 1},
+    "known_task_specification": {"type": ["object", "null"]},
+    "calibration_board_dimensions": {"type": ["object", "null"]},
+    "operator_notes": {"type": "array", "items": {"type": "string"}},
+    "permitted_reconstruction_providers": {"type": "array", "items": {"type": "string"}},
+    "permitted_evidence_uses": {"type": "array", "items": {"type": "string"}},
+    "upload_validation": {"type": "object", "required": ["status"]},
+    "malware_content_validation": {"type": "object", "required": ["status"]},
+    "source_capture_binding": {
+      "type": "object",
+      "properties": {"source_capture_digest": {"$ref": "#/$defs/sha256"}}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "authority_profile": {
+      "enum": [
+        "iphone_arkit_lidar",
+        "iphone_arkit_non_lidar",
+        "camera_360_equirectangular",
+        "camera_360_native",
+        "monocular_video",
+        "precomputed_external_reconstruction"
+      ]
+    }
+  }
+}
