@@ -1,0 +1,13 @@
+{
+  "schema_version": "policy_ranking_cosmos3_droid_review_gallery.v1",
+  "root": "$HOME/workspace/policy-ranking-roboarena-droid-reference-confirmation-evidence-20260729/review_media_v2",
+  "items": [
+    {"path": "recorded.mp4", "sha256": "eb467c255a0de22b471aa407e55eb95ca57fd3bcbf7aef2e866bad83483fd765", "role": "native Cosmos recorded-action composite"},
+    {"path": "no_motion.mp4", "sha256": "b98d4f82a06acdcc03281d597cbb16e39501d39ada58484136721e119bfa67ac", "role": "native Cosmos valid no-motion composite"},
+    {"path": "compare_wrist_recorded_left_no_motion_right.mp4", "sha256": "07f027bf78ee2905ce2793e0f1e3d17df470416e6d98e62c3913f359889f4692", "role": "wrist recorded versus no-motion"},
+    {"path": "compare_left_recorded_left_no_motion_right.mp4", "sha256": "ed028eae1d3b575bc1a804f5465ed836cb9569ca560604c8eacf6b7a990e2bde", "role": "left shoulder recorded versus no-motion"},
+    {"path": "compare_right_recorded_left_no_motion_right.mp4", "sha256": "e845e2477f16394d0c748f3a1f1077ecd6390a6729b70187d6ecac4e3369cdc4", "role": "right shoulder recorded versus no-motion"}
+  ],
+  "selection_policy": "complete paired output plus every separately attributable camera view; no attractive-output filtering",
+  "large_media_committed_to_git": false
+}

@@ -71,8 +71,7 @@ def test_refresh_existing_output_get_url_preserves_object_and_extends_access(
         encoding="utf-8",
     )
     (job / "provider_output_put_url.txt").write_text(
-        "https://nyc3.digitaloceanspaces.com/blueprint-wam/"
-        f"{output_key}?X-Amz-Signature=old-put\n",
+        f"https://nyc3.digitaloceanspaces.com/blueprint-wam/{output_key}?X-Amz-Signature=old-put\n",
         encoding="utf-8",
     )
     access = tmp_path / "access"
@@ -131,9 +130,7 @@ def test_refresh_existing_output_get_url_preserves_object_and_extends_access(
     persisted = (job / "wam_provider_object_store_staging_manifest.json").read_text(
         encoding="utf-8"
     )
-    refresh = (job / "wam_provider_object_store_get_refresh.json").read_text(
-        encoding="utf-8"
-    )
+    refresh = (job / "wam_provider_object_store_get_refresh.json").read_text(encoding="utf-8")
     assert "X-Amz-Signature" not in persisted
     assert "X-Amz-Signature" not in refresh
 
@@ -239,8 +236,7 @@ def test_wam_provider_object_store_writes_0600_signed_url_files_without_leaking_
     bundle_get_params = [
         params
         for operation, params in fake_client.presign_params
-        if operation == "get_object"
-        and params.get("Key", "").endswith("/provider_bundle.zip")
+        if operation == "get_object" and params.get("Key", "").endswith("/provider_bundle.zip")
     ]
     assert bundle_get_params == [
         {
@@ -527,3 +523,79 @@ def test_wam_provider_object_store_bucket_cli_and_main_edges(
         )
         == 1
     )
+
+
+def test_cleanup_staged_objects_is_exact_and_absence_proven(tmp_path: Path, monkeypatch) -> None:
+    job = tmp_path / "job"
+    job.mkdir()
+    keys = ["blueprint/task/job/bundle.zip", "blueprint/task/job/output.zip"]
+    (job / "wam_provider_object_store_staging_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": object_store.SCHEMA_VERSION,
+                "status": "completed",
+                "object_store": {"key_prefix": "blueprint/task"},
+                "bundle_key": keys[0],
+                "output_key": keys[1],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name in (
+        "provider_bundle_url.txt",
+        "provider_output_put_url.txt",
+        "provider_output_get_url.txt",
+    ):
+        (job / name).write_text("https://signed.example/?secret\n", encoding="utf-8")
+    access = tmp_path / "access"
+    secret = tmp_path / "secret"
+    access.write_text("access\n", encoding="utf-8")
+    secret.write_text("secret\n", encoding="utf-8")
+
+    class FakeConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeNotFound(RuntimeError):
+        response = {
+            "ResponseMetadata": {"HTTPStatusCode": 404},
+            "Error": {"Code": "NoSuchKey"},
+        }
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def delete_object(self, *, Bucket: str, Key: str):
+            assert Bucket == "bucket"
+            self.deleted.append(Key)
+            return {"ResponseMetadata": {"HTTPStatusCode": 204}}
+
+        def head_object(self, *, Bucket: str, Key: str):
+            assert Bucket == "bucket"
+            assert Key in self.deleted
+            raise FakeNotFound("absent")
+
+    client = FakeClient()
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        SimpleNamespace(client=lambda _service, **_kwargs: client),
+    )
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig))
+
+    result = object_store.cleanup_staged_wam_provider_objects(
+        job,
+        access_key_id_file=access,
+        secret_access_key_file=secret,
+        bucket="bucket",
+    )
+
+    assert result["status"] == "completed"
+    assert client.deleted == keys
+    assert result["all_objects_absent"] is True
+    assert result["signed_url_files_removed"] is True
+    persisted = (job / "wam_provider_object_store_cleanup.json").read_text(encoding="utf-8")
+    assert "signed.example" not in persisted
+    assert keys[0] not in persisted

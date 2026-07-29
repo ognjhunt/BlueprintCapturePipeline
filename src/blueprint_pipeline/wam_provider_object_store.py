@@ -30,6 +30,7 @@ SIGNED_OUTPUT_ROUND_TRIP_SCHEMA_VERSION = "wam_signed_output_round_trip.v1"
 SIGNED_OUTPUT_SENTINEL_BYTES = 96
 SIGNED_OUTPUT_HTTP_TIMEOUT_SECONDS = 30
 SIGNED_OUTPUT_MAX_RESPONSE_BYTES = 64 * 1024
+OBJECT_CLEANUP_SCHEMA_VERSION = "wam_provider_object_store_cleanup.v1"
 DEFAULT_ACCESS_KEY_FILES = (
     "~/.blueprint-secrets/digitalocean_spaces_access_key_id",
     "~/.blueprint-secrets/runpod_s3_access_key",
@@ -311,6 +312,138 @@ def _s3_absence_confirmed(client: Any, *, bucket: str, key: str) -> dict[str, An
         "object_still_present": True,
         "raw_secret_values_recorded": False,
     }
+
+
+def cleanup_staged_wam_provider_objects(
+    job_dir: str | Path,
+    *,
+    access_key_id_file: str | Path | None = None,
+    secret_access_key_file: str | Path | None = None,
+    endpoint_url: str = "",
+    endpoint_url_file: str | Path | None = None,
+    bucket: str = "",
+    bucket_file: str | Path | None = None,
+    region: str = "",
+    region_file: str | Path | None = None,
+    expiration_seconds: int = 12 * 60 * 60,
+) -> dict[str, Any]:
+    """Delete and absence-prove only the exact objects in a staging manifest."""
+
+    del expiration_seconds
+    resolved_job_dir = Path(job_dir).expanduser().resolve()
+    manifest_path = resolved_job_dir / "wam_provider_object_store_staging_manifest.json"
+    manifest = (
+        _mapping(json.loads(manifest_path.read_text(encoding="utf-8")))
+        if manifest_path.is_file()
+        else {}
+    )
+    blockers: list[str] = []
+    if manifest.get("schema_version") != SCHEMA_VERSION or manifest.get("status") != "completed":
+        blockers.append("completed_staging_manifest_required")
+    keys = [str(manifest.get(name) or "") for name in ("bundle_key", "output_key")]
+    if not all(keys) or len(set(keys)) != 2:
+        blockers.append("exact_staged_object_keys_required")
+    object_store = _mapping(manifest.get("object_store"))
+    expected_prefix = _string(object_store.get("key_prefix")).strip("/")
+    if not expected_prefix or any(not key.startswith(expected_prefix + "/") for key in keys):
+        blockers.append("staged_object_key_prefix_mismatch")
+
+    access_key, _ = _read_first_file(
+        explicit_path=access_key_id_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID",
+        default_paths=DEFAULT_ACCESS_KEY_FILES,
+        label="object_store_access_key_id",
+    )
+    secret_key, _ = _read_first_file(
+        explicit_path=secret_access_key_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY",
+        default_paths=DEFAULT_SECRET_KEY_FILES,
+        label="object_store_secret_access_key",
+    )
+    endpoint, _ = _read_first_file(
+        explicit_path=endpoint_url_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL",
+        default_paths=DEFAULT_ENDPOINT_FILES,
+        label="object_store_endpoint_url",
+        allow_env_value=True,
+    )
+    endpoint = endpoint_url or endpoint
+    bucket_value, _ = _read_first_file(
+        explicit_path=bucket_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_BUCKET",
+        default_paths=DEFAULT_BUCKET_FILES,
+        label="object_store_bucket",
+        allow_env_value=True,
+    )
+    bucket_value = bucket or bucket_value
+    region_value, _ = _read_first_file(
+        explicit_path=region_file,
+        env_name="BLUEPRINT_WAM_OBJECT_STORE_REGION",
+        default_paths=DEFAULT_REGION_FILES,
+        label="object_store_region",
+        allow_env_value=True,
+    )
+    region_value = region or region_value or "us-east-1"
+    if not access_key or not secret_key or not bucket_value:
+        blockers.append("object_store_cleanup_credentials_missing")
+
+    cleanup_rows: list[dict[str, Any]] = []
+    if not blockers:
+        try:
+            import boto3  # type: ignore[import-not-found]
+            from botocore.client import Config  # type: ignore[import-not-found]
+
+            kwargs: dict[str, Any] = {
+                "aws_access_key_id": access_key,
+                "aws_secret_access_key": secret_key,
+                "region_name": region_value,
+                "config": Config(signature_version="s3v4"),
+            }
+            if endpoint:
+                kwargs["endpoint_url"] = endpoint
+            client = boto3.client("s3", **kwargs)
+            for key in keys:
+                client.delete_object(Bucket=bucket_value, Key=key)
+                absence = _s3_absence_confirmed(client, bucket=bucket_value, key=key)
+                cleanup_rows.append(
+                    {
+                        "key_sha256": hashlib.sha256(key.encode("utf-8")).hexdigest(),
+                        "absence": absence,
+                    }
+                )
+                if absence.get("absence_confirmed") is not True:
+                    blockers.append("staged_object_absence_unverified")
+        except Exception as exc:  # noqa: BLE001 - preserve fail-closed cleanup evidence
+            blockers.append(f"staged_object_cleanup_failed:{type(exc).__name__}")
+
+    signed_url_files = [
+        resolved_job_dir / name
+        for name in (
+            "provider_bundle_url.txt",
+            "provider_output_put_url.txt",
+            "provider_output_get_url.txt",
+        )
+    ]
+    if not blockers:
+        for path in signed_url_files:
+            path.unlink(missing_ok=True)
+    result = {
+        "schema_version": OBJECT_CLEANUP_SCHEMA_VERSION,
+        "generated_at": utc_now_iso(),
+        "status": "completed" if not blockers else "blocked",
+        "staging_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        if manifest_path.is_file()
+        else None,
+        "exact_object_count": len(keys) if all(keys) else 0,
+        "objects": cleanup_rows,
+        "all_objects_absent": bool(cleanup_rows)
+        and all(row["absence"].get("absence_confirmed") is True for row in cleanup_rows),
+        "signed_url_files_removed": not any(path.exists() for path in signed_url_files),
+        "blockers": sorted(set(blockers)),
+        "raw_secret_values_recorded": False,
+    }
+    write_json(resolved_job_dir / "wam_provider_object_store_cleanup.json", result)
+    return result
 
 
 def _signed_output_round_trip_preflight(
@@ -849,14 +982,14 @@ def refresh_wam_provider_output_get_url(
                 ExpiresIn=int(expiration_seconds),
                 HttpMethod="GET",
             )
-            put_url = (resolved_job_dir / "provider_output_put_url.txt").read_text(
-                encoding="utf-8"
-            ).strip()
+            put_url = (
+                (resolved_job_dir / "provider_output_put_url.txt")
+                .read_text(encoding="utf-8")
+                .strip()
+            )
             signed_output_object_binding_sha256(put_url, refreshed_url)
         except Exception as exc:
-            blockers.append(
-                f"wam_provider_output_refresh_failed:{type(exc).__name__}"
-            )
+            blockers.append(f"wam_provider_output_refresh_failed:{type(exc).__name__}")
             refreshed_url = ""
 
     expiry = _presigned_url_expiry_metadata(generated, int(expiration_seconds))
@@ -878,9 +1011,7 @@ def refresh_wam_provider_output_get_url(
         "object_size_bytes": object_size if object_size > 0 else None,
         "presigned_url_expiry": expiry,
         "provider_output_get_url_file": url_status,
-        "provider_output_get_url_redacted": (
-            _redact_url(refreshed_url) if refreshed_url else None
-        ),
+        "provider_output_get_url_redacted": (_redact_url(refreshed_url) if refreshed_url else None),
         "object_store": {
             "access_key_id": access_meta,
             "secret_access_key": secret_meta,
@@ -1001,6 +1132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--job-dir", required=True)
     parser.add_argument("--bundle-path")
     parser.add_argument("--refresh-output-get-url", action="store_true")
+    parser.add_argument("--cleanup-staged-objects", action="store_true")
     parser.add_argument("--access-key-id-file")
     parser.add_argument("--secret-access-key-file")
     parser.add_argument("--endpoint-url", default="")
@@ -1024,7 +1156,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "region_file": args.region_file,
         "expiration_seconds": args.expiration_seconds,
     }
-    if args.refresh_output_get_url:
+    if args.cleanup_staged_objects:
+        manifest = cleanup_staged_wam_provider_objects(**common)
+    elif args.refresh_output_get_url:
         manifest = refresh_wam_provider_output_get_url(**common)
     else:
         if not args.bundle_path:

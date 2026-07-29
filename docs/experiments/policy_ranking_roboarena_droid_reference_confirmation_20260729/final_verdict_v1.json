@@ -1,0 +1,28 @@
+{
+  "schema_version": "policy_ranking_roboarena_terminal_verdict.v2",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "overall_verdict": "inconclusive",
+  "components": {
+    "cosmos_wam_qualification": {
+      "verdict": "inconclusive",
+      "basis": "The corrected official DROID active/no-motion pair was structurally valid, but no-motion changed more overall, recorded timing correlation was -0.460018, the wrist null moved more, and the two exterior views were nearly static. One window and non-prospectively-frozen diagnostic thresholds are insufficient for powered falsification, so Blueprint abstained and awarded no qualification credit."
+    },
+    "frozen_benchmark_calibration": {
+      "verdict": "not_supported_for_frozen_gpt5_mini_phase_a_stack",
+      "basis": "The complete 441-episode known-answer reproduction failed rank and selective-use gates. Gemini 3.6 Flash was promising only after label exposure and never abstained."
+    },
+    "captured_site_transfer": {
+      "verdict": "inconclusive",
+      "basis": "Not admitted or measured; no same-site independently attributable physical outcomes exist."
+    },
+    "economics_and_speed": {
+      "verdict": "inconclusive",
+      "basis": "Digital canary cost was measured, but no useful ranking completed and no defensible exhaustive physical baseline was available."
+    }
+  },
+  "phase_b": {
+    "admitted": false,
+    "design_achieved": "single published-reference open-loop native-Cosmos paired causal diagnostic",
+    "claim_ceiling": "deployment and causal-screen diagnostic only; no closed-loop, ranking, or generalization credit"
+  }
+}

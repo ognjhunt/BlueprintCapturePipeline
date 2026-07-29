@@ -1,0 +1,94 @@
+{
+  "schema_version": "policy_ranking_cosmos3_droid_paired_reference_result.v1",
+  "experiment_id": "policy_ranking_roboarena_droid_reference_confirmation_20260729",
+  "allocation_index": 4,
+  "source_commit": "3e5a40499016f44b97680a5b0c55e791666e0732",
+  "provider": "runpod",
+  "provider_resource_id": "8il4xqyxk3663h",
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "hourly_rate_usd": 1.99,
+  "runtime": {
+    "status": "completed",
+    "allocation_wall_seconds": 250.05246114730835,
+    "model_load_seconds": 145.0424364299979,
+    "scientific_runtime_seconds": 153.3155775850173,
+    "provider_generation_request_count": 2,
+    "output_archive_sha256": "e5fca925c0f746cb7b6ce37eb806f5818b995f467e5bb1e3e7efca62d75340d0"
+  },
+  "recorded": {
+    "provider_response_id": "video_gen_3a535f5797c44a49b6c68ca762fa7a2b",
+    "video_sha256": "eb467c255a0de22b471aa407e55eb95ca57fd3bcbf7aef2e866bad83483fd765",
+    "decoded_geometry": [640, 528],
+    "frames": 17,
+    "fps": 15,
+    "temporal_absolute_difference_mean": 1.6660155057907104,
+    "first_to_last_absolute_difference_mean": 14.262382507324219,
+    "tier1_motion_mean": 0.2981051243841648,
+    "tier1_timing_correlation": -0.4600183950234717
+  },
+  "no_motion": {
+    "provider_response_id": "video_gen_35321ab00a5547bca60b9095f934381a",
+    "video_sha256": "b98d4f82a06acdcc03281d597cbb16e39501d39ada58484136721e119bfa67ac",
+    "decoded_geometry": [640, 528],
+    "frames": 17,
+    "fps": 15,
+    "temporal_absolute_difference_mean": 2.241431951522827,
+    "first_to_last_absolute_difference_mean": 15.908903121948242,
+    "tier1_motion_mean": 0.37777197710238397,
+    "tier1_timing_correlation": null
+  },
+  "offline_analysis": {
+    "path": "external-evidence-store://policy-ranking-roboarena-droid-reference-confirmation-evidence-20260729/paired_reference_analysis_v1.json",
+    "file_sha256": "d1d52e7b7fe96f56b591de7f62e1fd75ad4abd1eb5059f9f19835ccd070144b1",
+    "analysis_payload_sha256": "b9853a9e457e21fee80d3b9618a75f0a21a8e55a39a2c1322ab8a1f067fd9d18",
+    "threshold_source": "diagnostic_development_defaults_not_prospectively_frozen",
+    "session_windows": 1,
+    "session_reliable": false,
+    "abstention_reasons": [
+      "timing_evidence_insufficient",
+      "recorded_did_not_exceed_no_motion_in_every_view"
+    ]
+  },
+  "view_findings": {
+    "wrist": {
+      "recorded_residual_flow_mean": 0.7738363537937403,
+      "no_motion_residual_flow_mean": 1.0663595786318183,
+      "recorded_exceeds_no_motion": false
+    },
+    "left": {
+      "recorded_residual_flow_mean": 0.028467689524404705,
+      "no_motion_residual_flow_mean": 0.026685554417781532,
+      "recorded_exceeds_no_motion": true,
+      "interpretation": "both nearly static"
+    },
+    "right": {
+      "recorded_residual_flow_mean": 0.04319902358110994,
+      "no_motion_residual_flow_mean": 0.03129018202889711,
+      "recorded_exceeds_no_motion": true,
+      "interpretation": "both nearly static"
+    }
+  },
+  "adjudication": {
+    "provider_transport_and_structural_contract_passed": true,
+    "paired_causal_support_observed": false,
+    "cosmos_wam_qualification_credit": false,
+    "untouched_data_admitted": false,
+    "evaluator_admitted": false,
+    "phase_b_admitted": false,
+    "verdict": "inconclusive",
+    "reason": "The one-window diagnostic is underpowered and used thresholds that were not prospectively frozen for this experiment, but its observed causal separation is unfavorable."
+  },
+  "cost": {
+    "estimated_gpu_cost_usd": 0.13822344380087323,
+    "evaluator_api_cost_usd": 0.0,
+    "storage_and_transfer_cost_usd": null
+  },
+  "provider_zero": {
+    "task_live_resources": 0,
+    "global_live_resources": 0,
+    "provider_absence_confirmed": true,
+    "continuing_hourly_burn": false,
+    "watchdog_process_alive": false
+  },
+  "claim_boundary": "This is a single published-reference paired diagnostic. It is not a powered Cosmos qualification, closed-loop policy evaluation, policy ranking, captured-site transfer, or physical result."
+}

@@ -1,5 +1,8 @@
 # Cosmos3 DROID reference and untouched-data confirmation
 
+Terminal report: `final_report_v1.md`. Machine-readable verdict:
+`final_verdict_v1.json`. Overall verdict: `inconclusive`.
+
 This namespace continues the terminal `inconclusive` RoboArena successor without
 rewriting its evidence. NVIDIA published an exact Cosmos3 DROID
 forward-dynamics cookbook after that run. The new source resolves the main

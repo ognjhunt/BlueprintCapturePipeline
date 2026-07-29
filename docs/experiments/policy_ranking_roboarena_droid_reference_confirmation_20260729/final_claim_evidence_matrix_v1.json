@@ -1,0 +1,17 @@
+{
+  "schema_version": "policy_ranking_roboarena_claim_evidence_matrix.v2",
+  "overall_verdict": "inconclusive",
+  "components": [
+    {"name": "cosmos_wam_qualification", "verdict": "inconclusive", "evidence": ["allocation_4_paired_reference_result_v1.json", "external paired_reference_analysis_v1.json"], "missing": ["prospectively frozen thresholds", "registered independent-session count", "full causal controls", "seed robustness"]},
+    {"name": "frozen_benchmark_calibration", "verdict": "not_supported_for_frozen_gpt5_mini_phase_a_stack", "evidence": ["../policy_ranking_roboarena_full_stack_calibration_20260728/final_report_v1.md"], "claim_ceiling": "known-answer reproduction; Gemini post-unseal diagnostic"},
+    {"name": "captured_site_transfer", "verdict": "inconclusive", "evidence": [], "missing": ["admitted Phase C", "same-site independent physical outcomes"]},
+    {"name": "economics_and_speed", "verdict": "inconclusive", "evidence": ["campaign_cost_and_time_ledger_v1.json"], "missing": ["completed useful ranking", "attributable exhaustive physical cost/time anchor"]}
+  ],
+  "forbidden_inference_checks": {
+    "provider_success_treated_as_wam_success": false,
+    "generated_motion_treated_as_physical_success": false,
+    "reasoner_evaluator_treated_as_native_cosmos_wam": false,
+    "diagnostic_thresholds_treated_as_confirmatory": false,
+    "missing_components_combined_into_support": false
+  }
+}
