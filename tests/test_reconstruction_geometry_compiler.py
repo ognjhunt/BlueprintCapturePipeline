@@ -26,6 +26,12 @@ from blueprint_pipeline.task_evaluation_supervisor.supervisor import default_aut
 from blueprint_pipeline.task_evaluation_supervisor.tools import ToolRegistry, non_spend_tool_bindings
 
 
+RECORDED_ARKITSCENES_SURFACE = (
+    Path(__file__).parents[1]
+    / "docs/evidence/arkitscenes_observed_surface_40958756_2ad2b7df.json"
+)
+
+
 def _digest_bytes(value: bytes) -> str:
     import hashlib
 
@@ -269,6 +275,28 @@ def test_compiler_filters_low_confidence_observed_surface_without_fill(tmp_path:
     emitted = tmp_path / manifest["geometry_asset_reference"]
     assert emitted.is_file()
     assert _digest_bytes(emitted.read_bytes()) == manifest["geometry_asset_digest"]
+
+
+def test_recorded_arkitscenes_surface_cannot_bypass_coordinate_qualification(
+    tmp_path: Path,
+) -> None:
+    receipt = json.loads(RECORDED_ARKITSCENES_SURFACE.read_text(encoding="utf-8"))
+    request = _request(
+        tmp_path,
+        coordinate_frame_declaration=receipt["coordinate_frame_declaration"],
+        metric_scale_status=receipt["surface_measurements"]["metric_scale_status"],
+        metric_scale_validation=None,
+    )
+
+    with pytest.raises(
+        ReconstructionGeometryCompilerError,
+        match="metric_geometry_coordinate_frame_unqualified",
+    ):
+        compile_metric_geometry(
+            source_artifact=request,
+            output_root=tmp_path / "generated" / "metric",
+            artifact_root=tmp_path,
+        )
 
 
 def test_metric_compilation_and_collider_baseline_replay_exactly(tmp_path: Path) -> None:

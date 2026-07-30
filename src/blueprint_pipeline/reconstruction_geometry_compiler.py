@@ -186,6 +186,18 @@ def _validate_metric_scale(request: Mapping[str, Any]) -> None:
         raise ReconstructionGeometryCompilerError(["metric_scale_validation_invalid"])
 
 
+def _validate_coordinate_frame(request: Mapping[str, Any]) -> None:
+    declaration = request.get("coordinate_frame_declaration")
+    if (
+        not isinstance(declaration, Mapping)
+        or declaration.get("units") != "meters"
+        or declaration.get("up_axis") != "Z"
+    ):
+        raise ReconstructionGeometryCompilerError(
+            ["metric_geometry_coordinate_frame_unqualified"]
+        )
+
+
 def _parse_observed_surface(
     value: Mapping[str, Any], *, minimum_confidence: float
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
@@ -345,6 +357,7 @@ def compile_metric_geometry(
     request = json.loads(json.dumps(dict(source_artifact)))
     _validate_request_digest(request)
     _validate_metric_scale(request)
+    _validate_coordinate_frame(request)
     if request.get("generated_fill_used") is not False:
         raise ReconstructionGeometryCompilerError(["generated_or_unseen_fill_forbidden"])
     if request.get("appearance_asset_used_as_geometry_truth") is not False:
