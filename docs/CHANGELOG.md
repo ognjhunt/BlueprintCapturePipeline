@@ -1,5 +1,55 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-29
+
+### User-Facing
+
+- Closed the powered DROID native-Cosmos causal confirmation as
+  `thesis_not_supported` for the frozen tested stack. The complete 17-session,
+  51-window matrix returned 612/612 valid videos but passed zero windows and
+  zero sessions; correct-action scene effects were consistently weaker than
+  ordinary seed variation, so Blueprint abstained without producing a policy
+  ranking (`docs/experiments/policy_ranking_roboarena_powered_droid_confirmation_20260729/final_report_v1.md`).
+- Added the claim-level Decision/Evidence Router above stable leaf evaluators.
+  Task Evaluation Run requests now bind maintained testbeds, qualifications,
+  budgets, rights, evidence plans, normalized results, decisions or explicit
+  abstentions, and append-only physical-outcome joins. Legacy Policy Improvement
+  and post-training exports remain opt-in compatibility machinery
+  (`docs/architecture/decision-evidence-router.md`,
+  `src/blueprint_pipeline/decision_evidence_router.py`).
+
+### Employee-Facing
+
+- Hardened the powered GPU lane with exact source/runtime identities, immutable
+  object transport, spend/TTL admission, stale-callback rejection, teardown,
+  and provider-zero evidence. Two Vast allocations consumed 4,615.574 live
+  seconds and an estimated USD 2.226112; this proves bounded execution and
+  cleanup, not invoice settlement or scientific validity
+  (`src/blueprint_pipeline/policy_ranking_powered_droid_analysis.py`,
+  `docs/experiments/policy_ranking_roboarena_powered_droid_confirmation_20260729/provider_zero_and_object_closure_v1.json`).
+- Added isolated new-site diagnostic adapters plus an allocator-only one-arm GPU
+  canary, and made OpenPI monitoring retry transient output failures. These are
+  diagnostic/runtime seams and do not qualify a WAM, admit a ranking, or prove
+  captured-site transfer (`src/blueprint_pipeline/new_site_diagnostic_smoke.py`,
+  `src/blueprint_pipeline/new_site_diagnostic_canary_gpu.py`,
+  `src/blueprint_pipeline/openpi_policy_ranking_runpod.py`).
+
+### Future-Agent-Facing
+
+- The America/Chicago window contains sixteen first-parent `main` commits,
+  `3d6c4044` through `21e49c3d` (PRs #237 and #239--#245). At review, the
+  checkout is clean on a later feature branch; `main == origin/main` at
+  `4aa4e056`, so later July 30 history and checkout-only July 29 branches are
+  excluded. No attributable uncommitted July 29 work is recorded.
+- Do not rerun unchanged native Cosmos or promote the router's hermetic vertical
+  slice into provider, deployment, safety, or physical evidence. A new WAM arm
+  needs prospectively frozen causal controls before evaluator spend; physical
+  claim upgrades require separately accepted, exactly joined outcomes.
+- Raw capture, timestamps, poses, provenance, rights, privacy, and accepted
+  physical outcomes remain authoritative. Generated videos, simulator results,
+  router plans, qualification records, provider receipts, readiness summaries,
+  and this changelog are downstream support artifacts.
+
 ## 2026-07-28
 
 ### User-Facing
