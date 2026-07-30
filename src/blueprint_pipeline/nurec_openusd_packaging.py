@@ -364,6 +364,10 @@ def package_nurec_openusd(
             "blueprint:appearanceAssetDigest", request["appearance_asset"]["digest"]
         )
         root_prim.SetCustomDataByKey(
+            "blueprint:appearanceAssetManifestDigest",
+            request["appearance_asset_manifest_digest"],
+        )
+        root_prim.SetCustomDataByKey(
             "blueprint:colliderAssetDigest", request["collider_asset"]["digest"]
         )
         root_prim.SetCustomDataByKey(
@@ -415,6 +419,7 @@ def package_nurec_openusd(
             }
         )
         value.pop("appearance_asset", None)
+        value.pop("appearance_asset_manifest", None)
         value.pop("collider_asset", None)
         value.pop("target_prim_paths", None)
         value.pop("output_format", None)

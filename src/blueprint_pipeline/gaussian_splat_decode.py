@@ -16,6 +16,7 @@ This module never claims rendering or physics; it only decodes/inspects splat ge
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,7 @@ class SplatData:
     scales: np.ndarray     # (N, 3) float32 — log-scale
     quats: np.ndarray      # (N, 4) float32 — rotation quaternion (rot_0..3)
     properties: tuple[str, ...]
+    sh_rest: np.ndarray | None = None  # (N, 3*((degree+1)^2-1)) channel-major
 
     @property
     def opacity_sigmoid(self) -> np.ndarray:
@@ -240,6 +242,17 @@ def read_standard_3dgs_ply(path: str | Path) -> SplatData:
     def cols(keys: Sequence[str]) -> np.ndarray:
         return arr[:, [index[k] for k in keys]].astype(np.float32, copy=True)
 
+    rest_names = sorted(
+        (name for name in names if re.fullmatch(r"f_rest_[0-9]+", name)),
+        key=lambda name: int(name.rsplit("_", 1)[1]),
+    )
+    sh_rest = cols(rest_names) if rest_names else None
+    if sh_rest is not None:
+        coefficient_count = 1 + (sh_rest.shape[1] // 3)
+        degree = int(round(coefficient_count**0.5)) - 1
+        if sh_rest.shape[1] % 3 or (degree + 1) ** 2 != coefficient_count:
+            raise ValueError("invalid f_rest property count for spherical harmonics")
+
     return SplatData(
         count=count,
         xyz=cols(["x", "y", "z"]),
@@ -248,6 +261,7 @@ def read_standard_3dgs_ply(path: str | Path) -> SplatData:
         scales=cols(["scale_0", "scale_1", "scale_2"]),
         quats=cols(["rot_0", "rot_1", "rot_2", "rot_3"]),
         properties=tuple(names),
+        sh_rest=sh_rest,
     )
 
 
@@ -267,6 +281,15 @@ def write_standard_3dgs_ply(splat: SplatData, path: str | Path) -> Path:
         ("rot_0", splat.quats[:, 0]), ("rot_1", splat.quats[:, 1]),
         ("rot_2", splat.quats[:, 2]), ("rot_3", splat.quats[:, 3]),
     ]
+    if splat.sh_rest is not None:
+        rest = np.asarray(splat.sh_rest, dtype=np.float32)
+        if rest.ndim != 2 or rest.shape[0] != splat.count or rest.shape[1] % 3:
+            raise ValueError("invalid sh_rest shape")
+        coefficient_count = 1 + rest.shape[1] // 3
+        degree = int(round(coefficient_count**0.5)) - 1
+        if (degree + 1) ** 2 != coefficient_count:
+            raise ValueError("invalid sh_rest coefficient count")
+        order.extend((f"f_rest_{index}", rest[:, index]) for index in range(rest.shape[1]))
     header = ["ply", "format binary_little_endian 1.0", f"element vertex {splat.count}"]
     header += [f"property float {name}" for name, _ in order]
     header.append("end_header\n")

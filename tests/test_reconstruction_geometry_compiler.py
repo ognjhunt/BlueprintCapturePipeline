@@ -8,6 +8,9 @@ from jsonschema import Draft202012Validator
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.nurec_openusd_packaging import package_nurec_openusd
+from blueprint_pipeline.reconstruction_appearance_asset import (
+    build_appearance_asset_manifest,
+)
 from blueprint_pipeline.reconstruction_geometry_compiler import (
     COMPILER_SCHEMA,
     QUALIFICATION_MEASUREMENT_SCHEMA,
@@ -720,6 +723,59 @@ def test_measured_geometry_to_qualified_collider_to_openusd_package(tmp_path: Pa
     stage.SetDefaultPrim(world.GetPrim())
     stage.GetRootLayer().Save()
     appearance_digest = _digest_bytes(appearance.read_bytes())
+    appearance_manifest = build_appearance_asset_manifest(
+        {
+            "stable_run_identity": "geometry-to-package-run-1",
+            "source_capture_identity": candidate["source_capture_identity"],
+            "source_capture_digest": candidate["source_capture_digest"],
+            "original_file_references": candidate["original_file_references"],
+            "producing_method": "fixture_particlefield_compiler",
+            "implementation_version": "1.0.0",
+            "container_image_digest": None,
+            "source_commit_sha": candidate["source_commit_sha"],
+            "deterministic_configuration_digest": "sha256:" + "9" * 64,
+            "input_digests": [
+                {"artifact_id": "appearance_candidate.ply", "digest": "sha256:" + "7" * 64},
+                {"artifact_id": "training_result", "digest": "sha256:" + "6" * 64},
+            ],
+            "output_digests": [
+                {"artifact_id": "inputs/appearance.usda", "digest": appearance_digest}
+            ],
+            "train_heldout_split_digest": candidate["train_heldout_split_digest"],
+            "camera_calibration_binding": candidate["camera_calibration_binding"],
+            "coordinate_frame_declaration": candidate["coordinate_frame_declaration"],
+            "units": "meters",
+            "metric_scale_status": "validated",
+            "provider_runtime_identity": {"provider": "local"},
+            "cost_usd": 0.0,
+            "duration_seconds": 0.0,
+            "authority_used": {"mode": "execute_non_spend"},
+            "warnings": [],
+            "blockers": [],
+            "proof_effect": "appearance_asset_candidate_only",
+            "claim_ceiling": "appearance_reconstruction",
+            "parent_artifact_or_event": {"digest": "sha256:" + "6" * 64},
+            "timestamp": "2026-07-30T23:00:00Z",
+            "status": "completed",
+            "reconstruction_training_request_digest": "sha256:" + "5" * 64,
+            "reconstruction_training_result_digest": "sha256:" + "6" * 64,
+            "source_appearance_asset_reference": "appearance_candidate.ply",
+            "source_appearance_asset_digest": "sha256:" + "7" * 64,
+            "source_asset_format": "standard_3dgs_ply",
+            "appearance_asset_reference": "inputs/appearance.usda",
+            "appearance_asset_digest": appearance_digest,
+            "appearance_asset_format": "particlefield_usd",
+            "source_prim_path": "/World/Appearance",
+            "splat_count": 1,
+            "sh_degree": 0,
+            "captured_observation": False,
+            "raw_evidence": False,
+            "metric_geometry_proven": False,
+            "collision_geometry_proven": False,
+            "heldout_evaluated": False,
+        }
+    )
+    appearance_manifest_digest = appearance_manifest["appearance_asset_manifest_digest"]
     collider_path = tmp_path / candidate["collider_asset_reference"]
     assert _digest_bytes(collider_path.read_bytes()) == candidate["collider_asset_digest"]
 
@@ -737,6 +793,10 @@ def test_measured_geometry_to_qualified_collider_to_openusd_package(tmp_path: Pa
         "deterministic_configuration_digest": "sha256:" + "8" * 64,
         "input_digests": [
             {"artifact_id": "appearance", "digest": appearance_digest},
+            {
+                "artifact_id": "appearance_manifest",
+                "digest": appearance_manifest_digest,
+            },
             {"artifact_id": "collider", "digest": candidate["collider_asset_digest"]},
         ],
         "output_digests": [],
@@ -758,7 +818,10 @@ def test_measured_geometry_to_qualified_collider_to_openusd_package(tmp_path: Pa
             "relative_path": "inputs/appearance.usda",
             "digest": appearance_digest,
             "source_prim_path": "/World/Appearance",
+            "manifest_digest": appearance_manifest_digest,
         },
+        "appearance_asset_manifest_digest": appearance_manifest_digest,
+        "appearance_asset_manifest": appearance_manifest,
         "metric_geometry_manifest_digest": metric["metric_geometry_manifest_digest"],
         "collider_asset": {
             "relative_path": candidate["collider_asset_reference"],

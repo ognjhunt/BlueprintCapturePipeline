@@ -2578,6 +2578,7 @@ def _execute_geometry_contract_tool(
     if tool_id == "package_nurec_openusd" and any(
         result.get(field) != source.get(field)
         for field in (
+            "appearance_asset_manifest_digest",
             "metric_geometry_manifest_digest",
             "collider_candidate_manifest_digest",
             "collider_qualification_digest",

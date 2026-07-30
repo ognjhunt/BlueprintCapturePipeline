@@ -5,6 +5,7 @@
   "required": [
     "schema_version",
     "appearance_asset_digest",
+    "appearance_asset_manifest_digest",
     "metric_geometry_manifest_digest",
     "collider_candidate_manifest_digest",
     "collider_qualification_digest",
@@ -32,6 +33,7 @@
   "properties": {
     "schema_version": {"const": "nurec_openusd_packaging_result.v1"},
     "appearance_asset_digest": {"$ref": "#/$defs/digest"},
+    "appearance_asset_manifest_digest": {"$ref": "#/$defs/digest"},
     "metric_geometry_manifest_digest": {"$ref": "#/$defs/digest"},
     "collider_candidate_manifest_digest": {"$ref": "#/$defs/digest"},
     "collider_qualification_digest": {"$ref": "#/$defs/digest"},

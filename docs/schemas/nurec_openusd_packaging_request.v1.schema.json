@@ -4,6 +4,8 @@
   "type": "object",
   "required": [
     "schema_version",
+    "appearance_asset_manifest_digest",
+    "appearance_asset_manifest",
     "appearance_asset",
     "metric_geometry_manifest_digest",
     "collider_asset",
@@ -22,7 +24,16 @@
   ],
   "properties": {
     "schema_version": {"const": "nurec_openusd_packaging_request.v1"},
-    "appearance_asset": {"$ref": "#/$defs/assetBinding"},
+    "appearance_asset_manifest_digest": {"$ref": "#/$defs/digest"},
+    "appearance_asset_manifest": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": "appearance_asset_manifest.v1"},
+        "appearance_asset_manifest_digest": {"$ref": "#/$defs/digest"}
+      },
+      "required": ["schema_version", "appearance_asset_manifest_digest"]
+    },
+    "appearance_asset": {"$ref": "#/$defs/appearanceAssetBinding"},
     "collider_asset": {"$ref": "#/$defs/assetBinding"},
     "metric_geometry_manifest_digest": {"$ref": "#/$defs/digest"},
     "collider_candidate_manifest_digest": {"$ref": "#/$defs/digest"},
@@ -39,6 +50,17 @@
   },
   "$defs": {
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "appearanceAssetBinding": {
+      "type": "object",
+      "required": ["relative_path", "digest", "source_prim_path", "manifest_digest"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/digest"},
+        "source_prim_path": {"type": "string", "pattern": "^/"},
+        "manifest_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
     "assetBinding": {
       "type": "object",
       "required": ["relative_path", "digest", "source_prim_path"],

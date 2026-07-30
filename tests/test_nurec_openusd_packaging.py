@@ -18,6 +18,9 @@ from blueprint_pipeline.reconstruction_geometry_contracts import (
     ReconstructionGeometryContractError,
     build_nurec_openusd_packaging_request,
 )
+from blueprint_pipeline.reconstruction_appearance_asset import (
+    build_appearance_asset_manifest,
+)
 from blueprint_pipeline.task_evaluation_supervisor.capabilities import SupervisorContext
 from blueprint_pipeline.task_evaluation_supervisor.contracts import AutonomyMode
 from blueprint_pipeline.task_evaluation_supervisor.supervisor import default_authority_envelope
@@ -92,9 +95,68 @@ def _write_sources(root: Path) -> tuple[Path, Path]:
     return appearance, collider
 
 
+def _appearance_manifest(appearance: Path) -> dict:
+    appearance_digest = _sha256(appearance)
+    return build_appearance_asset_manifest(
+        {
+            "stable_run_identity": "packaging-run-1",
+            "source_capture_identity": "capture-1",
+            "source_capture_digest": DIGESTS[0],
+            "original_file_references": [
+                {"artifact_id": "capture.mov", "digest": DIGESTS[1]}
+            ],
+            "producing_method": "fixture_particlefield_compiler",
+            "implementation_version": "1",
+            "container_image_digest": None,
+            "source_commit_sha": "1" * 40,
+            "deterministic_configuration_digest": DIGESTS[1],
+            "input_digests": [
+                {"artifact_id": "appearance_candidate.ply", "digest": DIGESTS[0]},
+                {"artifact_id": "training_result", "digest": DIGESTS[1]},
+            ],
+            "output_digests": [
+                {"artifact_id": appearance.name, "digest": appearance_digest}
+            ],
+            "train_heldout_split_digest": DIGESTS[2],
+            "camera_calibration_binding": {"digest": DIGESTS[3]},
+            "coordinate_frame_declaration": {"frame": "world", "up_axis": "Z"},
+            "units": "meters",
+            "metric_scale_status": "validated",
+            "provider_runtime_identity": {"provider": "local"},
+            "cost_usd": 0.0,
+            "duration_seconds": 0.0,
+            "authority_used": {"mode": "execute_non_spend"},
+            "warnings": [],
+            "blockers": [],
+            "proof_effect": "appearance_asset_candidate_only",
+            "claim_ceiling": "appearance_reconstruction",
+            "parent_artifact_or_event": {"digest": DIGESTS[1]},
+            "timestamp": "2026-07-30T13:00:00Z",
+            "status": "completed",
+            "reconstruction_training_request_digest": DIGESTS[0],
+            "reconstruction_training_result_digest": DIGESTS[1],
+            "source_appearance_asset_reference": "appearance_candidate.ply",
+            "source_appearance_asset_digest": DIGESTS[0],
+            "source_asset_format": "standard_3dgs_ply",
+            "appearance_asset_reference": appearance.name,
+            "appearance_asset_digest": appearance_digest,
+            "appearance_asset_format": "particlefield_usd",
+            "source_prim_path": "/World/Appearance",
+            "splat_count": 1,
+            "sh_degree": 0,
+            "captured_observation": False,
+            "raw_evidence": False,
+            "metric_geometry_proven": False,
+            "collision_geometry_proven": False,
+            "heldout_evaluated": False,
+        }
+    )
+
+
 def _request(root: Path, **updates):
     appearance = root / "appearance.usda"
     collider = root / "collider.usda"
+    appearance_manifest = _appearance_manifest(appearance)
     value = {
         "stable_run_identity": "packaging-run-1",
         "source_capture_identity": "capture-1",
@@ -110,11 +172,15 @@ def _request(root: Path, **updates):
         "input_digests": [
             {"artifact_id": "appearance", "digest": _sha256(appearance)},
             {"artifact_id": "collider", "digest": _sha256(collider)},
+            {
+                "artifact_id": "appearance_manifest",
+                "digest": appearance_manifest["appearance_asset_manifest_digest"],
+            },
         ],
         "output_digests": [],
         "train_heldout_split_digest": DIGESTS[2],
         "camera_calibration_binding": {"digest": DIGESTS[3]},
-        "coordinate_frame_declaration": {"frame": "world", "up": "Z"},
+        "coordinate_frame_declaration": {"frame": "world", "up_axis": "Z"},
         "units": "meters",
         "provider_runtime_identity": {"provider": "local"},
         "cost_usd": 0.0,
@@ -128,7 +194,12 @@ def _request(root: Path, **updates):
             "relative_path": appearance.name,
             "digest": _sha256(appearance),
             "source_prim_path": "/World/Appearance",
+            "manifest_digest": appearance_manifest["appearance_asset_manifest_digest"],
         },
+        "appearance_asset_manifest_digest": appearance_manifest[
+            "appearance_asset_manifest_digest"
+        ],
+        "appearance_asset_manifest": appearance_manifest,
         "metric_geometry_manifest_digest": DIGESTS[3],
         "collider_asset": {
             "relative_path": collider.name,
@@ -152,6 +223,36 @@ def _request(root: Path, **updates):
     }
     value.update(updates)
     return build_nurec_openusd_packaging_request(value)
+
+
+def _rebind_appearance(request: dict, *, relative_path: str, digest: str) -> None:
+    manifest_value = json.loads(json.dumps(request["appearance_asset_manifest"]))
+    manifest_value.pop("appearance_asset_manifest_digest", None)
+    manifest_value["appearance_asset_reference"] = relative_path
+    manifest_value["appearance_asset_digest"] = digest
+    manifest_value["output_digests"] = [
+        {"artifact_id": relative_path, "digest": digest}
+    ]
+    manifest = build_appearance_asset_manifest(manifest_value)
+    request["appearance_asset_manifest"] = manifest
+    request["appearance_asset_manifest_digest"] = manifest[
+        "appearance_asset_manifest_digest"
+    ]
+    request["appearance_asset"] = {
+        "relative_path": relative_path,
+        "digest": digest,
+        "source_prim_path": "/World/Appearance",
+        "manifest_digest": manifest["appearance_asset_manifest_digest"],
+    }
+    request["input_digests"] = [
+        row for row in request["input_digests"] if row.get("artifact_id") != "appearance_manifest"
+    ]
+    request["input_digests"].append(
+        {
+            "artifact_id": "appearance_manifest",
+            "digest": manifest["appearance_asset_manifest_digest"],
+        }
+    )
 
 
 def test_real_openusd_packaging_is_self_contained_digest_bound_and_replayable(
@@ -240,6 +341,17 @@ def test_packaging_request_rejects_unqualified_collider_and_path_traversal(
     ):
         build_nurec_openusd_packaging_request(unbound)
 
+    spoofed = dict(_request(tmp_path))
+    spoofed.pop("packaging_request_digest")
+    spoofed["appearance_asset"] = dict(
+        spoofed["appearance_asset"], digest=spoofed["collider_asset"]["digest"]
+    )
+    with pytest.raises(
+        ReconstructionGeometryContractError,
+        match="appearance_asset_manifest_asset_binding_mismatch",
+    ):
+        build_nurec_openusd_packaging_request(spoofed)
+
 
 def test_packager_rejects_digest_mismatch_and_symlink(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
@@ -247,7 +359,7 @@ def test_packager_rejects_digest_mismatch_and_symlink(tmp_path: Path) -> None:
     appearance, _collider = _write_sources(source_root)
     request = dict(_request(source_root))
     request.pop("packaging_request_digest")
-    request["appearance_asset"] = dict(request["appearance_asset"], digest=DIGESTS[0])
+    _rebind_appearance(request, relative_path="appearance.usda", digest=DIGESTS[0])
     request["original_file_references"] = [
         {"artifact_id": "appearance", "digest": DIGESTS[0]},
         request["original_file_references"][1],
@@ -255,6 +367,7 @@ def test_packager_rejects_digest_mismatch_and_symlink(tmp_path: Path) -> None:
     request["input_digests"] = [
         {"artifact_id": "appearance", "digest": DIGESTS[0]},
         request["input_digests"][1],
+        request["input_digests"][2],
     ]
     request = build_nurec_openusd_packaging_request(request)
     with pytest.raises(NuRecOpenUSDPackagingError, match="appearance_asset_digest_mismatch"):
@@ -268,9 +381,10 @@ def test_packager_rejects_digest_mismatch_and_symlink(tmp_path: Path) -> None:
     link.symlink_to(appearance)
     request = dict(_request(source_root))
     request.pop("packaging_request_digest")
-    request["appearance_asset"] = dict(
-        request["appearance_asset"],
+    _rebind_appearance(
+        request,
         relative_path=link.name,
+        digest=request["appearance_asset"]["digest"],
     )
     request = build_nurec_openusd_packaging_request(request)
     with pytest.raises(NuRecOpenUSDPackagingError, match="appearance_asset_symlink_forbidden"):
@@ -380,7 +494,7 @@ def test_packager_rejects_unbound_usd_dependencies_and_compressed_usdz(
     request = dict(_request(source_root))
     request.pop("packaging_request_digest")
     digest = _sha256(appearance)
-    request["appearance_asset"] = dict(request["appearance_asset"], digest=digest)
+    _rebind_appearance(request, relative_path="appearance.usda", digest=digest)
     request["original_file_references"][0] = {"artifact_id": "appearance", "digest": digest}
     request["input_digests"][0] = {"artifact_id": "appearance", "digest": digest}
     request = build_nurec_openusd_packaging_request(request)
@@ -399,16 +513,16 @@ def test_packager_rejects_unbound_usd_dependencies_and_compressed_usdz(
     request = dict(_request(source_root))
     request.pop("packaging_request_digest")
     digest = _sha256(compressed)
-    request["appearance_asset"] = {
+    request["collider_asset"] = {
         "relative_path": compressed.name,
         "digest": digest,
-        "source_prim_path": "/World/Appearance",
+        "source_prim_path": "/World/Collision",
     }
-    request["original_file_references"][0] = {"artifact_id": "appearance", "digest": digest}
-    request["input_digests"][0] = {"artifact_id": "appearance", "digest": digest}
+    request["original_file_references"][1] = {"artifact_id": "collider", "digest": digest}
+    request["input_digests"][1] = {"artifact_id": "collider", "digest": digest}
     request = build_nurec_openusd_packaging_request(request)
     with pytest.raises(
-        NuRecOpenUSDPackagingError, match="appearance_asset_usdz_compressed_member"
+        NuRecOpenUSDPackagingError, match="collider_asset_usdz_compressed_member"
     ):
         package_nurec_openusd(
             source_artifact=request,

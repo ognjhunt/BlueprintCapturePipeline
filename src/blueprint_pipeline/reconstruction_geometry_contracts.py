@@ -14,6 +14,10 @@ import re
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+from .reconstruction_appearance_asset import (
+    AppearanceAssetContractError,
+    build_appearance_asset_manifest,
+)
 
 
 METRIC_GEOMETRY_SCHEMA = "metric_geometry_manifest.v1"
@@ -229,6 +233,7 @@ def build_nurec_openusd_packaging_request(value: Mapping[str, Any]) -> dict[str,
     errors: list[str] = []
     _lineage(artifact, errors)
     for key in (
+        "appearance_asset_manifest_digest",
         "metric_geometry_manifest_digest",
         "collider_candidate_manifest_digest",
         "collider_qualification_digest",
@@ -268,6 +273,57 @@ def build_nurec_openusd_packaging_request(value: Mapping[str, Any]) -> dict[str,
         prim_path = str(binding.get("source_prim_path") or "")
         if not prim_path.startswith("/") or ".." in prim_path.split("/"):
             errors.append(f"{name}_source_prim_path_invalid")
+    appearance_binding = artifact.get("appearance_asset")
+    appearance_manifest_value = artifact.get("appearance_asset_manifest")
+    appearance_manifest: Mapping[str, Any] | None = None
+    if not isinstance(appearance_manifest_value, Mapping):
+        errors.append("appearance_asset_manifest_missing")
+    else:
+        try:
+            appearance_manifest = build_appearance_asset_manifest(appearance_manifest_value)
+            artifact["appearance_asset_manifest"] = appearance_manifest
+        except AppearanceAssetContractError as exc:
+            errors.extend(f"appearance_asset_manifest_invalid:{code}" for code in exc.codes)
+    if isinstance(appearance_binding, Mapping) and appearance_binding.get(
+        "manifest_digest"
+    ) != artifact.get("appearance_asset_manifest_digest"):
+        errors.append("appearance_asset_manifest_binding_mismatch")
+    if artifact.get("appearance_asset_manifest_digest") not in input_digests:
+        errors.append("appearance_asset_manifest_provenance_binding_missing")
+    if appearance_manifest is not None:
+        if appearance_manifest.get("appearance_asset_manifest_digest") != artifact.get(
+            "appearance_asset_manifest_digest"
+        ):
+            errors.append("appearance_asset_manifest_digest_mismatch")
+        if not isinstance(appearance_binding, Mapping) or any(
+            (
+                appearance_binding.get("digest")
+                != appearance_manifest.get("appearance_asset_digest"),
+                appearance_binding.get("relative_path")
+                != appearance_manifest.get("appearance_asset_reference"),
+                appearance_binding.get("source_prim_path")
+                != appearance_manifest.get("source_prim_path"),
+            )
+        ):
+            errors.append("appearance_asset_manifest_asset_binding_mismatch")
+        if any(
+            (
+                appearance_manifest.get("stable_run_identity")
+                != artifact.get("stable_run_identity"),
+                appearance_manifest.get("source_capture_identity")
+                != artifact.get("source_capture_identity"),
+                appearance_manifest.get("source_capture_digest")
+                != artifact.get("source_capture_digest"),
+                appearance_manifest.get("train_heldout_split_digest")
+                != artifact.get("train_heldout_split_digest"),
+                appearance_manifest.get("camera_calibration_binding")
+                != artifact.get("camera_calibration_binding"),
+                appearance_manifest.get("coordinate_frame_declaration")
+                != artifact.get("coordinate_frame_declaration"),
+                appearance_manifest.get("units") != artifact.get("units"),
+            )
+        ):
+            errors.append("appearance_asset_manifest_lineage_mismatch")
     if artifact.get("stage_meters_per_unit") != 1.0 or artifact.get("up_axis") != "Z":
         errors.append("stage_units_or_up_axis_invalid")
     if artifact.get("shared_visual_physics_frame") is not True:
@@ -303,6 +359,7 @@ def build_nurec_openusd_packaging_result(value: Mapping[str, Any]) -> dict[str, 
     _lineage(artifact, errors)
     for key in (
         "appearance_asset_digest",
+        "appearance_asset_manifest_digest",
         "metric_geometry_manifest_digest",
         "collider_candidate_manifest_digest",
         "collider_qualification_digest",

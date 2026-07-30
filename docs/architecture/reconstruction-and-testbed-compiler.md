@@ -406,8 +406,21 @@ coverage, visual disagreement, obstacle thickness, clearance, and robot-footprin
 navigability. A passing report is limited to bounded navigation simulation;
 grasping, articulation, contact-force, and deployment claims remain unsupported.
 
+Candidate training output does not enter packaging directly.
+`appearance_asset_manifest.v1` verifies the successful training receipt and
+standard-3DGS PLY digest, preserves the trained spherical-harmonic bands, and
+authors a meter/Z-up `ParticleField3DGaussianSplat` USD. The manifest binds the
+source capture, frozen split, calibration, training request/result, worker
+image, source commit, authority, and exact input/output digests. It records that
+the layer is reconstructed rather than captured evidence and cannot prove
+metric geometry, collision geometry, held-out quality, or Isaac rendering.
+
 `nurec_openusd_packaging_request.v1` binds exact appearance, metric-geometry,
 collider-candidate, and independently accepted collider-qualification digests.
+The frozen request carries the complete validated appearance manifest and
+cross-checks its capture, split, calibration, coordinate frame, prim path,
+artifact reference, and asset digest, so citing a valid manifest beside a
+different USD fails closed.
 The repository-owned OpenUSD packager accepts only safe relative asset paths
 from a trusted artifact root, re-hashes both sources, composes one meter/Z-up
 visual and physics frame, creates a self-contained USDZ dependency closure, and
