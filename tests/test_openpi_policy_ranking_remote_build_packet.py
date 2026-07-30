@@ -15,7 +15,9 @@ from blueprint_pipeline.groot_oscar_infrastructure_admission import (
 )
 from blueprint_pipeline.openpi_policy_ranking_remote_build_packet import (
     CTRL_WORLD_IMAGE_VARIANT,
+    CTRL_WORLD_OSCAR_IMAGE_VARIANT,
     DEFAULT_CTRL_WORLD_IMAGE_REF,
+    DEFAULT_CTRL_WORLD_OSCAR_IMAGE_REF,
     DEFAULT_IMAGE_REF,
     MENAGERIE_REVISION,
     OPENPI_REVISION,
@@ -122,6 +124,43 @@ def test_ctrl_world_variant_binds_combined_dockerfile_and_runtime_lock(tmp_path:
         name.endswith("/policy_ranking_openpi_ctrl_world/ctrl_world_source_manifest.json")
         for name in result["archive_members"]
     )
+
+
+def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    result = prepare_remote_build_packet(
+        output_dir=tmp_path,
+        repo_root=repo,
+        image_ref=DEFAULT_CTRL_WORLD_OSCAR_IMAGE_REF,
+        source_commit=head,
+        source_worktree_dirty=True,
+        image_variant=CTRL_WORLD_OSCAR_IMAGE_VARIANT,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["image_variant"] == CTRL_WORLD_OSCAR_IMAGE_VARIANT
+    assert result["dockerfile_relative_path"] == (
+        "deploy/docker/policy_ranking_openpi_ctrl_world_oscar/Dockerfile"
+    )
+    assert validate_openpi_policy_ranking_archive(result) == []
+    with tarfile.open(result["tarball_path"], "r:gz") as archive:
+        dockerfile = archive.extractfile(
+            "openpi_policy_ranking_remote_build/context/"
+            "deploy/docker/policy_ranking_openpi_ctrl_world_oscar/Dockerfile"
+        )
+        assert dockerfile is not None
+        text = dockerfile.read().decode("utf-8")
+    assert "blueprint-groot-oscar-eval@sha256:93d99a5e" in text
+    assert "token=False" in text
+    assert "offline_preflight" in text
 
 
 def test_openpi_packet_is_admitted_only_when_clean_source_claim_is_ready(

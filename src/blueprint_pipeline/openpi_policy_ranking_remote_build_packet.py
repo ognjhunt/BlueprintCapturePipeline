@@ -26,9 +26,15 @@ DEFAULT_IMAGE_REF = "docker.io/nijelhunt/blueprint-openpi-policy-ranking:2026072
 DEFAULT_CTRL_WORLD_IMAGE_REF = (
     "docker.io/nijelhunt/blueprint-openpi-ctrl-world-diagnostic:20260730-v1"
 )
+DEFAULT_CTRL_WORLD_OSCAR_IMAGE_REF = (
+    "docker.io/nijelhunt/blueprint-openpi-ctrl-world-oscar-diagnostic:20260730-v1"
+)
 DOCKERFILE_RELATIVE_PATH = Path("deploy/docker/policy_ranking_openpi/Dockerfile")
 CTRL_WORLD_DOCKERFILE_RELATIVE_PATH = Path(
     "deploy/docker/policy_ranking_openpi_ctrl_world/Dockerfile"
+)
+CTRL_WORLD_OSCAR_DOCKERFILE_RELATIVE_PATH = Path(
+    "deploy/docker/policy_ranking_openpi_ctrl_world_oscar/Dockerfile"
 )
 REQUIRED_CONTEXT_PATHS = (
     DOCKERFILE_RELATIVE_PATH,
@@ -53,13 +59,26 @@ CTRL_WORLD_REQUIRED_CONTEXT_PATHS = (
     Path("README.md"),
     Path("LICENSE"),
 )
+CTRL_WORLD_OSCAR_REQUIRED_CONTEXT_PATHS = (
+    CTRL_WORLD_OSCAR_DOCKERFILE_RELATIVE_PATH,
+    Path("deploy/docker/policy_ranking_openpi_ctrl_world/requirements.lock"),
+    Path("deploy/docker/policy_ranking_openpi_ctrl_world/ctrl_world_source_manifest.json"),
+    Path("pyproject.toml"),
+    Path("README.md"),
+    Path("LICENSE"),
+)
 DEFAULT_IMAGE_VARIANT = "openpi"
 CTRL_WORLD_IMAGE_VARIANT = "openpi_ctrl_world"
+CTRL_WORLD_OSCAR_IMAGE_VARIANT = "openpi_ctrl_world_oscar"
 IMAGE_VARIANTS = {
     DEFAULT_IMAGE_VARIANT: (DOCKERFILE_RELATIVE_PATH, REQUIRED_CONTEXT_PATHS),
     CTRL_WORLD_IMAGE_VARIANT: (
         CTRL_WORLD_DOCKERFILE_RELATIVE_PATH,
         CTRL_WORLD_REQUIRED_CONTEXT_PATHS,
+    ),
+    CTRL_WORLD_OSCAR_IMAGE_VARIANT: (
+        CTRL_WORLD_OSCAR_DOCKERFILE_RELATIVE_PATH,
+        CTRL_WORLD_OSCAR_REQUIRED_CONTEXT_PATHS,
     ),
 }
 _COMMIT = re.compile(r"[0-9a-f]{40}")
