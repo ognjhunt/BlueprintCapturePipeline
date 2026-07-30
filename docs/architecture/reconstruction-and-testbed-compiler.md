@@ -138,6 +138,21 @@ deterministic terminal report preserving the blocker. These are hermetic
 contract fixtures—not representative real capture, trainer, provider, or
 Isaac execution evidence.
 
+A current real stitched-video proxy execution is recorded in
+`docs/evidence/ricoh360_bridge_equirectangular_39e3baa9.json`. It downloads the
+author-published Ricoh360 original-video archive, validates its ZIP structure,
+hashes and probes the 3840x1920 Ricoh Theta V `bridge.MP4`, validates 193
+strictly increasing variable-spaced decoded PTS values, freezes 16 observations
+into 11 training, two validation, and three hidden held-out panoramas, and
+compiles physically separate candidate and evaluator shared-center rigs. This
+is real stitched-360 input evidence, but it is a public outdoor dataset proxy:
+there is no native dual-fisheye source, physical camera trajectory, independent
+metric scale, qualified stitch result, appearance training, collision layer, or
+Isaac result. The repository license is MIT, while a separate dataset license
+was not stated; only the explicitly authorized local research evaluation was
+performed, with commercial, redistribution, provider-upload, and paid-compute
+authority remaining absent.
+
 ## Strict ARKit reconstruction export
 
 The strict V3.2 ARKit/LiDAR adapter now feeds the frozen frame kernel into
@@ -282,8 +297,9 @@ Isaac compatibility.
 ## Remaining reconstruction qualification gaps
 
 The executable local kernel should be extended, not replaced. Remaining work
-includes bounded ARKit pose refinement; real native `.insv` and stitched-360
-execution; frozen rig-constrained pose-method comparison; a built and
+includes bounded ARKit pose refinement; real native `.insv` execution and a
+representative indoor stitched-360 execution; frozen rig-constrained
+pose-method comparison; a built and
 smoke-tested reconstruction worker; independent appearance and geometry evaluation;
 metric-anchor and collider qualification; reproducible NuRec/OpenUSD packaging;
 headless Isaac load/render/contact checks; provider-governed external imports;

@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.equirectangular_virtual_rig import (
     EquirectangularVirtualRigError,
     compile_equirectangular_virtual_rig,
@@ -41,6 +42,69 @@ def _schema() -> dict:
             Path(__file__).parents[1]
             / "docs/schemas/equirectangular_virtual_rig.v1.schema.json"
         ).read_text(encoding="utf-8")
+    )
+
+
+def _recorded_public_proxy_receipt() -> dict:
+    return json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/evidence/ricoh360_bridge_equirectangular_39e3baa9.json"
+        ).read_text(encoding="utf-8")
+    )
+
+
+def test_recorded_real_ricoh360_proxy_preserves_claim_boundaries() -> None:
+    receipt = _recorded_public_proxy_receipt()
+
+    assert receipt["status"] == "partial"
+    assert receipt["validated_capture_profile"] == (
+        "camera_360_equirectangular_public_dataset_proxy"
+    )
+    assert receipt["media_probe"]["decoded_frame_count"] == 193
+    assert receipt["media_probe"]["decoded_pts_unique"] is True
+    assert receipt["media_probe"]["decoded_pts_strictly_increasing"] is True
+    dataset = receipt["deterministic_frame_dataset"]
+    assert dataset["selected_frame_count"] == 16
+    assert dataset["training_frame_count"] == 11
+    assert dataset["validation_frame_count"] == 2
+    assert dataset["hidden_heldout_frame_count"] == 3
+    assert dataset["candidate_contains_hidden_heldout_pixels"] is False
+    assert dataset["candidate_can_modify_split"] is False
+    assert dataset["exact_replay"] is True
+    rigs = receipt["virtual_rig_compilation"]
+    assert rigs["candidate_virtual_view_count"] == 156
+    assert rigs["heldout_virtual_view_count"] == 36
+    assert rigs["candidate_and_evaluator_access_scopes_separate"] is True
+    assert rigs["virtual_views_are_captured_evidence"] is False
+    assert rigs["virtual_views_are_independent_physical_cameras"] is False
+    ceiling = receipt["claim_ceiling"]
+    assert ceiling["decoded_observation_availability"] is True
+    assert ceiling["equirectangular_virtual_camera_rig"] is True
+    assert all(
+        ceiling[claim] is False
+        for claim in (
+            "calibrated_physical_camera_trajectory",
+            "appearance_reconstruction",
+            "metric_scale",
+            "metric_reference_geometry",
+            "collision_geometry",
+            "physics_readiness",
+            "isaac_load_render_compatibility",
+            "simulator_task_evidence",
+            "physical_task_success",
+            "deployment_readiness",
+        )
+    )
+    assert (
+        receipt["rights_and_authority"]["dataset_license_separately_stated"]
+        is False
+    )
+    assert receipt["rights_and_authority"]["provider_upload_authorized"] is False
+    assert receipt["rights_and_authority"]["paid_compute_authorized"] is False
+    assert receipt["runtime"]["cost_usd"] == 0.0
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
     )
 
 
