@@ -7,6 +7,7 @@ in this registry owns proof transitions, paid allocation, or physical actions.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 import math
 from pathlib import Path
 import re
@@ -30,6 +31,10 @@ from ..reconstruction_geometry_contracts import (
     build_metric_geometry_manifest,
     build_nurec_openusd_packaging_request,
     build_nurec_openusd_packaging_result,
+)
+from ..reconstruction_geometry_compiler import (
+    compile_collision_candidate as compile_collision_candidate_runtime,
+    compile_metric_geometry as compile_metric_geometry_runtime,
 )
 from ..reconstruction_heldout_evaluation import (
     build_heldout_appearance_evaluation_request,
@@ -2331,6 +2336,11 @@ _GEOMETRY_TOOL_CONFIG = {
     ),
 }
 
+_BUILTIN_GEOMETRY_RUNTIMES = {
+    "compile_metric_geometry": compile_metric_geometry_runtime,
+    "compile_collision_candidate": compile_collision_candidate_runtime,
+}
+
 
 def _execute_geometry_contract_tool(
     *, context: Any, tool_id: str, arguments: Mapping[str, Any]
@@ -2341,6 +2351,9 @@ def _execute_geometry_contract_tool(
     source_attr, runtime_attr, digest_field, builder, result_digest_field, artifact_type, ceiling, decision_field = _GEOMETRY_TOOL_CONFIG[tool_id]
     source = getattr(context, source_attr, None)
     runtime = getattr(context, runtime_attr, None)
+    builtin = _BUILTIN_GEOMETRY_RUNTIMES.get(tool_id)
+    if runtime is None and builtin is not None:
+        runtime = partial(builtin, artifact_root=root_value)
     if not isinstance(source, Mapping) or not callable(runtime):
         raise ValueError(f"registered_tool_runtime_not_injected:{tool_id}")
     if tool_id == "package_nurec_openusd":
@@ -2911,9 +2924,10 @@ def non_spend_tool_bindings(
             continue
         if tool_id in _GEOMETRY_TOOL_CONFIG:
             source_attr, runtime_attr, *_ = _GEOMETRY_TOOL_CONFIG[tool_id]
-            if not isinstance(getattr(context, source_attr, None), Mapping) or not callable(
-                getattr(context, runtime_attr, None)
-            ):
+            runtime_available = callable(getattr(context, runtime_attr, None)) or (
+                tool_id in _BUILTIN_GEOMETRY_RUNTIMES
+            )
+            if not isinstance(getattr(context, source_attr, None), Mapping) or not runtime_available:
                 continue
         if tool_id == "diagnose_reconstruction_failure" and not isinstance(
             getattr(context, "reconstruction_failure_diagnosis_request", None), Mapping
