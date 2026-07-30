@@ -8,6 +8,8 @@ FROM docker.io/nijelhunt/blueprint-openpi-policy-ranking@sha256:badde151b360cd52
 
 ARG CTRL_WORLD_SOURCE_URL=https://github.com/Robert-gyj/Ctrl-World.git
 ARG CTRL_WORLD_SOURCE_REVISION=99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d
+ARG OSCAR_SOURCE_URL=https://github.com/wuzy2115/oscar-public.git
+ARG OSCAR_SOURCE_REVISION=4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb
 ARG BLUEPRINT_SOURCE_COMMIT
 
 ENV BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
@@ -34,23 +36,25 @@ ENV BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
     TRANSFORMERS_OFFLINE=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     TOKENIZERS_PARALLELISM=false \
+    PYTHONPATH=/opt/OSCAR \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTORCH_ALLOC_CONF=expandable_segments:True \
     XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 COPY --from=oscar_runtime /opt/uv-python /opt/uv-python
 COPY --from=oscar_runtime /opt/oscar-venv /opt/oscar-venv
-# The pinned donor carries /opt/OSCAR as a symlink. Copy the reviewed target
-# bytes into a real directory so the runtime provenance verifier can reject
-# symlink substitution while retaining the sealed /opt/OSCAR identity.
-COPY --from=oscar_runtime /opt/oscar-public /opt/OSCAR
 COPY --from=oscar_runtime /opt/blueprint/ckpts/oscar /opt/blueprint/ckpts/oscar
 
 RUN git clone --filter=blob:none --no-checkout "${CTRL_WORLD_SOURCE_URL}" /opt/ctrl-world \
     && git -C /opt/ctrl-world fetch --depth 1 origin "${CTRL_WORLD_SOURCE_REVISION}" \
     && git -C /opt/ctrl-world checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/ctrl-world rev-parse HEAD)" = "${CTRL_WORLD_SOURCE_REVISION}" \
-    && test -z "$(git -C /opt/ctrl-world status --short --untracked-files=no)"
+    && test -z "$(git -C /opt/ctrl-world status --short --untracked-files=no)" \
+    && git clone --filter=blob:none --no-checkout "${OSCAR_SOURCE_URL}" /opt/OSCAR \
+    && git -C /opt/OSCAR fetch --depth 1 origin "${OSCAR_SOURCE_REVISION}" \
+    && git -C /opt/OSCAR checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/OSCAR rev-parse HEAD)" = "${OSCAR_SOURCE_REVISION}" \
+    && test -z "$(git -C /opt/OSCAR status --short --untracked-files=no)"
 
 COPY deploy/docker/policy_ranking_openpi_ctrl_world/requirements.lock /opt/ctrl-world-runtime/requirements.lock
 COPY deploy/docker/policy_ranking_openpi_ctrl_world/ctrl_world_source_manifest.json /opt/ctrl-world-runtime/ctrl_world_source_manifest.json
@@ -66,15 +70,18 @@ RUN uv venv --python 3.11.9 /.ctrl-world-venv \
     && VIRTUAL_ENV=/.venv uv pip install --no-deps -e /opt/blueprint-current \
     && VIRTUAL_ENV=/.ctrl-world-venv uv pip install --no-deps -e /opt/blueprint-current \
     && uv pip install --python /opt/oscar-venv/bin/python --no-deps -e /opt/blueprint-current \
+    && /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import transformer_engine_shim_script_text; Path('/tmp/oscar_te_shim.py').write_text(transformer_engine_shim_script_text(), encoding='utf-8')" \
+    && /opt/oscar-venv/bin/python /tmp/oscar_te_shim.py /opt/OSCAR \
     && find /opt/OSCAR -type d -name __pycache__ -prune -exec rm -rf '{}' + \
     && find /opt/OSCAR -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
-    && rm -f /tmp/oscar_source_provenance_absent.json \
-    && /opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance normalize \
+    && /opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance seal \
       --source-root /opt/OSCAR \
-      --existing-seal /tmp/oscar_source_provenance_absent.json \
       --output /opt/blueprint/oscar_source_provenance.json \
+      --source-url "${OSCAR_SOURCE_URL}" \
+      --source-commit "${OSCAR_SOURCE_REVISION}" \
       --runtime-source-root /opt/OSCAR \
     && chmod 0444 /opt/blueprint/oscar_source_provenance.json \
+    && rm -rf /opt/OSCAR/.git /tmp/oscar_te_shim.py \
     && /.venv/bin/python -m compileall -q /opt/blueprint-current/src/blueprint_pipeline \
     && /.ctrl-world-venv/bin/python -m compileall -q /opt/blueprint-current/src/blueprint_pipeline \
     && /.ctrl-world-venv/bin/python -c "import torch; assert torch.__version__ == '2.7.1+cu128'; import accelerate, decord, diffusers, einops, mediapy, swanlab, transformers, wandb" \

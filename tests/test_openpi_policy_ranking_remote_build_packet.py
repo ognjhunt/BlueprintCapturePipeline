@@ -163,15 +163,23 @@ def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path)
         "COPY --from=oscar_runtime /opt/blueprint/oscar_source_provenance.json"
         not in text
     )
+    assert "COPY --from=oscar_runtime /opt/oscar-public /opt/OSCAR" not in text
+    assert "https://github.com/wuzy2115/oscar-public.git" in text
+    assert "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb" in text
+    assert 'git -C /opt/OSCAR checkout --detach FETCH_HEAD' in text
+    shim = "/opt/oscar-venv/bin/python /tmp/oscar_te_shim.py /opt/OSCAR"
     cleanup = "find /opt/OSCAR -type d -name __pycache__"
-    normalize = "blueprint_pipeline.oscar_runtime_source_provenance normalize"
+    seal = "blueprint_pipeline.oscar_runtime_source_provenance seal"
+    assert shim in text
     assert cleanup in text
-    assert normalize in text
-    assert text.index(cleanup) < text.index(normalize)
-    assert "--existing-seal /tmp/oscar_source_provenance_absent.json" in text
+    assert seal in text
+    assert text.index(shim) < text.index(cleanup) < text.index(seal)
     assert "--output /opt/blueprint/oscar_source_provenance.json" in text
+    assert '--source-url "${OSCAR_SOURCE_URL}"' in text
+    assert '--source-commit "${OSCAR_SOURCE_REVISION}"' in text
     assert "--runtime-source-root /opt/OSCAR" in text
     assert "chmod 0444 /opt/blueprint/oscar_source_provenance.json" in text
+    assert "rm -rf /opt/OSCAR/.git /tmp/oscar_te_shim.py" in text
     assert "token=False" in text
     assert "offline_preflight" in text
 
