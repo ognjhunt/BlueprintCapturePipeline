@@ -81,6 +81,9 @@ from .site_task_testbed_webapp_sync import (
     TESTBED_WEBAPP_SYNC_REQUIRED_ENV,
     sync_site_task_testbed_to_webapp,
 )
+from .site_task_testbed_compilation_contract import (
+    validate_testbed_compilation_submission,
+)
 from .task_evaluation_run_control_plane import (
     TaskEvaluationRunControlPlaneError,
     authorize_task_evaluation_run,
@@ -2107,6 +2110,10 @@ def create_app() -> FastAPI:
                     + ",".join(client_owned_reconstruction_fields)
                 ),
             )
+        try:
+            payload = validate_testbed_compilation_submission(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         manifest_path = _manifest_path().resolve()
         if not manifest_path.is_file():
             raise HTTPException(

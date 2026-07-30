@@ -120,6 +120,16 @@ qualified method produces exact candidates, creates immutable evaluator/reset
 support artifacts, and limits the initial condition envelope to the accepted
 capture observation. Those support artifacts are written beside the immutable
 testbed manifest and cards.
+
+The entire v2 submission is validated by the closed Pydantic contract in
+`site_task_testbed_compilation_contract.py`. Its generated Draft 2020-12 schema
+is checked in at
+`docs/schemas/site_task_testbed_compilation_submission.v2.schema.json` and is
+mirrored byte-for-byte by WebApp. Unknown contract-owned fields, malformed
+identifiers/digests, caller-selected scientific scope, inconsistent robot
+bindings, duplicate claim IDs, live-robot authorization, paid-compute
+authorization, and WebApp provider selection all fail before compilation.
+
 After compilation it can publish the full digest-bound testbed to WebApp through
 `PIPELINE_TESTBED_WEBAPP_URL`, authenticated with `PIPELINE_SYNC_TOKEN`. A 2xx
 response is insufficient: Pipeline accepts only a receipt matching the exact
