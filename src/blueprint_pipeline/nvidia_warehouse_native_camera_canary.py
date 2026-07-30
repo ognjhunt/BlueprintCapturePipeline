@@ -181,6 +181,53 @@ def _backend_array_to_numpy(value: Any) -> np.ndarray:
     return np.asarray(value)
 
 
+def _world_pose_matrix_from_backend_pose(position: Any, orientation_wxyz: Any) -> np.ndarray:
+    """Build the row-vector local-to-world matrix used by USD projection helpers."""
+
+    translation = _backend_array_to_numpy(position).astype(float).reshape(-1)
+    quaternion = _backend_array_to_numpy(orientation_wxyz).astype(float).reshape(-1)
+    if (
+        translation.shape != (3,)
+        or quaternion.shape != (4,)
+        or not np.isfinite(translation).all()
+        or not np.isfinite(quaternion).all()
+    ):
+        raise ValueError("native_fabric_world_pose_invalid")
+    norm = float(np.linalg.norm(quaternion))
+    if not math.isfinite(norm) or norm <= 1e-9:
+        raise ValueError("native_fabric_world_orientation_invalid")
+    w, x, y, z = quaternion / norm
+    column_rotation = np.asarray(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ]
+    )
+    matrix = np.eye(4)
+    matrix[:3, :3] = column_rotation.T
+    matrix[3, :3] = translation
+    return matrix
+
+
+def _fabric_world_pose_matrix(prim_wrapper: Any) -> np.ndarray:
+    """Read one live Fabric pose instead of the stale authored USD transform."""
+
+    view = getattr(prim_wrapper, "_xform_prim_view", None)
+    get_world_poses = getattr(view, "get_world_poses", None)
+    if not callable(get_world_poses):
+        raise ValueError("native_fabric_world_pose_api_missing")
+    try:
+        positions, orientations = get_world_poses(usd=False)
+    except Exception as exc:
+        raise ValueError("native_fabric_world_pose_query_failed:" + type(exc).__name__) from exc
+    positions_array = _backend_array_to_numpy(positions).astype(float).reshape(-1, 3)
+    orientations_array = _backend_array_to_numpy(orientations).astype(float).reshape(-1, 4)
+    if positions_array.shape[0] != 1 or orientations_array.shape[0] != 1:
+        raise ValueError("native_fabric_world_pose_cardinality_invalid")
+    return _world_pose_matrix_from_backend_pose(positions_array[0], orientations_array[0])
+
+
 def _render_world_without_physics_advance(world: Any) -> None:
     """Update articulation/Fabric transforms and render without stepping physics."""
 
@@ -429,7 +476,7 @@ def isaac_sim_6_backend(
     simulation_app = SimulationApp(_simulation_app_launch_config())
     try:
         from isaacsim.core.api import World
-        from isaacsim.core.prims import SingleArticulation
+        from isaacsim.core.prims import SingleArticulation, SingleXFormPrim
         from isaacsim.core.utils.stage import add_reference_to_stage
         from isaacsim.sensors.camera import Camera
         from isaacsim.storage.native import get_assets_root_path
@@ -529,14 +576,19 @@ def isaac_sim_6_backend(
             render_count=2,
         )
 
-        def camera_matrix(path: str) -> np.ndarray:
+        def usd_camera_matrix(path: str) -> np.ndarray:
             cache = UsdGeom.XformCache()
             return _matrix_array(cache.GetLocalToWorldTransform(stage.GetPrimAtPath(path)))
 
         wrist = spec["cameras"]["wrist"]
         calibration = wrist["rigid_mount_orientation"]
         wrist_path = "/World/Franka/panda_hand/BlueprintWristCamera"
-        hand_initial_matrix = camera_matrix("/World/Franka/panda_hand")
+        hand_pose = SingleXFormPrim(
+            prim_path="/World/Franka/panda_hand",
+            name="native_warehouse_hand_fabric_pose",
+            reset_xform_properties=False,
+        )
+        hand_initial_matrix = _fabric_world_pose_matrix(hand_pose)
         wrist_quaternion, wrist_mount_calibration = _rigid_wrist_mount_from_initial_task_framing(
             parent_to_world=hand_initial_matrix,
             mount_translation_parent=wrist["mount_translation_m"],
@@ -568,7 +620,7 @@ def isaac_sim_6_backend(
         wrist_local_initial = _matrix_array(
             UsdGeom.Xformable(stage.GetPrimAtPath(wrist_path)).GetLocalTransformation()
         )
-        wrist_world_initial = camera_matrix(wrist_path)
+        wrist_world_initial = _fabric_world_pose_matrix(camera_objects["wrist"])
         actual_wrist_eye = wrist_world_initial[3, :3]
         actual_wrist_forward = (np.asarray([0.0, 0.0, -1.0, 0.0]) @ wrist_world_initial)[:3]
         actual_wrist_forward /= np.linalg.norm(actual_wrist_forward)
@@ -605,7 +657,12 @@ def isaac_sim_6_backend(
         ):
             link_path = f"/World/Franka/{link_name}"
             if stage.GetPrimAtPath(link_path).IsValid():
-                franka_link_points[link_name] = camera_matrix(link_path)[3, :3]
+                link_pose = SingleXFormPrim(
+                    prim_path=link_path,
+                    name=f"native_warehouse_{link_name}_fabric_pose",
+                    reset_xform_properties=False,
+                )
+                franka_link_points[link_name] = _fabric_world_pose_matrix(link_pose)[3, :3]
         if not franka_link_points:
             raise ValueError("native_warehouse_franka_link_projection_points_missing")
 
@@ -623,27 +680,52 @@ def isaac_sim_6_backend(
                 frames[view_id][f"{phase}_physics_step"] = step
             return step
 
+        def record_entity_projections(phase: str) -> None:
+            for view_id, path in (("external", external_path), ("wrist", wrist_path)):
+                camera_to_world = (
+                    usd_camera_matrix(path)
+                    if view_id == "external"
+                    else _fabric_world_pose_matrix(camera_objects["wrist"])
+                )
+                if view_id == "external":
+                    required, projection_evidence = _project_required_external_entities(
+                        camera_to_world=camera_to_world,
+                        task_points=entity_points,
+                        franka_link_points=franka_link_points,
+                        width=640,
+                        height=480,
+                        vfov_deg=float(spec["cameras"][view_id]["vertical_fov_deg"]),
+                    )
+                    frames[view_id].setdefault("franka_projection_evidence_by_phase", {})[phase] = (
+                        projection_evidence
+                    )
+                else:
+                    required = _project_world_points(
+                        camera_to_world=camera_to_world,
+                        points=entity_points,
+                        width=640,
+                        height=480,
+                        vfov_deg=float(spec["cameras"][view_id]["vertical_fov_deg"]),
+                    )
+                frames[view_id].setdefault("required_entities_projected_in_frame_by_phase", {})[
+                    phase
+                ] = required
+
+        def finalize_entity_projections() -> None:
+            for view_id in REQUIRED_VIEWS:
+                phase_values = frames[view_id]["required_entities_projected_in_frame_by_phase"]
+                names = sorted(
+                    {str(name) for projection in phase_values.values() for name in projection}
+                )
+                frames[view_id]["required_entities_projected_in_frame"] = {
+                    name: all(
+                        bool(phase_values[phase].get(name)) for phase in ("initial", "commanded")
+                    )
+                    for name in names
+                }
+
         initial_step = save_frames("initial")
-        for view_id, path in (("external", external_path), ("wrist", wrist_path)):
-            if view_id == "external":
-                required, projection_evidence = _project_required_external_entities(
-                    camera_to_world=camera_matrix(path),
-                    task_points=entity_points,
-                    franka_link_points=franka_link_points,
-                    width=640,
-                    height=480,
-                    vfov_deg=float(spec["cameras"][view_id]["vertical_fov_deg"]),
-                )
-                frames[view_id]["required_entities_projected_in_frame"] = required
-                frames[view_id]["franka_projection_evidence"] = projection_evidence
-            else:
-                frames[view_id]["required_entities_projected_in_frame"] = _project_world_points(
-                    camera_to_world=camera_matrix(path),
-                    points=entity_points,
-                    width=640,
-                    height=480,
-                    vfov_deg=float(spec["cameras"][view_id]["vertical_fov_deg"]),
-                )
+        record_entity_projections("initial")
 
         commanded_joint_state = _apply_and_measure_render_only_joint_pose(
             robot=robot,
@@ -653,7 +735,9 @@ def isaac_sim_6_backend(
             render_count=4,
         )
         commanded_step = save_frames("commanded")
-        wrist_world_commanded = camera_matrix(wrist_path)
+        record_entity_projections("commanded")
+        finalize_entity_projections()
+        wrist_world_commanded = _fabric_world_pose_matrix(camera_objects["wrist"])
         wrist_local_commanded = _matrix_array(
             UsdGeom.Xformable(stage.GetPrimAtPath(wrist_path)).GetLocalTransformation()
         )

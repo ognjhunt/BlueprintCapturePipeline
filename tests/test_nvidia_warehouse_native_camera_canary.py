@@ -15,12 +15,14 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _apply_runtime_asset_relocations,
     _backend_array_to_numpy,
     _camera_quaternion_wxyz,
+    _fabric_world_pose_matrix,
     _load_materialization_manifest,
     _project_required_external_entities,
     _project_world_points,
     _render_world_without_physics_advance,
     _rigid_wrist_mount_from_initial_task_framing,
     _simulation_app_launch_config,
+    _world_pose_matrix_from_backend_pose,
     import_simulation_app,
     run_native_camera_canary,
 )
@@ -212,6 +214,34 @@ def test_backend_array_to_numpy_moves_tensor_like_value_to_cpu() -> None:
 
     assert np.array_equal(_backend_array_to_numpy(TensorLike()), np.asarray([1.0, 2.0]))
     assert calls == ["detach", "cpu", "numpy"]
+
+
+def test_backend_pose_matrix_uses_usd_row_vector_convention() -> None:
+    half_turn = math.radians(90.0) / 2.0
+    matrix = _world_pose_matrix_from_backend_pose(
+        [1.0, 2.0, 3.0],
+        [math.cos(half_turn), 0.0, 0.0, math.sin(half_turn)],
+    )
+
+    assert np.asarray([1.0, 0.0, 0.0, 0.0]) @ matrix == pytest.approx([0.0, 1.0, 0.0, 0.0])
+    assert np.asarray([0.0, 0.0, 0.0, 1.0]) @ matrix == pytest.approx([1.0, 2.0, 3.0, 1.0])
+
+
+def test_fabric_world_pose_query_explicitly_bypasses_stale_usd() -> None:
+    calls: list[bool] = []
+
+    class View:
+        def get_world_poses(self, *, usd):
+            calls.append(usd)
+            return np.asarray([[0.1, 0.2, 0.3]]), np.asarray([[1.0, 0.0, 0.0, 0.0]])
+
+    class Prim:
+        _xform_prim_view = View()
+
+    matrix = _fabric_world_pose_matrix(Prim())
+
+    assert calls == [False]
+    assert matrix[3, :3] == pytest.approx([0.1, 0.2, 0.3])
 
 
 def test_wrist_mount_is_calibrated_once_in_parent_coordinates_toward_task_centroid() -> None:
