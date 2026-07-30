@@ -485,7 +485,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     canary.add_argument("--protocol", required=True)
     canary.add_argument("--background", required=True)
     canary.add_argument("--output", required=True)
-    canary.add_argument("--arm", choices=("skeleton_only", "ctrl_world"), required=True)
+    canary.add_argument(
+        "--arm", choices=("skeleton_only", "oscar", "ctrl_world"), required=True
+    )
     canary.add_argument("--native-camera-canary-result")
     background = subparsers.add_parser("materialize-canary-background")
     background.add_argument("--source", required=True)

@@ -425,3 +425,41 @@ def test_bootstrap_routes_oscar_to_resident_multiview_runtime(
     assert observed["initial_camera_paths"] == cameras
     assert runtime.entered is True
     assert runtime.exited is True
+
+
+def test_build_canary_input_cli_accepts_oscar_arm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict = {}
+
+    def build_canary(**kwargs):
+        observed.update(kwargs)
+        return {
+            "schema_version": bootstrap_module.CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
+            "status": "completed",
+        }
+
+    monkeypatch.setattr(bootstrap_module, "build_canary_input_bundle", build_canary)
+    output = tmp_path / "oscar-input.zip"
+
+    result = bootstrap_module.main(
+        [
+            "build-canary-input",
+            "--protocol",
+            str(tmp_path / "protocol.json"),
+            "--background",
+            str(tmp_path / "background.png"),
+            "--output",
+            str(output),
+            "--arm",
+            "oscar",
+            "--native-camera-canary-result",
+            str(tmp_path / "native-camera.json"),
+        ]
+    )
+
+    assert result == 0
+    assert observed["arm_id"] == "oscar"
+    assert observed["native_camera_canary_result_path"] == str(
+        tmp_path / "native-camera.json"
+    )
