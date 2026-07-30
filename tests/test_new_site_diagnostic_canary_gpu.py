@@ -10,6 +10,7 @@ from PIL import Image
 
 from blueprint_pipeline import new_site_diagnostic_canary_gpu as canary_module
 from blueprint_pipeline.droid_oscar_closed_loop_adapter import EXTERIOR_VIEW, WRIST_VIEW
+from blueprint_pipeline.droid_policy_bridge import DROID_EXTERIOR_VIEW_2
 from blueprint_pipeline.new_site_diagnostic_canary_gpu import (
     MultiViewCanaryReliabilityGate,
     build_canary_input_bundle,
@@ -117,12 +118,8 @@ def test_background_materialization_is_deterministic_and_does_not_crop(tmp_path:
     first = tmp_path / "first.png"
     second = tmp_path / "second.png"
 
-    first_receipt = materialize_canary_background(
-        source_path=source, output_path=first
-    )
-    second_receipt = materialize_canary_background(
-        source_path=source, output_path=second
-    )
+    first_receipt = materialize_canary_background(source_path=source, output_path=first)
+    second_receipt = materialize_canary_background(source_path=source, output_path=second)
 
     assert first.read_bytes() == second.read_bytes()
     assert first_receipt["output_sha256"] == second_receipt["output_sha256"]
@@ -216,6 +213,84 @@ def test_canary_input_roundtrip_carries_passed_native_initial_camera_frames(
     )
     for path in extracted["initial_camera_paths"].values():
         assert Image.open(path).size == (640, 480)
+
+
+def test_ctrl_world_input_roundtrip_requires_and_carries_three_native_views(
+    tmp_path: Path,
+) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224), color=(12, 34, 56)).save(background)
+    frame_entries = {}
+    for view_key, color in (
+        ("external", (20, 40, 60)),
+        ("external_2", (30, 50, 70)),
+        ("wrist", (60, 40, 20)),
+    ):
+        path = tmp_path / f"native_{view_key}.png"
+        Image.new("RGB", (640, 480), color=color).save(path)
+        frame_entries[view_key] = {
+            "frames": {
+                "initial": {
+                    "path": str(path),
+                    "sha256": file_sha256(path),
+                    "resolution": [640, 480],
+                    "nonblank": True,
+                }
+            }
+        }
+    native_result = {
+        "status": "passed",
+        "label_free": True,
+        "rankings_or_policy_outcomes_accessed": False,
+        "assessment": {
+            "required_views": ["external", "external_2", "wrist"],
+            "views": frame_entries,
+        },
+    }
+    native_result["result_sha256"] = canonical_sha256(native_result)
+    native_result_path = tmp_path / "native_result.json"
+    native_result_path.write_text(json.dumps(native_result), encoding="utf-8")
+
+    receipt = build_canary_input_bundle(
+        protocol_path=protocol_path,
+        background_path=background,
+        output_zip=tmp_path / "ctrl_world_canary.zip",
+        arm_id="ctrl_world",
+        native_camera_canary_result_path=native_result_path,
+    )
+    extracted = extract_canary_input_bundle(
+        bundle_path=tmp_path / "ctrl_world_canary.zip",
+        expected_bundle_sha256=receipt["bundle_sha256"],
+        output_dir=tmp_path / "ctrl_world_extracted",
+    )
+
+    assert set(extracted["initial_camera_paths"]) == {
+        EXTERIOR_VIEW,
+        DROID_EXTERIOR_VIEW_2,
+        WRIST_VIEW,
+    }
+    assert set(receipt["manifest"]["native_initial_cameras"]) == {
+        EXTERIOR_VIEW,
+        DROID_EXTERIOR_VIEW_2,
+        WRIST_VIEW,
+    }
+
+
+def test_ctrl_world_input_rejects_missing_native_three_view_result(tmp_path: Path) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224)).save(background)
+
+    with pytest.raises(ValueError, match="native_three_view_result_required"):
+        build_canary_input_bundle(
+            protocol_path=protocol_path,
+            background_path=background,
+            output_zip=tmp_path / "ctrl_world_canary.zip",
+            arm_id="ctrl_world",
+        )
 
 
 def test_canary_input_accepts_portable_native_camera_relative_paths(
@@ -344,9 +419,7 @@ def test_skeleton_wrist_uses_hash_verified_world_motion_not_rigid_camera_pixels(
         tmp_path,
         [[0.50, 0.00, 0.10], [0.52, 0.00, 0.10]],
     )
-    result = MultiViewCanaryReliabilityGate(
-        ReliabilityThresholds(), assessor=assessor
-    ).assess(
+    result = MultiViewCanaryReliabilityGate(ReliabilityThresholds(), assessor=assessor).assess(
         previous_observation={},
         prepared_transition={
             "reliability_actions_10d": _active_reliability_actions(),
@@ -366,9 +439,7 @@ def test_skeleton_wrist_uses_hash_verified_world_motion_not_rigid_camera_pixels(
     assert wrist["raw_pixel_flags"] == [FLAG_STATIC_UNDER_COMMAND]
     assert wrist["flags"] == []
     assert wrist["motion_basis"] == "hash_verified_reference_frame_fk_trace"
-    assert wrist["kinematic_motion"]["maximum_reference_displacement_m"] == pytest.approx(
-        0.02
-    )
+    assert wrist["kinematic_motion"]["maximum_reference_displacement_m"] == pytest.approx(0.02)
 
 
 def test_skeleton_wrist_still_fails_when_fk_trace_is_stationary(tmp_path: Path) -> None:
@@ -389,9 +460,7 @@ def test_skeleton_wrist_still_fails_when_fk_trace_is_stationary(tmp_path: Path) 
         tmp_path,
         [[0.50, 0.00, 0.10], [0.50, 0.00, 0.10]],
     )
-    result = MultiViewCanaryReliabilityGate(
-        ReliabilityThresholds(), assessor=assessor
-    ).assess(
+    result = MultiViewCanaryReliabilityGate(ReliabilityThresholds(), assessor=assessor).assess(
         previous_observation={},
         prepared_transition={
             "reliability_actions_10d": _active_reliability_actions(),
@@ -463,7 +532,9 @@ def test_skeleton_canary_runs_two_policy_wam_transitions_without_ranking(
         action_chunk_rows=15,
     )
     monkeypatch.setattr(canary_module, "load_policy_spec", lambda *_args, **_kwargs: spec)
-    monkeypatch.setattr(canary_module, "verify_local_checkpoint", lambda **_kwargs: {"status": "verified"})
+    monkeypatch.setattr(
+        canary_module, "verify_local_checkpoint", lambda **_kwargs: {"status": "verified"}
+    )
     monkeypatch.setattr(canary_module, "LocalOpenPIDroidPolicyClient", lambda **_kwargs: object())
     monkeypatch.setattr(canary_module, "prepare_franka_droid_runtime", lambda **_kwargs: {})
     monkeypatch.setattr(

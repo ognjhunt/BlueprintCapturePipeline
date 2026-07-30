@@ -19,7 +19,7 @@ from .droid_oscar_closed_loop_adapter import (
     DroidOscarSkeletonTransitionAdapter,
     SkeletonOnlyIntendedMotionArm,
 )
-from .droid_policy_bridge import validate_droid_observation
+from .droid_policy_bridge import DROID_EXTERIOR_VIEW_2, validate_droid_observation
 from .franka_can_tray_feasibility import _CAN_INITIAL
 from .franka_droid_closed_loop import (
     _EXTERNAL_CAMERA,
@@ -63,9 +63,21 @@ BACKGROUND_NAME = "captured_site_background.png"
 MANIFEST_NAME = "bundle_manifest.json"
 NATIVE_CAMERA_RESULT_NAME = "native_camera_canary_result.json"
 NATIVE_EXTERNAL_NAME = "native_external_initial.png"
+NATIVE_EXTERNAL_2_NAME = "native_external_2_initial.png"
 NATIVE_WRIST_NAME = "native_wrist_initial.png"
 MAX_INPUT_BYTES = 8 * 1024 * 1024
-SUPPORTED_ARMS = frozenset({"skeleton_only"})
+BUNDLE_SUPPORTED_ARMS = frozenset({"skeleton_only", "ctrl_world"})
+NATIVE_CAMERA_REQUIREMENTS = {
+    "skeleton_only": (
+        (EXTERIOR_VIEW, NATIVE_EXTERNAL_NAME, "external"),
+        (WRIST_VIEW, NATIVE_WRIST_NAME, "wrist"),
+    ),
+    "ctrl_world": (
+        (EXTERIOR_VIEW, NATIVE_EXTERNAL_NAME, "external"),
+        (DROID_EXTERIOR_VIEW_2, NATIVE_EXTERNAL_2_NAME, "external_2"),
+        (WRIST_VIEW, NATIVE_WRIST_NAME, "wrist"),
+    ),
+}
 SKELETON_WRIST_REFERENCE_DISPLACEMENT_MIN_M = 0.001
 _SKELETON_WRIST_PIXEL_MOTION_FLAGS = frozenset(
     {FLAG_STATIC_UNDER_COMMAND, FLAG_MOTION_WITHOUT_COMMAND, FLAG_TIMING_DISAGREEMENT}
@@ -159,8 +171,10 @@ def build_canary_input_bundle(
     with Image.open(background) as image:
         if image.size != (224, 224):
             raise ValueError("new_site_canary_background_must_be_224_square")
-    if arm_id not in SUPPORTED_ARMS:
-        raise ValueError("new_site_canary_arm_not_supported_by_openpi_image")
+    if arm_id not in BUNDLE_SUPPORTED_ARMS:
+        raise ValueError("new_site_canary_arm_not_supported_by_input_bundle")
+    if arm_id == "ctrl_world" and native_camera_canary_result_path is None:
+        raise ValueError("new_site_ctrl_world_native_three_view_result_required")
     if protocol.get("schema_version") != "policy_ranking_new_site_diagnostic_smoke_protocol.v1":
         raise ValueError("new_site_canary_protocol_schema_invalid")
     _validate_protocol_identity(protocol)
@@ -215,11 +229,14 @@ def build_canary_input_bundle(
             "result": native_result,
             "frames": {},
         }
-        for view_id, filename in (
-            (EXTERIOR_VIEW, NATIVE_EXTERNAL_NAME),
-            (WRIST_VIEW, NATIVE_WRIST_NAME),
-        ):
-            view_key = "external" if view_id == EXTERIOR_VIEW else "wrist"
+        camera_requirements = NATIVE_CAMERA_REQUIREMENTS[arm_id]
+        if arm_id == "ctrl_world" and assessment.get("required_views") != [
+            "external",
+            "external_2",
+            "wrist",
+        ]:
+            raise ValueError("new_site_ctrl_world_native_three_view_assessment_required")
+        for view_id, filename, view_key in camera_requirements:
             view = views.get(view_key)
             view = view if isinstance(view, Mapping) else {}
             frames = view.get("frames")
@@ -230,11 +247,7 @@ def build_canary_input_bundle(
             if not path.is_file():
                 relative_value = str(frame.get("relative_path") or "")
                 relative = PurePosixPath(relative_value)
-                if (
-                    relative_value
-                    and not relative.is_absolute()
-                    and ".." not in relative.parts
-                ):
+                if relative_value and not relative.is_absolute() and ".." not in relative.parts:
                     path = (native_result_path.parent / relative.as_posix()).resolve()
             if (
                 not path.is_file()
@@ -302,14 +315,19 @@ def extract_canary_input_bundle(
         infos = archive.infolist()
         names = {info.filename for info in infos}
         base_names = {MANIFEST_NAME, PROTOCOL_NAME, BACKGROUND_NAME}
-        native_names = base_names | {
+        native_two_view_names = base_names | {
             NATIVE_CAMERA_RESULT_NAME,
             NATIVE_EXTERNAL_NAME,
             NATIVE_WRIST_NAME,
         }
-        if frozenset(names) not in {frozenset(base_names), frozenset(native_names)}:
+        native_three_view_names = native_two_view_names | {NATIVE_EXTERNAL_2_NAME}
+        if frozenset(names) not in {
+            frozenset(base_names),
+            frozenset(native_two_view_names),
+            frozenset(native_three_view_names),
+        }:
             raise ValueError("new_site_canary_input_member_allowlist_mismatch")
-        if len(infos) not in {3, 6}:
+        if len(infos) not in {3, 6, 7}:
             raise ValueError("new_site_canary_input_member_count_invalid")
         for info in infos:
             member = PurePosixPath(info.filename)
@@ -321,14 +339,11 @@ def extract_canary_input_bundle(
         native_result_bytes = (
             archive.read(NATIVE_CAMERA_RESULT_NAME) if NATIVE_CAMERA_RESULT_NAME in names else None
         )
-        native_frame_bytes = (
-            {
-                EXTERIOR_VIEW: archive.read(NATIVE_EXTERNAL_NAME),
-                WRIST_VIEW: archive.read(NATIVE_WRIST_NAME),
-            }
-            if native_result_bytes is not None
-            else {}
-        )
+        native_frame_bytes = {
+            filename: archive.read(filename)
+            for filename in (NATIVE_EXTERNAL_NAME, NATIVE_EXTERNAL_2_NAME, NATIVE_WRIST_NAME)
+            if filename in names
+        }
     if not isinstance(manifest_value, Mapping):
         raise ValueError("new_site_canary_input_manifest_not_object")
     manifest = dict(manifest_value)
@@ -338,8 +353,23 @@ def extract_canary_input_bundle(
     manifest["manifest_sha256"] = declared
     if manifest.get("schema_version") != INPUT_SCHEMA_VERSION:
         raise ValueError("new_site_canary_input_schema_invalid")
-    if manifest.get("arm_id") not in SUPPORTED_ARMS:
+    arm_id = manifest.get("arm_id")
+    if arm_id not in BUNDLE_SUPPORTED_ARMS:
         raise ValueError("new_site_canary_input_arm_unsupported")
+    camera_requirements = NATIVE_CAMERA_REQUIREMENTS[str(arm_id)]
+    expected_native_names = (
+        base_names
+        | {NATIVE_CAMERA_RESULT_NAME}
+        | {filename for _view_id, filename, _view_key in camera_requirements}
+    )
+    if native_result_bytes is None:
+        if arm_id == "ctrl_world":
+            raise ValueError("new_site_ctrl_world_native_three_view_result_required")
+        expected_names = base_names
+    else:
+        expected_names = expected_native_names
+    if names != expected_names:
+        raise ValueError("new_site_canary_input_arm_camera_members_mismatch")
     if hashlib.sha256(protocol_bytes).hexdigest() != manifest.get("protocol_file_sha256"):
         raise ValueError("new_site_canary_protocol_file_sha256_mismatch")
     if hashlib.sha256(background_bytes).hexdigest() != manifest.get("background_sha256"):
@@ -360,13 +390,10 @@ def extract_canary_input_bundle(
         native_manifest = manifest.get("native_initial_cameras")
         if not isinstance(native_manifest, Mapping):
             raise ValueError("new_site_canary_native_camera_manifest_missing")
-        for view_id, filename in (
-            (EXTERIOR_VIEW, NATIVE_EXTERNAL_NAME),
-            (WRIST_VIEW, NATIVE_WRIST_NAME),
-        ):
+        for view_id, filename, _view_key in camera_requirements:
             entry = native_manifest.get(view_id)
             entry = entry if isinstance(entry, Mapping) else {}
-            data = native_frame_bytes[view_id]
+            data = native_frame_bytes[filename]
             if (
                 entry.get("filename") != filename
                 or hashlib.sha256(data).hexdigest() != entry.get("sha256")
@@ -579,10 +606,9 @@ def _assess_skeleton_wrist_reference_motion(
         raise ValueError("new_site_canary_wrist_conditioning_evidence_missing")
     evidence = dict(evidence_value)
     declared_evidence_sha256 = evidence.pop("evidence_sha256", None)
-    if (
-        not isinstance(declared_evidence_sha256, str)
-        or declared_evidence_sha256 != canonical_sha256(evidence)
-    ):
+    if not isinstance(
+        declared_evidence_sha256, str
+    ) or declared_evidence_sha256 != canonical_sha256(evidence):
         raise ValueError("new_site_canary_wrist_conditioning_evidence_sha256_invalid")
     trace_evidence = evidence.get("trace_evidence")
     if not isinstance(trace_evidence, Mapping):
@@ -764,9 +790,7 @@ def run_skeleton_only_canary(
     first_provenance_value = (
         row_mappings[0].get("next_observation_provenance") if row_mappings else None
     )
-    first_provenance = (
-        first_provenance_value if isinstance(first_provenance_value, Mapping) else {}
-    )
+    first_provenance = first_provenance_value if isinstance(first_provenance_value, Mapping) else {}
     first_policy_observation_sha256 = (
         row_mappings[0].get("policy_observation_sha256") if row_mappings else None
     )
@@ -774,9 +798,7 @@ def run_skeleton_only_canary(
         row_mappings[0].get("next_observation_sha256") if row_mappings else None
     )
     second_policy_observation_sha256 = (
-        row_mappings[1].get("policy_observation_sha256")
-        if len(row_mappings) >= 2
-        else None
+        row_mappings[1].get("policy_observation_sha256") if len(row_mappings) >= 2 else None
     )
     round_trip_passed = (
         len(rows) == 2
@@ -785,8 +807,7 @@ def run_skeleton_only_canary(
         and row_mappings[0].get("query_index") == 0
         and row_mappings[1].get("query_index") == 1
         and all(
-            row.get("schema_version") == "policy_wam_closed_loop_trace.v1"
-            for row in row_mappings
+            row.get("schema_version") == "policy_wam_closed_loop_trace.v1" for row in row_mappings
         )
         and loop.get("trace_sha256") == file_sha256(trace_path)
         and loop.get("policy_call_count") == 2

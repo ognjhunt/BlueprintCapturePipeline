@@ -122,9 +122,7 @@ def test_bootstrap_uploads_terminal_failure_envelope_for_early_runtime_error(
     def upload(_url: str, archive_path: Path) -> int:
         with zipfile.ZipFile(archive_path) as archive:
             observed.update(
-                json.loads(
-                    archive.read("openpi_policy_ranking_gpu_job.json").decode("utf-8")
-                )
+                json.loads(archive.read("openpi_policy_ranking_gpu_job.json").decode("utf-8"))
             )
         return 200
 
@@ -158,9 +156,7 @@ def test_bootstrap_routes_canary_bundle_to_one_arm_worker(
         "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL",
         "https://storage.example/input?signature=secret",
     )
-    monkeypatch.setenv(
-        "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256", receipt["bundle_sha256"]
-    )
+    monkeypatch.setenv("BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256", receipt["bundle_sha256"])
     monkeypatch.setenv(
         "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL",
         "https://storage.example/output?signature=secret",
@@ -205,3 +201,41 @@ def test_bootstrap_routes_canary_bundle_to_one_arm_worker(
     assert result["execution_mode"] == EXECUTION_MODE_NEW_SITE_CANARY
     assert Path(observed["protocol_path"]).read_bytes() == protocol_path.read_bytes()
     assert "new_site_diagnostic_canary_gpu.json" in archive_names
+
+
+def test_bootstrap_fails_closed_before_routing_unconnected_ctrl_world_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL", "https://storage.example/input"
+    )
+    monkeypatch.setenv("BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256", "a" * 64)
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL",
+        "https://storage.example/output",
+    )
+    monkeypatch.setenv("BLUEPRINT_OPENPI_EXECUTION_MODE", EXECUTION_MODE_NEW_SITE_CANARY)
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_download_signed_input",
+        lambda _url, destination, **_kwargs: destination.write_bytes(b"placeholder"),
+    )
+    monkeypatch.setattr(
+        bootstrap_module,
+        "extract_canary_input_bundle",
+        lambda **_kwargs: {"manifest": {"arm_id": "ctrl_world", "protocol_sha256": "b" * 64}},
+    )
+    monkeypatch.setattr(
+        bootstrap_module,
+        "run_skeleton_only_canary",
+        lambda **_kwargs: pytest.fail("must not route Ctrl-World through skeleton-only"),
+    )
+    monkeypatch.setattr(bootstrap_module, "_upload_output", lambda *_args: 200)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    result = run_signed_gpu_bootstrap(workspace=workspace)
+
+    assert result["status"] == "blocked"
+    assert result["failure_type"] == "ValueError"
+    assert result["input_manifest"]["arm_id"] == "ctrl_world"

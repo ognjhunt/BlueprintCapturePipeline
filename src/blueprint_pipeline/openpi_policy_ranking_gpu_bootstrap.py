@@ -173,9 +173,7 @@ def extract_private_input_bundle(
         if not isinstance(scenes, list) or not scenes:
             raise ValueError("gpu_input_bundle_scenes_invalid")
         filenames = {
-            str(row.get("background_filename") or "")
-            for row in scenes
-            if isinstance(row, Mapping)
+            str(row.get("background_filename") or "") for row in scenes if isinstance(row, Mapping)
         }
         if (
             len(filenames) != len(scenes)
@@ -226,9 +224,12 @@ def _download_signed_input(
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("gpu_input_url_not_safe_https")
     request = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(  # nosec B310 - exact validated HTTPS URL and redirect check
-        request, timeout=180
-    ) as response, destination.open("wb") as handle:
+    with (
+        urllib.request.urlopen(  # nosec B310 - exact validated HTTPS URL and redirect check
+            request, timeout=180
+        ) as response,
+        destination.open("wb") as handle,
+    ):
         if response.geturl() != url:
             raise ValueError("gpu_input_url_redirect_forbidden")
         total = 0
@@ -261,13 +262,9 @@ def _upload_output(url: str, archive_path: Path) -> int:
 
 def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[str, Any]:
     root = Path(workspace).expanduser().resolve()
-    input_url = os.getenv(
-        "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL", ""
-    ).strip()
+    input_url = os.getenv("BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL", "").strip()
     input_sha = os.getenv("BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256", "").strip()
-    output_url = os.getenv(
-        "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL", ""
-    ).strip()
+    output_url = os.getenv("BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL", "").strip()
     execution_mode = os.getenv(
         "BLUEPRINT_OPENPI_EXECUTION_MODE", EXECUTION_MODE_FULL_CAMPAIGN
     ).strip()
@@ -297,6 +294,8 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
                 expected_bundle_sha256=input_sha,
                 output_dir=extracted,
             )
+            if (extracted_input.get("manifest") or {}).get("arm_id") != "skeleton_only":
+                raise ValueError("signed_gpu_bootstrap_canary_arm_runtime_not_connected")
             campaign = run_skeleton_only_canary(
                 protocol_path=extracted_input["protocol_path"],
                 background_path=extracted_input["background_path"],
@@ -369,9 +368,9 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
             failure_manifest.update(
                 {
                     "arm_id": (extracted_input.get("manifest") or {}).get("arm_id"),
-                    "protocol_sha256": (
-                        extracted_input.get("manifest") or {}
-                    ).get("protocol_sha256"),
+                    "protocol_sha256": (extracted_input.get("manifest") or {}).get(
+                        "protocol_sha256"
+                    ),
                     "canary": None,
                 }
             )
@@ -379,9 +378,7 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
             failure_manifest.update(
                 {
                     "inputs": {
-                        "scenes": list(
-                            (extracted_input.get("manifest") or {}).get("scenes") or []
-                        ),
+                        "scenes": list((extracted_input.get("manifest") or {}).get("scenes") or []),
                         "policy_ids": list(POLICY_IDS),
                     },
                     "policy_runs": [],
