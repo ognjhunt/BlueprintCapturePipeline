@@ -81,6 +81,7 @@ from .nvidia_warehouse_native_camera_gpu_admission import (
     run_native_camera_gpu_lane,
 )
 from .policy_ranking_successor_gpu_admission import (
+    CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND,
     PROBE_KIND as POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
     run_successor_gpu_lane,
 )
@@ -630,6 +631,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             CURRENT_REFERENCE_POLICY_CANARY_PROBE_KIND,
             NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
+            CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND,
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
         ),
         default="strict-policy-smoke",
@@ -1065,7 +1067,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
-        if args.probe_kind == POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND:
+        if args.probe_kind in {
+            POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
+            CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND,
+        }:
             if args.successor_action == "refresh":
                 missing = [
                     name
@@ -1202,6 +1207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         session_budget_ledger=args.successor_session_budget_ledger,
                         expected_source_commit=checkout_commit,
                         execute=args.execute,
+                        expected_probe_kind=args.probe_kind,
                     )
             success = result.get("status") in {
                 "dry_run_ready",

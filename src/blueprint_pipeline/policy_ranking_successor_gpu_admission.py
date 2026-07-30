@@ -77,6 +77,7 @@ from .watchdog_owner_teardown_contract import write_owner_teardown_cancel_reques
 
 
 PROBE_KIND = "policy-ranking-successor-cosmos"
+CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND = "policy-ranking-ctrl-world-current-reference"
 FOLLOWUP_EXPERIMENT_ID = "policy_ranking_cosmos3_followup_20260728"
 SCHEMA_VERSION = "policy_ranking_successor_gpu_admission.v1"
 AUTHORIZATION_SCHEMA = "policy_ranking_successor_compute_authorization.v1"
@@ -107,6 +108,7 @@ class SuccessorGPUProfile:
     max_hourly_rate_usd: float
     target_spend_usd: float
     hard_ttl_seconds: int
+    probe_kind: str = PROBE_KIND
     reference_bundle: bool = False
     powered_bundle: bool = False
     edge_policy_canary_bundle: bool = False
@@ -1273,7 +1275,7 @@ def build_successor_gpu_admission(
     result: dict[str, Any] = {
         "schema_version": profile.admission_schema,
         "status": "admitted" if not blockers else "blocked",
-        "probe_kind": PROBE_KIND,
+        "probe_kind": profile.probe_kind,
         "experiment_id": profile.experiment_id,
         "execute_requested": bool(execute),
         "blockers": sorted(set(blockers)),
@@ -1720,6 +1722,7 @@ def run_successor_gpu_lane(
     provider_output_put_url_file: str | Path | None = None,
     provider_output_get_url_file: str | Path | None = None,
     observed_now_epoch: float | None = None,
+    expected_probe_kind: str | None = None,
 ) -> dict[str, Any]:
     input_blockers: list[str] = []
 
@@ -1752,6 +1755,8 @@ def run_successor_gpu_lane(
         profile = PHASE_B_PROFILE
     else:
         profile = LEGACY_PROFILE
+    if expected_probe_kind is not None and expected_probe_kind != profile.probe_kind:
+        input_blockers.append("successor_probe_kind_profile_mismatch")
     bundle = inspect_successor_bundle(
         provider_bundle_path,
         receipt=bundle_receipt,
@@ -1821,7 +1826,7 @@ def run_successor_gpu_lane(
         "experiment_id": profile.experiment_id,
         "source_commit": expected_source_commit,
         "provider": str(provider_preflight.get("provider") or "").strip().lower(),
-        "probe_kind": PROBE_KIND,
+        "probe_kind": profile.probe_kind,
         "public_image": profile.public_image,
         "provider_bundle_sha256": bundle.get("bundle_sha256"),
         "smoke_inventory_sha256": canonical_sha256(smoke_inventory),
@@ -2075,6 +2080,7 @@ __all__ = [
     "PREFLIGHT_SCHEMA",
     "DROID_REFERENCE_PROFILE",
     "CTRL_WORLD_REPLAY_PROFILE",
+    "CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND",
     "EDGE_CLOSED_LOOP_PROFILE",
     "OSCAR_PUBLIC_REPLAY_PROFILE",
     "POWERED_DROID_PROFILE",

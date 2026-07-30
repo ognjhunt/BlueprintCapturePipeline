@@ -987,6 +987,32 @@ def test_successor_lane_writes_blocked_artifacts_for_unreadable_input(
     assert adapter_out.is_file()
 
 
+def test_successor_lane_rejects_probe_kind_profile_mismatch(tmp_path: Path) -> None:
+    result = admission.run_successor_gpu_lane(
+        authorization_path=EXPERIMENT / "compute_authorization_allocation_2.json",
+        environment_path=EXPERIMENT / "environment_and_source_manifest.json",
+        smoke_inventory_path=EXPERIMENT / "smoke_request_inventory.json",
+        provider_preflight_path=_preflight_path(tmp_path),
+        provider_bundle_path=EXPERIMENT / BUNDLE_NAME,
+        provider_bundle_receipt_path=EXPERIMENT / BUNDLE_RECEIPT_NAME,
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "adapter.json",
+        job_dir=tmp_path / "job",
+        public_base_url=None,
+        token_file=None,
+        secret_env_file=None,
+        output_path=None,
+        session_budget_ledger=None,
+        expected_source_commit="e" * 40,
+        execute=False,
+        expected_probe_kind=admission.CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND,
+    )
+
+    assert result["status"] == "blocked"
+    assert "successor_probe_kind_profile_mismatch" in result["blockers"]
+
+
 def test_paid_resource_allocator_dispatches_successor_lane_only_through_probe_kind(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1049,3 +1075,61 @@ def test_paid_resource_allocator_dispatches_successor_lane_only_through_probe_ki
     assert captured["provider_output_put_url_file"] == "output-put-url.txt"
     assert captured["provider_output_get_url_file"] == "output-get-url.txt"
     assert captured["expected_source_commit"] == "d" * 40
+    assert captured["expected_probe_kind"] == (
+        allocator.POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND
+    )
+
+
+def test_paid_resource_allocator_dispatches_ctrl_world_current_reference_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        allocator,
+        "_source_checkout_blockers",
+        lambda _commit, **_kwargs: ([], "d" * 40),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_successor_gpu_lane",
+        lambda **kwargs: captured.update(kwargs)
+        or {"status": "dry_run_ready", "provider_mutations_performed": 0},
+    )
+
+    code = allocator.main(
+        [
+            "gpu-canary",
+            "--probe-kind",
+            allocator.CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND,
+            "--provider-launch-request",
+            "authorization.json",
+            "--release-evidence",
+            "environment.json",
+            "--model-cache-evidence",
+            "inventory.json",
+            "--preflight-bundle",
+            "preflight.json",
+            "--episode-bundle",
+            "bundle.zip",
+            "--successor-bundle-receipt",
+            "receipt.json",
+            "--admission-out",
+            str(tmp_path / "admission.json"),
+            "--bound-request-out",
+            str(tmp_path / "bound.json"),
+            "--adapter-output",
+            str(tmp_path / "adapter.json"),
+            "--pod-name",
+            str(tmp_path / "job"),
+            "--expected-source-commit",
+            "d" * 40,
+        ]
+    )
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+    assert captured["expected_probe_kind"] == (
+        allocator.CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND
+    )
