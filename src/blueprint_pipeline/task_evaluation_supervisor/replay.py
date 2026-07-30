@@ -33,6 +33,8 @@ from .phase2_artifacts import (
     recapture_reinspection as build_recapture_reinspection,
     validate_clarification_receipt,
     validate_clarification_request,
+    validate_authorization_receipt,
+    validate_authorization_request,
     validate_recapture_reinspection,
     validate_targeted_recapture_receipt,
     validate_targeted_recapture_request,
@@ -82,6 +84,16 @@ def _validate_kernel_input(name: str, value: Mapping[str, Any]) -> Mapping[str, 
             return validate_clarification_receipt(value)
         except Phase2ArtifactError as exc:
             raise SupervisorReplayError("clarification_receipt_invalid") from exc
+    if name == "authorization_request":
+        try:
+            return validate_authorization_request(value)
+        except Phase2ArtifactError as exc:
+            raise SupervisorReplayError("authorization_request_invalid") from exc
+    if name == "authorization_receipt":
+        try:
+            return validate_authorization_receipt(value)
+        except Phase2ArtifactError as exc:
+            raise SupervisorReplayError("authorization_receipt_invalid") from exc
     if name == "targeted_recapture_request":
         try:
             return validate_targeted_recapture_request(value)
@@ -520,6 +532,19 @@ def replay_supervisor_run(
             )
         except Phase2ArtifactError as exc:
             raise SupervisorReplayError("clarification_kernel_inputs_mismatch") from exc
+
+    authorization_receipt = kernel_inputs.get("authorization_receipt")
+    if authorization_receipt is not None:
+        authorization_request = kernel_inputs.get("authorization_request")
+        if authorization_request is None:
+            raise SupervisorReplayError("authorization_request_kernel_input_missing")
+        try:
+            validate_authorization_receipt(
+                authorization_receipt,
+                request=authorization_request,
+            )
+        except Phase2ArtifactError as exc:
+            raise SupervisorReplayError("authorization_kernel_inputs_mismatch") from exc
 
     deterministic_decision = kernel_inputs.get("decision_envelope")
     replayed_decision: dict[str, Any] | None = None

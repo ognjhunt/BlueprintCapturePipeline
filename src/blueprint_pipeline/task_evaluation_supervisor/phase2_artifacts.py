@@ -322,7 +322,89 @@ def authorization_request(
         "agent_may_approve": False,
         "proof_effect": "none",
     }
-    return _finalize(value, digest_field="authorization_request_digest")
+    return validate_authorization_request(
+        _finalize(value, digest_field="authorization_request_digest")
+    )
+
+
+def validate_authorization_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the exact authority an agent may request but never grant."""
+
+    required_fields = {
+        "schema_version",
+        "request_id",
+        "run_id",
+        "tool_id",
+        "reason",
+        "requested_max_cost_usd",
+        "requested_ttl_seconds",
+        "requested_retry_count",
+        "immutable_input_digests",
+        "requested_provider_ids",
+        "requested_action_ids",
+        "status",
+        "agent_may_approve",
+        "proof_effect",
+        "authorization_request_digest",
+    }
+    if set(value) != required_fields:
+        raise Phase2ArtifactError("authorization_request_fields_invalid")
+    run_id = str(value.get("run_id") or "").strip()
+    tool_id = str(value.get("tool_id") or "").strip()
+    reason = str(value.get("reason") or "").strip()
+    cost = value.get("requested_max_cost_usd")
+    ttl = value.get("requested_ttl_seconds")
+    retries = value.get("requested_retry_count")
+    raw_digests = value.get("immutable_input_digests")
+    if not isinstance(raw_digests, list):
+        raise Phase2ArtifactError("authorization_request_input_digests_invalid")
+    digests = sorted(
+        {_require_digest(item, field="immutable_input_digest") for item in raw_digests}
+    )
+    providers = _strings(
+        value.get("requested_provider_ids"),
+        field="requested_provider_ids",
+        minimum=0,
+        maximum=20,
+        item_maximum=100,
+    )
+    actions = _strings(
+        value.get("requested_action_ids"),
+        field="requested_action_ids",
+        minimum=0,
+        maximum=50,
+        item_maximum=100,
+    )
+    expected = canonical_digest(value, digest_field="authorization_request_digest")
+    if (
+        value.get("schema_version") != AUTHORIZATION_REQUEST_SCHEMA_VERSION
+        or not run_id
+        or not tool_id
+        or not reason
+        or len(reason) > 2_000
+        or value.get("request_id") != f"{run_id}-{tool_id}-authorization"
+        or isinstance(cost, bool)
+        or not isinstance(cost, (int, float))
+        or not math.isfinite(float(cost))
+        or float(cost) < 0
+        or isinstance(ttl, bool)
+        or not isinstance(ttl, int)
+        or ttl < 1
+        or isinstance(retries, bool)
+        or not isinstance(retries, int)
+        or retries < 0
+        or not digests
+        or raw_digests != digests
+        or list(value.get("requested_provider_ids") or []) != providers
+        or list(value.get("requested_action_ids") or []) != actions
+        or (tool_id == "execute_preauthorized_recovery" and (not providers or not actions))
+        or value.get("status") != "awaiting_authorized_operator"
+        or value.get("agent_may_approve") is not False
+        or value.get("proof_effect") != "none"
+        or value.get("authorization_request_digest") != expected
+    ):
+        raise Phase2ArtifactError("authorization_request_contract_invalid")
+    return dict(value)
 
 
 def authorization_receipt(
@@ -338,17 +420,16 @@ def authorization_receipt(
     granted_provider_ids: Sequence[str] = (),
     granted_action_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
-    expected = canonical_digest(request, digest_field="authorization_request_digest")
-    if request.get("authorization_request_digest") != expected:
-        raise Phase2ArtifactError("authorization_request_digest_mismatch")
+    validated_request = validate_authorization_request(request)
+    expected = validated_request["authorization_request_digest"]
     if not operator_id.strip() or not issued_at.strip() or not expires_at.strip():
         raise Phase2ArtifactError("authorization_receipt_missing_fields")
-    requested_cost = float(request.get("requested_max_cost_usd") or 0.0)
-    requested_ttl = int(request.get("requested_ttl_seconds") or 0)
-    requested_retries = int(request.get("requested_retry_count") or 0)
+    requested_cost = float(validated_request.get("requested_max_cost_usd") or 0.0)
+    requested_ttl = int(validated_request.get("requested_ttl_seconds") or 0)
+    requested_retries = int(validated_request.get("requested_retry_count") or 0)
     requested_providers = set(
         _strings(
-            request.get("requested_provider_ids") or [],
+            validated_request.get("requested_provider_ids") or [],
             field="requested_provider_ids",
             minimum=0,
             maximum=20,
@@ -357,7 +438,7 @@ def authorization_receipt(
     )
     requested_actions = set(
         _strings(
-            request.get("requested_action_ids") or [],
+            validated_request.get("requested_action_ids") or [],
             field="requested_action_ids",
             minimum=0,
             maximum=50,
@@ -401,22 +482,24 @@ def authorization_receipt(
         or granted_actions
     ):
         raise Phase2ArtifactError("denied_authorization_cannot_grant_authority")
-    if request.get("tool_id") == "execute_preauthorized_recovery" and (
-        not granted_providers or not granted_actions
+    if (
+        approved
+        and validated_request.get("tool_id") == "execute_preauthorized_recovery"
+        and (not granted_providers or not granted_actions)
     ):
         raise Phase2ArtifactError("recovery_authorization_scope_missing")
     value = {
         "schema_version": AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
-        "receipt_id": f"{request['request_id']}-receipt",
-        "run_id": request["run_id"],
+        "receipt_id": f"{validated_request['request_id']}-receipt",
+        "run_id": validated_request["run_id"],
         "authorization_request_digest": expected,
         "operator_id": operator_id.strip(),
         "approved": bool(approved),
-        "granted_tool_id": request["tool_id"],
+        "granted_tool_id": validated_request["tool_id"],
         "granted_max_cost_usd": float(granted_max_cost_usd),
         "granted_ttl_seconds": granted_ttl_seconds,
         "granted_retry_count": granted_retry_count,
-        "immutable_input_digests": list(request["immutable_input_digests"]),
+        "immutable_input_digests": list(validated_request["immutable_input_digests"]),
         "granted_provider_ids": granted_providers,
         "granted_action_ids": granted_actions,
         "issued_at": issued_at,
@@ -424,7 +507,122 @@ def authorization_receipt(
         "issued_by_agent": False,
         "proof_effect": "none",
     }
-    return _finalize(value, digest_field="authorization_receipt_digest")
+    return validate_authorization_receipt(
+        _finalize(value, digest_field="authorization_receipt_digest"),
+        request=validated_request,
+    )
+
+
+def validate_authorization_receipt(
+    value: Mapping[str, Any],
+    *,
+    request: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate an operator receipt without turning it into agent authority."""
+
+    required_fields = {
+        "schema_version",
+        "receipt_id",
+        "run_id",
+        "authorization_request_digest",
+        "operator_id",
+        "approved",
+        "granted_tool_id",
+        "granted_max_cost_usd",
+        "granted_ttl_seconds",
+        "granted_retry_count",
+        "immutable_input_digests",
+        "granted_provider_ids",
+        "granted_action_ids",
+        "issued_at",
+        "expires_at",
+        "issued_by_agent",
+        "proof_effect",
+        "authorization_receipt_digest",
+    }
+    if set(value) != required_fields:
+        raise Phase2ArtifactError("authorization_receipt_fields_invalid")
+    run_id = str(value.get("run_id") or "").strip()
+    tool_id = str(value.get("granted_tool_id") or "").strip()
+    cost = value.get("granted_max_cost_usd")
+    ttl = value.get("granted_ttl_seconds")
+    retries = value.get("granted_retry_count")
+    raw_digests = value.get("immutable_input_digests")
+    if not isinstance(raw_digests, list):
+        raise Phase2ArtifactError("authorization_receipt_input_digests_invalid")
+    digests = sorted(
+        {_require_digest(item, field="immutable_input_digest") for item in raw_digests}
+    )
+    providers = _strings(
+        value.get("granted_provider_ids"),
+        field="granted_provider_ids",
+        minimum=0,
+        maximum=20,
+        item_maximum=100,
+    )
+    actions = _strings(
+        value.get("granted_action_ids"),
+        field="granted_action_ids",
+        minimum=0,
+        maximum=50,
+        item_maximum=100,
+    )
+    issued = _parse_time(value.get("issued_at"), field="authorization_receipt_issued_at")
+    expires = _parse_time(value.get("expires_at"), field="authorization_receipt_expires_at")
+    approved = value.get("approved")
+    expected = canonical_digest(value, digest_field="authorization_receipt_digest")
+    _require_digest(
+        value.get("authorization_request_digest"),
+        field="authorization_request_digest",
+    )
+    if (
+        value.get("schema_version") != AUTHORIZATION_RECEIPT_SCHEMA_VERSION
+        or not run_id
+        or not tool_id
+        or not str(value.get("operator_id") or "").strip()
+        or value.get("receipt_id") != f"{run_id}-{tool_id}-authorization-receipt"
+        or not isinstance(approved, bool)
+        or isinstance(cost, bool)
+        or not isinstance(cost, (int, float))
+        or not math.isfinite(float(cost))
+        or float(cost) < 0
+        or isinstance(ttl, bool)
+        or not isinstance(ttl, int)
+        or ttl < 1
+        or isinstance(retries, bool)
+        or not isinstance(retries, int)
+        or retries < 0
+        or not digests
+        or raw_digests != digests
+        or list(value.get("granted_provider_ids") or []) != providers
+        or list(value.get("granted_action_ids") or []) != actions
+        or expires <= issued
+        or (expires - issued).total_seconds() > ttl
+        or value.get("issued_by_agent") is not False
+        or value.get("proof_effect") != "none"
+        or value.get("authorization_receipt_digest") != expected
+        or (approved is False and (float(cost) != 0 or retries != 0 or providers or actions))
+        or (approved is True and tool_id == "execute_preauthorized_recovery" and not providers)
+        or (approved is True and tool_id == "execute_preauthorized_recovery" and not actions)
+    ):
+        raise Phase2ArtifactError("authorization_receipt_contract_invalid")
+    if request is not None:
+        validated_request = validate_authorization_request(request)
+        if (
+            value.get("run_id") != validated_request["run_id"]
+            or value.get("granted_tool_id") != validated_request["tool_id"]
+            or value.get("authorization_request_digest")
+            != validated_request["authorization_request_digest"]
+            or value.get("receipt_id") != f"{validated_request['request_id']}-receipt"
+            or float(cost) > float(validated_request["requested_max_cost_usd"])
+            or ttl > int(validated_request["requested_ttl_seconds"])
+            or retries > int(validated_request["requested_retry_count"])
+            or digests != validated_request["immutable_input_digests"]
+            or not set(providers).issubset(validated_request["requested_provider_ids"])
+            or not set(actions).issubset(validated_request["requested_action_ids"])
+        ):
+            raise Phase2ArtifactError("authorization_receipt_exceeds_request")
+    return dict(value)
 
 
 def validate_targeted_recapture_request(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -1144,5 +1342,7 @@ __all__ = [
     "validate_recapture_reinspection",
     "validate_clarification_receipt",
     "validate_clarification_request",
+    "validate_authorization_receipt",
+    "validate_authorization_request",
     "write_phase2_artifact",
 ]

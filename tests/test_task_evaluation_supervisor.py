@@ -87,6 +87,7 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     targeted_recapture_request,
     validate_capture_build_ingress,
     validate_clarification_receipt,
+    validate_authorization_receipt,
     validate_recapture_reinspection,
     validate_targeted_recapture_receipt,
     validate_tool_observation_binding,
@@ -185,6 +186,8 @@ class _FixtureAgentsSDKInvoker:
             decision_envelope=payload.get("decision_envelope"),
             clarification_request=payload.get("clarification_request"),
             clarification_receipt=payload.get("clarification_receipt"),
+            authorization_request=payload.get("authorization_request"),
+            authorization_receipt=payload.get("authorization_receipt"),
             targeted_recapture_request=payload.get("targeted_recapture_request"),
             targeted_recapture_receipt=payload.get("targeted_recapture_receipt"),
             recapture_reinspection=payload.get("recapture_reinspection"),
@@ -1727,6 +1730,162 @@ def test_clarification_receipt_cli_ingress_is_bounded_and_does_not_create_proof(
             responder_id="customer:site-owner-1",
             responses=too_deep,
             received_at="2026-07-30T16:30:00Z",
+        )
+
+
+def test_authorization_receipt_is_replayable_input_but_not_agent_authority(
+    tmp_path: Path,
+) -> None:
+    context = _context_with_retryable_evidence_failure()
+    request = authorization_request(
+        run_id=context.run_id,
+        tool_id="execute_preauthorized_recovery",
+        reason="Permit one bounded provider-capacity recovery attempt.",
+        requested_max_cost_usd=0.25,
+        requested_ttl_seconds=120,
+        immutable_input_digests=[SHA_A],
+        requested_retry_count=1,
+        requested_provider_ids=["fixture-provider"],
+        requested_action_ids=["bounded_provider_retry"],
+    )
+    receipt = authorization_receipt(
+        request=request,
+        operator_id="runtime-owner-1",
+        approved=True,
+        granted_max_cost_usd=0.25,
+        granted_ttl_seconds=120,
+        granted_retry_count=1,
+        issued_at="2026-07-30T16:30:00Z",
+        expires_at="2026-07-30T16:32:00Z",
+        granted_provider_ids=["fixture-provider"],
+        granted_action_ids=["bounded_provider_retry"],
+    )
+    invoker = _FixtureAgentsSDKInvoker()
+    execution = TaskEvaluationSupervisor(agents_sdk_invoker=invoker).run(
+        replace(
+            context,
+            authorization_request=request,
+            authorization_receipt=receipt,
+        ),
+        output_dir=tmp_path / "authorization-return-supervisor",
+        mode="shadow",
+        generated_at="2026-07-30T16:31:00Z",
+    )
+
+    recovery_result = next(
+        row.to_mapping()
+        for row in execution.capability_results
+        if row.to_mapping()["capability"] == CapabilityKind.RUNTIME_FAILURE_RECOVERY.value
+    )
+    assert recovery_result["artifact"]["authorization_receipt_present"] is True
+    assert recovery_result["artifact"]["authorization_granted_to_agent"] is False
+    assert recovery_result["artifact"]["execution_requires_preauthorized_controller"] is True
+    assert recovery_result["artifact"]["recovery_executed"] is False
+    specialist_call = next(
+        row
+        for row in invoker.calls
+        if row["spec"].capability is CapabilityKind.RUNTIME_FAILURE_RECOVERY
+    )
+    assert specialist_call["payload"]["authorization_request"] == request
+    assert specialist_call["payload"]["authorization_receipt"] == receipt
+    assert execution.report.to_mapping()["actions_executed"] is False
+    assert (execution.output_dir / "kernel_inputs" / "authorization_request.json").is_file()
+    assert (execution.output_dir / "kernel_inputs" / "authorization_receipt.json").is_file()
+    assert replay_supervisor_run(execution.output_dir)["status"] == "replay_verified"
+
+    overgrant = dict(receipt)
+    overgrant["granted_max_cost_usd"] = 0.5
+    overgrant["authorization_receipt_digest"] = canonical_digest(
+        overgrant,
+        digest_field="authorization_receipt_digest",
+    )
+    with pytest.raises(Phase2ArtifactError, match="authorization_receipt_exceeds_request"):
+        validate_authorization_receipt(overgrant, request=request)
+
+    agent_issued = dict(receipt)
+    agent_issued["issued_by_agent"] = True
+    agent_issued["authorization_receipt_digest"] = canonical_digest(
+        agent_issued,
+        digest_field="authorization_receipt_digest",
+    )
+    with pytest.raises(Phase2ArtifactError, match="authorization_receipt_contract_invalid"):
+        validate_authorization_receipt(agent_issued, request=request)
+
+
+def test_authorization_cli_ingress_and_controller_receipt_binding_fail_closed(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        decision_evidence_cli,
+        "TaskEvaluationSupervisor",
+        lambda **_: _sdk_supervisor(),
+    )
+    request = authorization_request(
+        run_id="authorization-cli-origin",
+        tool_id="execute_preauthorized_recovery",
+        reason="Permit one bounded recovery.",
+        requested_max_cost_usd=0.25,
+        requested_ttl_seconds=120,
+        immutable_input_digests=[SHA_A],
+        requested_retry_count=1,
+        requested_provider_ids=["fixture-provider"],
+        requested_action_ids=["bounded_provider_retry"],
+    )
+    receipt = authorization_receipt(
+        request=request,
+        operator_id="runtime-owner-1",
+        approved=True,
+        granted_max_cost_usd=0.25,
+        granted_ttl_seconds=120,
+        granted_retry_count=1,
+        issued_at="2026-07-30T16:30:00Z",
+        expires_at="2026-07-30T16:32:00Z",
+        granted_provider_ids=["fixture-provider"],
+        granted_action_ids=["bounded_provider_retry"],
+    )
+    request_path = tmp_path / "authorization-request.json"
+    receipt_path = tmp_path / "authorization-receipt.json"
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    output = tmp_path / "authorization-cli-supervisor"
+
+    exit_code = decision_evidence_cli_main(
+        [
+            "supervise",
+            "--authorization-request",
+            str(request_path),
+            "--authorization-receipt",
+            str(receipt_path),
+            "--mode",
+            "shadow",
+            "--output-dir",
+            str(output),
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert exit_code == 0, result
+    assert result["authorization_request_ingested"] is True
+    assert result["authorization_receipt_ingested"] is True
+    assert result["authorization_granted_to_agent"] is False
+    assert result["preauthorized_controller_injected"] is False
+    assert result["actions_executed"] is False
+
+    controller, _adapter = _recovery_controller(max_cost_usd=0.5)
+    with pytest.raises(ValueError, match="recovery_controller_authorization_receipt_mismatch"):
+        TaskEvaluationSupervisor(
+            agents_sdk_invoker=_FixtureAgentsSDKInvoker(),
+            recovery_controller=controller,
+        ).run(
+            replace(
+                _context_with_retryable_evidence_failure(),
+                authorization_request=request,
+                authorization_receipt=receipt,
+            ),
+            output_dir=tmp_path / "mismatched-controller-receipt",
+            mode=AutonomyMode.EXECUTE_PREAUTHORIZED,
+            generated_at="2026-07-30T16:31:00Z",
         )
 
 
@@ -3760,7 +3919,11 @@ def test_phase3_vast_recovery_runs_through_supervisor_and_replay(
         agents_sdk_invoker=invoker,
         recovery_controller=controller,
     ).run(
-        _context_with_retryable_evidence_failure(),
+        replace(
+            _context_with_retryable_evidence_failure(),
+            authorization_request=request,
+            authorization_receipt=receipt,
+        ),
         output_dir=tmp_path / "supervisor-vast-recovery",
         mode=AutonomyMode.EXECUTE_PREAUTHORIZED,
         generated_at="2026-07-29T16:00:00+00:00",
@@ -3771,6 +3934,8 @@ def test_phase3_vast_recovery_runs_through_supervisor_and_replay(
     assert report["registered_preauthorized_actions_executed"] == 1
     assert controller.attempt_ledger[0]["provider_id"] == "vast_wam_recovery"
     assert controller.attempt_ledger[0]["provider_zero_proven"] is True
+    assert (execution.output_dir / "kernel_inputs" / "authorization_request.json").is_file()
+    assert (execution.output_dir / "kernel_inputs" / "authorization_receipt.json").is_file()
     replay = replay_supervisor_run(execution.output_dir)
     assert replay["replayed_tool_cost_usd"] == pytest.approx(0.1)
     assert replay["proof_result_reproduced"] is False

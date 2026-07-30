@@ -36,6 +36,8 @@ from .task_evaluation_supervisor import (
     reconcile_neutral_candidate_policy_costs,
     validate_clarification_receipt,
     validate_clarification_request,
+    validate_authorization_receipt,
+    validate_authorization_request,
     validate_targeted_recapture_receipt,
     validate_targeted_recapture_request,
 )
@@ -111,6 +113,21 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
     )
     if clarification_receipt is not None and clarification_request is None:
         raise ValueError("supervisor_clarification_receipt_requires_request")
+    authorization_request = (
+        validate_authorization_request(read_json(args.authorization_request))
+        if args.authorization_request
+        else None
+    )
+    authorization_receipt = (
+        validate_authorization_receipt(
+            read_json(args.authorization_receipt),
+            request=authorization_request,
+        )
+        if args.authorization_receipt
+        else None
+    )
+    if authorization_receipt is not None and authorization_request is None:
+        raise ValueError("supervisor_authorization_receipt_requires_request")
     recapture_request = (
         validate_targeted_recapture_request(read_json(args.targeted_recapture_request))
         if args.targeted_recapture_request
@@ -134,9 +151,10 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
         and request is None
         and testbed is None
         and clarification_request is None
+        and authorization_request is None
     ):
         raise ValueError(
-            "supervisor_requires_capture_build_request_testbed_or_clarification_request"
+            "supervisor_requires_capture_build_request_testbed_clarification_or_authorization"
         )
     plan = read_json(args.plan) if args.plan else None
     decision = read_json(args.decision) if args.decision else None
@@ -145,6 +163,8 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
         (recapture_receipt or {}).get("receipt_id")
         or (clarification_receipt or {}).get("receipt_id")
         or (clarification_request or {}).get("request_id")
+        or (authorization_receipt or {}).get("receipt_id")
+        or (authorization_request or {}).get("request_id")
         or (request or {}).get("request_id")
         or (testbed or {}).get("testbed_id")
         or (capture_build or {}).get("capture_build_digest", "capture-build")[7:23]
@@ -153,16 +173,21 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
     question = str((request or {}).get("decision_question") or "").strip()
     if not question:
         question = (
-            "Interpret the returned customer clarification, identify what remains ambiguous, "
-            "and require a validated Decision Evidence Request before evaluation."
-            if clarification_receipt is not None
+            "Inspect the returned operator authorization alongside the typed failure, but execute "
+            "nothing unless a separately injected preauthorized controller matches it exactly."
+            if authorization_receipt is not None
             else (
-                "Did this targeted recapture resolve the specifically requested capture gap, "
-                "and what deterministic testbed validation is still required?"
-                if recapture_receipt is not None
+                "Interpret the returned customer clarification, identify what remains ambiguous, "
+                "and require a validated Decision Evidence Request before evaluation."
+                if clarification_receipt is not None
                 else (
-                    "What task evaluations can this capture build currently support, "
-                    "and what customer, robot, task, success, or evidence details are still missing?"
+                    "Did this targeted recapture resolve the specifically requested capture gap, "
+                    "and what deterministic testbed validation is still required?"
+                    if recapture_receipt is not None
+                    else (
+                        "What task evaluations can this capture build currently support, "
+                        "and what customer, robot, task, success, or evidence details are still missing?"
+                    )
                 )
             )
         )
@@ -184,6 +209,8 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
             decision_envelope=decision,
             clarification_request=clarification_request,
             clarification_receipt=clarification_receipt,
+            authorization_request=authorization_request,
+            authorization_receipt=authorization_receipt,
             targeted_recapture_request=recapture_request,
             targeted_recapture_receipt=recapture_receipt,
         ),
@@ -229,6 +256,10 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
         "clarification_request_ingested": clarification_request is not None,
         "clarification_receipt_ingested": clarification_receipt is not None,
         "clarification_response_accepted_as_proof": False,
+        "authorization_request_ingested": authorization_request is not None,
+        "authorization_receipt_ingested": authorization_receipt is not None,
+        "authorization_granted_to_agent": False,
+        "preauthorized_controller_injected": False,
         "targeted_recapture_receipt_ingested": recapture_receipt is not None,
         "targeted_recapture_resolution_claimed": False,
         "execution_started": tool_execution_started,
@@ -440,6 +471,16 @@ def _parser() -> argparse.ArgumentParser:
         "--clarification-receipt",
         type=Path,
         help="Bound, untrusted customer clarification response receipt.",
+    )
+    supervise.add_argument(
+        "--authorization-request",
+        type=Path,
+        help="Original Blueprint authorization request bound to an operator receipt.",
+    )
+    supervise.add_argument(
+        "--authorization-receipt",
+        type=Path,
+        help="Bound operator authorization receipt; does not itself construct a controller.",
     )
     supervise.add_argument(
         "--targeted-recapture-request",

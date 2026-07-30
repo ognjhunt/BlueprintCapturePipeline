@@ -260,6 +260,27 @@ interpreter. The claimed responder identity is not verified by the supervisor.
 The receipt therefore cannot answer its own request, create claims, or become
 proof: evaluation still requires a separately valid Decision Evidence Request.
 
+An operator authorization response follows the same durable, replayable ingress
+path:
+
+```bash
+blueprint-route-task-evaluation supervise \
+  --authorization-request /path/to/authorization-request.json \
+  --authorization-receipt /path/to/operator-authorization-receipt.json \
+  --mode shadow \
+  --output-dir out/authorization-return
+```
+
+Blueprint validates the exact request identity, digest, immutable inputs,
+provider/action subsets, cost, TTL, retry ceiling, issuer type, and proof effect
+before recording either artifact. The approved receipt is observable context,
+not an executable SDK credential: the CLI injects no recovery controller and
+reports `authorization_granted_to_agent=false`. Programmatic
+`execute_preauthorized` execution requires a separately constructed controller
+bound to the identical receipt digest. The controller then independently
+rejects expiration and other runtime authority failures. This permits stale
+receipts to remain in the immutable audit without making them usable.
+
 A targeted follow-up capture re-enters the same control plane with both the
 original Blueprint request and a customer-bound receipt:
 

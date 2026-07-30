@@ -116,6 +116,28 @@ claimed responder's identity. The interpreter may use it to propose a clearer
 task contract, but Blueprint must still receive and validate a complete Decision
 Evidence Request before compiling or running claims.
 
+### Authorization return
+
+Return an operator decision through the same supervisor control plane while
+preserving the original Blueprint request:
+
+```bash
+blueprint-route-task-evaluation supervise \
+  --authorization-request /path/to/authorization-request.json \
+  --authorization-receipt /path/to/operator-authorization-receipt.json \
+  --mode shadow \
+  --output-dir /path/to/authorization-return
+```
+
+The request and receipt are strict, digest-bound kernel inputs. Ingesting an
+approved receipt makes it visible to the recovery specialist and replay, but
+does not grant authority to the agent and does not construct a recovery
+controller. Actual `execute_preauthorized` recovery requires a separately
+injected controller whose receipt digest matches the recorded receipt exactly.
+That controller still enforces expiry, TTL, provider/action allowlists,
+immutable inputs, spend, retries, watchdog, and teardown. A denied, stale,
+over-scoped, agent-issued, or mismatched receipt cannot execute an action.
+
 ### Targeted recapture return
 
 When the customer returns a targeted recapture, preserve the original request

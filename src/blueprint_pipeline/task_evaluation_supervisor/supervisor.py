@@ -60,6 +60,8 @@ from .phase2_artifacts import (
     recapture_reinspection as build_recapture_reinspection,
     validate_clarification_receipt,
     validate_clarification_request,
+    validate_authorization_receipt,
+    validate_authorization_request,
     validate_targeted_recapture_receipt,
     validate_targeted_recapture_request,
     write_phase2_artifact,
@@ -107,6 +109,21 @@ def _validated_context(context: SupervisorContext) -> SupervisorContext:
     )
     if clarification_receipt is not None and clarification_request is None:
         raise ValueError("clarification_receipt_requires_request")
+    authorization_request = (
+        validate_authorization_request(context.authorization_request)
+        if context.authorization_request is not None
+        else None
+    )
+    authorization_receipt = (
+        validate_authorization_receipt(
+            context.authorization_receipt,
+            request=authorization_request,
+        )
+        if context.authorization_receipt is not None
+        else None
+    )
+    if authorization_receipt is not None and authorization_request is None:
+        raise ValueError("authorization_receipt_requires_request")
     recapture_request = (
         validate_targeted_recapture_request(context.targeted_recapture_request)
         if context.targeted_recapture_request is not None
@@ -167,6 +184,8 @@ def _validated_context(context: SupervisorContext) -> SupervisorContext:
         ),
         clarification_request=clarification_request,
         clarification_receipt=clarification_receipt,
+        authorization_request=authorization_request,
+        authorization_receipt=authorization_receipt,
         targeted_recapture_request=recapture_request,
         targeted_recapture_receipt=recapture_receipt,
         recapture_reinspection=derived_recapture_reinspection,
@@ -197,6 +216,8 @@ def _write_kernel_inputs(root: Path, context: SupervisorContext) -> dict[str, An
         ("decision_envelope", context.decision_envelope),
         ("clarification_request", context.clarification_request),
         ("clarification_receipt", context.clarification_receipt),
+        ("authorization_request", context.authorization_request),
+        ("authorization_receipt", context.authorization_receipt),
         ("targeted_recapture_request", context.targeted_recapture_request),
         ("targeted_recapture_receipt", context.targeted_recapture_receipt),
         ("recapture_reinspection", context.recapture_reinspection),
@@ -234,6 +255,8 @@ def _input_digests(context: SupervisorContext) -> list[str]:
         (context.decision_envelope, "decision_envelope_digest"),
         (context.clarification_request, "clarification_request_digest"),
         (context.clarification_receipt, "clarification_receipt_digest"),
+        (context.authorization_request, "authorization_request_digest"),
+        (context.authorization_receipt, "authorization_receipt_digest"),
         (context.targeted_recapture_request, "targeted_recapture_request_digest"),
         (context.targeted_recapture_receipt, "targeted_recapture_receipt_digest"),
         (context.recapture_reinspection, "recapture_reinspection_digest"),
@@ -386,6 +409,15 @@ class TaskEvaluationSupervisor:
         resume: bool = True,
     ) -> SupervisorExecution:
         context = _validated_context(context)
+        if self.recovery_controller is not None and context.authorization_receipt is not None:
+            controller_receipt_digest = self.recovery_controller.policy.receipt.get(
+                "authorization_receipt_digest"
+            )
+            if (
+                context.authorization_receipt.get("authorization_receipt_digest")
+                != controller_receipt_digest
+            ):
+                raise ValueError("recovery_controller_authorization_receipt_mismatch")
         # Canonicalize once so every artifact writer and relative-path binding
         # uses the same root. On macOS, for example, /tmp aliases /private/tmp;
         # mixing those spellings makes valid generated artifacts appear to

@@ -117,6 +117,13 @@ default. The concrete supervisor Vast adapter reuses the authorized Vast WAM
 runner and requires versioned result/teardown artifacts plus terminal watchdog
 closure; it does not introduce a parallel provider launcher.
 
+An operator receipt can be returned with `supervise --authorization-request
+... --authorization-receipt ...`; this only records and replays the strict,
+digest-bound response. It never grants SDK tool authority or constructs the
+controller. Any injected recovery controller must carry the identical receipt,
+and remains responsible for expiry, spend, provider/action, retry, watchdog,
+and teardown enforcement.
+
 Agentic robot stacks enter evaluation through
 `blueprint_agentic_candidate_policy@1`. Direct policy, decomposed planner+policy,
 and verify/recover supervisor candidates are frozen and compiled against the

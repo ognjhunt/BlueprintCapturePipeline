@@ -442,6 +442,8 @@ class OpenAIAgentsSDKCapability:
             "decision_envelope": context.decision_envelope,
             "clarification_request": context.clarification_request,
             "clarification_receipt": context.clarification_receipt,
+            "authorization_request": context.authorization_request,
+            "authorization_receipt": context.authorization_receipt,
             "targeted_recapture_request": context.targeted_recapture_request,
             "targeted_recapture_receipt": context.targeted_recapture_receipt,
             "recapture_reinspection": context.recapture_reinspection,

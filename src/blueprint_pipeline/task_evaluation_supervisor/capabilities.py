@@ -40,6 +40,8 @@ class SupervisorContext:
     decision_envelope: Mapping[str, Any] | None = None
     clarification_request: Mapping[str, Any] | None = None
     clarification_receipt: Mapping[str, Any] | None = None
+    authorization_request: Mapping[str, Any] | None = None
+    authorization_receipt: Mapping[str, Any] | None = None
     targeted_recapture_request: Mapping[str, Any] | None = None
     targeted_recapture_receipt: Mapping[str, Any] | None = None
     recapture_reinspection: Mapping[str, Any] | None = None
@@ -588,6 +590,9 @@ class DeterministicRuntimeFailureRecovery:
                 "recovery_executed": False,
                 "failed_evidence_suppressed": False,
                 "additional_authority_inferred": False,
+                "authorization_receipt_present": bool(context.authorization_receipt),
+                "authorization_granted_to_agent": False,
+                "execution_requires_preauthorized_controller": True,
             },
             proposals=proposals,
             blockers=[] if diagnoses else ["no_failed_normalized_results_supplied"],
