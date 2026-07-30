@@ -1,0 +1,10 @@
+torch==2.4.1
+torchvision==0.19.1
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+trimesh==4.4.9
+onnxruntime-gpu==1.24.4
+scikit-image==0.24.0
+imageio==2.35.1
+lpips==0.1.4
+usd-core==26.3
