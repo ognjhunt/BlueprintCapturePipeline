@@ -45,6 +45,13 @@ from .perception_adapter import (
     detections_from_sam3,
     qualify_metric_depth_evidence,
 )
+from .semantic_gaussian_lifting import (
+    CONTRIBUTION_SEMANTICS,
+    REQUEST_SCHEMA_VERSION as SEMANTIC_GAUSSIAN_LIFTING_REQUEST_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION as SEMANTIC_GAUSSIAN_LIFTING_RESULT_SCHEMA_VERSION,
+    canonical_json_digest,
+    lift_semantic_masks_to_gaussians,
+)
 from .placement import compute_stand_pose, ring_scan_stand_pose
 from .robot_profile import (
     DEFAULT_ROBOT_ID,
@@ -124,6 +131,11 @@ __all__ = [
     "build_perception_views",
     "build_perception_views_from_frames",
     "qualify_metric_depth_evidence",
+    "CONTRIBUTION_SEMANTICS",
+    "SEMANTIC_GAUSSIAN_LIFTING_REQUEST_SCHEMA_VERSION",
+    "SEMANTIC_GAUSSIAN_LIFTING_RESULT_SCHEMA_VERSION",
+    "canonical_json_digest",
+    "lift_semantic_masks_to_gaussians",
     "resolve_target",
     "resolve_target_by_label",
     "compute_stand_pose",
