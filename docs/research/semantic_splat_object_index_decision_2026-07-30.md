@@ -66,14 +66,28 @@ that does not make the candidate geometry canonical capture truth.
   intersections. It returns a precise next experiment on disagreement. A pass
   remains an independently cross-checked semantic candidate; it never sets
   `collision_ready` or `physics_ready`.
+- An independent semantic-geometry benchmark now consumes the exact OBB result
+  plus a rights-cleared, independently produced and reviewed metric Z-up
+  reference set that was withheld from prediction. It uses deterministic
+  label-aware optimal assignment rather than greedy instance matching and
+  reports object recall, false-positive fraction, center/dimension/yaw error,
+  true oriented 3D OBB IoU, adjacent same-label instance recovery, and geometry
+  drift under hash-bound view-removal reruns. Cuboid axis swaps and 180-degree
+  yaw symmetry are handled explicitly; near-square objects are excluded from
+  yaw scoring rather than assigned a misleading error. A bounded CLI stage
+  verifies exact artifact bytes before emitting the diagnostic result. A
+  complete digest-bound prediction-input manifest is mandatory, and the
+  evaluator rejects a reference annotation, source, or alignment artifact that
+  appeared in prediction inputs.
 
 Still missing is a real renderer adapter that emits those exact contribution
 artifacts from a production analysis splat. The checked-in stage consumes and
 qualifies contribution rows but does not synthesize them or claim a render ran.
 Large-scene production also needs a bounded chunked/binary transport rather than
 one JSON view artifact, followed by graph cleanup, a production surface-point
-adapter, production collision-scene/support evidence, testbed projection, and a
-measured ground-truth evaluation set.
+adapter, production collision-scene/support evidence, and testbed projection.
+The metric suite is implemented, but no public-dataset result is claimed until
+an independently reviewed reference split and real predictions are supplied.
 
 ## Primary-source audit
 
@@ -161,9 +175,10 @@ output digest. Unsupported or generated-only regions remain explicit.
 
 ## Evaluation gate
 
-Use a rights-cleared, noncommercial research fixture set only for development.
-Measure object recall/false positives, center error, dimension error, yaw error,
-3D OBB IoU, adjacent same-category separation, held-out reprojection, and
-stability under removed frames/views. No benchmark pass upgrades collision,
-physics, physical success, deployment, safety, or the frozen comparative
-policy-ranking verdict `thesis_not_supported`.
+Use a rights-cleared research fixture only within its license envelope. The
+implemented benchmark measures object recall/false positives, center error,
+dimension error, yaw error, true 3D OBB IoU, adjacent same-category separation,
+and stability under removed frames/views. Held-out reprojection remains a
+separate renderer gate. No benchmark pass upgrades collision, physics, physical
+success, deployment, safety, or the frozen comparative policy-ranking verdict
+`thesis_not_supported`.
