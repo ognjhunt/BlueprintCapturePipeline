@@ -10,6 +10,12 @@ The production agent harness is OpenAI Agents SDK. There is no alternate agent
 harness or deterministic agent fallback. The deterministic proof kernel is a
 separate authority boundary beneath the SDK agents.
 
+The capture lifecycle run ID includes the capture digest and a digest of the
+exact model, inference ceiling, live-inference request, operator-gate state,
+harness, and autonomy mode. Repeating that profile reuses the same terminal run.
+Adding inference authority creates a new linked run; it does not rewrite the
+earlier no-authority blocker or its ledger.
+
 ```text
 capture build
   -> six specialist agent capabilities

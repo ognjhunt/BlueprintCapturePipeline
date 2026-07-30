@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
+from ..decision_evidence_contracts import canonical_digest
 from .agents_sdk import DEFAULT_SUPERVISOR_AGENT_MODEL
 from .capabilities import SupervisorContext
 from .capture_ingress import load_capture_build_ingress
@@ -12,7 +14,33 @@ from .contracts import AutonomyMode
 from .supervisor import TaskEvaluationSupervisor
 
 
-CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION = "task_evaluation_capture_supervisor_lifecycle.v2"
+CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION = "task_evaluation_capture_supervisor_lifecycle.v3"
+
+
+def capture_supervisor_execution_profile(
+    *,
+    agent_model: str = DEFAULT_SUPERVISOR_AGENT_MODEL,
+    allow_live_agents_sdk: bool = False,
+    agent_inference_budget_usd: float = 0.0,
+) -> dict[str, Any]:
+    """Bind the exact execution authority that determines lifecycle idempotency."""
+
+    value = {
+        "schema_version": "task_evaluation_capture_supervisor_execution_profile.v1",
+        "agent_harness": "openai_agents_sdk",
+        "agent_model": agent_model,
+        "allow_live_agents_sdk": allow_live_agents_sdk,
+        "live_operator_gate_enabled": (
+            env_truthy(LIVE_AGENTS_SDK_ENV) if allow_live_agents_sdk else False
+        ),
+        "agent_inference_budget_usd": float(agent_inference_budget_usd),
+        "autonomy_mode": AutonomyMode.EXECUTE_NON_SPEND.value,
+    }
+    value["execution_profile_digest"] = canonical_digest(
+        value,
+        digest_field="execution_profile_digest",
+    )
+    return value
 
 
 def run_capture_build_supervisor(
@@ -32,7 +60,13 @@ def run_capture_build_supervisor(
     root = Path(capture_root).expanduser().resolve()
     capture_build = load_capture_build_ingress(root)
     digest_suffix = str(capture_build["capture_build_digest"]).removeprefix("sha256:")[:24]
-    run_id = f"capture-supervisor-v2-{digest_suffix}"
+    execution_profile = capture_supervisor_execution_profile(
+        agent_model=agent_model,
+        allow_live_agents_sdk=allow_live_agents_sdk,
+        agent_inference_budget_usd=agent_inference_budget_usd,
+    )
+    profile_suffix = str(execution_profile["execution_profile_digest"]).removeprefix("sha256:")[:16]
+    run_id = f"capture-supervisor-v3-{digest_suffix}-{profile_suffix}"
     output_dir = root / "pipeline" / "task_evaluation_supervisor" / "runs" / run_id
     execution = TaskEvaluationSupervisor(
         agent_model=agent_model,
@@ -67,6 +101,8 @@ def run_capture_build_supervisor(
         "event_ledger_path": str(output_dir / "supervisor_events.jsonl"),
         "agent_harness": "openai_agents_sdk",
         "agent_model": agent_model,
+        "execution_profile": execution_profile,
+        "execution_profile_digest": execution_profile["execution_profile_digest"],
         "autonomy_mode": AutonomyMode.EXECUTE_NON_SPEND.value,
         "capability_count": len(execution.capability_results),
         "triggered_capability_count": len(execution.capability_results),
@@ -77,20 +113,11 @@ def run_capture_build_supervisor(
             (report.get("inference_spend") or {}).get("manager_invocation_count") or 0
         ),
         "agent_inference_started": (
-            int(
-                (report.get("inference_spend") or {}).get("live_invocation_count")
-                or 0
-            )
-            > 0
-            or int(
-                (report.get("inference_spend") or {}).get("reservation_count") or 0
-            )
-            > 0
+            int((report.get("inference_spend") or {}).get("live_invocation_count") or 0) > 0
+            or int((report.get("inference_spend") or {}).get("reservation_count") or 0) > 0
         ),
         "actions_executed": bool(report.get("actions_executed")),
-        "registered_tool_reads_executed": int(
-            report.get("registered_tool_reads_executed") or 0
-        ),
+        "registered_tool_reads_executed": int(report.get("registered_tool_reads_executed") or 0),
         "registered_non_spend_actions_executed": int(
             report.get("registered_non_spend_actions_executed") or 0
         ),
@@ -101,5 +128,6 @@ def run_capture_build_supervisor(
 
 __all__ = [
     "CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION",
+    "capture_supervisor_execution_profile",
     "run_capture_build_supervisor",
 ]

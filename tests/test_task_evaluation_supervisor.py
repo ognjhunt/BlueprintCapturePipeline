@@ -1889,6 +1889,55 @@ def test_capture_build_lifecycle_materializes_non_spend_clarification_when_sdk_i
     assert replay_supervisor_run(result["output_dir"])["status"] == "replay_verified"
 
 
+def test_capture_build_lifecycle_creates_new_run_when_inference_authority_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    (capture_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "capture_descriptor.v1",
+                "scene_id": "site-1",
+                "capture_id": "capture-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    initial = supervisor_lifecycle.run_capture_build_supervisor(capture_root=capture_root)
+    assert initial["status"] == "blocked"
+    assert initial["agent_inference_started"] is False
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    assert supervisor_lifecycle.run_capture_build_supervisor(capture_root=capture_root) == initial
+
+    invoker = _CaptureNonSpendToolCallingInvoker()
+    monkeypatch.setattr(
+        supervisor_lifecycle,
+        "TaskEvaluationSupervisor",
+        lambda **_: TaskEvaluationSupervisor(agents_sdk_invoker=invoker),
+    )
+    authorized = supervisor_lifecycle.run_capture_build_supervisor(
+        capture_root=capture_root,
+        allow_live_agents_sdk=True,
+        agent_inference_budget_usd=1.0,
+    )
+    repeated = supervisor_lifecycle.run_capture_build_supervisor(
+        capture_root=capture_root,
+        allow_live_agents_sdk=True,
+        agent_inference_budget_usd=1.0,
+    )
+
+    assert authorized == repeated
+    assert authorized["run_id"] != initial["run_id"]
+    assert authorized["execution_profile_digest"] != initial["execution_profile_digest"]
+    assert authorized["execution_profile"]["live_operator_gate_enabled"] is True
+    assert Path(authorized["output_dir"]).is_dir()
+    assert Path(initial["output_dir"]).is_dir()
+    assert authorized["registered_non_spend_actions_executed"] == 1
+    assert replay_supervisor_run(authorized["output_dir"])["status"] == "replay_verified"
+
+
 def test_execute_non_spend_exposes_only_registered_scoped_tools(
     tmp_path: Path,
 ) -> None:

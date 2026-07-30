@@ -166,6 +166,12 @@ inference budget and the shared provider gate are present. The completed capture
 remains usable; Blueprint simply has not yet performed the agent reasoning or
 made a Task Evaluation decision.
 
+Capture lifecycle v3 binds each durable run ID to the capture digest and the
+exact agent execution profile: model, live-inference request, inference ceiling,
+operator-gate state, harness, and autonomy mode. Repeating an identical profile
+is idempotent. Supplying new inference authority creates a new provenance-linked
+run instead of trying to mutate or resume the earlier immutable blocked run.
+
 ## Shadow artifacts
 
 An explicit shadow run writes:

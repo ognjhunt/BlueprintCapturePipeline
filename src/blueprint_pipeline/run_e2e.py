@@ -34,6 +34,7 @@ from .robot_eval_job_orchestrator import run_robot_eval_job_request_inbox
 from .core.stage_outcome import stage_ledger_outcome_kind
 from .task_evaluation_supervisor import (
     DEFAULT_SUPERVISOR_AGENT_MODEL,
+    capture_supervisor_execution_profile,
     run_capture_build_supervisor,
 )
 
@@ -337,12 +338,17 @@ def _completed_stage_resume_snapshot(
     ledger: Mapping[str, Any],
     *,
     stage: str,
+    input_binding_digest: str | None = None,
 ) -> Any | None:
     stages = ledger.get("stages")
     if not isinstance(stages, Mapping):
         return None
     entry = stages.get(stage)
     if not isinstance(entry, Mapping):
+        return None
+    if input_binding_digest is not None and entry.get("input_binding_digest") != (
+        input_binding_digest
+    ):
         return None
     if entry.get("status") != "completed":
         return None
@@ -363,13 +369,20 @@ def _mark_run_e2e_stage(
     artifacts: Mapping[str, Any] | None = None,
     result_snapshot: Any | None = None,
     resume_used: bool = False,
+    input_binding_digest: str | None = None,
     error: BaseException | None = None,
 ) -> None:
     now = utc_now_iso()
     stages = ledger.setdefault("stages", {})
     entry = dict(stages.get(stage) if isinstance(stages.get(stage), Mapping) else {})
+    if input_binding_digest is not None and entry.get("input_binding_digest") != (
+        input_binding_digest
+    ):
+        entry = {}
     entry.setdefault("name", stage)
     entry["status"] = status
+    if input_binding_digest is not None:
+        entry["input_binding_digest"] = input_binding_digest
     if status != "running":
         entry["outcome_kind"] = stage_ledger_outcome_kind(
             status=status,
@@ -603,6 +616,11 @@ def run_end_to_end(
         )
     if allow_live_supervisor_agents and supervisor_inference_budget_usd <= 0:
         raise PipelineError("live_supervisor_agents_require_positive_inference_budget_usd")
+    supervisor_execution_profile = capture_supervisor_execution_profile(
+        agent_model=supervisor_agent_model,
+        allow_live_agents_sdk=allow_live_supervisor_agents,
+        agent_inference_budget_usd=supervisor_inference_budget_usd,
+    )
     log_event(
         logger,
         logging.INFO,
@@ -665,9 +683,14 @@ def run_end_to_end(
         callback: Any,
         *,
         artifacts_from_result: Any = None,
+        input_binding_digest: str | None = None,
     ) -> Any:
         if resume_completed_stages:
-            resumed_result = _completed_stage_resume_snapshot(stage_ledger, stage=stage)
+            resumed_result = _completed_stage_resume_snapshot(
+                stage_ledger,
+                stage=stage,
+                input_binding_digest=input_binding_digest,
+            )
             if resumed_result is not None:
                 _mark_run_e2e_stage(
                     stage_ledger,
@@ -677,6 +700,7 @@ def run_end_to_end(
                     detail=_stage_result_status(resumed_result),
                     result_snapshot=resumed_result,
                     resume_used=True,
+                    input_binding_digest=input_binding_digest,
                 )
                 stage_ledger["resume_used_count"] = (
                     int(stage_ledger.get("resume_used_count") or 0) + 1
@@ -688,6 +712,7 @@ def run_end_to_end(
             capture_root=context.capture_root,
             stage=stage,
             status="running",
+            input_binding_digest=input_binding_digest,
         )
         try:
             stage_result = callback()
@@ -697,6 +722,7 @@ def run_end_to_end(
                 capture_root=context.capture_root,
                 stage=stage,
                 status="failed",
+                input_binding_digest=input_binding_digest,
                 error=exc,
             )
             raise
@@ -709,6 +735,7 @@ def run_end_to_end(
             detail=_stage_result_status(stage_result),
             artifacts=artifacts,
             result_snapshot=_json_safe_stage_result_snapshot(stage_result),
+            input_binding_digest=input_binding_digest,
         )
         return stage_result
 
@@ -832,6 +859,7 @@ def run_end_to_end(
                 value.get("event_ledger_path") if isinstance(value, Mapping) else None
             ),
         },
+        input_binding_digest=str(supervisor_execution_profile["execution_profile_digest"]),
     )
     if run_agent_review_stage:
         review = _run_stage(

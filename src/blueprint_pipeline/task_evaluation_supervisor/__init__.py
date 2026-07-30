@@ -51,6 +51,7 @@ from .inference_reservations import (
 )
 from .lifecycle import (
     CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION,
+    capture_supervisor_execution_profile,
     run_capture_build_supervisor,
 )
 from .manager import (
@@ -182,6 +183,7 @@ __all__ = [
     "agents_sdk_capabilities",
     "deterministic_baseline_capabilities",
     "compare_supervisor_to_baseline",
+    "capture_supervisor_execution_profile",
     "compile_neutral_candidate_policy_suite",
     "execute_neutral_candidate_policy_suite",
     "reconcile_neutral_candidate_policy_costs",
