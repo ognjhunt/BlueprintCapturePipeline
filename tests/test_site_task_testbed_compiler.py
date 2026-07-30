@@ -616,17 +616,35 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
     envelope = _envelope()
     qa = _qa(envelope)
     plan = _plan(qa)
+    execution_digest = SHA_C
+    monkeypatch.setattr(
+        service,
+        "load_reconstruction_compilation_inputs",
+        lambda **_: {
+            "context": {
+                "capture_session_id": "capture-session-1",
+                "intake_id": "intake-1",
+            },
+            "capture_intake_envelope": envelope,
+            "capture_qa_report": qa,
+            "reconstruction_plan": plan,
+            "reconstruction_results": [_result(plan)],
+            "execution_result": {
+                "state": "completed",
+                "execution_result_digest": execution_digest,
+            },
+        },
+    )
+    monkeypatch.setenv(service.CAPTURE_UPLOAD_STORE_ROOT_ENV, str(tmp_path / "capture-store"))
     payload = {
-        "schema_version": "site_task_testbed_compilation_submission.v1",
+        "schema_version": "site_task_testbed_compilation_submission.v2",
         "capture_session_id": "capture-session-1",
         "intake_id": "intake-1",
         "testbed_id": "site-task-service",
         "version": "1",
         "approved_task_digest": approved["approved_task_digest"],
-        "capture_intake_envelope": envelope,
-        "capture_qa_report": qa,
-        "reconstruction_plan": plan,
-        "reconstruction_results": [_result(plan)],
+        "reconstruction_plan_id": "reconstruction-plan-1",
+        "reconstruction_execution_result_digest": execution_digest,
         "simready_decision": _simready(),
         "robot_placement_result": _placement(),
         "artifact_references": _refs(),

@@ -306,6 +306,11 @@ def plan_reconstruction_methods(
             "method_version": applicable[index][0]["version"],
             "method_profile_digest": applicable[index][0]["method_profile_digest"],
             "provider_identity": applicable[index][0]["provider_identity"],
+            **(
+                {"adapter_reference": applicable[index][0]["adapter_reference"]}
+                if applicable[index][0].get("adapter_reference")
+                else {}
+            ),
             "expected_cost_usd": applicable[index][0]["expected_cost_usd"],
         }
         for index in chosen_indexes

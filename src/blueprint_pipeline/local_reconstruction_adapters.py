@@ -322,6 +322,7 @@ def decoded_observation_method_profile(*, execution_authorized: bool = False) ->
             "method_kind": "decoded_observation_index",
             "provider_identity": "local",
             "execution_mode": "hermetic_local",
+            "adapter_reference": LOCAL_DECODED_OBSERVATION_ADAPTER,
             "outputs": ["decoded_observation_frames"],
             "required_capture_authority_profiles": sorted(_VIDEO_PROFILES),
             "required_claim_ceiling_flags": [],
@@ -345,6 +346,7 @@ def arkit_metric_scaffold_method_profile(*, execution_authorized: bool = False) 
             "method_kind": "lidar_depth_fusion",
             "provider_identity": "local",
             "execution_mode": "hermetic_local",
+            "adapter_reference": LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER,
             "outputs": [
                 "calibrated_frames",
                 "decoded_observation_frames",

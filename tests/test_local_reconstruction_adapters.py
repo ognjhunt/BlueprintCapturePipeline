@@ -91,6 +91,9 @@ def test_ordinary_video_plans_decoded_observations_not_calibration() -> None:
     assert plan["selected_methods"][0]["representations"] == [
         "decoded_observation_frames"
     ]
+    assert plan["selected_methods"][0]["adapter_reference"] == (
+        LOCAL_DECODED_OBSERVATION_ADAPTER
+    )
     assert "calibrated_frames" not in plan["required_representations"]
 
 

@@ -4,8 +4,9 @@ The service is a thin wrapper around ``build_live_pipeline_input_intake``. It
 accepts a WebApp ``robot_eval_job_request.v1`` payload or queue envelope, accepts
 job-specific policy packages, real robot POV evidence, deployment outcomes, and live closure evidence,
 stages validated files into the configured control-plane paths, accepts
-short-lived grants for immutable capture intake, and optionally runs a configured
-trigger command. It does not execute paid providers or promote proof claims.
+short-lived grants for immutable capture intake, executes only explicitly
+authorized hermetic local methods, and optionally runs a configured trigger
+command. It does not execute paid providers or promote proof claims.
 """
 
 from __future__ import annotations
@@ -37,6 +38,14 @@ from .capture_upload_intake import (
     process_capture_upload_submission,
 )
 from .capture_qa_webapp_sync import build_capture_qa_webapp_publication
+from .reconstruction_control_plane import (
+    ReconstructionControlPlaneError,
+    authorize_reconstruction_plan,
+    execute_reconstruction_plan,
+    inspect_reconstruction_plan,
+    load_reconstruction_compilation_inputs,
+    prepare_reconstruction_plan,
+)
 from .live_pipeline_control_plane import (
     CONTROL_PLANE_OUTPUT_PATH_ENV,
     WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
@@ -153,6 +162,10 @@ def _task_candidate_control_plane_root(manifest_path: Path) -> Path:
 
 def _maintained_testbed_root(manifest_path: Path) -> Path:
     return _work_dir(manifest_path).expanduser().resolve() / "maintained_site_task_testbeds"
+
+
+def _reconstruction_control_plane_root(manifest_path: Path) -> Path:
+    return _work_dir(manifest_path).expanduser().resolve() / "reconstruction_control_plane"
 
 
 def _task_evaluation_run_root(manifest_path: Path) -> Path:
@@ -1663,7 +1676,8 @@ def create_app() -> FastAPI:
                 and _string(os.getenv(CAPTURE_MALWARE_SCANNER_ARGV_ENV))
             ),
             "proof_boundary": {
-                "service_is_intake_only": True,
+                "authorized_hermetic_local_reconstruction_supported": True,
+                "paid_or_live_provider_execution_supported": False,
                 "simulator_execution_proven": False,
                 "rank_fidelity_result_proven": False,
             },
@@ -1730,6 +1744,106 @@ def create_app() -> FastAPI:
                 report=_mapping(receipt.get("capture_qa_report")),
             ),
         }
+
+    @app.post(
+        "/api/live-pipeline/reconstructions/plan",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def plan_reconstruction(request: Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        if payload.get("schema_version") != "reconstruction_plan_submission.v1":
+            raise HTTPException(status_code=422, detail="reconstruction plan schema version mismatch")
+        claims = payload.get("requested_claim_types")
+        if not isinstance(claims, list):
+            raise HTTPException(status_code=422, detail="requested claim types must be a list")
+        manifest_path = _manifest_path().resolve()
+        store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+        if not manifest_path.is_file() or not store_root_text:
+            raise HTTPException(status_code=503, detail="reconstruction control plane is not configured")
+        try:
+            return await run_in_threadpool(
+                prepare_reconstruction_plan,
+                state_root=_reconstruction_control_plane_root(manifest_path),
+                capture_store_root=Path(store_root_text).expanduser().resolve(),
+                capture_session_id=str(payload.get("capture_session_id") or ""),
+                intake_id=str(payload.get("intake_id") or ""),
+                requested_claim_types=[str(row) for row in claims],
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+            )
+        except ReconstructionControlPlaneError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+
+    @app.post(
+        "/api/live-pipeline/reconstructions/{plan_id}/authorize",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def authorize_reconstruction(plan_id: str, request: Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        if payload.get("schema_version") != "reconstruction_authorization_submission.v1":
+            raise HTTPException(
+                status_code=422, detail="reconstruction authorization schema version mismatch"
+            )
+        references = payload.get("authorized_adapter_references")
+        actor = payload.get("actor")
+        if not isinstance(references, list) or not isinstance(actor, Mapping):
+            raise HTTPException(status_code=422, detail="authorization references or actor invalid")
+        manifest_path = _manifest_path().resolve()
+        try:
+            return authorize_reconstruction_plan(
+                state_root=_reconstruction_control_plane_root(manifest_path),
+                plan_id=plan_id,
+                reconstruction_plan_digest=str(
+                    payload.get("reconstruction_plan_digest") or ""
+                ),
+                authorized_adapter_references=[str(row) for row in references],
+                actor=dict(actor),
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+            )
+        except ReconstructionControlPlaneError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+
+    @app.post(
+        "/api/live-pipeline/reconstructions/{plan_id}/execute",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def execute_reconstruction(plan_id: str) -> Dict[str, Any]:
+        manifest_path = _manifest_path().resolve()
+        store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+        if not store_root_text:
+            raise HTTPException(status_code=503, detail="capture intake store is not configured")
+        try:
+            return await run_in_threadpool(
+                execute_reconstruction_plan,
+                state_root=_reconstruction_control_plane_root(manifest_path),
+                capture_store_root=Path(store_root_text).expanduser().resolve(),
+                plan_id=plan_id,
+            )
+        except ReconstructionControlPlaneError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+
+    @app.get(
+        "/api/live-pipeline/reconstructions/{plan_id}",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def inspect_reconstruction(plan_id: str) -> Dict[str, Any]:
+        manifest_path = _manifest_path().resolve()
+        try:
+            return inspect_reconstruction_plan(
+                state_root=_reconstruction_control_plane_root(manifest_path),
+                plan_id=plan_id,
+            )
+        except ReconstructionControlPlaneError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
 
     @app.post("/api/live-pipeline/job-requests", dependencies=[Depends(_require_admission)])
     async def intake_job_request(request: Request) -> Dict[str, Any]:
@@ -1829,10 +1943,26 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid JSON body") from exc
         if not isinstance(payload, Mapping):
             raise HTTPException(status_code=400, detail="expected JSON object")
-        if payload.get("schema_version") != "site_task_testbed_compilation_submission.v1":
+        if payload.get("schema_version") != "site_task_testbed_compilation_submission.v2":
             raise HTTPException(
                 status_code=422,
-                detail="schema_version:must_be:site_task_testbed_compilation_submission.v1",
+                detail="schema_version:must_be:site_task_testbed_compilation_submission.v2",
+            )
+        client_owned_reconstruction_fields = sorted(
+            {
+                "capture_intake_envelope",
+                "capture_qa_report",
+                "reconstruction_plan",
+                "reconstruction_results",
+            }.intersection(payload)
+        )
+        if client_owned_reconstruction_fields:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Pipeline-owned reconstruction inputs forbidden:"
+                    + ",".join(client_owned_reconstruction_fields)
+                ),
             )
         manifest_path = _manifest_path().resolve()
         if not manifest_path.is_file():
@@ -1870,12 +2000,26 @@ def create_app() -> FastAPI:
                 raise SiteTaskTestbedCompilerError(
                     ["approved_task_digest:authoritative_mismatch"]
                 )
-            results_value = payload.get("reconstruction_results")
-            if not isinstance(results_value, list) or not all(
-                isinstance(row, Mapping) for row in results_value
+            store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+            if not store_root_text:
+                raise ReconstructionControlPlaneError(
+                    "capture intake store is not configured", status_code=503
+                )
+            reconstruction = load_reconstruction_compilation_inputs(
+                state_root=_reconstruction_control_plane_root(manifest_path),
+                capture_store_root=Path(store_root_text).expanduser().resolve(),
+                plan_id=str(payload.get("reconstruction_plan_id") or ""),
+                execution_result_digest=str(
+                    payload.get("reconstruction_execution_result_digest") or ""
+                ),
+            )
+            context = _mapping(reconstruction.get("context"))
+            if (
+                context.get("capture_session_id") != session_id
+                or context.get("intake_id") != intake_id
             ):
                 raise SiteTaskTestbedCompilerError(
-                    ["reconstruction_results:not_object_list"]
+                    ["authoritative_reconstruction:source_mismatch"]
                 )
             previous_value = payload.get("previous_testbed")
             if previous_value is not None and not isinstance(previous_value, Mapping):
@@ -1883,11 +2027,17 @@ def create_app() -> FastAPI:
             testbed = compile_site_task_testbed(
                 testbed_id=str(payload.get("testbed_id") or ""),
                 version=str(payload.get("version") or ""),
-                capture_intake_envelope=_mapping(payload.get("capture_intake_envelope")),
-                capture_qa_report=_mapping(payload.get("capture_qa_report")),
+                capture_intake_envelope=_mapping(
+                    reconstruction.get("capture_intake_envelope")
+                ),
+                capture_qa_report=_mapping(reconstruction.get("capture_qa_report")),
                 approved_task_definition=approved,
-                reconstruction_plan=_mapping(payload.get("reconstruction_plan")),
-                reconstruction_results=[dict(row) for row in results_value],
+                reconstruction_plan=_mapping(reconstruction.get("reconstruction_plan")),
+                reconstruction_results=[
+                    dict(row)
+                    for row in reconstruction.get("reconstruction_results", [])
+                    if isinstance(row, Mapping)
+                ],
                 simready_decision=_mapping(payload.get("simready_decision")),
                 robot_placement_result=_mapping(payload.get("robot_placement_result")),
                 artifact_references=_mapping(payload.get("artifact_references")),
@@ -1946,6 +2096,8 @@ def create_app() -> FastAPI:
                     request=decision_evidence_request,
                 )
         except TaskCandidateControlPlaneError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+        except ReconstructionControlPlaneError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
         except (SiteTaskTestbedCompilerError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

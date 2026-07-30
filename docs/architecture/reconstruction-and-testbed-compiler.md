@@ -24,6 +24,32 @@ representations, total expected cost, and the next cheapest experiment. A
 generated visual completion cannot satisfy metric, collision, physics, or
 articulation outputs.
 
+## Local reconstruction control plane
+
+The signed service exposes plan, authorize, execute, and inspect operations
+under `/api/live-pipeline/reconstructions`. Planning resolves the immutable
+Pipeline-owned upload receipt, revalidates the intake envelope, QA digest,
+object-manifest digest, raw-object size, and raw-object SHA-256, then records the
+exact adapter reference beside each selected method-profile digest. The client
+cannot provide a filesystem path, command, credential, or executor.
+
+Authorization is a separate immutable record bound to the plan and source
+context digests. The registry is empty unless the operator names an exact
+planned hermetic adapter. The initial executable adapters are:
+
+- `local://decoded-observation-index-v1`, which indexes decoded PTS and extracts
+  deterministic retained-video observations without claiming calibration,
+  scale, geometry, collision, physics, or physical success;
+- `local://arkit-metric-scaffold-v1`, which accepts only a complete Capture Raw
+  Contract V3.2 LiDAR bundle whose decoded PTS, encoder retention, AR poses,
+  intrinsics, coordinate semantics, and depth/confidence pairs agree.
+
+A single MP4 uploaded with an iPhone profile does not activate the bundle
+adapter. Missing authority produces a partial plan, abstention, or next
+experiment. Execution is local, zero-paid-compute, deterministic, retry-safe,
+and stores a normalized immutable result. Adapter failure is evidence
+insufficiency; it never becomes a pass.
+
 ## Normalized results and layers
 
 `reconstruction_result.v1` binds exact capture, method-profile,
@@ -81,8 +107,11 @@ compiler rejects unaccepted QA, stale capture/result bindings, results from
 methods absent from the exact plan, credential-bearing artifact URIs, and
 same-version successors.
 
-The signed `/api/live-pipeline/testbeds/compile` service loads the authoritative
-approved task from Pipeline state rather than trusting a caller-supplied task.
+The signed `/api/live-pipeline/testbeds/compile` version 2 service loads the
+authoritative approved task, capture intake, QA, reconstruction plan, and
+execution results from Pipeline state rather than trusting caller-supplied
+scientific inputs. It rejects the former client-owned reconstruction fields and
+requires the exact reconstruction plan ID and execution-result digest.
 After compilation it can publish the full digest-bound testbed to WebApp through
 `PIPELINE_TESTBED_WEBAPP_URL`, authenticated with `PIPELINE_SYNC_TOKEN`. A 2xx
 response is insufficient: Pipeline accepts only a receipt matching the exact

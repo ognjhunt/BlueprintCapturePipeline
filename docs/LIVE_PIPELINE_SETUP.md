@@ -340,6 +340,15 @@ The service exposes:
 
 - `GET /health`
 - `POST /api/live-pipeline/capture-upload-intakes`
+- `POST /api/live-pipeline/reconstructions/plan`
+- `POST /api/live-pipeline/reconstructions/{plan_id}/authorize`
+- `POST /api/live-pipeline/reconstructions/{plan_id}/execute`
+- `GET /api/live-pipeline/reconstructions/{plan_id}`
+- `POST /api/live-pipeline/testbeds/compile`
+- `POST /api/live-pipeline/task-evaluation-runs/plan`
+- `POST /api/live-pipeline/task-evaluation-runs/{run_id}/authorize`
+- `POST /api/live-pipeline/task-evaluation-runs/{run_id}/execute`
+- `GET /api/live-pipeline/task-evaluation-runs/{run_id}`
 - `POST /api/live-pipeline/job-requests`
 - `POST /api/live-pipeline/policy-packages`
 - `POST /api/live-pipeline/real-robot-pov`
@@ -369,6 +378,17 @@ publication; it never persists or echoes the URL or grant. Capture QA may accept
 the input or request exact recapture, but neither artifact establishes
 reconstruction, task success, physical success, deployment readiness, safety
 certification, or policy-ranking support.
+
+Reconstruction planning and execution require the same configured capture
+store. The service resolves capture bytes by the accepted session/intake
+receipt and never accepts a caller-selected local path. Planning alone is not
+authorization. The authorize endpoint must name an exact planned local adapter;
+the execute endpoint cannot enable live providers, paid compute, or physical
+robot work. Testbed compilation accepts
+`site_task_testbed_compilation_submission.v2`, which references the exact
+Pipeline-owned reconstruction plan and execution-result digest. Version 2
+rejects caller-supplied intake, QA, reconstruction-plan, or reconstruction-result
+objects.
 
 Signed intake headers are required by default. Temporary legacy bearer support
 exists only when `BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER=true` is
