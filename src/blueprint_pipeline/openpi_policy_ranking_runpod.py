@@ -23,6 +23,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .common import write_json
 from .gpu_render_providers import RenderLaunchSpec, get_render_provider
 from .groot_oscar_runpod_watchdog import (
@@ -222,6 +224,7 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
                 if (
                     tuple(manifest.get("frozen_policy_order") or []) != expected_policies
                     or manifest.get("requests_per_policy") != 1
+                    or manifest.get("artifact_path_mode") != "result_root_relative"
                     or len(policy_results) != 3
                     or any(
                         not isinstance(row, Mapping) or row.get("status") != "completed"
@@ -229,13 +232,64 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
                     )
                 ):
                     blockers.append("openpi_output_current_reference_completion_invalid")
+                result_by_policy = {
+                    str(row.get("policy_id") or ""): row
+                    for row in policy_results
+                    if isinstance(row, Mapping)
+                }
                 for policy_id in expected_policies:
-                    if (
-                        f"{policy_id}_native_action.npy" not in names
-                        or f"{policy_id}_policy_receipt.json" not in names
-                    ):
+                    action_name = f"{policy_id}_native_action.npy"
+                    receipt_name = f"{policy_id}_policy_receipt.json"
+                    if action_name not in names or receipt_name not in names:
                         blockers.append(
                             f"openpi_output_current_reference_policy_artifacts_missing:{policy_id}"
+                        )
+                        continue
+                    try:
+                        receipt_value = json.loads(archive.read(receipt_name).decode("utf-8"))
+                        receipt = dict(receipt_value) if isinstance(receipt_value, Mapping) else {}
+                        receipt_digest_payload = dict(receipt)
+                        receipt_manifest_sha256 = str(
+                            receipt_digest_payload.pop("manifest_sha256", "")
+                        )
+                        receipt_bytes = archive.read(receipt_name)
+                        action_bytes = archive.read(action_name)
+                        action = np.load(io.BytesIO(action_bytes), allow_pickle=False)
+                        expected_shape = (15, 8) if policy_id == "pi05_droid" else (10, 8)
+                        result_row = result_by_policy.get(policy_id, {})
+                        if (
+                            receipt.get("schema_version")
+                            != "openpi_current_reference_policy_query_receipt.v1"
+                            or receipt.get("policy_id") != policy_id
+                            or receipt.get("artifact_path_mode") != "result_root_relative"
+                            or receipt.get("native_action_path") != action_name
+                            or receipt.get("native_action_file_sha256")
+                            != hashlib.sha256(action_bytes).hexdigest()
+                            or receipt.get("physical_outcome_accessed") is not False
+                            or receipt.get("wam_called") is not False
+                            or receipt_manifest_sha256
+                            != canonical_sha256(receipt_digest_payload)
+                            or action.shape != expected_shape
+                            or action.dtype != np.float64
+                            or not np.isfinite(action).all()
+                            or result_row.get("artifact_path_mode")
+                            != "result_root_relative"
+                            or result_row.get("receipt_path") != receipt_name
+                            or result_row.get("receipt_file_sha256")
+                            != hashlib.sha256(receipt_bytes).hexdigest()
+                            or result_row.get("receipt_manifest_sha256")
+                            != receipt_manifest_sha256
+                            or result_row.get("native_action_shape") != list(expected_shape)
+                            or result_row.get("native_action_file_sha256")
+                            != hashlib.sha256(action_bytes).hexdigest()
+                        ):
+                            blockers.append(
+                                "openpi_output_current_reference_policy_artifacts_invalid:"
+                                f"{policy_id}"
+                            )
+                    except (UnicodeError, ValueError, json.JSONDecodeError):
+                        blockers.append(
+                            f"openpi_output_current_reference_policy_artifacts_unreadable:{policy_id}"
                         )
             elif status == "blocked":
                 if not manifest.get("blockers"):

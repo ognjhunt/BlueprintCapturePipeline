@@ -31,6 +31,12 @@ second reservation and rounds elapsed seconds upward. Protocol Amendment 5
 therefore freezes a fail-closed terminal reconciliation rule and expands only
 the internal wall-time accounting envelope to 72,000 seconds. Monetary limits,
 per-stage TTLs, and one-GPU concurrency are unchanged.
+Offline terminal-artifact review then found that provider-local absolute paths
+would not resolve after downloading the policy output archive. Protocol
+Amendment 6 requires result-root-relative paths and independently validates the
+receipt hash, native-action hash, exact shape, dtype, finite values, and claim
+boundary for every policy. The earlier signed retry bundle is retired before
+execution and must be rebuilt from the new immutable SHA.
 
 The scientific admission state is:
 
@@ -42,10 +48,10 @@ The scientific admission state is:
 - blind physical ranking: unavailable and not measured;
 - captured-site transfer: not admitted;
 - economics and speed: not admitted;
-- provider state: the successor's exact Vast prefix is zero; an unrelated
-  user-owned Vast GPU is active under a different prefix and consumes the global
-  one-GPU ceiling. The successor's watchdog conservatively retains its lease and
-  reservation until global Vast zero, but it does not own or alter that resource.
+- provider state: the latest read-only inventory snapshot showed exact-prefix
+  and global provider zero. The older watchdog nevertheless remains the
+  authoritative lease and reservation owner until its frozen terminal path
+  completes; the successor does not bypass or alter that process.
 
 The historical frozen-stack verdict remains `thesis_not_supported`. The prior
 specialized successor remains `inconclusive`. Neither result is overwritten or
@@ -120,15 +126,19 @@ used as blind confirmation.
 - `protocol_amendment_5_conservative_reservation_wall_envelope_v1.md` —
   prospective conservative settlement and wall-accounting envelope without any
   monetary or scientific threshold change;
+- `protocol_amendment_6_portable_policy_output_artifacts_v1.md` — portable
+  result-root-relative action and receipt paths plus independent terminal
+  archive validation of their bytes, hashes, shapes, dtype, and claim boundary;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-The next finite gate is to commit and push the provider repair, freeze and hash
-its new exact codeload archive and a newly versioned signed input bundle, then
-wait for global one-GPU admission and execute one identity-bound inference from
-each of the three policy checkpoints. Only after this policy gate may the
-separately sealed Ctrl-World WAM image and one policy-action generation be
-admitted. Judges remain forbidden until a complete episode passes causal
-qualification.
+The next finite gate is to commit and push the portable-output repair, freeze
+and hash its new exact codeload archive and a newly versioned signed input
+bundle, then let the older watchdog complete its authoritative terminal path.
+After fresh global-zero proof and conservative ledger reconciliation, execute
+one identity-bound inference from each of the three policy checkpoints. Only
+after this policy gate may the separately sealed Ctrl-World WAM image and one
+policy-action generation be admitted. Judges remain forbidden until a complete
+episode passes causal qualification.
