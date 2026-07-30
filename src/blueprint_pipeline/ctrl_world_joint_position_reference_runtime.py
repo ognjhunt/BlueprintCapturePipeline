@@ -248,7 +248,12 @@ def _validate_source_manifest(source_root: Path, manifest_path: Path) -> dict[st
 
 
 def _validate_snapshot_root(
-    path_value: str | Path, *, repository: str, revision: str, reason: str
+    path_value: str | Path,
+    *,
+    repository: str,
+    revision: str,
+    required_blobs: Any,
+    reason: str,
 ) -> Path:
     candidate = Path(path_value).expanduser()
     if candidate.is_symlink():
@@ -260,6 +265,14 @@ def _validate_snapshot_root(
     identity = _read_object(marker, reason=reason)
     if identity != {"repository": repository, "revision": revision}:
         raise ValueError(reason)
+    if not isinstance(required_blobs, list) or not required_blobs:
+        raise ValueError(reason)
+    for row in required_blobs:
+        if not isinstance(row, Mapping):
+            raise ValueError(reason)
+        blob = _contained_file(root=path, relative_value=row.get("relative_path"), reason=reason)
+        if blob.stat().st_size != row.get("size_bytes") or file_sha256(blob) != row.get("sha256"):
+            raise ValueError(reason)
     return path
 
 
@@ -308,12 +321,14 @@ def validate_joint_position_runtime_assets(
         svd_model_root,
         repository=svd_freeze["repository"],
         revision=svd_freeze["revision"],
+        required_blobs=svd_freeze.get("required_blobs"),
         reason="ctrl_world_joint_position_runtime_svd_snapshot_mismatch",
     )
     clip = _validate_snapshot_root(
         clip_model_root,
         repository=clip_freeze["repository"],
         revision=clip_freeze["revision"],
+        required_blobs=clip_freeze.get("required_blobs"),
         reason="ctrl_world_joint_position_runtime_clip_snapshot_mismatch",
     )
     return {

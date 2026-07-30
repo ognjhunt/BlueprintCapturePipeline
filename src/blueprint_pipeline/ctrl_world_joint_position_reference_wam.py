@@ -51,10 +51,34 @@ MODEL_FREEZE = {
     "stable_video_diffusion": {
         "repository": "stabilityai/stable-video-diffusion-img2vid",
         "revision": "9cf024d5bfa8f56622af86c884f26a52f6676f2e",
+        "required_blobs": [
+            {
+                "relative_path": "image_encoder/model.safetensors",
+                "size_bytes": 2528371296,
+                "sha256": "ed1e5af7b4042ca30ec29999a4a5cfcac90b7fb610fd05ace834f2dcbb763eab",
+            },
+            {
+                "relative_path": "unet/diffusion_pytorch_model.safetensors",
+                "size_bytes": 6098682464,
+                "sha256": "98c5e6b99df6bef015b2681c0f8ab9d4c807b733be46c067d6c9966101698f58",
+            },
+            {
+                "relative_path": "vae/diffusion_pytorch_model.safetensors",
+                "size_bytes": 391017740,
+                "sha256": "9975042d7bee021bd53a72b1af14c8627d624f6547ec9abe661b68b962b88c49",
+            },
+        ],
     },
     "clip": {
         "repository": "openai/clip-vit-base-patch32",
         "revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
+        "required_blobs": [
+            {
+                "relative_path": "pytorch_model.bin",
+                "size_bytes": 605247071,
+                "sha256": "a63082132ba4f97a80bea76823f544493bffa8082296d62d71581a4feff1576f",
+            }
+        ],
     },
     "ctrl_world_state_stats": {
         "repository": "https://github.com/Robert-gyj/Ctrl-World",

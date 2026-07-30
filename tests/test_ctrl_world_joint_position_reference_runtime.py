@@ -148,6 +148,20 @@ def test_configured_runtime_emits_result_accepted_by_wam_contract(
     monkeypatch.setitem(MODEL_FREEZE["ctrl_world_state_stats"], "sha256", file_sha256(stats))
     svd = _snapshot(tmp_path, "stable_video_diffusion")
     clip = _snapshot(tmp_path, "clip")
+    for freeze_key, root in (("stable_video_diffusion", svd), ("clip", clip)):
+        blob = root / "weights.bin"
+        blob.write_bytes(f"{freeze_key} fixture".encode())
+        monkeypatch.setitem(
+            MODEL_FREEZE[freeze_key],
+            "required_blobs",
+            [
+                {
+                    "relative_path": "weights.bin",
+                    "size_bytes": blob.stat().st_size,
+                    "sha256": file_sha256(blob),
+                }
+            ],
+        )
     receipt = stage_ctrl_world_joint_position_request(
         _request(tmp_path), output_dir=tmp_path / "request", seed=23
     )
@@ -207,3 +221,11 @@ def test_configured_runtime_emits_result_accepted_by_wam_contract(
         for paths in validated["generated_view_frame_sequences"].values()
     )
     assert (tmp_path / "output/ctrl_world_joint_position_runtime_result.json").is_file()
+
+    (svd / "weights.bin").write_bytes(b"drift after admission")
+    with pytest.raises(ValueError, match="ctrl_world_joint_position_runtime_svd_snapshot_mismatch"):
+        runtime(
+            request_manifest_path=Path(receipt["manifest_path"]),
+            output_dir=tmp_path / "drifted-output",
+            seed=23,
+        )
