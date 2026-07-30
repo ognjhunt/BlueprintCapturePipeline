@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+import types
 from typing import Any
 
 import numpy as np
@@ -316,3 +318,49 @@ def test_released_action_runtime_rejects_asset_hash_drift(
             dynamics_loader=lambda *_: _dynamics,
             forward_kinematics_loader=lambda _: _fk,
         )
+
+
+def test_released_dynamics_loader_stubs_only_unused_decord_training_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import ctrl_world_droid_action_adapter as action_module
+
+    source = tmp_path / "train2.py"
+    source.write_text(
+        """
+from decord import VideoReader, cpu
+class Dynamics:
+    def __init__(self, action_dim, action_num, hidden_size): pass
+    def to(self, device): return self
+    def load_state_dict(self, state): pass
+    def eval(self): pass
+    def __call__(self, current, velocity, delta, training=False): return velocity
+""",
+        encoding="utf-8",
+    )
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"fixture")
+
+    class NoGrad:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.load = lambda *_args, **_kwargs: {}  # type: ignore[attr-defined]
+    fake_torch.no_grad = NoGrad  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    original_find_spec = action_module.importlib.util.find_spec
+    monkeypatch.setattr(
+        action_module.importlib.util,
+        "find_spec",
+        lambda name: None if name == "decord" else original_find_spec(name),
+    )
+    execute = action_module._load_released_dynamics(source, checkpoint, "cpu")
+
+    result = execute(np.zeros(7), np.zeros((15, 7)))
+    assert result.shape == (15, 7)
+    assert execute.blueprint_training_only_import_stubs == ("decord",)  # type: ignore[attr-defined]
+    assert "decord" not in sys.modules

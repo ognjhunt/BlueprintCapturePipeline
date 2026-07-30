@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 import importlib.util
 import sys
+import types
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -287,11 +288,27 @@ def _load_released_dynamics(
     if spec is None or spec.loader is None:
         raise RuntimeError("ctrl_world_released_dynamics_import_spec_invalid")
     module = importlib.util.module_from_spec(spec)
+    previous_decord = sys.modules.get("decord")
+    training_only_stubs: list[str] = []
+    if importlib.util.find_spec("decord") is None:
+        decord_stub = types.ModuleType("decord")
+
+        def _training_only_dependency_used(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("ctrl_world_training_only_decord_path_forbidden")
+
+        decord_stub.VideoReader = _training_only_dependency_used  # type: ignore[attr-defined]
+        decord_stub.cpu = _training_only_dependency_used  # type: ignore[attr-defined]
+        sys.modules["decord"] = decord_stub
+        training_only_stubs.append("decord")
     sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
     finally:
         sys.modules.pop(module_name, None)
+        if previous_decord is None:
+            sys.modules.pop("decord", None)
+        else:
+            sys.modules["decord"] = previous_decord
     model = module.Dynamics(action_dim=7, action_num=15, hidden_size=512).to(device)
     state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
@@ -307,6 +324,7 @@ def _load_released_dynamics(
             )
         return np.asarray(result, dtype=np.float64)
 
+    execute.blueprint_training_only_import_stubs = tuple(training_only_stubs)  # type: ignore[attr-defined]
     return execute
 
 
@@ -374,6 +392,10 @@ def load_ctrl_world_released_joint_velocity_adapter(
         "native_action_space": "joint_velocity_plus_gripper_position",
         "target_action_space": "ctrl_world_cartesian_xyz_euler_xyz_plus_gripper",
         "official_released_dynamics_and_fk_loaded": True,
+        "training_only_import_stubs": list(
+            getattr(dynamics, "blueprint_training_only_import_stubs", ())
+        ),
+        "training_only_stub_paths_forbidden_at_runtime": True,
         "absolute_joint_position_conversion_supported": False,
     }
     evidence["runtime_sha256"] = canonical_sha256(evidence)

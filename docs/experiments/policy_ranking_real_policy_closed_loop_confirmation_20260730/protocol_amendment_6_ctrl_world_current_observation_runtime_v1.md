@@ -40,6 +40,15 @@ for each of the three registered views. It must explicitly record no future
 physical RGB, no recorded action trace, no outcome labels, no WAM-to-WAM
 chaining, one frozen WAM across all views, timing, seed, and model identities.
 
+The released Dynamics definition is loaded from the exact frozen `train2.py`
+bytes. If the local preprocessing environment lacks `decord`, Blueprint may
+provide a temporary fail-closed stub for that file's unused training-data import;
+any attempted call through the stub raises immediately. The Dynamics class,
+checkpoint, and FK bytes remain unchanged, and the receipt records whether the
+stub was present. The pinned provider environment includes `decord`; live
+execution must revalidate the exact checkpoint-bound result there before causal
+credit.
+
 ## Admission and claim boundary
 
 This correction changes no policy, action adapter, causal threshold, reliability
