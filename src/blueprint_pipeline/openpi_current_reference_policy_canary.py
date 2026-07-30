@@ -35,8 +35,15 @@ SCHEMA_VERSION = "openpi_current_reference_policy_canary.v1"
 FROZEN_POLICY_ORDER = ("pi0_droid", "pi0_fast_droid", "pi05_droid")
 
 
-def _load_verified_array(row: Mapping[str, Any], *, expected_shape: tuple[int, ...]) -> np.ndarray:
-    path = Path(str(row.get("path") or "")).expanduser().resolve()
+def _resolve_packet_path(value: Any, *, manifest_dir: Path) -> Path:
+    path = Path(str(value or "")).expanduser()
+    return (path if path.is_absolute() else manifest_dir / path).resolve()
+
+
+def _load_verified_array(
+    row: Mapping[str, Any], *, expected_shape: tuple[int, ...], manifest_dir: Path
+) -> np.ndarray:
+    path = _resolve_packet_path(row.get("path"), manifest_dir=manifest_dir)
     if not path.is_file() or path.is_symlink() or file_sha256(path) != row.get("sha256"):
         raise ValueError("current_reference_initial_state_file_invalid")
     array = np.load(path, allow_pickle=False)
@@ -75,13 +82,13 @@ def load_current_reference_initial_observation(
     observation: dict[str, Any] = {
         "prompt": str(payload.get("task_prompt") or ""),
         "observation/joint_position": _load_verified_array(
-            state["joint_position"], expected_shape=(7,)
+            state["joint_position"], expected_shape=(7,), manifest_dir=path.parent
         ),
         "observation/gripper_position": _load_verified_array(
-            state["gripper_position"], expected_shape=(1,)
+            state["gripper_position"], expected_shape=(1,), manifest_dir=path.parent
         ),
         "blueprint/ctrl_world_cartesian_pose_7d": _load_verified_array(
-            state["cartesian_pose_7d"], expected_shape=(7,)
+            state["cartesian_pose_7d"], expected_shape=(7,), manifest_dir=path.parent
         ),
     }
     history_paths: dict[str, list[str]] = {}
@@ -89,9 +96,11 @@ def load_current_reference_initial_observation(
         row = views[view_id]
         if not isinstance(row, Mapping):
             raise ValueError("current_reference_initial_observation_view_row_invalid")
-        frame = Path(str(row.get("frame_path") or "")).expanduser().resolve()
-        if not frame.is_file() or frame.is_symlink() or file_sha256(frame) != row.get(
-            "frame_sha256"
+        frame = _resolve_packet_path(row.get("frame_path"), manifest_dir=path.parent)
+        if (
+            not frame.is_file()
+            or frame.is_symlink()
+            or file_sha256(frame) != row.get("frame_sha256")
         ):
             raise ValueError("current_reference_initial_observation_frame_invalid")
         observation[view_id] = image_preprocessor(frame)
@@ -114,9 +123,7 @@ def _default_checkpoint_downloader(uri: str) -> Path:
     return Path(download.maybe_download(uri)).expanduser().resolve()
 
 
-def _default_policy_loader(
-    spec: OpenPICurrentReferenceDroidPolicySpec, checkpoint: Path
-) -> Any:
+def _default_policy_loader(spec: OpenPICurrentReferenceDroidPolicySpec, checkpoint: Path) -> Any:
     try:
         from openpi.policies import policy_config
         from openpi.training import config as training_config
@@ -246,7 +253,9 @@ def run_current_reference_policy_canary(
                     }
                 )
             except Exception as exc:  # noqa: BLE001 - failure is experimental evidence
-                blocker = f"openpi_current_reference_policy_failed:{policy_id}:{type(exc).__name__}:{exc}"
+                blocker = (
+                    f"openpi_current_reference_policy_failed:{policy_id}:{type(exc).__name__}:{exc}"
+                )
                 blockers.append(blocker)
                 policy_results.append(
                     {
@@ -269,9 +278,7 @@ def run_current_reference_policy_canary(
         "schema_version": SCHEMA_VERSION,
         "status": "completed" if not blockers and len(policy_results) == 3 else "blocked",
         "gpu_runtime": gpu,
-        "source_freeze_file_sha256": file_sha256(
-            Path(source_freeze_path).expanduser().resolve()
-        ),
+        "source_freeze_file_sha256": file_sha256(Path(source_freeze_path).expanduser().resolve()),
         "initial_observation_manifest_file_sha256": file_sha256(
             Path(initial_observation_manifest_path).expanduser().resolve()
         ),

@@ -8,6 +8,12 @@ Ctrl-World current-reference** arm with three current official OpenPI DROID
 policies. No live policy checkpoint, Ctrl-World WAM, judge, physical-label join,
 or paid successor resource has run yet.
 
+The finite policy-only GPU lane is now implemented behind the canonical paid
+allocator. It packages portable label-free inputs, verifies all checkpoint
+objects, preserves one complete native action per policy, and uses a hash-bound
+code-only source overlay with the existing pinned OpenPI image. This is offline
+engineering admission, not live policy evidence.
+
 The scientific admission state is:
 
 - real-policy/WAM contract: offline adapter admitted for `pi0_droid`,
@@ -18,9 +24,10 @@ The scientific admission state is:
 - blind physical ranking: unavailable and not measured;
 - captured-site transfer: not admitted;
 - economics and speed: not admitted;
-- provider state: successor allocation forbidden while an unrelated user-owned
-  Vast instance occupies the one-GPU campaign ceiling; see the latest
-  `provider_state_refresh_v1.json` rather than the historical preflight identity.
+- provider state: Vast, RunPod, OpenAI Batch, and Gemini Batch are currently
+  zero, but an unrelated user-owned canonical DigitalOcean CPU image build is
+  active in another clean worktree; see the latest
+  `provider_and_writer_state_refresh_2_v1.json` and refresh again before spend.
 
 The historical frozen-stack verdict remains `thesis_not_supported`. The prior
 specialized successor remains `inconclusive`. Neither result is overwritten or
@@ -78,17 +85,22 @@ used as blind confirmation.
   power ceiling;
 - `engineering_contract_admission_v1.json` — focused offline gate results and
   exact live work still unproven;
-- `provider_state_refresh_v1.json` — latest live inventory, preserved separately
+- `provider_state_refresh_v1.json` — intermediate live inventory, preserved
   because provider state changed after preflight;
+- `provider_and_writer_state_refresh_2_v1.json` — later provider-zero and
+  unrelated active CPU-build writer observation;
+- `protocol_amendment_1_policy_identity_canary_provisioning_v1.md` — finite
+  three-policy canary, portable signed input, source-overlay, and terminal-output
+  rules;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-The next admitted work is label-free and offline: finish the pinned runtime
-bundle, execute one identity-bound inference from each of the three policy
-checkpoints, and prove deterministic request/response identities. Only after an
-immutable pushed experimental SHA, exact input hashes, provider-zero state, and
-the canonical paid-resource admission gate may one Ctrl-World WAM generation
-run. Judges remain forbidden until a complete episode passes causal
-qualification.
+The next finite gate is to commit and push the allocator extension, freeze and
+hash its exact codeload archive and signed input bundle, then execute one
+identity-bound inference from each of the three policy checkpoints. Live launch
+still requires fresh provider-zero and canonical paid-resource admission. Only
+after this policy gate may the separately sealed Ctrl-World WAM image and one
+policy-action generation be admitted. Judges remain forbidden until a complete
+episode passes causal qualification.

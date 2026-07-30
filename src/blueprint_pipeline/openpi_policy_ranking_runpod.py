@@ -32,7 +32,11 @@ from .groot_oscar_runpod_watchdog import (
 from .new_site_diagnostic_canary_gpu import (
     INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
 )
+from .openpi_current_reference_gpu_bundle import (
+    INPUT_RECEIPT_SCHEMA_VERSION as CURRENT_REFERENCE_INPUT_RECEIPT_SCHEMA_VERSION,
+)
 from .openpi_policy_ranking_gpu_bootstrap import (
+    EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY,
     EXECUTION_MODE_FULL_CAMPAIGN,
     EXECUTION_MODE_NEW_SITE_CANARY,
     POLICY_IDS,
@@ -72,6 +76,9 @@ SCHEMA_VERSION = "openpi_policy_ranking_runpod_launch.v1"
 INPUT_SECRET_URL_ENV = "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL"
 INPUT_SHA256_ENV = "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256"
 EXECUTION_MODE_ENV = "BLUEPRINT_OPENPI_EXECUTION_MODE"
+RUNTIME_SOURCE_ARCHIVE_URL_ENV = "BLUEPRINT_RUNTIME_SOURCE_ARCHIVE_URL"
+RUNTIME_SOURCE_ARCHIVE_SHA256_ENV = "BLUEPRINT_RUNTIME_SOURCE_ARCHIVE_SHA256"
+RUNTIME_SOURCE_COMMIT_ENV = "BLUEPRINT_RUNTIME_SOURCE_COMMIT"
 OUTPUT_SECRET_PUT_URL_ENV = "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL"
 GENERIC_OUTPUT_SECRET_URL_ENV = "BLUEPRINT_WORKER_RUNTIME_MANIFEST_SIGNED_PUT_URL"
 FORWARD_SECRET_ENV_NAMES_ENV = "BLUEPRINT_RUNPOD_FORWARD_SECRET_ENV_VARS"
@@ -190,6 +197,71 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
             total_uncompressed += int(member.file_size)
         if total_uncompressed > MAX_OUTPUT_UNCOMPRESSED_BYTES:
             blockers.append("openpi_output_archive_uncompressed_size_exceeded")
+        current_manifest_name = "openpi_current_reference_policy_canary.json"
+        if current_manifest_name in names:
+            try:
+                value = json.loads(archive.read(current_manifest_name).decode("utf-8"))
+            except (UnicodeError, ValueError, json.JSONDecodeError):
+                value = {}
+                blockers.append("openpi_output_current_reference_manifest_unreadable")
+            manifest = dict(value) if isinstance(value, Mapping) else {}
+            if manifest.get("schema_version") != "openpi_current_reference_policy_canary.v1":
+                blockers.append("openpi_output_current_reference_schema_invalid")
+            declared_sha = str(manifest.get("manifest_sha256") or "")
+            digest_payload = dict(manifest)
+            digest_payload.pop("manifest_sha256", None)
+            from .policy_ranking_thesis import canonical_sha256
+
+            if declared_sha != canonical_sha256(digest_payload):
+                blockers.append("openpi_output_current_reference_manifest_sha256_mismatch")
+            expected_policies = ("pi0_droid", "pi0_fast_droid", "pi05_droid")
+            policy_results = manifest.get("policy_results")
+            policy_results = policy_results if isinstance(policy_results, list) else []
+            status = str(manifest.get("status") or "")
+            if status == "completed":
+                if (
+                    tuple(manifest.get("frozen_policy_order") or []) != expected_policies
+                    or manifest.get("requests_per_policy") != 1
+                    or len(policy_results) != 3
+                    or any(
+                        not isinstance(row, Mapping) or row.get("status") != "completed"
+                        for row in policy_results
+                    )
+                ):
+                    blockers.append("openpi_output_current_reference_completion_invalid")
+                for policy_id in expected_policies:
+                    if (
+                        f"{policy_id}_native_action.npy" not in names
+                        or f"{policy_id}_policy_receipt.json" not in names
+                    ):
+                        blockers.append(
+                            f"openpi_output_current_reference_policy_artifacts_missing:{policy_id}"
+                        )
+            elif status == "blocked":
+                if not manifest.get("blockers"):
+                    blockers.append("openpi_output_current_reference_blocker_missing")
+            else:
+                blockers.append("openpi_output_current_reference_not_terminal")
+            if (
+                manifest.get("wam_called") is not False
+                or manifest.get("judge_called") is not False
+                or manifest.get("physical_outcome_accessed") is not False
+            ):
+                blockers.append("openpi_output_current_reference_claim_boundary_invalid")
+            return {
+                "schema_version": "openpi_policy_ranking_output_validation.v1",
+                "status": "completed" if not blockers else "blocked",
+                "execution_mode": EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY,
+                "blockers": sorted(set(blockers)),
+                "terminal_output_present": True,
+                "campaign_status": manifest.get("status"),
+                "campaign_manifest": manifest,
+                "policy_result_count": len(policy_results),
+                "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                "archive_size_bytes": len(archive_bytes),
+                "archive_member_count": len(members),
+                "raw_secret_values_recorded": False,
+            }
         canary_manifest_name = "new_site_diagnostic_canary_gpu.json"
         if canary_manifest_name in names:
             try:
@@ -222,9 +294,7 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
                     "external": any(
                         name.endswith("query_000_external_skeleton.mp4") for name in names
                     ),
-                    "wrist": any(
-                        name.endswith("query_000_wrist_skeleton.mp4") for name in names
-                    ),
+                    "wrist": any(name.endswith("query_000_wrist_skeleton.mp4") for name in names),
                 }
                 if not all(expected_media.values()):
                     blockers.append("openpi_output_canary_individual_camera_media_missing")
@@ -284,15 +354,9 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
         inputs = inputs if isinstance(inputs, Mapping) else {}
         scenes = inputs.get("scenes")
         scenes = scenes if isinstance(scenes, list) else []
-        scene_ids = {
-            str(row.get("scene_id") or "")
-            for row in scenes
-            if isinstance(row, Mapping)
-        }
+        scene_ids = {str(row.get("scene_id") or "") for row in scenes if isinstance(row, Mapping)}
         scene_kinds = {
-            str(row.get("scene_kind") or "")
-            for row in scenes
-            if isinstance(row, Mapping)
+            str(row.get("scene_kind") or "") for row in scenes if isinstance(row, Mapping)
         }
         if len(scene_ids) != 2 or scene_kinds != {
             "captured_3dgs",
@@ -318,9 +382,7 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
                 policy_id = str(run.get("policy_id") or "")
                 scene_id = str(record.get("scene_id") or "")
                 variant_id = str(record.get("variant_id") or "")
-                episode_name = (
-                    f"{policy_id}/{scene_id}/{variant_id}/franka_droid_closed_loop.json"
-                )
+                episode_name = f"{policy_id}/{scene_id}/{variant_id}/franka_droid_closed_loop.json"
                 if episode_name not in names:
                     blockers.append("openpi_output_episode_manifest_missing")
                     continue
@@ -329,9 +391,7 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
                 except (UnicodeError, ValueError, json.JSONDecodeError):
                     blockers.append("openpi_output_episode_manifest_unreadable")
                     continue
-                if episode.get("manifest_sha256") != record.get(
-                    "episode_manifest_sha256"
-                ):
+                if episode.get("manifest_sha256") != record.get("episode_manifest_sha256"):
                     blockers.append("openpi_output_episode_manifest_binding_mismatch")
         campaign_status = str(manifest.get("status") or "")
         if campaign_status == "completed":
@@ -438,9 +498,7 @@ def _monitor_openpi_output_and_teardown(
             if consecutive_transient_errors >= MAX_CONSECUTIVE_TRANSIENT_OUTPUT_ERRORS:
                 return {
                     "status": "monitor_failed_watchdog_retained",
-                    "blockers": [
-                        f"openpi_output_monitor_failed:{type(exc).__name__}"
-                    ],
+                    "blockers": [f"openpi_output_monitor_failed:{type(exc).__name__}"],
                     "transient_error_attempts": consecutive_transient_errors,
                     "continuing_spend": True,
                     "watchdog_deadline_epoch": deadline_epoch,
@@ -477,9 +535,7 @@ def _monitor_openpi_output_and_teardown(
         global_inventory.get("api_confirmed") is True
         and global_inventory.get("live_resource_count") == 0
     )
-    absence_proven = bool(
-        teardown.get("provider_absence_confirmed") is True and global_absent
-    )
+    absence_proven = bool(teardown.get("provider_absence_confirmed") is True and global_absent)
     if absence_proven:
         write_owner_teardown_cancel_request(
             root=root,
@@ -487,9 +543,7 @@ def _monitor_openpi_output_and_teardown(
             provider_name=provider_name,
             instance_id=pod_id,
         )
-    watchdog_terminal = (
-        _wait_for_watchdog_terminal(root) if absence_proven else {}
-    )
+    watchdog_terminal = _wait_for_watchdog_terminal(root) if absence_proven else {}
     settlement = watchdog_terminal.get("campaign_budget_settlement")
     settlement = settlement if isinstance(settlement, Mapping) else {}
     control_terminal = bool(
@@ -553,9 +607,7 @@ def _handoff_cleanup_to_watchdog(
         if absence_proven
         else {}
     )
-    watchdog_terminal = (
-        _wait_for_watchdog_terminal(root) if cancel_request else {}
-    )
+    watchdog_terminal = _wait_for_watchdog_terminal(root) if cancel_request else {}
     settlement = watchdog_terminal.get("campaign_budget_settlement")
     settlement = settlement if isinstance(settlement, Mapping) else {}
     control_terminal = bool(
@@ -572,6 +624,101 @@ def _handoff_cleanup_to_watchdog(
     }
 
 
+def _execution_mode_for_input_bundle(input_bundle: Mapping[str, Any]) -> str:
+    schema = input_bundle.get("schema_version")
+    if schema == CURRENT_REFERENCE_INPUT_RECEIPT_SCHEMA_VERSION:
+        return EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY
+    if schema == CANARY_INPUT_RECEIPT_SCHEMA_VERSION:
+        return EXECUTION_MODE_NEW_SITE_CANARY
+    return EXECUTION_MODE_FULL_CAMPAIGN
+
+
+def _runtime_source_bootstrap_script(execution_mode: str) -> str:
+    if execution_mode != EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY:
+        return (
+            "exec /.venv/bin/python -m blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap run"
+        )
+    return r"""set -euo pipefail
+exec /.venv/bin/python - <<'PY'
+import hashlib
+import os
+import pathlib
+import shutil
+import tarfile
+import urllib.request
+
+url = os.environ["BLUEPRINT_RUNTIME_SOURCE_ARCHIVE_URL"]
+expected_sha = os.environ["BLUEPRINT_RUNTIME_SOURCE_ARCHIVE_SHA256"]
+commit = os.environ["BLUEPRINT_RUNTIME_SOURCE_COMMIT"]
+expected_url = (
+    "https://codeload.github.com/ognjhunt/BlueprintCapturePipeline/tar.gz/"
+    + commit
+)
+if url != expected_url or len(commit) != 40 or len(expected_sha) != 64:
+    raise SystemExit("runtime_source_identity_invalid")
+archive_path = pathlib.Path("/workspace/blueprint-runtime-source.tar.gz")
+request = urllib.request.Request(url, method="GET")
+digest = hashlib.sha256()
+size = 0
+with urllib.request.urlopen(request, timeout=120) as response:
+    if response.geturl() != url:
+        raise SystemExit("runtime_source_redirect_forbidden")
+    with archive_path.open("xb") as handle:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > 32 * 1024 * 1024:
+                raise SystemExit("runtime_source_archive_too_large")
+            digest.update(chunk)
+            handle.write(chunk)
+if digest.hexdigest() != expected_sha:
+    raise SystemExit("runtime_source_archive_sha256_mismatch")
+destination = pathlib.Path("/workspace/blueprint-runtime-source")
+if destination.exists():
+    shutil.rmtree(destination)
+destination.mkdir()
+with tarfile.open(archive_path, "r:gz") as archive:
+    members = archive.getmembers()
+    roots = {pathlib.PurePosixPath(member.name).parts[0] for member in members}
+    if len(roots) != 1 or not next(iter(roots)).endswith(commit):
+        raise SystemExit("runtime_source_archive_root_invalid")
+    for member in members:
+        path = pathlib.PurePosixPath(member.name)
+        if path.is_absolute() or ".." in path.parts or not (member.isdir() or member.isfile()):
+            raise SystemExit("runtime_source_archive_member_unsafe")
+        target = destination.joinpath(*path.parts)
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            if source is None:
+                raise SystemExit("runtime_source_archive_file_unreadable")
+            with source, target.open("xb") as handle:
+                shutil.copyfileobj(source, handle)
+root = destination / next(iter(roots))
+module = root / "src/blueprint_pipeline/openpi_policy_ranking_gpu_bootstrap.py"
+if not module.is_file():
+    raise SystemExit("runtime_source_bootstrap_module_missing")
+env = dict(os.environ)
+env["PYTHONPATH"] = str(root / "src") + (
+    ":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+)
+os.execve(
+    "/.venv/bin/python",
+    [
+        "/.venv/bin/python",
+        "-m",
+        "blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap",
+        "run",
+    ],
+    env,
+)
+PY"""
+
+
 def _build_vast_launch_request(
     *,
     provider: Any,
@@ -584,29 +731,34 @@ def _build_vast_launch_request(
     output_secret_put_url: str,
 ) -> dict[str, Any]:
     capacity_request = preflight.get("capacity_request")
-    capacity_request = (
-        capacity_request if isinstance(capacity_request, Mapping) else {}
-    )
-    execution_mode = (
-        EXECUTION_MODE_NEW_SITE_CANARY
-        if input_bundle.get("schema_version")
-        == CANARY_INPUT_RECEIPT_SCHEMA_VERSION
-        else EXECUTION_MODE_FULL_CAMPAIGN
-    )
+    capacity_request = capacity_request if isinstance(capacity_request, Mapping) else {}
+    execution_mode = _execution_mode_for_input_bundle(input_bundle)
+    manifest = input_bundle.get("manifest")
+    manifest = manifest if isinstance(manifest, Mapping) else {}
+    runtime_source = manifest.get("runtime_source")
+    runtime_source = runtime_source if isinstance(runtime_source, Mapping) else {}
+    environment = {
+        INPUT_SECRET_URL_ENV: input_secret_url,
+        INPUT_SHA256_ENV: str(input_bundle["bundle_sha256"]),
+        EXECUTION_MODE_ENV: execution_mode,
+        OUTPUT_SECRET_PUT_URL_ENV: output_secret_put_url,
+        GENERIC_OUTPUT_SECRET_URL_ENV: output_secret_put_url,
+    }
+    if execution_mode == EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY:
+        environment.update(
+            {
+                RUNTIME_SOURCE_ARCHIVE_URL_ENV: str(runtime_source["archive_url"]),
+                RUNTIME_SOURCE_ARCHIVE_SHA256_ENV: str(runtime_source["archive_sha256"]),
+                RUNTIME_SOURCE_COMMIT_ENV: str(runtime_source["commit"]),
+            }
+        )
     spec = RenderLaunchSpec(
         name=pod_name,
         image=str(release["resolved_digest_ref"]),
-        env={
-            INPUT_SECRET_URL_ENV: input_secret_url,
-            INPUT_SHA256_ENV: str(input_bundle["bundle_sha256"]),
-            EXECUTION_MODE_ENV: execution_mode,
-            OUTPUT_SECRET_PUT_URL_ENV: output_secret_put_url,
-            GENERIC_OUTPUT_SECRET_URL_ENV: output_secret_put_url,
-        },
+        env=environment,
         bootstrap_argv=[
             "-lc",
-            "exec /.venv/bin/python -m "
-            "blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap run",
+            _runtime_source_bootstrap_script(execution_mode),
         ],
         entrypoint=["bash"],
         container_disk_gb=int(preflight["container_disk_bytes"]) // 1024**3,
@@ -669,11 +821,29 @@ def build_openpi_policy_ranking_provider_request(
     gpu_type_id = str(preflight["gpu_type_id"])
     provider_name = str(preflight["provider"])
     execution_mode = str(admission["execution_mode"])
-    operation = (
-        "execute_frozen_new_site_diagnostic_canary"
-        if execution_mode == EXECUTION_MODE_NEW_SITE_CANARY
-        else "execute_frozen_openpi_policy_ranking_campaign"
-    )
+    operation = {
+        EXECUTION_MODE_NEW_SITE_CANARY: "execute_frozen_new_site_diagnostic_canary",
+        EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY: (
+            "execute_current_reference_real_policy_identity_canary"
+        ),
+    }.get(execution_mode, "execute_frozen_openpi_policy_ranking_campaign")
+    manifest = input_bundle.get("manifest")
+    manifest = manifest if isinstance(manifest, Mapping) else {}
+    runtime_source = manifest.get("runtime_source")
+    runtime_source = runtime_source if isinstance(runtime_source, Mapping) else {}
+    source_overlay = execution_mode == EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY
+    plaintext_values = {
+        INPUT_SHA256_ENV: bundle_sha,
+        EXECUTION_MODE_ENV: execution_mode,
+    }
+    if source_overlay:
+        plaintext_values.update(
+            {
+                RUNTIME_SOURCE_ARCHIVE_URL_ENV: str(runtime_source["archive_url"]),
+                RUNTIME_SOURCE_ARCHIVE_SHA256_ENV: str(runtime_source["archive_sha256"]),
+                RUNTIME_SOURCE_COMMIT_ENV: str(runtime_source["commit"]),
+            }
+        )
     request: dict[str, Any] = {
         "schema_version": "robot_eval_gpu_provider_launch_request.v1",
         "job_id": job_id,
@@ -694,24 +864,27 @@ def build_openpi_policy_ranking_provider_request(
                 "configured_image_ref_is_versioned": True,
                 "configured_image_ref_fetchable_by_provider": True,
             },
-            "docker_entrypoint": [
-                "/.venv/bin/python",
-                "-m",
-                "blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap",
-                "run",
-            ],
-            "docker_start_cmd": [],
+            "docker_entrypoint": (
+                ["bash", "-lc"]
+                if source_overlay
+                else [
+                    "/.venv/bin/python",
+                    "-m",
+                    "blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap",
+                    "run",
+                ]
+            ),
+            "docker_start_cmd": (
+                [_runtime_source_bootstrap_script(execution_mode)] if source_overlay else []
+            ),
             "environment": {
                 "secret_env_var_names": [
                     INPUT_SECRET_URL_ENV,
                     OUTPUT_SECRET_PUT_URL_ENV,
                     GENERIC_OUTPUT_SECRET_URL_ENV,
                 ],
-                "plaintext_env_var_names": [INPUT_SHA256_ENV, EXECUTION_MODE_ENV],
-                "plaintext_env_values": {
-                    INPUT_SHA256_ENV: bundle_sha,
-                    EXECUTION_MODE_ENV: execution_mode,
-                },
+                "plaintext_env_var_names": sorted(plaintext_values),
+                "plaintext_env_values": plaintext_values,
                 "secret_values_in_artifact": False,
                 "customer_visible_secret_values_allowed": False,
             },
@@ -724,13 +897,19 @@ def build_openpi_policy_ranking_provider_request(
                 "capture_root_bundle_uri_fetchable_by_provider": True,
                 "artifact_output_uri_required": False,
             },
+            "runtime_source": {
+                "overlay_required": source_overlay,
+                "commit": admission.get("runtime_source_commit"),
+                "archive_sha256": runtime_source.get("archive_sha256"),
+                "archive_url_is_exact_commit_codeload": source_overlay,
+                "image_source_commit": admission.get("source_commit"),
+            },
             "gpu": {
                 "preferred_gpu_class": gpu_type_id,
                 "preferred_gpu_type_id": gpu_type_id,
                 "provider_gpu_priority": [gpu_type_id],
                 "gpu_count": 1,
-                "container_disk_in_gb": int(preflight["container_disk_bytes"])
-                // 1024**3,
+                "container_disk_in_gb": int(preflight["container_disk_bytes"]) // 1024**3,
                 # OpenPI stores the four frozen checkpoints under /workspace.
                 # RunPod mounts this requested ephemeral volume at that path;
                 # 80 GiB safely exceeds the 47.3 GB checkpoint cohort.  Vast
@@ -749,9 +928,7 @@ def build_openpi_policy_ranking_provider_request(
                 "idle_shutdown_required": True,
                 "external_watchdog_ttl_required": True,
                 "external_watchdog_ttl_seconds": ttl,
-                "external_watchdog_owner": (
-                    f"independent_name_bound_{provider_name}_watchdog"
-                ),
+                "external_watchdog_owner": (f"independent_name_bound_{provider_name}_watchdog"),
                 "scale_to_zero_default": True,
             },
             "artifact_finalizer": {
@@ -892,9 +1069,7 @@ def run_openpi_policy_ranking_campaign(
                 name_prefix=CANARY_NAME_PREFIX,
                 container_disk_bytes=int(preflight.get("container_disk_bytes") or 0),
                 capacity_probe=provider.capacity_preflight,
-                inventory_probe=lambda prefix: provider.billable_inventory(
-                    name_prefix=prefix
-                ),
+                inventory_probe=lambda prefix: provider.billable_inventory(name_prefix=prefix),
             )
             if resolved_provider == "vast"
             else collect_openpi_policy_ranking_runpod_preflight(
@@ -902,9 +1077,7 @@ def run_openpi_policy_ranking_campaign(
                 gpu_type_ids=list(preflight.get("requested_gpu_types") or []),
                 container_disk_bytes=int(preflight.get("container_disk_bytes") or 0),
                 capacity_probe=provider.capacity_preflight,
-                inventory_probe=lambda prefix: provider.billable_inventory(
-                    name_prefix=prefix
-                ),
+                inventory_probe=lambda prefix: provider.billable_inventory(name_prefix=prefix),
             )
         )
         write_json(root / "openpi_provider_preflight_launch_refresh.json", preflight)
@@ -1206,9 +1379,7 @@ def run_openpi_policy_ranking_campaign(
             )
             adapter = {
                 **dict(launch),
-                "status": (
-                    "submitted" if launch.get("status") == "launched" else "blocked"
-                ),
+                "status": ("submitted" if launch.get("status") == "launched" else "blocked"),
                 "provider": "vast",
                 "raw_secret_values_recorded": False,
             }
@@ -1319,9 +1490,7 @@ def run_openpi_policy_ranking_campaign(
     result = {
         **adapter,
         "status": "failed",
-        "blockers": sorted(
-            set([*(adapter.get("blockers") or []), "openpi_runpod_pod_id_missing"])
-        ),
+        "blockers": sorted(set([*(adapter.get("blockers") or []), "openpi_runpod_pod_id_missing"])),
         "immediate_cleanup": cleanup,
         "cleanup_handoff": cleanup_handoff,
         "continuing_spend": cleanup_handoff["continuing_spend"],

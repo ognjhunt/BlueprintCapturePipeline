@@ -17,6 +17,10 @@ from .new_site_diagnostic_canary_gpu import (
     INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
     INPUT_SCHEMA_VERSION as CANARY_INPUT_SCHEMA_VERSION,
 )
+from .openpi_current_reference_gpu_bundle import (
+    INPUT_RECEIPT_SCHEMA_VERSION as CURRENT_REFERENCE_INPUT_RECEIPT_SCHEMA_VERSION,
+    INPUT_SCHEMA_VERSION as CURRENT_REFERENCE_INPUT_SCHEMA_VERSION,
+)
 from .paid_resource_admission import build_paid_lane_admission
 from .policy_ranking_thesis import canonical_sha256
 
@@ -24,9 +28,11 @@ from .policy_ranking_thesis import canonical_sha256
 SCHEMA_VERSION = "openpi_policy_ranking_gpu_admission.v1"
 PROBE_KIND = "openpi-policy-ranking"
 NEW_SITE_CANARY_PROBE_KIND = "new-site-diagnostic-canary"
+CURRENT_REFERENCE_POLICY_CANARY_PROBE_KIND = "openpi-current-reference-policy-canary"
 OPENPI_REVISION = "15a9616a00943ada6c20a0f158e3adb39df2ccac"
 MENAGERIE_REVISION = "71f066ad0be9cd271f7ed58c030243ef157af9f4"
 CHECKPOINT_BYTES = 47_286_181_297
+CURRENT_REFERENCE_CHECKPOINT_BYTES = 35_280_084_249
 MAX_TTL_SECONDS = 14_400
 MAX_PREFLIGHT_AGE_SECONDS = 300
 MIN_GPU_MEMORY_BYTES = 24 * 1024**3
@@ -79,8 +85,7 @@ def collect_openpi_policy_ranking_runpod_preflight(
     ]
     selected = viable[0] if viable else {}
     inventory_zero = bool(
-        inventory.get("api_confirmed") is True
-        and inventory.get("live_resource_count") == 0
+        inventory.get("api_confirmed") is True and inventory.get("live_resource_count") == 0
     )
     provider_api_verified = bool(
         capacity.get("status") == "available"
@@ -109,9 +114,7 @@ def collect_openpi_policy_ranking_runpod_preflight(
         "single_gpu_available": bool(selected),
         "gpu_type_id": selected.get("gpu_type_id"),
         "gpu_memory_bytes": int(selected.get("memory_in_gb") or 0) * 1024**3,
-        "on_demand_price_usd_per_hour": selected.get(
-            "on_demand_price_usd_per_hour"
-        ),
+        "on_demand_price_usd_per_hour": selected.get("on_demand_price_usd_per_hour"),
         "container_disk_bytes": int(container_disk_bytes),
         "requested_gpu_types": requested,
         "capacity_snapshot": capacity,
@@ -139,9 +142,7 @@ def collect_openpi_policy_ranking_vast_preflight(
 ) -> dict[str, Any]:
     """Collect the frozen lane's mutation-free Vast offer snapshot."""
 
-    preferred = [
-        str(value).strip() for value in preferred_gpu_keywords if str(value).strip()
-    ]
+    preferred = [str(value).strip() for value in preferred_gpu_keywords if str(value).strip()]
     request = {
         "max_hourly_rate_usd": float(max_hourly_rate_usd),
         "min_gpu_ram_mb": int(min_gpu_ram_mb),
@@ -165,8 +166,7 @@ def collect_openpi_policy_ranking_vast_preflight(
         and 0 < price <= float(max_hourly_rate_usd)
     )
     inventory_zero = bool(
-        inventory.get("api_confirmed") is True
-        and inventory.get("live_resource_count") == 0
+        inventory.get("api_confirmed") is True and inventory.get("live_resource_count") == 0
     )
     provider_api_verified = bool(
         capacity.get("status") == "available"
@@ -224,9 +224,31 @@ def build_openpi_policy_ranking_gpu_admission(
     blockers: list[str] = []
     expected_commit = str(expected_source_commit or "").strip().lower()
     source_commit = str(release.get("source_commit") or "").strip().lower()
+    receipt_schema = input_bundle.get("schema_version")
+    is_canary = receipt_schema == CANARY_INPUT_RECEIPT_SCHEMA_VERSION
+    is_current_reference = receipt_schema == CURRENT_REFERENCE_INPUT_RECEIPT_SCHEMA_VERSION
+    manifest = input_bundle.get("manifest")
+    manifest = manifest if isinstance(manifest, Mapping) else {}
+    runtime_source = manifest.get("runtime_source")
+    runtime_source = runtime_source if isinstance(runtime_source, Mapping) else {}
     if not _COMMIT.fullmatch(expected_commit):
         blockers.append("openpi_gpu_expected_source_commit_invalid")
-    if source_commit != expected_commit or not _COMMIT.fullmatch(source_commit):
+    if not _COMMIT.fullmatch(source_commit):
+        blockers.append("openpi_gpu_release_source_commit_mismatch")
+    if is_current_reference:
+        if (
+            runtime_source.get("commit") != expected_commit
+            or runtime_source.get("overlay_required") is not True
+            or manifest.get("image_source_commit") != source_commit
+        ):
+            blockers.append("openpi_gpu_runtime_source_overlay_identity_mismatch")
+        archive_url = str(runtime_source.get("archive_url") or "")
+        if archive_url != (
+            "https://codeload.github.com/ognjhunt/BlueprintCapturePipeline/"
+            f"tar.gz/{expected_commit}"
+        ) or not _SHA256.fullmatch(str(runtime_source.get("archive_sha256") or "")):
+            blockers.append("openpi_gpu_runtime_source_archive_invalid")
+    elif source_commit != expected_commit:
         blockers.append("openpi_gpu_release_source_commit_mismatch")
     image_ref = str(release.get("resolved_digest_ref") or "").strip()
     if not _DIGEST_REF.fullmatch(image_ref):
@@ -246,22 +268,23 @@ def build_openpi_policy_ranking_gpu_admission(
     if release.get("interiorgs_assets_embedded") is not False:
         blockers.append("openpi_gpu_release_embeds_interiorgs")
 
-    receipt_schema = input_bundle.get("schema_version")
-    is_canary = receipt_schema == CANARY_INPUT_RECEIPT_SCHEMA_VERSION
     if receipt_schema not in {
         "openpi_policy_ranking_gpu_input_bundle_receipt.v1",
         CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
+        CURRENT_REFERENCE_INPUT_RECEIPT_SCHEMA_VERSION,
     }:
         blockers.append("openpi_gpu_input_bundle_receipt_schema_invalid")
     bundle_sha = str(input_bundle.get("bundle_sha256") or "")
     if not _SHA256.fullmatch(bundle_sha):
         blockers.append("openpi_gpu_input_bundle_sha256_invalid")
-    manifest = input_bundle.get("manifest")
-    manifest = manifest if isinstance(manifest, Mapping) else {}
     expected_manifest_schema = (
         CANARY_INPUT_SCHEMA_VERSION
         if is_canary
-        else "openpi_policy_ranking_gpu_input_bundle.v2"
+        else (
+            CURRENT_REFERENCE_INPUT_SCHEMA_VERSION
+            if is_current_reference
+            else "openpi_policy_ranking_gpu_input_bundle.v2"
+        )
     )
     if manifest.get("schema_version") != expected_manifest_schema:
         blockers.append("openpi_gpu_input_bundle_manifest_schema_invalid")
@@ -272,11 +295,17 @@ def build_openpi_policy_ranking_gpu_admission(
     expected_purpose = (
         "private_internal_noncommercial_new_site_diagnostic_canary"
         if is_canary
-        else "private_internal_noncommercial_research_gpu_execution"
+        else (
+            "label_free_current_reference_real_policy_identity_canary"
+            if is_current_reference
+            else "private_internal_noncommercial_research_gpu_execution"
+        )
     )
     if manifest.get("purpose") != expected_purpose:
         blockers.append("openpi_gpu_input_bundle_purpose_invalid")
-    if not _SHA256.fullmatch(str(manifest.get("background_sha256") or "")):
+    if not is_current_reference and not _SHA256.fullmatch(
+        str(manifest.get("background_sha256") or "")
+    ):
         blockers.append("openpi_gpu_input_background_sha256_invalid")
     if is_canary:
         if (
@@ -294,18 +323,32 @@ def build_openpi_policy_ranking_gpu_admission(
         manifest_payload.pop("manifest_sha256", None)
         if declared_manifest_sha != canonical_sha256(manifest_payload):
             blockers.append("openpi_gpu_input_canary_manifest_sha256_invalid")
+    elif is_current_reference:
+        if (
+            manifest.get("policy_ids") != ["pi05_droid", "pi0_droid", "pi0_fast_droid"]
+            or manifest.get("requests_per_policy") != 1
+            or manifest.get("label_free") is not True
+            or manifest.get("confirmation_eligible") is not False
+            or manifest.get("physical_outcome_included") is not False
+            or manifest.get("checkpoint_weights_included") is not False
+        ):
+            blockers.append("openpi_gpu_current_reference_canary_freeze_invalid")
+        files = manifest.get("files")
+        if not isinstance(files, list) or len(files) != 11:
+            blockers.append("openpi_gpu_current_reference_file_inventory_invalid")
+        declared_manifest_sha = str(manifest.get("manifest_sha256") or "")
+        manifest_payload = dict(manifest)
+        manifest_payload.pop("manifest_sha256", None)
+        if declared_manifest_sha != canonical_sha256(manifest_payload):
+            blockers.append("openpi_gpu_current_reference_manifest_sha256_invalid")
     else:
         scenes = manifest.get("scenes")
         scenes = scenes if isinstance(scenes, list) else []
         scene_ids = {
-            str(row.get("source_scene_id") or "")
-            for row in scenes
-            if isinstance(row, Mapping)
+            str(row.get("source_scene_id") or "") for row in scenes if isinstance(row, Mapping)
         }
         scene_kinds = {
-            str(row.get("source_scene_kind") or "")
-            for row in scenes
-            if isinstance(row, Mapping)
+            str(row.get("source_scene_kind") or "") for row in scenes if isinstance(row, Mapping)
         }
         if (
             manifest.get("scene_count") != 2
@@ -318,9 +361,7 @@ def build_openpi_policy_ranking_gpu_admission(
             if not isinstance(row, Mapping) or not _SHA256.fullmatch(
                 str(row.get("background_sha256") or "")
             ):
-                blockers.append(
-                    f"openpi_gpu_input_scene_background_sha256_invalid:{index}"
-                )
+                blockers.append(f"openpi_gpu_input_scene_background_sha256_invalid:{index}")
 
     if preflight.get("schema_version") not in {
         "openpi_policy_ranking_runpod_preflight.v1",
@@ -330,9 +371,10 @@ def build_openpi_policy_ranking_gpu_admission(
     if preflight.get("status") != "verified":
         blockers.append("openpi_gpu_preflight_not_verified")
     provider_name = str(preflight.get("provider") or "")
-    if provider_name not in {"runpod", "vast"} or preflight.get(
-        "provider_api_verified"
-    ) is not True:
+    if (
+        provider_name not in {"runpod", "vast"}
+        or preflight.get("provider_api_verified") is not True
+    ):
         blockers.append("openpi_gpu_provider_not_verified")
     observed = preflight.get("observed_at_epoch")
     now = time.time() if observed_now_epoch is None else float(observed_now_epoch)
@@ -368,16 +410,16 @@ def build_openpi_policy_ranking_gpu_admission(
         blockers.append("openpi_gpu_ttl_invalid")
     if type(max_spend) not in {int, float} or float(max_spend) <= 0:
         blockers.append("openpi_gpu_max_spend_invalid")
-    elif type(ttl) is int and type(price) in {int, float} and (
-        float(price) * ttl / 3600 > float(max_spend)
+    elif (
+        type(ttl) is int
+        and type(price) in {int, float}
+        and (float(price) * ttl / 3600 > float(max_spend))
     ):
         blockers.append("openpi_gpu_ttl_cost_exceeds_max_spend")
     if spend.get("physical_robot_endpoint_access_allowed") is not False:
         blockers.append("openpi_gpu_physical_robot_endpoint_not_forbidden")
 
-    provider_resource_class = (
-        "gpu_render" if provider_name == "vast" else "runpod_provider_adapter"
-    )
+    provider_resource_class = "gpu_render" if provider_name == "vast" else "runpod_provider_adapter"
     shared = build_paid_lane_admission(
         resource_class=provider_resource_class,
         blockers=blockers,
@@ -385,15 +427,33 @@ def build_openpi_policy_ranking_gpu_admission(
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "admitted" if not blockers and shared["status"] == "admitted" else "blocked",
-        "probe_kind": NEW_SITE_CANARY_PROBE_KIND if is_canary else PROBE_KIND,
+        "probe_kind": (
+            NEW_SITE_CANARY_PROBE_KIND
+            if is_canary
+            else (
+                CURRENT_REFERENCE_POLICY_CANARY_PROBE_KIND if is_current_reference else PROBE_KIND
+            )
+        ),
         "execution_mode": (
-            "new_site_diagnostic_canary" if is_canary else "full_campaign"
+            "new_site_diagnostic_canary"
+            if is_canary
+            else (
+                "current_reference_policy_identity_canary"
+                if is_current_reference
+                else "full_campaign"
+            )
         ),
         "blockers": sorted(set(blockers)),
         "source_commit": source_commit or None,
         "release_image_ref": image_ref or None,
         "input_bundle_sha256": bundle_sha or None,
-        "checkpoint_size_bytes": CHECKPOINT_BYTES,
+        "runtime_source_commit": (
+            runtime_source.get("commit") if is_current_reference else source_commit
+        ),
+        "runtime_source_overlay_required": is_current_reference,
+        "checkpoint_size_bytes": (
+            CURRENT_REFERENCE_CHECKPOINT_BYTES if is_current_reference else CHECKPOINT_BYTES
+        ),
         "gpu_type_id": preflight.get("gpu_type_id"),
         "provider": provider_name or None,
         "provider_resource_class": provider_resource_class,

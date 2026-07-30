@@ -7,6 +7,10 @@ from blueprint_pipeline.new_site_diagnostic_canary_gpu import (
     INPUT_RECEIPT_SCHEMA_VERSION,
     INPUT_SCHEMA_VERSION,
 )
+from blueprint_pipeline.openpi_current_reference_gpu_bundle import (
+    INPUT_RECEIPT_SCHEMA_VERSION as CURRENT_REFERENCE_RECEIPT_SCHEMA_VERSION,
+    INPUT_SCHEMA_VERSION as CURRENT_REFERENCE_SCHEMA_VERSION,
+)
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
 
 
@@ -15,7 +19,8 @@ def _inputs():
         "schema_version": "openpi_policy_ranking_gpu_release.v1",
         "status": "passed",
         "source_commit": "a" * 40,
-        "resolved_digest_ref": "ghcr.io/ognjhunt/blueprint-openpi-policy-ranking@sha256:" + "b" * 64,
+        "resolved_digest_ref": "ghcr.io/ognjhunt/blueprint-openpi-policy-ranking@sha256:"
+        + "b" * 64,
         "runnable_platform": "linux/amd64",
         "openpi_revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
         "menagerie_revision": "71f066ad0be9cd271f7ed58c030243ef157af9f4",
@@ -126,6 +131,73 @@ def test_openpi_gpu_admission_accepts_one_arm_label_free_canary_receipt() -> Non
     assert result["status"] == "admitted"
     assert result["probe_kind"] == "new-site-diagnostic-canary"
     assert result["execution_mode"] == "new_site_diagnostic_canary"
+
+
+def test_openpi_gpu_admission_accepts_exact_current_reference_source_overlay() -> None:
+    release, _bundle, preflight, spend = _inputs()
+    runtime_commit = "d" * 40
+    manifest = {
+        "schema_version": CURRENT_REFERENCE_SCHEMA_VERSION,
+        "purpose": "label_free_current_reference_real_policy_identity_canary",
+        "runtime_source": {
+            "repository": "https://github.com/ognjhunt/BlueprintCapturePipeline",
+            "commit": runtime_commit,
+            "archive_url": (
+                "https://codeload.github.com/ognjhunt/BlueprintCapturePipeline/tar.gz/"
+                + runtime_commit
+            ),
+            "archive_sha256": "e" * 64,
+            "overlay_required": True,
+        },
+        "image_source_commit": release["source_commit"],
+        "policy_ids": ["pi05_droid", "pi0_droid", "pi0_fast_droid"],
+        "requests_per_policy": 1,
+        "raw_3dgs_included": False,
+        "redistribution_authorized": False,
+        "label_free": True,
+        "confirmation_eligible": False,
+        "physical_outcome_included": False,
+        "checkpoint_weights_included": False,
+        "files": [
+            {"path": f"file-{index}", "sha256": "f" * 64, "size_bytes": index}
+            for index in range(11)
+        ],
+    }
+    manifest["manifest_sha256"] = canonical_sha256(manifest)
+    bundle = {
+        "schema_version": CURRENT_REFERENCE_RECEIPT_SCHEMA_VERSION,
+        "bundle_sha256": "c" * 64,
+        "manifest": manifest,
+    }
+    result = build_openpi_policy_ranking_gpu_admission(
+        release=release,
+        input_bundle=bundle,
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit=runtime_commit,
+        observed_now_epoch=1001.0,
+    )
+    assert result["status"] == "admitted"
+    assert result["probe_kind"] == "openpi-current-reference-policy-canary"
+    assert result["runtime_source_overlay_required"] is True
+    assert result["source_commit"] == "a" * 40
+    assert result["runtime_source_commit"] == runtime_commit
+
+    manifest["runtime_source"]["archive_url"] = (
+        "https://codeload.github.com/ognjhunt/BlueprintCapturePipeline/tar.gz/" + "9" * 40
+    )
+    manifest["manifest_sha256"] = canonical_sha256(
+        {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    )
+    blocked = build_openpi_policy_ranking_gpu_admission(
+        release=release,
+        input_bundle=bundle,
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit=runtime_commit,
+        observed_now_epoch=1001.0,
+    )
+    assert "openpi_gpu_runtime_source_archive_invalid" in blocked["blockers"]
 
 
 def test_openpi_gpu_admission_blocks_rights_robot_and_budget_regressions() -> None:

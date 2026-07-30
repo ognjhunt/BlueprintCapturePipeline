@@ -11,6 +11,10 @@ from blueprint_pipeline import paid_provider_lane_lease as lease_module
 from blueprint_pipeline.new_site_diagnostic_canary_gpu import (
     INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
 )
+from blueprint_pipeline.openpi_current_reference_gpu_bundle import (
+    INPUT_RECEIPT_SCHEMA_VERSION as CURRENT_REFERENCE_RECEIPT_SCHEMA_VERSION,
+    INPUT_SCHEMA_VERSION as CURRENT_REFERENCE_SCHEMA_VERSION,
+)
 from blueprint_pipeline.openpi_policy_ranking_runpod import (
     EXECUTION_MODE_ENV,
     GENERIC_OUTPUT_SECRET_URL_ENV,
@@ -72,9 +76,7 @@ def _completed_output_archive() -> bytes:
     manifest["manifest_sha256"] = canonical_sha256(manifest)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr(
-            "openpi_policy_ranking_gpu_job.json", json.dumps(manifest)
-        )
+        archive.writestr("openpi_policy_ranking_gpu_job.json", json.dumps(manifest))
         for name, episode in episode_payloads.items():
             archive.writestr(name, json.dumps(episode))
     return buffer.getvalue()
@@ -328,6 +330,42 @@ def _inputs():
     return release, bundle, preflight, spend
 
 
+def _current_reference_bundle(*, image_source_commit: str, runtime_commit: str):
+    manifest = {
+        "schema_version": CURRENT_REFERENCE_SCHEMA_VERSION,
+        "purpose": "label_free_current_reference_real_policy_identity_canary",
+        "runtime_source": {
+            "repository": "https://github.com/ognjhunt/BlueprintCapturePipeline",
+            "commit": runtime_commit,
+            "archive_url": (
+                "https://codeload.github.com/ognjhunt/BlueprintCapturePipeline/tar.gz/"
+                + runtime_commit
+            ),
+            "archive_sha256": "e" * 64,
+            "overlay_required": True,
+        },
+        "image_source_commit": image_source_commit,
+        "policy_ids": ["pi05_droid", "pi0_droid", "pi0_fast_droid"],
+        "requests_per_policy": 1,
+        "raw_3dgs_included": False,
+        "redistribution_authorized": False,
+        "label_free": True,
+        "confirmation_eligible": False,
+        "physical_outcome_included": False,
+        "checkpoint_weights_included": False,
+        "files": [
+            {"path": f"file-{index}", "sha256": "f" * 64, "size_bytes": index}
+            for index in range(11)
+        ],
+    }
+    manifest["manifest_sha256"] = canonical_sha256(manifest)
+    return {
+        "schema_version": CURRENT_REFERENCE_RECEIPT_SCHEMA_VERSION,
+        "bundle_sha256": "c" * 64,
+        "manifest": manifest,
+    }
+
+
 def test_openpi_request_shape_is_redacted_and_one_gpu(tmp_path: Path) -> None:
     release, bundle, preflight, spend = _inputs()
     prepared = build_openpi_policy_ranking_provider_request(
@@ -367,6 +405,76 @@ def test_openpi_request_shape_is_redacted_and_one_gpu(tmp_path: Path) -> None:
     assert "output-secret" not in persisted
     request = json.loads((tmp_path / "openpi_provider_launch_request.json").read_text())
     assert input_url not in json.dumps(request)
+
+
+def test_current_reference_request_uses_hash_bound_source_overlay() -> None:
+    release, _bundle, preflight, spend = _inputs()
+    runtime_commit = "d" * 40
+    bundle = _current_reference_bundle(
+        image_source_commit=release["source_commit"], runtime_commit=runtime_commit
+    )
+    prepared = build_openpi_policy_ranking_provider_request(
+        release=release,
+        input_bundle=bundle,
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit=runtime_commit,
+        job_id="openpi-current-reference-test",
+    )
+    assert prepared["status"] == "admitted"
+    shape = prepared["bound_request"]["provider_request_shape"]
+    assert shape["docker_entrypoint"] == ["bash", "-lc"]
+    assert len(shape["docker_start_cmd"]) == 1
+    assert "runtime_source_archive_sha256_mismatch" in shape["docker_start_cmd"][0]
+    assert shape["runtime_source"] == {
+        "overlay_required": True,
+        "commit": runtime_commit,
+        "archive_sha256": "e" * 64,
+        "archive_url_is_exact_commit_codeload": True,
+        "image_source_commit": release["source_commit"],
+    }
+    assert shape["gpu"]["gpu_count"] == 1
+    assert shape["limits"]["external_watchdog_ttl_required"] is True
+
+
+def test_current_reference_terminal_output_requires_all_three_native_actions() -> None:
+    policy_ids = ("pi0_droid", "pi0_fast_droid", "pi05_droid")
+    manifest = {
+        "schema_version": "openpi_current_reference_policy_canary.v1",
+        "status": "completed",
+        "frozen_policy_order": list(policy_ids),
+        "requests_per_policy": 1,
+        "policy_results": [
+            {"policy_id": policy_id, "status": "completed"} for policy_id in policy_ids
+        ],
+        "blockers": [],
+        "wam_called": False,
+        "judge_called": False,
+        "physical_outcome_accessed": False,
+    }
+    manifest["manifest_sha256"] = canonical_sha256(manifest)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "openpi_current_reference_policy_canary.json",
+            json.dumps(manifest),
+        )
+        for policy_id in policy_ids:
+            archive.writestr(f"{policy_id}_native_action.npy", b"native-action")
+            archive.writestr(f"{policy_id}_policy_receipt.json", b"{}")
+    valid = _validate_output_archive(buffer.getvalue())
+    assert valid["status"] == "completed"
+    assert valid["execution_mode"] == "current_reference_policy_identity_canary"
+
+    missing = io.BytesIO()
+    with zipfile.ZipFile(missing, "w") as archive:
+        archive.writestr(
+            "openpi_current_reference_policy_canary.json",
+            json.dumps(manifest),
+        )
+    blocked = _validate_output_archive(missing.getvalue())
+    assert blocked["status"] == "blocked"
+    assert any("policy_artifacts_missing" in item for item in blocked["blockers"])
 
 
 def test_vast_launch_request_uses_frozen_floor_and_args_entrypoint(
@@ -449,9 +557,7 @@ def test_vast_launch_request_routes_current_canary_receipt_to_canary_mode(
         output_secret_put_url="https://storage.example/output?signature=secret",
     )
 
-    assert request["create_payload"]["env"][EXECUTION_MODE_ENV] == (
-        "new_site_diagnostic_canary"
-    )
+    assert request["create_payload"]["env"][EXECUTION_MODE_ENV] == ("new_site_diagnostic_canary")
 
 
 def test_openpi_campaign_dry_run_stays_mutation_free(tmp_path: Path) -> None:

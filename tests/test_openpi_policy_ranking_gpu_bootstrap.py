@@ -7,6 +7,7 @@ from PIL import Image
 
 from blueprint_pipeline import openpi_policy_ranking_gpu_bootstrap as bootstrap_module
 from blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap import (
+    EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY,
     EXECUTION_MODE_NEW_SITE_CANARY,
     _download_signed_input,
     _upload_output,
@@ -122,9 +123,7 @@ def test_bootstrap_uploads_terminal_failure_envelope_for_early_runtime_error(
     def upload(_url: str, archive_path: Path) -> int:
         with zipfile.ZipFile(archive_path) as archive:
             observed.update(
-                json.loads(
-                    archive.read("openpi_policy_ranking_gpu_job.json").decode("utf-8")
-                )
+                json.loads(archive.read("openpi_policy_ranking_gpu_job.json").decode("utf-8"))
             )
         return 200
 
@@ -158,9 +157,7 @@ def test_bootstrap_routes_canary_bundle_to_one_arm_worker(
         "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL",
         "https://storage.example/input?signature=secret",
     )
-    monkeypatch.setenv(
-        "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256", receipt["bundle_sha256"]
-    )
+    monkeypatch.setenv("BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256", receipt["bundle_sha256"])
     monkeypatch.setenv(
         "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL",
         "https://storage.example/output?signature=secret",
@@ -205,3 +202,87 @@ def test_bootstrap_routes_canary_bundle_to_one_arm_worker(
     assert result["execution_mode"] == EXECUTION_MODE_NEW_SITE_CANARY
     assert Path(observed["protocol_path"]).read_bytes() == protocol_path.read_bytes()
     assert "new_site_diagnostic_canary_gpu.json" in archive_names
+
+
+def test_bootstrap_routes_current_reference_bundle_to_identity_canary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    bundle_bytes = b"fixture-current-reference-bundle"
+    bundle_sha = hashlib.sha256(bundle_bytes).hexdigest()
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL",
+        "https://storage.example/input?signature=secret",
+    )
+    monkeypatch.setenv("BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256", bundle_sha)
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL",
+        "https://storage.example/output?signature=secret",
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_EXECUTION_MODE",
+        EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY,
+    )
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_download_signed_input",
+        lambda _url, destination, **_kwargs: destination.write_bytes(bundle_bytes),
+    )
+    extracted = tmp_path / "extracted-fixture"
+    extracted.mkdir()
+    source = extracted / "source.json"
+    source.write_text("{}", encoding="utf-8")
+    inventories = extracted / "inventories"
+    inventories.mkdir()
+    initial = extracted / "initial.json"
+    initial.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        bootstrap_module,
+        "extract_current_reference_gpu_input_bundle",
+        lambda **_kwargs: {
+            "manifest": {"schema_version": "fixture"},
+            "source_freeze_path": source,
+            "checkpoint_inventory_dir": inventories,
+            "initial_observation_manifest_path": initial,
+        },
+    )
+    observed = {}
+
+    def run_canary(**kwargs):
+        observed.update(kwargs)
+        manifest = {
+            "schema_version": "openpi_current_reference_policy_canary.v1",
+            "status": "completed",
+            "frozen_policy_order": ["pi0_droid", "pi0_fast_droid", "pi05_droid"],
+            "requests_per_policy": 1,
+            "policy_results": [],
+            "blockers": [],
+            "wam_called": False,
+            "judge_called": False,
+            "physical_outcome_accessed": False,
+            "manifest_sha256": "c" * 64,
+        }
+        output = Path(kwargs["output_dir"])
+        output.mkdir(parents=True)
+        (output / "openpi_current_reference_policy_canary.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        return manifest
+
+    archive_names = []
+
+    def upload(_url: str, archive_path: Path) -> int:
+        with zipfile.ZipFile(archive_path) as archive:
+            archive_names.extend(archive.namelist())
+        return 200
+
+    monkeypatch.setattr(bootstrap_module, "run_current_reference_policy_canary", run_canary)
+    monkeypatch.setattr(bootstrap_module, "_upload_output", upload)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    result = run_signed_gpu_bootstrap(workspace=workspace)
+    assert result["status"] == "completed"
+    assert result["execution_mode"] == EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY
+    assert observed["source_freeze_path"] == source
+    assert "openpi_current_reference_policy_canary.json" in archive_names

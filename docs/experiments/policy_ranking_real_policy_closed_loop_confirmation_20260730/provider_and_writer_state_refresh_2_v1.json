@@ -1,0 +1,39 @@
+{
+  "schema_version": "policy_ranking_real_policy_closed_loop_provider_and_writer_refresh.v1",
+  "observed_at": "2026-07-30T10:39:21-0500",
+  "supersedes_live_state_only": "provider_state_refresh_v1.json",
+  "historical_observations_preserved": true,
+  "providers": {
+    "vast": {
+      "api_confirmed": true,
+      "live_resource_count": 0
+    },
+    "runpod": {
+      "api_confirmed": true,
+      "live_resource_count": 0
+    },
+    "openai_batches": {
+      "api_confirmed": true,
+      "active_batch_count": 0
+    },
+    "gemini_batches": {
+      "api_confirmed": true,
+      "active_batch_count": 0
+    }
+  },
+  "successor_paid_resources_live": 0,
+  "other_writer_active": true,
+  "other_writer": {
+    "kind": "canonical_paid_resource_allocator_cpu_build",
+    "checkout": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-new-site-smoke-20260729",
+    "source_commit": "db87866daf3c1d080d5cd0d80528acaced60ec3c",
+    "evidence_root": "/Users/nijelhunt_1/workspace/policy_ranking_new_site_smoke_nvidia_warehouse_20260729_harness_v9_offline/isaac_image_build_packet_db87866d_v21_build_attempt_1/cpu_build_v21_a1",
+    "successor_owned": false,
+    "mutation_authorized": false,
+    "touched": false
+  },
+  "successor_branch_work_may_continue": true,
+  "successor_paid_launch_requires_another_live_refresh": true,
+  "successor_paid_launch_requires_campaign_ledger_reconciliation": true,
+  "raw_secret_values_recorded": false
+}

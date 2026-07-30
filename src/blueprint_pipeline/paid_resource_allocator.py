@@ -71,6 +71,7 @@ from .paid_resource_admission import (
     require_paid_resource_admission,
 )
 from .openpi_policy_ranking_gpu_admission import (
+    CURRENT_REFERENCE_POLICY_CANARY_PROBE_KIND,
     NEW_SITE_CANARY_PROBE_KIND,
     PROBE_KIND as OPENPI_POLICY_RANKING_PROBE_KIND,
 )
@@ -626,6 +627,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             G1_MICROWAVE_FINETUNE_PROBE_KIND,
             OPENPI_POLICY_RANKING_PROBE_KIND,
             NEW_SITE_CANARY_PROBE_KIND,
+            CURRENT_REFERENCE_POLICY_CANARY_PROBE_KIND,
             NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
@@ -1211,6 +1213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.probe_kind in {
             OPENPI_POLICY_RANKING_PROBE_KIND,
             NEW_SITE_CANARY_PROBE_KIND,
+            CURRENT_REFERENCE_POLICY_CANARY_PROBE_KIND,
         }:
             missing = [
                 name
