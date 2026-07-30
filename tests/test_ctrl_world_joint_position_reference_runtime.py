@@ -140,6 +140,11 @@ def test_configured_runtime_emits_result_accepted_by_wam_contract(
         ),
         encoding="utf-8",
     )
+    monkeypatch.setitem(
+        MODEL_FREEZE["ctrl_world_source"],
+        "required_files",
+        json.loads(source_manifest.read_text(encoding="utf-8"))["files"],
+    )
     checkpoint = tmp_path / "checkpoint-10000.pt"
     checkpoint.write_bytes(b"checkpoint fixture")
     stats = tmp_path / "stat.json"
@@ -224,6 +229,15 @@ def test_configured_runtime_emits_result_accepted_by_wam_contract(
         for paths in validated["generated_view_frame_sequences"].values()
     )
     assert (tmp_path / "output/ctrl_world_joint_position_runtime_result.json").is_file()
+
+    source_file.write_text("# drifted source fixture\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="ctrl_world_joint_position_runtime_source_file_mismatch"):
+        runtime(
+            request_manifest_path=Path(receipt["manifest_path"]),
+            output_dir=tmp_path / "source-drifted-output",
+            seed=23,
+        )
+    source_file.write_text("# exact source fixture\n", encoding="utf-8")
 
     (svd / "weights.bin").write_bytes(b"drift after admission")
     with pytest.raises(ValueError, match="ctrl_world_joint_position_runtime_svd_snapshot_mismatch"):

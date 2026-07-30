@@ -225,6 +225,9 @@ def _validate_source_manifest(source_root: Path, manifest_path: Path) -> dict[st
     rows = manifest.get("files")
     if not isinstance(rows, list) or not rows:
         raise ValueError("ctrl_world_joint_position_runtime_source_files_missing")
+    required_rows = freeze.get("required_files")
+    if not isinstance(required_rows, list) or rows != required_rows:
+        raise ValueError("ctrl_world_joint_position_runtime_source_file_set_mismatch")
     observed: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, Mapping):

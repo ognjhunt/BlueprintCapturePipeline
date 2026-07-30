@@ -40,6 +40,48 @@ MODEL_FREEZE = {
     "ctrl_world_source": {
         "repository": "https://github.com/Robert-gyj/Ctrl-World",
         "revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+        "required_files": [
+            {
+                "relative_path": "config.py",
+                "size_bytes": 11169,
+                "sha256": "f051477791dd9d3dad954b88e4a1d9f228d8378677d6d9d4de5d7579cef65e64",
+            },
+            {
+                "relative_path": "models/__init__.py",
+                "size_bytes": 0,
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            },
+            {
+                "relative_path": "models/ctrl_world.py",
+                "size_bytes": 9186,
+                "sha256": "b737c3b9097cb12ae39ac8524d4b50ca13320afac7f4c0ef0676176b8d83fb98",
+            },
+            {
+                "relative_path": "models/pipeline_ctrl_world.py",
+                "size_bytes": 43910,
+                "sha256": "e88b7b76ce150c74b50ef6fae80f5e8a09d68b015ee339dcbd4a1ab150aaaf47",
+            },
+            {
+                "relative_path": "models/pipeline_stable_video_diffusion.py",
+                "size_bytes": 32884,
+                "sha256": "73aea1aa5d16c6b734cb8a93b96bc98b44287dde9052ec9c0e6d2a0ffcd8c7a1",
+            },
+            {
+                "relative_path": "models/unet_spatio_temporal_condition.py",
+                "size_bytes": 23958,
+                "sha256": "20e50ce474cb51b94404ccca00f2ef4bdb3ff348766ac9ff86567956fdb6a3c7",
+            },
+            {
+                "relative_path": "models/utils.py",
+                "size_bytes": 6602,
+                "sha256": "bd9af90afdf379b95c2dfc7c3a5f8f6b8c6f1edc92ef8b8b7b59d08868ecfae3",
+            },
+            {
+                "relative_path": "dataset_meta_info/droid/stat.json",
+                "size_bytes": 294,
+                "sha256": "1e6fa202c87d6295f8b988dfd2764dec88796c910846cecdf684670fb818f208",
+            },
+        ],
     },
     "ctrl_world_checkpoint": {
         "repository": "yjguo/Ctrl-World",
