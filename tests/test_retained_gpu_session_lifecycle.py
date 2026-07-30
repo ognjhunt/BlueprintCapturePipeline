@@ -41,6 +41,30 @@ def test_retained_gpu_lifecycle_records_required_state_path(tmp_path: Path) -> N
         assert current["previous_record_sha256"] == previous["record_sha256"]
 
 
+def test_retained_gpu_lifecycle_extends_journal_for_new_attempt_after_provider_absent(
+    tmp_path: Path,
+) -> None:
+    first_attempt = (
+        "allocated",
+        "container_starting",
+        "image_pulling",
+        "terminal_failure",
+        "teardown_requested",
+        "provider_absent",
+    )
+    for state in first_attempt:
+        record_retained_gpu_state(tmp_path, state, evidence={"attempt": 1})
+
+    manifest = record_retained_gpu_state(tmp_path, "allocated", evidence={"attempt": 2})
+    rows = [json.loads(line) for line in (tmp_path / JOURNAL_NAME).read_text().splitlines()]
+
+    assert manifest["state"] == "allocated"
+    assert manifest["terminal"] is False
+    assert manifest["sequence"] == len(first_attempt) + 1
+    assert rows[-1]["previous_state"] == "provider_absent"
+    assert rows[-1]["previous_record_sha256"] == rows[-2]["record_sha256"]
+
+
 def test_retained_gpu_lifecycle_rejects_invalid_transition(tmp_path: Path) -> None:
     record_retained_gpu_state(tmp_path, "allocated")
 

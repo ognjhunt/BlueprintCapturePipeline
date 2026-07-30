@@ -82,10 +82,12 @@ def test_ctrl_world_bundle_is_deterministic_and_passes_frozen_inspection(
     assert rollout["physical_outcome_labels_accessed"] is False
 
 
-def test_ctrl_world_profile_binds_exact_v2_bundle() -> None:
+def test_ctrl_world_profile_binds_exact_v3_bundle() -> None:
     profile = admission.CTRL_WORLD_REPLAY_PROFILE
     assert profile.authorization_ids_by_allocation_index == {
-        8: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-8"
+        8: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-8",
+        9: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-9",
+        10: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-10",
     }
     assert profile.expected_bundle_sha256 == (
         "6f3b4acd71addec24251c19bba4a304268ba086ed1017007e8d06a884accc558"

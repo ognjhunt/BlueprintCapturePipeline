@@ -411,6 +411,29 @@ def _dedupe(values: Iterable[str]) -> list[str]:
     return result
 
 
+def _record_lifecycle_or_block(
+    base_result: dict[str, Any],
+    *,
+    operation: str,
+    recorder: Callable[[], Any],
+) -> bool:
+    """Record lifecycle evidence without allowing evidence I/O to skip teardown."""
+
+    try:
+        recorder()
+    except Exception as exc:
+        blocker = f"retained_gpu_lifecycle_{operation}_record_failed:{type(exc).__name__}"
+        base_result.update(
+            {
+                "status": "failed",
+                "reason": "retained_gpu_lifecycle_record_failed",
+                "blockers": _dedupe([*_string_list(base_result.get("blockers")), blocker]),
+            }
+        )
+        return False
+    return True
+
+
 def _env_truthy(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -6137,12 +6160,18 @@ def run_vast_provider_adapter(
             retention_decision,
         )
         if retain_instance_on_runtime_failure and instance_ids:
-            record_terminal_lifecycle(
-                resolved_job_dir,
-                instance_id=instance_ids[-1],
-                decision=retention_decision,
-                video_smoke_completed=video_smoke.get("status") == "completed",
+            lifecycle_recorded = _record_lifecycle_or_block(
+                base_result,
+                operation="terminal",
+                recorder=lambda: record_terminal_lifecycle(
+                    resolved_job_dir,
+                    instance_id=instance_ids[-1],
+                    decision=retention_decision,
+                    video_smoke_completed=video_smoke.get("status") == "completed",
+                ),
             )
+            if not lifecycle_recorded:
+                retention_authorized = False
         if instance_ids and not retention_authorized:
             _append_phase(
                 resolved_job_dir,
@@ -6231,14 +6260,18 @@ def run_vast_provider_adapter(
             and not retention_authorized
             and not continuing_spend
         ):
-            record_retained_gpu_state(
-                resolved_job_dir,
-                "provider_absent",
-                evidence={
-                    "provider": "vast",
-                    "provider_instance_id": instance_ids[-1],
-                    "destroy_request_completed": True,
-                },
+            _record_lifecycle_or_block(
+                base_result,
+                operation="provider_absent",
+                recorder=lambda: record_retained_gpu_state(
+                    resolved_job_dir,
+                    "provider_absent",
+                    evidence={
+                        "provider": "vast",
+                        "provider_instance_id": instance_ids[-1],
+                        "destroy_request_completed": True,
+                    },
+                ),
             )
         if retention_authorized:
             continuing_spend = True
