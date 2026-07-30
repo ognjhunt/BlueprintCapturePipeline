@@ -220,6 +220,15 @@ def _apply_and_measure_render_only_joint_pose(
 
     requested = np.asarray(joint_positions, dtype=float).reshape(-1)
     zeros = np.zeros_like(requested)
+    backend_utils = getattr(robot, "_backend_utils", None)
+    backend_convert = getattr(backend_utils, "convert", None)
+    backend_device = getattr(robot, "_device", None)
+    if callable(backend_convert):
+        requested_for_backend = backend_convert(requested, backend_device)
+        zeros_for_backend = backend_convert(zeros, backend_device)
+    else:
+        requested_for_backend = requested
+        zeros_for_backend = zeros
     required = {
         "set_joint_positions": getattr(robot, "set_joint_positions", None),
         "set_joint_velocities": getattr(robot, "set_joint_velocities", None),
@@ -229,8 +238,8 @@ def _apply_and_measure_render_only_joint_pose(
     if missing:
         raise ValueError("native_franka_render_only_joint_state_api_missing:" + ",".join(missing))
     try:
-        required["set_joint_positions"](requested)
-        required["set_joint_velocities"](zeros)
+        required["set_joint_positions"](requested_for_backend)
+        required["set_joint_velocities"](zeros_for_backend)
         for _ in range(int(render_count)):
             render()
     except Exception as exc:

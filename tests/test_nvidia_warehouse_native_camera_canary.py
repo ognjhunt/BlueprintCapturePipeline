@@ -294,6 +294,55 @@ def test_joint_pose_is_rendered_without_requesting_physics_steps() -> None:
     assert result["max_abs_position_error_rad"] == pytest.approx(0.0)
 
 
+def test_joint_pose_is_converted_to_the_robot_cuda_backend_before_application() -> None:
+    class BackendValue:
+        def __init__(self, value: np.ndarray) -> None:
+            self.value = value
+
+    conversions: list[tuple[np.ndarray, str]] = []
+
+    class BackendUtils:
+        @staticmethod
+        def convert(value, device):
+            array = np.asarray(value)
+            conversions.append((array, device))
+            return BackendValue(array)
+
+    applied: list[tuple[str, BackendValue]] = []
+
+    class Robot:
+        _backend_utils = BackendUtils()
+        _device = "cuda:0"
+
+        def set_joint_positions(self, value):
+            applied.append(("set_joint_positions", value))
+
+        def set_joint_velocities(self, value):
+            applied.append(("set_joint_velocities", value))
+
+        def get_joint_positions(self):
+            return np.asarray([0.1, -0.2, 0.3])
+
+    result = _apply_and_measure_render_only_joint_pose(
+        robot=Robot(),
+        joint_positions=[0.1, -0.2, 0.3],
+        phase="initial",
+        render=lambda: None,
+        render_count=1,
+    )
+
+    assert len(conversions) == 2
+    assert all(device == "cuda:0" for _value, device in conversions)
+    assert np.array_equal(conversions[0][0], np.asarray([0.1, -0.2, 0.3]))
+    assert np.array_equal(conversions[1][0], np.zeros(3))
+    assert [name for name, _value in applied] == [
+        "set_joint_positions",
+        "set_joint_velocities",
+    ]
+    assert all(isinstance(value, BackendValue) for _name, value in applied)
+    assert result["max_abs_position_error_rad"] == pytest.approx(0.0)
+
+
 def test_render_only_joint_state_fails_closed_without_state_api() -> None:
     class Robot:
         def set_joint_positions(self, _value):
