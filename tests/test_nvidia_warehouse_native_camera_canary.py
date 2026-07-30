@@ -15,7 +15,9 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _apply_runtime_asset_relocations,
     _camera_quaternion_wxyz,
     _load_materialization_manifest,
+    _project_required_external_entities,
     _project_world_points,
+    _render_world_without_physics_advance,
     _rigid_wrist_mount_from_initial_task_framing,
     _simulation_app_launch_config,
     import_simulation_app,
@@ -74,8 +76,14 @@ def _backend(*, output_dir: Path, **_kwargs):
         "franka_render_only_joint_state": {
             "mode": "render_only_kinematic_joint_state_transition",
             "physics_dynamics_claimed": False,
-            "initial": {"max_abs_position_error_rad": 0.001},
-            "commanded": {"max_abs_position_error_rad": 0.001},
+            "initial": {
+                "max_abs_position_error_rad": 0.001,
+                "zero_time_scene_update_requested": True,
+            },
+            "commanded": {
+                "max_abs_position_error_rad": 0.001,
+                "zero_time_scene_update_requested": True,
+            },
         },
         "camera_transition_physics_steps_advanced": 0,
         "wrist_camera_world_displacement_m": 0.02,
@@ -95,6 +103,66 @@ def test_usd_camera_convention_projects_negative_z_forward_and_builds_identity_p
         vfov_deg=60.0,
     )
     assert projected == {"center": True, "behind": False}
+
+
+def test_external_projection_accepts_any_visible_franka_link_origin() -> None:
+    required, evidence = _project_required_external_entities(
+        camera_to_world=np.eye(4),
+        task_points={"spraycan": [0.0, 0.0, -1.0], "tray": [0.1, 0.1, -1.0]},
+        franka_link_points={
+            "panda_link0": [10.0, 0.0, -1.0],
+            "panda_link4": [0.0, 0.0, -1.0],
+        },
+        width=640,
+        height=480,
+        vfov_deg=60.0,
+    )
+
+    assert required == {"franka": True, "spraycan": True, "tray": True}
+    assert evidence["franka_link_origins_projected_in_frame"] == {
+        "panda_link0": False,
+        "panda_link4": True,
+    }
+
+
+def test_external_projection_fails_closed_without_franka_link_origins() -> None:
+    with pytest.raises(ValueError, match="native_warehouse_franka_link_projection_points_missing"):
+        _project_required_external_entities(
+            camera_to_world=np.eye(4),
+            task_points={"spraycan": [0.0, 0.0, -1.0]},
+            franka_link_points={},
+            width=640,
+            height=480,
+            vfov_deg=60.0,
+        )
+
+
+def test_zero_time_scene_update_uses_step_sim_false_and_preserves_step_index() -> None:
+    class World:
+        current_time_step_index = 7
+
+        def __init__(self):
+            self.calls = []
+
+        def step(self, **kwargs):
+            self.calls.append(kwargs)
+
+    world = World()
+    _render_world_without_physics_advance(world)
+
+    assert world.calls == [{"render": True, "step_sim": False, "update_fabric": True}]
+    assert world.current_time_step_index == 7
+
+
+def test_zero_time_scene_update_fails_if_world_advances_physics() -> None:
+    class World:
+        current_time_step_index = 7
+
+        def step(self, **_kwargs):
+            self.current_time_step_index += 1
+
+    with pytest.raises(ValueError, match="native_franka_zero_time_scene_update_advanced_physics"):
+        _render_world_without_physics_advance(World())
 
 
 def test_wrist_mount_is_calibrated_once_in_parent_coordinates_toward_task_centroid() -> None:
@@ -173,6 +241,7 @@ def test_joint_pose_is_rendered_without_requesting_physics_steps() -> None:
     assert np.array_equal(calls[1][1], np.zeros(3))
     assert len(renders) == 4
     assert result["physics_steps_requested"] == 0
+    assert result["zero_time_scene_update_requested"] is True
     assert result["max_abs_position_error_rad"] == pytest.approx(0.0)
 
 
@@ -415,9 +484,7 @@ def test_native_camera_canary_fails_closed_when_joint_state_does_not_match(tmp_p
 
     def drifting_backend(**kwargs):
         value = _backend(**kwargs)
-        value["franka_render_only_joint_state"]["commanded"][
-            "max_abs_position_error_rad"
-        ] = 0.25
+        value["franka_render_only_joint_state"]["commanded"]["max_abs_position_error_rad"] = 0.25
         return value
 
     result = run_native_camera_canary(
@@ -429,6 +496,27 @@ def test_native_camera_canary_fails_closed_when_joint_state_does_not_match(tmp_p
 
     assert result["status"] == "failed"
     assert "native_franka_joint_state_error_exceeded:commanded" in result["blockers"]
+
+
+def test_native_camera_canary_requires_zero_time_scene_update_evidence(
+    tmp_path: Path,
+) -> None:
+    spec_path = tmp_path / "spec.json"
+    _spec(spec_path)
+
+    def missing_update_evidence_backend(**kwargs):
+        value = _backend(**kwargs)
+        value["franka_render_only_joint_state"]["commanded"].pop("zero_time_scene_update_requested")
+        return value
+
+    result = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "result",
+        backend=missing_update_evidence_backend,
+    )
+
+    assert "native_franka_zero_time_scene_update_not_proven:commanded" in result["blockers"]
 
 
 def test_native_camera_canary_fails_closed_when_camera_transition_steps_physics(

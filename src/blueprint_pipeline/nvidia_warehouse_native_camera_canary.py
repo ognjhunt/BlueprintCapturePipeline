@@ -125,8 +125,62 @@ def _project_world_points(
     return result
 
 
+def _project_required_external_entities(
+    *,
+    camera_to_world: Any,
+    task_points: Mapping[str, Any],
+    franka_link_points: Mapping[str, Any],
+    width: int,
+    height: int,
+    vfov_deg: float,
+) -> tuple[dict[str, bool], dict[str, Any]]:
+    """Require task points and at least one Franka link origin in the image."""
+
+    if not franka_link_points:
+        raise ValueError("native_warehouse_franka_link_projection_points_missing")
+    task_projection = _project_world_points(
+        camera_to_world=camera_to_world,
+        points=task_points,
+        width=width,
+        height=height,
+        vfov_deg=vfov_deg,
+    )
+    link_projection = _project_world_points(
+        camera_to_world=camera_to_world,
+        points=franka_link_points,
+        width=width,
+        height=height,
+        vfov_deg=vfov_deg,
+    )
+    required = {
+        "franka": any(link_projection.values()),
+        **task_projection,
+    }
+    return required, {
+        "franka_visibility_rule": "at_least_one_articulation_link_origin_in_frame",
+        "franka_link_origins_projected_in_frame": link_projection,
+    }
+
+
 def _matrix_array(matrix: Any) -> np.ndarray:
     return np.asarray([[float(matrix[row][column]) for column in range(4)] for row in range(4)])
+
+
+def _render_world_without_physics_advance(world: Any) -> None:
+    """Update articulation/Fabric transforms and render without stepping physics."""
+
+    step = getattr(world, "step", None)
+    if not callable(step):
+        raise ValueError("native_franka_zero_time_scene_update_api_missing")
+    before = int(world.current_time_step_index)
+    try:
+        step(render=True, step_sim=False, update_fabric=True)
+    except Exception as exc:
+        raise ValueError(
+            "native_franka_zero_time_scene_update_failed:" + type(exc).__name__
+        ) from exc
+    if int(world.current_time_step_index) != before:
+        raise ValueError("native_franka_zero_time_scene_update_advanced_physics")
 
 
 def _apply_and_measure_render_only_joint_pose(
@@ -137,7 +191,7 @@ def _apply_and_measure_render_only_joint_pose(
     render: Callable[[], None],
     render_count: int,
 ) -> dict[str, Any]:
-    """Teleport one joint state, render without physics, and measure it."""
+    """Teleport one joint state, update/render without physics, and measure it."""
 
     requested = np.asarray(joint_positions, dtype=float).reshape(-1)
     zeros = np.zeros_like(requested)
@@ -148,9 +202,7 @@ def _apply_and_measure_render_only_joint_pose(
     }
     missing = sorted(name for name, method in required.items() if not callable(method))
     if missing:
-        raise ValueError(
-            "native_franka_render_only_joint_state_api_missing:" + ",".join(missing)
-        )
+        raise ValueError("native_franka_render_only_joint_state_api_missing:" + ",".join(missing))
     try:
         required["set_joint_positions"](requested)
         required["set_joint_velocities"](zeros)
@@ -171,6 +223,7 @@ def _apply_and_measure_render_only_joint_pose(
         "max_abs_position_error_rad": float(np.max(np.abs(measured - requested))),
         "zero_velocity_state_applied": True,
         "joint_position_state_applied": True,
+        "zero_time_scene_update_requested": True,
         "render_count": int(render_count),
         "physics_steps_requested": 0,
     }
@@ -436,7 +489,7 @@ def isaac_sim_6_backend(
             robot=robot,
             joint_positions=initial_joints,
             phase="initial_precalibration",
-            render=world.render,
+            render=lambda: _render_world_without_physics_advance(world),
             render_count=2,
         )
 
@@ -472,7 +525,7 @@ def isaac_sim_6_backend(
             robot=robot,
             joint_positions=initial_joints,
             phase="initial_observation",
-            render=world.render,
+            render=lambda: _render_world_without_physics_advance(world),
             render_count=4,
         )
 
@@ -498,12 +551,27 @@ def isaac_sim_6_backend(
                 ),
             }
         )
-        hand_initial = hand_initial_matrix[3, :3]
         entity_points = {
-            "franka": hand_initial,
             "spraycan": placements["spraycan_translation_m"],
             "tray": tray_center,
         }
+        franka_link_points = {}
+        for link_name in (
+            "panda_link0",
+            "panda_link1",
+            "panda_link2",
+            "panda_link3",
+            "panda_link4",
+            "panda_link5",
+            "panda_link6",
+            "panda_link7",
+            "panda_hand",
+        ):
+            link_path = f"/World/Franka/{link_name}"
+            if stage.GetPrimAtPath(link_path).IsValid():
+                franka_link_points[link_name] = camera_matrix(link_path)[3, :3]
+        if not franka_link_points:
+            raise ValueError("native_warehouse_franka_link_projection_points_missing")
 
         frames: dict[str, dict[str, Any]] = {view: {} for view in REQUIRED_VIEWS}
 
@@ -521,24 +589,31 @@ def isaac_sim_6_backend(
 
         initial_step = save_frames("initial")
         for view_id, path in (("external", external_path), ("wrist", wrist_path)):
-            required_points = (
-                entity_points
-                if view_id == "external"
-                else {key: entity_points[key] for key in ("spraycan", "tray")}
-            )
-            frames[view_id]["required_entities_projected_in_frame"] = _project_world_points(
-                camera_to_world=camera_matrix(path),
-                points=required_points,
-                width=640,
-                height=480,
-                vfov_deg=float(spec["cameras"][view_id]["vertical_fov_deg"]),
-            )
+            if view_id == "external":
+                required, projection_evidence = _project_required_external_entities(
+                    camera_to_world=camera_matrix(path),
+                    task_points=entity_points,
+                    franka_link_points=franka_link_points,
+                    width=640,
+                    height=480,
+                    vfov_deg=float(spec["cameras"][view_id]["vertical_fov_deg"]),
+                )
+                frames[view_id]["required_entities_projected_in_frame"] = required
+                frames[view_id]["franka_projection_evidence"] = projection_evidence
+            else:
+                frames[view_id]["required_entities_projected_in_frame"] = _project_world_points(
+                    camera_to_world=camera_matrix(path),
+                    points=entity_points,
+                    width=640,
+                    height=480,
+                    vfov_deg=float(spec["cameras"][view_id]["vertical_fov_deg"]),
+                )
 
         commanded_joint_state = _apply_and_measure_render_only_joint_pose(
             robot=robot,
             joint_positions=commanded_joints,
             phase="commanded_observation",
-            render=world.render,
+            render=lambda: _render_world_without_physics_advance(world),
             render_count=4,
         )
         commanded_step = save_frames("commanded")
@@ -574,9 +649,7 @@ def isaac_sim_6_backend(
                 "initial": initial_joint_state,
                 "commanded": commanded_joint_state,
             },
-            "camera_transition_physics_steps_advanced": int(
-                world.current_time_step_index
-            )
+            "camera_transition_physics_steps_advanced": int(world.current_time_step_index)
             - physics_step_after_reset,
             "wrist_camera_world_displacement_m": float(
                 np.linalg.norm(wrist_world_commanded[3, :3] - wrist_world_initial[3, :3])
@@ -735,6 +808,8 @@ def assess_native_camera_backend_result(
             blockers.append(f"native_franka_joint_state_error_missing_or_invalid:{phase}")
         elif error > MAX_KINEMATIC_JOINT_POSITION_ERROR_RAD:
             blockers.append(f"native_franka_joint_state_error_exceeded:{phase}")
+        if phase_state.get("zero_time_scene_update_requested") is not True:
+            blockers.append(f"native_franka_zero_time_scene_update_not_proven:{phase}")
     if backend_result.get("external_wrist_timestamp_pairs_exact") is not True:
         blockers.append("native_camera_timestamps_not_synchronized")
 
