@@ -52,6 +52,29 @@ The resulting descriptor carries the intake digest, profile, reduced-authority
 reasons, claim ceiling, and byte-verification count. Existing Raw Contract
 verification remains independently required.
 
+## Completed-capture lifecycle
+
+Each completed upload receipt records its immutable receive time. The signed
+service exposes capture-scoped lifecycle apply and inspect operations for
+consent revocation, an operator deletion request, or exact retention expiry.
+The lifecycle binds the session, intake, capture digest, and envelope digest;
+checks the declared revocation policy, retention deadline, and legal hold; then
+writes a fail-closed marker before removing data.
+
+Local deletion removes the exact intake payload, unshared raw object, and bound
+task-discovery, reconstruction, testbed, and Task Evaluation Run work products.
+A content-addressed object remains while another active intake references it.
+The final non-sensitive tombstone retains hashes needed to explain prior
+decisions without retaining the removed payload. Both the marker and tombstone
+block re-upload reuse and all future reconstruction.
+
+External provider deletion is a separate obligation. Local deletion records
+which provider/result receipts require deletion, and a later operator record
+can bind provider deletion receipt metadata. That metadata is not described as
+independent provider verification. WebApp revocation and signed-download
+disablement remain explicit required-but-unexecuted actions until their signed
+cross-repository acknowledgements land.
+
 This is the upload/admission seam, not a second router. Approved tasks still
 flow into the existing Decision/Evidence Router, whose authorization and
 qualification boundaries remain unchanged.
@@ -62,7 +85,6 @@ The current implementation now hands admitted bytes to the separately versioned
 `capture_qa_report.v1` boundary for decoded media/PTS checks and provenance-bound
 quality observations. The separately versioned task-candidate contract now
 requires digest-bound customer/operator approval before inferred intent can
-reach the router. Pipeline handoff from the WebApp resumable upload session, 360
-native-container normalization, WebApp approval UX, reconstruction planning,
-testbed compilation, and the hosted WebApp state machine remain launch gates and
-must not be inferred from intake admission.
+reach the router. 360 native-container normalization, deployed cross-repository
+lifecycle sync, and the real-capture vertical slice remain launch gates and must
+not be inferred from intake admission or a local deletion tombstone.

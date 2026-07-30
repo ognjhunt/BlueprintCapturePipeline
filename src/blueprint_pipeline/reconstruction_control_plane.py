@@ -123,6 +123,14 @@ def _sha256_file(path: Path) -> str:
 def _source_binding(
     *, capture_store_root: Path, capture_session_id: str, intake_id: str
 ) -> dict[str, Any]:
+    lifecycle_key = hashlib.sha256(
+        f"{capture_session_id}\0{intake_id}".encode("utf-8")
+    ).hexdigest()
+    if any(
+        (capture_store_root / directory / f"{lifecycle_key}.json").is_file()
+        for directory in ("lifecycle_markers", "lifecycle_tombstones")
+    ):
+        raise ReconstructionControlPlaneError("capture_revoked_or_expired", status_code=410)
     receipt = _read_object(
         _receipt_path(capture_store_root, capture_session_id, intake_id),
         code="capture_upload_receipt_not_found",

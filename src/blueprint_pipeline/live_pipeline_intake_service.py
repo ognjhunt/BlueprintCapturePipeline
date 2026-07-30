@@ -38,6 +38,13 @@ from .capture_upload_intake import (
     process_capture_upload_submission,
 )
 from .capture_qa_webapp_sync import build_capture_qa_webapp_publication
+from .capture_lifecycle import (
+    CaptureLifecycleError,
+    apply_capture_lifecycle_action,
+    inspect_capture_lifecycle,
+    record_external_revocation_evidence,
+    record_provider_deletion_evidence,
+)
 from .reconstruction_control_plane import (
     ReconstructionControlPlaneError,
     authorize_reconstruction_plan,
@@ -1744,6 +1751,136 @@ def create_app() -> FastAPI:
                 report=_mapping(receipt.get("capture_qa_report")),
             ),
         }
+
+    @app.post(
+        "/api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/lifecycle",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def apply_capture_lifecycle(
+        capture_session_id: str, intake_id: str, request: Request
+    ) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        if payload.get("schema_version") != "capture_lifecycle_submission.v1":
+            raise HTTPException(status_code=422, detail="capture lifecycle schema version mismatch")
+        store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+        if not store_root_text:
+            raise HTTPException(status_code=503, detail="capture intake store is not configured")
+        manifest_path = _manifest_path().resolve()
+        actor_identity = _string(getattr(request.state, "intake_client_id", ""))
+        try:
+            return await run_in_threadpool(
+                apply_capture_lifecycle_action,
+                store_root=Path(store_root_text).expanduser().resolve(),
+                work_root=_work_dir(manifest_path).expanduser().resolve(),
+                capture_session_id=capture_session_id,
+                intake_id=intake_id,
+                capture_digest=str(payload.get("capture_digest") or ""),
+                envelope_digest=str(payload.get("envelope_digest") or ""),
+                action=str(payload.get("action") or ""),
+                actor={
+                    "role": "authenticated_pipeline_client",
+                    "identity": actor_identity,
+                },
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+            )
+        except CaptureLifecycleError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+
+    @app.post(
+        "/api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/provider-deletion-evidence",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def submit_provider_deletion_evidence(
+        capture_session_id: str, intake_id: str, request: Request
+    ) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        if payload.get("schema_version") != "capture_provider_deletion_evidence_submission.v1":
+            raise HTTPException(
+                status_code=422, detail="provider deletion evidence schema version mismatch"
+            )
+        store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+        if not store_root_text:
+            raise HTTPException(status_code=503, detail="capture intake store is not configured")
+        try:
+            return record_provider_deletion_evidence(
+                store_root=Path(store_root_text).expanduser().resolve(),
+                capture_session_id=capture_session_id,
+                intake_id=intake_id,
+                obligation_digest=str(payload.get("obligation_digest") or ""),
+                deletion_receipt_digest=str(
+                    payload.get("deletion_receipt_digest") or ""
+                ),
+                provider_identity=str(payload.get("provider_identity") or ""),
+                deleted_at=str(payload.get("deleted_at") or ""),
+                verification_method=str(payload.get("verification_method") or ""),
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+            )
+        except CaptureLifecycleError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+
+    @app.get(
+        "/api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/lifecycle",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def inspect_completed_capture_lifecycle(
+        capture_session_id: str, intake_id: str
+    ) -> Dict[str, Any]:
+        store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+        if not store_root_text:
+            raise HTTPException(status_code=503, detail="capture intake store is not configured")
+        try:
+            return inspect_capture_lifecycle(
+                store_root=Path(store_root_text).expanduser().resolve(),
+                capture_session_id=capture_session_id,
+                intake_id=intake_id,
+            )
+        except CaptureLifecycleError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+
+    @app.post(
+        "/api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/external-revocation-evidence",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def submit_external_revocation_evidence(
+        capture_session_id: str, intake_id: str, request: Request
+    ) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        if payload.get("schema_version") != "capture_external_revocation_evidence_submission.v1":
+            raise HTTPException(
+                status_code=422, detail="external revocation evidence schema version mismatch"
+            )
+        store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+        if not store_root_text:
+            raise HTTPException(status_code=503, detail="capture intake store is not configured")
+        try:
+            return record_external_revocation_evidence(
+                store_root=Path(store_root_text).expanduser().resolve(),
+                capture_session_id=capture_session_id,
+                intake_id=intake_id,
+                action=str(payload.get("action") or ""),
+                target_system=str(payload.get("target_system") or ""),
+                receipt_digest=str(payload.get("receipt_digest") or ""),
+                completed_at=str(payload.get("completed_at") or ""),
+                verification_method=str(payload.get("verification_method") or ""),
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+            )
+        except CaptureLifecycleError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
 
     @app.post(
         "/api/live-pipeline/reconstructions/plan",

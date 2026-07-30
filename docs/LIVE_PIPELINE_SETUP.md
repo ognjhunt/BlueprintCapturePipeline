@@ -340,6 +340,10 @@ The service exposes:
 
 - `GET /health`
 - `POST /api/live-pipeline/capture-upload-intakes`
+- `POST /api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/lifecycle`
+- `GET /api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/lifecycle`
+- `POST /api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/provider-deletion-evidence`
+- `POST /api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/external-revocation-evidence`
 - `POST /api/live-pipeline/reconstructions/plan`
 - `POST /api/live-pipeline/reconstructions/{plan_id}/authorize`
 - `POST /api/live-pipeline/reconstructions/{plan_id}/execute`
@@ -389,6 +393,17 @@ robot work. Testbed compilation accepts
 Pipeline-owned reconstruction plan and execution-result digest. Version 2
 rejects caller-supplied intake, QA, reconstruction-plan, or reconstruction-result
 objects.
+
+Completed-capture lifecycle actions are destructive and fail closed. They
+require the exact capture and envelope digests and never accept a caller path.
+Consent revocation and operator deletion require the intake's revocation policy;
+retention expiry is computed from the immutable receipt time plus `max_days`;
+legal hold prevents deletion. A marker blocks use before deletion begins. The
+final tombstone contains digests and deletion counts, not the raw capture or
+customer identifiers. Shared content-addressed objects are preserved until the
+last active reference is removed. Provider deletion and WebApp/signed-download
+revocation remain separate, inspectable obligations rather than being inferred
+from local file deletion.
 
 Signed intake headers are required by default. Temporary legacy bearer support
 exists only when `BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER=true` is
