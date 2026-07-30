@@ -6,12 +6,17 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic import (
     GPT5_MODEL,
     GPT54_MINI_MODEL,
     complete_graph_diagnostic_protocol,
 )
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic_openai_batch import (
+    OpenAIBatchDiagnosticError,
+    TRANSPORT_REPAIR_ARM_ID,
+    TRANSPORT_REPAIR_MAX_OUTPUT_TOKENS,
     collect_shard,
     prepare_shard,
 )
@@ -95,6 +100,70 @@ def test_prepare_complete_graph_shard_binds_medium_gpt5_configuration(
     assert body["max_output_tokens"] == 4000
     assert manifest["arm_id"] == "gpt5_complete_graph"
     assert manifest["reasoning_effort"] == "medium"
+
+
+def test_prepare_registered_transport_repair_subset_binds_only_frozen_repair_config(
+    tmp_path: Path,
+) -> None:
+    frames = []
+    for index in range(32):
+        path = tmp_path / f"repair-{index}.jpg"
+        path.write_bytes(str(index).encode())
+        frames.append(
+            {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        )
+    inventory = {
+        "status": "ready",
+        "comparison_graph_kind": "registered_complete_graph_subset",
+        "pair_count": 1,
+        "protocol_sha256": complete_graph_diagnostic_protocol()["protocol_sha256"],
+        "parent_inventory_sha256": "b" * 64,
+        "outcome_labels_accessed_to_build_pairs": False,
+        "pairs": [
+            {
+                "pair_id": "repair-pair",
+                "task_instruction": "move cup",
+                "episode_a": {"frames": frames, "policy_id_internal_only": "secret-a"},
+                "episode_b": {"frames": frames, "policy_id_internal_only": "secret-b"},
+            }
+        ],
+    }
+    inventory["inventory_sha256"] = canonical_sha256(inventory)
+
+    manifest = prepare_shard(
+        inventory,
+        model=GPT5_MODEL,
+        offset=0,
+        count=1,
+        jsonl_path=tmp_path / "repair.jsonl",
+        manifest_path=tmp_path / "repair-manifest.json",
+        source_commit="a" * 40,
+        reasoning_effort="medium",
+        max_output_tokens=TRANSPORT_REPAIR_MAX_OUTPUT_TOKENS,
+        arm_id=TRANSPORT_REPAIR_ARM_ID,
+    )
+    body = json.loads((tmp_path / "repair.jsonl").read_text())["body"]
+    assert body["max_output_tokens"] == TRANSPORT_REPAIR_MAX_OUTPUT_TOKENS
+    assert manifest["arm_id"] == TRANSPORT_REPAIR_ARM_ID
+    assert "secret-a" not in (tmp_path / "repair.jsonl").read_text()
+    assert "secret-b" not in (tmp_path / "repair.jsonl").read_text()
+
+    with pytest.raises(
+        OpenAIBatchDiagnosticError,
+        match="complete_graph_transport_repair_config_mismatch",
+    ):
+        prepare_shard(
+            inventory,
+            model=GPT5_MODEL,
+            offset=0,
+            count=1,
+            jsonl_path=tmp_path / "invalid-repair.jsonl",
+            manifest_path=tmp_path / "invalid-repair-manifest.json",
+            source_commit="a" * 40,
+            reasoning_effort="medium",
+            max_output_tokens=4000,
+            arm_id="gpt5_complete_graph",
+        )
 
 
 def test_collect_failed_batch_records_error_and_deletes_input(
