@@ -529,6 +529,39 @@ def _topology(faces: list[tuple[int, int, int]]) -> tuple[dict[str, Any], dict[s
     )
 
 
+def _write_collision_usda(
+    path: Path,
+    *,
+    vertices: list[tuple[float, float, float]],
+    faces: list[tuple[int, int, int]],
+    observed_surface_digest: str,
+) -> None:
+    try:
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # type: ignore
+    except ImportError as exc:
+        raise ReconstructionGeometryCompilerError(["openusd_runtime_unavailable"]) from exc
+    stage = Usd.Stage.CreateNew(str(path))
+    if stage is None:
+        raise ReconstructionGeometryCompilerError(["collider_openusd_stage_create_failed"])
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    world = UsdGeom.Xform.Define(stage, "/World")
+    collision = UsdGeom.Xform.Define(stage, "/World/Collision")
+    mesh = UsdGeom.Mesh.Define(stage, "/World/Collision/ObservedSurface")
+    mesh.CreatePointsAttr([Gf.Vec3f(*row) for row in vertices])
+    mesh.CreateFaceVertexCountsAttr([3] * len(faces))
+    mesh.CreateFaceVertexIndicesAttr([index for face in faces for index in face])
+    mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+    UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+    collision.GetPrim().SetCustomDataByKey("blueprint:generatedFillUsed", False)
+    collision.GetPrim().SetCustomDataByKey(
+        "blueprint:observedSurfaceDigest", observed_surface_digest
+    )
+    collision.GetPrim().SetCustomDataByKey("blueprint:collisionValidated", False)
+    stage.SetDefaultPrim(world.GetPrim())
+    stage.GetRootLayer().Save()
+
+
 def compile_collision_candidate(
     *, source_artifact: Mapping[str, Any], output_root: str | Path, artifact_root: str | Path
 ) -> dict[str, Any]:
@@ -549,7 +582,15 @@ def compile_collision_candidate(
     output = _prepare_output_root(output_root, artifact_root)
     output_path = output / "observed_surface_collider_candidate.ply"
     shutil.copyfile(source_path, output_path)
-    output_digest = _sha256(output_path)
+    observed_surface_digest = _sha256(output_path)
+    collider_path = output / "observed_surface_collider_candidate.usda"
+    _write_collision_usda(
+        collider_path,
+        vertices=vertices,
+        faces=faces,
+        observed_surface_digest=observed_surface_digest,
+    )
+    collider_digest = _sha256(collider_path)
     root = Path(artifact_root)
     value = {
         **_lineage(metric),
@@ -562,7 +603,13 @@ def compile_collision_candidate(
             },
             {"artifact_id": "metric_geometry_asset", "digest": metric["geometry_asset_digest"]},
         ],
-        "output_digests": [{"artifact_id": "collider_candidate", "digest": output_digest}],
+        "output_digests": [
+            {
+                "artifact_id": "collider_observed_surface",
+                "digest": observed_surface_digest,
+            },
+            {"artifact_id": "collider_openusd_candidate", "digest": collider_digest},
+        ],
         "metric_geometry_manifest_digest": metric["metric_geometry_manifest_digest"],
         "metric_scale_status": metric["metric_scale_status"],
         "units": "meters",
@@ -572,8 +619,14 @@ def compile_collision_candidate(
         "warnings": list(metric.get("warnings") or []),
         "blockers": list(metric.get("blockers") or []),
         "parent_artifact_or_event": {"digest": metric["metric_geometry_manifest_digest"]},
-        "collider_asset_reference": _relative_to_root(output_path, root),
-        "collider_asset_digest": output_digest,
+        "observed_surface_asset_reference": _relative_to_root(output_path, root),
+        "observed_surface_asset_digest": observed_surface_digest,
+        "collider_asset_reference": _relative_to_root(collider_path, root),
+        "collider_asset_digest": collider_digest,
+        "collider_source_prim_path": "/World/Collision",
+        "openusd_stage_meters_per_unit": 1.0,
+        "openusd_up_axis": "Z",
+        "collision_api_configured": True,
         "unobserved_regions_filled": False,
         "collision_validated": False,
         "component_statistics": {**components, "vertex_count": len(vertices)},

@@ -7,6 +7,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.nurec_openusd_packaging import package_nurec_openusd
 from blueprint_pipeline.reconstruction_geometry_compiler import (
     COMPILER_SCHEMA,
     QUALIFICATION_MEASUREMENT_SCHEMA,
@@ -15,6 +16,9 @@ from blueprint_pipeline.reconstruction_geometry_compiler import (
     compile_collision_candidate,
     compile_metric_geometry,
     qualify_collision_candidate,
+)
+from blueprint_pipeline.reconstruction_geometry_contracts import (
+    build_nurec_openusd_packaging_request,
 )
 from blueprint_pipeline.task_evaluation_supervisor.capabilities import SupervisorContext
 from blueprint_pipeline.task_evaluation_supervisor.contracts import AutonomyMode
@@ -297,7 +301,11 @@ def test_metric_compilation_and_collider_baseline_replay_exactly(tmp_path: Path)
     assert candidate["candidate_operation"] == (
         "exact_observed_surface_copy_no_decimation_no_hole_fill"
     )
-    assert candidate["collider_asset_digest"] == first["geometry_asset_digest"]
+    assert candidate["observed_surface_asset_digest"] == first["geometry_asset_digest"]
+    assert candidate["collider_asset_digest"] != first["geometry_asset_digest"]
+    assert candidate["collider_asset_reference"].endswith(".usda")
+    assert candidate["collider_source_prim_path"] == "/World/Collision"
+    assert candidate["collision_api_configured"] is True
     assert candidate["component_statistics"] == {
         "count": 1,
         "disconnected_count": 0,
@@ -653,3 +661,114 @@ def test_compiler_rejects_duplicate_json_keys_and_output_escape(tmp_path: Path) 
             artifact_root=tmp_path,
         )
     assert not escaped.exists()
+
+
+def test_measured_geometry_to_qualified_collider_to_openusd_package(tmp_path: Path) -> None:
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    metric = compile_metric_geometry(
+        source_artifact=_request(tmp_path),
+        output_root=tmp_path / "generated" / "metric",
+        artifact_root=tmp_path,
+    )
+    candidate = compile_collision_candidate(
+        source_artifact=metric,
+        output_root=tmp_path / "generated" / "collider",
+        artifact_root=tmp_path,
+    )
+    qualification = qualify_collision_candidate(
+        source_artifact=candidate,
+        output_root=tmp_path / "generated" / "qualification",
+        artifact_root=tmp_path,
+        qualification_request=_qualification_request(tmp_path, candidate),
+    )
+
+    appearance = tmp_path / "inputs" / "appearance.usda"
+    stage = Usd.Stage.CreateNew(str(appearance))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    world = UsdGeom.Xform.Define(stage, "/World")
+    stage.DefinePrim("/World/Appearance", "ParticleField3DGaussianSplat")
+    stage.SetDefaultPrim(world.GetPrim())
+    stage.GetRootLayer().Save()
+    appearance_digest = _digest_bytes(appearance.read_bytes())
+    collider_path = tmp_path / candidate["collider_asset_reference"]
+    assert _digest_bytes(collider_path.read_bytes()) == candidate["collider_asset_digest"]
+
+    packaging = {
+        "stable_run_identity": "geometry-to-package-run-1",
+        "source_capture_identity": candidate["source_capture_identity"],
+        "source_capture_digest": candidate["source_capture_digest"],
+        "original_file_references": [
+            {"artifact_id": "appearance", "digest": appearance_digest},
+            {"artifact_id": "collider", "digest": candidate["collider_asset_digest"]},
+        ],
+        "producing_method": "blueprint.hermetic_packaging_request_compiler",
+        "implementation_version": "1.0.0",
+        "source_commit_sha": candidate["source_commit_sha"],
+        "deterministic_configuration_digest": "sha256:" + "8" * 64,
+        "input_digests": [
+            {"artifact_id": "appearance", "digest": appearance_digest},
+            {"artifact_id": "collider", "digest": candidate["collider_asset_digest"]},
+        ],
+        "output_digests": [],
+        "train_heldout_split_digest": candidate["train_heldout_split_digest"],
+        "camera_calibration_binding": candidate["camera_calibration_binding"],
+        "coordinate_frame_declaration": candidate["coordinate_frame_declaration"],
+        "units": "meters",
+        "provider_runtime_identity": {"provider": "local", "runtime": "python"},
+        "cost_usd": 0.0,
+        "duration_seconds": 0.0,
+        "authority_used": {"mode": "execute_non_spend"},
+        "warnings": [],
+        "blockers": [],
+        "parent_artifact_or_event": {
+            "digest": qualification["collider_qualification_digest"]
+        },
+        "timestamp": "2026-07-30T23:00:00Z",
+        "appearance_asset": {
+            "relative_path": "inputs/appearance.usda",
+            "digest": appearance_digest,
+            "source_prim_path": "/World/Appearance",
+        },
+        "metric_geometry_manifest_digest": metric["metric_geometry_manifest_digest"],
+        "collider_asset": {
+            "relative_path": candidate["collider_asset_reference"],
+            "digest": candidate["collider_asset_digest"],
+            "source_prim_path": candidate["collider_source_prim_path"],
+        },
+        "collider_candidate_manifest_digest": candidate[
+            "collider_candidate_manifest_digest"
+        ],
+        "collider_qualification_digest": qualification["collider_qualification_digest"],
+        "collider_qualification_decision": qualification["decision"],
+        "stage_meters_per_unit": 1.0,
+        "up_axis": "Z",
+        "shared_visual_physics_frame": True,
+        "target_prim_paths": {
+            "appearance": "/World/BlueprintReconstruction/Appearance",
+            "collision": "/World/BlueprintReconstruction/Collision",
+        },
+        "output_format": "usdz",
+        "output_name": "measured_geometry_fixture.usdz",
+        "proof_effect": "packaging_request_only",
+        "claim_ceiling": "none",
+    }
+    request = build_nurec_openusd_packaging_request(packaging)
+    result = package_nurec_openusd(
+        source_artifact=request,
+        artifact_root=tmp_path,
+        output_root=tmp_path / "generated" / "package",
+    )
+    replay = package_nurec_openusd(
+        source_artifact=request,
+        artifact_root=tmp_path,
+        output_root=tmp_path / "generated" / "package",
+    )
+    assert replay == result
+    assert result["collider_qualification_decision"] == "accepted_bounded_navigation"
+    assert result["collision_api_configured"] is True
+    package = tmp_path / "generated" / "package" / result["package_artifact_reference"]
+    packaged_stage = Usd.Stage.Open(str(package))
+    collision = packaged_stage.GetPrimAtPath("/World/BlueprintReconstruction/Collision")
+    assert any(prim.HasAPI(UsdPhysics.CollisionAPI) for prim in Usd.PrimRange(collision))
