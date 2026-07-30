@@ -20,9 +20,10 @@ from blueprint_pipeline.live_pipeline_intake_service import (
     INTAKE_TOKEN_ENV,
     create_app,
 )
+from blueprint_pipeline.task_evaluation_supervisor import replay_supervisor_run
 
 
-def _write_json(path: Path, payload: dict[str, object]) -> None:
+def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -579,6 +580,100 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
     assert "download.example.test" not in response.text
     assert seen["payload"] == submission
     assert seen["store_root"] == (tmp_path / "capture-intakes").resolve()
+
+
+def test_live_pipeline_capture_upload_starts_real_replayable_supervisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "token")
+    monkeypatch.setenv(
+        CONTROL_PLANE_OUTPUT_PATH_ENV,
+        str(tmp_path / "control" / "manifest.json"),
+    )
+    store_root = (tmp_path / "capture-intakes").resolve()
+    monkeypatch.setenv(service.CAPTURE_UPLOAD_STORE_ROOT_ENV, str(store_root))
+
+    def process(payload, *, store_root):
+        artifact_root = store_root / "intakes" / "intake-real" / "capture"
+        _write_json(
+            artifact_root / "capture_intake_envelope.json",
+            {
+                "schema_version": "capture_intake_envelope.v1",
+                "capture_session_id": payload["capture_session_id"],
+                "intake_id": "intake-real",
+                "admission_status": "accepted",
+                "state": "capture_accepted",
+                "capture_digest": f"sha256:{'3' * 64}",
+                "claim_ceiling": {"physical_task_success": False},
+                "proof_boundary": {
+                    "capture_qa_completed": False,
+                    "physical_task_success_established": False,
+                    "comparative_policy_ranking_verdict": "thesis_not_supported",
+                },
+            },
+        )
+        return {
+            "schema_version": "capture_upload_intake_receipt.v1",
+            "capture_session_id": payload["capture_session_id"],
+            "intake_id": "intake-real",
+            "request_digest": f"sha256:{'1' * 64}",
+            "envelope_digest": f"sha256:{'2' * 64}",
+            "capture_digest": f"sha256:{'3' * 64}",
+            "size_bytes": 12,
+            "admission_status": "accepted",
+            "state": "capture_accepted",
+            "claim_ceiling": {"physical_task_success": False},
+            "artifact_reference": {
+                "uri": "intakes/intake-real/capture",
+                "envelope_digest": f"sha256:{'2' * 64}",
+            },
+            "malware_content_validation": {
+                "status": "passed",
+                "scanner": "fixture",
+            },
+            "capture_qa_report": {"qa_report_digest": f"sha256:{'4' * 64}"},
+            "already_exists": False,
+            "proof_boundary": {
+                "capture_qa_completed": False,
+                "physical_task_success_established": False,
+                "comparative_policy_ranking_verdict": "thesis_not_supported",
+            },
+        }
+
+    monkeypatch.setattr(service, "process_capture_upload_submission", process)
+    monkeypatch.setattr(
+        service,
+        "build_capture_qa_webapp_publication",
+        lambda *, capture_session_id, report: {
+            "schema_version": "capture_qa_publication.v1",
+            "capture_session_id": capture_session_id,
+            "qa_report_digest": report["qa_report_digest"],
+        },
+    )
+    submission = {
+        "schema_version": "capture_upload_transfer_submission.v1",
+        "capture_session_id": "capture-upload-real-supervisor",
+        "transfer": {"url": "https://download.example.test/file/capture.mp4"},
+    }
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/capture-upload-intakes",
+        json=submission,
+        headers={"x-blueprint-intake-token": "token"},
+    )
+
+    assert response.status_code == 200
+    lifecycle = response.json()["task_evaluation_supervisor"]
+    assert lifecycle["status"] == "blocked"
+    assert lifecycle["agent_harness"] == "openai_agents_sdk"
+    assert lifecycle["autonomy_mode"] == "execute_non_spend"
+    assert lifecycle["capture_build_alone_can_start_run"] is True
+    assert lifecycle["all_six_capabilities_registered"] is True
+    assert lifecycle["proof_state_mutated_by_agent"] is False
+    output_dir = Path(lifecycle["output_dir"])
+    assert output_dir.is_relative_to(store_root / "intakes" / "intake-real" / "capture")
+    assert Path(lifecycle["event_ledger_path"]).is_file()
+    assert Path(lifecycle["terminal_report_path"]).is_file()
+    assert replay_supervisor_run(output_dir)["status"] == "replay_verified"
 
 
 def test_live_pipeline_capture_upload_intake_returns_typed_fail_closed_blockers(
