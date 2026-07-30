@@ -645,11 +645,7 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
         "approved_task_digest": approved["approved_task_digest"],
         "reconstruction_plan_id": "reconstruction-plan-1",
         "reconstruction_execution_result_digest": execution_digest,
-        "simready_decision": _simready(),
-        "robot_placement_result": _placement(),
-        "artifact_references": _refs(),
-        "supported_condition_ranges": {"lighting_lux": [300, 600]},
-        "previous_testbed": None,
+        "robot_binding": _robot_binding(),
         "decision_request_constraints": {
             "request_id": "request-service-1",
             "decision_id": "decision-service-1",
@@ -713,11 +709,52 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
     assert "artifact_path" not in json.dumps(result)
     assert result["proof_boundary"]["deployment_or_safety_approved"] is False
     assert result["webapp_sync"]["status"] == "skipped"
+    placement_evidence = next(
+        row
+        for row in result["testbed"]["evidence_inventory"]
+        if row["evidence_id"] == "robot_placement"
+    )
+    assert placement_evidence["status"] == "abstained"
+    assert "robot_placement_not_established" in result["testbed"][
+        "known_unsupported_conditions"
+    ]
+    version_root = (
+        work_dir / "maintained_site_task_testbeds" / "site-task-service" / "1"
+    )
+    assert (version_root / "evaluator.json").is_file()
+    assert (version_root / "reset.json").is_file()
     assert result["decision_evidence_request"]["testbed_digest"] == result["testbed_digest"]
     assert result["decision_evidence_request_artifact"]["request_digest"] == (
         result["decision_evidence_request"]["request_digest"]
     )
     assert "artifact_path" not in json.dumps(result["decision_evidence_request_artifact"])
+
+    caller_scientific_payload = {**payload, "simready_decision": _simready()}
+    caller_scientific_body = json.dumps(caller_scientific_payload, separators=(",", ":"))
+    caller_scientific_nonce = "testbed-compile-nonce-2"
+    caller_scientific_signature = hmac.new(
+        token.encode("utf-8"),
+        (
+            f"{timestamp}.blueprint-webapp.{caller_scientific_nonce}."
+            f"{caller_scientific_body}"
+        ).encode("utf-8"),
+        "sha256",
+    ).hexdigest()
+    rejected = TestClient(service.create_app()).post(
+        "/api/live-pipeline/testbeds/compile",
+        content=caller_scientific_body,
+        headers={
+            "content-type": "application/json",
+            "x-blueprint-pipeline-timestamp": timestamp,
+            "x-blueprint-pipeline-client-id": "blueprint-webapp",
+            "x-blueprint-pipeline-nonce": caller_scientific_nonce,
+            "x-blueprint-pipeline-signature": f"sha256={caller_scientific_signature}",
+        },
+    )
+    assert rejected.status_code == 422
+    assert "Pipeline-owned scientific inputs forbidden:simready_decision" in (
+        rejected.json()["detail"]
+    )
 
 
 def test_testbed_webapp_publication_is_exactly_bound_and_receipt_verified(

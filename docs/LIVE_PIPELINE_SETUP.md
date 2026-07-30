@@ -360,6 +360,15 @@ The service exposes:
 - `POST /api/live-pipeline/live-closure-evidence`
 - `GET /api/live-pipeline/intake-audit`
 
+`site_task_testbed_compilation_submission.v2` must name the exact accepted
+session/intake, approved-task digest, completed reconstruction plan/result, new
+testbed ID/version, an owner-attested robot binding, and optional provider-neutral
+Decision/Evidence Request constraints. It must not contain capture/QA/
+reconstruction artifacts, SimReady or placement conclusions, evaluator/reset
+references, supported-condition claims, or a predecessor manifest. Pipeline
+loads or derives those scientific artifacts itself and currently emits an
+explicit placement abstention until qualified candidate evidence exists.
+
 The capture-upload intake endpoint is a separate Task Evaluation Run product
 seam; it does not use the legacy robot-evaluation capture-handoff converter or a
 caller-selected local capture root. Configure it with:

@@ -111,7 +111,15 @@ The signed `/api/live-pipeline/testbeds/compile` version 2 service loads the
 authoritative approved task, capture intake, QA, reconstruction plan, and
 execution results from Pipeline state rather than trusting caller-supplied
 scientific inputs. It rejects the former client-owned reconstruction fields and
-requires the exact reconstruction plan ID and execution-result digest.
+requires the exact reconstruction plan ID and execution-result digest. The same
+boundary now covers SimReady decisions, robot-placement results, evaluator/reset
+artifacts, condition-range claims, and predecessor manifests. The caller may
+provide only an owner-attested robot configuration. Pipeline derives a
+per-object/per-claim SimReady decision, emits a placement abstention until a
+qualified method produces exact candidates, creates immutable evaluator/reset
+support artifacts, and limits the initial condition envelope to the accepted
+capture observation. Those support artifacts are written beside the immutable
+testbed manifest and cards.
 After compilation it can publish the full digest-bound testbed to WebApp through
 `PIPELINE_TESTBED_WEBAPP_URL`, authenticated with `PIPELINE_SYNC_TOKEN`. A 2xx
 response is insufficient: Pipeline accepts only a receipt matching the exact

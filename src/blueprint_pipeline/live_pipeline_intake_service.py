@@ -72,6 +72,7 @@ from .task_candidate_control_plane import (
 from .task_candidate_discovery import compile_approved_task_decision_request
 from .site_task_testbed_compiler import (
     SiteTaskTestbedCompilerError,
+    build_pipeline_owned_compilation_support,
     compile_site_task_testbed,
     write_testbed_version,
     write_testbed_decision_evidence_request,
@@ -2091,13 +2092,18 @@ def create_app() -> FastAPI:
                 "capture_qa_report",
                 "reconstruction_plan",
                 "reconstruction_results",
+                "simready_decision",
+                "robot_placement_result",
+                "artifact_references",
+                "supported_condition_ranges",
+                "previous_testbed",
             }.intersection(payload)
         )
         if client_owned_reconstruction_fields:
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "Pipeline-owned reconstruction inputs forbidden:"
+                    "Pipeline-owned scientific inputs forbidden:"
                     + ",".join(client_owned_reconstruction_fields)
                 ),
             )
@@ -2158,9 +2164,42 @@ def create_app() -> FastAPI:
                 raise SiteTaskTestbedCompilerError(
                     ["authoritative_reconstruction:source_mismatch"]
                 )
-            previous_value = payload.get("previous_testbed")
-            if previous_value is not None and not isinstance(previous_value, Mapping):
-                raise SiteTaskTestbedCompilerError(["previous_testbed:not_object"])
+            request_constraints = payload.get("decision_request_constraints")
+            if request_constraints is not None and not isinstance(
+                request_constraints, Mapping
+            ):
+                raise SiteTaskTestbedCompilerError(
+                    ["decision_request_constraints:not_object"]
+                )
+            constraints = dict(request_constraints or {})
+            requested_claim_types = sorted(
+                {
+                    _string(row.get("claim_type"))
+                    for row in constraints.get("claims", [])
+                    if isinstance(row, Mapping) and _string(row.get("claim_type"))
+                }
+            )
+            planned_claim_types = sorted(
+                {
+                    _string(row)
+                    for row in _mapping(
+                        reconstruction.get("reconstruction_plan")
+                    ).get("requested_claim_types", [])
+                    if _string(row)
+                }
+            )
+            if requested_claim_types and requested_claim_types != planned_claim_types:
+                raise SiteTaskTestbedCompilerError(
+                    ["decision_request_constraints:claim_types_reconstruction_plan_mismatch"]
+                )
+            support = build_pipeline_owned_compilation_support(
+                testbed_id=str(payload.get("testbed_id") or ""),
+                version=str(payload.get("version") or ""),
+                approved_task_definition=approved,
+                capture_qa_report=_mapping(reconstruction.get("capture_qa_report")),
+                reconstruction_plan=_mapping(reconstruction.get("reconstruction_plan")),
+                robot_binding=_mapping(payload.get("robot_binding")),
+            )
             testbed = compile_site_task_testbed(
                 testbed_id=str(payload.get("testbed_id") or ""),
                 version=str(payload.get("version") or ""),
@@ -2175,29 +2214,22 @@ def create_app() -> FastAPI:
                     for row in reconstruction.get("reconstruction_results", [])
                     if isinstance(row, Mapping)
                 ],
-                simready_decision=_mapping(payload.get("simready_decision")),
-                robot_placement_result=_mapping(payload.get("robot_placement_result")),
-                artifact_references=_mapping(payload.get("artifact_references")),
-                supported_condition_ranges=_mapping(
-                    payload.get("supported_condition_ranges")
-                ),
-                previous_testbed=(
-                    dict(previous_value) if isinstance(previous_value, Mapping) else None
-                ),
+                simready_decision=support["simready_decision"],
+                robot_placement_result=support["robot_placement_result"],
+                artifact_references=support["artifact_references"],
+                supported_condition_ranges=support["supported_condition_ranges"],
+                previous_testbed=None,
+                pipeline_owned_support_artifacts=support[
+                    "pipeline_owned_support_artifacts"
+                ],
             )
             compilation = write_testbed_version(
                 output_root=_maintained_testbed_root(manifest_path),
                 testbed=testbed,
             )
-            request_constraints = payload.get("decision_request_constraints")
             decision_evidence_request = None
             request_write = None
             if request_constraints is not None:
-                if not isinstance(request_constraints, Mapping):
-                    raise SiteTaskTestbedCompilerError(
-                        ["decision_request_constraints:not_object"]
-                    )
-                constraints = dict(request_constraints)
                 decision_evidence_request = compile_approved_task_decision_request(
                     approved,
                     testbed=testbed,
