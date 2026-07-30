@@ -305,9 +305,12 @@ def test_articulation_link_pose_uses_explicit_kinematic_update_and_xyzw_tensor_o
 def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
     calls: list[dict[str, object]] = []
 
-    class Camera:
+    class XformPrimView:
         def set_world_poses(self, **kwargs):
             calls.append(kwargs)
+
+    class Camera:
+        _xform_prim_view = XformPrimView()
 
     parent_initial = _world_pose_matrix_from_backend_pose(
         [0.4, -0.2, 1.1],
@@ -335,8 +338,8 @@ def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
     )
 
     assert len(calls) == 2
-    assert all(call["camera_axes"] == "usd" for call in calls)
     assert all(call["usd"] is False for call in calls)
+    assert all("camera_axes" not in call for call in calls)
     assert all(np.asarray(call["positions"]).shape == (1, 3) for call in calls)
     assert all(np.asarray(call["orientations"]).shape == (1, 4) for call in calls)
     assert np.linalg.norm(commanded[3, :3] - initial[3, :3]) > 0.001
@@ -350,12 +353,15 @@ def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
     assert roundtrip == pytest.approx(commanded)
 
 
-def test_world_camera_sync_rejects_stale_single_pose_usd_writer() -> None:
+def test_world_camera_sync_rejects_stale_camera_wrapper_pose_writers() -> None:
     class Camera:
         def set_world_pose(self, **_kwargs):
             raise AssertionError("single-pose USD writer must not be used")
 
-    with pytest.raises(ValueError, match="native_wrist_camera_live_world_poses_api_missing"):
+        def set_world_poses(self, **_kwargs):
+            raise AssertionError("camera wrapper writer must not be used")
+
+    with pytest.raises(ValueError, match="native_wrist_camera_fabric_world_poses_api_missing"):
         _synchronize_camera_to_rigid_link(
             camera=Camera(),
             parent_to_world=np.eye(4),
