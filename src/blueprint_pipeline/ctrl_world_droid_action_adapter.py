@@ -38,6 +38,131 @@ CTRL_WORLD_RELEASED_ACTION_ROWS = 15
 CTRL_WORLD_FUTURE_FRAME_INDICES = (0, 2, 4, 6, 8)
 CTRL_WORLD_HISTORY_ROWS = 6
 RELIABILITY_ROT6D_IDENTITY = np.asarray([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+CTRL_WORLD_EXECUTED_PREFIX_ROWS = 8
+CTRL_WORLD_CAUSAL_SHUFFLE_SEED = 20260730
+CTRL_WORLD_CAUSAL_SHUFFLE_ORDER = (3, 5, 6, 0, 1, 4, 7, 2)
+CTRL_WORLD_CAUSAL_CONDITIONS = (
+    "own_action",
+    "no_motion",
+    "shuffled",
+    "reversed",
+    "shifted",
+    "policy_swapped",
+)
+
+
+def _native_velocity_action(value: Any, *, reason: str) -> np.ndarray:
+    action = np.asarray(value, dtype=np.float64)
+    if action.ndim != 2 or action.shape[0] not in {10, 15} or action.shape[1] != 8:
+        raise ValueError(reason)
+    if not np.isfinite(action).all():
+        raise ValueError(f"{reason}_nonfinite")
+    return action.copy()
+
+
+def _frozen_shuffle_order(seed: int) -> list[int]:
+    if seed != CTRL_WORLD_CAUSAL_SHUFFLE_SEED or isinstance(seed, bool):
+        raise ValueError("ctrl_world_causal_shuffle_seed_invalid")
+    return list(CTRL_WORLD_CAUSAL_SHUFFLE_ORDER)
+
+
+def build_ctrl_world_current_reference_action_controls(
+    *,
+    own_policy_action: Any,
+    own_source_trace_id: str,
+    policy_swapped_action: Any,
+    policy_swapped_source_trace_id: str,
+    current_gripper_hold: float,
+    shuffle_seed: int,
+    temporal_shift_steps: int = 1,
+) -> dict[str, Any]:
+    """Build the frozen six-condition matrix in the released native action space."""
+
+    own_trace = str(own_source_trace_id).strip()
+    swapped_trace = str(policy_swapped_source_trace_id).strip()
+    if not own_trace or not swapped_trace:
+        raise ValueError("ctrl_world_causal_real_trace_identity_missing")
+    if own_trace == swapped_trace:
+        raise ValueError("ctrl_world_causal_policy_swap_trace_not_distinct")
+    own = _native_velocity_action(own_policy_action, reason="ctrl_world_causal_own_action_invalid")
+    swapped = _native_velocity_action(
+        policy_swapped_action, reason="ctrl_world_causal_policy_swapped_action_invalid"
+    )
+    hold = float(current_gripper_hold)
+    if not math.isfinite(hold) or not 0.0 <= hold <= 1.0:
+        raise ValueError("ctrl_world_causal_gripper_hold_invalid")
+    if (
+        isinstance(temporal_shift_steps, bool)
+        or not isinstance(temporal_shift_steps, int)
+        or not 0 < temporal_shift_steps < CTRL_WORLD_EXECUTED_PREFIX_ROWS
+    ):
+        raise ValueError("ctrl_world_causal_temporal_shift_invalid")
+
+    order = _frozen_shuffle_order(shuffle_seed)
+    no_motion = np.zeros_like(own)
+    no_motion[:, 7] = hold
+    shuffled = own.copy()
+    shuffled[:CTRL_WORLD_EXECUTED_PREFIX_ROWS] = own[np.asarray(order)]
+    reversed_action = own.copy()
+    reversed_action[:CTRL_WORLD_EXECUTED_PREFIX_ROWS] = own[:CTRL_WORLD_EXECUTED_PREFIX_ROWS][::-1]
+    shifted = own.copy()
+    shifted[:CTRL_WORLD_EXECUTED_PREFIX_ROWS] = np.roll(
+        own[:CTRL_WORLD_EXECUTED_PREFIX_ROWS],
+        -temporal_shift_steps,
+        axis=0,
+    )
+    controls = {
+        "own_action": own,
+        "no_motion": no_motion,
+        "shuffled": shuffled,
+        "reversed": reversed_action,
+        "shifted": shifted,
+        "policy_swapped": swapped,
+    }
+    prefix_hashes = {
+        condition: canonical_sha256(action[:CTRL_WORLD_EXECUTED_PREFIX_ROWS].tolist())
+        for condition, action in controls.items()
+    }
+    if len(set(prefix_hashes.values())) != len(prefix_hashes):
+        collisions = sorted(
+            condition
+            for condition, digest in prefix_hashes.items()
+            if list(prefix_hashes.values()).count(digest) > 1
+        )
+        raise ValueError(
+            "ctrl_world_causal_executed_prefixes_not_pairwise_distinct:" + ",".join(collisions)
+        )
+    complete_hashes = {
+        condition: canonical_sha256(action.tolist()) for condition, action in controls.items()
+    }
+    result: dict[str, Any] = {
+        "schema_version": "ctrl_world_current_reference_action_controls.v1",
+        "conditions": controls,
+        "condition_order": list(CTRL_WORLD_CAUSAL_CONDITIONS),
+        "complete_native_action_sha256_by_condition": complete_hashes,
+        "executed_prefix_sha256_by_condition": prefix_hashes,
+        "native_action_shape_by_condition": {
+            condition: list(action.shape) for condition, action in controls.items()
+        },
+        "executed_prefix_rows": CTRL_WORLD_EXECUTED_PREFIX_ROWS,
+        "own_source_trace_id": own_trace,
+        "policy_swapped_source_trace_id": swapped_trace,
+        "policy_swap_is_distinct_real_trace": True,
+        "synthetic_policy_swap_forbidden": True,
+        "no_motion_joint_velocity_zero": True,
+        "no_motion_gripper_hold": hold,
+        "shuffle_seed": shuffle_seed,
+        "shuffle_order_first_eight": order,
+        "temporal_shift_steps_first_eight": temporal_shift_steps,
+        "tail_rows_preserved_for_own_derived_controls": True,
+        "physical_outcome_accessed": False,
+    }
+    identity_material = {
+        **result,
+        "conditions": {condition: action.tolist() for condition, action in controls.items()},
+    }
+    result["controls_sha256"] = canonical_sha256(identity_material)
+    return result
 
 
 def validate_ctrl_world_runtime_assets(
@@ -486,6 +611,10 @@ class FrankaCtrlWorldJointPositionAdapter:
 
 
 __all__ = [
+    "CTRL_WORLD_CAUSAL_CONDITIONS",
+    "CTRL_WORLD_CAUSAL_SHUFFLE_ORDER",
+    "CTRL_WORLD_CAUSAL_SHUFFLE_SEED",
+    "CTRL_WORLD_EXECUTED_PREFIX_ROWS",
     "CTRL_WORLD_FUTURE_FRAME_INDICES",
     "CTRL_WORLD_HISTORY_ROWS",
     "CTRL_WORLD_RELEASED_ACTION_ADAPTER_SOURCE_SHA256",
@@ -497,6 +626,7 @@ __all__ = [
     "OFFICIAL_LOCAL_ACTION_ADAPTER_SHA256",
     "SCHEMA_VERSION",
     "cartesian_pose_rows_to_reliability_actions_10d",
+    "build_ctrl_world_current_reference_action_controls",
     "load_ctrl_world_released_joint_velocity_adapter",
     "validate_ctrl_world_runtime_assets",
 ]

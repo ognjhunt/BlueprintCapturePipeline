@@ -126,6 +126,9 @@ used as blind confirmation.
 - `protocol_amendment_7_ctrl_world_reliability_measurement_v1.md` —
   prospective absolute-pose-to-incremental measurement correction and exact
   per-view PNG reliability gate, frozen before any WAM output;
+- `protocol_amendment_8_ctrl_world_causal_control_construction_v1.md` —
+  prospective six-condition native action construction, distinct real-policy
+  swap, and pairwise executed-prefix collision gate;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 

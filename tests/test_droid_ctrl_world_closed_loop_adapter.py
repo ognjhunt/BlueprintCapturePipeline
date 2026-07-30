@@ -10,8 +10,12 @@ import pytest
 from PIL import Image
 
 from blueprint_pipeline.ctrl_world_droid_action_adapter import (
+    CTRL_WORLD_CAUSAL_CONDITIONS,
+    CTRL_WORLD_CAUSAL_SHUFFLE_ORDER,
+    CTRL_WORLD_CAUSAL_SHUFFLE_SEED,
     CTRL_WORLD_FUTURE_FRAME_INDICES,
     CtrlWorldReleasedJointVelocityAdapter,
+    build_ctrl_world_current_reference_action_controls,
     cartesian_pose_rows_to_reliability_actions_10d,
     load_ctrl_world_released_joint_velocity_adapter,
 )
@@ -119,6 +123,62 @@ def test_reliability_adapter_uses_incremental_translation_not_absolute_position(
     assert actions[0, 0] == 0.0
     assert np.allclose(actions[1:, 0], 0.02)
     assert np.allclose(actions[:, 1:3], 0.0)
+
+
+def test_causal_controls_transform_only_real_executed_prefixes() -> None:
+    own = np.zeros((15, 8), dtype=np.float64)
+    own[:, :7] = np.arange(15)[:, None] / 100.0
+    own[:, 7] = np.linspace(0.1, 0.7, 15)
+    swapped = np.zeros((10, 8), dtype=np.float64)
+    swapped[:, :7] = 1.0 + np.arange(10)[:, None] / 100.0
+    swapped[:, 7] = np.linspace(0.7, 0.2, 10)
+
+    result = build_ctrl_world_current_reference_action_controls(
+        own_policy_action=own,
+        own_source_trace_id="pi05-request-hash",
+        policy_swapped_action=swapped,
+        policy_swapped_source_trace_id="pi0-fast-request-hash",
+        current_gripper_hold=0.25,
+        shuffle_seed=CTRL_WORLD_CAUSAL_SHUFFLE_SEED,
+        temporal_shift_steps=1,
+    )
+
+    assert tuple(result["condition_order"]) == CTRL_WORLD_CAUSAL_CONDITIONS
+    assert len(set(result["executed_prefix_sha256_by_condition"].values())) == 6
+    assert result["native_action_shape_by_condition"]["policy_swapped"] == [10, 8]
+    assert result["shuffle_order_first_eight"] == list(CTRL_WORLD_CAUSAL_SHUFFLE_ORDER)
+    assert np.array_equal(result["conditions"]["shuffled"][8:], own[8:])
+    assert np.array_equal(result["conditions"]["reversed"][8:], own[8:])
+    assert np.array_equal(result["conditions"]["shifted"][8:], own[8:])
+    assert np.allclose(result["conditions"]["no_motion"][:, :7], 0.0)
+    assert np.allclose(result["conditions"]["no_motion"][:, 7], 0.25)
+    assert result["policy_swap_is_distinct_real_trace"] is True
+    assert len(result["controls_sha256"]) == 64
+
+
+def test_causal_controls_fail_on_colliding_or_synthetic_policy_swap() -> None:
+    own = np.zeros((10, 8), dtype=np.float64)
+    own[:, 7] = 0.3
+    swapped = np.ones((10, 8), dtype=np.float64)
+
+    with pytest.raises(ValueError, match="trace_not_distinct"):
+        build_ctrl_world_current_reference_action_controls(
+            own_policy_action=own,
+            own_source_trace_id="same",
+            policy_swapped_action=swapped,
+            policy_swapped_source_trace_id="same",
+            current_gripper_hold=0.3,
+            shuffle_seed=CTRL_WORLD_CAUSAL_SHUFFLE_SEED,
+        )
+    with pytest.raises(ValueError, match="prefixes_not_pairwise_distinct"):
+        build_ctrl_world_current_reference_action_controls(
+            own_policy_action=own,
+            own_source_trace_id="own",
+            policy_swapped_action=swapped,
+            policy_swapped_source_trace_id="other",
+            current_gripper_hold=0.3,
+            shuffle_seed=CTRL_WORLD_CAUSAL_SHUFFLE_SEED,
+        )
 
 
 def test_released_velocity_adapter_repeats_last_row_for_ten_row_policies() -> None:
