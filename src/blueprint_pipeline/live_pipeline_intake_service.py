@@ -35,6 +35,10 @@ from .live_pipeline_control_plane import (
 )
 from .live_pipeline_input_intake import build_live_pipeline_input_intake
 from .core.security_controls import json_shape_within_limits, strict_identifier
+from .task_candidate_control_plane import (
+    TaskCandidateControlPlaneError,
+    process_task_candidate_decision_submission,
+)
 
 
 DEFAULT_MANIFEST_PATH = (
@@ -99,6 +103,10 @@ def _work_dir(manifest_path: Path) -> Path:
     if configured:
         return Path(configured).expanduser()
     return manifest_path.parent / "incoming_webapp_job_requests"
+
+
+def _task_candidate_control_plane_root(manifest_path: Path) -> Path:
+    return _work_dir(manifest_path).expanduser().resolve() / "task_candidate_control_plane"
 
 
 def _safe_stem(value: str) -> str:
@@ -1648,6 +1656,31 @@ def create_app() -> FastAPI:
         if intake.get("input_blockers"):
             return JSONResponse(status_code=202, content=response)
         return response
+
+    @app.post(
+        "/api/live-pipeline/task-decisions",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def intake_task_decision(request: Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        manifest_path = _manifest_path().resolve()
+        if not manifest_path.is_file():
+            raise HTTPException(
+                status_code=503,
+                detail=f"control-plane manifest missing: {manifest_path}",
+            )
+        try:
+            return process_task_candidate_decision_submission(
+                state_root=_task_candidate_control_plane_root(manifest_path),
+                submission=payload,
+            )
+        except TaskCandidateControlPlaneError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
 
     @app.post("/api/live-pipeline/capture-handoffs", dependencies=[Depends(_require_admission)])
     async def intake_capture_handoff(request: Request) -> Dict[str, Any]:

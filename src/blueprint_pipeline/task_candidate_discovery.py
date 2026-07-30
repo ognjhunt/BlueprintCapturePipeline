@@ -408,6 +408,16 @@ def _validate_discovery(discovery: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
+def validate_task_candidate_discovery(discovery: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a detached, integrity-checked discovery artifact.
+
+    Service and sync boundaries use this public wrapper instead of depending on
+    the module's private validation implementation.
+    """
+
+    return _validate_discovery(discovery)
+
+
 def _approved_task_body(candidate: Mapping[str, Any], edited_task: Mapping[str, Any] | None) -> dict[str, Any]:
     if edited_task is None:
         return {
