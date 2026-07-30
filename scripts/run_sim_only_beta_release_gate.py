@@ -24,6 +24,7 @@ from blueprint_pipeline.common import ensure_dir, read_json_any, utc_now_iso, wr
 
 
 SCHEMA_VERSION = "blueprint.sim_only_beta_release_gate_report.v1"
+DEPLOYMENT_PROOF_SCHEMA_VERSION = "blueprint.sim_only_beta_deployment_parity_proof.v2"
 READY_FORWARDING_STATUSES = {
     "ready_for_required_forwarding_with_probe",
 }
@@ -101,7 +102,9 @@ def _same_capture_root_or_identity(left: str, right: str) -> bool:
     return bool(left_identity and right_identity and left_identity == right_identity)
 
 
-def _gate(gate_id: str, *, passed: bool, blockers: list[str], evidence: dict[str, Any]) -> dict[str, Any]:
+def _gate(
+    gate_id: str, *, passed: bool, blockers: list[str], evidence: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "id": gate_id,
         "status": "passed" if passed else "blocked",
@@ -182,7 +185,9 @@ def _sim_only_beta_requirement_summary(
     return satisfied, blocked_ids, blockers_by_requirement, details_present
 
 
-def _local_sim_only_gate(local_gate: Mapping[str, Any], load_error: str | None, path: Path) -> dict[str, Any]:
+def _local_sim_only_gate(
+    local_gate: Mapping[str, Any], load_error: str | None, path: Path
+) -> dict[str, Any]:
     blockers: list[str] = []
     if load_error:
         blockers.append(f"local_sim_only_gate_report_{load_error}")
@@ -219,9 +224,7 @@ def _local_sim_only_gate(local_gate: Mapping[str, Any], load_error: str | None, 
         "metric_coverage_complete": batch_closure.get("metric_coverage_complete"),
         "machine_trace_package_complete": batch_closure.get("machine_trace_package_complete"),
         "failure_label_coverage_complete": batch_closure.get("failure_label_coverage_complete"),
-        "visual_review_coverage_complete": batch_closure.get(
-            "visual_review_coverage_complete"
-        ),
+        "visual_review_coverage_complete": batch_closure.get("visual_review_coverage_complete"),
         "visual_recording_coverage_complete": visual_coverage.get(
             "all_required_runs_have_visual_recording"
         ),
@@ -255,9 +258,7 @@ def _local_sim_only_gate(local_gate: Mapping[str, Any], load_error: str | None, 
             },
             "scenario_eval_matrix": scenario_eval_matrix,
             "visual_review_accepted_count": visual_review.get("accepted_review_count"),
-            "sim_only_beta_core_complete": robot_team_closure.get(
-                "sim_only_beta_core_complete"
-            ),
+            "sim_only_beta_core_complete": robot_team_closure.get("sim_only_beta_core_complete"),
             "sim_only_beta_blocked_requirement_ids": sim_only_blocked_requirement_ids,
             "sim_only_beta_requirement_blockers": sim_only_requirement_blockers,
             "proof_boundary": proof_boundary,
@@ -287,9 +288,7 @@ def _forwarding_gate(
         if _string(warning)
     ]
     blocking_warnings = [
-        warning
-        for warning in warnings
-        if warning not in NON_BLOCKING_FORWARDING_WARNINGS
+        warning for warning in warnings if warning not in NON_BLOCKING_FORWARDING_WARNINGS
     ]
     if blocking_warnings:
         blockers.append("forwarding_preflight_has_warnings")
@@ -334,9 +333,7 @@ def _forwarding_gate(
             "warning_count": len(warnings),
             "blocking_warnings": blocking_warnings,
             "non_blocking_warnings": [
-                warning
-                for warning in warnings
-                if warning in NON_BLOCKING_FORWARDING_WARNINGS
+                warning for warning in warnings if warning in NON_BLOCKING_FORWARDING_WARNINGS
             ],
             "probe": {
                 "status": probe.get("status"),
@@ -413,7 +410,9 @@ def _route_proof_gate(
     )
 
 
-def _deployment_gate(deployment_proof: Mapping[str, Any], load_error: str | None, path: Path | None) -> dict[str, Any]:
+def _deployment_gate(
+    deployment_proof: Mapping[str, Any], load_error: str | None, path: Path | None
+) -> dict[str, Any]:
     blockers: list[str] = []
     if path is None:
         blockers.append("production_deployment_proof_path_missing")
@@ -423,10 +422,17 @@ def _deployment_gate(deployment_proof: Mapping[str, Any], load_error: str | None
     status = _string(deployment_proof.get("status")).lower()
     if status not in READY_DEPLOYMENT_STATUSES:
         blockers.append("production_deployment_status_not_ready")
+    if deployment_proof.get("schema_version") != DEPLOYMENT_PROOF_SCHEMA_VERSION:
+        blockers.append("production_deployment_proof_schema_not_supported")
+    if deployment_proof.get("deployment_environment") != "production":
+        blockers.append("production_deployment_environment_not_production")
     for field in (
+        "deployment_proven",
         "production_deployment_proven",
         "webapp_health_ready",
         "pipeline_intake_health_ready",
+        "webapp_deployment_identity_ready",
+        "pipeline_deployment_identity_ready",
         "git_parity_proven",
     ):
         if deployment_proof.get(field) is not True:
@@ -438,11 +444,20 @@ def _deployment_gate(deployment_proof: Mapping[str, Any], load_error: str | None
         blockers=blockers,
         evidence={
             "path": str(path) if path else None,
+            "schema_version": deployment_proof.get("schema_version"),
             "status": deployment_proof.get("status"),
+            "deployment_environment": deployment_proof.get("deployment_environment"),
+            "deployment_proven": deployment_proof.get("deployment_proven"),
             "webapp_url": deployment_proof.get("webapp_url"),
             "pipeline_intake_url": deployment_proof.get("pipeline_intake_url"),
             "webapp_health_ready": deployment_proof.get("webapp_health_ready"),
             "pipeline_intake_health_ready": deployment_proof.get("pipeline_intake_health_ready"),
+            "webapp_deployment_identity_ready": deployment_proof.get(
+                "webapp_deployment_identity_ready"
+            ),
+            "pipeline_deployment_identity_ready": deployment_proof.get(
+                "pipeline_deployment_identity_ready"
+            ),
             "git_parity_proven": deployment_proof.get("git_parity_proven"),
         },
     )
@@ -541,7 +556,9 @@ def build_release_gate_report(
             forwarding_preflight_report_path,
             require_non_local_endpoint=require_non_local_forwarding_endpoint,
         ),
-        _route_proof_gate(route_proof, route_error, production_route_forwarding_proof_path, capture_root),
+        _route_proof_gate(
+            route_proof, route_error, production_route_forwarding_proof_path, capture_root
+        ),
         _deployment_gate(deployment_proof, deployment_error, production_deployment_proof_path),
         _buyer_claim_ceiling_gate(
             local_gate=local_gate,
@@ -549,11 +566,7 @@ def build_release_gate_report(
             deployment_proof=deployment_proof,
         ),
     ]
-    blockers = [
-        f"{gate['id']}:{blocker}"
-        for gate in gates
-        for blocker in gate.get("blockers", [])
-    ]
+    blockers = [f"{gate['id']}:{blocker}" for gate in gates for blocker in gate.get("blockers", [])]
     local_gate_evidence = _mapping(gates[0].get("evidence"))
     local_gate_proof_boundary = _mapping(local_gate_evidence.get("proof_boundary"))
     local_scenario_eval_matrix = _mapping(local_gate_evidence.get("scenario_eval_matrix"))
@@ -572,7 +585,9 @@ def build_release_gate_report(
         "scenario_eval_run_count": local_scenario_eval_matrix.get("scenario_eval_run_count"),
         "visual_review_accepted_count": local_gate_evidence.get("visual_review_accepted_count"),
         "webapp_health_ready": deployment_gate_evidence.get("webapp_health_ready"),
-        "pipeline_intake_health_ready": deployment_gate_evidence.get("pipeline_intake_health_ready"),
+        "pipeline_intake_health_ready": deployment_gate_evidence.get(
+            "pipeline_intake_health_ready"
+        ),
         "git_parity_proven": deployment_gate_evidence.get("git_parity_proven"),
         "simulator_execution_proven": simulator_execution_proven,
         "public_claim_upgrade_allowed": False,
@@ -640,9 +655,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else None
         ),
         production_deployment_proof_path=(
-            args.production_deployment_proof.resolve()
-            if args.production_deployment_proof
-            else None
+            args.production_deployment_proof.resolve() if args.production_deployment_proof else None
         ),
         require_non_local_forwarding_endpoint=not args.allow_local_forwarding_endpoint,
     )
