@@ -23,11 +23,14 @@ from .common import utc_now_iso
 
 SCHEMA_VERSION = "production_gpu_campaign_budget.v1"
 AUTHORIZED_SPEND_CAP_USD = 20.0
-AUTHORIZED_GPU_WALL_CAP_SECONDS = 36_000
-# The campaign remains bounded by the unchanged USD 20 total cap.  The higher
-# wall ceiling can contain the reconciled historical usage plus one explicitly
-# authorized 18,600-second persistent non-H100 reservation; it is not a second
-# spend allowance and ordinary canaries retain their lower plan ceilings.
+AUTHORIZED_GPU_WALL_CAP_SECONDS = 72_000
+# The campaign remains bounded independently by the unchanged USD 20 internal
+# total cap and every lower per-stage TTL/spend cap.  The wall ceiling is an
+# accounting envelope for conservatively charged reservations, including
+# no-allocation attempts whose watchdog must retain worst-case budget until
+# provider and control-plane zero are proven.  It is not a second spend
+# allowance; ordinary canaries retain their lower plan ceilings and one-resource
+# concurrency.
 MAX_HOURLY_RATE_USD = 3.50
 
 
@@ -79,9 +82,7 @@ class ProductionGpuCampaignBudget:
         self.initial_used_gpu_seconds = _seconds(
             initial_used_gpu_seconds, field="initial_used_gpu_seconds"
         )
-        self.total_spend_cap_usd = _number(
-            total_spend_cap_usd, field="total_spend_cap_usd"
-        )
+        self.total_spend_cap_usd = _number(total_spend_cap_usd, field="total_spend_cap_usd")
         self.combined_gpu_wall_cap_seconds = _seconds(
             combined_gpu_wall_cap_seconds, field="combined_gpu_wall_cap_seconds"
         )

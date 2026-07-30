@@ -26,6 +26,11 @@ The subsequent global-zero cleanup exposed a no-instance-ID watchdog settlement
 gap. Protocol Amendment 4 adds a double prefix-plus-global-zero early-close rule
 without inventing an ID or mutating the provider. The already running older
 watchdog remains authoritative until its own hard-deadline settlement.
+The older watchdog's deadline is 1.291 milliseconds beyond its exact 14,400-
+second reservation and rounds elapsed seconds upward. Protocol Amendment 5
+therefore freezes a fail-closed terminal reconciliation rule and expands only
+the internal wall-time accounting envelope to 72,000 seconds. Monetary limits,
+per-stage TTLs, and one-GPU concurrency are unchanged.
 
 The scientific admission state is:
 
@@ -112,6 +117,9 @@ used as blind confirmation.
   symlink audit and fail-closed, two-path skip rule without link extraction;
 - `protocol_amendment_4_vast_no_id_watchdog_settlement_v1.md` — no-ID repeated
   zero proof, mutation-free early settlement, and old-watchdog ownership rule;
+- `protocol_amendment_5_conservative_reservation_wall_envelope_v1.md` —
+  prospective conservative settlement and wall-accounting envelope without any
+  monetary or scientific threshold change;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 

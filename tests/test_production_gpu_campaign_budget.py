@@ -67,20 +67,17 @@ def test_duplicate_reservation_is_idempotent_but_conflict_is_rejected(tmp_path) 
     first = ledger.reserve(
         reservation_id="qualification-one", gpu_seconds=100, max_hourly_rate_usd=1.0
     )
-    assert ledger.reserve(
-        reservation_id="qualification-one", gpu_seconds=100, max_hourly_rate_usd=1.0
-    ) == first
+    assert (
+        ledger.reserve(reservation_id="qualification-one", gpu_seconds=100, max_hourly_rate_usd=1.0)
+        == first
+    )
     with pytest.raises(ValueError, match="reservation_id_conflict"):
-        ledger.reserve(
-            reservation_id="qualification-one", gpu_seconds=101, max_hourly_rate_usd=1.0
-        )
+        ledger.reserve(reservation_id="qualification-one", gpu_seconds=101, max_hourly_rate_usd=1.0)
 
 
 def test_settled_reservation_id_cannot_be_reused(tmp_path) -> None:
     ledger = _ledger(tmp_path)
-    ledger.reserve(
-        reservation_id="qualification-one", gpu_seconds=100, max_hourly_rate_usd=1.0
-    )
+    ledger.reserve(reservation_id="qualification-one", gpu_seconds=100, max_hourly_rate_usd=1.0)
     ledger.settle(
         reservation_id="qualification-one",
         charged_gpu_seconds=0,
@@ -171,7 +168,7 @@ def test_ordinary_21000_second_plan_and_persistent_authority_are_bounded(
             tmp_path / "over-authorized-budget.json",
             initial_spent_usd=0,
             initial_used_gpu_seconds=0,
-            combined_gpu_wall_cap_seconds=36_001,
+            combined_gpu_wall_cap_seconds=72_001,
         )
 
     persistent = ProductionGpuCampaignBudget(
@@ -187,3 +184,25 @@ def test_ordinary_21000_second_plan_and_persistent_authority_are_bounded(
     )
     assert reservation["reserved_gpu_seconds"] == 18_600
     assert persistent.snapshot()["remaining_gpu_seconds"] == 1_776
+
+
+def test_conservative_no_allocation_charge_still_allows_one_finite_retry(
+    tmp_path,
+) -> None:
+    ledger = ProductionGpuCampaignBudget(
+        tmp_path / "real-policy-successor-budget.json",
+        initial_spent_usd=6.986999,
+        initial_used_gpu_seconds=22_845,
+        combined_gpu_wall_cap_seconds=72_000,
+    )
+    retry = ledger.reserve(
+        reservation_id="current-reference-policy-identity-retry",
+        gpu_seconds=14_400,
+        max_hourly_rate_usd=0.75,
+    )
+    assert retry["reserved_usd"] == 3.0
+    snapshot = ledger.snapshot()
+    assert snapshot["committed_gpu_seconds"] == 37_245
+    assert snapshot["remaining_gpu_seconds"] == 34_755
+    assert snapshot["committed_usd"] == 9.986999
+    assert snapshot["remaining_usd"] == 10.013001
