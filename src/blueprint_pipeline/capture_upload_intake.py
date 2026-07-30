@@ -61,6 +61,17 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _opaque_identifier(value: Any, *, field: str, max_length: int = 256) -> str:
+    text = value.strip() if isinstance(value, str) else ""
+    if (
+        not text
+        or len(text) > max_length
+        or any(ord(character) < 32 or ord(character) == 127 for character in text)
+    ):
+        raise CaptureUploadTransferError([f"{field}_invalid"])
+    return text
+
+
 def _canonical(value: Mapping[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
@@ -190,21 +201,38 @@ def _verified_submission(value: Mapping[str, Any]) -> dict[str, Any]:
     blockers: list[str] = []
     if submission.get("schema_version") != CAPTURE_UPLOAD_TRANSFER_SCHEMA_VERSION:
         blockers.append("capture_upload_submission_schema_invalid")
-    for field in ("capture_session_id", "customer_id", "organization_id"):
+    try:
+        submission["capture_session_id"] = strict_identifier(
+            submission.get("capture_session_id"),
+            field="capture_session_id",
+            max_length=128,
+        )
+    except ValueError:
+        blockers.append("capture_session_id_invalid")
+    for field in ("customer_id", "organization_id"):
         try:
-            submission[field] = strict_identifier(
-                submission.get(field), field=field, max_length=192
+            submission[field] = _opaque_identifier(
+                submission.get(field), field=field
             )
-        except ValueError:
+        except CaptureUploadTransferError:
             blockers.append(f"{field}_invalid")
     request = _mapping(submission.get("request"))
     if request.get("schema_version") != "capture_upload_session_request.v1":
         blockers.append("capture_upload_request_schema_invalid")
-    for field in ("intake_id", "idempotency_key", "scene_id"):
+    for field in ("intake_id", "scene_id"):
         try:
-            request[field] = strict_identifier(request.get(field), field=field, max_length=256)
+            request[field] = strict_identifier(
+                request.get(field), field=field, max_length=128
+            )
         except ValueError:
             blockers.append(f"capture_upload_request_{field}_invalid")
+    try:
+        request["idempotency_key"] = _opaque_identifier(
+            request.get("idempotency_key"),
+            field="capture_upload_request_idempotency_key",
+        )
+    except CaptureUploadTransferError:
+        blockers.append("capture_upload_request_idempotency_key_invalid")
     profile = _text(request.get("capture_authority_profile"))
     if profile not in _WEB_PROFILES or request.get("source_type") != profile:
         blockers.append("capture_upload_authority_profile_invalid")

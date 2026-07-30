@@ -1,11 +1,11 @@
-"""Authenticated HTTP intake for live WebApp robot-eval job requests.
+"""Authenticated HTTP facade for Blueprint WebApp-to-Pipeline control traffic.
 
 The service is a thin wrapper around ``build_live_pipeline_input_intake``. It
 accepts a WebApp ``robot_eval_job_request.v1`` payload or queue envelope, accepts
 job-specific policy packages, real robot POV evidence, deployment outcomes, and live closure evidence,
-stages validated files into the configured control-plane paths, and optionally
-runs a configured trigger command. It does not execute simulator/provider work
-or promote proof claims.
+stages validated files into the configured control-plane paths, accepts
+short-lived grants for immutable capture intake, and optionally runs a configured
+trigger command. It does not execute paid providers or promote proof claims.
 """
 
 from __future__ import annotations

@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
+from .core.security_controls import strict_identifier
+
 
 CAPTURE_INTAKE_SCHEMA_VERSION = "capture_intake_envelope.v1"
 CAPTURE_ADMISSION_SCHEMA_VERSION = "capture_intake_admission.v1"
@@ -146,6 +148,12 @@ def _validate_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
     ):
         if not str(envelope.get(key) or "").strip():
             errors.append(f"{key}:missing")
+    try:
+        envelope["intake_id"] = strict_identifier(
+            envelope.get("intake_id"), field="intake_id", max_length=128
+        )
+    except ValueError:
+        errors.append("intake_id:invalid_path_identifier")
     profile = str(envelope.get("capture_authority_profile") or "")
     if profile not in CAPTURE_AUTHORITY_PROFILES:
         errors.append("capture_authority_profile:unsupported")

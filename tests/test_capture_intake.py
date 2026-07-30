@@ -113,6 +113,23 @@ def test_monocular_materialization_is_content_addressed_idempotent_and_reduced_a
     )["raw_inputs_mutated"] is False
 
 
+def test_intake_identifier_cannot_escape_the_content_addressed_store(tmp_path: Path) -> None:
+    payload = b"video"
+    upload = tmp_path / "upload"
+    upload.mkdir()
+    (upload / "capture.mp4").write_bytes(payload)
+    envelope = _envelope(payload)
+    envelope["intake_id"] = "../escape"
+
+    with pytest.raises(CaptureIntakeError, match="intake_id:invalid_path_identifier"):
+        materialize_capture_intake(
+            envelope,
+            upload_root=upload,
+            store_root=tmp_path / "store",
+        )
+    assert not (tmp_path / "escape").exists()
+
+
 def test_capture_intake_schema_accepts_the_runtime_contract() -> None:
     schema_path = Path(__file__).parents[1] / "docs/schemas/capture_intake_envelope.schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
