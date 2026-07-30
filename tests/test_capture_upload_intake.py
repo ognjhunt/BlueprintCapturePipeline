@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -87,6 +88,36 @@ def _scanner(path: Path) -> dict:
     return {"status": "passed", "scanner": "fixture-clam", "definition_version": "1"}
 
 
+def _qa_builder(envelope: dict, *, upload_root: Path) -> dict:
+    assert upload_root.joinpath("capture.mp4").is_file()
+    report = {
+        "schema_version": "capture_qa_report.v1",
+        "intake_id": envelope["intake_id"],
+        "envelope_digest": envelope["envelope_digest"],
+        "capture_authority_profile": envelope["capture_authority_profile"],
+        "status": "accepted",
+        "state": "capture_accepted",
+        "checks": [],
+        "recapture_plan": [],
+        "missing_evidence": ["metric_scale"],
+        "required_analysis": [],
+        "next_cheapest_experiment": None,
+        "quality_observations_digest": None,
+        "quality_analysis_errors": [],
+        "claim_ceiling": {
+            "physical_task_success": False,
+            "deployment_readiness": False,
+            "safety_certification": False,
+        },
+        "prohibited_claims": ["physical_task_success"],
+        "comparative_policy_ranking_verdict": "thesis_not_supported",
+    }
+    report["qa_report_digest"] = "sha256:" + hashlib.sha256(
+        json.dumps(report, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return report
+
+
 def test_streams_scans_hashes_and_materializes_without_persisting_transfer_grant(
     tmp_path: Path,
 ) -> None:
@@ -98,6 +129,7 @@ def test_streams_scans_hashes_and_materializes_without_persisting_transfer_grant
         allowed_hosts=["download.example.test"],
         transfer_opener=_opener(payload, seen),
         malware_scanner=_scanner,
+        qa_builder=_qa_builder,
     )
 
     assert first["admission_status"] == "accepted"
@@ -106,7 +138,7 @@ def test_streams_scans_hashes_and_materializes_without_persisting_transfer_grant
     assert first["proof_boundary"] == {
         "server_sha256_verified": True,
         "raw_input_content_addressed": True,
-        "capture_qa_completed": False,
+        "capture_qa_completed": True,
         "task_success_established": False,
         "physical_task_success_established": False,
         "deployment_or_safety_approved": False,
@@ -127,6 +159,7 @@ def test_streams_scans_hashes_and_materializes_without_persisting_transfer_grant
         allowed_hosts=["download.example.test"],
         transfer_opener=_opener(payload, replay_seen),
         malware_scanner=_scanner,
+        qa_builder=_qa_builder,
     )
     assert replay["already_exists"] is True
     assert replay["capture_digest"] == first["capture_digest"]
@@ -149,6 +182,7 @@ def test_transfer_fails_closed_on_host_query_size_media_and_malware(
             allowed_hosts=["download.example.test"],
             transfer_opener=_opener(_payload(), {}),
             malware_scanner=_scanner,
+            qa_builder=_qa_builder,
         )
 
     short = _payload()[:-1]
@@ -159,6 +193,7 @@ def test_transfer_fails_closed_on_host_query_size_media_and_malware(
             allowed_hosts=["download.example.test"],
             transfer_opener=_opener(short, {}),
             malware_scanner=_scanner,
+            qa_builder=_qa_builder,
         )
 
     invalid_media = b"not-an-mp4" + b"x" * (len(_payload()) - 10)
@@ -169,6 +204,7 @@ def test_transfer_fails_closed_on_host_query_size_media_and_malware(
             allowed_hosts=["download.example.test"],
             transfer_opener=_opener(invalid_media, {}),
             malware_scanner=lambda _path: {"status": "passed", "scanner": "fixture"},
+            qa_builder=_qa_builder,
         )
 
     with pytest.raises(CaptureUploadTransferError, match="malware_detected"):
@@ -180,6 +216,7 @@ def test_transfer_fails_closed_on_host_query_size_media_and_malware(
             malware_scanner=lambda _path: (_ for _ in ()).throw(
                 CaptureUploadTransferError(["malware_detected"])
             ),
+            qa_builder=_qa_builder,
         )
 
 
@@ -191,6 +228,7 @@ def test_receipt_idempotency_rejects_changed_request_binding(tmp_path: Path) -> 
         allowed_hosts=["download.example.test"],
         transfer_opener=_opener(payload, {}),
         malware_scanner=_scanner,
+        qa_builder=_qa_builder,
     )
     changed = _submission(payload)
     changed["request"]["scene_id"] = "scene-2"
@@ -201,6 +239,7 @@ def test_receipt_idempotency_rejects_changed_request_binding(tmp_path: Path) -> 
             allowed_hosts=["download.example.test"],
             transfer_opener=_opener(payload, {}),
             malware_scanner=_scanner,
+            qa_builder=_qa_builder,
         )
 
 
@@ -223,6 +262,7 @@ def test_receipt_is_valid_json_and_contains_no_ephemeral_fields(tmp_path: Path) 
         allowed_hosts=["download.example.test"],
         transfer_opener=_opener(payload, {}),
         malware_scanner=_scanner,
+        qa_builder=_qa_builder,
     )
     persisted = json.loads(next((tmp_path / "transfer_receipts").glob("*.json")).read_text())
     assert persisted == receipt
