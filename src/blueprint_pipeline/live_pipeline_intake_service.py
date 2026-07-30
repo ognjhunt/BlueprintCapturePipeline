@@ -26,8 +26,16 @@ from typing import Any, AsyncIterator, Dict, Mapping, Sequence
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .capture_upload_intake import (
+    CAPTURE_MALWARE_SCANNER_ARGV_ENV,
+    CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV,
+    CAPTURE_UPLOAD_STORE_ROOT_ENV,
+    CaptureUploadTransferError,
+    process_capture_upload_submission,
+)
 from .live_pipeline_control_plane import (
     CONTROL_PLANE_OUTPUT_PATH_ENV,
     WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
@@ -1625,12 +1633,72 @@ def create_app() -> FastAPI:
             "shared_nonce_store_enabled": True,
             "server_capture_root_mapping_enforced": True,
             "bounded_admission_enabled": True,
+            "capture_upload_transfer_configured": bool(
+                _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+                and _string(os.getenv(CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV))
+                and _string(os.getenv(CAPTURE_MALWARE_SCANNER_ARGV_ENV))
+            ),
             "proof_boundary": {
                 "service_is_intake_only": True,
                 "simulator_execution_proven": False,
                 "rank_fidelity_result_proven": False,
             },
         }
+
+    @app.post(
+        "/api/live-pipeline/capture-upload-intakes",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def intake_capture_upload(request: Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+        if not store_root_text:
+            raise HTTPException(
+                status_code=503,
+                detail="capture intake store is not configured",
+            )
+        store_root = Path(store_root_text).expanduser().resolve()
+        try:
+            receipt = await run_in_threadpool(
+                process_capture_upload_submission,
+                payload,
+                store_root=store_root,
+            )
+        except CaptureUploadTransferError as exc:
+            blockers = list(exc.blockers)
+            if "capture_upload_idempotency_conflict" in blockers:
+                response_status = 409
+            elif any(
+                blocker.endswith("not_configured")
+                or blocker == "malware_scanner_configuration_invalid"
+                for blocker in blockers
+            ):
+                response_status = 503
+            elif "capture_transfer_download_failed" in blockers:
+                response_status = 502
+            else:
+                response_status = 422
+            return JSONResponse(
+                status_code=response_status,
+                content={
+                    "schema_version": "capture_upload_intake_rejection.v1",
+                    "status": "rejected",
+                    "blockers": blockers,
+                    "proof_boundary": {
+                        "capture_qa_completed": False,
+                        "task_success_established": False,
+                        "physical_task_success_established": False,
+                        "deployment_or_safety_approved": False,
+                        "comparative_policy_ranking_verdict": "thesis_not_supported",
+                    },
+                },
+            )
+        return receipt
 
     @app.post("/api/live-pipeline/job-requests", dependencies=[Depends(_require_admission)])
     async def intake_job_request(request: Request) -> Dict[str, Any]:
