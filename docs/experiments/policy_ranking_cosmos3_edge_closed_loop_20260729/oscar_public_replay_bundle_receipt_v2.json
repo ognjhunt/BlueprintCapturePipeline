@@ -1,0 +1,22 @@
+{
+  "schema_version": "oscar_public_replay_bundle_receipt.v2",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T11:01:26-0500",
+  "bundle_source_commit": "38518c3cacc8c1baa6adc81cbf72e8ba2961a483",
+  "bundle_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/oscar_public_replay_canary_v4/bundle_job/oscar_wam_provider_runtime_bundle.zip",
+  "bundle_sha256": "d6447c8432eb9d484c64f61244eaec40739f9115d778390f6b1fef18c9564752",
+  "bundle_size_bytes": 1135718,
+  "runtime_manifest_file_sha256": "2cc85cf88be3318fc1692fd2872aeb802ee3de24f993f80ced0d2b5b348205f2",
+  "rollout_manifest_file_sha256": "2b50a0abf072ba691e68f612ab95d8d5e3856688c90be0e81741785d4929d823",
+  "first_frame_sha256": "2efae31ef115800a18f04302b668241a5891d36f3ad29734b22a46c791307a35",
+  "skeleton_video_sha256": "4ad9dd1c6cf2acd2bd62fd51a4e5c0744ee0a077b8ea06b7a0a35af24418d08c",
+  "runner_sha256": "4b1367be37fc49b319b602c5cedbd40c66c5fe5d16afcf10697cccc8f0fa60e4",
+  "entrypoint_sha256": "194f4809624cc82e1f3a88f64e12304451708986dad5880695af0518a0efb19c",
+  "provider_bundle_kind": "wam",
+  "official_case": "droid_TRI",
+  "fps": 14.0,
+  "seed": 44,
+  "future_rgb_video_enabled": false,
+  "physical_outcome_labels_accessed": false,
+  "receipt_sha256": "79717defe8f946bd0342549fd31c5dcac4db7b995b3f6e11b0fb93195fcdd277"
+}

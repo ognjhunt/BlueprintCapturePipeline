@@ -10,14 +10,25 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from .droid_policy_bridge import validate_droid_action_chunk, validate_droid_observation
+from .droid_policy_bridge import (
+    DROID_EXTERIOR_VIEW_1,
+    DROID_EXTERIOR_VIEW_2,
+    DROID_OPENPI_POLICY_VIEWS,
+    DROID_ROBOARENA_CONCAT_VIEWS,
+    DROID_WRIST_VIEW,
+    validate_droid_action_chunk,
+    validate_droid_observation,
+)
 from .oscar_wam_command_adapter import OSCAR_DEFAULT_NEGATIVE_PROMPT
 from .policy_ranking_thesis import canonical_sha256, file_sha256
 
 
-EXTERIOR_VIEW = "observation/exterior_image_1_left"
-WRIST_VIEW = "observation/wrist_image_left"
-REQUIRED_POLICY_VIEWS = (EXTERIOR_VIEW, WRIST_VIEW)
+EXTERIOR_VIEW = DROID_EXTERIOR_VIEW_1
+RIGHT_EXTERIOR_VIEW = DROID_EXTERIOR_VIEW_2
+WRIST_VIEW = DROID_WRIST_VIEW
+REQUIRED_POLICY_VIEWS = DROID_OPENPI_POLICY_VIEWS
+ROBOARENA_CONCAT_POLICY_VIEWS = DROID_ROBOARENA_CONCAT_VIEWS
+WAM_SOURCE_VIEW_PATHS = "blueprint/wam_source_view_paths"
 
 
 def _safe_file(value: Any, *, reason: str) -> Path:
@@ -45,6 +56,7 @@ class DroidOscarSkeletonTransitionAdapter:
 
     conditioning_builder: Callable[..., Mapping[str, Any]]
     action_chunk_rows: int
+    required_policy_views: tuple[str, ...] = REQUIRED_POLICY_VIEWS
     adapter_id: str = "droid_oscar_camera_aligned_skeleton_v1"
 
     def prepare_transition(
@@ -57,7 +69,9 @@ class DroidOscarSkeletonTransitionAdapter:
         query_index: int,
         output_dir: Path,
     ) -> dict[str, Any]:
-        observation_blockers = validate_droid_observation(observation)
+        observation_blockers = validate_droid_observation(
+            observation, required_views=self.required_policy_views
+        )
         if observation_blockers:
             raise ValueError(f"droid_observation_invalid:{observation_blockers[0]}")
         action_blockers = validate_droid_action_chunk(
@@ -67,6 +81,17 @@ class DroidOscarSkeletonTransitionAdapter:
             raise ValueError(f"droid_policy_action_invalid:{action_blockers[0]}")
         if executed_prefix_steps > self.action_chunk_rows:
             raise ValueError("executed_prefix_exceeds_policy_action_chunk")
+        source_view_paths = observation.get(WAM_SOURCE_VIEW_PATHS)
+        if source_view_paths is not None:
+            if not isinstance(source_view_paths, Mapping) or set(source_view_paths) != set(
+                self.required_policy_views
+            ):
+                raise ValueError("wam_source_view_paths_mismatch")
+            for view_id in self.required_policy_views:
+                _safe_file(
+                    source_view_paths[view_id],
+                    reason=f"wam_source_view_frame_missing:{view_id}",
+                )
         built = self.conditioning_builder(
             observation=observation,
             policy_action=np.asarray(policy_action, dtype=np.float64),
@@ -75,10 +100,10 @@ class DroidOscarSkeletonTransitionAdapter:
             output_dir=output_dir,
         )
         views = built.get("views")
-        if not isinstance(views, Mapping) or set(views) != set(REQUIRED_POLICY_VIEWS):
-            raise ValueError("oscar_conditioning_requires_external_and_wrist_views")
+        if not isinstance(views, Mapping) or set(views) != set(self.required_policy_views):
+            raise ValueError("oscar_conditioning_required_policy_views_mismatch")
         request_views: dict[str, Any] = {}
-        for view_id in REQUIRED_POLICY_VIEWS:
+        for view_id in self.required_policy_views:
             view = views[view_id]
             if not isinstance(view, Mapping):
                 raise ValueError(f"oscar_conditioning_view_invalid:{view_id}")
@@ -124,6 +149,7 @@ class DroidOscarSkeletonTransitionAdapter:
                 "fps": 15.0,
                 "executed_prefix_steps": executed_prefix_steps,
                 "source_rgb_context": "one_recorded_or_prior_wam_frame_per_view",
+                "required_policy_views": list(self.required_policy_views),
             },
             "reliability_actions_10d": reliability_actions,
             "next_joint_position": next_joints,
@@ -145,8 +171,10 @@ class DroidOscarSkeletonTransitionAdapter:
     ) -> dict[str, Any]:
         del previous_observation, executed_prefix_steps, query_index, output_dir
         generated = wam_prediction.get("generated_view_frames")
-        if not isinstance(generated, Mapping) or set(generated) != set(REQUIRED_POLICY_VIEWS):
-            raise ValueError("oscar_prediction_requires_external_and_wrist_frames")
+        if not isinstance(generated, Mapping) or set(generated) != set(
+            self.required_policy_views
+        ):
+            raise ValueError("oscar_prediction_required_policy_views_mismatch")
         observation: dict[str, Any] = {
             "observation/joint_position": np.asarray(
                 prepared_transition["next_joint_position"], dtype=np.float64
@@ -157,15 +185,19 @@ class DroidOscarSkeletonTransitionAdapter:
             "prompt": str(
                 prepared_transition["wam_request"]["task_prompt"]
             ),
+            WAM_SOURCE_VIEW_PATHS: {},
         }
         generated_hashes: dict[str, str] = {}
-        for view_id in REQUIRED_POLICY_VIEWS:
+        for view_id in self.required_policy_views:
             frame = _safe_file(
                 generated[view_id], reason=f"oscar_generated_view_frame_missing:{view_id}"
             )
             observation[view_id] = _load_policy_image(frame)
+            observation[WAM_SOURCE_VIEW_PATHS][view_id] = str(frame)
             generated_hashes[view_id] = file_sha256(frame)
-        blockers = validate_droid_observation(observation)
+        blockers = validate_droid_observation(
+            observation, required_views=self.required_policy_views
+        )
         if blockers:
             raise ValueError(f"advanced_droid_observation_invalid:{blockers[0]}")
         return {
@@ -187,16 +219,19 @@ class CallableMultiViewOscarWamArm:
 
     generator: Callable[..., Mapping[str, Any]]
     frame_extractor: Callable[..., Path]
+    required_policy_views: tuple[str, ...] = REQUIRED_POLICY_VIEWS
     arm_id: str = "oscar_purpose_built_wam_multiview"
 
     def predict(self, request: Mapping[str, Any], *, output_dir: Path) -> dict[str, Any]:
         views = request.get("views")
-        if not isinstance(views, Mapping) or set(views) != set(REQUIRED_POLICY_VIEWS):
+        if not isinstance(views, Mapping) or set(views) != set(
+            self.required_policy_views
+        ):
             raise ValueError("oscar_multiview_request_invalid")
         generated_videos: dict[str, str] = {}
         generated_frames: dict[str, str] = {}
         receipts: dict[str, Any] = {}
-        for view_id in REQUIRED_POLICY_VIEWS:
+        for view_id in self.required_policy_views:
             view_dir = output_dir / view_id.replace("/", "_")
             view_dir.mkdir(parents=True, exist_ok=True)
             receipt = self.generator(
@@ -227,8 +262,13 @@ class CallableMultiViewOscarWamArm:
                 "generated_video_sha256": file_sha256(video),
                 "executed_prefix_frame_sha256": file_sha256(frame),
             }
+        primary_view = (
+            EXTERIOR_VIEW
+            if EXTERIOR_VIEW in self.required_policy_views
+            else self.required_policy_views[0]
+        )
         return {
-            "generated_video_path": generated_videos[EXTERIOR_VIEW],
+            "generated_video_path": generated_videos[primary_view],
             "generated_videos_by_view": generated_videos,
             "generated_view_frames": generated_frames,
             "view_receipts": receipts,
@@ -295,7 +335,10 @@ __all__ = [
     "CallableMultiViewOscarWamArm",
     "DroidOscarSkeletonTransitionAdapter",
     "EXTERIOR_VIEW",
+    "RIGHT_EXTERIOR_VIEW",
+    "ROBOARENA_CONCAT_POLICY_VIEWS",
     "REQUIRED_POLICY_VIEWS",
     "SkeletonOnlyIntendedMotionArm",
     "WRIST_VIEW",
+    "WAM_SOURCE_VIEW_PATHS",
 ]

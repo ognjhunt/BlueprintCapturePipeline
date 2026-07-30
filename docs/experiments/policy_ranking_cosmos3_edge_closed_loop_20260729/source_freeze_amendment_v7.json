@@ -1,0 +1,20 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze_amendment.v7",
+  "frozen_at": "2026-07-29T10:31:00-0500",
+  "former_manifest": "source_freeze_v6.json",
+  "former_manifest_sha256": "56db03603d72c5da25bc623b77e6b8443bdc4a10053e91554e779d0d4e779944",
+  "successor_manifest": "source_freeze_v7.json",
+  "successor_manifest_sha256": "10b6abbd83e2fdc85f8fc971b6513ca11f3008670bd4a3a67a29a88c8a4ffef5",
+  "changed_fields": [
+    "reverified exact public OSCAR source remote head, tree, license, and executable file hashes",
+    "reverified exact checkpoint revision, access state, license, model card, and frozen model hashes",
+    "froze exact droid_TRI public-script canary settings",
+    "classified published policy evaluation as open-loop recorded-action replay"
+  ],
+  "scientific_inputs_changed": false,
+  "public_source_or_checkpoint_changed": false,
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "amendment_sha256": "d0bd8949b8c88f0a2937fb2540c9899d2a7178a5cbced7f248b6f07dd332fe67"
+}

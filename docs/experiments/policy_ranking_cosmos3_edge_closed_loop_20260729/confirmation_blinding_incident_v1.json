@@ -1,0 +1,48 @@
+{
+  "schema_version": "policy_ranking_confirmation_blinding_incident.v1",
+  "detected_at": "2026-07-29T22:49:26-0500",
+  "status": "preserved_fail_closed",
+  "affected_cohort": {
+    "path": "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/confirmation_cohort_v1.json",
+    "file_sha256": "f90d8cf73dc38aefa44b580c49cfece2dd4e76a3543e87a77c6abd7841968dc6",
+    "cohort_sha256": "06df54ecaad7f8088487d590322a4b307f888b13c48146708f75d359ba9b0ae5",
+    "session_count": 17
+  },
+  "superseded_availability_claim": {
+    "path": "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/confirmation_availability_audit_v2.json",
+    "file_sha256": "6041e1a3fb83b00429732f532e96ce53dd8e0056c11215ca5edc1ebeccde22e3",
+    "audit_sha256": "dfbc66481446f488c0636b74c0264bfe045d8386e983b43f82a540deab91fabc",
+    "claim_no_longer_current": "physical_outcome_labels_accessed_false"
+  },
+  "trigger": {
+    "operation": "broad_recursive_metadata_search_during_task_instruction_schema_audit",
+    "dataset_revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "metadata_contract": "Each session metadata file co-locates language_instruction with preference, long-form feedback, and per-policy outcome fields.",
+    "visible_tool_excerpt_included_outcome_bearing_longform_feedback": true,
+    "selected_session_outcomes_intentionally_requested": false,
+    "outcome_values_used_for_cohort_selection_or_thresholds": false,
+    "can_prove_selected_session_metadata_absent_from_truncated_output": false
+  },
+  "scientific_disposition": {
+    "fail_closed": true,
+    "affected_cohort_outcomes_remain_prospectively_sealed": false,
+    "affected_cohort_may_support_confirmatory_phase_b": false,
+    "affected_cohort_claim_ceiling": "diagnostic_or_sensitivity_only",
+    "predictions_frozen_before_incident": false,
+    "generated_rollouts_completed_before_incident": false,
+    "provider_or_model_result_used_to_select_sessions": false,
+    "historical_frozen_evidence_changed": false
+  },
+  "recovery_gate": {
+    "acceptable_path_1": "freeze_a_genuinely_disjoint_new_snapshot_whose_outcomes_have_not_been_accessed",
+    "acceptable_path_2": "use_an_independently_administered_blind_outcome_join_after_all_predictions_are_hashed",
+    "not_acceptable": "reuse_the_affected_17_sessions_as_confirmatory_because_selection_was_outcome_independent",
+    "current_phase_b_status": "not_measured_pending_new_blind_data_path"
+  },
+  "resource_effect": {
+    "provider_called_for_incident": false,
+    "paid_cost_usd": 0.0,
+    "gpu_allocated": false
+  },
+  "incident_sha256": "0f727e3c617477424e2ad3564e381b4fb903e684049d9d9ae2e3fc6b276c3844"
+}

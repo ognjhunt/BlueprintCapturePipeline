@@ -1,0 +1,84 @@
+{
+  "schema_version": "policy_ranking_gpt5_medium_batch_pilot_freeze.v1",
+  "status": "frozen_not_submitted",
+  "claim_class": "post_unseal_transport_and_cost_diagnostic_only",
+  "source_commit": "07e5fab4ac7535f6222d2c3ec1d8dc9d99914c8b",
+  "source_commit_pushed_and_remote_equal": true,
+  "protocol": {
+    "path": "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/complete_graph_diagnostic_protocol_v1.json",
+    "protocol_sha256": "4636d2e4a6b834f24f86f5073ef831e47c843925a11c1ad761d27663f8194954",
+    "method_attribution": "OSCAR_method_inspired_not_exact_code_reproduction"
+  },
+  "inventory": {
+    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/complete_pair_inventory_v1.json",
+    "file_sha256": "5e75b250a170d13b08a1901b2bce236e820854e52cdfe4d1aeb6b58c3d5c0b57",
+    "inventory_sha256": "b60eb58c8a53d95d49f6fb1c221d276f13ea60d5289006d66bd3c08ef1f3f531",
+    "pair_count": 1323
+  },
+  "completed_schema_canary": {
+    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/gpt5_medium_canary_v1/canary_result_v1.json",
+    "file_sha256": "aa6f2aeb0d7c0dedd456fd7791076e49e299ed926ff49927b825369d48a83c8a",
+    "report_sha256": "c3f11f11d428e48900e105d9daf2afad9c7cb1b78a7d719c1557c3cbfcd0478a",
+    "status": "passed",
+    "response_status": "completed",
+    "input_tokens": 4854,
+    "output_tokens": 1745,
+    "latency_seconds": 23.455251583,
+    "actual_synchronous_cost_usd": 0.0235175,
+    "projected_batch_cost_per_request_same_usage_usd": 0.01175875,
+    "projected_1323_pair_batch_cost_same_usage_usd": 15.55682625
+  },
+  "pilot_selection": {
+    "rule": "complete_graph_inventory_offset_1_count_7_excluding_paid_synchronous_canary_pair_0",
+    "offset": 1,
+    "count": 7,
+    "label_fields_used": false,
+    "canary_response_used_to_select_pairs": false,
+    "reuse_if_complete": "The seven Batch results may be retained as the first seven exact-config complete-graph results; synchronous canary pair 0 is not reused because its transport differs."
+  },
+  "batch_manifest": {
+    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/gpt5_medium_batch_pilot_v1/manifest_v1.json",
+    "file_sha256": "4a4ffaef99d3db12c0fc724b2955641d16aaa03e61c4c20428b5be9079fd828f",
+    "manifest_sha256": "597877f2daaa3553b1aa7daa941546cc1a5fc7371dd2912ee6b714557636a96d",
+    "shard_id": "8af66af1d6eba36ee2709952ffa16f8bfc000d6e351122ff07cf4b5f9d8de3cd",
+    "model": "gpt-5-2025-08-07",
+    "reasoning_effort": "medium",
+    "max_output_tokens": 4000,
+    "arm_id": "gpt5_complete_graph"
+  },
+  "batch_jsonl": {
+    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/gpt5_medium_batch_pilot_v1/input_v1.jsonl",
+    "file_sha256": "b3592cc7f531069032b7ddaba4c77965989a86075e1619a738f8f6ce07076a0e",
+    "size_bytes": 38843561,
+    "row_count": 7,
+    "unique_custom_id_count": 7,
+    "images_per_row": 64,
+    "policy_identifier_hits": 0,
+    "non_data_image_urls": 0,
+    "physical_ground_truth_pixels_in_payload": false
+  },
+  "budget_admission": {
+    "successor_evaluator_api_cap_usd": 25.0,
+    "spent_before_canary_usd": 0.0,
+    "spent_after_canary_usd": 0.0235175,
+    "pilot_upper_projection_from_canary_usage_usd": 0.08231125,
+    "projected_spend_after_pilot_usd": 0.10582875,
+    "pilot_within_category_cap": true,
+    "full_matrix_admitted": false
+  },
+  "pre_submission_provider_state": {
+    "active_matching_openai_batches": 0,
+    "checked": true
+  },
+  "admission": {
+    "pilot_submission_admitted": true,
+    "next_gate": "collect_all_seven_rows_then_freeze_measured_conservative_full_matrix_projection",
+    "stop_if": [
+      "batch_schema_or_transport_failure",
+      "any_redaction_or_media_hash_failure",
+      "measured_projection_exceeds_successor_evaluator_api_cap"
+    ]
+  },
+  "provider_called_for_pilot": false,
+  "freeze_sha256": "e686028fd3b8e5d0015cc9d1a8b299064c52fdaea96b8ef5347d3f6abbd441f2"
+}

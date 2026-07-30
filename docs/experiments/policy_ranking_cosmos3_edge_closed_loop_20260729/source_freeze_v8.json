@@ -1,0 +1,50 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze.v8",
+  "frozen_at": "2026-07-29T10:37:00-0500",
+  "supersedes_manifest_sha256": "10b6abbd83e2fdc85f8fc971b6513ca11f3008670bd4a3a67a29a88c8a4ffef5",
+  "inherits_all_sources_from": "source_freeze_v7.json",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "oscar_droid_tri_assets": {
+    "repository": "zywu2115/OSCAR-2B",
+    "revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+    "case_map_start_frame": 116,
+    "caption_pickle": {
+      "size_bytes": 593,
+      "sha256": "b0cc27da5134b36b62153e02a99509305dc14614ebcc383974a44e395bb659b5",
+      "huggingface_x_linked_etag_matches_sha256": true,
+      "pickle_opcode_audit_only_no_local_unpickle": true
+    },
+    "rgb_mp4": {
+      "size_bytes": 29890885,
+      "sha256": "6280df33844427d754a0fd7aa1ed212b4d4edd9a5ec8d8a6468569b90d617439",
+      "huggingface_x_linked_etag_matches_sha256": true,
+      "codec": "h264",
+      "width": 1280,
+      "height": 720,
+      "fps": 14.0,
+      "frame_count": 298,
+      "duration_seconds": 21.285714
+    },
+    "gripper_scenario_mp4": {
+      "size_bytes": 381778,
+      "sha256": "4ad9dd1c6cf2acd2bd62fd51a4e5c0744ee0a077b8ea06b7a0a35af24418d08c",
+      "huggingface_x_linked_etag_matches_sha256": true,
+      "codec": "h264",
+      "width": 1280,
+      "height": 720,
+      "fps": 14.0,
+      "frame_count": 298,
+      "duration_seconds": 21.285714
+    }
+  },
+  "exact_public_timing_contract": {
+    "fps_source": "auto_detect_from_gripper_scenario_mp4",
+    "fps": 14.0,
+    "num_frames": 81,
+    "window_duration_seconds": 5.785714285714286,
+    "generic_15_hz_fallback_used": false
+  },
+  "manifest_sha256": "dcf03d35d1c454eeeb5615164a4dd6ae67150baa67689f99121c400e3090dff5"
+}

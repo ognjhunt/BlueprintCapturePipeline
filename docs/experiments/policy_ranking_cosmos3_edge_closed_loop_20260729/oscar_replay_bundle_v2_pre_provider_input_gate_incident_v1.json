@@ -1,0 +1,34 @@
+{
+  "schema_version": "policy_ranking_oscar_replay_pre_provider_input_gate_incident.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-29T10:45:00-0500",
+  "bundle_candidate": "oscar_public_replay_canary_v2",
+  "status": "blocked_before_bundle_creation",
+  "provider_called": false,
+  "provider_mutations_performed": false,
+  "gpu_allocated": false,
+  "stage_spend_usd": 0.0,
+  "physical_outcome_labels_accessed": false,
+  "source_commit": "e559e9ce43ec06c42f1e98adcb982f7f2fea7a4a",
+  "protocol_amendment_sha256": "a27cbeb11c58b1b2d0a2953f85ad44ca3a36d2a906dcb1cd5d5f028d498bac9a",
+  "input_assets": {
+    "rgb_sha256": "6280df33844427d754a0fd7aa1ed212b4d4edd9a5ec8d8a6468569b90d617439",
+    "skeleton_sha256": "4ad9dd1c6cf2acd2bd62fd51a4e5c0744ee0a077b8ea06b7a0a35af24418d08c",
+    "caption_sha256": "b0cc27da5134b36b62153e02a99509305dc14614ebcc383974a44e395bb659b5",
+    "skeleton_sampled_frames_readable": 6,
+    "skeleton_nonzero_pixels_present": true
+  },
+  "blockers": [
+    "oscar_input_skeleton_conditioning_video_not_visually_useful",
+    "oscar_input_skeleton_conditioning_video_visual_smoke_failed"
+  ],
+  "root_cause": "The generic RGB-scene visual smoke treated OSCAR's intentionally sparse colored skeleton on a black canvas as a dark ordinary video. It did not apply an OSCAR model-input-specific sparse-geometry signal test.",
+  "disposition": "preserved_and_superseded_prospectively",
+  "claim_boundary": {
+    "no_model_output_generated": true,
+    "no_wam_execution_credit": true,
+    "no_ranking_or_thesis_credit": true,
+    "input_gate_failure_does_not_discredit_the_public_oscar_model": true
+  },
+  "record_sha256": "3280ac705bae2691bc67bc0be2c576384112e74dafb6a198cf4db92d0a5405b9"
+}

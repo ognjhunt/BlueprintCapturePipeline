@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from .common import write_json
-from .policy_ranking_evaluator_diagnostic import diagnostic_protocol
+from .policy_ranking_evaluator_diagnostic import (
+    complete_graph_diagnostic_protocol,
+    diagnostic_protocol,
+)
 from .policy_ranking_evaluator_diagnostic_gemini import (
     GATE_ENV,
     _secure_file,
@@ -30,6 +33,15 @@ class GeminiMatrixError(ValueError):
     """The full-matrix Gemini media stage is invalid."""
 
 
+def _arm_id(inventory: Mapping[str, Any]) -> str:
+    if (
+        inventory.get("protocol_sha256")
+        == complete_graph_diagnostic_protocol()["protocol_sha256"]
+    ):
+        return "gemini36_flash_complete_graph"
+    return "gemini36_flash_native_video"
+
+
 def _ledger_core(
     *,
     status: str,
@@ -42,7 +54,7 @@ def _ledger_core(
     ledger: dict[str, Any] = {
         "schema_version": LEDGER_SCHEMA,
         "status": status,
-        "arm_id": "gemini36_flash_native_video",
+        "arm_id": _arm_id(inventory),
         "inventory_sha256": inventory["inventory_sha256"],
         "native_video_manifest_sha256": manifest["manifest_sha256"],
         "expected_video_count": 441,
@@ -61,18 +73,23 @@ def _ledger_core(
 
 
 def _validate_inventory(inventory: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    protocol = diagnostic_protocol()
+    allowed_protocol_digests = {
+        diagnostic_protocol()["protocol_sha256"],
+        complete_graph_diagnostic_protocol()["protocol_sha256"],
+    }
     pairs = inventory.get("pairs")
+    pair_count = inventory.get("pair_count")
     payload = {key: value for key, value in inventory.items() if key != "inventory_sha256"}
     if (
         inventory.get("status") != "ready"
-        or inventory.get("pair_count") != 441
-        or inventory.get("protocol_sha256") != protocol["protocol_sha256"]
+        or pair_count not in {441, 882, 1323}
+        or inventory.get("protocol_sha256") not in allowed_protocol_digests
         or canonical_sha256(payload) != inventory.get("inventory_sha256")
         or not isinstance(pairs, list)
-        or len(pairs) != 441
+        or len(pairs) != pair_count
+        or len({str(pair.get("pair_id")) for pair in pairs}) != pair_count
     ):
-        raise GeminiMatrixError("pair_inventory_not_ready_bound_and_valid_441")
+        raise GeminiMatrixError("pair_inventory_not_ready_bound_and_valid_supported_matrix")
     return pairs
 
 
@@ -228,6 +245,8 @@ def submit_matrix_batch(
 ) -> dict[str, Any]:
     if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
         raise GeminiMatrixError(f"missing_env_{GATE_ENV}")
+    pairs = _validate_inventory(inventory)
+    pair_count = len(pairs)
     target = Path(receipt_path)
     if target.is_file():
         previous = json.loads(target.read_text(encoding="utf-8"))
@@ -238,12 +257,15 @@ def submit_matrix_batch(
             raise GeminiMatrixError("existing_matrix_batch_receipt_digest_invalid")
         if (
             previous.get("batch_name")
-            and previous.get("arm_id") == "gemini36_flash_native_video"
-            and previous.get("request_count") == 441
+            and previous.get("arm_id") == _arm_id(inventory)
+            and previous.get("request_count") == pair_count
+            and (
+                pair_count == 441
+                or previous.get("inventory_sha256") == inventory["inventory_sha256"]
+            )
         ):
             return previous
         raise GeminiMatrixError("existing_matrix_batch_failure_receipt_requires_review")
-    pairs = _validate_inventory(inventory)
     ledger_payload = {key: value for key, value in ledger.items() if key != "ledger_sha256"}
     if (
         canonical_sha256(ledger_payload) != ledger.get("ledger_sha256")
@@ -280,7 +302,7 @@ def submit_matrix_batch(
             model="gemini-3.6-flash",
             src=requests,
             config=types.CreateBatchJobConfig(
-                display_name="blueprint-roboarena-gemini36-full-matrix-v1"
+                display_name="blueprint-roboarena-gemini36-complete-graph-v1"
             ),
         )
     except Exception as exc:
@@ -289,7 +311,8 @@ def submit_matrix_batch(
             "schema_version": "policy_ranking_gemini_matrix_batch_submission.v1",
             "status": "failed_before_batch_creation",
             "batch_name": None,
-            "request_count": 441,
+            "request_count": pair_count,
+            "inventory_sha256": inventory["inventory_sha256"],
             "media_ledger_sha256": ledger["ledger_sha256"],
             "error_type": type(exc).__name__,
             "deletions": deletions,
@@ -305,10 +328,11 @@ def submit_matrix_batch(
         "status": _job_state(job),
         "batch_name": str(job.name),
         "model": "gemini-3.6-flash",
-        "arm_id": "gemini36_flash_native_video",
+        "arm_id": _arm_id(inventory),
         "pair_ids": [str(pair["pair_id"]) for pair in pairs],
-        "request_count": 441,
+        "request_count": pair_count,
         "unique_video_count": 441,
+        "inventory_sha256": inventory["inventory_sha256"],
         "uploads": ledger["uploads"],
         "media_ledger_sha256": ledger["ledger_sha256"],
         "submitted_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),

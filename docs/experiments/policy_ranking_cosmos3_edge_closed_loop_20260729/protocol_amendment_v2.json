@@ -1,0 +1,22 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v2",
+  "amended_at": "2026-07-29T08:11:20-0500",
+  "former_protocol": "protocol_v1.json",
+  "former_protocol_sha256": "76a2e0d32804c8c928c435828a18a5fbbc3eb95f3746b59c117e08beb41b60e6",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "amendment_reason": "Pinned NVIDIA checkpoint metadata and server code establish a native 32x8 action output; protocol v1 incorrectly treated 16x8 as native.",
+  "native_policy_action_shape": [32, 8],
+  "wam_prefix_action_shape": [16, 8],
+  "deterministic_adapter": "hash and retain all 32 native rows, then take rows 0 through 15 without rescaling, interpolation, clipping, or outcome-dependent selection",
+  "executed_prefix_steps": 8,
+  "executed_prefix_seconds_derived": 0.5333333333333333,
+  "scientific_legitimacy": "The WAM still receives the prospectively frozen 16-step horizon and advances exactly eight steps. Only the upstream native-policy representation is corrected before execution.",
+  "forbidden": [
+    "configure the 32-row checkpoint as if it were trained to produce 16 rows",
+    "discard or fail to hash the unused native rows",
+    "select policy rows using physical outcomes or downstream evaluator scores"
+  ],
+  "amendment_sha256": "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
+}

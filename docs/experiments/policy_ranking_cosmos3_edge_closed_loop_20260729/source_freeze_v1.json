@@ -1,0 +1,61 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze.v1",
+  "frozen_at": "2026-07-29T07:36:53-05:00",
+  "sources": [
+    {
+      "identity": "nvidia/Cosmos3-Edge-Policy-DROID",
+      "role": "candidate_policy_only",
+      "url": "https://huggingface.co/nvidia/Cosmos3-Edge-Policy-DROID",
+      "revision": "3ea407af3e156c0af3b4bb6edd85842cc9a58777",
+      "license": "OpenMDW-1.1",
+      "readme_sha256": "583c4a82074ea9a8a6de7c26815637cc5a3b715820a6c5f3366a501f3093ec1e",
+      "config_sha256": "da6a23cbf4477aafda3e773874bf2c98d6869156e8a450d944e2f28c94eee00b",
+      "checkpoint_config_sha256": "a279d57b84d458c2aeeaf9698aee8c1b3830204422da67ab31c801ab57225019",
+      "model_index_sha256": "6e0a5c43411271246ee0446dc644ac38eaf72958ca4dc2fb59c2fb3e3893420e",
+      "safetensors_index_sha256": "b81262b29147bb0cdeca3f87263e2229deb94414682c074ac04a47dedd7131f7",
+      "published_action_shape": [16, 8],
+      "training_action_space": "joint_pos absolute joint position plus gripper",
+      "training_viewpoint": "concat_view: wrist on top; left and right exteriors below",
+      "conditioning_fps": 15.0
+    },
+    {
+      "identity": "nvidia/Cosmos3-Edge",
+      "role": "independent_native_forward_dynamics_challenger_only",
+      "url": "https://huggingface.co/nvidia/Cosmos3-Edge",
+      "revision": "ff48d22144de52de296a7b4d3a78914831007212",
+      "license": "OpenMDW-1.1",
+      "readme_sha256": "9b0b3e887389e04501658b9ecbcc50e972d47e688a7a7a3c9a8918f9285c9e00",
+      "config_sha256": "ffb75b654e65d10e337ea07f20ac4eadc3775dd22c9a8194c87c3b68df5c8f5f",
+      "published_vendor_native_fd_domain": "umi",
+      "published_vendor_native_fd_action_shape": [16, 10],
+      "droid_fd_action_shape_in_pinned_framework": [16, 10]
+    },
+    {
+      "identity": "NVIDIA/cosmos-framework",
+      "role": "policy_and_forward_dynamics_runtime_contract",
+      "url": "https://github.com/NVIDIA/cosmos-framework",
+      "revision": "2f603cb114ff8b335e116060444d0b6caee3a85e",
+      "license": "OpenMDW-1.1",
+      "license_sha256": "6bd3fdb9356edb6e4c1f00ad9cd6639a1cf06ca0a415a5071fd70d68799209e6",
+      "policy_posttrain_doc_sha256": "20dff36cefd9d2d6d35d6cc57fd0e1f710c81309f52fdc41f1bb0ba9cdcc4b10",
+      "droid_fd_posttrain_doc_sha256": "fc2e2f16d2e8a2b768b0fead57b53ab3811319d0b561755edcee2298380e028a",
+      "policy_server_sha256": "0ea7c258e5e3250ffa9e259151fc856ab767164d94a05040518409e4a7e31423",
+      "domain_utils_sha256": "139e2929c86ad591d613a43b590884adb7ec37f19c1affaeb6bd3cde27a6ad19"
+    },
+    {
+      "identity": "OSCAR",
+      "role": "skeleton_renderer_and_purpose_built_wam_arm",
+      "url": "https://arxiv.org/abs/2606.04463",
+      "published_model_base": "Cosmos-Predict2.5-2B fine-tuned with 2D kinematic skeleton conditioning",
+      "claim_boundary": "The deterministic skeleton renderer may be reused; the purpose-built WAM remains attributable to OSCAR and is not native Cosmos3."
+    }
+  ],
+  "excluded": [
+    {
+      "identity": "anshks/cosmos3-nano-droid-fd-wm",
+      "reason": "third-party DROID forward-dynamics checkpoint has no unambiguous executable license/provenance approval for paid use"
+    }
+  ],
+  "scientific_role_rule": "A candidate policy decides actions. A WAM predicts future observations. Policy-DROID cannot serve as the neutral WAM or grade itself.",
+  "manifest_sha256": "b8590f33afd66cfe98665095df9344cdfd953b2a1be866d086920ae0cca540b0"
+}

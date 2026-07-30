@@ -68,6 +68,15 @@ def test_body_sends_64_images_but_no_policy_identity(tmp_path: Path) -> None:
     assert full_body["reasoning"] == {"effort": "high"}
     assert full_body["max_output_tokens"] == 4000
 
+    successor_body = build_response_body(
+        _pair(tmp_path),
+        model=GPT5_MODEL,
+        reasoning_effort="medium",
+        max_output_tokens=4000,
+    )
+    assert successor_body["reasoning"] == {"effort": "medium"}
+    assert successor_body["max_output_tokens"] == 4000
+
 
 def test_canary_records_usage_and_redaction(tmp_path: Path) -> None:
     class Responses:
@@ -92,6 +101,34 @@ def test_canary_records_usage_and_redaction(tmp_path: Path) -> None:
     assert result["usage"]["standard_cost_usd"] > 0
     assert result["policy_identity_sent_to_provider"] is False
     assert result["physical_ground_truth_pixels_sent_to_provider"] is False
+
+
+def test_canary_binds_successor_reasoning_and_arm_identity(tmp_path: Path) -> None:
+    class Responses:
+        def create(self, **kwargs):
+            assert kwargs["reasoning"] == {"effort": "medium"}
+            return types.SimpleNamespace(
+                id="resp-successor",
+                status="completed",
+                output_text=json.dumps(_payload()),
+                usage=types.SimpleNamespace(
+                    input_tokens=1000,
+                    output_tokens=200,
+                    input_tokens_details=types.SimpleNamespace(cached_tokens=0),
+                ),
+            )
+
+    result = score_canary(
+        types.SimpleNamespace(responses=Responses()),
+        _pair(tmp_path),
+        model=GPT5_MODEL,
+        reasoning_effort="medium",
+        max_output_tokens=4000,
+        arm_id="gpt5_complete_graph",
+    )
+    assert result["arm_id"] == "gpt5_complete_graph"
+    assert result["reasoning_effort"] == "medium"
+    assert result["max_output_tokens"] == 4000
 
 
 def test_incomplete_canary_is_retained_as_invalid_evidence(tmp_path: Path) -> None:

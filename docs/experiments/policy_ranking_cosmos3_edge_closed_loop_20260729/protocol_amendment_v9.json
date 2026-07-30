@@ -1,0 +1,47 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v9",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T11:01:26-0500",
+  "supersedes_amendment_sha256": "c8a52f5ebbadcd66492f788d0453fa3c0c1ee2660d4350324994f560c9070111",
+  "phase": "phase_2_exact_public_oscar_compatibility",
+  "triggering_failure": {
+    "allocation_index": 6,
+    "provider_mutations_performed": 1,
+    "authorization_consumed": true,
+    "provider_zero_after_close": true,
+    "executed_bundle_sha256": "f505f7516e65e7faff13fd8b6868f599c23cea79bee586b40ce14323b8de4a24",
+    "executed_bundle_version": 1,
+    "blocker": "official_oscar_case_prepare_failed:RuntimeError",
+    "model_inference_started": false,
+    "generated_video_count": 0,
+    "estimated_cost_usd": 0.116064
+  },
+  "demonstrable_defect": "The executed v1 runner unconditionally entered Blueprint alternate case preparation before the official script, while the already-frozen v4 runner contains the prospective public-script ownership guard. Allocation 6 therefore did not test the v4 exact-public contract.",
+  "prospective_correction": {
+    "allocation_index": 7,
+    "bundle_version": 4,
+    "bundle_sha256": "d6447c8432eb9d484c64f61244eaec40739f9115d778390f6b1fef18c9564752",
+    "runner_sha256": "4b1367be37fc49b319b602c5cedbd40c66c5fe5d16afcf10697cccc8f0fa60e4",
+    "required_runner_guard": "if official_case_smoke and not official_case_use_script:",
+    "fps": 14.0,
+    "seed": 44,
+    "source_revision_unchanged": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "checkpoint_revision_unchanged": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+    "case_unchanged": "droid_TRI",
+    "future_rgb_video_argument_enabled": false,
+    "physical_outcome_labels_accessed": false,
+    "maximum_successor_allocations_without_another_amendment": 1
+  },
+  "budget": {
+    "allocation_hard_cap_usd": 5.0,
+    "allocation_target_spend_usd": 5.0,
+    "maximum_hourly_rate_usd": 2.05,
+    "hard_ttl_seconds": 7200,
+    "maximum_concurrent_gpus": 1,
+    "campaign_gpu_spend_before_allocation_7_usd": 3.344877,
+    "gpu_category_ceiling_usd": 50.0,
+    "campaign_total_ceiling_usd": 100.0
+  },
+  "claim_boundary": "A pass establishes only exact public OSCAR open-loop replay runtime compatibility and one generated replay. It does not establish live policy re-query, WAM causal qualification, ranking fidelity, captured-site transfer, economics, physical success, or thesis support.",
+  "amendment_sha256": "67cdf7df54de8d572219fa9eaeed367e231bde62f7229d1749a8381b7eddf6ae"
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": "policy_ranking_confirmation_availability_amendment.v3",
+  "recorded_at": "2026-07-29T22:49:26-0500",
+  "status": "phase_b_not_measured_pending_new_blind_data_path",
+  "base_audit": {
+    "path": "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/confirmation_availability_audit_v2.json",
+    "file_sha256": "6041e1a3fb83b00429732f532e96ce53dd8e0056c11215ca5edc1ebeccde22e3",
+    "audit_sha256": "dfbc66481446f488c0636b74c0264bfe045d8386e983b43f82a540deab91fabc"
+  },
+  "incident": {
+    "path": "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/confirmation_blinding_incident_v1.json",
+    "incident_sha256": "0f727e3c617477424e2ad3564e381b4fb903e684049d9d9ae2e3fc6b276c3844"
+  },
+  "changed_fields": {
+    "physical_outcome_labels_accessed": true,
+    "outcomes_remain_sealed": false,
+    "phase_b_admitted": false,
+    "affected_17_session_claim_ceiling": "diagnostic_or_sensitivity_only",
+    "new_confirmation_requirement": "genuinely_disjoint_unaccessed_snapshot_or_independently_administered_blind_outcome_join"
+  },
+  "unchanged_findings": {
+    "selection_used_outcomes": false,
+    "complete_three_view_sessions": 14,
+    "exact_public_ctrl_world_closed_loop_reproduction_blocked_by_unpublished_openpi_and_pi_checkpoint_revisions": true,
+    "exact_open_loop_replay_blocked_for_10_Hz_exports_without_published_temporal_adapter": true,
+    "historical_frozen_stack_verdict": "thesis_not_supported"
+  },
+  "resource_effect": {
+    "provider_called_for_amendment": false,
+    "paid_cost_usd": 0.0,
+    "gpu_allocated": false
+  },
+  "amendment_sha256": "5a7162f73d3be5e485757b7adcf42d21510437ea00566e2a93383c2653a1f361"
+}

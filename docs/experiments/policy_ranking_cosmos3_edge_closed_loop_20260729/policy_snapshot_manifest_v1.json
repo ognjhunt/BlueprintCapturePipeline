@@ -1,0 +1,117 @@
+{
+  "schema_version": "cosmos_edge_droid_policy_snapshot_manifest.v1",
+  "frozen_at": "2026-07-29T07:36:53-05:00",
+  "model_id": "nvidia/Cosmos3-Edge-Policy-DROID",
+  "model_revision": "3ea407af3e156c0af3b4bb6edd85842cc9a58777",
+  "source_url": "https://huggingface.co/nvidia/Cosmos3-Edge-Policy-DROID",
+  "license": "OpenMDW-1.1",
+  "required_files": [
+    {
+      "path": "checkpoint.json",
+      "size_bytes": 192,
+      "sha256": "a279d57b84d458c2aeeaf9698aee8c1b3830204422da67ab31c801ab57225019"
+    },
+    {
+      "path": "config.json",
+      "size_bytes": 7527,
+      "sha256": "da6a23cbf4477aafda3e773874bf2c98d6869156e8a450d944e2f28c94eee00b"
+    },
+    {
+      "path": "generation_config.json",
+      "size_bytes": 159,
+      "sha256": "7277bfaa08b64ba8783482aa7225814e66260912e02c567b82273418e4f97490"
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "size_bytes": 104914,
+      "sha256": "b81262b29147bb0cdeca3f87263e2229deb94414682c074ac04a47dedd7131f7"
+    },
+    {
+      "path": "model_index.json",
+      "size_bytes": 555,
+      "sha256": "6e0a5c43411271246ee0446dc644ac38eaf72958ca4dc2fb59c2fb3e3893420e"
+    },
+    {
+      "path": "modular_model_index.json",
+      "size_bytes": 1335,
+      "sha256": "3d64547490570b80dc3b950e39472d6b074d9e83c9ebecfbf2642de07cf87a93"
+    },
+    {
+      "path": "preprocessor_config.json",
+      "size_bytes": 334,
+      "sha256": "7fc1e423001190416180fa0a22eb1ed0cb5fb90b525a6205fbe6d2316aa46a60"
+    },
+    {
+      "path": "processor_config.json",
+      "size_bytes": 781,
+      "sha256": "7a670dbb2f5f5e3de6570ed6c01e7f01b9b7fb0e00515d4ebef53b8f8c049fd1"
+    },
+    {
+      "path": "scheduler/scheduler_config.json",
+      "size_bytes": 888,
+      "sha256": "6b04159c2b2116e9055d52d776e3e15f5923e8251aa3a8d43215d7040cc30505"
+    },
+    {
+      "path": "special_tokens_map.json",
+      "size_bytes": 563,
+      "sha256": "e9435fefd6d838fd9fcbbc44b97a8e3ff322be7f6dfb7e4fd2468586574bb52b"
+    },
+    {
+      "path": "tokenizer.json",
+      "size_bytes": 17077500,
+      "sha256": "4dc692a99dca6d92a44e9529ffb53541eb79bb260eec7281bc51268c05d7311c"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "size_bytes": 177253,
+      "sha256": "85577f01be64ea03ee9aacc0536088e47b96971e4aff21e0aa604900b1410386"
+    },
+    {
+      "path": "transformer/config.json",
+      "size_bytes": 993,
+      "sha256": "8cdde02b8cf98c485c7f6f7282a938ebb7e14390327dbf5c4346de337c21327d"
+    },
+    {
+      "path": "transformer/cosmos_framework_model.safetensors",
+      "size_bytes": 11032,
+      "sha256": "1815af3a075108820c1f3c26d50b999299a8d831526cf561a20249bf1bb6fcd1"
+    },
+    {
+      "path": "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+      "size_bytes": 5000041944,
+      "sha256": "99b0ff1f9dbdcb497fac16cbc0ebe33dee19653b4c182fa0d474433dcc845206"
+    },
+    {
+      "path": "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+      "size_bytes": 1748779008,
+      "sha256": "1842fefdacd0dcbb8ab543b59848a0b696e0c9634676bc76db9e0c971fe328d5"
+    },
+    {
+      "path": "transformer/diffusion_pytorch_model.safetensors.index.json",
+      "size_bytes": 53623,
+      "sha256": "504ed8bf62349b2d0b6a8923a76157b670585da026d00d4d82a667ab02d3afda"
+    },
+    {
+      "path": "vae/config.json",
+      "size_bytes": 1755,
+      "sha256": "2af4752d63e8b308b8bfd29798ec6663886583ab228d7c643f559612c54df1ca"
+    },
+    {
+      "path": "vae/diffusion_pytorch_model.safetensors",
+      "size_bytes": 1409400600,
+      "sha256": "230496cb59ff85bc9c040487737c4062480cb61c71e697b197b4c30142f2a0da"
+    },
+    {
+      "path": "video_preprocessor_config.json",
+      "size_bytes": 367,
+      "sha256": "4c7a48dd35a60057358a4269ae1e1402a70170bef916df1d850f15d617e225f7"
+    },
+    {
+      "path": "vision_encoder/model.safetensors",
+      "size_bytes": 978739880,
+      "sha256": "2180ad739ecc96b5c1e9386892d3c5c08bfa42b9cdab9aabc53b028671db89b3"
+    }
+  ],
+  "claim_boundary": "Exact required runtime-file identity only; not proof that the policy is accurate, that a WAM is causal, or that a closed-loop rollout represents physical behavior.",
+  "manifest_sha256": "766c33e99945394406986495d3263596953ed8d696db29a63e91e41fae5d4c64"
+}

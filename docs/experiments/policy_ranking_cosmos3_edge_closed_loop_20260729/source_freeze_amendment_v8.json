@@ -1,0 +1,21 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze_amendment.v8",
+  "frozen_at": "2026-07-29T10:37:00-0500",
+  "former_manifest": "source_freeze_v7.json",
+  "former_manifest_sha256": "10b6abbd83e2fdc85f8fc971b6513ca11f3008670bd4a3a67a29a88c8a4ffef5",
+  "successor_manifest": "source_freeze_v8.json",
+  "successor_manifest_sha256": "dcf03d35d1c454eeeb5615164a4dd6ae67150baa67689f99121c400e3090dff5",
+  "changed_fields": [
+    "frozen exact public droid_TRI asset sizes and SHA256 digests",
+    "verified Hugging Face linked object digests against downloaded bytes",
+    "frozen exact RGB and skeleton media dimensions, frame counts, and native 14 Hz rate",
+    "recorded safe pickle opcode audit without locally executing the caption artifact"
+  ],
+  "scientific_inputs_changed": true,
+  "scientific_input_change": "prospective canary fps corrected from expected 15 Hz to exact asset-native 14 Hz before model execution",
+  "public_source_or_checkpoint_changed": false,
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "amendment_sha256": "9fc3b8357551aa4cc276c33721e5b2af54e1d2ede2d3740ef48fa96fe031d4fd"
+}

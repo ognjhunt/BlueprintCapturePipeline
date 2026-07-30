@@ -1,0 +1,22 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_bundle_overwrite_incident.v1",
+  "recorded_at": "2026-07-29T08:42:24-0500",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "affected_freeze": "policy_canary_bundle_freeze_v1.json",
+  "affected_freeze_file_sha256": "9d1aa4e6f83004247725e85ee692ee7307915881b869977cb914f56127b7fb78",
+  "affected_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/policy_canary_bundle_v3/cosmos_edge_policy_canary_provider_bundle.zip",
+  "frozen_bundle_sha256": "97b3e2b31a57a3a805feef8196ff96988d1259038004b3200e7e8dec3015d954",
+  "frozen_bundle_size_bytes": 761711,
+  "observed_replacement_sha256": "3572c7cac6283877ea2a44603bf158fd3329281da74b2e132cb532532138e6a2",
+  "observed_replacement_size_bytes": 762143,
+  "cause": "Two Codex continuation threads wrote the shared successor evidence root concurrently after one thread had reported it stopped. The newer bundle generator reused the v3 directory based on an immediately stale inventory.",
+  "recovery": "The committed freeze metadata remains intact, but no second local copy of the original v3 bytes was found. v3 is excluded from execution. A fresh v4 bundle is frozen separately; v1 and v2 were not modified.",
+  "original_bytes_recovered": false,
+  "affected_bundle_executable": false,
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "provider_resource_created": false,
+  "authorization_consumed": false,
+  "physical_outcome_labels_accessed": false,
+  "record_sha256": "ed1205b47f6b7ce4b30da3af0b10485964d695af76b1c1c6e20b6bdbe4b8ec77"
+}

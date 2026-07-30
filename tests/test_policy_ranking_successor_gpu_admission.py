@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,142 @@ def _preflight_path(tmp_path: Path) -> Path:
     path = tmp_path / "vast_compute_preflight.json"
     path.write_text(json.dumps(_load("vast_compute_preflight.json")), encoding="utf-8")
     return path
+
+
+def _oscar_replay_fixture(
+    tmp_path: Path,
+    *,
+    public_script_guard: bool = True,
+) -> tuple[Path, dict[str, Any], admission.SuccessorGPUProfile]:
+    bundle = tmp_path / "oscar-replay.zip"
+    entrypoint = (
+        "write_missing_result wam_runner_process_exited_without_runtime_result "
+        "blocked_wam_process_exited_without_result"
+    ).encode()
+    guard = (
+        "if official_case_smoke and not official_case_use_script:"
+        if public_script_guard
+        else "if official_case_smoke:"
+    )
+    runner = (
+        "OSCAR-2B wam_runtime_result.json action_conditioned_video_rollout_generated\n"
+        + guard
+    ).encode()
+    runtime_manifest = {
+        "schema_version": "wam_provider_runtime_manifest.v1",
+        "oscar_hf_repo": "zywu2115/OSCAR-2B",
+        "oscar_hf_revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+        "oscar_source_ref": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+        "official_case_smoke": "droid_TRI",
+        "official_case_use_script": "true",
+        "official_case_rgb_video": "0",
+        "fps": 14.0,
+        "num_frames": 81,
+        "height": 480,
+        "width": 640,
+        "num_steps": 35,
+        "guidance": 6.0,
+        "seed": 44,
+    }
+    rollout_manifest = {
+        "schema_version": "wam_rollout_input_manifest.v1",
+        "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+        "arm_id": "oscar_public_replay",
+        "case_id": "droid_TRI",
+        "physical_future_rgb_provided_to_model": False,
+        "physical_outcome_labels_accessed": False,
+    }
+    payloads = {
+        "provider_runtime/wam_provider_runtime_manifest.json": json.dumps(
+            runtime_manifest, sort_keys=True
+        ).encode(),
+        "provider_runtime/wam_rollout_input_manifest.json": json.dumps(
+            rollout_manifest, sort_keys=True
+        ).encode(),
+        "provider_runtime/oscar_input/first_frame.png": b"frozen-first-frame",
+        "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4": (
+            b"frozen-skeleton"
+        ),
+        "provider_runtime/wam_provider_runtime_runner.py": runner,
+        "provider_runtime/run_wam_provider_runtime.sh": entrypoint,
+    }
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in payloads.items():
+            archive.writestr(name, payload)
+    embedded = {
+        "runtime_manifest_file_sha256": hashlib.sha256(
+            payloads["provider_runtime/wam_provider_runtime_manifest.json"]
+        ).hexdigest(),
+        "rollout_manifest_file_sha256": hashlib.sha256(
+            payloads["provider_runtime/wam_rollout_input_manifest.json"]
+        ).hexdigest(),
+        "first_frame_sha256": hashlib.sha256(
+            payloads["provider_runtime/oscar_input/first_frame.png"]
+        ).hexdigest(),
+        "skeleton_video_sha256": hashlib.sha256(
+            payloads[
+                "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4"
+            ]
+        ).hexdigest(),
+        "runner_sha256": hashlib.sha256(runner).hexdigest(),
+        "entrypoint_sha256": hashlib.sha256(entrypoint).hexdigest(),
+    }
+    bundle_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest()
+    profile = replace(
+        admission.OSCAR_PUBLIC_REPLAY_PROFILE,
+        expected_bundle_sha256=bundle_sha256,
+        expected_bundle_size_bytes=bundle.stat().st_size,
+        expected_embedded_input_hashes=embedded,
+    )
+    receipt = {
+        "schema_version": profile.receipt_schema,
+        "experiment_id": profile.experiment_id,
+        "bundle_sha256": bundle_sha256,
+        "bundle_size_bytes": bundle.stat().st_size,
+        **embedded,
+    }
+    return bundle, receipt, profile
+
+
+def test_oscar_public_replay_profile_binds_exact_v4_bundle() -> None:
+    profile = admission.OSCAR_PUBLIC_REPLAY_PROFILE
+
+    assert profile.authorization_ids_by_allocation_index == {
+        7: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-7"
+    }
+    assert profile.expected_bundle_sha256 == (
+        "d6447c8432eb9d484c64f61244eaec40739f9115d778390f6b1fef18c9564752"
+    )
+    assert profile.expected_bundle_size_bytes == 1_135_718
+    assert profile.target_spend_usd == profile.max_compute_cap_usd == 5.0
+
+
+def test_oscar_public_replay_bundle_passes_exact_contract(tmp_path: Path) -> None:
+    bundle, receipt, profile = _oscar_replay_fixture(tmp_path)
+
+    result = admission.inspect_successor_bundle(
+        bundle,
+        receipt=receipt,
+        smoke_inventory={},
+        profile=profile,
+    )
+
+    assert result["status"] == "passed", result["blockers"]
+    assert result["rollout_manifest"]["physical_future_rgb_provided_to_model"] is False
+
+
+def test_oscar_public_replay_rejects_stale_pre_script_preparation(tmp_path: Path) -> None:
+    bundle, receipt, profile = _oscar_replay_fixture(tmp_path, public_script_guard=False)
+
+    result = admission.inspect_successor_bundle(
+        bundle,
+        receipt=receipt,
+        smoke_inventory={},
+        profile=profile,
+    )
+
+    assert result["status"] == "blocked"
+    assert "successor_oscar_bundle_public_script_ownership_guard_missing" in result["blockers"]
 
 
 def test_frozen_successor_bundle_passes_integrity_inspection() -> None:

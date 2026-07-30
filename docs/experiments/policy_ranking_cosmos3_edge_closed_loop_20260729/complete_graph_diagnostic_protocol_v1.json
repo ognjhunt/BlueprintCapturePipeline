@@ -1,0 +1,191 @@
+{
+  "schema_version": "policy_ranking_evaluator_diagnostic.v4",
+  "purpose": "post_unseal_complete_graph_evaluator_diagnosis",
+  "claim_class": "diagnostic_only",
+  "method_attribution": "OSCAR_method_inspired_not_exact_code_reproduction",
+  "private_oscar_prompt_code_and_raw_pair_responses_published": false,
+  "independent_confirmation_credit": false,
+  "phase_b_admission_credit": false,
+  "source_episode_count": 441,
+  "source_freeze": {
+    "OSCAR_public_policy_rollouts_revision": "db5edfaef285c15d0a41d5115177a983c08b4f5f",
+    "outcomes_already_unsealed": true,
+    "outcomes_withheld_from_provider_prompts_and_pair_selection": true
+  },
+  "comparison_graph": {
+    "kind": "complete_graph_per_session",
+    "session_count": 63,
+    "policy_count": 7,
+    "edges_per_session": 21,
+    "total_edges": 1323,
+    "side_assignment": "sha256_session_pair_index_complete_graph_v1_parity",
+    "each_episode_appearances": 6,
+    "label_fields_used_to_select_edges": false,
+    "all_episodes_included": true
+  },
+  "shared_judging_contract": {
+    "prompt": "You are Blueprint's independent conservative robot-episode comparison judge. Two complete generated episodes, A and B, show the same task and starting session. Policy identities, published physical outcomes, and physical ground-truth pixels are withheld. Compare visible full-episode task progress directly. Success requires task completion that remains stable across adjacent moments. A visible skeleton is intended-motion evidence, not proof of an object or scene consequence. Retain and penalize frozen futures, loops, discontinuities, robot-skeleton divergence, disappearance, corruption, and out-of-view motion. Choose A, B, tie, or abstain. Abstain when neither ordering is trustworthy. Return only the registered JSON object.",
+    "prompt_sha256": "ebe714130b8ade9305f8b5c6df77fa414fa7b9ac33d843d5a25c2905da41943c",
+    "output_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preferred_episode": {
+          "type": "string",
+          "enum": [
+            "A",
+            "B",
+            "tie",
+            "abstain"
+          ]
+        },
+        "episode_a_progress_0_to_5": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "episode_b_progress_0_to_5": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "stable_success_a": {
+          "type": "boolean"
+        },
+        "stable_success_b": {
+          "type": "boolean"
+        },
+        "comparison_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "uncertainty": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "decisive_evidence": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "string"
+          }
+        },
+        "artifact_flags_a": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string"
+          }
+        },
+        "artifact_flags_b": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string"
+          }
+        },
+        "abstention_factors": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "preferred_episode",
+        "episode_a_progress_0_to_5",
+        "episode_b_progress_0_to_5",
+        "stable_success_a",
+        "stable_success_b",
+        "comparison_confidence",
+        "uncertainty",
+        "decisive_evidence",
+        "artifact_flags_a",
+        "artifact_flags_b",
+        "abstention_factors"
+      ]
+    },
+    "output_schema_sha256": "cc1bb974e6313543cc9de63789bd50b4e996feac0d834d71ae8312e8ca50d750",
+    "policy_identity_in_provider_payload": false,
+    "physical_outcome_in_provider_payload": false,
+    "physical_ground_truth_pixels_in_provider_payload": false,
+    "ties": "half_win_each_in_bradley_terry",
+    "abstentions": "retained_and_excluded_from_fit"
+  },
+  "judge_arms": [
+    {
+      "arm_id": "gpt5_complete_graph",
+      "provider": "openai",
+      "model": "gpt-5-2025-08-07",
+      "reasoning_effort": "medium",
+      "max_output_tokens_including_reasoning": 4000,
+      "media": "32_generated_only_frames_per_episode_64_per_pair",
+      "transport": "responses_batch_api"
+    },
+    {
+      "arm_id": "gemini36_flash_complete_graph",
+      "provider": "google",
+      "model": "gemini-3.6-flash",
+      "thinking_level": "medium",
+      "max_output_tokens_including_thinking": 3000,
+      "media": "two_generated_only_native_mp4_videos",
+      "transport": "batch_api",
+      "prospective_requests": 882,
+      "frozen_prior_requests_reused": 441
+    }
+  ],
+  "frozen_gemini_subset_reuse": {
+    "allowed": true,
+    "require_exact_unordered_episode_pair": true,
+    "side_orientation_remap": "deterministic_A_B_inversion_only",
+    "model": "gemini-3.6-flash",
+    "thinking_level": "medium",
+    "max_output_tokens_including_thinking": 3000,
+    "prompt_sha256": "ebe714130b8ade9305f8b5c6df77fa414fa7b9ac33d843d5a25c2905da41943c",
+    "prior_inventory_sha256": "808999ee2160e7b3a5371f068875e35b623069d8e17ffa873d6ddc4553617ab2",
+    "prior_collection_file_sha256": "f8a222bbede6e796d40722eda2e5b5990fad1fe3dfa954f0f06ef3f9cdbdd0c5",
+    "prior_result_count": 441,
+    "prior_error_count": 0,
+    "prior_measured_batch_cost_usd": 3.14775225,
+    "prior_results_are_diagnostic_only": true
+  },
+  "admission_and_stopping": {
+    "one_schema_transport_canary_per_arm": true,
+    "seven_pair_label_blind_pilot_per_new_configuration": true,
+    "full_matrix_requires_measured_projection_within_category_cap": true,
+    "partial_matrix_ranking_credit": false,
+    "scientifically_unfavorable_outputs_are_not_a_stop_reason": true,
+    "stop_reasons": [
+      "schema_or_transport_invalid",
+      "redaction_or_media_integrity_failure",
+      "measured_projection_exceeds_frozen_category_cap",
+      "campaign_category_or_total_cap_would_be_exceeded"
+    ]
+  },
+  "cost_boundary": {
+    "successor_evaluator_api_cap_usd": 25.0,
+    "historical_diagnostic_spend_is_reported_but_not_recharged": true,
+    "contingency_does_not_expand_category_cap": true,
+    "paid_execution_admitted": false
+  },
+  "analysis": {
+    "ranking": "Bradley_Terry_maximum_likelihood",
+    "metrics": [
+      "full_seven_policy_vector",
+      "spearman_rho",
+      "kendall_tau_b",
+      "pairwise_ordering_accuracy",
+      "session_clustered_bootstrap_ci95",
+      "exact_or_permutation_small_n_uncertainty",
+      "top_policy_rank",
+      "abstention_coverage",
+      "cost_and_latency"
+    ],
+    "threshold_tuning_forbidden": true
+  },
+  "evaluator_provider_called": false,
+  "protocol_sha256": "4636d2e4a6b834f24f86f5073ef831e47c843925a11c1ad761d27663f8194954"
+}
