@@ -32,11 +32,36 @@ that does not make the candidate geometry canonical capture truth.
 - The current multi-view AABB fusion path is retained as a qualified metric-depth
   method or explicit diagnostic. It is not mislabeled as the future
   contribution-weighted Gaussian semantic lifter.
+- A provider-neutral contribution-lifting baseline now accepts exact stable
+  Gaussian mappings, persistent track registries, full-frame mask probabilities,
+  source-frame PTS, calibrated camera records, and the renderer's actual
+  front-to-back `transmittance * alpha` rows. It independently verifies the
+  canonical mapping, track, camera, mask, contribution, and view payload digests;
+  caps input size; accumulates foreground and background evidence; requires
+  multi-view and angular support; excludes generated-only Gaussians; keeps
+  adjacent same-label track IDs separate; and returns a targeted abstention when
+  evidence is insufficient.
+- A bounded file stage verifies the exact JSON artifact bytes and sizes before
+  executing the pure lifter and atomically writes a provenance-linked terminal
+  result. The result ceiling is per-Gaussian semantic support. It explicitly
+  remains unready for metric boxes, collision, physics, task success, or physical
+  claims.
+- A separate Z-up metric OBB stage now consumes only a digest-valid terminal
+  lifting result, the exact Gaussian mapping, and hash-bound observed depth,
+  verified mesh-surface, or Gaussian-center support points. It rejects
+  generated/unknown support, requires verified metric scale, removes bounded MAD
+  outliers, fits a deterministic minimum-area horizontal rectangle, estimates
+  vertical limits independently, and emits eight ordered corners. Gaussian-center
+  fits carry an explicitly weaker approximate ceiling. Every output remains a
+  candidate pending separate collision/occupancy validation.
 
-Still missing is the production contribution-rendering stage itself: stable
-Gaussian IDs or a hash-bound analysis mapping, exact source cameras, per-pixel
-transmittance/alpha contributions, track-aware instance fusion, true Z-up OBB
-fitting, collision validation, and a measured ground-truth evaluation set.
+Still missing is a real renderer adapter that emits those exact contribution
+artifacts from a production analysis splat. The checked-in stage consumes and
+qualifies contribution rows but does not synthesize them or claim a render ran.
+Large-scene production also needs a bounded chunked/binary transport rather than
+one JSON view artifact, followed by graph cleanup, a production surface-point
+adapter, support-plane reasoning, collision validation, and a measured
+ground-truth evaluation set.
 
 ## Primary-source audit
 
@@ -108,8 +133,9 @@ still contains only the release timeline and no runnable implementation/models.
 3. `gaussian_contribution_lifter`: accumulate foreground/background evidence
    using renderer contribution weights and exact camera bindings.
 4. `instance_fusion`: track-aware, multi-view, disconnected-component cleanup.
-5. `oriented_box_fitter`: robust outlier removal, support-plane reasoning,
-   horizontal-axis fitting, independent vertical bounds, eight Z-up corners.
+5. `oriented_box_fitter`: implemented baseline for robust outlier removal,
+   horizontal minimum-area fitting, independent vertical bounds, and eight Z-up
+   corners; production support-plane evidence remains incomplete.
 6. `collision_validator`: separate collision/occupancy consistency checks.
 7. `confidence_scorer`: view count/diversity, ambiguity, coverage, reprojection,
    scale, support, and held-out validation.
