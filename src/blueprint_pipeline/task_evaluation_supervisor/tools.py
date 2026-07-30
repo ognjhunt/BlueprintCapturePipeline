@@ -21,6 +21,7 @@ from ..reconstruction_geometry_contracts import (
     build_collider_qualification_report,
     build_isaac_asset_verification_result,
     build_metric_geometry_manifest,
+    build_nurec_openusd_packaging_request,
     build_nurec_openusd_packaging_result,
 )
 from ..reconstruction_worker_contracts import (
@@ -491,6 +492,7 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             required_inputs=["packaging_request_digest"], mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
             minimum_mode="execute_non_spend", timeout_seconds=3_600.0,
+            idempotency="content_addressed_receipt_replay",
         ),
         _descriptor(
             "verify_isaac_asset", "capture_reconstruction_isaac_verification",
@@ -1718,6 +1720,11 @@ def _execute_geometry_contract_tool(
     runtime = getattr(context, runtime_attr, None)
     if not isinstance(source, Mapping) or not callable(runtime):
         raise ValueError(f"registered_tool_runtime_not_injected:{tool_id}")
+    if tool_id == "package_nurec_openusd":
+        try:
+            source = build_nurec_openusd_packaging_request(source)
+        except ValueError as exc:
+            raise ValueError(f"registered_tool_request_contract_invalid:{tool_id}") from exc
     expected = arguments.get(digest_field)
     actual = source.get(digest_field)
     if not isinstance(actual, str) or expected != actual:
@@ -1740,6 +1747,16 @@ def _execute_geometry_contract_tool(
         raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
     if tool_id == "verify_isaac_asset" and result.get("packaging_result_digest") != source.get(
         "packaging_result_digest"
+    ):
+        raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
+    if tool_id == "package_nurec_openusd" and any(
+        result.get(field) != source.get(field)
+        for field in (
+            "metric_geometry_manifest_digest",
+            "collider_candidate_manifest_digest",
+            "collider_qualification_digest",
+            "collider_qualification_decision",
+        )
     ):
         raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
     result_digest = result[result_digest_field]

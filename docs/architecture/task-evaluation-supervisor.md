@@ -181,7 +181,10 @@ request artifacts plus executor callables remain trusted runtime state. The
 model cannot supply paths, thresholds, calibration, package contents, Isaac
 checks, or provider handles. Each emitted artifact is revalidated and bound to
 its predecessor before it enters the ledger; the enclosing tool observation
-retains `proof_effect=none`.
+retains `proof_effect=none`. `package_nurec_openusd` additionally validates the
+complete versioned packaging request before invoking the trusted packager; a
+digest-valid but scientifically unqualified collider request is refused before
+filesystem execution.
 
 When no Decision/Evidence Request or maintained Site-Task Testbed exists, the
 manager first triggers claim interpretation, then capture/testbed inspection,

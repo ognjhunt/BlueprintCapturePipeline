@@ -1,8 +1,9 @@
 # Reconstruction Capability and Testbed Compiler
 
 Status: implemented local contract boundary, deterministic frame/split kernel,
-ARKitScenes raw proxy compiler, native dual-fisheye normalization, and strict
-Isaac reconstruction qualification runner, version 1 (2026-07-30)
+ARKitScenes raw proxy compiler, native dual-fisheye normalization, deterministic
+OpenUSD packaging, and strict Isaac reconstruction qualification runner, version
+1 (2026-07-30)
 
 ## Decision
 
@@ -279,9 +280,20 @@ coverage, visual disagreement, obstacle thickness, clearance, and robot-footprin
 navigability. A passing report is limited to bounded navigation simulation;
 grasping, articulation, contact-force, and deployment claims remain unsupported.
 
-`nurec_openusd_packaging_result.v1` requires meters, Z-up, one shared visual and
-physics frame, separate appearance and collision prims, and configured collision
-API. `isaac_asset_verification_result.v1` requires the exact package, expected
+`nurec_openusd_packaging_request.v1` binds exact appearance, metric-geometry,
+collider-candidate, and independently accepted collider-qualification digests.
+The repository-owned OpenUSD packager accepts only safe relative asset paths
+from a trusted artifact root, re-hashes both sources, composes one meter/Z-up
+visual and physics frame, creates a self-contained USDZ dependency closure, and
+normalizes ZIP order, timestamps, storage, and 64-byte member alignment for
+byte-stable replay. This version requires each bound source asset to be
+self-contained; unlisted external layers/assets and compressed, encrypted,
+symlinked, corrupt, traversal, or oversized USDZ members fail closed. It then
+reopens the exact package and verifies ParticleField,
+collision API, and dependency presence before emitting
+`nurec_openusd_packaging_result.v1`. A successful package remains a compatibility
+candidate, not collision or simulator proof. `isaac_asset_verification_result.v1`
+requires the exact package, expected
 prims, valid units/transforms, no missing assets, loaded ParticleField, active
 collision geometry, a contact surface, a non-falling test body, and nonblank
 fixed-camera renders without NaNs or obvious scale mismatch. Even a passing

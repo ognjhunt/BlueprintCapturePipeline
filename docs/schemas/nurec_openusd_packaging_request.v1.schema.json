@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/nurec_openusd_packaging_request.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "appearance_asset",
+    "metric_geometry_manifest_digest",
+    "collider_asset",
+    "collider_candidate_manifest_digest",
+    "collider_qualification_digest",
+    "collider_qualification_decision",
+    "stage_meters_per_unit",
+    "up_axis",
+    "shared_visual_physics_frame",
+    "target_prim_paths",
+    "output_format",
+    "output_name",
+    "proof_effect",
+    "claim_ceiling",
+    "packaging_request_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "nurec_openusd_packaging_request.v1"},
+    "appearance_asset": {"$ref": "#/$defs/assetBinding"},
+    "collider_asset": {"$ref": "#/$defs/assetBinding"},
+    "metric_geometry_manifest_digest": {"$ref": "#/$defs/digest"},
+    "collider_candidate_manifest_digest": {"$ref": "#/$defs/digest"},
+    "collider_qualification_digest": {"$ref": "#/$defs/digest"},
+    "collider_qualification_decision": {"const": "accepted_bounded_navigation"},
+    "stage_meters_per_unit": {"const": 1.0},
+    "up_axis": {"const": "Z"},
+    "shared_visual_physics_frame": {"const": true},
+    "output_format": {"const": "usdz"},
+    "output_name": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.usdz$"},
+    "proof_effect": {"const": "packaging_request_only"},
+    "claim_ceiling": {"const": "none"},
+    "packaging_request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "assetBinding": {
+      "type": "object",
+      "required": ["relative_path", "digest", "source_prim_path"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/digest"},
+        "source_prim_path": {"type": "string", "pattern": "^/"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import PurePosixPath
 import re
 from typing import Any, Mapping, Sequence
 
@@ -18,6 +19,7 @@ from .decision_evidence_contracts import canonical_digest
 METRIC_GEOMETRY_SCHEMA = "metric_geometry_manifest.v1"
 COLLIDER_CANDIDATE_SCHEMA = "mesh_collider_candidate_manifest.v1"
 COLLIDER_QUALIFICATION_SCHEMA = "collider_qualification_report.v1"
+PACKAGING_REQUEST_SCHEMA = "nurec_openusd_packaging_request.v1"
 PACKAGING_RESULT_SCHEMA = "nurec_openusd_packaging_result.v1"
 ISAAC_VERIFICATION_SCHEMA = "isaac_asset_verification_result.v1"
 
@@ -222,6 +224,79 @@ def build_collider_qualification_report(value: Mapping[str, Any]) -> dict[str, A
     return _finalize(artifact, COLLIDER_QUALIFICATION_SCHEMA, "collider_qualification_digest")
 
 
+def build_nurec_openusd_packaging_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    artifact = _clone(value)
+    errors: list[str] = []
+    _lineage(artifact, errors)
+    for key in (
+        "metric_geometry_manifest_digest",
+        "collider_candidate_manifest_digest",
+        "collider_qualification_digest",
+    ):
+        if not _is_digest(artifact.get(key)):
+            errors.append(f"{key}_invalid")
+    if artifact.get("collider_qualification_decision") != "accepted_bounded_navigation":
+        errors.append("qualified_collider_required_for_packaging")
+    original_digests = {
+        str(item.get("digest") or "")
+        for item in artifact.get("original_file_references") or []
+        if isinstance(item, Mapping)
+    }
+    input_digests = {
+        str(item.get("digest") or "")
+        for item in artifact.get("input_digests") or []
+        if isinstance(item, Mapping)
+    }
+    for name in ("appearance_asset", "collider_asset"):
+        binding = artifact.get(name)
+        if not isinstance(binding, Mapping):
+            errors.append(f"{name}_binding_missing")
+            continue
+        if not _is_digest(binding.get("digest")):
+            errors.append(f"{name}_digest_invalid")
+        elif binding.get("digest") not in original_digests or binding.get("digest") not in input_digests:
+            errors.append(f"{name}_provenance_binding_missing")
+        relative_path = str(binding.get("relative_path") or "").replace("\\", "/")
+        relative = PurePosixPath(relative_path)
+        if (
+            not relative_path
+            or relative.is_absolute()
+            or any(part in {"", ".", ".."} for part in relative.parts)
+            or ":" in relative.parts[0]
+        ):
+            errors.append(f"{name}_relative_path_unsafe")
+        prim_path = str(binding.get("source_prim_path") or "")
+        if not prim_path.startswith("/") or ".." in prim_path.split("/"):
+            errors.append(f"{name}_source_prim_path_invalid")
+    if artifact.get("stage_meters_per_unit") != 1.0 or artifact.get("up_axis") != "Z":
+        errors.append("stage_units_or_up_axis_invalid")
+    if artifact.get("shared_visual_physics_frame") is not True:
+        errors.append("visual_physics_frame_mismatch")
+    if artifact.get("output_format") != "usdz":
+        errors.append("self_contained_usdz_output_required")
+    if artifact.get("output_digests") != []:
+        errors.append("packaging_request_cannot_predeclare_outputs")
+    output_name = str(artifact.get("output_name") or "")
+    if (
+        not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.usdz", output_name)
+        or "/" in output_name
+        or "\\" in output_name
+    ):
+        errors.append("packaging_output_name_unsafe")
+    targets = artifact.get("target_prim_paths")
+    if not isinstance(targets, Mapping) or targets.get("appearance") != (
+        "/World/BlueprintReconstruction/Appearance"
+    ) or targets.get("collision") != "/World/BlueprintReconstruction/Collision":
+        errors.append("packaging_target_prim_paths_invalid")
+    if artifact.get("proof_effect") != "packaging_request_only" or artifact.get(
+        "claim_ceiling"
+    ) != "none":
+        errors.append("packaging_request_claim_boundary_invalid")
+    if errors:
+        raise ReconstructionGeometryContractError(errors)
+    return _finalize(artifact, PACKAGING_REQUEST_SCHEMA, "packaging_request_digest")
+
+
 def build_nurec_openusd_packaging_result(value: Mapping[str, Any]) -> dict[str, Any]:
     artifact = _clone(value)
     errors: list[str] = []
@@ -230,10 +305,33 @@ def build_nurec_openusd_packaging_result(value: Mapping[str, Any]) -> dict[str, 
         "appearance_asset_digest",
         "metric_geometry_manifest_digest",
         "collider_candidate_manifest_digest",
+        "collider_qualification_digest",
+        "packaging_request_digest",
         "package_digest",
     ):
         if not _is_digest(artifact.get(key)):
             errors.append(f"{key}_invalid")
+    if artifact.get("collider_qualification_decision") != "accepted_bounded_navigation":
+        errors.append("packaged_collider_not_independently_qualified")
+    if artifact.get("package_format") != "usdz" or artifact.get("self_contained") is not True:
+        errors.append("self_contained_usdz_package_required")
+    if artifact.get("deterministic_archive") is not True:
+        errors.append("deterministic_package_archive_required")
+    if artifact.get("missing_asset_count") != 0:
+        errors.append("packaged_dependency_missing")
+    for key in ("package_member_count", "particlefield_prim_count", "collision_api_prim_count"):
+        value_number = artifact.get(key)
+        if isinstance(value_number, bool) or not isinstance(value_number, int) or value_number < 1:
+            errors.append(f"{key}_invalid")
+    package_reference = str(artifact.get("package_artifact_reference") or "").replace("\\", "/")
+    package_path = PurePosixPath(package_reference)
+    if (
+        not package_reference
+        or package_path.is_absolute()
+        or any(part in {"", ".", ".."} for part in package_path.parts)
+        or package_path.suffix.lower() != ".usdz"
+    ):
+        errors.append("package_artifact_reference_unsafe")
     if artifact.get("stage_meters_per_unit") != 1.0 or artifact.get("up_axis") != "Z":
         errors.append("stage_units_or_up_axis_invalid")
     if artifact.get("shared_visual_physics_frame") is not True:

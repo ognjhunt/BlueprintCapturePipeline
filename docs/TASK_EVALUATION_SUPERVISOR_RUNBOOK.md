@@ -153,7 +153,11 @@ The registered Phase 5 sequence is `compile_metric_geometry` →
 immutable predecessor or request digest. Missing injected executors omit the
 tool from the live SDK surface; mismatched digests, malformed results, altered
 lineage, self-issued collision validity, or inflated Isaac claims are refused
-and preserved as typed tool failures.
+and preserved as typed tool failures. The local OpenUSD packager may be injected
+for non-spend execution. It revalidates the frozen packaging request, source
+digests, qualified-collider binding, path confinement, self-contained USDZ
+closure, deterministic archive layout, and exact composed prims before its
+result can enter the ledger.
 
 Clarification responses and authorization grants are separate receipts created
 at trusted customer/operator boundaries. Agent output never satisfies its own
