@@ -110,6 +110,7 @@ from .recovery import (
     PreauthorizedRecoveryController,
     PreauthorizedRecoveryPolicy,
     RecoveryControlError,
+    validate_recovery_result,
 )
 from .evaluation import (
     SEALED_SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION,
@@ -240,6 +241,7 @@ __all__ = [
     "validate_targeted_recapture_receipt",
     "validate_targeted_recapture_request",
     "validate_recapture_reinspection",
+    "validate_recovery_result",
     "validate_clarification_receipt",
     "validate_clarification_request",
     "validate_authorization_receipt",

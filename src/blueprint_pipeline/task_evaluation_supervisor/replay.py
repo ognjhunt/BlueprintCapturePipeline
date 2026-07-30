@@ -41,9 +41,11 @@ from .phase2_artifacts import (
     validate_authorization_request,
     validate_customer_report,
     validate_recapture_reinspection,
+    validate_scenario_proposal_set,
     validate_targeted_recapture_receipt,
     validate_targeted_recapture_request,
 )
+from .recovery import RecoveryControlError, validate_recovery_result
 from .tools import (
     TOOL_REGISTRY_SCHEMA_VERSION,
     ToolRegistry,
@@ -481,6 +483,7 @@ def replay_supervisor_run(
     referenced_tool_observation_paths: set[Path] = set()
     generated_artifact_digests: list[str] = []
     generated_artifact_references: list[dict[str, Any]] = []
+    generated_recovery_results: list[dict[str, Any]] = []
     replayed_tool_cost_usd = 0.0
     for row in report_value.get("invocation_manifests") or []:
         path = (root / str(row["artifact_path"])).resolve()
@@ -574,6 +577,22 @@ def replay_supervisor_run(
                     generated_value,
                     digest_field=digest_fields.get(artifact_type),
                 )
+                try:
+                    if artifact_type == "task_evaluation_scenario_proposal_set.v1":
+                        generated_value = validate_scenario_proposal_set(generated_value)
+                        if generated_value["run_id"] != run_value["run_id"]:
+                            raise SupervisorReplayError("generated_scenario_run_mismatch")
+                    elif artifact_type == "task_evaluation_recovery_result.v1":
+                        generated_value = validate_recovery_result(
+                            generated_value,
+                            run_id=str(run_value["run_id"]),
+                            authority=authority_value,
+                        )
+                        generated_recovery_results.append(dict(generated_value))
+                except Phase2ArtifactError as exc:
+                    raise SupervisorReplayError("generated_scenario_contract_mismatch") from exc
+                except RecoveryControlError as exc:
+                    raise SupervisorReplayError("generated_recovery_contract_mismatch") from exc
                 if generated_ref.get("artifact_digest") != generated_digest:
                     raise SupervisorReplayError("generated_artifact_digest_mismatch")
                 generated_artifact_digests.append(generated_digest)
@@ -795,6 +814,20 @@ def replay_supervisor_run(
             )
         except Phase2ArtifactError as exc:
             raise SupervisorReplayError("authorization_kernel_inputs_mismatch") from exc
+    if generated_recovery_results:
+        if authorization_receipt is None:
+            raise SupervisorReplayError("generated_recovery_authorization_missing")
+        for recovery_result in generated_recovery_results:
+            if (
+                recovery_result["authorization_receipt_digest"]
+                != authorization_receipt["authorization_receipt_digest"]
+                or recovery_result["immutable_input_digests"]
+                != authorization_receipt["immutable_input_digests"]
+                or recovery_result["provider_id"]
+                not in authorization_receipt["granted_provider_ids"]
+                or recovery_result["action_id"] not in authorization_receipt["granted_action_ids"]
+            ):
+                raise SupervisorReplayError("generated_recovery_authorization_mismatch")
 
     deterministic_decision = kernel_inputs.get("decision_envelope")
     replayed_decision: dict[str, Any] | None = None

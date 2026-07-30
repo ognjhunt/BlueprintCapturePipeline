@@ -312,6 +312,15 @@ the fail-closed `disabled`, missing-preauthorization-controller, and
 `candidate_policy` control-plane outcomes. A rehashed report cannot relabel a
 blocked capability or turn a blocker into a completed run.
 
+Generated scenario proposal sets and preauthorized recovery results are
+contract-validated again during replay, not accepted from their digest alone.
+Scenario sets must remain pre-result, unfrozen, non-authoritative, and free of
+hidden labels. Recovery results must preserve exact run, receipt, provider,
+action, immutable-input, cost, retry, watchdog, teardown, provider-zero, and
+no-proof-effect semantics. A live recovery controller is refused before
+execution unless the matching operator request and receipt are also recorded as
+kernel inputs.
+
 The customer report has its own exact-schema validator at creation and replay.
 It rejects unknown fields, non-finite or negative spend, inconsistent
 decision/partial/abstention flags, agent-authoritative output, proof mutation,

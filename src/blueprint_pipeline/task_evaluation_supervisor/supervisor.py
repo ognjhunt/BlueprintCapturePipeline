@@ -455,6 +455,12 @@ class TaskEvaluationSupervisor:
             selected_mode = mode if isinstance(mode, AutonomyMode) else AutonomyMode(str(mode))
         except ValueError as exc:
             raise ValueError(f"unsupported_supervisor_autonomy_mode:{mode}") from exc
+        if (
+            selected_mode is AutonomyMode.EXECUTE_PREAUTHORIZED
+            and self.recovery_controller is not None
+            and (context.authorization_request is None or context.authorization_receipt is None)
+        ):
+            raise ValueError("preauthorized_recovery_requires_recorded_authorization_pair")
         persisted_run_value: dict[str, Any] | None = None
         run_path = root / "task_evaluation_supervisor_run.json"
         if ledger_path.exists() and ledger_path.stat().st_size:

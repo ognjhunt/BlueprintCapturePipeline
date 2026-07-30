@@ -99,6 +99,7 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     validate_customer_report,
     validate_frozen_scenario_manifest,
     validate_recapture_reinspection,
+    validate_recovery_result,
     validate_scenario_proposal_set,
     validate_targeted_recapture_receipt,
     validate_tool_observation_binding,
@@ -3469,6 +3470,19 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
         replay_supervisor_run(execution.output_dir)
     leaf_paths[0].write_text(json.dumps(generated_leaf), encoding="utf-8")
 
+    scenario_path = execution.output_dir / "generated" / "scenario_proposals" / "proposal_set.json"
+    scenario_artifact = json.loads(scenario_path.read_text(encoding="utf-8"))
+    rewritten_scenario = json.loads(json.dumps(scenario_artifact))
+    rewritten_scenario["scenarios"][0]["hidden_label"] = "candidate-a-wins"
+    rewritten_scenario["scenario_proposal_set_digest"] = canonical_digest(
+        rewritten_scenario,
+        digest_field="scenario_proposal_set_digest",
+    )
+    scenario_path.write_text(json.dumps(rewritten_scenario), encoding="utf-8")
+    with pytest.raises(SupervisorReplayError, match="generated_scenario_contract_mismatch"):
+        replay_supervisor_run(execution.output_dir)
+    scenario_path.write_text(json.dumps(scenario_artifact), encoding="utf-8")
+
     tampered = json.loads(observations[0].read_text(encoding="utf-8"))
     tampered["proof_effect"] = "accepted_evidence"
     observations[0].write_text(json.dumps(tampered), encoding="utf-8")
@@ -4162,12 +4176,43 @@ def test_phase3_preauthorized_recovery_enforces_and_replays_bounded_execution(
     tmp_path: Path,
 ) -> None:
     controller, adapter = _recovery_controller()
+    with pytest.raises(
+        ValueError,
+        match="preauthorized_recovery_requires_recorded_authorization_pair",
+    ):
+        TaskEvaluationSupervisor(
+            agents_sdk_invoker=_RecoveryToolCallingInvoker(
+                commit_sha="a" * 40,
+                input_digests=[SHA_A],
+            ),
+            recovery_controller=controller,
+        ).run(
+            _context_with_retryable_evidence_failure(),
+            output_dir=tmp_path / "preauthorized-recovery-without-receipt",
+            mode=AutonomyMode.EXECUTE_PREAUTHORIZED,
+            generated_at="2026-07-29T16:00:00+00:00",
+        )
+    request = authorization_request(
+        run_id="supervisor-run-1",
+        tool_id="execute_preauthorized_recovery",
+        reason="Permit one bounded recovery for a typed provider failure.",
+        requested_max_cost_usd=0.5,
+        requested_ttl_seconds=120,
+        immutable_input_digests=[SHA_A],
+        requested_retry_count=1,
+        requested_provider_ids=["fixture-provider"],
+        requested_action_ids=["bounded_provider_retry"],
+    )
     invoker = _RecoveryToolCallingInvoker(commit_sha="a" * 40, input_digests=[SHA_A])
     execution = TaskEvaluationSupervisor(
         agents_sdk_invoker=invoker,
         recovery_controller=controller,
     ).run(
-        _context_with_retryable_evidence_failure(),
+        replace(
+            _context_with_retryable_evidence_failure(),
+            authorization_request=request,
+            authorization_receipt=controller.policy.receipt,
+        ),
         output_dir=tmp_path / "preauthorized-recovery",
         mode=AutonomyMode.EXECUTE_PREAUTHORIZED,
         generated_at="2026-07-29T16:00:00+00:00",
@@ -4206,6 +4251,27 @@ def test_phase3_preauthorized_recovery_enforces_and_replays_bounded_execution(
     assert attempt["scientific_validity_inferred"] is False
     assert attempt["shared_paid_resource_admission_validated"] is True
     assert attempt["paid_resource_class"] == "gpu_canary"
+    assert validate_recovery_result(attempt, run_id="supervisor-run-1") == attempt
+
+    rewritten_recovery = dict(attempt)
+    rewritten_recovery["proof_effect"] = "authoritative_success"
+    rewritten_recovery["recovery_result_digest"] = canonical_digest(
+        rewritten_recovery,
+        digest_field="recovery_result_digest",
+    )
+    with pytest.raises(RecoveryControlError, match="recovery_result_contract_invalid"):
+        validate_recovery_result(rewritten_recovery, run_id="supervisor-run-1")
+
+    recovery_path = next((execution.output_dir / "generated" / "recovery_attempts").glob("*.json"))
+    recovery_artifact = json.loads(recovery_path.read_text(encoding="utf-8"))
+    recovery_artifact["scientific_validity_inferred"] = True
+    recovery_artifact["recovery_result_digest"] = canonical_digest(
+        recovery_artifact,
+        digest_field="recovery_result_digest",
+    )
+    recovery_path.write_text(json.dumps(recovery_artifact), encoding="utf-8")
+    with pytest.raises(SupervisorReplayError, match="generated_recovery_contract_mismatch"):
+        replay_supervisor_run(execution.output_dir)
 
 
 def test_phase3_vast_recovery_runs_through_supervisor_and_replay(
