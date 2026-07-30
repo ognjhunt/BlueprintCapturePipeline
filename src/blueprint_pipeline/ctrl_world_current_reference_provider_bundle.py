@@ -5,6 +5,9 @@ from __future__ import annotations
 import shutil
 import stat
 import zipfile
+import hashlib
+import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +49,135 @@ SOURCE_FILES = (
     "models/utils.py",
     "dataset_meta_info/droid/stat.json",
 )
+
+
+def inspect_ctrl_world_current_reference_archive_inputs(
+    archive: zipfile.ZipFile,
+    *,
+    manifest: Mapping[str, Any],
+    rollout_manifest: Mapping[str, Any],
+    names: set[str],
+) -> tuple[dict[str, str], list[str]]:
+    """Independently validate every request/source byte in a current-reference bundle."""
+
+    blockers: list[str] = []
+    prefix = "provider_runtime/"
+    required = {
+        prefix + "wam_provider_runtime_manifest.json",
+        prefix + "wam_rollout_input_manifest.json",
+        prefix + "wam_provider_runtime_runner.py",
+        prefix + "ctrl_world_provider_runtime_support.py",
+        prefix + "run_wam_provider_runtime.sh",
+        prefix + "successor_retained_control.py",
+        prefix + "ctrl_world_request/ctrl_world_current_reference_request.json",
+    }
+    missing = sorted(required - names)
+    if missing:
+        blockers.append("ctrl_world_current_reference_archive_entries_missing")
+    if any(name.lower().endswith(".mp4") for name in names):
+        blockers.append("ctrl_world_current_reference_archive_future_video_present")
+    try:
+        request_entry = prefix + "ctrl_world_request/ctrl_world_current_reference_request.json"
+        request = json.loads(archive.read(request_entry).decode("utf-8"))
+        if (
+            request.get("schema_version")
+            != "blueprint_ctrl_world_current_reference_staged_request.v1"
+        ):
+            blockers.append("ctrl_world_current_reference_archive_request_schema_invalid")
+        request_digest_payload = dict(request)
+        recorded_request_sha256 = request_digest_payload.pop("request_sha256", None)
+        computed_request_sha256 = canonical_sha256(request_digest_payload)
+        if recorded_request_sha256 != computed_request_sha256:
+            blockers.append("ctrl_world_current_reference_archive_request_digest_invalid")
+        request_root = prefix + "ctrl_world_request/"
+        request_files: list[tuple[str, str]] = []
+        for view_id in request.get("view_order") or []:
+            for row in (request.get("selected_history_views") or {}).get(view_id, []):
+                request_files.append(
+                    (str(row.get("relative_path") or ""), str(row.get("sha256") or ""))
+                )
+            current = (request.get("current_views") or {}).get(view_id, {})
+            request_files.append(
+                (str(current.get("relative_path") or ""), str(current.get("sha256") or ""))
+            )
+        action = request.get("action_conditioning") or {}
+        request_files.append(
+            (str(action.get("relative_path") or ""), str(action.get("sha256") or ""))
+        )
+        for relative, expected_digest in request_files:
+            entry = request_root + relative
+            if not relative or entry not in names:
+                blockers.append("ctrl_world_current_reference_archive_request_file_missing")
+                continue
+            observed_digest = hashlib.sha256(archive.read(entry)).hexdigest()
+            if observed_digest != expected_digest:
+                blockers.append("ctrl_world_current_reference_archive_request_file_hash_mismatch")
+
+        source_manifest = manifest.get("source_manifest")
+        if not isinstance(source_manifest, Mapping):
+            blockers.append("ctrl_world_current_reference_archive_source_manifest_invalid")
+            source_manifest = {}
+        for row in source_manifest.get("files") or []:
+            relative = str(row.get("relative_path") or "")
+            entry = prefix + "ctrl_world_source/" + relative
+            if not relative or entry not in names:
+                blockers.append("ctrl_world_current_reference_archive_source_file_missing")
+                continue
+            observed = hashlib.sha256(archive.read(entry)).hexdigest()
+            if observed != row.get("sha256"):
+                blockers.append("ctrl_world_current_reference_archive_source_file_hash_mismatch")
+
+        for value, reason in (
+            (
+                manifest.get("experiment_id"),
+                "ctrl_world_current_reference_archive_experiment_invalid",
+            ),
+            (
+                rollout_manifest.get("experiment_id"),
+                "ctrl_world_current_reference_archive_rollout_experiment_invalid",
+            ),
+        ):
+            if value != EXPERIMENT_ID:
+                blockers.append(reason)
+        if manifest.get("arm_id") != "blueprint_ctrl_world_current_reference":
+            blockers.append("ctrl_world_current_reference_archive_arm_invalid")
+        if rollout_manifest.get("arm_id") != "blueprint_ctrl_world_current_reference":
+            blockers.append("ctrl_world_current_reference_archive_rollout_arm_invalid")
+        if manifest.get("request_sha256") != computed_request_sha256:
+            blockers.append("ctrl_world_current_reference_archive_manifest_request_mismatch")
+        if rollout_manifest.get("request_sha256") != computed_request_sha256:
+            blockers.append("ctrl_world_current_reference_archive_rollout_request_mismatch")
+        if manifest.get("truth_boundary", {}).get("future_physical_rgb_forbidden") is not True:
+            blockers.append("ctrl_world_current_reference_archive_future_rgb_boundary_invalid")
+        if rollout_manifest.get("physical_future_rgb_provided_to_model") is not False:
+            blockers.append("ctrl_world_current_reference_archive_rollout_future_rgb_invalid")
+        if rollout_manifest.get("physical_outcome_labels_accessed") is not False:
+            blockers.append("ctrl_world_current_reference_archive_rollout_label_boundary_invalid")
+
+        embedded_hashes = {
+            "runtime_manifest_file_sha256": hashlib.sha256(
+                archive.read(prefix + "wam_provider_runtime_manifest.json")
+            ).hexdigest(),
+            "rollout_manifest_file_sha256": hashlib.sha256(
+                archive.read(prefix + "wam_rollout_input_manifest.json")
+            ).hexdigest(),
+            "request_manifest_file_sha256": hashlib.sha256(archive.read(request_entry)).hexdigest(),
+            "request_sha256": computed_request_sha256,
+            "source_manifest_sha256": canonical_sha256(source_manifest),
+            "direct_runner_sha256": hashlib.sha256(
+                archive.read(prefix + "wam_provider_runtime_runner.py")
+            ).hexdigest(),
+            "support_runner_sha256": hashlib.sha256(
+                archive.read(prefix + "ctrl_world_provider_runtime_support.py")
+            ).hexdigest(),
+            "entrypoint_sha256": hashlib.sha256(
+                archive.read(prefix + "run_wam_provider_runtime.sh")
+            ).hexdigest(),
+        }
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        blockers.append("ctrl_world_current_reference_archive_unreadable")
+        embedded_hashes = {}
+    return embedded_hashes, sorted(set(blockers))
 
 
 def build_ctrl_world_current_reference_provider_bundle(
@@ -257,4 +389,5 @@ __all__ = [
     "RECEIPT_SCHEMA_VERSION",
     "SOURCE_FILES",
     "build_ctrl_world_current_reference_provider_bundle",
+    "inspect_ctrl_world_current_reference_archive_inputs",
 ]

@@ -123,6 +123,67 @@ def test_bundle_is_deterministic_and_contains_no_policy_or_future_video(
         )
         == []
     )
+    with zipfile.ZipFile(first["bundle_path"]) as archive:
+        names = set(archive.namelist())
+        runtime_manifest = json.loads(
+            archive.read("provider_runtime/wam_provider_runtime_manifest.json")
+        )
+        rollout_manifest = json.loads(
+            archive.read("provider_runtime/wam_rollout_input_manifest.json")
+        )
+        embedded, blockers = bundle.inspect_ctrl_world_current_reference_archive_inputs(
+            archive,
+            manifest=runtime_manifest,
+            rollout_manifest=rollout_manifest,
+            names=names,
+        )
+    assert blockers == []
+    assert embedded == first["embedded_hashes"]
+
+
+def test_archive_inspector_rejects_request_byte_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source(tmp_path)
+    monkeypatch.setattr(
+        bundle, "_source_commit", lambda _: MODEL_FREEZE["ctrl_world_source"]["revision"]
+    )
+    monkeypatch.setattr(bundle, "_source_status", lambda _: "")
+    monkeypatch.setattr(
+        bundle,
+        "EXPECTED_STATE_STAT_SHA256",
+        file_sha256(source / "dataset_meta_info/droid/stat.json"),
+    )
+    built = bundle.build_ctrl_world_current_reference_provider_bundle(
+        job_dir=tmp_path / "built",
+        ctrl_world_source_dir=source,
+        staged_request_dir=_request(tmp_path),
+    )
+    drifted = tmp_path / "drifted.zip"
+    with (
+        zipfile.ZipFile(built["bundle_path"]) as source_archive,
+        zipfile.ZipFile(drifted, "w") as target,
+    ):
+        for name in source_archive.namelist():
+            value = source_archive.read(name)
+            if name.endswith("action_conditioning_11x7.npy"):
+                value += b"drift"
+            target.writestr(name, value)
+    with zipfile.ZipFile(drifted) as archive:
+        names = set(archive.namelist())
+        runtime_manifest = json.loads(
+            archive.read("provider_runtime/wam_provider_runtime_manifest.json")
+        )
+        rollout_manifest = json.loads(
+            archive.read("provider_runtime/wam_rollout_input_manifest.json")
+        )
+        _embedded, blockers = bundle.inspect_ctrl_world_current_reference_archive_inputs(
+            archive,
+            manifest=runtime_manifest,
+            rollout_manifest=rollout_manifest,
+            names=names,
+        )
+    assert "ctrl_world_current_reference_archive_request_file_hash_mismatch" in blockers
 
 
 def test_bundle_refuses_nonempty_output_and_wrong_source_revision(
