@@ -87,6 +87,7 @@ def test_transition_builds_exact_three_view_11x7_request(tmp_path: Path) -> None
     assert request["view_order"] == list(CTRL_WORLD_RELEASED_VIEW_ORDER)
     assert request["action_conditioning_shape"] == [11, 7]
     assert request["action_conditioning_7d"].shape == (11, 7)
+    assert set(request["current_views"]) == set(CTRL_WORLD_RELEASED_VIEW_ORDER)
     assert prepared["reliability_actions_10d"].shape == (5, 10)
     assert prepared["next_joint_position"][0] == pytest.approx(0.7)
     assert Path(prepared["native_policy_action_path"]).is_file()
@@ -129,6 +130,15 @@ def test_joint_position_ctrl_world_requeries_same_policy_on_generated_views(
         def predict(self, request: dict[str, Any], *, output_dir: Path) -> dict[str, Any]:
             assert request["action_conditioning_7d"].shape == (11, 7)
             query_index = int(request["query_index"])
+            if query_index == 1:
+                with Image.open(
+                    request["current_views"][DROID_EXTERIOR_VIEW_1]["path"]
+                ) as image:
+                    assert int(np.mean(np.asarray(image))) == 11
+                with Image.open(
+                    request["selected_history_views"][DROID_EXTERIOR_VIEW_1][-1]["path"]
+                ) as image:
+                    assert int(np.mean(np.asarray(image))) == 0
             sequences: dict[str, list[str]] = {}
             for view_index, view_id in enumerate(CTRL_WORLD_RELEASED_VIEW_ORDER):
                 paths: list[str] = []

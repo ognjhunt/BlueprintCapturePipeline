@@ -163,6 +163,7 @@ class DroidCtrlWorldJointPositionTransitionAdapter:
         native_action_path = output_dir / "native_policy_action.npy"
         np.save(native_action_path, np.asarray(policy_action, dtype=np.float64), allow_pickle=False)
         selected_histories: dict[str, list[dict[str, str]]] = {}
+        current_views: dict[str, dict[str, str]] = {}
         for view_id in CTRL_WORLD_RELEASED_VIEW_ORDER:
             selected_histories[view_id] = []
             for index in CTRL_WORLD_SELECTED_HISTORY_INDICES:
@@ -173,6 +174,14 @@ class DroidCtrlWorldJointPositionTransitionAdapter:
                 selected_histories[view_id].append(
                     {"path": str(path), "sha256": file_sha256(path)}
                 )
+            current_path = _safe_file(
+                view_histories[view_id][-1],
+                reason=f"ctrl_world_joint_position_current_view_missing:{view_id}",
+            )
+            current_views[view_id] = {
+                "path": str(current_path),
+                "sha256": file_sha256(current_path),
+            }
 
         return {
             "wam_request": {
@@ -181,6 +190,7 @@ class DroidCtrlWorldJointPositionTransitionAdapter:
                 "task_prompt": task_prompt,
                 "view_order": list(CTRL_WORLD_RELEASED_VIEW_ORDER),
                 "selected_history_views": selected_histories,
+                "current_views": current_views,
                 "selected_history_indices": list(CTRL_WORLD_SELECTED_HISTORY_INDICES),
                 "action_conditioning_7d": adapted["action_conditioning_7d"],
                 "action_conditioning_shape": [11, 7],

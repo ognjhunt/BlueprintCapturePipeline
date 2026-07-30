@@ -42,6 +42,7 @@ def _request(tmp_path: Path) -> dict[str, Any]:
         "task_prompt": "Pick up the spray can and place it inside the marked tray.",
         "view_order": list(CTRL_WORLD_RELEASED_VIEW_ORDER),
         "selected_history_views": histories,
+        "current_views": {view_id: dict(rows[-1]) for view_id, rows in histories.items()},
         "selected_history_indices": list(CTRL_WORLD_SELECTED_HISTORY_INDICES),
         "action_conditioning_7d": np.zeros((11, 7), dtype=np.float64),
         "action_conditioning_shape": [11, 7],
@@ -66,6 +67,11 @@ def test_stage_request_binds_three_view_history_action_and_model_freeze(tmp_path
     assert manifest["policy_identity_in_provider_request"] is False
     assert manifest["label_free"] is True
     assert all(len(rows) == 6 for rows in manifest["selected_history_views"].values())
+    assert set(manifest["current_views"]) == set(CTRL_WORLD_RELEASED_VIEW_ORDER)
+    assert all(
+        (Path(receipt["request_dir"]) / row["relative_path"]).is_file()
+        for row in manifest["current_views"].values()
+    )
 
 
 def test_request_rejects_identity_outcome_future_pixels_and_contract_drift(
