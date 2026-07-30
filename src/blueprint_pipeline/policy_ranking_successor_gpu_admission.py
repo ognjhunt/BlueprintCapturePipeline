@@ -444,6 +444,7 @@ CTRL_WORLD_REPLAY_PROFILE = SuccessorGPUProfile(
     receipt_schema="ctrl_world_replay_bundle_receipt.v1",
     authorization_ids_by_allocation_index={
         8: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-8",
+        9: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-9",
     },
     cost_authorization_binding_sha256=(
         "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
