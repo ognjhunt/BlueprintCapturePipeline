@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import sys
@@ -24,6 +25,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _simulation_app_launch_config,
     _world_pose_matrix_from_backend_pose,
     import_simulation_app,
+    isaac_sim_6_backend,
     run_native_camera_canary,
 )
 from blueprint_pipeline.nvidia_warehouse_workcell import CANARY_SPEC_SCHEMA_VERSION
@@ -242,6 +244,16 @@ def test_fabric_world_pose_query_explicitly_bypasses_stale_usd() -> None:
 
     assert calls == [False]
     assert matrix[3, :3] == pytest.approx([0.1, 0.2, 0.3])
+
+
+def test_wrist_camera_prim_exists_before_fabric_world_reset() -> None:
+    source = inspect.getsource(isaac_sim_6_backend)
+
+    camera_definition = source.index("wrist_prim = UsdGeom.Camera.Define")
+    world_reset = source.index("world.reset()")
+    calibrated_local_pose = source.index('camera_objects["wrist"].set_local_pose')
+
+    assert camera_definition < world_reset < calibrated_local_pose
 
 
 def test_wrist_mount_is_calibrated_once_in_parent_coordinates_toward_task_centroid() -> None:

@@ -558,6 +558,20 @@ def isaac_sim_6_backend(
         )
         set_pose(external_path, external_eye, external_quaternion)
 
+        # Fabric snapshots the stage hierarchy during World.reset(). The wrist
+        # camera must already exist then or its child transform remains outside
+        # the live articulation hierarchy.
+        wrist = spec["cameras"]["wrist"]
+        calibration = wrist["rigid_mount_orientation"]
+        wrist_path = "/World/Franka/panda_hand/BlueprintWristCamera"
+        wrist_prim = UsdGeom.Camera.Define(stage, wrist_path)
+        wrist_prim.CreateVerticalApertureAttr(15.2908)
+        wrist_prim.CreateHorizontalApertureAttr(15.2908 * 640.0 / 480.0)
+        wrist_prim.CreateFocalLengthAttr(
+            15.2908 / (2.0 * math.tan(math.radians(float(wrist["vertical_fov_deg"])) / 2.0))
+        )
+        set_pose(wrist_path, wrist["mount_translation_m"], (1.0, 0.0, 0.0, 0.0))
+
         robot = SingleArticulation(prim_path="/World/Franka", name="native_warehouse_franka")
         world.scene.add(robot)
         world.reset()
@@ -580,9 +594,6 @@ def isaac_sim_6_backend(
             cache = UsdGeom.XformCache()
             return _matrix_array(cache.GetLocalToWorldTransform(stage.GetPrimAtPath(path)))
 
-        wrist = spec["cameras"]["wrist"]
-        calibration = wrist["rigid_mount_orientation"]
-        wrist_path = "/World/Franka/panda_hand/BlueprintWristCamera"
         hand_pose = SingleXFormPrim(
             prim_path="/World/Franka/panda_hand",
             name="native_warehouse_hand_fabric_pose",
@@ -598,15 +609,13 @@ def isaac_sim_6_backend(
             },
             world_up=calibration["world_up"],
         )
-        wrist_prim = UsdGeom.Camera.Define(stage, wrist_path)
-        wrist_prim.CreateVerticalApertureAttr(15.2908)
-        wrist_prim.CreateHorizontalApertureAttr(15.2908 * 640.0 / 480.0)
-        wrist_prim.CreateFocalLengthAttr(
-            15.2908 / (2.0 * math.tan(math.radians(float(wrist["vertical_fov_deg"])) / 2.0))
-        )
-        set_pose(wrist_path, wrist["mount_translation_m"], wrist_quaternion)
         camera_objects["external"] = Camera(prim_path=external_path, resolution=(640, 480))
         camera_objects["wrist"] = Camera(prim_path=wrist_path, resolution=(640, 480))
+        camera_objects["wrist"].set_local_pose(
+            translation=wrist["mount_translation_m"],
+            orientation=wrist_quaternion,
+            camera_axes="usd",
+        )
         for camera in camera_objects.values():
             camera.initialize()
         initial_joint_state = _apply_and_measure_render_only_joint_pose(
@@ -620,6 +629,7 @@ def isaac_sim_6_backend(
         wrist_local_initial = _matrix_array(
             UsdGeom.Xformable(stage.GetPrimAtPath(wrist_path)).GetLocalTransformation()
         )
+        hand_world_initial = _fabric_world_pose_matrix(hand_pose)
         wrist_world_initial = _fabric_world_pose_matrix(camera_objects["wrist"])
         actual_wrist_eye = wrist_world_initial[3, :3]
         actual_wrist_forward = (np.asarray([0.0, 0.0, -1.0, 0.0]) @ wrist_world_initial)[:3]
@@ -737,6 +747,7 @@ def isaac_sim_6_backend(
         commanded_step = save_frames("commanded")
         record_entity_projections("commanded")
         finalize_entity_projections()
+        hand_world_commanded = _fabric_world_pose_matrix(hand_pose)
         wrist_world_commanded = _fabric_world_pose_matrix(camera_objects["wrist"])
         wrist_local_commanded = _matrix_array(
             UsdGeom.Xformable(stage.GetPrimAtPath(wrist_path)).GetLocalTransformation()
@@ -771,6 +782,9 @@ def isaac_sim_6_backend(
             },
             "camera_transition_physics_steps_advanced": int(world.current_time_step_index)
             - physics_step_after_reset,
+            "wrist_parent_world_displacement_m": float(
+                np.linalg.norm(hand_world_commanded[3, :3] - hand_world_initial[3, :3])
+            ),
             "wrist_camera_world_displacement_m": float(
                 np.linalg.norm(wrist_world_commanded[3, :3] - wrist_world_initial[3, :3])
             ),
