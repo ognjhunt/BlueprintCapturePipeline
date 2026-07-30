@@ -303,6 +303,15 @@ and final event, terminal-report digest, completed capabilities, mode, spent
 cost, and remaining budget. Rehashing either artifact after changing those
 values does not make the change authoritative.
 
+Capability, specialist-invocation, manager-decision, manager-invocation, and
+manager-refusal summaries in the terminal report are exact indexes of their
+canonical artifacts, not editable labels. Replay reconstructs the manager's
+terminal reason, blocker set, terminal status, and terminal-event payload from
+those artifacts and the validated tool observations. It also replay-verifies
+the fail-closed `disabled`, missing-preauthorization-controller, and
+`candidate_policy` control-plane outcomes. A rehashed report cannot relabel a
+blocked capability or turn a blocker into a completed run.
+
 The customer report has its own exact-schema validator at creation and replay.
 It rejects unknown fields, non-finite or negative spend, inconsistent
 decision/partial/abstention flags, agent-authoritative output, proof mutation,

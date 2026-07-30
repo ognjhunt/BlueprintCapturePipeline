@@ -2595,6 +2595,7 @@ def test_disabled_and_not_yet_enabled_modes_fail_closed(tmp_path: Path) -> None:
     assert disabled.report.to_mapping()["status"] == "disabled"
     assert disabled.capability_results == ()
     assert disabled.report.to_mapping()["event_count"] == 2
+    assert replay_supervisor_run(disabled.output_dir)["status"] == "replay_verified"
 
     blocked = TaskEvaluationSupervisor().run(
         _context(),
@@ -2606,6 +2607,36 @@ def test_disabled_and_not_yet_enabled_modes_fail_closed(tmp_path: Path) -> None:
     assert blocked.capability_results == ()
     assert len(blocked.report.to_mapping()["manager_refusals"]) == 1
     assert blocked.report.to_mapping()["actions_executed"] is False
+    assert replay_supervisor_run(blocked.output_dir)["status"] == "replay_verified"
+
+    missing_recovery_authority = TaskEvaluationSupervisor().run(
+        _context(),
+        output_dir=tmp_path / "execute-preauthorized-without-controller",
+        mode="execute_preauthorized",
+        generated_at="2026-07-29T12:00:00+00:00",
+    )
+    assert missing_recovery_authority.report.to_mapping()["status"] == "blocked"
+    assert missing_recovery_authority.report.to_mapping()["blockers"] == [
+        "preauthorized_recovery_controller_missing"
+    ]
+    assert (
+        replay_supervisor_run(missing_recovery_authority.output_dir)["status"] == "replay_verified"
+    )
+
+    candidate_policy_control_plane = TaskEvaluationSupervisor().run(
+        _context(),
+        output_dir=tmp_path / "candidate-policy-control-plane",
+        mode="candidate_policy",
+        generated_at="2026-07-29T12:00:00+00:00",
+    )
+    assert candidate_policy_control_plane.report.to_mapping()["status"] == "blocked"
+    assert candidate_policy_control_plane.report.to_mapping()["blockers"] == [
+        "autonomy_mode_not_enabled_in_phase1:candidate_policy"
+    ]
+    assert (
+        replay_supervisor_run(candidate_policy_control_plane.output_dir)["status"]
+        == "replay_verified"
+    )
 
 
 def test_contracts_reject_proof_and_authority_escalation() -> None:
@@ -3266,6 +3297,103 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
         match="terminal_state_inference_accounting_mismatch",
     ):
         replay_supervisor_run(rewritten_state_run)
+
+    rewritten_capability_run = tmp_path / "rewritten-capability-summary"
+    shutil.copytree(execution.output_dir, rewritten_capability_run)
+    rewritten_capability_path = rewritten_capability_run / "terminal_supervisor_report.json"
+    rewritten_capability = json.loads(rewritten_capability_path.read_text(encoding="utf-8"))
+    rewritten_capability["capability_results"][0]["status"] = "blocked"
+    rewritten_capability["terminal_report_digest"] = canonical_digest(
+        rewritten_capability,
+        digest_field="terminal_report_digest",
+    )
+    rewritten_capability_path.write_text(json.dumps(rewritten_capability), encoding="utf-8")
+    rebind_terminal_state(
+        rewritten_capability_run,
+        rewritten_capability["terminal_report_digest"],
+    )
+    with pytest.raises(SupervisorReplayError, match="terminal_capability_inventory_mismatch"):
+        replay_supervisor_run(rewritten_capability_run)
+
+    rewritten_manager_run = tmp_path / "rewritten-manager-terminal-reason"
+    shutil.copytree(execution.output_dir, rewritten_manager_run)
+    rewritten_manager_path = rewritten_manager_run / "terminal_supervisor_report.json"
+    rewritten_manager = json.loads(rewritten_manager_path.read_text(encoding="utf-8"))
+    rewritten_manager["manager_terminal_reason"] = "decision_ready"
+    rewritten_manager["terminal_report_digest"] = canonical_digest(
+        rewritten_manager,
+        digest_field="terminal_report_digest",
+    )
+    rewritten_manager_path.write_text(json.dumps(rewritten_manager), encoding="utf-8")
+    rebind_terminal_state(
+        rewritten_manager_run,
+        rewritten_manager["terminal_report_digest"],
+    )
+    with pytest.raises(SupervisorReplayError, match="manager_terminal_reason_mismatch"):
+        replay_supervisor_run(rewritten_manager_run)
+
+    rewritten_outcome_run = tmp_path / "rewritten-terminal-outcome"
+    shutil.copytree(execution.output_dir, rewritten_outcome_run)
+    rewritten_outcome_path = rewritten_outcome_run / "terminal_supervisor_report.json"
+    rewritten_outcome = json.loads(rewritten_outcome_path.read_text(encoding="utf-8"))
+    rewritten_outcome["status"] = "blocked"
+    rewritten_outcome["blockers"] = ["fabricated_terminal_blocker"]
+    rewritten_outcome["terminal_report_digest"] = canonical_digest(
+        rewritten_outcome,
+        digest_field="terminal_report_digest",
+    )
+    rewritten_outcome_path.write_text(json.dumps(rewritten_outcome), encoding="utf-8")
+    rebind_terminal_state(
+        rewritten_outcome_run,
+        rewritten_outcome["terminal_report_digest"],
+    )
+    with pytest.raises(SupervisorReplayError, match="terminal_outcome_mismatch"):
+        replay_supervisor_run(rewritten_outcome_run)
+
+    rewritten_terminal_event_run = tmp_path / "rewritten-terminal-event"
+    shutil.copytree(execution.output_dir, rewritten_terminal_event_run)
+    ledger_path = rewritten_terminal_event_run / "supervisor_events.jsonl"
+    ledger_rows = [
+        json.loads(line)
+        for line in ledger_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    ledger_rows[-1]["payload_digest"] = canonical_digest({"fabricated": True})
+    ledger_rows[-1]["event_digest"] = canonical_digest(
+        ledger_rows[-1],
+        digest_field="event_digest",
+    )
+    ledger_path.write_text(
+        "\n".join(json.dumps(row) for row in ledger_rows) + "\n",
+        encoding="utf-8",
+    )
+    rewritten_event_report_path = rewritten_terminal_event_run / "terminal_supervisor_report.json"
+    rewritten_event_report = json.loads(rewritten_event_report_path.read_text(encoding="utf-8"))
+    rewritten_event_report["last_event_digest"] = ledger_rows[-1]["event_digest"]
+    rewritten_event_report["terminal_report_digest"] = canonical_digest(
+        rewritten_event_report,
+        digest_field="terminal_report_digest",
+    )
+    rewritten_event_report_path.write_text(
+        json.dumps(rewritten_event_report),
+        encoding="utf-8",
+    )
+    rewritten_event_state_path = rewritten_terminal_event_run / "supervisor_state.json"
+    rewritten_event_state = json.loads(rewritten_event_state_path.read_text(encoding="utf-8"))
+    rewritten_event_state["last_event_digest"] = ledger_rows[-1]["event_digest"]
+    rewritten_event_state["terminal_report_digest"] = rewritten_event_report[
+        "terminal_report_digest"
+    ]
+    rewritten_event_state["supervisor_state_digest"] = canonical_digest(
+        rewritten_event_state,
+        digest_field="supervisor_state_digest",
+    )
+    rewritten_event_state_path.write_text(
+        json.dumps(rewritten_event_state),
+        encoding="utf-8",
+    )
+    with pytest.raises(SupervisorReplayError, match="terminal_event_outcome_mismatch"):
+        replay_supervisor_run(rewritten_terminal_event_run)
 
     authority = json.loads(
         (execution.output_dir / "authority_envelope.json").read_text(encoding="utf-8")

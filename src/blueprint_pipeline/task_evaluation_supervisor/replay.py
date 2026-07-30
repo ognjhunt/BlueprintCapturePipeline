@@ -141,6 +141,8 @@ def replay_supervisor_run(
         raise SupervisorReplayError("proof_boundary_mismatch") from exc
     if report_value["run_id"] != run_value["run_id"]:
         raise SupervisorReplayError("run_report_identity_mismatch")
+    if report_value["customer_question"] != run_value["customer_question"]:
+        raise SupervisorReplayError("run_report_question_mismatch")
     if state_value["run_id"] != run_value["run_id"]:
         raise SupervisorReplayError("run_state_identity_mismatch")
     if run_value["authority_digest"] != authority.digest:
@@ -253,6 +255,14 @@ def replay_supervisor_run(
             raise SupervisorReplayError("capability_artifact_digest_mismatch")
         capability_digests.append(capability.digest)
         capability_value = capability.to_mapping()
+        expected_capability_row = {
+            "capability": capability_value["capability"],
+            "status": capability_value["status"],
+            "digest": capability.digest,
+            "artifact_path": f"capabilities/{capability_value['capability']}.json",
+        }
+        if dict(row) != expected_capability_row:
+            raise SupervisorReplayError("terminal_capability_inventory_mismatch")
         capability_values.append(capability_value)
         capability_id = str(capability_value["capability"])
         capability_digest_by_kind[capability_id] = capability.digest
@@ -264,6 +274,8 @@ def replay_supervisor_run(
         structured_observations_by_capability[capability_id] = [
             dict(item) for item in embedded_observations
         ]
+    if len(capability_digest_by_kind) != len(capability_values):
+        raise SupervisorReplayError("terminal_capability_inventory_duplicate")
     if state_value["completed_capabilities"] != [row["capability"] for row in capability_values]:
         raise SupervisorReplayError("terminal_state_capabilities_mismatch")
 
@@ -271,6 +283,7 @@ def replay_supervisor_run(
     manager_invocation_digests: list[str] = []
     manager_invocation_values: list[dict[str, Any]] = []
     manager_refusal_digests: list[str] = []
+    manager_refusal_values: list[dict[str, Any]] = []
     observed_capability_digests: list[str] = []
     manager_rows = sorted(
         [
@@ -280,9 +293,14 @@ def replay_supervisor_run(
         ],
         key=lambda row: int(row.get("step_index", -1)),
     )
-    refusal_rows = [
-        dict(row) for row in report_value.get("manager_refusals") or [] if isinstance(row, Mapping)
-    ]
+    refusal_rows = sorted(
+        [
+            dict(row)
+            for row in report_value.get("manager_refusals") or []
+            if isinstance(row, Mapping)
+        ],
+        key=lambda row: int(row.get("step_index", -1)),
+    )
     for row in refusal_rows:
         path = (root / str(row.get("artifact_path") or "")).resolve()
         if root not in path.parents:
@@ -296,11 +314,21 @@ def replay_supervisor_run(
             refusal.get("schema_version") != "task_evaluation_supervisor_manager_refusal.v1"
             or refusal.get("supervisor_manager_refusal_digest") != digest
             or row.get("digest") != digest
+            or refusal.get("run_id") != run_value["run_id"]
+            or refusal.get("step_index") != row.get("step_index")
             or refusal.get("proof_effect") != "none"
             or refusal.get("raw_error_message_recorded") is not False
         ):
             raise SupervisorReplayError("manager_refusal_contract_mismatch")
+        expected_refusal_row = {
+            "step_index": refusal["step_index"],
+            "digest": digest,
+            "artifact_path": f"manager/refusals/step-{int(refusal['step_index']):03d}.json",
+        }
+        if row != expected_refusal_row:
+            raise SupervisorReplayError("manager_refusal_summary_mismatch")
         manager_refusal_digests.append(digest)
+        manager_refusal_values.append(refusal)
     if len(manager_refusal_digests) > 1 or (
         refusal_rows and int(refusal_rows[0].get("step_index", -1)) != len(manager_rows)
     ):
@@ -309,6 +337,12 @@ def replay_supervisor_run(
         not manager_rows
         and not manager_refusal_digests
         and run_value.get("manager_agent_required") is True
+        and authority_value["mode"]
+        not in {
+            "disabled",
+            "candidate_policy",
+            "execute_preauthorized",
+        }
     ):
         raise SupervisorReplayError("manager_decision_artifacts_missing")
     terminal_manager_rows = 0
@@ -324,7 +358,11 @@ def replay_supervisor_run(
             digest_field="supervisor_manager_decision_digest",
         )
         if (
-            manager_decision_value.get("supervisor_manager_decision_digest") != digest
+            manager_decision_value.get("schema_version")
+            != "task_evaluation_supervisor_manager_decision.v1"
+            or manager_decision_value.get("run_id") != run_value["run_id"]
+            or manager_decision_value.get("step_index") != expected_step
+            or manager_decision_value.get("supervisor_manager_decision_digest") != digest
             or row.get("digest") != digest
             or manager_decision_value.get("observed_capability_result_digests")
             != sorted(observed_capability_digests)
@@ -332,6 +370,16 @@ def replay_supervisor_run(
             or manager_decision_value.get("manager_controls_sequencing_only") is not True
         ):
             raise SupervisorReplayError("manager_decision_contract_mismatch")
+        expected_manager_row = {
+            "step_index": expected_step,
+            "status": manager_decision_value["status"],
+            "next_capability": manager_decision_value.get("next_capability"),
+            "terminal_reason": manager_decision_value.get("terminal_reason"),
+            "digest": digest,
+            "artifact_path": f"manager/decisions/step-{expected_step:03d}.json",
+        }
+        if row != expected_manager_row:
+            raise SupervisorReplayError("manager_decision_summary_mismatch")
         if manager_decision_value.get("status") == "continue":
             capability_id = str(manager_decision_value.get("next_capability") or "")
             capability_digest = capability_digest_by_kind.get(capability_id)
@@ -350,6 +398,24 @@ def replay_supervisor_run(
         or sorted(observed_capability_digests) != sorted(capability_digests)
     ):
         raise SupervisorReplayError("manager_terminal_sequence_incomplete")
+    if manager_refusal_values and manager_refusal_values[0].get(
+        "observed_capability_result_digests"
+    ) != sorted(observed_capability_digests):
+        raise SupervisorReplayError("manager_refusal_observed_results_mismatch")
+    replayed_manager_terminal_reason = (
+        "blocked"
+        if manager_refusal_values
+        else next(
+            (
+                str(row.get("terminal_reason") or "")
+                for row in reversed(manager_rows)
+                if row.get("status") == "terminal"
+            ),
+            None,
+        )
+    )
+    if report_value.get("manager_terminal_reason") != replayed_manager_terminal_reason:
+        raise SupervisorReplayError("manager_terminal_reason_mismatch")
 
     invocation_rows = sorted(
         [
@@ -372,6 +438,7 @@ def replay_supervisor_run(
         )
         if (
             int(manager_invocation_value.get("step_index", -1)) != expected_step
+            or manager_invocation_value.get("run_id") != run_value["run_id"]
             or manager_invocation_value.get("manager_invocation_digest") != digest
             or row.get("digest") != digest
             or manager_invocation_value.get("structured_output_digest")
@@ -380,6 +447,13 @@ def replay_supervisor_run(
             or manager_invocation_value.get("action_taken") != "specialist_sequence_selected"
         ):
             raise SupervisorReplayError("manager_invocation_contract_mismatch")
+        expected_invocation_row = {
+            "step_index": expected_step,
+            "digest": digest,
+            "artifact_path": f"manager/invocations/step-{expected_step:03d}.json",
+        }
+        if row != expected_invocation_row:
+            raise SupervisorReplayError("manager_invocation_summary_mismatch")
         manager_invocation_digests.append(digest)
         manager_invocation_values.append(manager_invocation_value)
 
@@ -414,8 +488,14 @@ def replay_supervisor_run(
             raise SupervisorReplayError("invocation_artifact_path_escape")
         specialist_invocation = AgentInvocationManifest.from_mapping(read_json(path))
         specialist_invocation_value = specialist_invocation.to_mapping()
+        expected_invocation_row = {
+            "capability": specialist_invocation_value["capability"],
+            "digest": specialist_invocation.digest,
+            "artifact_path": f"invocations/{specialist_invocation_value['capability']}.json",
+        }
         if (
             specialist_invocation.digest != row["digest"]
+            or dict(row) != expected_invocation_row
             or specialist_invocation_value["run_id"] != run_value["run_id"]
             or specialist_invocation_value["authority_digest"] != authority.digest
             or specialist_invocation_value["tool_registry_digest"] != tool_registry.digest
@@ -546,6 +626,65 @@ def replay_supervisor_run(
         != authority_value.get("preauthorization_receipt_digest")
     ):
         raise SupervisorReplayError("terminal_action_accounting_mismatch")
+    replayed_blockers = {
+        f"capability_blocked:{row['capability']}"
+        for row in capability_values
+        if row["status"] == "blocked"
+    }
+    if manager_refusal_values:
+        replayed_blockers.add("supervisor_manager_output_invalid_or_failed")
+    if authority_value["mode"] == "candidate_policy":
+        replayed_blockers.add("autonomy_mode_not_enabled_in_phase1:candidate_policy")
+    if (
+        authority_value["mode"] == "execute_preauthorized"
+        and not capability_values
+        and not manager_rows
+        and not manager_refusal_values
+        and authority_value.get("preauthorization_receipt_digest") is None
+    ):
+        replayed_blockers.add("preauthorized_recovery_controller_missing")
+    preauthorized_failures = any(
+        row.get("mutability") == "external_side_effect" and row.get("status") != "completed"
+        for row in tool_observation_values
+    )
+    replayed_terminal_status = (
+        "disabled"
+        if authority_value["mode"] == "disabled"
+        else "blocked"
+        if replayed_blockers
+        else "non_spend_complete"
+        if authority_value["mode"] == "execute_non_spend"
+        else "advise_complete"
+        if authority_value["mode"] == "advise"
+        else "preauthorized_complete_with_failures"
+        if authority_value["mode"] == "execute_preauthorized" and preauthorized_failures
+        else "preauthorized_complete"
+        if authority_value["mode"] == "execute_preauthorized"
+        else "shadow_complete"
+    )
+    if (
+        report_value["blockers"] != sorted(replayed_blockers)
+        or report_value["status"] != replayed_terminal_status
+    ):
+        raise SupervisorReplayError("terminal_outcome_mismatch")
+    replayed_terminal_payload_digest = canonical_digest(
+        {
+            "run_id": run_value["run_id"],
+            "status": replayed_terminal_status,
+            "capability_result_digests": capability_digests,
+            "supervisor_manager_decision_digests": manager_decision_digests,
+            "supervisor_manager_terminal_reason": replayed_manager_terminal_reason,
+            "supervisor_manager_refusal_digests": manager_refusal_digests,
+            "blockers": sorted(replayed_blockers),
+        }
+    )
+    terminal_event = events[-1].to_mapping()
+    if (
+        terminal_event["event_type"] != f"supervisor_run_terminal:{replayed_terminal_status}"
+        or terminal_event["phase"] != "terminal"
+        or terminal_event["payload_digest"] != replayed_terminal_payload_digest
+    ):
+        raise SupervisorReplayError("terminal_event_outcome_mismatch")
     replayed_inference_cost = sum(
         float(row.get("cost_usd") or 0.0)
         for row in [*manager_invocation_values, *invocation_values]
