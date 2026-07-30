@@ -92,6 +92,28 @@ Clarification responses and authorization grants are separate receipts created
 at trusted customer/operator boundaries. Agent output never satisfies its own
 request. Every accepted response is revalidated by deterministic contracts.
 
+### Targeted recapture return
+
+When the customer returns a targeted recapture, preserve the original request
+and create a customer-bound receipt for the newly completed capture projection.
+Start the follow-up run with all three inputs:
+
+```bash
+blueprint-route-task-evaluation supervise \
+  --capture-build /path/to/completed-targeted-recapture \
+  --targeted-recapture-request /path/to/targeted-recapture-request.json \
+  --targeted-recapture-receipt /path/to/customer-submission-receipt.json \
+  --mode shadow \
+  --output-dir /path/to/recapture-reinspection
+```
+
+The request and receipt are required together. The receipt must bind the prior
+request digest, its source digest, and a different strict capture-build digest.
+It records who submitted the capture and when, but has `proof_effect=none`, does
+not infer rights, and leaves `original_blocker_resolution` as
+`undetermined_pending_reinspection`. Recompile or validate the maintained
+Site-Task Testbed before treating the requested gap as resolved.
+
 ## Pre-authorized recovery and provider choice
 
 The recovery controller requires all of the following before invoking an

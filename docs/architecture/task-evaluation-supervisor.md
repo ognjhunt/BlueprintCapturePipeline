@@ -243,6 +243,25 @@ or proof-mutating action becomes available. The authority change is represented
 as capture-supervisor lifecycle v2 with a new run-id namespace; v1 shadow-run
 ledgers remain immutable and are never resumed as non-spend runs.
 
+A targeted follow-up capture re-enters the same control plane with both the
+original Blueprint request and a customer-bound receipt:
+
+```bash
+blueprint-route-task-evaluation supervise \
+  --capture-build /path/to/completed-targeted-recapture \
+  --targeted-recapture-request /path/to/targeted-recapture-request.json \
+  --targeted-recapture-receipt /path/to/customer-submission-receipt.json \
+  --mode shadow \
+  --output-dir out/recapture-reinspection
+```
+
+The deterministic ingress accepts only known capture manifests and a bounded
+approved projection, then binds its digest to the exact prior request. The
+receipt records submission, not success: it cannot infer rights, make the new
+capture authoritative, or resolve the original blocker. The capture specialist
+must reinspect it and a maintained testbed must be deterministically rebuilt or
+validated before the blocker can change.
+
 Live inference is fail closed and requires `--allow-live-agent-sdk`, a positive
 `--agent-inference-budget-usd`, and
 `BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true`. Before every SDK call the
@@ -285,6 +304,12 @@ started, and proof state is unchanged. The capture/testbed agent can also write
 a targeted recapture proposal bound to the current capture or testbed. It may
 not initiate capture, request a full-site recapture through this action, infer
 rights, mutate raw capture, or create proof. Phase 2 also includes deterministic
+targeted-recapture receipts that reject an unchanged capture, bind the exact
+request and new capture projection, and preserve an undetermined blocker until
+testbed reinspection. Capture projections are schema-validated during live
+ingress and replay; a malformed but self-consistently hashed envelope is
+refused when it violates the bounded projection contract. Phase 2 also includes
+deterministic
 customer report generation, clarification and authorization receipts,
 scenario-proposal materialization with an operator-only freezing boundary, and
 tests proving that identical accepted evidence yields the same kernel decision

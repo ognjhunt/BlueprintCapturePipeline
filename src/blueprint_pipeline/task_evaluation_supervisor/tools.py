@@ -27,6 +27,7 @@ from .phase2_artifacts import (
     authorization_request,
     clarification_request,
     scenario_proposal_set,
+    targeted_recapture_request,
     write_phase2_artifact,
 )
 
@@ -604,25 +605,11 @@ def _materialize_targeted_recapture_request(
         raise ValueError("targeted_recapture_scope_out_of_range")
     if arguments.get("full_site_recapture_requested") is True:
         raise ValueError("full_site_recapture_requires_separate_operator_authorization")
-    request: dict[str, Any] = {
-        "schema_version": "targeted_recapture_request.v1",
-        "request_id": f"{context.run_id}-targeted-recapture",
-        "run_id": context.run_id,
-        "source_digest": source_digest,
-        "source_type": "site_task_testbed" if source_digest == testbed_digest else "capture_build",
-        "missing_evidence": normalized_missing,
-        "requested_scope": "targeted_only",
-        "full_site_recapture_requested": False,
-        "status": "proposed_for_review",
-        "capture_started": False,
-        "rights_clearance_inferred": False,
-        "raw_capture_mutated": False,
-        "authoritative": False,
-        "proof_effect": "none",
-    }
-    request["targeted_recapture_request_digest"] = canonical_digest(
-        request,
-        digest_field="targeted_recapture_request_digest",
+    request = targeted_recapture_request(
+        run_id=context.run_id,
+        source_digest=str(source_digest),
+        source_type="site_task_testbed" if source_digest == testbed_digest else "capture_build",
+        missing_evidence=normalized_missing,
     )
     artifact_path = (
         Path(root_value)

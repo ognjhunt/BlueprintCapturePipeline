@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from ..common import write_json
 from ..decision_evidence_contracts import canonical_digest
+from .capture_ingress import CaptureBuildIngressError, validate_capture_build_ingress
 
 
 CUSTOMER_REPORT_SCHEMA_VERSION = "task_evaluation_customer_report.v1"
@@ -17,6 +18,8 @@ CLARIFICATION_REQUEST_SCHEMA_VERSION = "task_evaluation_clarification_request.v1
 CLARIFICATION_RECEIPT_SCHEMA_VERSION = "task_evaluation_clarification_receipt.v1"
 AUTHORIZATION_REQUEST_SCHEMA_VERSION = "task_evaluation_authorization_request.v1"
 AUTHORIZATION_RECEIPT_SCHEMA_VERSION = "task_evaluation_authorization_receipt.v1"
+TARGETED_RECAPTURE_REQUEST_SCHEMA_VERSION = "targeted_recapture_request.v1"
+TARGETED_RECAPTURE_RECEIPT_SCHEMA_VERSION = "task_evaluation_targeted_recapture_receipt.v1"
 SCENARIO_PROPOSAL_SET_SCHEMA_VERSION = "task_evaluation_scenario_proposal_set.v1"
 FROZEN_SCENARIO_MANIFEST_SCHEMA_VERSION = "task_evaluation_frozen_scenario_manifest.v1"
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -140,7 +143,10 @@ def authorization_request(
     ):
         raise Phase2ArtifactError("authorization_request_envelope_invalid")
     digests = sorted(
-        {_require_digest(value, field="immutable_input_digest") for value in immutable_input_digests}
+        {
+            _require_digest(value, field="immutable_input_digest")
+            for value in immutable_input_digests
+        }
     )
     if not tool_id.strip() or not reason.strip() or not digests:
         raise Phase2ArtifactError("authorization_request_missing_fields")
@@ -281,6 +287,230 @@ def authorization_receipt(
     return _finalize(value, digest_field="authorization_receipt_digest")
 
 
+def validate_targeted_recapture_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the exact fail-closed request accepted by recapture ingress."""
+
+    required_fields = {
+        "schema_version",
+        "request_id",
+        "run_id",
+        "source_digest",
+        "source_type",
+        "missing_evidence",
+        "requested_scope",
+        "full_site_recapture_requested",
+        "status",
+        "capture_started",
+        "rights_clearance_inferred",
+        "raw_capture_mutated",
+        "authoritative",
+        "proof_effect",
+        "targeted_recapture_request_digest",
+    }
+    if set(value) != required_fields:
+        raise Phase2ArtifactError("targeted_recapture_request_fields_invalid")
+    expected = canonical_digest(value, digest_field="targeted_recapture_request_digest")
+    missing_evidence = _strings(
+        value.get("missing_evidence"),
+        field="missing_evidence",
+        maximum=50,
+        item_maximum=200,
+    )
+    run_id = str(value.get("run_id") or "").strip()
+    if (
+        value.get("schema_version") != TARGETED_RECAPTURE_REQUEST_SCHEMA_VERSION
+        or value.get("targeted_recapture_request_digest") != expected
+        or not run_id
+        or value.get("request_id") != f"{run_id}-targeted-recapture"
+        or value.get("source_type") not in {"capture_build", "site_task_testbed"}
+        or value.get("requested_scope") != "targeted_only"
+        or value.get("full_site_recapture_requested") is not False
+        or value.get("status") != "proposed_for_review"
+        or value.get("capture_started") is not False
+        or value.get("rights_clearance_inferred") is not False
+        or value.get("raw_capture_mutated") is not False
+        or value.get("authoritative") is not False
+        or value.get("proof_effect") != "none"
+        or list(value.get("missing_evidence") or []) != missing_evidence
+    ):
+        raise Phase2ArtifactError("targeted_recapture_request_contract_invalid")
+    _require_digest(value.get("source_digest"), field="source_digest")
+    return dict(value)
+
+
+def targeted_recapture_request(
+    *,
+    run_id: str,
+    source_digest: str,
+    source_type: str,
+    missing_evidence: Sequence[str],
+) -> dict[str, Any]:
+    if not run_id.strip() or source_type not in {"capture_build", "site_task_testbed"}:
+        raise Phase2ArtifactError("targeted_recapture_request_identity_invalid")
+    normalized_missing = _strings(
+        list(missing_evidence),
+        field="missing_evidence",
+        maximum=50,
+        item_maximum=200,
+    )
+    value = {
+        "schema_version": TARGETED_RECAPTURE_REQUEST_SCHEMA_VERSION,
+        "request_id": f"{run_id}-targeted-recapture",
+        "run_id": run_id,
+        "source_digest": _require_digest(source_digest, field="source_digest"),
+        "source_type": source_type,
+        "missing_evidence": normalized_missing,
+        "requested_scope": "targeted_only",
+        "full_site_recapture_requested": False,
+        "status": "proposed_for_review",
+        "capture_started": False,
+        "rights_clearance_inferred": False,
+        "raw_capture_mutated": False,
+        "authoritative": False,
+        "proof_effect": "none",
+    }
+    return _finalize(value, digest_field="targeted_recapture_request_digest")
+
+
+def validate_targeted_recapture_receipt(
+    value: Mapping[str, Any],
+    *,
+    request: Mapping[str, Any] | None = None,
+    capture_build: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate a customer-bound recapture submission without declaring resolution."""
+
+    required_fields = {
+        "schema_version",
+        "receipt_id",
+        "run_id",
+        "targeted_recapture_request_digest",
+        "source_digest",
+        "recapture_build_digest",
+        "submitted_by",
+        "received_at",
+        "requested_missing_evidence",
+        "capture_build_projection_contract_validated",
+        "accepted_as_authoritative_evidence",
+        "original_blocker_resolution",
+        "rights_clearance_inferred",
+        "submitted_by_agent",
+        "proof_effect",
+        "targeted_recapture_receipt_digest",
+    }
+    if set(value) != required_fields:
+        raise Phase2ArtifactError("targeted_recapture_receipt_fields_invalid")
+    expected = canonical_digest(value, digest_field="targeted_recapture_receipt_digest")
+    requested_missing = _strings(
+        value.get("requested_missing_evidence"),
+        field="requested_missing_evidence",
+        maximum=50,
+        item_maximum=200,
+    )
+    _parse_time(value.get("received_at"), field="targeted_recapture_received_at")
+    if (
+        value.get("schema_version") != TARGETED_RECAPTURE_RECEIPT_SCHEMA_VERSION
+        or value.get("targeted_recapture_receipt_digest") != expected
+        or not str(value.get("receipt_id") or "").strip()
+        or not str(value.get("run_id") or "").strip()
+        or not str(value.get("submitted_by") or "").strip()
+        or list(value.get("requested_missing_evidence") or []) != requested_missing
+        or value.get("capture_build_projection_contract_validated") is not True
+        or value.get("accepted_as_authoritative_evidence") is not False
+        or value.get("original_blocker_resolution") != "undetermined_pending_reinspection"
+        or value.get("rights_clearance_inferred") is not False
+        or value.get("submitted_by_agent") is not False
+        or value.get("proof_effect") != "none"
+    ):
+        raise Phase2ArtifactError("targeted_recapture_receipt_contract_invalid")
+    request_digest = _require_digest(
+        value.get("targeted_recapture_request_digest"),
+        field="targeted_recapture_request_digest",
+    )
+    source_digest = _require_digest(value.get("source_digest"), field="source_digest")
+    recapture_digest = _require_digest(
+        value.get("recapture_build_digest"), field="recapture_build_digest"
+    )
+    expected_receipt_id = (
+        f"{value['run_id']}-targeted-recapture-receipt-"
+        f"{recapture_digest.removeprefix('sha256:')[:16]}"
+    )
+    if value.get("receipt_id") != expected_receipt_id:
+        raise Phase2ArtifactError("targeted_recapture_receipt_identity_invalid")
+    if request is not None:
+        validated_request = validate_targeted_recapture_request(request)
+        if (
+            request_digest != validated_request["targeted_recapture_request_digest"]
+            or value.get("run_id") != validated_request["run_id"]
+            or source_digest != validated_request["source_digest"]
+            or requested_missing != validated_request["missing_evidence"]
+        ):
+            raise Phase2ArtifactError("targeted_recapture_receipt_request_mismatch")
+        if (
+            validated_request["source_type"] == "capture_build"
+            and recapture_digest == source_digest
+        ):
+            raise Phase2ArtifactError("targeted_recapture_receipt_capture_unchanged")
+    if capture_build is not None:
+        try:
+            validated_capture = validate_capture_build_ingress(capture_build)
+        except CaptureBuildIngressError as exc:
+            raise Phase2ArtifactError("targeted_recapture_receipt_capture_invalid") from exc
+        capture_digest = str(validated_capture["capture_build_digest"])
+        if recapture_digest != capture_digest:
+            raise Phase2ArtifactError("targeted_recapture_receipt_capture_mismatch")
+    return dict(value)
+
+
+def targeted_recapture_receipt(
+    *,
+    request: Mapping[str, Any],
+    capture_build: Mapping[str, Any],
+    submitted_by: str,
+    received_at: str,
+) -> dict[str, Any]:
+    validated_request = validate_targeted_recapture_request(request)
+    try:
+        validated_capture = validate_capture_build_ingress(capture_build)
+    except CaptureBuildIngressError as exc:
+        raise Phase2ArtifactError("targeted_recapture_capture_build_invalid") from exc
+    capture_digest = str(validated_capture["capture_build_digest"])
+    if (
+        validated_request["source_type"] == "capture_build"
+        and validated_request["source_digest"] == capture_digest
+    ):
+        raise Phase2ArtifactError("targeted_recapture_receipt_capture_unchanged")
+    if not submitted_by.strip():
+        raise Phase2ArtifactError("targeted_recapture_submitter_missing")
+    _parse_time(received_at, field="targeted_recapture_received_at")
+    value = {
+        "schema_version": TARGETED_RECAPTURE_RECEIPT_SCHEMA_VERSION,
+        "receipt_id": (
+            f"{validated_request['request_id']}-receipt-"
+            f"{capture_digest.removeprefix('sha256:')[:16]}"
+        ),
+        "run_id": validated_request["run_id"],
+        "targeted_recapture_request_digest": validated_request["targeted_recapture_request_digest"],
+        "source_digest": validated_request["source_digest"],
+        "recapture_build_digest": capture_digest,
+        "submitted_by": submitted_by.strip(),
+        "received_at": received_at,
+        "requested_missing_evidence": list(validated_request["missing_evidence"]),
+        "capture_build_projection_contract_validated": True,
+        "accepted_as_authoritative_evidence": False,
+        "original_blocker_resolution": "undetermined_pending_reinspection",
+        "rights_clearance_inferred": False,
+        "submitted_by_agent": False,
+        "proof_effect": "none",
+    }
+    receipt = _finalize(value, digest_field="targeted_recapture_receipt_digest")
+    return validate_targeted_recapture_receipt(
+        receipt,
+        request=validated_request,
+        capture_build=capture_build,
+    )
+
+
 def scenario_proposal_set(
     *,
     run_id: str,
@@ -343,7 +573,10 @@ def freeze_scenario_manifest(
     receipt_digest = canonical_digest(authorization, digest_field="authorization_receipt_digest")
     if authorization.get("authorization_receipt_digest") != receipt_digest:
         raise Phase2ArtifactError("scenario_freeze_authorization_digest_mismatch")
-    if authorization.get("approved") is not True or authorization.get("issued_by_agent") is not False:
+    if (
+        authorization.get("approved") is not True
+        or authorization.get("issued_by_agent") is not False
+    ):
         raise Phase2ArtifactError("scenario_freeze_not_operator_authorized")
     if authorization.get("granted_tool_id") != "freeze_scenario_manifest":
         raise Phase2ArtifactError("scenario_freeze_wrong_authority")
@@ -353,9 +586,7 @@ def freeze_scenario_manifest(
         raise Phase2ArtifactError("scenario_freeze_input_not_authorized")
     frozen_time = _parse_time(frozen_at, field="scenario_frozen_at")
     issued = _parse_time(authorization.get("issued_at"), field="scenario_authority_issued_at")
-    expires = _parse_time(
-        authorization.get("expires_at"), field="scenario_authority_expires_at"
-    )
+    expires = _parse_time(authorization.get("expires_at"), field="scenario_authority_expires_at")
     if frozen_time < issued or frozen_time >= expires:
         raise Phase2ArtifactError("scenario_freeze_authority_inactive")
     if proposal_set.get("candidate_results_observed") is not False:
@@ -517,6 +748,8 @@ __all__ = [
     "FROZEN_SCENARIO_MANIFEST_SCHEMA_VERSION",
     "Phase2ArtifactError",
     "SCENARIO_PROPOSAL_SET_SCHEMA_VERSION",
+    "TARGETED_RECAPTURE_RECEIPT_SCHEMA_VERSION",
+    "TARGETED_RECAPTURE_REQUEST_SCHEMA_VERSION",
     "authorization_receipt",
     "authorization_request",
     "clarification_receipt",
@@ -524,5 +757,9 @@ __all__ = [
     "deterministic_customer_report",
     "freeze_scenario_manifest",
     "scenario_proposal_set",
+    "targeted_recapture_receipt",
+    "targeted_recapture_request",
+    "validate_targeted_recapture_receipt",
+    "validate_targeted_recapture_request",
     "write_phase2_artifact",
 ]

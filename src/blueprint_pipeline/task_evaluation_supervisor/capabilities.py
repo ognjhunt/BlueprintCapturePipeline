@@ -38,6 +38,8 @@ class SupervisorContext:
     evidence_plan: Mapping[str, Any] | None = None
     evidence_results: Sequence[Mapping[str, Any]] = ()
     decision_envelope: Mapping[str, Any] | None = None
+    targeted_recapture_request: Mapping[str, Any] | None = None
+    targeted_recapture_receipt: Mapping[str, Any] | None = None
     autonomy_mode: str | None = None
     authority_envelope: Mapping[str, Any] | None = None
     # Internal execution scope for deterministic registered tools. This path is
@@ -227,6 +229,7 @@ class DeterministicCaptureTestbedSupervisor:
 
     def propose(self, context: SupervisorContext) -> CapabilityResult:
         if context.testbed is None:
+            recapture_receipt = dict(context.targeted_recapture_receipt or {})
             return _result(
                 context=context,
                 capability=self.kind,
@@ -235,8 +238,23 @@ class DeterministicCaptureTestbedSupervisor:
                     "schema_version": "capture_testbed_inspection.v1",
                     "inspection_completed": False,
                     "targeted_recapture_required": False,
+                    "targeted_recapture_received": bool(recapture_receipt),
+                    "original_blocker_resolution": recapture_receipt.get(
+                        "original_blocker_resolution"
+                    ),
+                    "recapture_requires_testbed_recompilation": bool(recapture_receipt),
                 },
                 blockers=["maintained_site_task_testbed_missing"],
+                evidence_refs=(
+                    [
+                        {
+                            "artifact": "targeted_recapture_receipt",
+                            "digest": recapture_receipt.get("targeted_recapture_receipt_digest"),
+                        }
+                    ]
+                    if recapture_receipt
+                    else []
+                ),
             )
         testbed = MaintainedSiteTaskTestbed.from_mapping(context.testbed).to_mapping()
         inventory = {

@@ -34,6 +34,8 @@ from .task_evaluation_supervisor import (
     load_capture_build_ingress,
     load_sealed_supervisor_evaluation_corpus,
     reconcile_neutral_candidate_policy_costs,
+    validate_targeted_recapture_receipt,
+    validate_targeted_recapture_request,
 )
 
 
@@ -92,13 +94,32 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
     capture_build = load_capture_build_ingress(args.capture_build) if args.capture_build else None
     request = read_json(args.request) if args.request else None
     testbed = read_json(args.testbed) if args.testbed else None
+    recapture_request = (
+        validate_targeted_recapture_request(read_json(args.targeted_recapture_request))
+        if args.targeted_recapture_request
+        else None
+    )
+    recapture_receipt = (
+        validate_targeted_recapture_receipt(
+            read_json(args.targeted_recapture_receipt),
+            request=recapture_request,
+            capture_build=capture_build,
+        )
+        if args.targeted_recapture_receipt
+        else None
+    )
+    if (recapture_request is None) != (recapture_receipt is None):
+        raise ValueError("supervisor_recapture_request_and_receipt_required_together")
+    if recapture_receipt is not None and capture_build is None:
+        raise ValueError("supervisor_recapture_receipt_requires_capture_build")
     if capture_build is None and request is None and testbed is None:
         raise ValueError("supervisor_requires_capture_build_request_or_testbed")
     plan = read_json(args.plan) if args.plan else None
     decision = read_json(args.decision) if args.decision else None
     results = _read_many(args.result)
     identity = (
-        (request or {}).get("request_id")
+        (recapture_receipt or {}).get("receipt_id")
+        or (request or {}).get("request_id")
         or (testbed or {}).get("testbed_id")
         or (capture_build or {}).get("capture_build_digest", "capture-build")[7:23]
     )
@@ -106,8 +127,13 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
     question = str((request or {}).get("decision_question") or "").strip()
     if not question:
         question = (
-            "What task evaluations can this capture build currently support, "
-            "and what customer, robot, task, success, or evidence details are still missing?"
+            "Did this targeted recapture resolve the specifically requested capture gap, "
+            "and what deterministic testbed validation is still required?"
+            if recapture_receipt is not None
+            else (
+                "What task evaluations can this capture build currently support, "
+                "and what customer, robot, task, success, or evidence details are still missing?"
+            )
         )
     execution = TaskEvaluationSupervisor(
         agent_model=args.agent_model,
@@ -125,6 +151,8 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
             evidence_plan=plan,
             evidence_results=results,
             decision_envelope=decision,
+            targeted_recapture_request=recapture_request,
+            targeted_recapture_receipt=recapture_receipt,
         ),
         output_dir=args.output_dir,
         mode=AutonomyMode(args.mode),
@@ -165,6 +193,8 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
         "agent_model": args.agent_model,
         "agent_inference_budget_usd": args.agent_inference_budget_usd,
         "capture_build_ingested": capture_build is not None,
+        "targeted_recapture_receipt_ingested": recapture_receipt is not None,
+        "targeted_recapture_resolution_claimed": False,
         "execution_started": tool_execution_started,
         "actions_executed": actions_executed,
         "agent_inference_started": agent_inference_started,
@@ -365,6 +395,16 @@ def _parser() -> argparse.ArgumentParser:
     supervise.add_argument("--plan", type=Path)
     supervise.add_argument("--result", action="append", type=Path, default=[])
     supervise.add_argument("--decision", type=Path)
+    supervise.add_argument(
+        "--targeted-recapture-request",
+        type=Path,
+        help="Original Blueprint targeted-recapture request bound to this follow-up capture.",
+    )
+    supervise.add_argument(
+        "--targeted-recapture-receipt",
+        type=Path,
+        help="Customer submission receipt binding the request to this capture build.",
+    )
     supervise.add_argument("--run-id")
     supervise.add_argument("--agent-model", default=DEFAULT_SUPERVISOR_AGENT_MODEL)
     supervise.add_argument("--agent-inference-budget-usd", type=float, default=0.0)

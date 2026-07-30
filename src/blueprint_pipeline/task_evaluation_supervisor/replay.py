@@ -25,8 +25,14 @@ from .contracts import (
     TerminalSupervisorReport,
     ToolDescriptor,
 )
+from .capture_ingress import CaptureBuildIngressError, validate_capture_build_ingress
 from .ledger import AppendOnlyEventLedger
 from .inference_reservations import InferenceReservationAudit
+from .phase2_artifacts import (
+    Phase2ArtifactError,
+    validate_targeted_recapture_receipt,
+    validate_targeted_recapture_request,
+)
 from .tools import (
     TOOL_REGISTRY_SCHEMA_VERSION,
     ToolRegistry,
@@ -58,11 +64,20 @@ def _validate_kernel_input(name: str, value: Mapping[str, Any]) -> Mapping[str, 
     if validator is not None:
         return validator.from_mapping(value).to_mapping()
     if name == "capture_build":
-        expected = value.get("capture_build_digest")
-        actual = canonical_digest(value, digest_field="capture_build_digest")
-        if expected != actual:
-            raise SupervisorReplayError("capture_build_digest_mismatch")
-        return dict(value)
+        try:
+            return validate_capture_build_ingress(value)
+        except CaptureBuildIngressError as exc:
+            raise SupervisorReplayError("capture_build_ingress_invalid") from exc
+    if name == "targeted_recapture_request":
+        try:
+            return validate_targeted_recapture_request(value)
+        except Phase2ArtifactError as exc:
+            raise SupervisorReplayError("targeted_recapture_request_invalid") from exc
+    if name == "targeted_recapture_receipt":
+        try:
+            return validate_targeted_recapture_receipt(value)
+        except Phase2ArtifactError as exc:
+            raise SupervisorReplayError("targeted_recapture_receipt_invalid") from exc
     raise SupervisorReplayError(f"kernel_input_name_unsupported:{name}")
 
 
@@ -439,6 +454,21 @@ def replay_supervisor_run(
         if canonical_digest(value) != row.get("digest"):
             raise SupervisorReplayError(f"kernel_input_artifact_digest_mismatch:{name}")
         kernel_inputs[name] = _validate_kernel_input(name, value)
+
+    recapture_receipt = kernel_inputs.get("targeted_recapture_receipt")
+    if recapture_receipt is not None:
+        recapture_request = kernel_inputs.get("targeted_recapture_request")
+        capture_build = kernel_inputs.get("capture_build")
+        if recapture_request is None or capture_build is None:
+            raise SupervisorReplayError("targeted_recapture_kernel_inputs_incomplete")
+        try:
+            validate_targeted_recapture_receipt(
+                recapture_receipt,
+                request=recapture_request,
+                capture_build=capture_build,
+            )
+        except Phase2ArtifactError as exc:
+            raise SupervisorReplayError("targeted_recapture_kernel_inputs_mismatch") from exc
 
     deterministic_decision = kernel_inputs.get("decision_envelope")
     replayed_decision: dict[str, Any] | None = None

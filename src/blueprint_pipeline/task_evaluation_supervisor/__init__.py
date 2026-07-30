@@ -14,7 +14,11 @@ from .agents_sdk import (
     agents_sdk_capabilities,
 )
 from .capabilities import SupervisorContext, deterministic_baseline_capabilities
-from .capture_ingress import CaptureBuildIngressError, load_capture_build_ingress
+from .capture_ingress import (
+    CaptureBuildIngressError,
+    load_capture_build_ingress,
+    validate_capture_build_ingress,
+)
 from .candidate_policy import (
     CANDIDATE_COST_RESERVATION_SCHEMA_VERSION,
     CANDIDATE_COST_SETTLEMENT_SCHEMA_VERSION,
@@ -70,6 +74,10 @@ from .phase2_artifacts import (
     deterministic_customer_report,
     freeze_scenario_manifest,
     scenario_proposal_set,
+    targeted_recapture_receipt,
+    targeted_recapture_request,
+    validate_targeted_recapture_receipt,
+    validate_targeted_recapture_request,
 )
 from .pigey_candidate_runtime import (
     PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION,
@@ -197,6 +205,7 @@ __all__ = [
     "evaluate_recorded_supervisor_corpus",
     "freeze_supervisor_evaluation_configuration",
     "load_capture_build_ingress",
+    "validate_capture_build_ingress",
     "load_supervisor_evaluation_corpus",
     "load_recorded_supervisor_execution",
     "load_sealed_supervisor_evaluation_corpus",
@@ -214,6 +223,10 @@ __all__ = [
     "freeze_scenario_manifest",
     "freeze_candidate_policy_manifest",
     "scenario_proposal_set",
+    "targeted_recapture_receipt",
+    "targeted_recapture_request",
+    "validate_targeted_recapture_receipt",
+    "validate_targeted_recapture_request",
     "validate_tool_observation_binding",
     "validate_pigey_license_attestation",
 ]

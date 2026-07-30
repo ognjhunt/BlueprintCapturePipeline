@@ -35,6 +35,7 @@ from .capabilities import (
     SupervisorContext,
     capability_instruction_digest,
 )
+from .capture_ingress import validate_capture_build_ingress
 from .contracts import (
     AgentInvocationManifest,
     AuthorityEnvelope,
@@ -54,7 +55,12 @@ from .inference_reservations import InferenceReservationAudit
 from .manager import (
     OpenAIAgentsSDKSupervisorManager,
 )
-from .phase2_artifacts import deterministic_customer_report, write_phase2_artifact
+from .phase2_artifacts import (
+    deterministic_customer_report,
+    validate_targeted_recapture_receipt,
+    validate_targeted_recapture_request,
+    write_phase2_artifact,
+)
 from .recovery import PreauthorizedRecoveryController
 from .tools import ToolRegistry, validate_tool_observation_binding
 
@@ -72,10 +78,23 @@ class SupervisorExecution:
 def _validated_context(context: SupervisorContext) -> SupervisorContext:
     capture_build = dict(context.capture_build) if context.capture_build is not None else None
     if capture_build is not None:
-        expected = capture_build.get("capture_build_digest")
-        actual = canonical_digest(capture_build, digest_field="capture_build_digest")
-        if expected != actual:
-            raise ValueError("capture_build_digest_mismatch")
+        capture_build = validate_capture_build_ingress(capture_build)
+    recapture_request = (
+        validate_targeted_recapture_request(context.targeted_recapture_request)
+        if context.targeted_recapture_request is not None
+        else None
+    )
+    recapture_receipt = (
+        validate_targeted_recapture_receipt(
+            context.targeted_recapture_receipt,
+            request=recapture_request,
+            capture_build=capture_build,
+        )
+        if context.targeted_recapture_receipt is not None
+        else None
+    )
+    if recapture_receipt is not None and (recapture_request is None or capture_build is None):
+        raise ValueError("targeted_recapture_receipt_requires_request_and_capture")
     return replace(
         context,
         capture_build=capture_build,
@@ -110,6 +129,8 @@ def _validated_context(context: SupervisorContext) -> SupervisorContext:
             if context.decision_envelope is not None
             else None
         ),
+        targeted_recapture_request=recapture_request,
+        targeted_recapture_receipt=recapture_receipt,
     )
 
 
@@ -135,6 +156,8 @@ def _write_kernel_inputs(root: Path, context: SupervisorContext) -> dict[str, An
         ("site_task_testbed", context.testbed),
         ("evidence_plan", context.evidence_plan),
         ("decision_envelope", context.decision_envelope),
+        ("targeted_recapture_request", context.targeted_recapture_request),
+        ("targeted_recapture_receipt", context.targeted_recapture_receipt),
     ):
         if isinstance(value, Mapping):
             record(name, value)
@@ -167,6 +190,8 @@ def _input_digests(context: SupervisorContext) -> list[str]:
         (context.testbed, "testbed_digest"),
         (context.evidence_plan, "plan_digest"),
         (context.decision_envelope, "decision_envelope_digest"),
+        (context.targeted_recapture_request, "targeted_recapture_request_digest"),
+        (context.targeted_recapture_receipt, "targeted_recapture_receipt_digest"),
     ):
         if isinstance(value, Mapping):
             candidates.append(value.get(key))
