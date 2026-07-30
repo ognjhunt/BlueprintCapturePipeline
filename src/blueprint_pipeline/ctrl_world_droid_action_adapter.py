@@ -37,6 +37,7 @@ CTRL_WORLD_RELEASED_FK_SOURCE_SHA256 = (
 CTRL_WORLD_RELEASED_ACTION_ROWS = 15
 CTRL_WORLD_FUTURE_FRAME_INDICES = (0, 2, 4, 6, 8)
 CTRL_WORLD_HISTORY_ROWS = 6
+RELIABILITY_ROT6D_IDENTITY = np.asarray([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
 
 
 def validate_ctrl_world_runtime_assets(
@@ -115,34 +116,44 @@ def _pose_from_fk(value: Any) -> np.ndarray:
 def cartesian_pose_rows_to_reliability_actions_10d(
     pose_rows: Sequence[Sequence[float]],
 ) -> np.ndarray:
-    """Convert Ctrl-World XYZ/Euler/gripper rows for reliability scoring only.
+    """Convert absolute Ctrl-World poses to incremental reliability actions.
 
     The WAM continues to receive its released seven-dimensional Cartesian
     contract.  This representation is a deterministic measurement adapter for
     Blueprint's existing translation/rotation-6D/gripper reliability gate; it
-    is never used as WAM conditioning.
+    is never used as WAM conditioning.  Translation and rotation are expressed
+    relative to the preceding generated-frame pose so an unchanged absolute
+    pose is a valid no-motion command rather than a false active command.  The
+    first row is the zero/identity transition anchored at the current pose.
     """
 
     poses = np.asarray(pose_rows, dtype=np.float64)
     if poses.ndim != 2 or poses.shape[1] != 7 or not np.isfinite(poses).all():
         raise ValueError("ctrl_world_pose_rows_must_be_finite_nx7")
-    actions = np.empty((poses.shape[0], 10), dtype=np.float64)
-    actions[:, :3] = poses[:, :3]
+    actions = np.zeros((poses.shape[0], 10), dtype=np.float64)
     actions[:, 9] = poses[:, 6]
-    for index, (rx, ry, rz) in enumerate(poses[:, 3:6]):
+
+    rotations: list[np.ndarray] = []
+    for rx, ry, rz in poses[:, 3:6]:
         cx, sx = math.cos(float(rx)), math.sin(float(rx))
         cy, sy = math.cos(float(ry)), math.sin(float(ry))
         cz, sz = math.cos(float(rz)), math.sin(float(rz))
-        rotation = np.asarray(
-            [
-                [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
-                [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
-                [-sy, cy * sx, cy * cx],
-            ],
-            dtype=np.float64,
+        rotations.append(
+            np.asarray(
+                [
+                    [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+                    [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+                    [-sy, cy * sx, cy * cx],
+                ],
+                dtype=np.float64,
+            )
         )
-        actions[index, 3:6] = rotation[0]
-        actions[index, 6:9] = rotation[1]
+    actions[0, 3:9] = RELIABILITY_ROT6D_IDENTITY
+    for index in range(1, poses.shape[0]):
+        actions[index, :3] = poses[index, :3] - poses[index - 1, :3]
+        relative_rotation = rotations[index - 1].T @ rotations[index]
+        actions[index, 3:6] = relative_rotation[0]
+        actions[index, 6:9] = relative_rotation[1]
     return actions
 
 
@@ -433,7 +444,9 @@ class FrankaCtrlWorldJointPositionAdapter:
         pose_rows: list[np.ndarray] = []
         clamped_rows = 0
         for row in action:
-            mapped = droid_joint_position_action_to_mujoco_targets(row, joint_limits=limits)
+            mapped = droid_joint_position_action_to_mujoco_targets(
+                row, joint_limits=limits.tolist()
+            )
             clamped_rows += int(mapped["joint_limit_clamped"])
             data.qpos[:7] = np.asarray(mapped["joint_position_target_rad"], dtype=np.float64)
             data.qpos[7:9] = float(mapped["gripper_position_target_m"])

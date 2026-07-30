@@ -123,6 +123,9 @@ used as blind confirmation.
 - `protocol_amendment_6_ctrl_world_current_observation_runtime_v1.md` —
   prospective separate current-observation binding and generated-only direct
   Ctrl-World runtime contract, frozen before any WAM output;
+- `protocol_amendment_7_ctrl_world_reliability_measurement_v1.md` —
+  prospective absolute-pose-to-incremental measurement correction and exact
+  per-view PNG reliability gate, frozen before any WAM output;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 

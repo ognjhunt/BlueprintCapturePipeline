@@ -12,6 +12,7 @@ from PIL import Image
 from blueprint_pipeline.ctrl_world_droid_action_adapter import (
     CTRL_WORLD_FUTURE_FRAME_INDICES,
     CtrlWorldReleasedJointVelocityAdapter,
+    cartesian_pose_rows_to_reliability_actions_10d,
     load_ctrl_world_released_joint_velocity_adapter,
 )
 from blueprint_pipeline.droid_ctrl_world_closed_loop_adapter import (
@@ -99,6 +100,25 @@ def test_released_velocity_adapter_preserves_native_chunk_and_public_state_rule(
     assert result["next_gripper_position"][0] <= 0.75
     assert result["official_ctrl_world_learned_action_adapter_used"] is True
     assert result["physical_future_observation_used"] is False
+
+
+def test_reliability_adapter_encodes_absolute_no_motion_as_null_command() -> None:
+    pose = np.asarray([0.42, -0.11, 0.27, 0.2, -0.1, 0.3, 0.5])
+    actions = cartesian_pose_rows_to_reliability_actions_10d(np.repeat(pose[None, :], 5, axis=0))
+
+    assert np.allclose(actions[:, :3], 0.0)
+    assert np.allclose(actions[:, 3:9], np.asarray([1, 0, 0, 0, 1, 0]))
+    assert np.allclose(actions[:, 9], 0.5)
+
+
+def test_reliability_adapter_uses_incremental_translation_not_absolute_position() -> None:
+    poses = np.zeros((5, 7), dtype=np.float64)
+    poses[:, 0] = 4.0 + np.arange(5) * 0.02
+    actions = cartesian_pose_rows_to_reliability_actions_10d(poses)
+
+    assert actions[0, 0] == 0.0
+    assert np.allclose(actions[1:, 0], 0.02)
+    assert np.allclose(actions[:, 1:3], 0.0)
 
 
 def test_released_velocity_adapter_repeats_last_row_for_ten_row_policies() -> None:

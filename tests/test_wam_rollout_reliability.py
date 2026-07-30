@@ -12,6 +12,7 @@ from blueprint_pipeline.wam_rollout_reliability import (
     FLAG_STATIC_UNDER_COMMAND,
     ROT6D_IDENTITY,
     action_energy_series,
+    assess_frame_sequence_reliability,
     assess_rollout_reliability,
 )
 
@@ -45,7 +46,7 @@ def _square_frames(step_px: list[int]) -> list[np.ndarray]:
     for dx in [0, *step_px]:
         x += dx
         f = BACKGROUND.copy()
-        f[36:60, x:x + 20] = 255
+        f[36:60, x : x + 20] = 255
         frames.append(f)
     return frames
 
@@ -94,3 +95,17 @@ def test_degenerate_rot6d_zero_chunk_is_flagged(tmp_path):
     report = assess_rollout_reliability(video, all_zero)
     assert not report.reliable
     assert "invalid_action_rot6d" in report.flags
+
+
+def test_exact_frame_sequence_uses_same_frozen_reliability_logic(tmp_path):
+    paths = []
+    for index, frame in enumerate(_square_frames([6] * 8 + [0] * 8)):
+        path = tmp_path / f"frame_{index:02d}.png"
+        assert cv2.imwrite(str(path), frame)
+        paths.append(path)
+
+    report = assess_frame_sequence_reliability(paths, ACTIVE_CHUNK)
+
+    assert report.reliable, report.flags
+    assert report.n_frames == N_FRAMES
+    assert report.video_path.startswith("frame_sequence:")
