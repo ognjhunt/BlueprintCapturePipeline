@@ -56,6 +56,12 @@ MODEL_FREEZE = {
         "repository": "openai/clip-vit-base-patch32",
         "revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
     },
+    "ctrl_world_state_stats": {
+        "repository": "https://github.com/Robert-gyj/Ctrl-World",
+        "revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+        "file": "dataset_meta_info/droid/stat.json",
+        "sha256": "1e6fa202c87d6295f8b988dfd2764dec88796c910846cecdf684670fb818f208",
+    },
 }
 
 _FORBIDDEN_KEYS = frozenset(
@@ -347,7 +353,9 @@ def validate_ctrl_world_joint_position_result(
             )
             digest = file_sha256(path)
             if expected_digest != digest:
-                raise ValueError(f"ctrl_world_joint_position_generated_frame_hash_mismatch:{view_id}")
+                raise ValueError(
+                    f"ctrl_world_joint_position_generated_frame_hash_mismatch:{view_id}"
+                )
             try:
                 with Image.open(path) as image:
                     if image.mode != "RGB" or image.size != (320, 192):
