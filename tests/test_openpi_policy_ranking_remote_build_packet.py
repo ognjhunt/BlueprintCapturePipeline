@@ -166,14 +166,11 @@ def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path)
         assert oscar_lock is not None
         oscar_lock_text = oscar_lock.read().decode("utf-8")
     assert "blueprint-groot-oscar-eval@sha256:ab8fbccb" in text
-    assert (
-        "COPY --from=oscar_runtime /opt/blueprint/oscar_source_provenance.json"
-        not in text
-    )
+    assert "COPY --from=oscar_runtime /opt/blueprint/oscar_source_provenance.json" not in text
     assert "COPY --from=oscar_runtime /opt/oscar-public /opt/OSCAR" not in text
     assert "https://github.com/wuzy2115/oscar-public.git" in text
     assert "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb" in text
-    assert 'git -C /opt/OSCAR checkout --detach FETCH_HEAD' in text
+    assert "git -C /opt/OSCAR checkout --detach FETCH_HEAD" in text
     shim = "/opt/oscar-venv/bin/python /tmp/oscar_te_shim.py /opt/OSCAR"
     cleanup = "find /opt/OSCAR -type d -name __pycache__"
     seal = "blueprint_pipeline.oscar_runtime_source_provenance seal"
@@ -203,16 +200,17 @@ def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path)
     assert "PYTHONPATH=/opt/blueprint-current/src:/opt/OSCAR" in text
     assert (
         "uv pip install --python /opt/oscar-venv/bin/python --no-deps "
-        "-e /opt/blueprint-current"
-        not in text
+        "-e /opt/blueprint-current" not in text
     )
     assert "oscar_site_packages" not in text
     assert "import torch, cv2, loguru" in text
+    assert "from inference.inference_oscar import main" in text
+    assert "from inference._core import run_inference" in text
+    assert "build_pipeline" not in text
     assert "token=False" in text
     assert "offline_preflight" in text
     assert any(
-        name.endswith("/requirements_oscar_foundation.lock")
-        for name in result["archive_members"]
+        name.endswith("/requirements_oscar_foundation.lock") for name in result["archive_members"]
     )
 
 

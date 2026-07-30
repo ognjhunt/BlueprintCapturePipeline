@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import io
 import sys
 import textwrap
 from pathlib import Path
+from typing import Any
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from blueprint_pipeline import oscar_resident_worker as resident
@@ -16,7 +20,7 @@ from blueprint_pipeline.oscar_resident_worker import (
     build_resident_worker_argv,
     make_resident_oscar_generate,
 )
-from blueprint_pipeline.oscar_resident_worker_main import serve
+from blueprint_pipeline.oscar_resident_worker_main import _OfficialOscarPipeline, serve
 
 
 FAKE_WORKER = textwrap.dedent(
@@ -254,9 +258,7 @@ def test_adapter_blocks_when_skeleton_conditioning_is_unavailable(
     worker.close()
 
     assert result["status"] == "blocked"
-    assert (
-        "oscar_per_step_projected_skeleton_conditioning_unavailable" in result["blockers"]
-    )
+    assert "oscar_per_step_projected_skeleton_conditioning_unavailable" in result["blockers"]
 
 
 def test_worker_error_is_surfaced_as_a_blocked_step(
@@ -288,6 +290,121 @@ def test_resident_argv_is_not_a_distributed_launcher() -> None:
     assert "torch.distributed.run" not in argv
     assert argv[1:3] == ["-m", "blueprint_pipeline.oscar_resident_worker_main"]
     assert "--checkpoint" in argv
+    assert argv[argv.index("--shift") + 1] == "5.0"
+
+
+def test_official_pipeline_uses_pinned_public_inference_primitives(tmp_path: Path) -> None:
+    calls: dict[str, Any] = {}
+
+    class FakeSample:
+        def float(self) -> "FakeSample":
+            return self
+
+        def clamp(self, *_args: Any) -> "FakeSample":
+            return self
+
+        def cpu(self) -> "FakeSample":
+            return self
+
+        def __mul__(self, _value: float) -> "FakeSample":
+            return self
+
+        def __add__(self, _value: float) -> "FakeSample":
+            return self
+
+    def load_first(path: Path, height: int, width: int) -> np.ndarray:
+        calls["first"] = (path, height, width)
+        return np.zeros((height, width, 3), dtype=np.uint8)
+
+    def load_video(path: Path, start: int, frames: int, height: int, width: int) -> np.ndarray:
+        calls["skeleton"] = (path, start, frames, height, width)
+        return np.zeros((frames, height, width, 3), dtype=np.uint8)
+
+    def run(model: Any, **kwargs: Any) -> FakeSample:
+        calls["model"] = model
+        calls["run"] = kwargs
+        return FakeSample()
+
+    def save(_frames: Any, base: str, *, fps: float) -> None:
+        calls["save"] = (base, fps)
+        Path(base + ".mp4").write_bytes(b"video")
+
+    pipeline = _OfficialOscarPipeline(
+        model="model",
+        load_first_frame=load_first,
+        load_video=load_video,
+        run_inference=run,
+        save_video=save,
+        rearrange=lambda value, _pattern: value,
+        numpy=np,
+    )
+    output = tmp_path / "generated.mp4"
+    pipeline.generate(
+        first_frame=str(tmp_path / "first.png"),
+        prompt="frozen task",
+        negative_prompt="frozen negative",
+        skeleton_video=str(tmp_path / "skeleton.mp4"),
+        num_frames=81,
+        num_steps=35,
+        guidance=6.0,
+        shift=5.0,
+        seed=42,
+        height=4,
+        width=6,
+        fps=15.0,
+        output=str(output),
+    )
+
+    assert calls["model"] == "model"
+    assert calls["run"]["rgb_frames"].shape == (81, 4, 6, 3)
+    assert calls["run"]["condition_frames"].shape == (81, 4, 6, 3)
+    assert calls["run"]["negative_prompt"] == "frozen negative"
+    assert calls["run"]["shift"] == 5.0
+    assert calls["save"] == (str(output)[:-4], 15.0)
+    assert output.read_bytes() == b"video"
+
+
+def test_resident_worker_drains_stderr_without_blocking_control_channel() -> None:
+    worker = ResidentOscarWorker(argv=[sys.executable, "-c", "pass"])
+    worker._process = SimpleNamespace(stderr=io.StringIO("first\nsecond\n"))
+    worker._drain_stderr()
+
+    assert worker.throughput_report()["worker_stderr_tail"] == "first\nsecond"
+
+
+def test_serve_redirects_model_stdout_away_from_json_protocol(capsys: Any) -> None:
+    out = _Capture()
+
+    def noisy_generate(_request: dict[str, Any]) -> dict[str, Any]:
+        print("oscar model progress")
+        return {"blockers": [], "output_video": "/tmp/output.mp4"}
+
+    serve(
+        stdin=iter(
+            [
+                json.dumps(
+                    {
+                        "schema_version": resident.REQUEST_SCHEMA_VERSION,
+                        "request_id": "request-1",
+                        "op": "generate",
+                    }
+                ),
+                json.dumps({"schema_version": resident.REQUEST_SCHEMA_VERSION, "op": "shutdown"}),
+            ]
+        ),
+        stdout=out,
+        generate=noisy_generate,
+        ready_payload={
+            "schema_version": resident.READY_SCHEMA_VERSION,
+            "status": "ready",
+            "worker_session_id": "session-1",
+        },
+    )
+
+    captured = capsys.readouterr()
+    assert "oscar model progress" in captured.err
+    assert captured.out == ""
+    assert all(line.startswith("{") for line in out.lines)
 
 
 class _Capture:

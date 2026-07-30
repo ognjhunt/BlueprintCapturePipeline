@@ -35,6 +35,7 @@ DEFAULT_OSCAR_RUNTIME_ASSET_CACHE = "/opt/blueprint/oscar-runtime-assets"
 
 OSCAR_NUM_STEPS = 35
 OSCAR_GUIDANCE = 6.0
+OSCAR_SHIFT = 5.0
 OSCAR_HEIGHT = 480
 OSCAR_WIDTH = 640
 OSCAR_FPS = 15.0
@@ -91,33 +92,21 @@ class OscarMultiViewReferenceRuntime:
         self._seen_output_paths: set[Path] = set()
 
     @classmethod
-    def from_environment(
-        cls, *, evidence_dir: str | Path
-    ) -> "OscarMultiViewReferenceRuntime":
+    def from_environment(cls, *, evidence_dir: str | Path) -> "OscarMultiViewReferenceRuntime":
         return cls(
             python=os.getenv(OSCAR_RUNTIME_PYTHON_ENV, DEFAULT_OSCAR_RUNTIME_PYTHON),
             oscar_repo=os.getenv(OSCAR_RUNTIME_REPO_ENV, DEFAULT_OSCAR_RUNTIME_REPO),
-            checkpoint=os.getenv(
-                OSCAR_RUNTIME_CHECKPOINT_ENV, DEFAULT_OSCAR_RUNTIME_CHECKPOINT
-            ),
-            source_seal=os.getenv(
-                OSCAR_RUNTIME_SOURCE_SEAL_ENV, DEFAULT_OSCAR_RUNTIME_SOURCE_SEAL
-            ),
-            asset_cache=os.getenv(
-                OSCAR_RUNTIME_ASSET_CACHE_ENV, DEFAULT_OSCAR_RUNTIME_ASSET_CACHE
-            ),
+            checkpoint=os.getenv(OSCAR_RUNTIME_CHECKPOINT_ENV, DEFAULT_OSCAR_RUNTIME_CHECKPOINT),
+            source_seal=os.getenv(OSCAR_RUNTIME_SOURCE_SEAL_ENV, DEFAULT_OSCAR_RUNTIME_SOURCE_SEAL),
+            asset_cache=os.getenv(OSCAR_RUNTIME_ASSET_CACHE_ENV, DEFAULT_OSCAR_RUNTIME_ASSET_CACHE),
             evidence_dir=evidence_dir,
         )
 
     def start(self) -> dict[str, Any]:
         if self._worker is not None:
             raise RuntimeError("new_site_oscar_resident_worker_already_started")
-        python = _safe_file(
-            self.python, reason="new_site_oscar_runtime_python_missing_or_unsafe"
-        )
-        repo = _safe_dir(
-            self.oscar_repo, reason="new_site_oscar_runtime_repo_missing_or_unsafe"
-        )
+        python = _safe_file(self.python, reason="new_site_oscar_runtime_python_missing_or_unsafe")
+        repo = _safe_dir(self.oscar_repo, reason="new_site_oscar_runtime_repo_missing_or_unsafe")
         checkpoint = _safe_dir(
             self.checkpoint,
             reason="new_site_oscar_runtime_checkpoint_missing_or_unsafe",
@@ -144,8 +133,7 @@ class OscarMultiViewReferenceRuntime:
             self._asset_preflight(
                 asset_cache,
                 oscar_checkpoint_root=checkpoint,
-                evidence_output_path=self.evidence_dir
-                / "oscar_runtime_asset_preflight.json",
+                evidence_output_path=self.evidence_dir / "oscar_runtime_asset_preflight.json",
             )
         )
         if assets.get("status") != "passed" or assets.get("blockers"):
@@ -157,6 +145,7 @@ class OscarMultiViewReferenceRuntime:
                 checkpoint=checkpoint,
                 num_steps=OSCAR_NUM_STEPS,
                 guidance=OSCAR_GUIDANCE,
+                shift=OSCAR_SHIFT,
                 height=OSCAR_HEIGHT,
                 width=OSCAR_WIDTH,
                 fps=OSCAR_FPS,
@@ -192,7 +181,6 @@ class OscarMultiViewReferenceRuntime:
         output_dir: Path,
         seed: int,
     ) -> dict[str, Any]:
-        del negative_prompt
         if self._worker is None:
             raise RuntimeError("new_site_oscar_resident_worker_not_started")
         if view_id not in OSCAR_REQUIRED_VIEWS:
@@ -223,6 +211,7 @@ class OscarMultiViewReferenceRuntime:
                 {
                     "reference_frame_path": str(first_frame),
                     "task_prompt": str(task_prompt),
+                    "negative_prompt": str(negative_prompt),
                     "num_frames": OSCAR_NUM_FRAMES,
                     "seed": seed,
                     "output_video": str(output_video),
@@ -247,7 +236,7 @@ class OscarMultiViewReferenceRuntime:
             "view_id": view_id,
             "seed": seed,
             "num_frames": OSCAR_NUM_FRAMES,
-            "official_negative_prompt_parameter_supported": False,
+            "official_negative_prompt_parameter_supported": True,
         }
 
     def close(self) -> dict[str, Any] | None:

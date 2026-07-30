@@ -113,11 +113,13 @@ def test_runtime_loads_once_and_dispatches_exact_view_bytes(tmp_path: Path) -> N
     worker = FakeWorker.instances[0]
     assert worker.requests[0]["num_frames"] == OSCAR_NUM_FRAMES
     assert worker.requests[0]["seed"] == 42
+    assert worker.requests[0]["negative_prompt"] == "ignored by official runtime"
     assert worker.requests[0]["reference_frame_path"] == str(
         Path(_view_request(tmp_path)["first_frame_path"]).resolve()
     )
     assert Path(receipt["generated_video_path"]).read_bytes() == b"generated-video"
     assert receipt["provider"] == "resident_official_oscar_multiview"
+    assert receipt["official_negative_prompt_parameter_supported"] is True
     assert worker.closed is True
     assert report is not None
 

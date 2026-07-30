@@ -37,6 +37,7 @@ import signal
 import subprocess
 import threading
 import time
+from collections import deque
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Callable
@@ -110,7 +111,9 @@ class ResidentOscarWorker:
 
         self._process: Any = None
         self._reader: threading.Thread | None = None
+        self._stderr_reader: threading.Thread | None = None
         self._lines: "queue.Queue[str | None]" = queue.Queue()
+        self._stderr_lines: deque[str] = deque(maxlen=200)
         self._ready: dict[str, Any] = {}
         self._alive = False
         self._request_counter = 0
@@ -151,6 +154,19 @@ class ResidentOscarWorker:
             if text:
                 return text
 
+    def _drain_stderr(self) -> None:
+        stream = getattr(self._process, "stderr", None)
+        if stream is None:
+            return
+        while True:
+            try:
+                line = stream.readline()
+            except Exception:
+                return
+            if not line:
+                return
+            self._stderr_lines.append(line.rstrip())
+
     def start(self) -> dict[str, Any]:
         """Spawn the worker and block until it reports readiness."""
 
@@ -168,6 +184,9 @@ class ResidentOscarWorker:
         self._lines = queue.Queue()
         self._reader = threading.Thread(target=self._drain_reader, daemon=True)
         self._reader.start()
+        self._stderr_lines = deque(maxlen=200)
+        self._stderr_reader = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_reader.start()
 
         payload = json.loads(self._read_line(self._startup_timeout))
         if payload.get("schema_version") != READY_SCHEMA_VERSION:
@@ -338,6 +357,7 @@ class ResidentOscarWorker:
             "restart_count": self.restart_count,
             "warm_step_count": len(warm),
             "warm_step_seconds_mean": warm_mean,
+            "worker_stderr_tail": "\n".join(self._stderr_lines)[-4000:],
             "warm_step_seconds_p50": _percentile(warm, 0.5),
             "warm_step_seconds_p95": _percentile(warm, 0.95),
             "warm_step_seconds_min": round(min(warm), 6) if warm else None,
@@ -371,6 +391,7 @@ def build_resident_worker_argv(
     height: int,
     width: int,
     fps: float,
+    shift: float = 5.0,
 ) -> list[str]:
     """Argv for the resident worker entrypoint.
 
@@ -390,6 +411,8 @@ def build_resident_worker_argv(
         str(int(num_steps)),
         "--guidance",
         str(float(guidance)),
+        "--shift",
+        str(float(shift)),
         "--height",
         str(int(height)),
         "--width",
@@ -519,9 +542,7 @@ def make_resident_oscar_generate(
         stdout_log.write_text(_string(response.get("stdout_tail")), encoding="utf-8")
         stderr_log.write_text(_string(response.get("stderr_tail")), encoding="utf-8")
 
-        blockers = [
-            _string(item) for item in response.get("blockers", []) or [] if _string(item)
-        ]
+        blockers = [_string(item) for item in response.get("blockers", []) or [] if _string(item)]
         if _string(response.get("status")) != "ok" or blockers:
             return {
                 "status": "blocked",
