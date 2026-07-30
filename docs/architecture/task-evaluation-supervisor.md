@@ -236,9 +236,12 @@ Every executed tool call returns a strict, versioned observation artifact. The
 same deterministic validator runs at tool creation, supervisor ingestion, and
 replay, binding the observation to the exact run, specialist capability,
 authority envelope, registered tool version and mutability, runtime identity,
-output digest, cost ceiling, and retry ceiling. Unknown fields or a mismatched
-binding are refused before the result can be written to the event ledger; raw
-injected tool text is not preserved as evidence.
+output digest, registered output schema, cost ceiling, and retry ceiling. A
+self-consistently hashed typed result is still refused when required fields,
+types, constants, or the tool-specific closed-field set do not match. Unknown
+fields or any other mismatched binding are refused before the result can be
+written to the event ledger; raw injected tool text is not preserved as
+evidence.
 
 The same unknown-field refusal applies to every proof-adjacent supervisor
 artifact: authority envelopes, tool descriptors, action proposals, capability

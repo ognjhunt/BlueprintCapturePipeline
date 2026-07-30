@@ -355,6 +355,24 @@ class ToolDescriptor(ValidatedSupervisorArtifact):
         for key in ("input_schema", "output_schema", "required_authority"):
             if not isinstance(value.get(key), Mapping) or not value.get(key):
                 errors.append(f"{key}:missing_or_empty")
+        for key in ("input_schema", "output_schema"):
+            schema = value.get(key)
+            if not isinstance(schema, Mapping):
+                continue
+            properties = schema.get("properties")
+            required = schema.get("required")
+            if schema.get("type") != "object":
+                errors.append(f"{key}.type:must_be_object")
+            if not isinstance(properties, Mapping):
+                errors.append(f"{key}.properties:must_be_mapping")
+            if not isinstance(required, list) or any(
+                not isinstance(item, str) or not item for item in required
+            ):
+                errors.append(f"{key}.required:must_be_string_list")
+            elif isinstance(properties, Mapping) and not set(required).issubset(properties):
+                errors.append(f"{key}.required:not_declared_in_properties")
+            if not isinstance(schema.get("additionalProperties"), bool):
+                errors.append(f"{key}.additionalProperties:must_be_boolean")
         for key in ("max_cost_usd", "timeout_seconds", "max_retries"):
             if not _number(value.get(key)):
                 errors.append(f"{key}:invalid")

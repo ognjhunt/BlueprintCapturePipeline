@@ -7,6 +7,7 @@ in this registry owns proof transitions, paid allocation, or physical actions.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import re
 from typing import Any, Callable, Mapping, Sequence
@@ -35,6 +36,129 @@ from .phase2_artifacts import (
 TOOL_REGISTRY_SCHEMA_VERSION = "task_evaluation_supervisor_tool_registry.v1"
 
 
+def _output_schema(
+    properties: Mapping[str, Mapping[str, Any]],
+    *,
+    additional_properties: bool = False,
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "required": list(properties),
+        "properties": {key: dict(schema) for key, schema in properties.items()},
+        "additionalProperties": additional_properties,
+    }
+
+
+_TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "inspect_site_task_testbed": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "evidence_inventory_count": {"type": "integer"},
+            "governance": {"type": "object"},
+        }
+    ),
+    "validate_proposed_claim_graph": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "claim_ids": {"type": "array"},
+        }
+    ),
+    "materialize_clarification_request": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "request_id": {"type": "string"},
+            "awaiting_customer_response": {"const": True},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "compile_deterministic_evidence_plan": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "step_count": {"type": "integer"},
+            "compiled_by_agent": {"const": False},
+        }
+    ),
+    "materialize_compiled_leaf_runs": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "plan_digest": {"type": "string"},
+            "compiled_leaf_run_count": {"type": "integer"},
+            "compiled_leaf_run_references": {"type": "array"},
+            "provider_execution_started": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "inspect_normalized_evidence_results": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "status": {},
+            "failure_type": {},
+            "execution_requested": {"type": "boolean"},
+        }
+    ),
+    "propose_targeted_recapture": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "request_id": {"type": "string"},
+            "targeted_recapture_request_digest": {"type": "string"},
+            "capture_started": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "propose_adversarial_scenarios": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "scenario_count": {"type": "integer"},
+            "frozen": {"const": False},
+            "hidden_labels_included": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "materialize_authorization_request": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "request_id": {"type": "string"},
+            "authorization_granted": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "execute_preauthorized_recovery": _output_schema(
+        {
+            "schema_version": {"const": "task_evaluation_recovery_result.v1"},
+            "run_id": {"type": "string"},
+            "attempt_id": {"type": "string"},
+            "status": {
+                "enum": ["completed", "failed", "timed_out", "failed_teardown"]
+            },
+            "typed_result": {"type": "object"},
+            "shared_paid_resource_admission_validated": {"const": True},
+            "proof_effect": {"const": "none"},
+            "scientific_validity_inferred": {"const": False},
+            "recovery_result_digest": {"type": "string"},
+        },
+        additional_properties=True,
+    ),
+    "explain_deterministic_decision": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "overall_outcome": {},
+            "claim_ceiling": {},
+            "verdict_changed_by_tool": {"const": False},
+        }
+    ),
+}
+
+
 def _descriptor(
     tool_id: str,
     category: str,
@@ -55,6 +179,9 @@ def _descriptor(
     timeout_seconds: float = 30.0,
     idempotency: str = "deterministic_for_bound_inputs",
 ) -> ToolDescriptor:
+    output_schema = _TOOL_OUTPUT_SCHEMAS.get(tool_id)
+    if output_schema is None:
+        raise ValueError(f"registered_tool_output_schema_missing:{tool_id}")
     safety_level = {
         "read_only": "proof_safe_read_only",
         "reversible_mutation": "proof_safe_reversible_non_spend",
@@ -79,17 +206,7 @@ def _descriptor(
                 "properties": {key: dict(schema) for key, schema in input_properties.items()},
                 "additionalProperties": False,
             },
-            "output_schema": {
-                "type": "object",
-                "required": ["schema_version", "status"],
-                "properties": {
-                    "schema_version": {"type": "string"},
-                    "status": {"type": "string"},
-                    "artifact_references": {"type": "array"},
-                    "proof_effect": {"const": "none"},
-                },
-                "additionalProperties": True,
-            },
+            "output_schema": output_schema,
             "expected_artifacts": list(expected_artifacts),
             "max_cost_usd": max_cost_usd,
             "timeout_seconds": timeout_seconds,
@@ -363,31 +480,44 @@ class ToolRegistry:
         return "eligible", ()
 
     @staticmethod
-    def _input_schema_errors(value: Any, schema_value: Any) -> list[str]:
+    def _schema_errors(value: Any, schema_value: Any, *, prefix: str) -> list[str]:
         if not isinstance(value, Mapping):
-            return ["tool_input_not_mapping"]
+            return [f"{prefix}_not_mapping"]
         schema = dict(schema_value) if isinstance(schema_value, Mapping) else {}
         properties = dict(schema.get("properties") or {})
         required = {str(item) for item in schema.get("required") or []}
-        errors = [f"tool_input_missing:{key}" for key in sorted(required - set(value))]
+        errors = [f"{prefix}_missing:{key}" for key in sorted(required - set(value))]
         if schema.get("additionalProperties") is False:
             errors.extend(
-                f"tool_input_unknown:{key}" for key in sorted(set(value) - set(properties))
+                f"{prefix}_unknown:{key}" for key in sorted(set(value) - set(properties))
             )
         type_checks = {
             "string": lambda item: isinstance(item, str),
             "boolean": lambda item: isinstance(item, bool),
             "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
-            "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
+            "number": lambda item: (
+                isinstance(item, (int, float))
+                and not isinstance(item, bool)
+                and math.isfinite(float(item))
+            ),
             "array": lambda item: isinstance(item, list),
             "object": lambda item: isinstance(item, Mapping),
         }
         for key in sorted(set(value) & set(properties)):
-            expected = str(dict(properties[key]).get("type") or "")
+            property_schema = dict(properties[key])
+            expected = str(property_schema.get("type") or "")
             check = type_checks.get(expected)
             if check is not None and not check(value[key]):
-                errors.append(f"tool_input_type:{key}:{expected}")
+                errors.append(f"{prefix}_type:{key}:{expected}")
+            if "const" in property_schema and value[key] != property_schema["const"]:
+                errors.append(f"{prefix}_const:{key}")
+            if "enum" in property_schema and value[key] not in property_schema["enum"]:
+                errors.append(f"{prefix}_enum:{key}")
         return errors
+
+    @classmethod
+    def _input_schema_errors(cls, value: Any, schema_value: Any) -> list[str]:
+        return cls._schema_errors(value, schema_value, prefix="tool_input")
 
 
 def validate_tool_observation_binding(
@@ -430,6 +560,16 @@ def validate_tool_observation_binding(
         raise ValueError("tool_observation_runtime_identity_mismatch")
     if observation["output_digest"] != canonical_digest(observation["typed_result"]):
         raise ValueError("tool_observation_output_digest_mismatch")
+    if observation["status"] != "refused":
+        output_errors = registry._schema_errors(
+            observation["typed_result"],
+            descriptor_value["output_schema"],
+            prefix="tool_output",
+        )
+        if output_errors:
+            raise ValueError(
+                "tool_observation_output_schema_invalid:" + ",".join(output_errors)
+            )
     produced_artifact_types = {
         str(row.get("artifact_type") or "") for row in observation["produced_artifact_references"]
     }

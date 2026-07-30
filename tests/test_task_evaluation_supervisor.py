@@ -2450,6 +2450,8 @@ def test_blueprint_preserves_trusted_tool_audit_when_sdk_omits_or_fails(
 
 def test_tool_descriptor_requires_consistent_rollback_and_retry_contract() -> None:
     descriptor = ToolRegistry.default().manifest()["tools"][0]
+    assert descriptor["output_schema"]["required"]
+    assert descriptor["output_schema"]["properties"]
     missing_rollback = dict(descriptor)
     missing_rollback.pop("rollback")
     missing_rollback.pop("tool_digest")
@@ -2463,6 +2465,13 @@ def test_tool_descriptor_requires_consistent_rollback_and_retry_contract() -> No
     with pytest.raises(SupervisorContractError) as retry_error:
         ToolDescriptor.from_mapping(fractional_retry)
     assert "max_retries:must_be_nonnegative_integer" in retry_error.value.errors
+
+    undeclared_output = json.loads(json.dumps(descriptor))
+    undeclared_output["output_schema"]["required"].append("fabricated_success")
+    undeclared_output.pop("tool_digest")
+    with pytest.raises(SupervisorContractError) as output_error:
+        ToolDescriptor.from_mapping(undeclared_output)
+    assert "output_schema.required:not_declared_in_properties" in output_error.value.errors
 
     unsafe = dict(descriptor)
     unsafe["safety_level"] = "preauthorized_external_side_effect"
@@ -3480,6 +3489,22 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
             injected_runtime,
             run_id=_context().run_id,
             capability=injected_runtime["capability"],
+            registry=ToolRegistry.default(),
+            authority=authority,
+        )
+
+    fabricated_result = json.loads(observations[0].read_text(encoding="utf-8"))
+    fabricated_result["typed_result"] = {"fabricated_success": True}
+    fabricated_result["output_digest"] = canonical_digest(fabricated_result["typed_result"])
+    fabricated_result["observation_digest"] = canonical_digest(
+        fabricated_result,
+        digest_field="observation_digest",
+    )
+    with pytest.raises(ValueError, match="tool_observation_output_schema_invalid"):
+        validate_tool_observation_binding(
+            fabricated_result,
+            run_id=_context().run_id,
+            capability=fabricated_result["capability"],
             registry=ToolRegistry.default(),
             authority=authority,
         )
