@@ -32,11 +32,27 @@ that does not make the candidate geometry canonical capture truth.
 - The current multi-view AABB fusion path is retained as a qualified metric-depth
   method or explicit diagnostic. It is not mislabeled as the future
   contribution-weighted Gaussian semantic lifter.
+- A provider-neutral contribution-lifting baseline now accepts exact stable
+  Gaussian mappings, persistent track registries, full-frame mask probabilities,
+  source-frame PTS, calibrated camera records, and the renderer's actual
+  front-to-back `transmittance * alpha` rows. It independently verifies the
+  canonical mapping, track, camera, mask, contribution, and view payload digests;
+  caps input size; accumulates foreground and background evidence; requires
+  multi-view and angular support; excludes generated-only Gaussians; keeps
+  adjacent same-label track IDs separate; and returns a targeted abstention when
+  evidence is insufficient.
+- A bounded file stage verifies the exact JSON artifact bytes and sizes before
+  executing the pure lifter and atomically writes a provenance-linked terminal
+  result. The result ceiling is per-Gaussian semantic support. It explicitly
+  remains unready for metric boxes, collision, physics, task success, or physical
+  claims.
 
-Still missing is the production contribution-rendering stage itself: stable
-Gaussian IDs or a hash-bound analysis mapping, exact source cameras, per-pixel
-transmittance/alpha contributions, track-aware instance fusion, true Z-up OBB
-fitting, collision validation, and a measured ground-truth evaluation set.
+Still missing is a real renderer adapter that emits those exact contribution
+artifacts from a production analysis splat. The checked-in stage consumes and
+qualifies contribution rows but does not synthesize them or claim a render ran.
+Large-scene production also needs a bounded chunked/binary transport rather than
+one JSON view artifact, followed by graph cleanup, true Z-up OBB fitting,
+collision validation, and a measured ground-truth evaluation set.
 
 ## Primary-source audit
 
