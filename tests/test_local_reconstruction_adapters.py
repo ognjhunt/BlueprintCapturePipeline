@@ -5,7 +5,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
+from blueprint_pipeline import local_reconstruction_adapters as adapters
 from blueprint_pipeline.local_reconstruction_adapters import (
     LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER,
     LOCAL_DECODED_OBSERVATION_ADAPTER,
@@ -31,7 +33,10 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
 
-def _stub_media_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+def _stub_media_tools(
+    monkeypatch: pytest.MonkeyPatch, *, presentation_times: list[float] | None = None
+) -> None:
+    times = presentation_times or [0.1, 0.2]
     monkeypatch.setattr(
         "blueprint_pipeline.local_reconstruction_adapters.shutil.which",
         lambda name: f"/fake/{name}",
@@ -54,11 +59,17 @@ def _stub_media_tools(monkeypatch: pytest.MonkeyPatch) -> None:
                                 "height": 48,
                                 "avg_frame_rate": "10/1",
                                 "time_base": "1/1000",
+                                "pix_fmt": "yuv420p",
+                                "color_space": "bt709",
+                                "tags": {"rotate": "90"},
                             }
                         ],
                         "frames": [
-                            {"best_effort_timestamp": "100", "best_effort_timestamp_time": "0.100"},
-                            {"best_effort_timestamp": "200", "best_effort_timestamp_time": "0.200"},
+                            {
+                                "best_effort_timestamp": str(round(value * 1000)),
+                                "best_effort_timestamp_time": str(value),
+                            }
+                            for value in times
                         ],
                     }
                 ),
@@ -66,7 +77,8 @@ def _stub_media_tools(monkeypatch: pytest.MonkeyPatch) -> None:
             )
         output = Path(command[-1])
         selected = next(value for value in command if value.startswith("select="))
-        output.write_bytes(f"png:{selected}".encode())
+        value = int(selected.split(",")[-1].rstrip(")"))
+        Image.new("RGB", (64, 48), color=(value * 40, 20, 10)).save(output, format="PNG")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(
@@ -97,10 +109,15 @@ def test_ordinary_video_plans_decoded_observations_not_calibration() -> None:
     assert "calibrated_frames" not in plan["required_representations"]
 
 
+def test_frame_sampling_uses_actual_presentation_timeline() -> None:
+    assert adapters._sample_indexes([0.0, 0.01, 0.02, 1.0, 2.0], 3) == [0, 3, 4]
+    assert adapters._sample_indexes([0.0, 0.01, 0.02, 0.03, 10.0], 4) == [0, 1, 3, 4]
+
+
 def test_decoded_observation_adapter_is_deterministic_and_non_metric(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _stub_media_tools(monkeypatch)
+    _stub_media_tools(monkeypatch, presentation_times=[0.1, 0.2, 0.3, 0.4])
     capture_root = tmp_path / "capture"
     capture_root.mkdir()
     (capture_root / "video.mp4").write_bytes(b"retained-video")
@@ -113,7 +130,7 @@ def test_decoded_observation_adapter_is_deterministic_and_non_metric(
         "video_relative_path": "video.mp4",
         "output_root": output_root,
         "rights_and_retention": {"external_processing": False},
-        "maximum_frames": 2,
+        "maximum_frames": 4,
     }
 
     first = LocalDecodedObservationAdapter().execute(**kwargs)
@@ -122,11 +139,27 @@ def test_decoded_observation_adapter_is_deterministic_and_non_metric(
     assert first == second
     assert first["outputs"] == ["decoded_observation_frames"]
     assert first["camera_solution"] == {"status": "not_available", "calibrated": False}
-    assert first["source_frames"]["sampled_frames"][0]["t_video_sec"] == 0.0
-    assert first["source_frames"]["sampled_frames"][1]["t_video_sec"] == 0.1
+    assert len(first["source_frames"]["sampled_frames"]) == 3
+    assert {
+        row["t_video_sec"] for row in first["source_frames"]["sampled_frames"]
+    } < {0.0, 0.1, 0.2, 0.3}
     assert first["claim_ceiling"]["calibrated_camera_poses"] is False
     assert first["claim_ceiling"]["metric_geometry"] is False
     assert first["claim_ceiling"]["physical_task_success"] is False
+    dataset_path = next(output_root.glob("**/reconstruction_dataset_manifest.json"))
+    dataset = json.loads(dataset_path.read_text(encoding="utf-8"))
+    assert dataset["stream_metadata"]["display_rotation_degrees"] == 90.0
+    assert dataset["train_heldout_split_digest"].startswith("sha256:")
+    assert dataset["candidate_dataset_contains_hidden_heldout_pixels"] is False
+    index = json.loads(next(output_root.glob("**/decoded_observation_index.json")).read_text())
+    assert len(index["sampled_frames"]) == 3
+    assert index["sampled_frames"][0]["image_metadata"] == {
+        "width": 64,
+        "height": 48,
+        "pixel_orientation": "encoded_source_no_autorotate",
+    }
+    assert "hidden_heldout_evaluator_manifest" not in first["asset_references"]
+    assert first["source_frames"]["hidden_heldout_frame_count"] == 1
 
 
 def _arkit_bundle(root: Path) -> None:
@@ -296,7 +329,14 @@ def test_arkit_metric_scaffold_requires_exact_v32_bindings(
     assert result["camera_solution"]["status"] == "raw_contract_3_2_verified"
     assert result["validation_metrics"]["retained_sync_pose_count"] == 2
     assert result["validation_metrics"]["depth_confidence_pair_count"] == 1
-    assert result["claim_ceiling"]["metric_scale"] is True
+    assert result["claim_ceiling"]["sensor_declared_metric_scale"] is True
+    assert result["claim_ceiling"]["metric_scale"] is False
+    assert result["claim_ceiling"]["metric_reference_layer"] is False
+    assert result["validation_metrics"]["independent_metric_scale_validation_passed"] is False
+    assert result["validation_metrics"]["pose_refinement_executed"] is False
+    assert result["asset_references"]["arkit_reconstruction_dataset_export"][
+        "digest"
+    ].startswith("sha256:")
     assert result["claim_ceiling"]["complete_geometry"] is False
     assert result["claim_ceiling"]["collision_geometry"] is False
     assert result["claim_ceiling"]["physical_task_success"] is False
@@ -344,3 +384,93 @@ def test_decoded_observation_rejects_path_traversal(
             output_root=tmp_path / "derived",
             rights_and_retention={"external_processing": False},
         )
+
+
+def test_decoded_observation_rejects_duplicate_pts_and_corrupt_media(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"retained-video")
+
+    def duplicate_pts(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "streams": [{"index": 0, "width": 64, "height": 48}],
+                    "frames": [
+                        {"best_effort_timestamp_time": "0.0"},
+                        {"best_effort_timestamp_time": "0.0"},
+                    ],
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(adapters.subprocess, "run", duplicate_pts)
+    with pytest.raises(LocalReconstructionAdapterError, match="duplicate_pts"):
+        adapters._probe_video(video, "/fake/ffprobe")
+
+    monkeypatch.setattr(
+        adapters.subprocess,
+        "run",
+        lambda command, **_: subprocess.CompletedProcess(command, 1, "", "corrupt"),
+    )
+    with pytest.raises(LocalReconstructionAdapterError, match="media_not_decodable"):
+        adapters._probe_video(video, "/fake/ffprobe")
+
+
+def test_decoded_observation_rejects_oversized_and_symlinked_media(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    video = capture_root / "video.mp4"
+    video.write_bytes(b"retained-video")
+    kwargs = {
+        "intake_id": "intake-1",
+        "capture_digest": CAPTURE_DIGEST,
+        "capture_authority_profile": "monocular_video",
+        "capture_root": capture_root,
+        "output_root": tmp_path / "derived",
+        "rights_and_retention": {"external_processing": False},
+    }
+    with pytest.raises(LocalReconstructionAdapterError, match="video_oversized"):
+        LocalDecodedObservationAdapter().execute(
+            **kwargs,
+            video_relative_path="video.mp4",
+            maximum_source_bytes=4,
+        )
+
+    link = capture_root / "linked.mp4"
+    link.symlink_to(video)
+    with pytest.raises(LocalReconstructionAdapterError, match="video_symlink_forbidden"):
+        LocalDecodedObservationAdapter().execute(
+            **kwargs,
+            video_relative_path="linked.mp4",
+        )
+
+
+def test_decoded_observation_treats_malicious_filename_as_opaque_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_media_tools(monkeypatch)
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    filename = "$(touch owned).mp4"
+    (capture_root / filename).write_bytes(b"retained-video")
+
+    result = LocalDecodedObservationAdapter().execute(
+        intake_id="intake-1",
+        capture_digest=CAPTURE_DIGEST,
+        capture_authority_profile="monocular_video",
+        capture_root=capture_root,
+        video_relative_path=filename,
+        output_root=tmp_path / "derived",
+        rights_and_retention={"external_processing": False},
+        maximum_frames=2,
+    )
+
+    assert result["claim_ceiling"]["captured_observation"] is True
+    assert not (tmp_path / "owned").exists()

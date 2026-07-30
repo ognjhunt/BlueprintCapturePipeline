@@ -52,6 +52,10 @@ class SupervisorContext:
     # never serialized into an agent prompt and cannot be selected by the model.
     supervisor_output_dir: str | None = None
     recovery_controller: Any | None = None
+    # Optional deterministic service injected by the capture runtime. The
+    # callable is never serialized into prompts and receives only digest-bound
+    # arguments plus a supervisor-owned output directory.
+    reconstruction_dataset_compiler: Any | None = None
 
 
 class SupervisorCapability(Protocol):

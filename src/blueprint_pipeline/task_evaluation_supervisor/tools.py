@@ -73,6 +73,17 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "proof_state_changed": {"const": False},
         }
     ),
+    "compile_frozen_frame_dataset": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "dataset_manifest_digest": {"type": "string"},
+            "split_digest": {"type": "string"},
+            "hidden_heldout_isolated": {"const": True},
+            "candidate_can_change_split": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
     "validate_proposed_claim_graph": _output_schema(
         {
             "contract_present": {"const": True},
@@ -262,6 +273,23 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                 "requested_claim_types": {"type": "array"},
             },
             required_inputs=["capture_build_digest", "requested_claim_types"],
+        ),
+        _descriptor(
+            "compile_frozen_frame_dataset",
+            "capture_reconstruction_dataset_compilation",
+            expected_artifacts=["reconstruction_dataset_manifest.v1"],
+            input_properties={
+                "capture_build_digest": {"type": "string"},
+                "capture_reconstruction_route_digest": {"type": "string"},
+            },
+            required_inputs=[
+                "capture_build_digest",
+                "capture_reconstruction_route_digest",
+            ],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=300.0,
         ),
         _descriptor(
             "validate_proposed_claim_graph",
@@ -646,6 +674,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
     "capture_testbed_supervisor": (
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
+        "compile_frozen_frame_dataset",
         "propose_targeted_recapture",
     ),
     "evaluation_method_router": (
@@ -957,6 +986,96 @@ def _execute_preauthorized_recovery(
     return result, [reference]
 
 
+def _compile_frozen_frame_dataset(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    compiler = getattr(context, "reconstruction_dataset_compiler", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError("registered_tool_execution_scope_missing:compile_frozen_frame_dataset")
+    if not callable(compiler):
+        raise ValueError("reconstruction_dataset_compiler_not_injected")
+    capture_build = context.capture_build
+    expected_capture_digest = arguments.get("capture_build_digest")
+    actual_capture_digest = (
+        capture_build.get("capture_build_digest") if isinstance(capture_build, Mapping) else None
+    )
+    claim_types = sorted(
+        {
+            str(row.get("claim_type") or "").strip()
+            for row in (
+                context.decision_request.get("claims", [])
+                if isinstance(context.decision_request, Mapping)
+                else []
+            )
+            if isinstance(row, Mapping) and str(row.get("claim_type") or "").strip()
+        }
+    )
+    route = (
+        build_capture_reconstruction_route(capture_build, requested_claim_types=claim_types)
+        if isinstance(capture_build, Mapping)
+        and expected_capture_digest
+        and expected_capture_digest == actual_capture_digest
+        else None
+    )
+    expected_route_digest = arguments.get("capture_reconstruction_route_digest")
+    if (
+        route is None
+        or route.get("status") != "route_proposed"
+        or expected_route_digest != route.get("capture_reconstruction_route_digest")
+    ):
+        raise ValueError("registered_tool_reconstruction_route_binding_mismatch")
+    output_root = Path(root_value) / "generated" / "reconstruction_frame_dataset"
+    compiled = compiler(
+        request={
+            "capture_build_digest": actual_capture_digest,
+            "capture_reconstruction_route_digest": expected_route_digest,
+            "capture_authority_profile": route["capture_authority_profile"],
+            "requested_claim_types": claim_types,
+        },
+        output_root=output_root,
+    )
+    if not isinstance(compiled, Mapping):
+        raise ValueError("reconstruction_dataset_compiler_result_not_object")
+    dataset = dict(compiled)
+    dataset_digest = dataset.get("dataset_manifest_digest")
+    split_digest = dataset.get("train_heldout_split_digest")
+    parent = dataset.get("parent_artifact_or_event")
+    if (
+        dataset.get("schema_version") != "reconstruction_dataset_manifest.v1"
+        or not isinstance(parent, Mapping)
+        or parent.get("capture_build_digest") != actual_capture_digest
+        or dataset.get("capture_authority_profile") != route["capture_authority_profile"]
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(dataset_digest or "")) is None
+        or dataset_digest != canonical_digest(dataset, digest_field="dataset_manifest_digest")
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(split_digest or "")) is None
+        or dataset.get("candidate_dataset_contains_hidden_heldout_pixels") is not False
+        or dataset.get("candidate_can_modify_split") is not False
+        or dataset.get("proof_effect") != "decoded_observation_availability_only"
+    ):
+        raise ValueError("reconstruction_dataset_compiler_result_contract_invalid")
+    path = write_phase2_artifact(
+        root_value,
+        "generated/reconstruction_frame_dataset/reconstruction_dataset_manifest.json",
+        dataset,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "dataset_manifest_digest": dataset_digest,
+        "split_digest": split_digest,
+        "hidden_heldout_isolated": True,
+        "candidate_can_change_split": False,
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": dataset_digest,
+            "artifact_type": "reconstruction_dataset_manifest.v1",
+        }
+    ]
+
+
 def _bound_artifact(
     context: Any,
     *,
@@ -1037,6 +1156,8 @@ def _bound_artifact(
             "execution_authorized_by_route": False,
             "proof_state_changed": False,
         }
+    elif tool_id == "compile_frozen_frame_dataset":
+        return _compile_frozen_frame_dataset(context=context, arguments=arguments)
     elif tool_id == "compile_deterministic_evidence_plan":
         value = context.evidence_plan
         expected = arguments.get("plan_digest")
@@ -1113,6 +1234,10 @@ def non_spend_tool_bindings(
         return ()
     bindings: list[RegisteredToolBinding] = []
     for tool_id in _CAPABILITY_TOOL_IDS.get(capability, ()):
+        if tool_id == "compile_frozen_frame_dataset" and not callable(
+            getattr(context, "reconstruction_dataset_compiler", None)
+        ):
+            continue
         descriptor = registry.resolve(tool_id)
         if descriptor is None:
             raise ValueError(f"registered_non_spend_tool_missing:{tool_id}")

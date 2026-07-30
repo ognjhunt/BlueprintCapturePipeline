@@ -1,6 +1,7 @@
 # Reconstruction Capability and Testbed Compiler
 
-Status: implemented local contract boundary, version 1 (2026-07-29)
+Status: implemented local contract boundary plus deterministic frame/split kernel,
+version 1 (2026-07-30)
 
 ## Decision
 
@@ -58,6 +59,92 @@ also names stages that are required but not yet registered, including 360
 normalization, SfM, 3DGS training, and independent scale validation. This is a
 planning aid only: the control plane still owns method-profile eligibility and
 separate execution authorization.
+
+## Deterministic frame dataset and hidden split
+
+`reconstruction_frame_dataset.py` implements the first execution kernel shared
+by reconstruction methods. The decoded-observation adapter uses actual decoded
+PTS rather than file order or nominal frame rate, selects bounded observations
+with a versioned timeline-spacing rule, and records DTS, duration, key-frame,
+rotation, pixel/color, and locally measurable image-quality metadata when those
+values are available. Duplicate or reordered PTS, undecodable media, symlinked
+inputs, unsafe paths, digest changes, and oversized retained video fail closed.
+The original retained video remains complete and authoritative.
+
+The kernel emits five versioned, digest-bound artifacts governed by
+`docs/schemas/reconstruction_frame_dataset.v1.schema.json`:
+
+- `reconstruction_dataset_manifest.v1`;
+- `retained_frame_selection_manifest.v1`;
+- `frozen_reconstruction_split_manifest.v1`;
+- `candidate_reconstruction_dataset_manifest.v1`;
+- `hidden_heldout_evaluator_manifest.v1`.
+
+Training and validation pixels are materialized under a candidate-only root.
+Hidden held-out pixels are materialized under a separate evaluator-only root,
+and neither the candidate manifest nor the registered candidate tool result
+contains those paths. Split assignments are digest-ranked, immutable, and
+bound to the exact source video, actual frame timing and digests, stream
+metadata, runtime, source commit, authority, and parent artifact. Identical
+inputs replay the accepted artifacts; altered inputs select a different
+content-addressed dataset. Fewer than three selected frames yields an explicit
+insufficient-split blocker rather than a fabricated held-out result.
+
+The Task Evaluation Supervisor registers
+`compile_frozen_frame_dataset` as a typed, zero-cost, scoped mutation tool only
+when a deterministic compiler callable is injected by the service. The tool
+cannot change the capture profile, split, proof state, or claim ceiling. The
+normal capture-build ingress intentionally projects known JSON fields without
+raw media paths, so the production lifecycle does not inject this compiler yet;
+it remains fail-closed until deterministic capture admission exposes an
+immutable retained-media binding. Agent prose cannot substitute for the tool
+result.
+
+This slice proves decoded observation availability, frame-selection
+determinism, split immutability, hidden-view isolation, and replay integrity on
+hermetic fixtures. It does not prove camera calibration, ARKit alignment,
+metric scale, reconstruction quality, geometry, collision, physics, Isaac
+compatibility, simulator task success, physical success, or deployment.
+
+## Strict ARKit reconstruction export
+
+The strict V3.2 ARKit/LiDAR adapter now feeds the frozen frame kernel into
+`arkit_reconstruction_dataset.py`. That compiler binds candidate-only RGB
+observations to the exact encoded-frame index, decoded PTS, capture timestamp,
+raw `T_world_camera`, session intrinsics, coordinate frame, and any matching
+depth/confidence references. FFmpeg extraction explicitly disables display
+autorotation, records the extracted pixel dimensions, and refuses the export
+when those encoded pixels do not match the declared intrinsics.
+
+The compiler emits `camera_calibration_manifest.v1`,
+`camera_observation_manifest.v1`, `pose_refinement_request.v1`, and
+`arkit_reconstruction_dataset_export.v1`. Their shared Draft 2020-12 contract is
+`docs/schemas/arkit_reconstruction_dataset.v1.schema.json`. The candidate
+observation manifest contains training and validation paths only. It cannot
+change raw ARKit poses or the frozen split, cannot read held-out pixels, and
+cannot enable undeclared distortion or rolling-shutter models.
+
+The pose-refinement request remains deterministically blocked because a
+repository-approved drift threshold and executable anchored bundle-adjustment
+tool are not registered yet. Accordingly, this export is a calibrated
+reconstruction request, not a refined trajectory or COLMAP/gsplat dataset. The
+ARKit scaffold records sensor-declared meter units, but its claim ceiling no
+longer says metric scale or a metric reference layer is independently proven:
+confidence filtering, RGB-depth alignment, metric-scale validation, and
+geometric held-out evaluation have not run.
+
+## Remaining reconstruction qualification gaps
+
+The executable local kernel should be extended, not replaced. Remaining work
+includes confidence-filtered ARKit depth fusion and bounded pose refinement;
+native `.insv` normalization and calibrated dual-fisheye/shared-center virtual
+rigs; frozen pose-method comparison; a pinned headless CUDA/ONNX COLMAP plus
+gsplat/3DGUT worker; independent appearance and geometry evaluation;
+metric-anchor and collider qualification; reproducible NuRec/OpenUSD packaging;
+headless Isaac load/render/contact checks; provider-governed external imports;
+and recorded qualification or rejection of enhancement methods. No
+representative real iPhone or 360 capture has completed that full path in this
+implementation.
 
 ## Normalized results and layers
 

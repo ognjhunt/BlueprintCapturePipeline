@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+import jsonschema
+import pytest
+
+from blueprint_pipeline.arkit_reconstruction_dataset import (
+    ArkitReconstructionDatasetError,
+    compile_arkit_reconstruction_dataset,
+)
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.reconstruction_frame_dataset import compile_frozen_frame_dataset
+
+
+CAPTURE_DIGEST = "sha256:" + "a" * 64
+IMPLEMENTATION_DIGEST = "sha256:" + "b" * 64
+RUNTIME_DIGEST = "sha256:" + "c" * 64
+SOURCE_COMMIT = "d" * 40
+
+
+def _file_digest(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _source_artifacts(root: Path) -> tuple[dict, dict, dict, dict, str]:
+    frames: list[dict] = []
+    for index in range(5):
+        path = root / "frames" / f"decoded-{index:09d}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"rgb-{index}".encode())
+        frames.append(
+            {
+                "frame_id": f"decoded-{index:09d}",
+                "decoded_frame_index": index,
+                "t_video_sec": round(index * 0.1, 9),
+                "source_pts_seconds": 10.0 + index * 0.1,
+                "source_dts_seconds": None,
+                "duration_seconds": 0.1,
+                "key_frame": index == 0,
+                "artifact_relative_path": path.relative_to(root).as_posix(),
+                "digest": _file_digest(path),
+                "image_metadata": {
+                    "width": 64,
+                    "height": 48,
+                    "pixel_orientation": "encoded_source_no_autorotate",
+                },
+                "quality_signals": {"gradient_energy": 10.0},
+            }
+        )
+    dataset = compile_frozen_frame_dataset(
+        artifact_root=root,
+        intake_id="intake-1",
+        capture_digest=CAPTURE_DIGEST,
+        capture_authority_profile="iphone_arkit_lidar",
+        source_video_relative_path="walkthrough.mov",
+        source_video_digest="sha256:" + "e" * 64,
+        decoded_frame_count=5,
+        selected_frames=frames,
+        stream_metadata={"width": 64, "height": 48, "display_rotation_degrees": 90},
+        runtime_identity="fixture-ffmpeg",
+        runtime_digest=RUNTIME_DIGEST,
+        implementation_digest=IMPLEMENTATION_DIGEST,
+        source_commit_sha=SOURCE_COMMIT,
+        rights_and_retention={"external_processing": False},
+        timestamp="2026-07-30T12:00:00Z",
+    )
+    base = next(root.glob("frozen_dataset_*"))
+    split = json.loads((base / "frozen_split_manifest.json").read_text())
+    candidate = json.loads((base / "candidate_dataset_manifest.json").read_text())
+    pose = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    scaffold = {
+        "schema_version": "arkit_metric_scaffold.v1",
+        "capture_digest": CAPTURE_DIGEST,
+        "coordinate_frame_session_id": "session-1",
+        "coordinate_system": {
+            "world_frame_definition": "arkit_world_origin_at_session_start",
+            "units": "meters",
+            "handedness": "right_handed",
+            "gravity_aligned": True,
+        },
+        "intrinsics": {"fx": 50.0, "fy": 50.0, "cx": 32.0, "cy": 24.0, "width": 64, "height": 48},
+        "camera_frames": [
+            {
+                "frame_id": f"capture-{index}",
+                "encoded_frame_index": index,
+                "t_video_sec": round(index * 0.1, 9),
+                "t_capture_sec": round(index * 0.1, 9),
+                "T_world_camera": pose,
+            }
+            for index in range(5)
+        ],
+        "depth_confidence_pairs": [
+            {
+                "frame_id": "capture-0",
+                "depth_relative_path": "arkit/depth/0.bin",
+                "depth_digest": "sha256:" + "f" * 64,
+                "confidence_relative_path": "arkit/confidence/0.bin",
+                "confidence_digest": "sha256:" + "1" * 64,
+            }
+        ],
+        "source_artifact_digests": {},
+    }
+    scaffold_digest = "sha256:" + hashlib.sha256(
+        (json.dumps(scaffold, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    ).hexdigest()
+    return dataset, split, candidate, scaffold, scaffold_digest
+
+
+def test_arkit_export_is_candidate_only_idempotent_and_fail_closed(tmp_path: Path) -> None:
+    dataset, split, candidate, scaffold, scaffold_digest = _source_artifacts(tmp_path / "source")
+    kwargs = {
+        "output_root": tmp_path / "export",
+        "intake_id": "intake-1",
+        "capture_digest": CAPTURE_DIGEST,
+        "dataset_manifest": dataset,
+        "split_manifest": split,
+        "candidate_manifest": candidate,
+        "metric_scaffold": scaffold,
+        "metric_scaffold_digest": scaffold_digest,
+        "implementation_digest": IMPLEMENTATION_DIGEST,
+        "source_commit_sha": SOURCE_COMMIT,
+        "authority_used": {"external_processing": False},
+        "timestamp": "2026-07-30T12:00:00Z",
+    }
+
+    first = compile_arkit_reconstruction_dataset(**kwargs)
+    second = compile_arkit_reconstruction_dataset(**kwargs)
+
+    assert first == second
+    assert first["hidden_heldout_pixels_included"] is False
+    assert first["raw_arkit_poses_modified"] is False
+    assert first["metric_scale_validation_status"] == "not_executed"
+    assert first["colmap_gsplat_export_status"] == (
+        "blocked_pose_refinement_and_qa_not_registered"
+    )
+    root = next((tmp_path / "export").glob("arkit_export_*"))
+    observations = json.loads(
+        (root / "candidate_camera_observation_manifest.json").read_text()
+    )
+    assert observations["candidate_splits_only"] is True
+    assert observations["hidden_heldout_pixels_included"] is False
+    assert {row["split"] for row in observations["observations"]} <= {
+        "training",
+        "validation",
+    }
+    assert len(observations["observations"]) < len(split["assignments"])
+    request = json.loads((root / "pose_refinement_request.json").read_text())
+    assert request["candidate_may_change_input_poses"] is False
+    assert request["maximum_pose_drift_threshold"] is None
+    calibration = json.loads((root / "camera_calibration_manifest.json").read_text())
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/arkit_reconstruction_dataset.v1.schema.json"
+        ).read_text()
+    )
+    validator = jsonschema.Draft202012Validator(schema)
+    for artifact in (first, observations, request, calibration):
+        validator.validate(artifact)
+
+
+def test_arkit_export_rejects_pixel_calibration_and_digest_spoofing(tmp_path: Path) -> None:
+    dataset, split, candidate, scaffold, scaffold_digest = _source_artifacts(tmp_path / "source")
+    bad_candidate = json.loads(json.dumps(candidate))
+    bad_candidate["frames"][0]["image_metadata"]["width"] = 65
+    bad_candidate["candidate_dataset_digest"] = canonical_digest(
+        bad_candidate, digest_field="candidate_dataset_digest"
+    )
+    base = {
+        "output_root": tmp_path / "export",
+        "intake_id": "intake-1",
+        "capture_digest": CAPTURE_DIGEST,
+        "dataset_manifest": dataset,
+        "split_manifest": split,
+        "metric_scaffold": scaffold,
+        "implementation_digest": IMPLEMENTATION_DIGEST,
+        "source_commit_sha": SOURCE_COMMIT,
+        "authority_used": {},
+    }
+    with pytest.raises(ArkitReconstructionDatasetError, match="pixel_binding_mismatch"):
+        compile_arkit_reconstruction_dataset(
+            **base,
+            candidate_manifest=bad_candidate,
+            metric_scaffold_digest=scaffold_digest,
+        )
+    with pytest.raises(ArkitReconstructionDatasetError, match="metric_scaffold_invalid"):
+        compile_arkit_reconstruction_dataset(
+            **base,
+            candidate_manifest=candidate,
+            metric_scaffold_digest="sha256:" + "9" * 64,
+        )

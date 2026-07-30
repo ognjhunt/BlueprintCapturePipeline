@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import jsonschema
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.reconstruction_frame_dataset import compile_frozen_frame_dataset
 from blueprint_pipeline.task_evaluation_supervisor import (
     AutonomyMode,
     CaptureReconstructionRouteError,
@@ -286,3 +288,111 @@ def test_agents_sdk_receives_only_digest_bound_deterministic_route_tool(
     )
     assert refused["status"] == "refused"
     assert refused["typed_result"] == {}
+
+
+def test_agents_sdk_executes_injected_frozen_dataset_compiler_without_proof_authority(
+    tmp_path: Path,
+) -> None:
+    capture_build = _capture_build(tmp_path, profile="camera_360_equirectangular")
+    route = build_capture_reconstruction_route(capture_build)
+
+    def compiler(*, request: dict, output_root: Path) -> dict:
+        frames: list[dict] = []
+        for index, timestamp in enumerate((0.0, 0.05, 0.13, 0.25, 0.5)):
+            path = output_root / "frames" / f"decoded-{index:09d}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"frame-{index}".encode())
+            digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+            frames.append(
+                {
+                    "frame_id": f"decoded-{index:09d}",
+                    "decoded_frame_index": index,
+                    "t_video_sec": timestamp,
+                    "source_pts_seconds": timestamp,
+                    "artifact_relative_path": path.relative_to(output_root).as_posix(),
+                    "digest": digest,
+                    "quality_signals": {},
+                }
+            )
+        return compile_frozen_frame_dataset(
+            artifact_root=output_root,
+            intake_id="supervisor-capture",
+            capture_digest="sha256:" + "1" * 64,
+            capture_authority_profile=request["capture_authority_profile"],
+            source_video_relative_path="retained/source.mov",
+            source_video_digest="sha256:" + "2" * 64,
+            decoded_frame_count=5,
+            selected_frames=frames,
+            stream_metadata={"width": 2048, "height": 1024},
+            runtime_identity="fixture_ffmpeg",
+            runtime_digest="sha256:" + "3" * 64,
+            implementation_digest="sha256:" + "4" * 64,
+            source_commit_sha="5" * 40,
+            rights_and_retention={"external_processing_allowed": False},
+            parent_artifact={
+                "capture_build_digest": request["capture_build_digest"],
+                "capture_reconstruction_route_digest": request[
+                    "capture_reconstruction_route_digest"
+                ],
+            },
+            timestamp="2026-07-30T12:00:00Z",
+        )
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="capture-dataset-tool",
+        customer_question="Compile the frozen reconstruction dataset.",
+        capture_build=capture_build,
+        supervisor_output_dir=str(tmp_path / "run"),
+        reconstruction_dataset_compiler=compiler,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[capture_build["capture_build_digest"]],
+    ).to_mapping()
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+    }
+
+    assert "compile_frozen_frame_dataset" in bindings
+    observation = bindings["compile_frozen_frame_dataset"].invoke(
+        {
+            "capture_build_digest": capture_build["capture_build_digest"],
+            "capture_reconstruction_route_digest": route[
+                "capture_reconstruction_route_digest"
+            ],
+        }
+    )
+
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["hidden_heldout_isolated"] is True
+    assert observation["typed_result"]["candidate_can_change_split"] is False
+    assert observation["proof_effect"] == "none"
+    assert observation["cost_usd"] == 0.0
+    assert observation["produced_artifact_references"][0]["artifact_type"] == (
+        "reconstruction_dataset_manifest.v1"
+    )
+    validate_tool_observation_binding(
+        observation,
+        run_id=context.run_id,
+        capability="capture_testbed_supervisor",
+        registry=registry,
+        authority=authority,
+    )
+
+    refused = bindings["compile_frozen_frame_dataset"].invoke(
+        {
+            "capture_build_digest": capture_build["capture_build_digest"],
+            "capture_reconstruction_route_digest": "sha256:" + "0" * 64,
+        }
+    )
+    assert refused["status"] == "refused"
+    assert "route_binding_mismatch" in refused["typed_failure"]["reason"]

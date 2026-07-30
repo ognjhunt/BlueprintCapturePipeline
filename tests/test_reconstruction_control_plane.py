@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from blueprint_pipeline import live_pipeline_intake_service as service
 from blueprint_pipeline.capture_intake import validate_capture_intake_envelope
@@ -182,7 +183,7 @@ def _stub_media_tools(monkeypatch: pytest.MonkeyPatch) -> None:
                 ),
                 "",
             )
-        Path(command[-1]).write_bytes(b"frame")
+        Image.new("RGB", (8, 8), color=(40, 20, 10)).save(Path(command[-1]), format="PNG")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(
