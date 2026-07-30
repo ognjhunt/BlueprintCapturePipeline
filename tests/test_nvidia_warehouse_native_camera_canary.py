@@ -14,15 +14,18 @@ from PIL import Image
 from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _apply_and_measure_render_only_joint_pose,
     _apply_runtime_asset_relocations,
+    _articulation_link_world_pose_matrices,
     _backend_array_to_numpy,
     _camera_quaternion_wxyz,
     _fabric_world_pose_matrix,
     _load_materialization_manifest,
     _project_required_external_entities,
     _project_world_points,
+    _quaternion_wxyz_from_world_pose_matrix,
     _render_world_without_physics_advance,
     _rigid_wrist_mount_from_initial_task_framing,
     _simulation_app_launch_config,
+    _synchronize_camera_to_rigid_link,
     _world_pose_matrix_from_backend_pose,
     import_simulation_app,
     isaac_sim_6_backend,
@@ -246,14 +249,102 @@ def test_fabric_world_pose_query_explicitly_bypasses_stale_usd() -> None:
     assert matrix[3, :3] == pytest.approx([0.1, 0.2, 0.3])
 
 
-def test_wrist_camera_prim_exists_before_fabric_world_reset() -> None:
+def test_wrist_camera_prim_exists_before_reset_and_syncs_from_live_link_afterward() -> None:
     source = inspect.getsource(isaac_sim_6_backend)
 
     camera_definition = source.index("wrist_prim = UsdGeom.Camera.Define")
     world_reset = source.index("world.reset()")
-    calibrated_local_pose = source.index('camera_objects["wrist"].set_local_pose')
+    calibrated_world_sync = source.index("_synchronize_camera_to_rigid_link")
 
-    assert camera_definition < world_reset < calibrated_local_pose
+    assert camera_definition < world_reset < calibrated_world_sync
+    assert 'wrist_path = "/World/Cameras/Wrist"' in source
+    assert "get_link_transforms_after_update_articulations_kinematic" in source
+
+
+def test_articulation_link_pose_uses_explicit_kinematic_update_and_xyzw_tensor_order() -> None:
+    calls: list[str] = []
+
+    class SimulationView:
+        def update_articulations_kinematic(self):
+            calls.append("update_articulations_kinematic")
+
+    half_turn = math.radians(90.0) / 2.0
+
+    class PhysicsView:
+        def get_link_transforms(self):
+            calls.append("get_link_transforms")
+            return np.asarray(
+                [
+                    [
+                        [1.0, 2.0, 3.0, 0.0, 0.0, math.sin(half_turn), math.cos(half_turn)],
+                        [4.0, 5.0, 6.0, 0.0, 0.0, 0.0, 1.0],
+                    ]
+                ]
+            )
+
+    class Articulation:
+        _physics_view = PhysicsView()
+        body_names = ["panda_link0", "panda_hand"]
+
+    class Robot:
+        _articulation_view = Articulation()
+
+    matrices = _articulation_link_world_pose_matrices(
+        robot=Robot(),
+        simulation_view=SimulationView(),
+    )
+
+    assert calls == ["update_articulations_kinematic", "get_link_transforms"]
+    assert matrices["panda_link0"][3, :3] == pytest.approx([1.0, 2.0, 3.0])
+    assert np.asarray([1.0, 0.0, 0.0, 0.0]) @ matrices["panda_link0"] == pytest.approx(
+        [0.0, 1.0, 0.0, 0.0]
+    )
+    assert matrices["panda_hand"][3, :3] == pytest.approx([4.0, 5.0, 6.0])
+
+
+def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
+    calls: list[dict[str, object]] = []
+
+    class Camera:
+        def set_world_pose(self, **kwargs):
+            calls.append(kwargs)
+
+    parent_initial = _world_pose_matrix_from_backend_pose(
+        [0.4, -0.2, 1.1],
+        [1.0, 0.0, 0.0, 0.0],
+    )
+    half_turn = math.radians(30.0) / 2.0
+    parent_commanded = _world_pose_matrix_from_backend_pose(
+        [0.5, -0.1, 1.2],
+        [math.cos(half_turn), 0.0, 0.0, math.sin(half_turn)],
+    )
+    mount_translation = [0.0, 0.1, 0.03]
+    mount_orientation = _camera_quaternion_wxyz([1.0, 0.0, -0.2], [0.0, 0.0, 1.0])
+
+    initial = _synchronize_camera_to_rigid_link(
+        camera=Camera(),
+        parent_to_world=parent_initial,
+        mount_translation_parent=mount_translation,
+        mount_orientation_parent_wxyz=mount_orientation,
+    )
+    commanded = _synchronize_camera_to_rigid_link(
+        camera=Camera(),
+        parent_to_world=parent_commanded,
+        mount_translation_parent=mount_translation,
+        mount_orientation_parent_wxyz=mount_orientation,
+    )
+
+    assert len(calls) == 2
+    assert all(call["camera_axes"] == "usd" for call in calls)
+    assert np.linalg.norm(commanded[3, :3] - initial[3, :3]) > 0.001
+    assert commanded @ np.linalg.inv(parent_commanded) == pytest.approx(
+        initial @ np.linalg.inv(parent_initial)
+    )
+    roundtrip = _world_pose_matrix_from_backend_pose(
+        commanded[3, :3],
+        _quaternion_wxyz_from_world_pose_matrix(commanded),
+    )
+    assert roundtrip == pytest.approx(commanded)
 
 
 def test_wrist_mount_is_calibrated_once_in_parent_coordinates_toward_task_centroid() -> None:

@@ -210,6 +210,119 @@ def _world_pose_matrix_from_backend_pose(position: Any, orientation_wxyz: Any) -
     return matrix
 
 
+def _quaternion_wxyz_from_world_pose_matrix(matrix_value: Any) -> np.ndarray:
+    """Extract a scalar-first quaternion from a row-vector world-pose matrix."""
+
+    matrix = np.asarray(matrix_value, dtype=float).reshape(4, 4)
+    rotation = matrix[:3, :3].T
+    if not np.isfinite(rotation).all():
+        raise ValueError("native_world_pose_rotation_invalid")
+    trace = float(np.trace(rotation))
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        quaternion = np.asarray(
+            [
+                0.25 * scale,
+                (rotation[2, 1] - rotation[1, 2]) / scale,
+                (rotation[0, 2] - rotation[2, 0]) / scale,
+                (rotation[1, 0] - rotation[0, 1]) / scale,
+            ]
+        )
+    else:
+        index = int(np.argmax(np.diag(rotation)))
+        next_index = (index + 1) % 3
+        final_index = (index + 2) % 3
+        scale = (
+            math.sqrt(
+                1.0
+                + rotation[index, index]
+                - rotation[next_index, next_index]
+                - rotation[final_index, final_index]
+            )
+            * 2.0
+        )
+        xyz = np.zeros(3)
+        xyz[index] = 0.25 * scale
+        xyz[next_index] = (rotation[next_index, index] + rotation[index, next_index]) / scale
+        xyz[final_index] = (rotation[final_index, index] + rotation[index, final_index]) / scale
+        w = (rotation[final_index, next_index] - rotation[next_index, final_index]) / scale
+        quaternion = np.concatenate(([w], xyz))
+    norm = float(np.linalg.norm(quaternion))
+    if not math.isfinite(norm) or norm <= 1e-9:
+        raise ValueError("native_world_pose_orientation_invalid")
+    return quaternion / norm
+
+
+def _articulation_link_world_pose_matrices(
+    *,
+    robot: Any,
+    simulation_view: Any,
+) -> dict[str, np.ndarray]:
+    """Read all live link poses from the articulation physics tensor view."""
+
+    update_kinematics = getattr(simulation_view, "update_articulations_kinematic", None)
+    if not callable(update_kinematics):
+        raise ValueError("native_articulation_kinematic_update_api_missing")
+    articulation = getattr(robot, "_articulation_view", None)
+    physics_view = getattr(articulation, "_physics_view", None)
+    get_link_transforms = getattr(physics_view, "get_link_transforms", None)
+    if not callable(get_link_transforms):
+        raise ValueError("native_articulation_link_transform_api_missing")
+    names_value = getattr(articulation, "body_names", None)
+    if not isinstance(names_value, (list, tuple)) or not names_value:
+        raise ValueError("native_articulation_link_names_missing")
+    names = [str(name) for name in names_value]
+    try:
+        update_kinematics()
+        transforms = _backend_array_to_numpy(get_link_transforms()).astype(float)
+    except Exception as exc:
+        raise ValueError(
+            "native_articulation_link_transform_query_failed:" + type(exc).__name__
+        ) from exc
+    if transforms.size != len(names) * 7:
+        raise ValueError("native_articulation_link_transform_cardinality_invalid")
+    transforms = transforms.reshape(1, len(names), 7)
+    if not np.isfinite(transforms).all():
+        raise ValueError("native_articulation_link_transform_invalid")
+    return {
+        name: _world_pose_matrix_from_backend_pose(
+            transforms[0, index, :3],
+            [
+                transforms[0, index, 6],
+                transforms[0, index, 3],
+                transforms[0, index, 4],
+                transforms[0, index, 5],
+            ],
+        )
+        for index, name in enumerate(names)
+    }
+
+
+def _synchronize_camera_to_rigid_link(
+    *,
+    camera: Any,
+    parent_to_world: Any,
+    mount_translation_parent: Any,
+    mount_orientation_parent_wxyz: Any,
+) -> np.ndarray:
+    """Apply a fixed parent-local mount to a world-space camera explicitly."""
+
+    mount_to_parent = _world_pose_matrix_from_backend_pose(
+        mount_translation_parent,
+        mount_orientation_parent_wxyz,
+    )
+    camera_to_world = mount_to_parent @ np.asarray(parent_to_world, dtype=float).reshape(4, 4)
+    set_world_pose = getattr(camera, "set_world_pose", None)
+    if not callable(set_world_pose):
+        raise ValueError("native_wrist_camera_world_pose_api_missing")
+    set_world_pose(
+        position=camera_to_world[3, :3],
+        orientation=_quaternion_wxyz_from_world_pose_matrix(camera_to_world),
+        camera_axes="usd",
+    )
+    return camera_to_world
+
+
 def _fabric_world_pose_matrix(prim_wrapper: Any) -> np.ndarray:
     """Read one live Fabric pose instead of the stale authored USD transform."""
 
@@ -476,7 +589,7 @@ def isaac_sim_6_backend(
     simulation_app = SimulationApp(_simulation_app_launch_config())
     try:
         from isaacsim.core.api import World
-        from isaacsim.core.prims import SingleArticulation, SingleXFormPrim
+        from isaacsim.core.prims import SingleArticulation
         from isaacsim.core.utils.stage import add_reference_to_stage
         from isaacsim.sensors.camera import Camera
         from isaacsim.storage.native import get_assets_root_path
@@ -558,12 +671,14 @@ def isaac_sim_6_backend(
         )
         set_pose(external_path, external_eye, external_quaternion)
 
-        # Fabric snapshots the stage hierarchy during World.reset(). The wrist
-        # camera must already exist then or its child transform remains outside
-        # the live articulation hierarchy.
+        # Define the wrist render sensor before World.reset(), but keep it outside
+        # the articulation hierarchy. Isaac's render-only joint teleport updates
+        # physics link tensors without reliably propagating a newly-authored child
+        # camera through Fabric. We therefore synchronize this world-space sensor
+        # from the live panda_hand tensor pose and one fixed parent-local mount.
         wrist = spec["cameras"]["wrist"]
         calibration = wrist["rigid_mount_orientation"]
-        wrist_path = "/World/Franka/panda_hand/BlueprintWristCamera"
+        wrist_path = "/World/Cameras/Wrist"
         wrist_prim = UsdGeom.Camera.Define(stage, wrist_path)
         wrist_prim.CreateVerticalApertureAttr(15.2908)
         wrist_prim.CreateHorizontalApertureAttr(15.2908 * 640.0 / 480.0)
@@ -575,6 +690,9 @@ def isaac_sim_6_backend(
         robot = SingleArticulation(prim_path="/World/Franka", name="native_warehouse_franka")
         world.scene.add(robot)
         world.reset()
+        physics_sim_view = world.physics_sim_view
+        if physics_sim_view is None:
+            raise ValueError("native_articulation_physics_view_missing")
 
         initial_joints = np.asarray(
             [0.2897, 0.50732, -0.140016, -2.176, -0.0310497, 2.51592, -0.49251, 0.04, 0.04]
@@ -594,12 +712,13 @@ def isaac_sim_6_backend(
             cache = UsdGeom.XformCache()
             return _matrix_array(cache.GetLocalToWorldTransform(stage.GetPrimAtPath(path)))
 
-        hand_pose = SingleXFormPrim(
-            prim_path="/World/Franka/panda_hand",
-            name="native_warehouse_hand_fabric_pose",
-            reset_xform_properties=False,
+        precalibration_link_matrices = _articulation_link_world_pose_matrices(
+            robot=robot,
+            simulation_view=physics_sim_view,
         )
-        hand_initial_matrix = _fabric_world_pose_matrix(hand_pose)
+        hand_initial_matrix = precalibration_link_matrices.get("panda_hand")
+        if hand_initial_matrix is None:
+            raise ValueError("native_articulation_panda_hand_link_missing")
         wrist_quaternion, wrist_mount_calibration = _rigid_wrist_mount_from_initial_task_framing(
             parent_to_world=hand_initial_matrix,
             mount_translation_parent=wrist["mount_translation_m"],
@@ -611,13 +730,16 @@ def isaac_sim_6_backend(
         )
         camera_objects["external"] = Camera(prim_path=external_path, resolution=(640, 480))
         camera_objects["wrist"] = Camera(prim_path=wrist_path, resolution=(640, 480))
-        camera_objects["wrist"].set_local_pose(
-            translation=wrist["mount_translation_m"],
-            orientation=wrist_quaternion,
-            camera_axes="usd",
-        )
         for camera in camera_objects.values():
             camera.initialize()
+        _synchronize_camera_to_rigid_link(
+            camera=camera_objects["wrist"],
+            parent_to_world=hand_initial_matrix,
+            mount_translation_parent=wrist["mount_translation_m"],
+            mount_orientation_parent_wxyz=wrist_quaternion,
+        )
+        for _ in range(2):
+            _render_world_without_physics_advance(world)
         initial_joint_state = _apply_and_measure_render_only_joint_pose(
             robot=robot,
             joint_positions=initial_joints,
@@ -626,11 +748,23 @@ def isaac_sim_6_backend(
             render_count=4,
         )
 
-        wrist_local_initial = _matrix_array(
-            UsdGeom.Xformable(stage.GetPrimAtPath(wrist_path)).GetLocalTransformation()
+        initial_link_matrices = _articulation_link_world_pose_matrices(
+            robot=robot,
+            simulation_view=physics_sim_view,
         )
-        hand_world_initial = _fabric_world_pose_matrix(hand_pose)
+        hand_world_initial = initial_link_matrices.get("panda_hand")
+        if hand_world_initial is None:
+            raise ValueError("native_articulation_panda_hand_link_missing")
+        _synchronize_camera_to_rigid_link(
+            camera=camera_objects["wrist"],
+            parent_to_world=hand_world_initial,
+            mount_translation_parent=wrist["mount_translation_m"],
+            mount_orientation_parent_wxyz=wrist_quaternion,
+        )
+        for _ in range(2):
+            _render_world_without_physics_advance(world)
         wrist_world_initial = _fabric_world_pose_matrix(camera_objects["wrist"])
+        wrist_local_initial = wrist_world_initial @ np.linalg.inv(hand_world_initial)
         actual_wrist_eye = wrist_world_initial[3, :3]
         actual_wrist_forward = (np.asarray([0.0, 0.0, -1.0, 0.0]) @ wrist_world_initial)[:3]
         actual_wrist_forward /= np.linalg.norm(actual_wrist_forward)
@@ -653,26 +787,11 @@ def isaac_sim_6_backend(
             "spraycan": placements["spraycan_translation_m"],
             "tray": tray_center,
         }
-        franka_link_points = {}
-        for link_name in (
-            "panda_link0",
-            "panda_link1",
-            "panda_link2",
-            "panda_link3",
-            "panda_link4",
-            "panda_link5",
-            "panda_link6",
-            "panda_link7",
-            "panda_hand",
-        ):
-            link_path = f"/World/Franka/{link_name}"
-            if stage.GetPrimAtPath(link_path).IsValid():
-                link_pose = SingleXFormPrim(
-                    prim_path=link_path,
-                    name=f"native_warehouse_{link_name}_fabric_pose",
-                    reset_xform_properties=False,
-                )
-                franka_link_points[link_name] = _fabric_world_pose_matrix(link_pose)[3, :3]
+        franka_link_points = {
+            link_name: matrix[3, :3]
+            for link_name, matrix in initial_link_matrices.items()
+            if link_name.startswith("panda_")
+        }
         if not franka_link_points:
             raise ValueError("native_warehouse_franka_link_projection_points_missing")
 
@@ -744,14 +863,26 @@ def isaac_sim_6_backend(
             render=lambda: _render_world_without_physics_advance(world),
             render_count=4,
         )
+        commanded_link_matrices = _articulation_link_world_pose_matrices(
+            robot=robot,
+            simulation_view=physics_sim_view,
+        )
+        hand_world_commanded = commanded_link_matrices.get("panda_hand")
+        if hand_world_commanded is None:
+            raise ValueError("native_articulation_panda_hand_link_missing")
+        _synchronize_camera_to_rigid_link(
+            camera=camera_objects["wrist"],
+            parent_to_world=hand_world_commanded,
+            mount_translation_parent=wrist["mount_translation_m"],
+            mount_orientation_parent_wxyz=wrist_quaternion,
+        )
+        for _ in range(2):
+            _render_world_without_physics_advance(world)
         commanded_step = save_frames("commanded")
         record_entity_projections("commanded")
         finalize_entity_projections()
-        hand_world_commanded = _fabric_world_pose_matrix(hand_pose)
         wrist_world_commanded = _fabric_world_pose_matrix(camera_objects["wrist"])
-        wrist_local_commanded = _matrix_array(
-            UsdGeom.Xformable(stage.GetPrimAtPath(wrist_path)).GetLocalTransformation()
-        )
+        wrist_local_commanded = wrist_world_commanded @ np.linalg.inv(hand_world_commanded)
 
         missing = [
             row["relative_path"]
@@ -773,6 +904,12 @@ def isaac_sim_6_backend(
             "spraycan_kinematic_for_camera_canary": True,
             "views": frames,
             "wrist_mount_calibration": wrist_mount_calibration,
+            "wrist_mount_implementation": {
+                "mode": "explicit_world_sensor_sync_from_physics_link_tensor",
+                "parent_link": "panda_hand",
+                "physics_link_pose_source": "get_link_transforms_after_update_articulations_kinematic",
+                "per_frame_task_reaim_performed": False,
+            },
             "franka_render_only_joint_state": {
                 "mode": "render_only_kinematic_joint_state_transition",
                 "physics_dynamics_claimed": False,
