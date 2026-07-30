@@ -24,6 +24,13 @@ types, size mismatches, and digest mismatches, then stores immutable
 content-addressed objects. An idempotency key cannot be rebound to different
 bytes or metadata.
 
+The signed Web-transfer boundary also accepts a single PLY under
+`precomputed_external_reconstruction`. It checks the declared media type and
+PLY magic before malware scanning, preserves the required source-capture digest
+binding, and stores the exact bytes immutably. This admits a derived asset for
+local normalization; it does not make the PLY raw capture, calibrated geometry,
+collision truth, or physics evidence.
+
 ## Admission
 
 `capture_intake_admission.v1` recomputes rights, consent, privacy, retention,

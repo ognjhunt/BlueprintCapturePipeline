@@ -65,10 +65,14 @@ idempotent. All metric, collision, contact, physical-success, deployment,
 safety, task-discovery, and comparative-policy-ranking authority stayed false;
 the frozen verdict remained `thesis_not_supported`.
 
-The current Capture QA path returned `analysis_required` because it has no
-external-reconstruction normalizer. That is accurate but incomplete behavior:
-the asset is safely admitted and bound, yet cannot become an inspectable
-`Reconstruction Result` or testbed layer.
+The follow-up external-reconstruction lane now admits PLY through the signed
+transfer boundary, preserves the source-capture digest in the immutable intake,
+requires explicit local-adapter authorization, and emits an inspectable
+appearance-only `Reconstruction Result`. The actual 367,960-vertex MuSHRoom PLY
+ran through intake, QA, plan, authorization, execution, and compiler-input
+loading for zero paid-compute cost. It ended `partial` because decoded source
+observations were absent. The transfer and malware scanner were injected test
+doubles, so this is not deployed security proof.
 
 The Task Evaluation Supervisor was then run against the same materialized
 intake. All six capabilities were registered, but no explicitly supported live
@@ -99,24 +103,19 @@ do not establish that a live model can complete an indoor walkthrough workflow.
 
 ## Tests to run next
 
-### P0: implement and qualify the external-reconstruction import adapter
+### Completed: external-reconstruction import and real PLY execution
 
-Add a local hermetic method that:
+The hermetic method now accepts only `precomputed_external_reconstruction`,
+verifies source and asset digests, parses a size-bounded PLY header without
+executing embedded content, records unknown coverage/generated-region/metric
+status, and exact-replays from immutable inputs. It emits only an appearance
+layer and cannot upgrade raw, captured-observation, task, metric, collision,
+physics, physical, deployment, safety, or comparative-ranking claims.
 
-1. accepts only `precomputed_external_reconstruction` intake;
-2. verifies source-capture binding and exact asset digest;
-3. parses size-bounded PLY/mesh metadata without executing embedded content;
-4. emits an observed-versus-derived `Reconstruction Result` with no metric or
-   physics upgrade unless independently qualified;
-5. records coordinate system, scale declaration, coverage, uncertainty, rights,
-   provider, and claim ceiling;
-6. fails stale/mismatched source binding;
-7. exact-replays from immutable inputs.
-
-Run MuSHRoom through intake -> QA -> reconstruction plan -> explicit local
-authorization -> execution -> task-candidate analysis -> human approval ->
-immutable testbed. The expected terminal result is a partial Decision Envelope
-or abstention with exact next measurements, not a pass.
+The next bounded product test is to add the processed MuSHRoom RGB/pose material
+as a separately source-bound observation representation, then run task-candidate
+analysis, human approval, immutable testbed compilation, and a partial Decision
+Envelope. This remains a public proxy, not the raw-capture launch gate.
 
 ### P0: live-agent, zero-tool mutation smoke
 
@@ -183,4 +182,3 @@ only.
 - [Seam360GS](https://openaccess.thecvf.com/content/ICCV2025/html/Shin_Seam360GS_Seamless_360deg_Gaussian_Splatting_from_Real-World_Omnidirectional_Images_ICCV_2025_paper.html)
 - [ODGS-SLAM](https://odgs-slam.github.io/)
 - [Original 3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting)
-

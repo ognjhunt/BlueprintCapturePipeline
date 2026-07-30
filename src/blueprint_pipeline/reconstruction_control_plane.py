@@ -21,10 +21,12 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 from .local_reconstruction_adapters import (
     LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER,
     LOCAL_DECODED_OBSERVATION_ADAPTER,
+    LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER,
     LocalReconstructionAdapterError,
     arkit_metric_scaffold_method_profile,
     authorized_local_reconstruction_adapter_registry,
     decoded_observation_method_profile,
+    external_reconstruction_import_method_profile,
 )
 from .reconstruction_capability import (
     ReconstructionContractError,
@@ -123,9 +125,7 @@ def _sha256_file(path: Path) -> str:
 def _source_binding(
     *, capture_store_root: Path, capture_session_id: str, intake_id: str
 ) -> dict[str, Any]:
-    lifecycle_key = hashlib.sha256(
-        f"{capture_session_id}\0{intake_id}".encode("utf-8")
-    ).hexdigest()
+    lifecycle_key = hashlib.sha256(f"{capture_session_id}\0{intake_id}".encode("utf-8")).hexdigest()
     if any(
         (capture_store_root / directory / f"{lifecycle_key}.json").is_file()
         for directory in ("lifecycle_markers", "lifecycle_tombstones")
@@ -135,7 +135,10 @@ def _source_binding(
         _receipt_path(capture_store_root, capture_session_id, intake_id),
         code="capture_upload_receipt_not_found",
     )
-    if receipt.get("capture_session_id") != capture_session_id or receipt.get("intake_id") != intake_id:
+    if (
+        receipt.get("capture_session_id") != capture_session_id
+        or receipt.get("intake_id") != intake_id
+    ):
         raise ReconstructionControlPlaneError("capture_upload_receipt_binding_mismatch")
     if receipt.get("admission_status") != "accepted" or receipt.get("state") != "capture_accepted":
         raise ReconstructionControlPlaneError("capture_not_accepted")
@@ -160,11 +163,9 @@ def _source_binding(
         artifact_root / "capture_qa_report.json",
         code="capture_qa_report_not_found",
     )
-    if (
-        canonical_json(artifact_qa) != canonical_json(qa)
-        or artifact_qa.get("qa_report_digest")
-        != canonical_digest(artifact_qa, digest_field="qa_report_digest")
-    ):
+    if canonical_json(artifact_qa) != canonical_json(qa) or artifact_qa.get(
+        "qa_report_digest"
+    ) != canonical_digest(artifact_qa, digest_field="qa_report_digest"):
         raise ReconstructionControlPlaneError("capture_qa_report_digest_mismatch")
     object_manifest = _read_object(
         artifact_root / "capture_intake_object_manifest.json",
@@ -198,7 +199,9 @@ def _source_binding(
     if object_path.stat().st_size != expected_size or _sha256_file(object_path) != matching[0].get(
         "sha256"
     ):
-        raise ReconstructionControlPlaneError("capture_object_digest_or_size_mismatch", status_code=409)
+        raise ReconstructionControlPlaneError(
+            "capture_object_digest_or_size_mismatch", status_code=409
+        )
     return {
         "receipt": receipt,
         "qa": qa,
@@ -207,6 +210,7 @@ def _source_binding(
         "artifact_root": artifact_root,
         "object_path": object_path,
         "object_relative_path": str(object_path.relative_to(capture_store_root.resolve())),
+        "source_original_filename": str(matching[0].get("original_filename") or ""),
     }
 
 
@@ -240,14 +244,23 @@ def prepare_reconstruction_plan(
     envelope = source["envelope"]
     receipt = source["receipt"]
     provider_values = _strings(envelope.get("permitted_reconstruction_providers"))
-    local_permitted = not provider_values or bool({"local", "local_only"}.intersection(provider_values))
+    local_permitted = not provider_values or bool(
+        {"local", "local_only"}.intersection(provider_values)
+    )
     profiles = [decoded_observation_method_profile(execution_authorized=local_permitted)]
     # A single-file Web upload is not enough to execute the V3.2 ARKit bundle
     # adapter. It remains available through the bundle-native lane, never by
     # treating an MP4 as poses/depth authority.
     profile = str(envelope.get("capture_authority_profile") or "")
-    if profile == "iphone_arkit_lidar" and (source["artifact_root"] / "capture_bundle/manifest.json").is_file():
+    if (
+        profile == "iphone_arkit_lidar"
+        and (source["artifact_root"] / "capture_bundle/manifest.json").is_file()
+    ):
         profiles.append(arkit_metric_scaffold_method_profile(execution_authorized=local_permitted))
+    if profile == "precomputed_external_reconstruction":
+        profiles.append(
+            external_reconstruction_import_method_profile(execution_authorized=local_permitted)
+        )
     plan = plan_reconstruction_methods(
         intake_id=intake,
         capture_digest=str(receipt.get("capture_digest") or ""),
@@ -270,6 +283,9 @@ def prepare_reconstruction_plan(
         "capture_authority_profile": profile,
         "object_manifest_digest": source["object_manifest"].get("manifest_digest"),
         "object_relative_path": source["object_relative_path"],
+        "source_original_filename": source["source_original_filename"],
+        "source_capture_binding": _mapping(envelope.get("source_capture_binding")),
+        "coordinate_frame_declaration": _mapping(envelope.get("coordinate_frame_declaration")),
         "capture_artifact_reference": source["receipt"]["artifact_reference"],
         "rights_and_retention": _mapping(envelope.get("governance")),
         "idempotency_key": key,
@@ -320,7 +336,9 @@ def authorize_reconstruction_plan(
     except ValueError as exc:
         raise ReconstructionControlPlaneError(str(exc)) from exc
     root = _run_root(state_root, plan_identifier)
-    plan = _read_object(root / "artifacts" / "reconstruction_plan.json", code="reconstruction_plan_not_found")
+    plan = _read_object(
+        root / "artifacts" / "reconstruction_plan.json", code="reconstruction_plan_not_found"
+    )
     if plan.get("reconstruction_plan_digest") != reconstruction_plan_digest:
         raise ReconstructionControlPlaneError("authorization_plan_digest_mismatch", status_code=409)
     planned = {
@@ -340,13 +358,16 @@ def authorize_reconstruction_plan(
         for name, value in actor_value.items()
         if value not in (None, "", [], {})
         and (
-            str(name).lower() in {"authorization", "credential", "credentials", "password", "secret", "token"}
+            str(name).lower()
+            in {"authorization", "credential", "credentials", "password", "secret", "token"}
             or str(name).lower().endswith(("_token", "_secret", "_password"))
         )
     }
     if forbidden:
         raise ReconstructionControlPlaneError("authorization_actor_secret_forbidden")
-    context = _read_object(root / "artifacts" / "context.json", code="reconstruction_context_not_found")
+    context = _read_object(
+        root / "artifacts" / "context.json", code="reconstruction_context_not_found"
+    )
     authorization = {
         "schema_version": "reconstruction_execution_authorization.v1",
         "plan_id": plan_identifier,
@@ -380,17 +401,23 @@ def execute_reconstruction_plan(
     root = _run_root(state_root, plan_identifier)
     execution_path = root / "artifacts" / "execution_result.json"
     if execution_path.is_file():
-        return {**_read_object(execution_path, code="reconstruction_execution_result_invalid"), "already_exists": True}
-    plan = _read_object(root / "artifacts" / "reconstruction_plan.json", code="reconstruction_plan_not_found")
-    context = _read_object(root / "artifacts" / "context.json", code="reconstruction_context_not_found")
+        return {
+            **_read_object(execution_path, code="reconstruction_execution_result_invalid"),
+            "already_exists": True,
+        }
+    plan = _read_object(
+        root / "artifacts" / "reconstruction_plan.json", code="reconstruction_plan_not_found"
+    )
+    context = _read_object(
+        root / "artifacts" / "context.json", code="reconstruction_context_not_found"
+    )
     authorization = _read_object(
         root / "artifacts" / "execution_authorization.json",
         code="reconstruction_authorization_not_found",
     )
-    if (
-        authorization.get("reconstruction_plan_digest") != plan.get("reconstruction_plan_digest")
-        or authorization.get("context_digest") != context.get("context_digest")
-    ):
+    if authorization.get("reconstruction_plan_digest") != plan.get(
+        "reconstruction_plan_digest"
+    ) or authorization.get("context_digest") != context.get("context_digest"):
         raise ReconstructionControlPlaneError("reconstruction_authorization_stale", status_code=409)
     store_root = Path(capture_store_root).expanduser().resolve()
     source = _source_binding(
@@ -438,13 +465,28 @@ def execute_reconstruction_plan(
                     output_root=output_root,
                     rights_and_retention=_mapping(context.get("rights_and_retention")),
                 )
+            elif reference == LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER:
+                result = adapter.execute(
+                    intake_id=str(context["intake_id"]),
+                    capture_digest=str(context["capture_digest"]),
+                    source_capture_binding=_mapping(context.get("source_capture_binding")),
+                    capture_root=store_root,
+                    asset_relative_path=str(context["object_relative_path"]),
+                    original_filename=str(context["source_original_filename"]),
+                    output_root=output_root,
+                    rights_and_retention=_mapping(context.get("rights_and_retention")),
+                    coordinate_frame_declaration=_mapping(
+                        context.get("coordinate_frame_declaration")
+                    ),
+                )
             else:  # registry is fail-closed; retain an explicit guard.
                 raise ReconstructionControlPlaneError("execution_adapter_not_supported")
             normalized = normalize_reconstruction_result(result)
             if (
                 normalized["capture_digest"] != context["capture_digest"]
                 or normalized["intake_id"] != context["intake_id"]
-                or normalized["method_profile_digest"] != selected[reference]["method_profile_digest"]
+                or normalized["method_profile_digest"]
+                != selected[reference]["method_profile_digest"]
             ):
                 raise ReconstructionControlPlaneError("reconstruction_result_binding_mismatch")
             results.append(normalized)
@@ -507,19 +549,29 @@ def inspect_reconstruction_plan(*, state_root: str | Path, plan_id: str) -> dict
     except ValueError as exc:
         raise ReconstructionControlPlaneError(str(exc)) from exc
     artifacts = _run_root(state_root, identifier) / "artifacts"
-    plan = _read_object(artifacts / "reconstruction_plan.json", code="reconstruction_plan_not_found")
+    plan = _read_object(
+        artifacts / "reconstruction_plan.json", code="reconstruction_plan_not_found"
+    )
     context = _read_object(artifacts / "context.json", code="reconstruction_context_not_found")
     authorization = (
-        _read_object(artifacts / "execution_authorization.json", code="reconstruction_authorization_invalid")
+        _read_object(
+            artifacts / "execution_authorization.json", code="reconstruction_authorization_invalid"
+        )
         if (artifacts / "execution_authorization.json").is_file()
         else None
     )
     execution = (
-        _read_object(artifacts / "execution_result.json", code="reconstruction_execution_result_invalid")
+        _read_object(
+            artifacts / "execution_result.json", code="reconstruction_execution_result_invalid"
+        )
         if (artifacts / "execution_result.json").is_file()
         else None
     )
-    state = execution["state"] if execution else ("authorization_required" if plan["selected_methods"] else "abstained")
+    state = (
+        execution["state"]
+        if execution
+        else ("authorization_required" if plan["selected_methods"] else "abstained")
+    )
     return {
         "schema_version": "reconstruction_control_plane_inspection.v1",
         "plan_id": identifier,
@@ -575,10 +627,9 @@ def load_reconstruction_compilation_inputs(
         capture_session_id=str(context["capture_session_id"]),
         intake_id=str(context["intake_id"]),
     )
-    if (
-        source["receipt"].get("capture_digest") != context.get("capture_digest")
-        or source["receipt"].get("envelope_digest") != context.get("envelope_digest")
-    ):
+    if source["receipt"].get("capture_digest") != context.get("capture_digest") or source[
+        "receipt"
+    ].get("envelope_digest") != context.get("envelope_digest"):
         raise ReconstructionControlPlaneError("reconstruction_source_stale", status_code=409)
     return {
         "context": context,
