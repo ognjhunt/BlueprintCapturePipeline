@@ -334,6 +334,20 @@ remote adapter must pass provider admission and explicit confidential-upload,
 terms, spend, retention/deletion, and source-binding authority before receiving
 bytes.
 
+The provider-neutral remote contract family is now present:
+`reconstruction_provider_admission.v1`,
+`reconstruction_provider_execution_request.v1`,
+`reconstruction_provider_execution_receipt.v1`, and
+`reconstruction_provider_deletion_receipt.v1`. Admission is derived from trusted
+legal/capability gates and records zero provider mutations. Execution requests
+bind a non-agent operator receipt, exact provider/actions, confidential-upload
+authority, positive budget, TTL, retries, immutable inputs, source commit,
+calibration/frame declarations, and the frozen split. Runtime receipts preserve
+cost, duration, failures, downloaded hashes, and complete lineage while forcing
+provider qualification, metric, collision, Isaac, physical, and deployment
+claims false. The tool descriptor exists, but the supervisor exposes no remote
+call until a separately qualified adapter is injected through the paid boundary.
+
 ## Normalized results and layers
 
 `reconstruction_result.v1` binds exact capture, method-profile,

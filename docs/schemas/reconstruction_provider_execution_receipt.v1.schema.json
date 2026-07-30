@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_provider_execution_receipt.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "provider_execution_request_digest", "source_capture_digest", "train_heldout_split_digest", "provider_identity", "provider_job_identity", "status", "cost_usd", "duration_seconds", "attempt_count", "downloaded_outputs", "deletion_status", "provider_success_is_blueprint_qualification", "metric_scale_proven", "collision_geometry_validated", "isaac_compatibility_proven", "physical_success_proven", "deployment_readiness_proven", "proof_effect", "claim_ceiling", "provider_execution_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_provider_execution_receipt.v1"},
+    "provider_execution_request_digest": {"$ref": "#/$defs/digest"},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "train_heldout_split_digest": {"$ref": "#/$defs/digest"},
+    "status": {"enum": ["succeeded_unqualified", "failed", "interrupted"]},
+    "cost_usd": {"type": "number", "minimum": 0},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "attempt_count": {"type": "integer", "minimum": 1},
+    "deletion_status": {"enum": ["pending", "verified_not_retained"]},
+    "provider_success_is_blueprint_qualification": {"const": false},
+    "metric_scale_proven": {"const": false},
+    "collision_geometry_validated": {"const": false},
+    "isaac_compatibility_proven": {"const": false},
+    "physical_success_proven": {"const": false},
+    "deployment_readiness_proven": {"const": false},
+    "proof_effect": {"const": "provider_output_derived_support_only"},
+    "claim_ceiling": {"const": "external_reconstruction_import"},
+    "provider_execution_receipt_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_provider_execution_request.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "stable_run_identity", "source_capture_identity", "source_capture_digest", "source_commit_sha", "deterministic_configuration_digest", "train_heldout_split_digest", "provider_identity", "provider_admission", "provider_admission_digest", "authorization_receipt", "authorization_receipt_digest", "immutable_input_digests", "authorized_actions", "max_cost_usd", "ttl_seconds", "retry_cap", "timestamp", "authority_expires_at", "operator_upload_authorized", "confidential_capture_processing_authorized", "spending_authorized", "post_job_deletion_required", "authorization_issued_by_agent", "candidate_may_read_hidden_heldout", "proof_effect", "claim_ceiling", "provider_execution_request_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_provider_execution_request.v1"},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "deterministic_configuration_digest": {"$ref": "#/$defs/digest"},
+    "train_heldout_split_digest": {"$ref": "#/$defs/digest"},
+    "provider_admission_digest": {"$ref": "#/$defs/digest"},
+    "authorization_receipt_digest": {"$ref": "#/$defs/digest"},
+    "max_cost_usd": {"type": "number", "exclusiveMinimum": 0},
+    "ttl_seconds": {"type": "integer", "minimum": 1},
+    "retry_cap": {"type": "integer", "minimum": 0},
+    "operator_upload_authorized": {"const": true},
+    "confidential_capture_processing_authorized": {"const": true},
+    "spending_authorized": {"const": true},
+    "post_job_deletion_required": {"const": true},
+    "authorization_issued_by_agent": {"const": false},
+    "candidate_may_read_hidden_heldout": {"const": false},
+    "proof_effect": {"const": "provider_execution_request_only"},
+    "claim_ceiling": {"const": "none"},
+    "provider_execution_request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}

@@ -195,6 +195,14 @@ receipts. It performs no remote upload and cannot promote provider output to
 raw evidence, metric geometry, collision truth, Isaac compatibility, task
 success, physical success, or deployment readiness.
 
+The registry also contains `invoke_authorized_reconstruction_provider` as an
+external-side-effect descriptor restricted to `execute_preauthorized`. It is
+deliberately absent from capability bindings while no qualified adapter exists.
+Future binding requires the provider-neutral admission/request contracts, an
+exact non-agent authorization receipt, a canonical paid-resource route, and
+execution plus deletion receipts. Provider success remains derived support and
+cannot self-grade or mutate deterministic proof.
+
 When no Decision/Evidence Request or maintained Site-Task Testbed exists, the
 manager first triggers claim interpretation, then capture/testbed inspection,
 and stops with a typed clarification or blocker. Scenario, routing, recovery,

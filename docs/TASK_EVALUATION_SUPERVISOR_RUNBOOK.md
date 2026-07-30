@@ -168,6 +168,16 @@ makes no remote call and cannot grant upload or provider authority. A successful
 receipt remains derived support with every metric, collision, Isaac, task,
 physical, and deployment proof boolean false.
 
+`invoke_authorized_reconstruction_provider` is registered as a preauthorized
+external-side-effect tool, but it is not placed on the live capability surface
+without a qualified provider adapter. Do not substitute the local import tool,
+a browser automation session, or a provider success label. Before an adapter is
+injected, require an admitted `reconstruction_provider_admission.v1`, the exact
+operator authorization receipt, canonical paid-resource routing, immutable
+inputs, budget/TTL/retry limits, and a verified deletion plan. Normalize all
+runtime output through the execution and deletion receipt contracts; neither
+receipt changes proof state or independently establishes provider-zero.
+
 Clarification responses and authorization grants are separate receipts created
 at trusted customer/operator boundaries. Agent output never satisfies its own
 request. Every accepted response is revalidated by deterministic contracts.

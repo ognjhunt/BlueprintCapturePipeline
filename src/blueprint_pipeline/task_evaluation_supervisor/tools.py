@@ -209,6 +209,16 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "proof_state_changed": {"const": False},
         }
     ),
+    "invoke_authorized_reconstruction_provider": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "status": {"enum": ["succeeded_unqualified", "failed", "interrupted"]},
+            "provider_execution_receipt_digest": {"type": "string"},
+            "claim_ceiling": {"const": "external_reconstruction_import"},
+            "proof_state_changed": {"const": False},
+        }
+    ),
     "validate_proposed_claim_graph": _output_schema(
         {
             "contract_present": {"const": True},
@@ -525,6 +535,23 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             minimum_mode="execute_non_spend",
             timeout_seconds=1_800.0,
             idempotency="content_addressed_receipt_replay",
+        ),
+        _descriptor(
+            "invoke_authorized_reconstruction_provider",
+            "capture_reconstruction_remote_provider",
+            expected_artifacts=[
+                "reconstruction_provider_execution_receipt.v1",
+                "reconstruction_provider_deletion_receipt.v1",
+            ],
+            input_properties={"provider_execution_request_digest": {"type": "string"}},
+            required_inputs=["provider_execution_request_digest"],
+            mutability="external_side_effect",
+            allowed_modes=["execute_preauthorized"],
+            minimum_mode="execute_preauthorized",
+            max_cost_usd=100.0,
+            max_retries=3,
+            timeout_seconds=86_400.0,
+            idempotency="provider_job_identity_bound_no_unchanged_blocker_retry",
         ),
         _descriptor(
             "validate_proposed_claim_graph",

@@ -107,6 +107,24 @@ Niantic/Scaniverse API or prove that programmatic Scaniverse export access is
 available. If Niantic grants Enterprise API access, implement it behind this
 same provider boundary and keep the raw-capture proof hierarchy unchanged.
 
+The `invoke_authorized_reconstruction_provider` descriptor is registered as an
+external side effect but intentionally has no live Scaniverse adapter. The
+current deterministic `reconstruction_provider_admission.v1` result is blocked
+unless a trusted, non-agent legal review accepts the exact commercial,
+confidentiality, retention, deletion, model-training, competitive-use, resale,
+and benchmarking terms; a programmatic upload/job/download API and the canonical
+paid-allocation route are qualified; and provider credentials exist. The
+official product workflow currently documented by Niantic is Scaniverse
+Web/app upload and cloud processing, which is not sufficient evidence for those
+API and teardown gates.
+
+A future admitted request must also contain an exact operator authorization
+receipt for confidential upload, provider execution, output download, deletion,
+spend, TTL, retries, provider identity, and immutable input digests. Even then,
+`reconstruction_provider_execution_receipt.v1` labels provider success
+unqualified, and `reconstruction_provider_deletion_receipt.v1` cannot by itself
+claim provider-zero.
+
 ## Evaluation Admission
 
 `scaniverse_import_manifest.json` is never an evaluation-admission artifact.
