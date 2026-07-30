@@ -3305,6 +3305,27 @@ def test_capture_build_lifecycle_creates_new_run_when_inference_authority_change
     assert replay_supervisor_run(authorized["output_dir"])["status"] == "replay_verified"
 
 
+def test_non_spend_tool_ttl_is_explicit_bounded_and_recorded(tmp_path: Path) -> None:
+    execution = TaskEvaluationSupervisor(
+        agents_sdk_invoker=_FixtureAgentsSDKInvoker(),
+        non_spend_action_ttl_seconds=3_600,
+    ).run(
+        _context(),
+        output_dir=tmp_path / "bounded-local-ttl",
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        generated_at="2026-07-30T12:00:00+00:00",
+    )
+    authority = json.loads(
+        (execution.output_dir / "authority_envelope.json").read_text(encoding="utf-8")
+    )
+    assert authority["max_duration_seconds"] == 3_600
+    assert authority["action_spend_allowed"] is False
+
+    for invalid in (0, 14_401, True):
+        with pytest.raises(ValueError, match="supervisor_non_spend_action_ttl_invalid"):
+            TaskEvaluationSupervisor(non_spend_action_ttl_seconds=invalid)
+
+
 def test_execute_non_spend_exposes_only_registered_scoped_tools(
     tmp_path: Path,
 ) -> None:

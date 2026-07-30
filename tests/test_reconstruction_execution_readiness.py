@@ -19,6 +19,9 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     build_reconstruction_execution_readiness,
     load_capture_build_ingress,
     validate_reconstruction_execution_readiness,
+    run_capture_build_supervisor,
+    run_capture_reconstruction_supervisor_continuation,
+    validate_reconstruction_supervisor_continuation,
 )
 
 
@@ -302,3 +305,113 @@ def test_readiness_refuses_source_mismatch_unregistered_binding_and_tampering(
         match="execution_readiness_contract_invalid",
     ):
         validate_reconstruction_execution_readiness(tampered)
+
+
+def test_capture_reconstruction_continuation_is_linear_bound_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    capture_build = _capture_build(tmp_path)
+    parent = run_capture_build_supervisor(
+        capture_root=tmp_path / "capture_intake_envelope.json",
+        source_commit_sha=SOURCE_COMMIT,
+    )
+    parent_report = Path(parent["terminal_report_path"]).read_bytes()
+
+    def compiler(*, request: dict, output_root: Path) -> dict:
+        raise AssertionError("offline continuation must not invoke a registered tool")
+
+    arguments = {
+        "capture_root": tmp_path / "capture_intake_envelope.json",
+        "control_plane_inspection": _inspection(authorized=True, executed=False),
+        "requested_tool_ids": ["compile_frozen_frame_dataset"],
+        "context_bindings": {"reconstruction_dataset_compiler": compiler},
+        "source_commit_sha": SOURCE_COMMIT,
+    }
+    first = run_capture_reconstruction_supervisor_continuation(**arguments)
+    second = run_capture_reconstruction_supervisor_continuation(**arguments)
+
+    def changed_compiler(*, request: dict, output_root: Path) -> dict:
+        raise AssertionError("a changed runtime receives a distinct continuation")
+
+    changed = run_capture_reconstruction_supervisor_continuation(
+        **{
+            **arguments,
+            "context_bindings": {
+                "reconstruction_dataset_compiler": changed_compiler
+            },
+        }
+    )
+
+    assert first == second
+    assert changed["continuation_run_id"] != first["continuation_run_id"]
+    assert changed["context_binding_digest"] != first["context_binding_digest"]
+    assert first["parent_capture_supervisor_run_id"] == parent["run_id"]
+    assert first["capture_build_digest"] == capture_build["capture_build_digest"]
+    assert first["bound_tool_ids"] == ["compile_frozen_frame_dataset"]
+    assert first["agent_harness"] == "openai_agents_sdk"
+    assert first["actions_executed"] is False
+    assert first["proof_boundary"]["prior_supervisor_run_preserved"] is True
+    assert Path(parent["terminal_report_path"]).read_bytes() == parent_report
+    continuation_path = (
+        Path(parent["output_dir"])
+        / first["output_relative_path"]
+        / "reconstruction_supervisor_continuation.json"
+    )
+    assert json.loads(continuation_path.read_text(encoding="utf-8")) == first
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/task_evaluation_reconstruction_supervisor_continuation.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.Draft202012Validator(schema).validate(first)
+
+
+def test_capture_reconstruction_continuation_rejects_unbound_and_forbidden_context(
+    tmp_path: Path,
+) -> None:
+    _capture_build(tmp_path)
+    common = {
+        "capture_root": tmp_path / "capture_intake_envelope.json",
+        "control_plane_inspection": _inspection(authorized=True, executed=False),
+        "requested_tool_ids": ["compile_frozen_frame_dataset"],
+        "source_commit_sha": SOURCE_COMMIT,
+    }
+    with pytest.raises(
+        ValueError,
+        match="reconstruction_continuation_runtime_binding_missing",
+    ):
+        run_capture_reconstruction_supervisor_continuation(
+            **common,
+            context_bindings={},
+        )
+    with pytest.raises(
+        ValueError,
+        match="reconstruction_continuation_context_field_forbidden",
+    ):
+        run_capture_reconstruction_supervisor_continuation(
+            **common,
+            context_bindings={"decision_request": {}},
+        )
+
+
+def test_reconstruction_continuation_receipt_refuses_proof_mutation(tmp_path: Path) -> None:
+    _capture_build(tmp_path)
+    receipt = run_capture_reconstruction_supervisor_continuation(
+        capture_root=tmp_path / "capture_intake_envelope.json",
+        control_plane_inspection=_inspection(authorized=True, executed=False),
+        requested_tool_ids=["compile_frozen_frame_dataset"],
+        context_bindings={"reconstruction_dataset_compiler": lambda **_: {}},
+        source_commit_sha=SOURCE_COMMIT,
+    )
+    tampered = json.loads(json.dumps(receipt))
+    tampered["proof_boundary"]["agent_can_change_proof_state"] = True
+    tampered["reconstruction_supervisor_continuation_digest"] = canonical_digest(
+        tampered,
+        digest_field="reconstruction_supervisor_continuation_digest",
+    )
+    with pytest.raises(
+        ValueError,
+        match="reconstruction_supervisor_continuation_invalid",
+    ):
+        validate_reconstruction_supervisor_continuation(tampered)

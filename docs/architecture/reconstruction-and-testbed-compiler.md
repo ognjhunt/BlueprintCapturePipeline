@@ -119,6 +119,27 @@ it remains fail-closed until deterministic capture admission exposes an
 immutable retained-media binding. Agent prose cannot substitute for the tool
 result.
 
+Later trusted bindings do not reopen or rewrite the terminal capture-ingress
+ledger. `run_capture_reconstruction_supervisor_continuation` creates one linear,
+content-addressed child supervisor run beneath the parent capture lifecycle for
+an immutable execution-readiness snapshot. Its identity binds the capture,
+source commit, typed request/source digests, requested registered tool IDs, and
+the implementation digest of every injected runtime. A changed compiler,
+evaluator, request, or readiness state therefore creates a distinct continuation
+instead of replaying stale output. The parent report and prior readiness
+snapshots remain immutable.
+
+The continuation uses the same OpenAI Agents SDK supervisor harness and exposes
+only digest-scoped registered tools whose runtime bindings actually exist. It
+rejects undeclared context fields, missing runtimes, unregistered tools, and
+route stages that lack the recorded control-plane authority needed for bounded
+execution. The agent receives neither callable handles nor unrestricted shell,
+filesystem, network, database, or provider access. The continuation receipt is
+support evidence only: it cannot grant rights or budget, mutate calibration or
+splits, change proof state, or establish physical success. The live service must
+still construct these trusted bindings from admitted capture artifacts; an HTTP
+caller cannot supply a callable runtime.
+
 This slice proves decoded observation availability, frame-selection
 determinism, split immutability, hidden-view isolation, and replay integrity on
 hermetic fixtures. It does not prove camera calibration, ARKit alignment,

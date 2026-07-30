@@ -342,11 +342,20 @@ class TaskEvaluationSupervisor:
         agent_inference_budget_usd: float = 0.0,
         recovery_controller: PreauthorizedRecoveryController | None = None,
         supervisor_manager: OpenAIAgentsSDKSupervisorManager | None = None,
+        non_spend_action_ttl_seconds: int = 300,
     ) -> None:
+        if (
+            isinstance(non_spend_action_ttl_seconds, bool)
+            or not isinstance(non_spend_action_ttl_seconds, int)
+            or non_spend_action_ttl_seconds < 1
+            or non_spend_action_ttl_seconds > 14_400
+        ):
+            raise ValueError("supervisor_non_spend_action_ttl_invalid")
         self.tool_registry = tool_registry or ToolRegistry.default()
         self.agent_inference_budget_usd = agent_inference_budget_usd
         self.allow_live_agents_sdk = allow_live_agents_sdk
         self.recovery_controller = recovery_controller
+        self.non_spend_action_ttl_seconds = non_spend_action_ttl_seconds
         sdk_config = OpenAIAgentsSDKConfig(
             model=agent_model,
             allow_live_invocation=allow_live_agents_sdk,
@@ -510,7 +519,7 @@ class TaskEvaluationSupervisor:
                 int(self.recovery_controller.policy.receipt.get("granted_ttl_seconds") or 300)
                 if selected_mode is AutonomyMode.EXECUTE_PREAUTHORIZED
                 and self.recovery_controller is not None
-                else 300
+                else self.non_spend_action_ttl_seconds
             ),
             preauthorization_receipt_digest=(
                 str(self.recovery_controller.policy.receipt.get("authorization_receipt_digest"))

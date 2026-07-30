@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/task_evaluation_reconstruction_supervisor_continuation.v1.schema.json",
+  "title": "Blueprint Reconstruction Supervisor Continuation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "continuation_run_id", "parent_capture_supervisor_run_id",
+    "capture_build_digest", "source_commit_sha",
+    "reconstruction_execution_readiness_digest", "context_binding_digest",
+    "bound_tool_ids", "supervisor_run_digest", "terminal_report_digest", "status",
+    "output_relative_path", "agent_harness", "autonomy_mode", "actions_executed",
+    "registered_non_spend_actions_executed", "proof_boundary", "recorded_at",
+    "reconstruction_supervisor_continuation_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "task_evaluation_reconstruction_supervisor_continuation.v1"},
+    "continuation_run_id": {"type": "string", "minLength": 1},
+    "parent_capture_supervisor_run_id": {"type": "string", "minLength": 1},
+    "capture_build_digest": {"$ref": "#/$defs/sha256"},
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "reconstruction_execution_readiness_digest": {"$ref": "#/$defs/sha256"},
+    "context_binding_digest": {"$ref": "#/$defs/sha256"},
+    "bound_tool_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "supervisor_run_digest": {"$ref": "#/$defs/sha256"},
+    "terminal_report_digest": {"$ref": "#/$defs/sha256"},
+    "status": {"type": "string", "minLength": 1},
+    "output_relative_path": {
+      "type": "string",
+      "pattern": "^reconstruction_continuations/[^/]+$"
+    },
+    "agent_harness": {"const": "openai_agents_sdk"},
+    "autonomy_mode": {"const": "execute_non_spend"},
+    "actions_executed": {"type": "boolean"},
+    "registered_non_spend_actions_executed": {"type": "integer", "minimum": 0},
+    "proof_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "continuation_is_execution_authority", "agent_can_change_proof_state",
+        "agent_can_change_splits_or_calibration", "agent_can_grant_rights_or_budget",
+        "raw_capture_remains_authoritative", "prior_supervisor_run_preserved",
+        "physical_task_success_established"
+      ],
+      "properties": {
+        "continuation_is_execution_authority": {"const": false},
+        "agent_can_change_proof_state": {"const": false},
+        "agent_can_change_splits_or_calibration": {"const": false},
+        "agent_can_grant_rights_or_budget": {"const": false},
+        "raw_capture_remains_authoritative": {"const": true},
+        "prior_supervisor_run_preserved": {"const": true},
+        "physical_task_success_established": {"const": false}
+      }
+    },
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "reconstruction_supervisor_continuation_digest": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
