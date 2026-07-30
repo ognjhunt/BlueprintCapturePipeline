@@ -91,8 +91,9 @@ def _successful_runner(command, timeout):
     assert timeout == 60
     values = {item.split("=", 1)[0]: item.split("=", 1)[1] for item in command if "=" in item}
     run_dir = Path(values["out_dir"])
-    (run_dir / "training").mkdir(parents=True)
-    (run_dir / "training/ckpt_last.pt").write_bytes(b"checkpoint")
+    upstream_run = run_dir / "training/candidate_colmap-3007_010203"
+    upstream_run.mkdir(parents=True)
+    (upstream_run / "ckpt_last.pt").write_bytes(b"checkpoint")
     Path(values["export_ply.path"]).write_bytes(b"ply\n")
     assert "dataset.test_split_interval=-1" in command
     assert "test_last=false" in command
@@ -122,6 +123,7 @@ def test_trainer_runs_pinned_candidate_only_command_and_hashes_outputs(tmp_path:
     assert result["failure_code"] is None
     assert result["registered_observation_ids"] == ["frame-1"]
     assert result["checkpoint_references"]
+    assert result["checkpoint_references"][0]["artifact_id"] == "checkpoint_last.pt"
     assert result["heldout_labels_included"] is False
     assert result["candidate_self_graded"] is False
     assert "heldout_metrics" not in result

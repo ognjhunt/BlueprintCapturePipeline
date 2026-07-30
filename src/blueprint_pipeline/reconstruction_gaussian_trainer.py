@@ -6,6 +6,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import time
 from functools import partial
@@ -78,6 +80,18 @@ def _failure(text: str, *, timed_out: bool = False) -> str:
     if "nan" in lowered or "non-finite" in lowered or "nonfinite" in lowered:
         return "nan_output"
     return "training_divergence"
+
+
+def _latest_checkpoint(paths: Sequence[Path]) -> Path | None:
+    for path in paths:
+        if path.name == "ckpt_last.pt":
+            return path
+
+    def iteration(path: Path) -> int:
+        matches = re.findall(r"\d+", path.stem)
+        return int(matches[-1]) if matches else -1
+
+    return max(paths, key=iteration, default=None)
 
 
 def _result_base(request: Mapping[str, Any], *, duration: float) -> dict[str, Any]:
@@ -246,7 +260,13 @@ def run_gaussian_reconstruction_training(
         returncode = 127
     duration = time.monotonic() - started
     log_path.write_text(output_text[-2_000_000:], encoding="utf-8")
-    checkpoints = sorted((run_dir / "training").glob("ckpt*.pt"))
+    upstream_checkpoints = sorted((run_dir / "training").rglob("ckpt*.pt"))
+    latest_checkpoint = _latest_checkpoint(upstream_checkpoints)
+    checkpoints: list[Path] = []
+    if latest_checkpoint is not None:
+        stable_checkpoint = run_dir / "checkpoint_last.pt"
+        shutil.copyfile(latest_checkpoint, stable_checkpoint)
+        checkpoints.append(stable_checkpoint)
     result = _result_base(request, duration=duration)
     result["registered_observation_ids"] = list(observation_ids)
     result["rejected_observation_ids"] = list(rejected_ids)
