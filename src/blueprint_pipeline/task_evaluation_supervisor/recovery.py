@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import math
 import re
 import time
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from ..decision_evidence_contracts import canonical_digest
@@ -15,6 +16,7 @@ from ..paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
 )
+from .phase2_artifacts import Phase2ArtifactError, validate_authorization_receipt
 
 
 RECOVERY_ACTION_SCHEMA_VERSION = "task_evaluation_recovery_action.v1"
@@ -100,8 +102,12 @@ class PreauthorizedRecoveryPolicy:
             raise RecoveryControlError("recovery_authorization_run_mismatch")
         if not _COMMIT_SHA.fullmatch(self.immutable_commit_sha):
             raise RecoveryControlError("recovery_commit_sha_invalid")
-        normalized_inputs = tuple(sorted({_digest(row, field="input_digest") for row in self.immutable_input_digests}))
-        receipt_inputs = tuple(sorted(str(row) for row in receipt.get("immutable_input_digests") or []))
+        normalized_inputs = tuple(
+            sorted({_digest(row, field="input_digest") for row in self.immutable_input_digests})
+        )
+        receipt_inputs = tuple(
+            sorted(str(row) for row in receipt.get("immutable_input_digests") or [])
+        )
         if (
             not normalized_inputs
             or self.immutable_input_digests != normalized_inputs
@@ -128,7 +134,9 @@ class PreauthorizedRecoveryPolicy:
             or (expires - issued).total_seconds() > granted_ttl
         ):
             raise RecoveryControlError("recovery_receipt_expiry_exceeds_ttl")
-        receipt_providers = tuple(sorted(str(row) for row in receipt.get("granted_provider_ids") or []))
+        receipt_providers = tuple(
+            sorted(str(row) for row in receipt.get("granted_provider_ids") or [])
+        )
         receipt_actions = tuple(sorted(str(row) for row in receipt.get("granted_action_ids") or []))
         if tuple(sorted(set(self.allowed_provider_ids))) != receipt_providers:
             raise RecoveryControlError("recovery_provider_allowlist_not_authorized")
@@ -140,6 +148,15 @@ class PreauthorizedRecoveryPolicy:
             raise RecoveryControlError("recovery_watchdog_exceeds_ttl")
         if not self.teardown_required:
             raise RecoveryControlError("recovery_teardown_required")
+        try:
+            validated_receipt = validate_authorization_receipt(receipt)
+        except Phase2ArtifactError as exc:
+            raise RecoveryControlError("recovery_authorization_receipt_contract_invalid") from exc
+        object.__setattr__(
+            self,
+            "authorization_receipt",
+            MappingProxyType(dict(validated_receipt)),
+        )
 
     @property
     def receipt(self) -> dict[str, Any]:
@@ -291,10 +308,14 @@ class PreauthorizedRecoveryController:
                             "failure_type": "provider_cost_invalid",
                             "retryable": False,
                         }
-                if typed_failure is None and actual_cost is not None and (
-                    not math.isfinite(actual_cost)
-                    or actual_cost < 0
-                    or actual_cost > projected_cost
+                if (
+                    typed_failure is None
+                    and actual_cost is not None
+                    and (
+                        not math.isfinite(actual_cost)
+                        or actual_cost < 0
+                        or actual_cost > projected_cost
+                    )
                 ):
                     if not math.isfinite(actual_cost):
                         actual_cost = None
@@ -318,9 +339,7 @@ class PreauthorizedRecoveryController:
                             and adapter_retryable is not False
                         )
                         typed_failure = {
-                            "failure_type": str(
-                                raw.get("failure_type") or "provider_failure"
-                            ),
+                            "failure_type": str(raw.get("failure_type") or "provider_failure"),
                             "retryable": retryable,
                         }
         except Exception as exc:  # noqa: BLE001 - normalized and preserved below

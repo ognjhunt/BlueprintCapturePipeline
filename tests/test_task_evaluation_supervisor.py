@@ -4103,6 +4103,7 @@ def test_phase3_recovery_rejects_receipt_ttl_drift_and_missing_cost() -> None:
     )
     assert result["status"] == "failed"
     assert result["typed_failure"]["failure_type"] == "provider_cost_missing"
+
     assert result["cost_reconciliation_required"] is True
     with pytest.raises(RecoveryControlError, match="recovery_cost_reconciliation_required"):
         controller.execute(
@@ -4129,6 +4130,46 @@ def test_phase3_recovery_rejects_receipt_ttl_drift_and_missing_cost() -> None:
     )
     assert nonfinite["actual_cost_usd"] is None
     assert nonfinite["cost_reconciliation_required"] is True
+
+
+def test_phase3_recovery_policy_rejects_malformed_receipt_and_snapshots_authority() -> None:
+    valid_controller, _ = _recovery_controller()
+    policy = valid_controller.policy
+
+    malformed = dict(policy.authorization_receipt)
+    malformed["agent_selected_override"] = True
+    malformed["authorization_receipt_digest"] = canonical_digest(
+        malformed,
+        digest_field="authorization_receipt_digest",
+    )
+    with pytest.raises(
+        RecoveryControlError,
+        match="recovery_authorization_receipt_contract_invalid",
+    ):
+        PreauthorizedRecoveryPolicy(
+            run_id=policy.run_id,
+            authorization_receipt=malformed,
+            immutable_commit_sha=policy.immutable_commit_sha,
+            immutable_input_digests=policy.immutable_input_digests,
+            allowed_provider_ids=policy.allowed_provider_ids,
+            allowed_action_ids=policy.allowed_action_ids,
+            watchdog_seconds=policy.watchdog_seconds,
+        )
+
+    mutable_receipt = dict(policy.authorization_receipt)
+    snapshotted_policy = PreauthorizedRecoveryPolicy(
+        run_id=policy.run_id,
+        authorization_receipt=mutable_receipt,
+        immutable_commit_sha=policy.immutable_commit_sha,
+        immutable_input_digests=policy.immutable_input_digests,
+        allowed_provider_ids=policy.allowed_provider_ids,
+        allowed_action_ids=policy.allowed_action_ids,
+        watchdog_seconds=policy.watchdog_seconds,
+    )
+    expected_digest = snapshotted_policy.receipt["authorization_receipt_digest"]
+    mutable_receipt["approved"] = False
+    assert snapshotted_policy.receipt["approved"] is True
+    assert snapshotted_policy.receipt["authorization_receipt_digest"] == expected_digest
 
 
 def test_phase3_retry_ceiling_is_global_across_authorized_actions() -> None:
