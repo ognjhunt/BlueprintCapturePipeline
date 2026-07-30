@@ -158,6 +158,13 @@ Supervisor -> optional legacy review/support stages -> deterministic evidence
 and decision stages
 ```
 
+The authenticated live capture-upload path has the same mandatory transition:
+after server-side admission and QA it passes the immutable
+`capture_intake_envelope.json` to the bounded ingress and returns the resulting
+supervisor lifecycle record with the upload receipt. This starts the
+clarification/blocker loop from a capture alone; it does not wait for
+reconstruction or testbed compilation and does not authorize live inference.
+
 There is no `--skip-task-evaluation-supervisor` control.
 
 The absence of live inference authority never causes a fallback to a different

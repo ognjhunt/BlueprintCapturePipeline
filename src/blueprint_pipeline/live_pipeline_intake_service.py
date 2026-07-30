@@ -77,6 +77,7 @@ from .task_evaluation_method_catalog import (
     TaskEvaluationMethodCatalogError,
     load_task_evaluation_method_catalog,
 )
+from .task_evaluation_supervisor import run_capture_build_supervisor
 from .task_evaluation_run_webapp_sync import (
     TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV,
 )
@@ -1715,6 +1716,18 @@ def create_app() -> FastAPI:
                     },
                 },
             )
+        artifact_root = (
+            store_root / str(_mapping(receipt.get("artifact_reference")).get("uri") or "")
+        ).resolve()
+        if store_root != artifact_root and store_root not in artifact_root.parents:
+            raise HTTPException(
+                status_code=500,
+                detail="capture intake artifact reference escaped configured store",
+            )
+        supervisor = await run_in_threadpool(
+            run_capture_build_supervisor,
+            capture_root=artifact_root / "capture_intake_envelope.json",
+        )
         return {
             "schema_version": "capture_upload_processing_result.v1",
             "receipt": receipt,
@@ -1722,6 +1735,7 @@ def create_app() -> FastAPI:
                 capture_session_id=str(receipt["capture_session_id"]),
                 report=_mapping(receipt.get("capture_qa_report")),
             ),
+            "task_evaluation_supervisor": supervisor,
         }
 
     @app.post(

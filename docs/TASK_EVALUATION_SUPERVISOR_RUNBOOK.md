@@ -6,6 +6,13 @@ A completed capture build always enters the Task Evaluation Supervisor stage.
 The capture is enough to start reasoning, but it is not enough to invent a task,
 robot, success condition, rights grant, or customer decision.
 
+This applies to both canonical ingress paths. `run_e2e` starts the supervisor
+after capture-pipeline completion, and the authenticated live capture-upload
+endpoint starts it immediately after server verification, malware scanning,
+immutable intake materialization, and capture QA. A standalone
+`capture_intake_envelope.json` is projected through the same bounded ingress;
+the supervisor writes beside that manifest and never reads the uploaded media.
+
 The production agent harness is OpenAI Agents SDK. There is no alternate agent
 harness or deterministic agent fallback. The deterministic proof kernel is a
 separate authority boundary beneath the SDK agents.

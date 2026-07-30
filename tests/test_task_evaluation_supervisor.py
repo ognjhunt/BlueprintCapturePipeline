@@ -3009,6 +3009,37 @@ def test_capture_build_alone_enters_required_supervisor_idempotently(
     assert len(events) == 3
 
 
+def test_standalone_capture_intake_manifest_enters_supervisor_next_to_manifest(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "intake" / "capture_intake_envelope.json"
+    manifest.parent.mkdir()
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "capture_intake_envelope.v1",
+                "scene_id": "live-intake-site-1",
+                "status": "accepted",
+                "task_name": "unknown_pending_customer_clarification",
+                "governance": {
+                    "rights": "accepted",
+                    "consent": "accepted",
+                    "privacy": "cleared",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_capture_build_supervisor(capture_root=manifest)
+
+    assert result["capture_build_alone_can_start_run"] is True
+    assert result["status"] == "blocked"
+    assert Path(result["output_dir"]).is_relative_to(manifest.parent)
+    assert not Path(result["output_dir"]).is_relative_to(manifest)
+    assert replay_supervisor_run(result["output_dir"])["status"] == "replay_verified"
+
+
 def test_capture_build_lifecycle_materializes_non_spend_clarification_when_sdk_is_authorized(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

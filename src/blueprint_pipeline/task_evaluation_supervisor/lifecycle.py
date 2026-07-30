@@ -57,8 +57,9 @@ def run_capture_build_supervisor(
     to clarify; they are never synthesized into authoritative facts.
     """
 
-    root = Path(capture_root).expanduser().resolve()
-    capture_build = load_capture_build_ingress(root)
+    source = Path(capture_root).expanduser().resolve()
+    capture_build = load_capture_build_ingress(source)
+    root = source if source.is_dir() else source.parent
     digest_suffix = str(capture_build["capture_build_digest"]).removeprefix("sha256:")[:24]
     execution_profile = capture_supervisor_execution_profile(
         agent_model=agent_model,
