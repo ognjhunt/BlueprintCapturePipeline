@@ -263,6 +263,31 @@ tree, recipe and dependency-lock digests, license-review receipt, budget, TTL,
 retry cap, and authority. Allocation and image-build success are explicitly not
 scientific success.
 
+## Metric geometry, collision, and Isaac qualification
+
+Phase 5 extends the existing `geometry_stage`, ParticleField/NuRec exporters,
+and Isaac renderer with deterministic qualification contracts; it does not
+replace those executors. `metric_geometry_manifest.v1` records confidence
+filtering, observed and unsupported regions, scale state, and a separate metric
+asset. It rejects generated fill and rejects treating the appearance asset as
+geometry truth.
+
+`mesh_collider_candidate_manifest.v1` is explicitly unvalidated and preserves
+component and hole statistics. `collider_qualification_report.v1` computes its
+decision from frozen thresholds for scale, gravity, floor/wall residuals,
+coverage, visual disagreement, obstacle thickness, clearance, and robot-footprint
+navigability. A passing report is limited to bounded navigation simulation;
+grasping, articulation, contact-force, and deployment claims remain unsupported.
+
+`nurec_openusd_packaging_result.v1` requires meters, Z-up, one shared visual and
+physics frame, separate appearance and collision prims, and configured collision
+API. `isaac_asset_verification_result.v1` requires the exact package, expected
+prims, valid units/transforms, no missing assets, loaded ParticleField, active
+collision geometry, a contact surface, a non-falling test body, and nonblank
+fixed-camera renders without NaNs or obvious scale mismatch. Even a passing
+result proves only Isaac load/render/physics-presence compatibility—not simulator
+task success, physical success, or deployment readiness.
+
 ## Normalized results and layers
 
 `reconstruction_result.v1` binds exact capture, method-profile,
