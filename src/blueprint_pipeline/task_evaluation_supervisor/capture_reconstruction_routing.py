@@ -37,6 +37,11 @@ _VIDEO_PROFILES = {
 _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
     "iphone_arkit_lidar": (
         ("verify_arkit_raw_contract", "capture_validation", "required_deterministic_gate"),
+        (
+            "compile_frozen_frame_dataset",
+            "capture_reconstruction_dataset_compilation",
+            "registered_conditional",
+        ),
         ("compile_arkit_metric_scaffold", "lidar_depth_fusion", "registered_conditional"),
         (
             "export_arkit_reconstruction_dataset",
@@ -49,29 +54,80 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "registered_conditional",
         ),
         ("validate_metric_scale", "metric_scale", "registered_conditional"),
-        ("train_pose_conditioned_3dgs", "gaussian_splat_3d", "required_not_registered"),
-        ("validate_testbed_layers", "testbed_compilation", "required_deterministic_gate"),
+        ("train_gaussian_reconstruction", "gaussian_splat_3d", "registered_conditional"),
+        (
+            "evaluate_heldout_appearance",
+            "independent_appearance_qa",
+            "registered_conditional",
+        ),
+        ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
+        ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
+        ("qualify_collision_candidate", "collision_qa", "registered_conditional"),
+        ("package_nurec_openusd", "openusd_packaging", "registered_conditional"),
+        ("verify_isaac_asset", "isaac_verification", "registered_conditional"),
+        ("generate_reconstruction_report", "terminal_reporting", "registered_conditional"),
     ),
     "iphone_arkit_non_lidar": (
         ("verify_arkit_pose_intrinsics", "capture_validation", "required_deterministic_gate"),
+        (
+            "compile_frozen_frame_dataset",
+            "capture_reconstruction_dataset_compilation",
+            "registered_conditional",
+        ),
+        (
+            "export_arkit_reconstruction_dataset",
+            "calibrated_dataset_export",
+            "registered_conditional",
+        ),
+        ("run_pose_refinement", "pose_refinement", "registered_conditional"),
         ("validate_metric_scale", "metric_scaffold", "registered_conditional"),
-        ("train_pose_conditioned_3dgs", "gaussian_splat_3d", "required_not_registered"),
-        ("validate_testbed_layers", "testbed_compilation", "required_deterministic_gate"),
+        ("train_gaussian_reconstruction", "gaussian_splat_3d", "registered_conditional"),
+        (
+            "evaluate_heldout_appearance",
+            "independent_appearance_qa",
+            "registered_conditional",
+        ),
+        ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
+        ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
+        ("qualify_collision_candidate", "collision_qa", "registered_conditional"),
+        ("package_nurec_openusd", "openusd_packaging", "registered_conditional"),
+        ("verify_isaac_asset", "isaac_verification", "registered_conditional"),
+        ("generate_reconstruction_report", "terminal_reporting", "registered_conditional"),
     ),
     "camera_360_equirectangular": (
         ("verify_equirectangular_metadata", "capture_validation", "required_deterministic_gate"),
+        (
+            "compile_frozen_frame_dataset",
+            "capture_reconstruction_dataset_compilation",
+            "registered_conditional",
+        ),
         (
             "compile_equirectangular_virtual_rig",
             "equirectangular_normalization",
             "registered_conditional",
         ),
-        ("estimate_camera_poses_with_sfm", "pose_sfm_estimation", "required_not_registered"),
-        ("train_unscaled_appearance_3dgs", "gaussian_splat_3d", "required_not_registered"),
+        ("run_pose_estimation", "pose_sfm_estimation", "registered_conditional"),
         ("validate_metric_scale", "metric_scaffold", "registered_conditional"),
-        ("validate_testbed_layers", "testbed_compilation", "required_deterministic_gate"),
+        ("train_gaussian_reconstruction", "gaussian_splat_3d", "registered_conditional"),
+        (
+            "evaluate_heldout_appearance",
+            "independent_appearance_qa",
+            "registered_conditional",
+        ),
+        ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
+        ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
+        ("qualify_collision_candidate", "collision_qa", "registered_conditional"),
+        ("package_nurec_openusd", "openusd_packaging", "registered_conditional"),
+        ("verify_isaac_asset", "isaac_verification", "registered_conditional"),
+        ("generate_reconstruction_report", "terminal_reporting", "registered_conditional"),
     ),
     "camera_360_native": (
         ("retain_native_360_originals", "capture_validation", "required_deterministic_gate"),
+        (
+            "compile_frozen_frame_dataset",
+            "capture_reconstruction_dataset_compilation",
+            "registered_conditional",
+        ),
         (
             "normalize_native_360_capture",
             "native_360_normalization",
@@ -83,30 +139,56 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "equirectangular_normalization",
             "registered_conditional",
         ),
-        ("estimate_camera_poses_with_sfm", "pose_sfm_estimation", "required_not_registered"),
-        ("train_unscaled_appearance_3dgs", "gaussian_splat_3d", "required_not_registered"),
+        ("run_pose_estimation", "pose_sfm_estimation", "registered_conditional"),
         ("validate_metric_scale", "metric_scaffold", "registered_conditional"),
-        ("validate_testbed_layers", "testbed_compilation", "required_deterministic_gate"),
+        ("train_gaussian_reconstruction", "gaussian_splat_3d", "registered_conditional"),
+        (
+            "evaluate_heldout_appearance",
+            "independent_appearance_qa",
+            "registered_conditional",
+        ),
+        ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
+        ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
+        ("qualify_collision_candidate", "collision_qa", "registered_conditional"),
+        ("package_nurec_openusd", "openusd_packaging", "registered_conditional"),
+        ("verify_isaac_asset", "isaac_verification", "registered_conditional"),
+        ("generate_reconstruction_report", "terminal_reporting", "registered_conditional"),
     ),
     "monocular_video": (
-        ("decode_retained_observation_frames", "decoded_observation_index", "registered"),
-        ("estimate_camera_poses_with_sfm", "pose_sfm_estimation", "required_not_registered"),
-        ("train_unscaled_appearance_3dgs", "gaussian_splat_3d", "required_not_registered"),
+        (
+            "compile_frozen_frame_dataset",
+            "capture_reconstruction_dataset_compilation",
+            "registered_conditional",
+        ),
+        ("run_pose_estimation", "pose_sfm_estimation", "registered_conditional"),
         ("validate_metric_scale", "metric_scaffold", "registered_conditional"),
-        ("validate_testbed_layers", "testbed_compilation", "required_deterministic_gate"),
+        ("train_gaussian_reconstruction", "gaussian_splat_3d", "registered_conditional"),
+        (
+            "evaluate_heldout_appearance",
+            "independent_appearance_qa",
+            "registered_conditional",
+        ),
+        ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
+        ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
+        ("qualify_collision_candidate", "collision_qa", "registered_conditional"),
+        ("package_nurec_openusd", "openusd_packaging", "registered_conditional"),
+        ("verify_isaac_asset", "isaac_verification", "registered_conditional"),
+        ("generate_reconstruction_report", "terminal_reporting", "registered_conditional"),
     ),
     "precomputed_external_reconstruction": (
         ("verify_source_capture_binding", "capture_validation", "required_deterministic_gate"),
         (
             "import_external_reconstruction",
             "external_reconstruction_import",
-            "required_not_registered",
+            "registered_conditional",
         ),
-        (
-            "independently_validate_metric_semantic_physics_layers",
-            "testbed_compilation",
-            "required_deterministic_gate",
-        ),
+        ("validate_metric_scale", "metric_scale", "registered_conditional"),
+        ("compile_metric_geometry", "metric_geometry", "registered_conditional"),
+        ("compile_collision_candidate", "collision_geometry", "registered_conditional"),
+        ("qualify_collision_candidate", "collision_qa", "registered_conditional"),
+        ("package_nurec_openusd", "openusd_packaging", "registered_conditional"),
+        ("verify_isaac_asset", "isaac_verification", "registered_conditional"),
+        ("generate_reconstruction_report", "terminal_reporting", "registered_conditional"),
     ),
 }
 
@@ -208,6 +290,8 @@ def build_capture_reconstruction_route(
         if profile == "camera_360_equirectangular"
         else ["local://decoded-observation-index-v1"]
         if profile in _VIDEO_PROFILES
+        else ["local://external-reconstruction-import-v1"]
+        if profile == "precomputed_external_reconstruction"
         else []
     )
     route = {
@@ -330,6 +414,8 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
             if profile == "camera_360_equirectangular"
             else ["local://decoded-observation-index-v1"]
             if profile in _VIDEO_PROFILES
+            else ["local://external-reconstruction-import-v1"]
+            if profile == "precomputed_external_reconstruction"
             else []
         )
         if (

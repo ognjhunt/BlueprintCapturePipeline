@@ -71,6 +71,16 @@ def test_iphone_lidar_and_360_capture_receive_different_reconstruction_routes(
     assert "compile_equirectangular_virtual_rig" in {
         row["stage_id"] for row in panorama["stages"]
     }
+    assert "train_gaussian_reconstruction" in {
+        row["stage_id"] for row in iphone["stages"]
+    }
+    assert "evaluate_heldout_appearance" in {
+        row["stage_id"] for row in iphone["stages"]
+    }
+    assert "qualify_collision_candidate" in {
+        row["stage_id"] for row in iphone["stages"]
+    }
+    assert "verify_isaac_asset" in {row["stage_id"] for row in iphone["stages"]}
     assert "metric_reference_layer" in panorama["required_representations"]
     assert panorama["execution_authorized_by_route"] is False
     assert panorama["appearance_layer_is_metric_or_physics_truth"] is False
@@ -133,7 +143,7 @@ def test_registered_capture_build_inspection_uses_deterministic_profile(
     ("profile", "required_stage"),
     [
         ("camera_360_native", "normalize_native_360_capture"),
-        ("monocular_video", "estimate_camera_poses_with_sfm"),
+        ("monocular_video", "run_pose_estimation"),
         ("precomputed_external_reconstruction", "verify_source_capture_binding"),
     ],
 )
@@ -148,6 +158,39 @@ def test_each_supported_capture_family_has_a_profile_specific_route(
     assert required_stage in {row["stage_id"] for row in route["stages"]}
     assert route["agent_selected_capture_profile"] is False
     assert route["proof_effect"] == "none"
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "iphone_arkit_lidar",
+        "iphone_arkit_non_lidar",
+        "camera_360_equirectangular",
+        "camera_360_native",
+        "monocular_video",
+        "precomputed_external_reconstruction",
+    ],
+)
+def test_every_registered_route_stage_resolves_to_the_typed_tool_registry(
+    tmp_path: Path,
+    profile: str,
+) -> None:
+    route = build_capture_reconstruction_route(_capture_build(tmp_path, profile=profile))
+    registry = ToolRegistry.default()
+
+    conditional_stages = {
+        row["stage_id"]
+        for row in route["stages"]
+        if row["implementation_status"] == "registered_conditional"
+    }
+
+    assert conditional_stages
+    assert all(registry.resolve(stage_id) is not None for stage_id in conditional_stages)
+    assert not {
+        row["stage_id"]
+        for row in route["stages"]
+        if row["implementation_status"] == "required_not_registered"
+    }
 
 
 def test_lidar_hint_alone_cannot_grant_arkit_lidar_route(tmp_path: Path) -> None:
