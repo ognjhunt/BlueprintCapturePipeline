@@ -124,6 +124,13 @@ as `blueprint_agentic_candidate_policy@1` candidates. Before hidden evaluation,
 freeze the code, model/provider/version, prompts, tools, memory/skills snapshot,
 budgets, retries, scenario pack, evaluator, and success predicates.
 
+The reviewed Pigey commit currently has no repository-level software license.
+Do not execute it for Blueprint merely because the repository is public. The
+runtime requires an independent `pigey_license_attestation.v1` bound to the exact
+commit and authorizing the intended commercial code execution. Until the rights
+holder grants permission or publishes acceptable terms, the live Pigey lane is
+blocked. See `docs/third-party/pigey-license-review.md`.
+
 The neutral suite contains one direct policy, one decomposed planner+policy, and
 one verify/recover supervisor. Every candidate receives the same scenario IDs,
 evaluator, predicates, and claim ceiling. Candidates receive no hidden labels,
@@ -136,6 +143,41 @@ manifest to the independent evaluator. Candidate runtime outputs have a strict
 allowlist and cannot contain their own verdict or score. The resulting harness
 artifact is still simulation/evaluation evidence only; it is not physical or
 deployment proof.
+
+### Pigey/OpenAI cost reconciliation
+
+Pigey's `trial.json` token totals are diagnostic only. A paid Pigey runtime must
+use a dedicated, pre-provisioned OpenAI project/API-key scope and bind the exact
+project ID, API-key ID, and an operator-controlled exclusive-scope attestation
+digest into both the frozen runtime configuration and its independent cost
+authority. `OPENAI_PROJECT` must match that frozen project.
+
+Before candidate execution, `OpenAIProjectCandidateCostAuthority` queries the
+official organization Costs endpoint with both identifiers and requires a zero
+baseline for the attribution window. It reads an admin key from a permission-
+restricted file and never records the key. OpenAI cost data may lag, so the
+first settlement normally remains `reconciliation_required`. After the frozen
+reporting delay, use the read-only reconciliation command against the preserved
+candidate execution directory and the same bound authority:
+
+```bash
+blueprint-route-task-evaluation reconcile-candidate-costs \
+  --execution-dir /path/to/candidate-execution \
+  --openai-project-id proj_example \
+  --openai-api-key-id key_example \
+  --openai-admin-key-file /permission-restricted/openai-admin-key \
+  --scope-attestation /path/to/openai-cost-scope-attestation.json
+```
+
+The
+reconciliation is content-addressed, does not rerun the candidate or evaluator,
+and remains partial if provider evidence is missing, malformed, out of scope, or
+over the reservation.
+
+The organization Costs result is provider-reported spend evidence. Do not call
+it invoice reconciliation, and do not launch Pigey directly merely because the
+read-only cost adapter exists. Paid execution still requires an operator receipt,
+the shared paid-resource admission grant, and the canonical allocation path.
 
 ## Replay and customer report
 

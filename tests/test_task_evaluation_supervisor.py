@@ -485,9 +485,7 @@ class _CaptureNonSpendToolCallingInvoker(_FixtureAgentsSDKInvoker):
                 dict(
                     binding.invoke(
                         {
-                            "source_digest": payload["capture_build"][
-                                "capture_build_digest"
-                            ],
+                            "source_digest": payload["capture_build"]["capture_build_digest"],
                             "questions": [
                                 "What customer decision and robot task should be evaluated?"
                             ],
@@ -630,19 +628,21 @@ class _CandidateRuntime:
         paid_resource_class: str | None = None,
         paid_resource_admission_grant=None,
         raise_exception: bool = False,
+        cost_authority_binding_digest: str = SHA_B,
     ) -> None:
         self.candidate_id = candidate_id
         self.candidate_policy_manifest_digest = manifest_digest
         self.runtime_configuration_digest = runtime_configuration_digest
         self.provider_id = (
-            "paid-fixture-provider"
-            if provider_execution_planned
-            else "local-fixture-runtime"
+            "paid-fixture-provider" if provider_execution_planned else "local-fixture-runtime"
         )
         self.provider_execution_planned = provider_execution_planned
         self.cost_accounting_authoritative = cost_accounting_authoritative
         self.paid_resource_class = paid_resource_class
         self.paid_resource_admission_grant = paid_resource_admission_grant
+        self.cost_authority_binding_digest = (
+            cost_authority_binding_digest if provider_execution_planned else None
+        )
         self.raise_exception = raise_exception
         self.self_grade = self_grade
         self.calls: list[dict] = []
@@ -678,6 +678,7 @@ class _CandidateCostAuthority:
     authority_id = "fixture-independent-cost-authority"
     provider_id = "paid-fixture-provider"
     paid_resource_class = "gpu_canary"
+    cost_authority_binding_digest = SHA_B
 
     def __init__(
         self,
@@ -704,6 +705,7 @@ class _CandidateCostAuthority:
             "authority_id": self.authority_id,
             "provider_id": self.provider_id,
             "paid_resource_class": self.paid_resource_class,
+            "cost_authority_binding_digest": self.cost_authority_binding_digest,
             "candidate_id": candidate_id,
             "candidate_evaluation_suite_digest": candidate_evaluation_suite_digest,
             "authorization_receipt_digest": authorization_receipt_digest,
@@ -732,6 +734,7 @@ class _CandidateCostAuthority:
             "authority_id": self.authority_id,
             "provider_id": self.provider_id,
             "paid_resource_class": self.paid_resource_class,
+            "cost_authority_binding_digest": self.cost_authority_binding_digest,
             "candidate_id": reservation["candidate_id"],
             "cost_reservation_digest": reservation["cost_reservation_digest"],
             "actual_cost_usd": self.actual_cost_usd if reconciled else None,
@@ -829,8 +832,7 @@ def _recovery_controller(
     )
     selected_adapter = adapter or _RecoveryAdapter()
     kwargs = {
-        "wall_clock": wall_clock
-        or (lambda: datetime(2026, 7, 29, 16, 1, tzinfo=timezone.utc)),
+        "wall_clock": wall_clock or (lambda: datetime(2026, 7, 29, 16, 1, tzinfo=timezone.utc)),
     }
     if monotonic is not None:
         kwargs["monotonic"] = monotonic
@@ -1147,9 +1149,7 @@ def _heldout_context(case: SupervisorEvaluationCase) -> SupervisorContext:
             failed.update(
                 {
                     "status": (
-                        "contradictory"
-                        if failure == "conflicting_evidence"
-                        else "unavailable"
+                        "contradictory" if failure == "conflicting_evidence" else "unavailable"
                     ),
                     "validity": False,
                     "supports_claim": False,
@@ -1163,8 +1163,7 @@ def _heldout_context(case: SupervisorEvaluationCase) -> SupervisorContext:
             results = [NormalizedEvidenceResult.from_mapping(failed).to_mapping()]
         decision = (
             build_decision_envelope(request, testbed, plan, results).to_mapping()
-            if case.case_id
-            in {"heldout-contradictory-evidence", "heldout-physical-claim-ceiling"}
+            if case.case_id in {"heldout-contradictory-evidence", "heldout-physical-claim-ceiling"}
             else None
         )
         return replace(
@@ -1325,14 +1324,10 @@ def test_advise_supervisor_records_approval_requests_without_executing_tools(
 
     results = [result.to_mapping() for result in execution.capability_results]
     dispositions = [
-        disposition
-        for result in results
-        for disposition in result["proposal_dispositions"]
+        disposition for result in results for disposition in result["proposal_dispositions"]
     ]
     assert dispositions
-    assert {row["disposition"] for row in dispositions} == {
-        "requires_operator_approval"
-    }
+    assert {row["disposition"] for row in dispositions} == {"requires_operator_approval"}
     assert all(row["blockers"] == [] and row["executed"] is False for row in dispositions)
     assert all(
         invocation.to_mapping()["action_taken"] == "none_shadow_mode"
@@ -1881,10 +1876,7 @@ def test_capture_build_lifecycle_materializes_non_spend_clarification_when_sdk_i
     assert result["registered_non_spend_actions_executed"] == 1
     assert result["registered_tool_reads_executed"] == 0
     clarification_path = (
-        Path(result["output_dir"])
-        / "generated"
-        / "clarification_requests"
-        / "request.json"
+        Path(result["output_dir"]) / "generated" / "clarification_requests" / "request.json"
     )
     clarification = json.loads(clarification_path.read_text(encoding="utf-8"))
     assert clarification["status"] == "awaiting_customer_response"
@@ -1935,8 +1927,7 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     assert len(observed_results) == 1
     assert observed_results[0]["structured_observations"]
     assert all(
-        row["proof_effect"] == "none"
-        for row in observed_results[0]["structured_observations"]
+        row["proof_effect"] == "none" for row in observed_results[0]["structured_observations"]
     )
 
     invalid_authority = json.loads(
@@ -1952,17 +1943,13 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     generated_plan_value = json.loads(generated_plan.read_text(encoding="utf-8"))
     assert generated_plan_value["request_digest"] == _context().decision_request["request_digest"]
     assert len(generated_plan_value["compiled_evaluation_run_specs"]) == 1
-    leaf_paths = sorted(
-        (execution.output_dir / "generated" / "compiled_leaf_runs").glob("*.json")
-    )
+    leaf_paths = sorted((execution.output_dir / "generated" / "compiled_leaf_runs").glob("*.json"))
     assert len(leaf_paths) == 1
     generated_leaf = json.loads(leaf_paths[0].read_text(encoding="utf-8"))
     assert generated_leaf == generated_plan_value["compiled_evaluation_run_specs"][0]
     materialization = next(
         value
-        for value in (
-            json.loads(path.read_text(encoding="utf-8")) for path in observations
-        )
+        for value in (json.loads(path.read_text(encoding="utf-8")) for path in observations)
         if value["tool_id"] == "materialize_compiled_leaf_runs"
     )
     assert materialization["typed_result"]["compiled_leaf_run_count"] == 1
@@ -2050,12 +2037,9 @@ def test_phase2_receipts_and_scenario_freeze_require_non_agent_authority(
         generated_at="2026-07-29T12:00:00+00:00",
     )
     clarification_value = json.loads(
-        (
-            execution.output_dir
-            / "generated"
-            / "clarification_requests"
-            / "request.json"
-        ).read_text(encoding="utf-8")
+        (execution.output_dir / "generated" / "clarification_requests" / "request.json").read_text(
+            encoding="utf-8"
+        )
     )
     clarification_value_receipt = clarification_receipt(
         request=clarification_value,
@@ -2067,9 +2051,9 @@ def test_phase2_receipts_and_scenario_freeze_require_non_agent_authority(
     assert clarification_value_receipt["requires_deterministic_contract_validation"] is True
 
     scenario_value = json.loads(
-        (
-            execution.output_dir / "generated" / "scenario_proposals" / "proposal_set.json"
-        ).read_text(encoding="utf-8")
+        (execution.output_dir / "generated" / "scenario_proposals" / "proposal_set.json").read_text(
+            encoding="utf-8"
+        )
     )
     freeze_request = authorization_request(
         run_id=_context().run_id,
@@ -2185,11 +2169,13 @@ def test_identical_evidence_produces_identical_kernel_decision_despite_agent_pro
     second_replay = replay_supervisor_run(second.output_dir)
     assert first_replay["proof_result_reproduced"] is True
     assert second_replay["proof_result_reproduced"] is True
-    assert first_replay["replayed_deterministic_decision"] == (
-        second_replay["replayed_deterministic_decision"]
+    assert (
+        first_replay["replayed_deterministic_decision"]
+        == (second_replay["replayed_deterministic_decision"])
     )
-    assert first_replay["replayed_deterministic_decision"]["decision_envelope_digest"] == (
-        context.decision_envelope["decision_envelope_digest"]
+    assert (
+        first_replay["replayed_deterministic_decision"]["decision_envelope_digest"]
+        == (context.decision_envelope["decision_envelope_digest"])
     )
     first_diagnosis = next(
         row
@@ -2295,9 +2281,7 @@ def test_phase3_preauthorized_recovery_enforces_and_replays_bounded_execution(
         for row in execution.invocation_manifests
         if row.to_mapping()["capability"] == "runtime_failure_recovery"
     )
-    assert recovery_invocation["action_taken"] == (
-        "registered_preauthorized_action_attempted"
-    )
+    assert recovery_invocation["action_taken"] == ("registered_preauthorized_action_attempted")
     recovery_descriptor = next(
         row
         for row in ToolRegistry.default().manifest()["tools"]
@@ -2623,9 +2607,7 @@ def test_phase3_recovery_rejects_receipt_ttl_drift_and_missing_cost() -> None:
             }
         )
 
-    nonfinite_controller, _ = _recovery_controller(
-        adapter=_RecoveryAdapter(cost_usd=float("nan"))
-    )
+    nonfinite_controller, _ = _recovery_controller(adapter=_RecoveryAdapter(cost_usd=float("nan")))
     nonfinite = nonfinite_controller.execute(
         {
             "action_id": "bounded_provider_retry",
@@ -2685,9 +2667,10 @@ def test_phase3_retry_ceiling_is_global_across_authorized_actions() -> None:
         "projected_cost_usd": 0.2,
         "failure_type": "provider_capacity",
     }
-    assert controller.execute({**common, "action_id": "bounded_provider_retry"})[
-        "status"
-    ] == "completed"
+    assert (
+        controller.execute({**common, "action_id": "bounded_provider_retry"})["status"]
+        == "completed"
+    )
     with pytest.raises(RecoveryControlError, match="recovery_retry_ceiling_exceeded"):
         controller.execute({**common, "action_id": "reuse_loaded_worker"})
 
@@ -2790,8 +2773,7 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
     assert suite["provider_execution_started"] is False
     assert suite["claim_ceiling"].startswith("simulation_only")
     assert {
-        row["policy_adapter"]["stack_type"]
-        for row in suite["candidate_evaluation_run_specs"]
+        row["policy_adapter"]["stack_type"] for row in suite["candidate_evaluation_run_specs"]
     } == set(stack_types)
     assert all(
         row["policy_adapter"]["evaluator_authority"] is False
@@ -3068,6 +3050,25 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
         for index, candidate in enumerate(candidates)
     ]
     paid_cost_authority = _CandidateCostAuthority()
+    mismatched_cost_authority = _CandidateCostAuthority()
+    mismatched_cost_authority.cost_authority_binding_digest = SHA_C
+    with pytest.raises(
+        CandidatePolicyError,
+        match="candidate_cost_authority_binding_mismatch",
+    ):
+        execute_neutral_candidate_policy_suite(
+            suite,
+            candidate_runtimes=admitted_paid_runtimes,
+            candidate_cost_authorities=[mismatched_cost_authority],
+            evaluator=_IndependentCandidateEvaluator(),
+            hidden_evaluation_manifest=hidden_evaluation_manifest,
+            output_dir=tmp_path / "candidate-paid-meter-binding-mismatch",
+            allow_execution=True,
+            execution_authorization=paid_receipt,
+            executed_at="2026-07-29T17:02:00Z",
+        )
+    assert not (tmp_path / "candidate-paid-meter-binding-mismatch").exists()
+
     paid_executed = execute_neutral_candidate_policy_suite(
         suite,
         candidate_runtimes=admitted_paid_runtimes,
@@ -3097,8 +3098,22 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
     )
     assert paid_result["candidate_reported_cost_usd"] == 0.0
     assert paid_result["candidate_reported_cost_accepted"] is False
-    assert (tmp_path / "candidate-paid-admitted" / "candidates" / str(candidates[2]["candidate_id"]) / "cost_authority" / "reservation.json").is_file()
-    assert (tmp_path / "candidate-paid-admitted" / "candidates" / str(candidates[2]["candidate_id"]) / "cost_authority" / "settlement.json").is_file()
+    assert (
+        tmp_path
+        / "candidate-paid-admitted"
+        / "candidates"
+        / str(candidates[2]["candidate_id"])
+        / "cost_authority"
+        / "reservation.json"
+    ).is_file()
+    assert (
+        tmp_path
+        / "candidate-paid-admitted"
+        / "candidates"
+        / str(candidates[2]["candidate_id"])
+        / "cost_authority"
+        / "settlement.json"
+    ).is_file()
     assert all(len(runtime.calls) == 1 for runtime in admitted_paid_runtimes)
 
     with pytest.raises(
@@ -3188,15 +3203,15 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
     assert len(executed["candidate_results"]) == 3
     assert all(row["candidate_self_graded"] is False for row in executed["candidate_results"])
     assert executed["physical_validation_proven"] is False
-    assert executed["authorization_receipt_digest"] == execution_receipt[
-        "authorization_receipt_digest"
-    ]
+    assert (
+        executed["authorization_receipt_digest"]
+        == execution_receipt["authorization_receipt_digest"]
+    )
     assert executed["reported_cost_usd"] == 0.0
     assert executed["paid_resource_admission_validated_candidate_ids"] == []
     assert len(evaluator.calls) == 3
     assert all(
-        "HIDDEN_CANDIDATE_CANARY_91D3" not in json.dumps(runtime.calls)
-        for runtime in runtimes
+        "HIDDEN_CANDIDATE_CANARY_91D3" not in json.dumps(runtime.calls) for runtime in runtimes
     )
     persisted_execution = (
         tmp_path / "candidate-executed" / "candidate_evaluation_execution.json"

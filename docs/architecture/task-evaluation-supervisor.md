@@ -312,10 +312,21 @@ entrypoint digest, invokes the
 public CLI without a shell, passes only allowlisted environment variables,
 normalizes `trial.json` into Blueprint's candidate trace, and explicitly drops
 Pigey's own success value. Pigey source is not vendored, and its current adapter
-marks trial-reported usage as non-authoritative. The provider-neutral cost-
-authority seam is implemented and hermetically tested, but a concrete trusted
-provider billing adapter, separate third-party license review, and paid-
-execution authorization are all required before a live Pigey run. No live
+marks trial-reported usage as non-authoritative. Paid Pigey execution now binds
+the runtime to an exact OpenAI project ID, API-key ID, and exclusive-scope
+attestation digest. A concrete `OpenAIProjectCandidateCostAuthority` takes a
+zero-cost provider baseline through OpenAI's read-only organization Costs
+endpoint before execution, filtering and grouping by both project and API-key
+identity. Immediate cost settlement remains `reconciliation_required` until the
+configured provider-reporting window closes. The delayed reconciliation path
+writes content-addressed settlement evidence and does not rerun the candidate or
+evaluator. Candidate token totals never satisfy this gate. This is provider-
+reported cost evidence, not invoice settlement. The exact reviewed Pigey commit
+currently publishes no repository-level license, so the runtime also requires a
+digest-bound, independent license-or-permission attestation and remains blocked
+without rights-holder permission. A dedicated pre-provisioned OpenAI cost scope,
+canonical paid-allocation entry, and paid-execution authorization are still
+required before a live Pigey run. No live
 Pigey/provider run or physical validation is claimed.
 
 No phase may infer physical validation, deployment approval, safety

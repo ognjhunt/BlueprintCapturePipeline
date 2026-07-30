@@ -12,9 +12,11 @@ from blueprint_pipeline.task_evaluation_supervisor.candidate_policy import (
     CandidatePolicyError,
 )
 from blueprint_pipeline.task_evaluation_supervisor.pigey_candidate_runtime import (
+    PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION,
     PigeyScenarioBinding,
     PigeySimCandidateRuntime,
 )
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
 COMMIT = "b0cef8239dd2afb92827f05d76f16352635a36cb"
@@ -24,7 +26,33 @@ def _digest(path: Path) -> str:
     return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
 
 
-def _runtime(tmp_path: Path, command_runner, *, environment=None, max_llm_steps: int = 35):
+def _license_attestation(*, issued_by_agent: bool = False) -> dict[str, Any]:
+    value = {
+        "schema_version": PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION,
+        "status": "permission_granted",
+        "source_repository": "https://github.com/lianegalanti/Pigey",
+        "source_commit_sha": COMMIT,
+        "reviewer_id": "fixture-independent-license-reviewer",
+        "issued_by_agent": issued_by_agent,
+        "commercial_use_authorized": True,
+        "code_execution_authorized": True,
+        "proof_effect": "none",
+    }
+    value["license_attestation_digest"] = canonical_digest(
+        value,
+        digest_field="license_attestation_digest",
+    )
+    return value
+
+
+def _runtime(
+    tmp_path: Path,
+    command_runner,
+    *,
+    environment=None,
+    max_llm_steps: int = 35,
+    license_attestation=None,
+):
     checkout = tmp_path / "pigey"
     script = checkout / "sim" / "agent_sim.py"
     script.parent.mkdir(parents=True)
@@ -56,8 +84,16 @@ def _runtime(tmp_path: Path, command_runner, *, environment=None, max_llm_steps:
         input_cost_per_million_tokens_usd=1.0,
         output_cost_per_million_tokens_usd=2.0,
         environment=environment
-        or {"PATH": "/usr/bin", "OPENAI_API_KEY": "secret-value-123"},
+        or {
+            "PATH": "/usr/bin",
+            "OPENAI_API_KEY": "secret-value-123",
+            "OPENAI_PROJECT": "proj_pigey_eval",
+        },
         paid_resource_admission_grant=None,
+        openai_project_id="proj_pigey_eval",
+        openai_api_key_id="key_pigey_eval",
+        openai_api_key_scope_attestation_digest="sha256:" + "f" * 64,
+        license_attestation=license_attestation or _license_attestation(),
         command_runner=command_runner,
     )
 
@@ -142,7 +178,8 @@ def test_pigey_runtime_invokes_exact_checkout_and_normalizes_trials_without_verd
     assert all("--no-video" in command for command, _kwargs in pigey_calls)
     assert all("shell" not in kwargs for _command, kwargs in pigey_calls)
     assert all(
-        set(kwargs["env"]) == {"PATH", "OPENAI_API_KEY", "PYTHONDONTWRITEBYTECODE"}
+        set(kwargs["env"])
+        == {"PATH", "OPENAI_API_KEY", "OPENAI_PROJECT", "PYTHONDONTWRITEBYTECODE"}
         for _command, kwargs in pigey_calls
     )
 
@@ -186,6 +223,27 @@ def test_pigey_runtime_fails_closed_on_timeout_and_unallowlisted_environment(
             tmp_path / "bad-env",
             lambda *_args, **_kwargs: None,
             environment={"UNREGISTERED_SECRET": "value"},
+        )
+
+    with pytest.raises(CandidatePolicyError, match="pigey_openai_cost_scope_not_bound"):
+        _runtime(
+            tmp_path / "wrong-project",
+            lambda *_args, **_kwargs: None,
+            environment={
+                "PATH": "/usr/bin",
+                "OPENAI_API_KEY": "secret-value-123",
+                "OPENAI_PROJECT": "proj_wrong",
+            },
+        )
+
+    with pytest.raises(
+        CandidatePolicyError,
+        match="pigey_license_or_permission_attestation_invalid",
+    ):
+        _runtime(
+            tmp_path / "agent-issued-license",
+            lambda *_args, **_kwargs: None,
+            license_attestation=_license_attestation(issued_by_agent=True),
         )
 
     def timeout(command: list[str], **_kwargs: Any):

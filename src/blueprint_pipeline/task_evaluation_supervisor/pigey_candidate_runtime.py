@@ -13,18 +13,21 @@ import json
 import math
 from pathlib import Path
 import re
-import subprocess
+# Candidate execution uses an exact argv vector, no shell, and a frozen entrypoint.
+import subprocess  # nosec B404
 from typing import Any, Callable, Mapping, Sequence
 
 from ..common import write_json
 from ..decision_evidence_contracts import canonical_digest
 from ..paid_resource_admission import PaidResourceAdmissionGrant
 from .candidate_policy import CandidatePolicyError
+from .openai_cost_authority import openai_cost_authority_binding_digest
 
 
 PIGEY_TRACE_SCHEMA_VERSION = "candidate_policy_trace.v1"
 PIGEY_RUNTIME_RESULT_SCHEMA_VERSION = "candidate_policy_runtime_result.v1"
 PIGEY_UPSTREAM_URL = "https://github.com/lianegalanti/Pigey"
+PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION = "pigey_license_attestation.v1"
 _COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SCENARIO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -40,6 +43,7 @@ _ALLOWED_ENVIRONMENT_KEYS = frozenset(
         "LIBERO_HORIZON",
         "MAX_ENV_STEPS",
         "OPENAI_API_KEY",
+        "OPENAI_PROJECT",
         "PATH",
         "PHASE0_MAX_STEPS",
         "PYTHONPATH",
@@ -77,6 +81,34 @@ def _nonnegative_int(value: Any, *, field: str) -> int:
     if number < 0 or str(number) != str(value):
         raise CandidatePolicyError(f"{field}:invalid")
     return number
+
+
+def validate_pigey_license_attestation(
+    value: Mapping[str, Any],
+    *,
+    expected_commit_sha: str,
+) -> dict[str, Any]:
+    """Require independent commercial-use permission for unlicensed Pigey code."""
+
+    attestation = dict(value)
+    expected_digest = canonical_digest(
+        attestation,
+        digest_field="license_attestation_digest",
+    )
+    if (
+        attestation.get("schema_version") != PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION
+        or attestation.get("license_attestation_digest") != expected_digest
+        or attestation.get("status") not in {"license_verified", "permission_granted"}
+        or attestation.get("source_repository") != PIGEY_UPSTREAM_URL
+        or attestation.get("source_commit_sha") != expected_commit_sha
+        or attestation.get("commercial_use_authorized") is not True
+        or attestation.get("code_execution_authorized") is not True
+        or attestation.get("issued_by_agent") is not False
+        or not str(attestation.get("reviewer_id") or "").strip()
+        or attestation.get("proof_effect") != "none"
+    ):
+        raise CandidatePolicyError("pigey_license_or_permission_attestation_invalid")
+    return attestation
 
 
 @dataclass(frozen=True)
@@ -126,10 +158,14 @@ class PigeySimCandidateRuntime:
     output_cost_per_million_tokens_usd: float
     environment: Mapping[str, str]
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None
+    openai_project_id: str
+    openai_api_key_id: str
+    openai_api_key_scope_attestation_digest: str
+    license_attestation: Mapping[str, Any]
     provider_id: str = "pigey_external_candidate"
     provider_execution_planned: bool = True
     cost_accounting_authoritative: bool = False
-    paid_resource_class: str | None = "gpu_canary"
+    paid_resource_class: str | None = "openai_api_candidate"
     command_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run
 
     @property
@@ -142,14 +178,10 @@ class PigeySimCandidateRuntime:
         """
 
         secret_keys = sorted(
-            key
-            for key in self.environment
-            if key.endswith("_KEY") or key.endswith("_TOKEN")
+            key for key in self.environment if key.endswith("_KEY") or key.endswith("_TOKEN")
         )
         nonsecret_environment = {
-            key: value
-            for key, value in sorted(self.environment.items())
-            if key not in secret_keys
+            key: value for key, value in sorted(self.environment.items()) if key not in secret_keys
         }
         return canonical_digest(
             {
@@ -185,19 +217,34 @@ class PigeySimCandidateRuntime:
                 "replan_steps": self.replan_steps,
                 "timeout_seconds_per_scenario": self.timeout_seconds_per_scenario,
                 "max_cost_usd": self.max_cost_usd,
-                "input_cost_per_million_tokens_usd": (
-                    self.input_cost_per_million_tokens_usd
-                ),
-                "output_cost_per_million_tokens_usd": (
-                    self.output_cost_per_million_tokens_usd
-                ),
+                "input_cost_per_million_tokens_usd": (self.input_cost_per_million_tokens_usd),
+                "output_cost_per_million_tokens_usd": (self.output_cost_per_million_tokens_usd),
                 "provider_id": self.provider_id,
                 "provider_execution_planned": self.provider_execution_planned,
                 "cost_accounting_authoritative": self.cost_accounting_authoritative,
                 "paid_resource_class": self.paid_resource_class,
+                "openai_project_id": self.openai_project_id,
+                "openai_api_key_id": self.openai_api_key_id,
+                "openai_api_key_scope_attestation_digest": (
+                    self.openai_api_key_scope_attestation_digest
+                ),
+                "license_attestation_digest": self.license_attestation[
+                    "license_attestation_digest"
+                ],
+                "cost_authority_binding_digest": self.cost_authority_binding_digest,
                 "secret_environment_keys": secret_keys,
                 "nonsecret_environment": nonsecret_environment,
             }
+        )
+
+    @property
+    def cost_authority_binding_digest(self) -> str:
+        return openai_cost_authority_binding_digest(
+            provider_id=self.provider_id,
+            paid_resource_class=str(self.paid_resource_class or ""),
+            project_id=self.openai_project_id,
+            api_key_id=self.openai_api_key_id,
+            scope_attestation_digest=self.openai_api_key_scope_attestation_digest,
         )
 
     def __post_init__(self) -> None:
@@ -209,6 +256,10 @@ class PigeySimCandidateRuntime:
             raise CandidatePolicyError("pigey_agent_sim_digest_invalid")
         if not _SHA256_DIGEST.fullmatch(self.runtime_environment_digest):
             raise CandidatePolicyError("pigey_runtime_environment_digest_invalid")
+        self.license_attestation = validate_pigey_license_attestation(
+            self.license_attestation,
+            expected_commit_sha=self.expected_commit_sha,
+        )
         if self.terminal_signal_policy != "shared_libero_task_done":
             raise CandidatePolicyError("pigey_terminal_signal_policy_invalid")
         if self.mode not in {"raw", "harness"} or not self.model_id.strip():
@@ -241,6 +292,15 @@ class PigeySimCandidateRuntime:
         unknown_env = set(self.environment) - _ALLOWED_ENVIRONMENT_KEYS
         if unknown_env or any(not isinstance(value, str) for value in self.environment.values()):
             raise CandidatePolicyError("pigey_runtime_environment_not_allowlisted")
+        if (
+            not self.openai_project_id.strip()
+            or not self.openai_api_key_id.strip()
+            or not self.openai_api_key_scope_attestation_digest.startswith("sha256:")
+            or len(self.openai_api_key_scope_attestation_digest) != 71
+            or self.environment.get("OPENAI_PROJECT") != self.openai_project_id
+            or not str(self.environment.get("OPENAI_API_KEY") or "").strip()
+        ):
+            raise CandidatePolicyError("pigey_openai_cost_scope_not_bound")
 
     def _run(self, command: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         return self.command_runner(list(command), **kwargs)
@@ -393,13 +453,9 @@ class PigeySimCandidateRuntime:
                 trial.get("mode") != self.mode
                 or trial.get("model") != self.model_id
                 or trial.get("suite") != binding.suite
-                or _nonnegative_int(
-                    trial.get("task_id"), field="pigey_trial_task_id"
-                )
+                or _nonnegative_int(trial.get("task_id"), field="pigey_trial_task_id")
                 != binding.task_id
-                or _nonnegative_int(
-                    trial.get("episode"), field="pigey_trial_episode"
-                )
+                or _nonnegative_int(trial.get("episode"), field="pigey_trial_episode")
                 != binding.episode
             ):
                 raise CandidatePolicyError("pigey_trial_binding_mismatch")
@@ -515,9 +571,11 @@ class PigeySimCandidateRuntime:
 
 
 __all__ = [
+    "PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION",
     "PIGEY_RUNTIME_RESULT_SCHEMA_VERSION",
     "PIGEY_TRACE_SCHEMA_VERSION",
     "PIGEY_UPSTREAM_URL",
     "PigeyScenarioBinding",
     "PigeySimCandidateRuntime",
+    "validate_pigey_license_attestation",
 ]

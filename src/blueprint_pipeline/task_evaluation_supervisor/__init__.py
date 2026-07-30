@@ -18,6 +18,7 @@ from .capture_ingress import CaptureBuildIngressError, load_capture_build_ingres
 from .candidate_policy import (
     CANDIDATE_COST_RESERVATION_SCHEMA_VERSION,
     CANDIDATE_COST_SETTLEMENT_SCHEMA_VERSION,
+    CANDIDATE_COST_RECONCILIATION_SCHEMA_VERSION,
     CandidateCostAuthority,
     CandidatePolicyRuntime,
     CandidatePolicyError,
@@ -25,6 +26,7 @@ from .candidate_policy import (
     IndependentCandidateEvaluator,
     compile_neutral_candidate_policy_suite,
     execute_neutral_candidate_policy_suite,
+    reconcile_neutral_candidate_policy_costs,
     freeze_candidate_policy_manifest,
 )
 from .contracts import (
@@ -67,7 +69,22 @@ from .phase2_artifacts import (
     freeze_scenario_manifest,
     scenario_proposal_set,
 )
-from .pigey_candidate_runtime import PigeyScenarioBinding, PigeySimCandidateRuntime
+from .pigey_candidate_runtime import (
+    PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION,
+    PigeyScenarioBinding,
+    PigeySimCandidateRuntime,
+    validate_pigey_license_attestation,
+)
+from .openai_cost_authority import (
+    OPENAI_COST_AUTHORITY_ID,
+    OPENAI_COST_SNAPSHOT_SCHEMA_VERSION,
+    OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION,
+    OpenAICostAuthorityError,
+    OpenAIOrganizationCostsClient,
+    OpenAIProjectCandidateCostAuthority,
+    openai_cost_authority_binding_digest,
+    validate_openai_cost_scope_attestation,
+)
 from .replay import SupervisorReplayError, replay_supervisor_run
 from .recovery import (
     PreauthorizedRecoveryController,
@@ -103,6 +120,7 @@ __all__ = [
     "CapabilityResult",
     "CANDIDATE_COST_RESERVATION_SCHEMA_VERSION",
     "CANDIDATE_COST_SETTLEMENT_SCHEMA_VERSION",
+    "CANDIDATE_COST_RECONCILIATION_SCHEMA_VERSION",
     "CandidateCostAuthority",
     "CandidatePolicyError",
     "CandidatePolicyRuntime",
@@ -115,7 +133,14 @@ __all__ = [
     "OpenAIAgentsSDKConfig",
     "OpenAIAgentsSDKInvoker",
     "OpenAIAgentsSDKSupervisorManager",
+    "OpenAICostAuthorityError",
+    "OpenAIOrganizationCostsClient",
+    "OpenAIProjectCandidateCostAuthority",
+    "OPENAI_COST_AUTHORITY_ID",
+    "OPENAI_COST_SNAPSHOT_SCHEMA_VERSION",
+    "OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION",
     "Phase2ArtifactError",
+    "PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION",
     "PigeyScenarioBinding",
     "PigeySimCandidateRuntime",
     "PreauthorizedRecoveryController",
@@ -146,9 +171,12 @@ __all__ = [
     "compare_supervisor_to_baseline",
     "compile_neutral_candidate_policy_suite",
     "execute_neutral_candidate_policy_suite",
+    "reconcile_neutral_candidate_policy_costs",
     "evaluate_supervisor_execution",
     "load_capture_build_ingress",
     "load_supervisor_evaluation_corpus",
+    "openai_cost_authority_binding_digest",
+    "validate_openai_cost_scope_attestation",
     "proof_boundary",
     "replay_supervisor_run",
     "run_capture_build_supervisor",
@@ -160,4 +188,5 @@ __all__ = [
     "freeze_scenario_manifest",
     "freeze_candidate_policy_manifest",
     "scenario_proposal_set",
+    "validate_pigey_license_attestation",
 ]

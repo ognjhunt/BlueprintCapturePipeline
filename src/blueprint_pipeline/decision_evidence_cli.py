@@ -25,9 +25,12 @@ from .physical_outcome_learning import join_physical_outcome
 from .task_evaluation_supervisor import (
     AutonomyMode,
     DEFAULT_SUPERVISOR_AGENT_MODEL,
+    OpenAIOrganizationCostsClient,
+    OpenAIProjectCandidateCostAuthority,
     SupervisorContext,
     TaskEvaluationSupervisor,
     load_capture_build_ingress,
+    reconcile_neutral_candidate_policy_costs,
 )
 
 
@@ -132,9 +135,9 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
     ]
     actions_executed = report.get("actions_executed") is True
     inference_spend = dict(report.get("inference_spend") or {})
-    agent_inference_started = bool(live_invocations) or int(
-        inference_spend.get("reservation_count") or 0
-    ) > 0
+    agent_inference_started = (
+        bool(live_invocations) or int(inference_spend.get("reservation_count") or 0) > 0
+    )
     tool_execution_started = actions_executed or any(
         int(report.get(key) or 0) > 0
         for key in (
@@ -154,9 +157,7 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
         "event_ledger": str(args.output_dir / "supervisor_events.jsonl"),
         "capability_count": len(execution.capability_results),
         "triggered_capability_count": len(execution.capability_results),
-        "registered_capability_count": len(
-            execution.run.to_mapping().get("capabilities") or []
-        ),
+        "registered_capability_count": len(execution.run.to_mapping().get("capabilities") or []),
         "agent_harness": "openai_agents_sdk",
         "agent_model": args.agent_model,
         "agent_inference_budget_usd": args.agent_inference_budget_usd,
@@ -252,6 +253,41 @@ def _ingest_outcome(args: argparse.Namespace) -> dict[str, Any]:
     return manifest
 
 
+def _reconcile_candidate_costs(args: argparse.Namespace) -> dict[str, Any]:
+    attestation = read_json(args.scope_attestation)
+    client = OpenAIOrganizationCostsClient(
+        project_id=args.openai_project_id,
+        api_key_id=args.openai_api_key_id,
+        admin_api_key_file=args.openai_admin_key_file,
+        timeout_seconds=args.provider_read_timeout_seconds,
+    )
+    authority = OpenAIProjectCandidateCostAuthority(
+        client=client,
+        scope_attestation=attestation,
+        provider_id=args.provider_id,
+        paid_resource_class="openai_api_candidate",
+    )
+    report = reconcile_neutral_candidate_policy_costs(
+        args.execution_dir,
+        candidate_cost_authorities=[authority],
+    )
+    return {
+        "schema_version": "decision_evidence_cli_result.v1",
+        "operation": "reconcile-candidate-costs",
+        "status": report["status"],
+        "candidate_cost_reconciliation_digest": report["candidate_cost_reconciliation_digest"],
+        "reported_cost_usd": report.get("reported_cost_usd"),
+        "reported_cost_is_final": report["reported_cost_is_final"],
+        "candidate_execution_repeated": False,
+        "candidate_evaluation_repeated": False,
+        "provider_cost_reconciliation_requested": True,
+        "provider_mutation_performed": False,
+        "candidate_reported_cost_accepted": False,
+        "physical_robot_run_initiated": False,
+        "proof_effect": "none",
+    }
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="operation", required=True)
@@ -330,6 +366,29 @@ def _parser() -> argparse.ArgumentParser:
     ingest.add_argument("--existing-outcome", action="append", type=Path, default=[])
     ingest.add_argument("--output-dir", required=True, type=Path)
     ingest.set_defaults(handler=_ingest_outcome)
+
+    reconcile_costs = subparsers.add_parser(
+        "reconcile-candidate-costs",
+        help=(
+            "Reconcile delayed paid-candidate cost from OpenAI's read-only "
+            "organization Costs endpoint without rerunning candidates."
+        ),
+    )
+    reconcile_costs.add_argument("--execution-dir", required=True, type=Path)
+    reconcile_costs.add_argument(
+        "--provider-id",
+        default="pigey_external_candidate",
+    )
+    reconcile_costs.add_argument("--openai-project-id", required=True)
+    reconcile_costs.add_argument("--openai-api-key-id", required=True)
+    reconcile_costs.add_argument("--openai-admin-key-file", required=True, type=Path)
+    reconcile_costs.add_argument("--scope-attestation", required=True, type=Path)
+    reconcile_costs.add_argument(
+        "--provider-read-timeout-seconds",
+        type=float,
+        default=30.0,
+    )
+    reconcile_costs.set_defaults(handler=_reconcile_candidate_costs)
     return parser
 
 

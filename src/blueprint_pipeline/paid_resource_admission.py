@@ -12,6 +12,7 @@ PAID_RESOURCE_CLASSES = frozenset(
         "cpu_build",
         "gpu_canary",
         "model_volume",
+        "openai_api_candidate",
         "gpu_render",
         "lambda_provider_adapter",
         "runpod_provider_adapter",
@@ -51,10 +52,7 @@ def require_paid_resource_admission(
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
     admission_resource_class = admission.get("resource_class")
-    if (
-        admission_resource_class is not None
-        and admission_resource_class != resource_class
-    ) or (
+    if (admission_resource_class is not None and admission_resource_class != resource_class) or (
         expected_schema_version == PAID_LANE_ADMISSION_SCHEMA_VERSION
         and admission_resource_class is None
     ):
