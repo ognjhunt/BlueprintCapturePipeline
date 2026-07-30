@@ -3882,6 +3882,10 @@ def test_identical_evidence_produces_identical_kernel_decision_despite_agent_pro
         "self_qualified": False,
     }
     assert source["claim_ceiling"] == context.evidence_results[0]["claim_ceiling"]
+    spending = customer_report["spending_and_runtime"]
+    assert spending["reserved_agent_cost_ceiling_usd"] >= spending["reported_agent_cost_usd"]
+    assert spending["reported_agent_duration_seconds"] >= 0.0
+    assert spending["reported_action_duration_seconds"] >= 0.0
 
     forged_authority = json.loads(json.dumps(customer_report))
     forged_authority["claim_evidence"][0]["evidence_sources"][0][

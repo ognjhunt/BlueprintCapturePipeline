@@ -1431,7 +1431,17 @@ def deterministic_customer_report(
             "reported_agent_cost_usd": sum(
                 float(row.get("cost_usd") or 0.0) for row in invocation_manifests
             ),
+            "reserved_agent_cost_ceiling_usd": max(
+                [
+                    float((row.get("budget_state") or {}).get("cumulative_reserved_cost_usd") or 0.0)
+                    for row in invocation_manifests
+                ],
+                default=0.0,
+            ),
             "invocation_count": len(invocation_manifests),
+            "reported_agent_duration_seconds": sum(
+                float(row.get("latency_seconds") or 0.0) for row in invocation_manifests
+            ),
             "reported_action_cost_usd": sum(
                 float(row.get("cost_usd") or 0.0) for row in tool_observations
             ),
@@ -1513,7 +1523,9 @@ def validate_customer_report(value: Mapping[str, Any]) -> dict[str, Any]:
     }
     numeric_fields = (
         "reported_agent_cost_usd",
+        "reserved_agent_cost_ceiling_usd",
         "invocation_count",
+        "reported_agent_duration_seconds",
         "reported_action_cost_usd",
         "reported_action_duration_seconds",
         "tool_observation_count",

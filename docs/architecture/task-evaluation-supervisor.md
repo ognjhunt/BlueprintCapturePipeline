@@ -101,7 +101,9 @@ The package `blueprint_pipeline.task_evaluation_supervisor` provides:
   proposals, action artifacts, spend, runtime, uncertainty, claim ceilings,
   next experiments, and prohibited claims. Each claim names its result digests,
   method identity and family, method-profile digest, authority/proof tiers,
-  self-qualification flag, validity, status, and exact claim ceiling;
+  self-qualification flag, validity, status, and exact claim ceiling. Spending
+  distinguishes reported cost from the reserved inference ceiling and reports
+  agent latency separately from registered-action duration;
 - clarification and authorization request/receipt contracts in which an agent
   may request input or authority but cannot answer or approve its own request;
 - pre-evaluation scenario proposal artifacts plus a separate operator-only
