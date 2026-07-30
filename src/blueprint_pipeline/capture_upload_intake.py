@@ -439,6 +439,8 @@ def process_capture_upload_submission(
                 raise CaptureUploadTransferError(
                     [f"capture_qa:{blocker}" for blocker in exc.errors]
                 ) from exc
+            except ValueError as exc:
+                raise CaptureUploadTransferError(["capture_qa:report_invalid"]) from exc
             _write_once(
                 materialized.artifact_root / "capture_qa_report.json",
                 capture_qa_report,
