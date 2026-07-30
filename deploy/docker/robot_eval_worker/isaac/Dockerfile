@@ -47,6 +47,8 @@ RUN mkdir -p /opt/blueprint \
       --build-time --output /opt/blueprint/image_build_healthcheck.json
 RUN PYTHONPATH=/app/src /isaac-sim/python.sh -c \
     "import blueprint_pipeline; print(blueprint_pipeline.__name__)"
+RUN PYTHONPATH=/app/src /isaac-sim/python.sh -c \
+    "from blueprint_pipeline.nvidia_warehouse_native_camera_canary import import_simulation_app; assert callable(import_simulation_app())"
 
 RUN groupadd --gid "${APP_GID}" blueprint \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \

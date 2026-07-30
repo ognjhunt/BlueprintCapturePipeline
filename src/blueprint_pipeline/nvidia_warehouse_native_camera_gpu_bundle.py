@@ -426,6 +426,62 @@ def _archive_worker_output(source: Path, destination: Path) -> None:
         raise ValueError("nvidia_warehouse_gpu_worker_output_too_large")
 
 
+def _write_worker_failure_output(
+    *, output_dir: Path, phase: str, error_type: str
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    failure_dir = output_dir / "failure"
+    failure_dir.mkdir(parents=True, exist_ok=True)
+    failure_path = failure_dir / "worker_failure.json"
+    failure = {
+        "schema_version": "nvidia_warehouse_native_camera_worker_failure.v1",
+        "status": "failed",
+        "phase": str(phase),
+        "error_type": str(error_type),
+        "failure_before_frames": True,
+        "label_free": True,
+        "rankings_or_policy_outcomes_accessed": False,
+        "raw_secret_values_recorded": False,
+    }
+    write_json(failure_path, failure)
+    blocker = f"native_camera_worker_failure:{error_type}"
+    result: dict[str, Any] = {
+        "schema_version": "nvidia_warehouse_native_camera_canary_result.v1",
+        "status": "failed",
+        "blockers": [blocker],
+        "assessment": {
+            "status": "failed",
+            "blockers": [blocker],
+            "views": {},
+        },
+        "failure_evidence": {
+            "phase": str(phase),
+            "error_type": str(error_type),
+            "failure_before_frames": True,
+            "media": [
+                {
+                    "relative_path": "failure/worker_failure.json",
+                    "sha256": file_sha256(failure_path),
+                }
+            ],
+        },
+        "label_free": True,
+        "rankings_or_policy_outcomes_accessed": False,
+        "paid_policy_or_wam_model_invoked": False,
+        "claim_boundary": {
+            "native_scene_and_camera_technical_canary_only": True,
+            "policy_wam_loop_proven": False,
+            "ranking_accuracy": False,
+            "physical_success": False,
+            "captured_site_transfer_validation": False,
+            "phase_b_confirmation": False,
+        },
+    }
+    result["result_sha256"] = canonical_sha256(result)
+    write_json(output_dir / "native_camera_canary_result.json", result)
+    return result
+
+
 def run_native_camera_gpu_worker(
     *,
     workspace: str | Path,
@@ -449,23 +505,31 @@ def run_native_camera_gpu_worker(
     if not _SHA256.fullmatch(expected_sha256):
         raise ValueError("nvidia_warehouse_gpu_worker_input_sha256_invalid")
     root.mkdir(parents=True)
-    bundle = root / "input.zip"
-    downloader(input_url, bundle)
-    if not bundle.is_file() or file_sha256(bundle) != expected_sha256:
-        raise ValueError("nvidia_warehouse_gpu_worker_download_sha256_mismatch")
-    result = dict(
-        bundle_runner(
-            bundle_path=bundle,
-            expected_sha256=expected_sha256,
-            workspace=root / "execution",
+    phase = "download"
+    try:
+        bundle = root / "input.zip"
+        downloader(input_url, bundle)
+        if not bundle.is_file() or file_sha256(bundle) != expected_sha256:
+            raise ValueError("nvidia_warehouse_gpu_worker_download_sha256_mismatch")
+        phase = "native_camera_execution"
+        result = dict(
+            bundle_runner(
+                bundle_path=bundle,
+                expected_sha256=expected_sha256,
+                workspace=root / "execution",
+            )
         )
-    )
+    except Exception as exc:
+        result = _write_worker_failure_output(
+            output_dir=root / "execution" / "output",
+            phase=phase,
+            error_type=type(exc).__name__,
+        )
     output_zip = root / "output.zip"
     _archive_worker_output(root / "execution" / "output", output_zip)
-    uploader(output_url, output_zip)
     receipt: dict[str, Any] = {
         "schema_version": "nvidia_warehouse_native_camera_gpu_worker_receipt.v1",
-        "status": "completed" if result.get("status") == "passed" else "failed",
+        "status": "completed",
         "canary_status": result.get("status"),
         "input_bundle_sha256": expected_sha256,
         "output_zip_sha256": file_sha256(output_zip),
@@ -477,6 +541,7 @@ def run_native_camera_gpu_worker(
     }
     receipt["receipt_sha256"] = canonical_sha256(receipt)
     write_json(root / "worker_receipt.json", receipt)
+    uploader(output_url, output_zip)
     return receipt
 
 

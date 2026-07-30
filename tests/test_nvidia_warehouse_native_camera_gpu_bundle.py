@@ -7,6 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.nvidia_warehouse_native_camera_gpu_admission import (
+    validate_native_camera_gpu_output_archive,
+)
 from blueprint_pipeline.nvidia_warehouse_native_camera_gpu_bundle import (
     INPUT_SECRET_URL_ENV,
     INPUT_SHA256_ENV,
@@ -206,6 +209,45 @@ def test_gpu_worker_downloads_runs_and_uploads_without_recording_urls(tmp_path: 
     assert output_url in uploaded
     assert input_url not in json.dumps(receipt)
     assert output_url not in json.dumps(receipt)
+
+
+def test_gpu_worker_uploads_hash_bound_failure_media_and_exits_transport_cleanly(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.zip"
+    source.write_bytes(b"hash-bound-input")
+    expected = file_sha256(source)
+    uploaded: dict[str, bytes] = {}
+
+    def downloader(_url: str, destination: Path) -> None:
+        destination.write_bytes(source.read_bytes())
+
+    def runner(**_kwargs):
+        raise TypeError("live Isaac SimulationApp shim was not callable")
+
+    def uploader(url: str, path: Path) -> None:
+        uploaded[url] = path.read_bytes()
+
+    output_url = "https://storage.example/output?secret=value"
+    receipt = run_native_camera_gpu_worker(
+        workspace=tmp_path / "worker",
+        environment={
+            INPUT_SECRET_URL_ENV: "https://storage.example/input?secret=value",
+            INPUT_SHA256_ENV: expected,
+            OUTPUT_SECRET_PUT_URL_ENV: output_url,
+        },
+        downloader=downloader,
+        uploader=uploader,
+        bundle_runner=runner,
+    )
+
+    validation = validate_native_camera_gpu_output_archive(uploaded[output_url])
+    assert receipt["status"] == "completed"
+    assert receipt["canary_status"] == "failed"
+    assert validation["status"] == "completed"
+    assert validation["canary_status"] == "failed"
+    assert validation["canary_result"]["failure_evidence"]["error_type"] == "TypeError"
+    assert validation["canary_result"]["claim_boundary"]["policy_wam_loop_proven"] is False
 
 
 def test_gpu_worker_rejects_non_https_signed_urls_before_download(tmp_path: Path) -> None:

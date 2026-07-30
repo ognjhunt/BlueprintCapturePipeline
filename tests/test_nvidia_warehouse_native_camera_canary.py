@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +12,7 @@ from PIL import Image
 from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _camera_quaternion_wxyz,
     _project_world_points,
+    import_simulation_app,
     run_native_camera_canary,
 )
 from blueprint_pipeline.nvidia_warehouse_workcell import CANARY_SPEC_SCHEMA_VERSION
@@ -73,6 +76,29 @@ def test_usd_camera_convention_projects_negative_z_forward_and_builds_identity_p
         vfov_deg=60.0,
     )
     assert projected == {"center": True, "behind": False}
+
+
+def test_simulation_app_import_falls_back_when_isaacsim_shim_is_not_callable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    isaacsim = types.ModuleType("isaacsim")
+    isaacsim.SimulationApp = None
+    omni = types.ModuleType("omni")
+    omni.__path__ = []
+    omni_isaac = types.ModuleType("omni.isaac")
+    omni_isaac.__path__ = []
+    omni_kit = types.ModuleType("omni.isaac.kit")
+
+    class LegacySimulationApp:
+        pass
+
+    omni_kit.SimulationApp = LegacySimulationApp
+    monkeypatch.setitem(sys.modules, "isaacsim", isaacsim)
+    monkeypatch.setitem(sys.modules, "omni", omni)
+    monkeypatch.setitem(sys.modules, "omni.isaac", omni_isaac)
+    monkeypatch.setitem(sys.modules, "omni.isaac.kit", omni_kit)
+
+    assert import_simulation_app() is LegacySimulationApp
 
 
 def test_native_camera_canary_requires_scene_robot_rigid_object_and_two_synced_views(

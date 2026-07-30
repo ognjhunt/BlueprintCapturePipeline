@@ -24,6 +24,23 @@ MAX_WRIST_LOCAL_TRANSFORM_DELTA = 1e-9
 REQUIRED_VIEWS = ("external", "wrist")
 
 
+def import_simulation_app() -> Any:
+    """Resolve the Isaac launcher while rejecting non-callable API shims."""
+
+    try:
+        from isaacsim import SimulationApp
+
+        if callable(SimulationApp):
+            return SimulationApp
+    except Exception:
+        pass
+    from omni.isaac.kit import SimulationApp
+
+    if not callable(SimulationApp):
+        raise ImportError("isaac_simulation_app_not_callable")
+    return SimulationApp
+
+
 def _camera_quaternion_wxyz(forward: Any, up: Any) -> np.ndarray:
     """Quaternion for a USD camera whose local forward axis is negative Z."""
 
@@ -95,8 +112,7 @@ def isaac_sim_6_backend(
 ) -> dict[str, Any]:  # pragma: no cover - requires the pinned Isaac GPU image
     """Load the selected workcell and render synchronized external/wrist frames."""
 
-    from isaacsim import SimulationApp
-
+    SimulationApp = import_simulation_app()
     simulation_app = SimulationApp(
         {"headless": True, "renderer": "RayTracedLighting", "width": 640, "height": 480}
     )

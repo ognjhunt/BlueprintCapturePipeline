@@ -5,6 +5,7 @@ import io
 import json
 import os
 import time
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -338,6 +339,55 @@ def test_native_camera_monitor_tears_down_before_admitting_policy_wam(
     assert result["provider_absence_confirmed"] is True
     assert result["control_plane_terminal"] is True
     assert result["continuing_spend"] is False
+
+
+def test_native_camera_monitor_exits_and_tears_down_when_worker_is_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Provider:
+        def inspect(self, _instance_id: str) -> dict:
+            return {
+                "status": "absent",
+                "provider_absence_confirmed": True,
+                "api_confirmed": True,
+            }
+
+    def missing_output(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "https://storage.example/output", 404, "missing", {}, None
+        )
+
+    monkeypatch.setattr(camera_gpu, "safe_http_request", missing_output)
+    monkeypatch.setattr(
+        camera_gpu,
+        "terminate_canary_resources",
+        lambda **_kwargs: {"provider_absence_confirmed": True},
+    )
+    monkeypatch.setattr(
+        camera_gpu,
+        "_camera_cleanup_handoff",
+        lambda **_kwargs: {
+            "provider_absence_confirmed": True,
+            "control_plane_terminal": True,
+            "continuing_spend": False,
+        },
+    )
+
+    result = camera_gpu._monitor_native_camera_output_and_teardown(
+        root=tmp_path,
+        output_secret_get_url="https://storage.example/output?signature=secret",
+        provider=Provider(),
+        armed={"status": "armed"},
+        instance_id="camera-1",
+        provider_name="vast",
+        deadline_epoch=time.time() + 300,
+        poll_interval_seconds=0.1,
+    )
+
+    assert result["status"] == "failed"
+    assert result["advance_to_policy_wam"] is False
+    assert result["continuing_spend"] is False
+    assert result["blockers"] == ["native_camera_worker_terminal_without_output"]
 
 
 def test_native_camera_execute_arms_guards_before_vast_launch(

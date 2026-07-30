@@ -397,11 +397,44 @@ def validate_native_camera_gpu_output_archive(
             ):
                 blockers.append("native_camera_output_claim_boundary_invalid")
 
+            failure = manifest.get("failure_evidence")
+            failure = failure if isinstance(failure, Mapping) else {}
+            failure_before_frames = bool(
+                manifest.get("status") == "failed"
+                and failure.get("failure_before_frames") is True
+            )
+            if failure_before_frames:
+                if not str(failure.get("phase") or "") or not str(
+                    failure.get("error_type") or ""
+                ):
+                    blockers.append("native_camera_output_failure_evidence_invalid")
+                media = failure.get("media")
+                media = media if isinstance(media, list) else []
+                if not media:
+                    blockers.append("native_camera_output_failure_media_missing")
+                for item in media:
+                    item = item if isinstance(item, Mapping) else {}
+                    relative = str(item.get("relative_path") or "")
+                    safe_relative = bool(
+                        relative
+                        and not Path(relative).is_absolute()
+                        and ".." not in Path(relative).parts
+                    )
+                    if not safe_relative or relative not in names:
+                        blockers.append("native_camera_output_failure_media_missing")
+                        continue
+                    if str(item.get("sha256") or "") != hashlib.sha256(
+                        archive.read(relative)
+                    ).hexdigest():
+                        blockers.append(
+                            "native_camera_output_failure_media_sha256_mismatch"
+                        )
+
             assessment = manifest.get("assessment")
             assessment = assessment if isinstance(assessment, Mapping) else {}
             views = assessment.get("views")
             views = views if isinstance(views, Mapping) else {}
-            for view_id in ("external", "wrist"):
+            for view_id in (() if failure_before_frames else ("external", "wrist")):
                 view = views.get(view_id)
                 view = view if isinstance(view, Mapping) else {}
                 frames = view.get("frames")
@@ -700,6 +733,39 @@ def _monitor_native_camera_output_and_teardown(
                 ],
                 "continuing_spend": True,
                 "watchdog_deadline_epoch": deadline_epoch,
+                "raw_secret_values_recorded": False,
+            }
+        inspection = provider.inspect(instance_id)
+        provider_terminal = bool(
+            inspection.get("provider_absence_confirmed") is True
+            or str(inspection.get("actual_status") or "").lower()
+            in {"exited", "stopped", "dead", "offline"}
+        )
+        if provider_terminal:
+            teardown = terminate_canary_resources(
+                provider=provider,
+                pod_name_prefix=CANARY_NAME_PREFIX,
+                armed=armed,
+                provider_name=provider_name,
+            )
+            handoff = _camera_cleanup_handoff(
+                root=root,
+                provider=provider,
+                cleanup=teardown,
+                instance_id=instance_id,
+                provider_name=provider_name,
+            )
+            return {
+                "status": (
+                    "failed"
+                    if handoff.get("control_plane_terminal") is True
+                    else "blocked"
+                ),
+                "blockers": ["native_camera_worker_terminal_without_output"],
+                "advance_to_policy_wam": False,
+                "provider_inspection": inspection,
+                "teardown": teardown,
+                **handoff,
                 "raw_secret_values_recorded": False,
             }
         time.sleep(max(0.1, poll_interval_seconds))
