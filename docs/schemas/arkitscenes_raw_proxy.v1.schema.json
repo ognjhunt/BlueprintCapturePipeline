@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/arkitscenes_raw_proxy.v1.schema.json",
+  "title": "ARKitScenes Raw proxy compilation contracts v1",
+  "description": "Claim-limited public-dataset proxy artifacts; never Blueprint Raw Contract 3.2 proof.",
+  "oneOf": [
+    {"$ref": "#/$defs/report"},
+    {"$ref": "#/$defs/observations"},
+    {"$ref": "#/$defs/scaffold"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "camera_frame": {
+      "type": "object",
+      "required": [
+        "frame_id", "decoded_frame_index", "t_video_sec", "source_pts_seconds",
+        "t_capture_sec", "T_world_camera", "rgb_intrinsics", "depth_intrinsics",
+        "pose_source"
+      ],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1},
+        "decoded_frame_index": {"type": "integer", "minimum": 0},
+        "t_video_sec": {"type": "number", "minimum": 0},
+        "source_pts_seconds": {"type": "number"},
+        "t_capture_sec": {"type": "number"},
+        "T_world_camera": {
+          "type": "array", "minItems": 4, "maxItems": 4,
+          "items": {
+            "type": "array", "minItems": 4, "maxItems": 4,
+            "items": {"type": "number"}
+          }
+        },
+        "rgb_intrinsics": {"type": "object"},
+        "depth_intrinsics": {"type": "object"},
+        "pose_source": {"const": "arkitscenes_official_trajectory_exact_timestamp"}
+      }
+    },
+    "depth_pair": {
+      "type": "object",
+      "required": [
+        "frame_id", "source_depth_relative_path", "source_depth_digest",
+        "source_confidence_relative_path", "source_confidence_digest",
+        "filtered_depth_relative_path", "filtered_depth_digest",
+        "accepted_pixel_count", "positive_source_depth_pixel_count",
+        "missing_or_rejected_pixels_preserved_as_zero"
+      ],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1},
+        "source_depth_relative_path": {"$ref": "#/$defs/relative_path"},
+        "source_depth_digest": {"$ref": "#/$defs/sha256"},
+        "source_confidence_relative_path": {"$ref": "#/$defs/relative_path"},
+        "source_confidence_digest": {"$ref": "#/$defs/sha256"},
+        "filtered_depth_relative_path": {"$ref": "#/$defs/relative_path"},
+        "filtered_depth_digest": {"$ref": "#/$defs/sha256"},
+        "accepted_pixel_count": {"type": "integer", "minimum": 0},
+        "positive_source_depth_pixel_count": {"type": "integer", "minimum": 0},
+        "missing_or_rejected_pixels_preserved_as_zero": {"const": true}
+      }
+    },
+    "scaffold": {
+      "type": "object",
+      "required": [
+        "schema_version", "capture_digest", "dataset_manifest_digest", "split_digest",
+        "access_scope", "coordinate_frame", "camera_frames", "depth_confidence_pairs",
+        "confidence_filter", "total_depth_pixels", "positive_source_depth_pixels",
+        "accepted_high_confidence_depth_pixels", "unseen_or_rejected_depth_filled",
+        "metric_scale_status", "collision_geometry_status", "metric_scaffold_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "arkitscenes_metric_scaffold_proxy.v1"},
+        "capture_digest": {"$ref": "#/$defs/sha256"},
+        "dataset_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "split_digest": {"$ref": "#/$defs/sha256"},
+        "access_scope": {
+          "enum": ["candidate_training_and_validation_only", "independent_evaluator_only"]
+        },
+        "coordinate_frame": {"type": "object"},
+        "camera_frames": {"type": "array", "items": {"$ref": "#/$defs/camera_frame"}},
+        "depth_confidence_pairs": {"type": "array", "items": {"$ref": "#/$defs/depth_pair"}},
+        "confidence_filter": {"const": "confidence_equals_2_and_positive_depth"},
+        "total_depth_pixels": {"type": "integer", "minimum": 0},
+        "positive_source_depth_pixels": {"type": "integer", "minimum": 0},
+        "accepted_high_confidence_depth_pixels": {"type": "integer", "minimum": 0},
+        "unseen_or_rejected_depth_filled": {"const": false},
+        "metric_scale_status": {"const": "dataset_declared_not_independently_validated"},
+        "collision_geometry_status": {"const": "not_compiled"},
+        "metric_scaffold_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "observations": {
+      "type": "object",
+      "required": [
+        "schema_version", "capture_digest", "dataset_manifest_digest", "split_digest",
+        "candidate_splits_only", "hidden_heldout_pixels_included", "observations",
+        "candidate_may_access_hidden_heldout", "candidate_may_modify_poses_or_calibration",
+        "camera_observation_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "arkitscenes_camera_observations_proxy.v1"},
+        "capture_digest": {"$ref": "#/$defs/sha256"},
+        "dataset_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "split_digest": {"$ref": "#/$defs/sha256"},
+        "candidate_splits_only": {"const": true},
+        "hidden_heldout_pixels_included": {"const": false},
+        "observations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "observation_id", "decoded_frame_index", "t_video_sec", "split",
+              "image_relative_path", "image_digest", "camera", "depth_confidence_binding"
+            ],
+            "properties": {
+              "observation_id": {"type": "string", "minLength": 1},
+              "decoded_frame_index": {"type": "integer", "minimum": 0},
+              "t_video_sec": {"type": "number", "minimum": 0},
+              "split": {"enum": ["training", "validation"]},
+              "image_relative_path": {"$ref": "#/$defs/relative_path"},
+              "image_digest": {"$ref": "#/$defs/sha256"},
+              "camera": {"$ref": "#/$defs/camera_frame"},
+              "depth_confidence_binding": {"$ref": "#/$defs/depth_pair"}
+            }
+          }
+        },
+        "candidate_may_access_hidden_heldout": {"const": false},
+        "candidate_may_modify_poses_or_calibration": {"const": false},
+        "camera_observation_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "report": {
+      "type": "object",
+      "required": [
+        "schema_version", "stable_run_identity", "source_capture_identity",
+        "source_capture_digest", "original_file_references", "producing_method",
+        "implementation_version", "container_image_digest", "source_commit_sha",
+        "deterministic_configuration_digest", "input_digests", "output_digests",
+        "train_heldout_split_digest", "camera_calibration_binding",
+        "coordinate_frame_declaration", "units", "metric_scale_status",
+        "provider_runtime_identity", "cost_usd", "duration_seconds", "authority_used",
+        "warnings", "blockers", "proof_effect", "claim_ceiling",
+        "parent_artifact_or_event", "timestamp", "status",
+        "hidden_heldout_pixels_exposed_to_candidate", "raw_contract_3_2_proven",
+        "iphone_route_proven", "metric_geometry_proven", "collision_or_physics_proven",
+        "isaac_compatibility_proven", "arkitscenes_proxy_compilation_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "arkitscenes_raw_proxy_compilation.v1"},
+        "stable_run_identity": {"type": "string", "minLength": 1},
+        "source_capture_identity": {"type": "string", "minLength": 1},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "original_file_references": {"type": "array", "minItems": 6},
+        "producing_method": {"const": "arkitscenes_raw_proxy_compiler.v1"},
+        "implementation_version": {"$ref": "#/$defs/sha256"},
+        "container_image_digest": {"type": "null"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "deterministic_configuration_digest": {"$ref": "#/$defs/sha256"},
+        "input_digests": {"type": "object"},
+        "output_digests": {"type": "object"},
+        "train_heldout_split_digest": {"$ref": "#/$defs/sha256"},
+        "camera_calibration_binding": {"$ref": "#/$defs/sha256"},
+        "coordinate_frame_declaration": {"type": "object"},
+        "units": {"const": "rgb_pixels_depth_millimeters_pose_meters"},
+        "metric_scale_status": {"const": "dataset_declared_not_independently_validated"},
+        "provider_runtime_identity": {"type": "object"},
+        "cost_usd": {"const": 0.0},
+        "duration_seconds": {"const": 0.0},
+        "authority_used": {"type": "object"},
+        "warnings": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "proof_effect": {"const": "public_dataset_proxy_pipeline_evidence_only"},
+        "claim_ceiling": {"const": "public_dataset_calibrated_observation_proxy"},
+        "parent_artifact_or_event": {"type": "object"},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "status": {"const": "partial"},
+        "hidden_heldout_pixels_exposed_to_candidate": {"const": false},
+        "raw_contract_3_2_proven": {"const": false},
+        "iphone_route_proven": {"const": false},
+        "metric_geometry_proven": {"const": false},
+        "collision_or_physics_proven": {"const": false},
+        "isaac_compatibility_proven": {"const": false},
+        "arkitscenes_proxy_compilation_digest": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

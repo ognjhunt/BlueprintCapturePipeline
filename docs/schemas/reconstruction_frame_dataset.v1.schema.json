@@ -74,7 +74,13 @@
         "source_video_digest": {"$ref": "#/$defs/sha256"},
         "decoded_frame_count": {"type": "integer", "minimum": 1},
         "selected_frame_count": {"type": "integer", "minimum": 1},
-        "selection_rule": {"const": "evenly_spaced_actual_decoded_pts_with_endpoints_v1"},
+        "selection_rule": {
+          "type": "string",
+          "enum": [
+            "evenly_spaced_actual_decoded_pts_with_endpoints_v1",
+            "arkitscenes_exact_trajectory_timestamp_even_coverage_v1"
+          ]
+        },
         "complete_retained_source_preserved": {"const": true},
         "source_video_relative_path": {"$ref": "#/$defs/relative_path"},
         "frames": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/selected_frame"}},

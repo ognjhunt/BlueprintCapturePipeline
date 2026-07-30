@@ -283,6 +283,7 @@ def compile_frozen_frame_dataset(
     implementation_digest: str,
     source_commit_sha: str,
     rights_and_retention: Mapping[str, Any],
+    selection_rule: str = "evenly_spaced_actual_decoded_pts_with_endpoints_v1",
     parent_artifact: Mapping[str, Any] | None = None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
@@ -309,6 +310,8 @@ def compile_frozen_frame_dataset(
         errors.append("dataset_decoded_frame_count_invalid")
     if not str(runtime_identity).strip():
         errors.append("dataset_runtime_identity_missing")
+    if not str(selection_rule).strip():
+        errors.append("dataset_selection_rule_missing")
     if len(source_commit_sha) != 40 or any(character not in "0123456789abcdef" for character in source_commit_sha):
         errors.append("dataset_source_commit_sha_invalid")
     if errors:
@@ -323,7 +326,7 @@ def compile_frozen_frame_dataset(
         "source_capture_identity": intake_id,
         "source_capture_digest": capture_digest,
         "capture_authority_profile": capture_authority_profile,
-        "selection_rule": "evenly_spaced_actual_decoded_pts_with_endpoints_v1",
+        "selection_rule": str(selection_rule),
         "split_rule": "digest_ranked_disjoint_train_validation_hidden_heldout_v1",
         "decoded_frame_count": decoded_frame_count,
         "selected_frame_count": len(frames),
