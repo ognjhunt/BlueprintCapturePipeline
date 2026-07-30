@@ -1,7 +1,7 @@
 """Perception-backed spatial index: 2D detections + depth -> world AABBs.
 
-This is the *dynamic*, no-USD path. Upstream perception (SAM3 for boxes, DA3 for
-a metric depth map) is treated as INPUT: callers hand us a list of detections
+This is the *dynamic*, no-USD geometry primitive. Upstream perception supplies
+tracked boxes/masks and a numeric depth sampler: callers hand us a list of detections
 ``[{label, bbox_px, confidence}]``, an injectable ``depth_provider(px, py) -> meters``,
 and a ``camera`` describing pinhole intrinsics + look-at extrinsics. We turn each
 2D box into a world-space :class:`SceneObject` by unprojecting its corners and
@@ -32,8 +32,9 @@ from typing import Callable, List, Mapping, Sequence, Tuple
 
 from .types import SceneObject, Vec3
 
-# A depth lookup: pixel (px, py) -> metric depth in meters along the optical axis.
-# Injected so tests pass a lambda and real runs pass a DA3 depth-map sampler.
+# A depth lookup: pixel (px, py) -> z-depth along the optical axis. This low-level
+# primitive cannot establish units or authority; production callers must pass through
+# perception_adapter's source-bound qualification seam before placement.
 DepthProvider = Callable[[float, float], float]
 
 

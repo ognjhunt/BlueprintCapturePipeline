@@ -18,6 +18,7 @@ from blueprint_pipeline.gaussian_splat_decode import read_compressed_ply_chunk_b
 from blueprint_pipeline.scene_placement import (
     InteriorGSSceneSpatialIndex,
     StandPose,
+    build_interiorgs_object_index,
     build_interiorgs_probe,
     build_scene_index,
     compute_stand_pose,
@@ -137,6 +138,69 @@ class TestLoadLabels:
         objects = load_interiorgs_labels(scene_dir / "labels.json")
         ids = {o.id for o in objects}
         assert "999" not in ids and "" not in ids
+
+    def test_rotated_box_retains_exact_corners_and_conservative_aabb(self, tmp_path):
+        rotated_corners = [
+            {"x": x, "y": y, "z": z}
+            for z in (0.0, 1.0)
+            for x, y in ((0.0, 1.0), (1.0, 2.0), (2.0, 1.0), (1.0, 0.0))
+        ]
+        labels = tmp_path / "labels.json"
+        labels.write_text(
+            json.dumps(
+                [{"ins_id": "rotated-1", "label": "work table", "bounding_box": rotated_corners}]
+            )
+        )
+
+        [table] = load_interiorgs_labels(labels)
+
+        assert table.bbox_min == (0.0, 0.0, 0.0)
+        assert table.bbox_max == (2.0, 2.0, 1.0)
+        assert table.extra["placement_bounds_kind"] == "conservative_world_aabb"
+        assert table.extra["oriented_bounding_box"]["corners_world_m"] == [
+            [corner["x"], corner["y"], corner["z"]] for corner in rotated_corners
+        ]
+
+
+class TestObjectIndex:
+    def test_deterministic_hash_bound_index_preserves_authority(self, scene_dir):
+        splat = scene_dir / "3dgs_compressed.ply"
+        splat.write_bytes(b"synthetic-splat-fixture")
+
+        first = build_interiorgs_object_index(
+            scene_dir / "labels.json",
+            splat_path=splat,
+            structure_path=scene_dir / "structure.json",
+        )
+        replay = build_interiorgs_object_index(
+            scene_dir / "labels.json",
+            splat_path=splat,
+            structure_path=scene_dir / "structure.json",
+        )
+
+        assert first == replay
+        assert first["schema_version"] == "object_index.v2"
+        assert [item["label"] for item in first["objects"]] == sorted(
+            item["label"] for item in first["objects"]
+        )
+        pot = next(item for item in first["objects"] if item["id"] == "88")
+        assert len(pot["orientedBoundingBox"]["corners_world_m"]) == 8
+        assert pot["boundingBox"]["kind"] == "conservative_world_aabb"
+        assert first["scene_structure"] == {
+            "room_count": 2,
+            "wall_count": 2,
+            "hole_count": 1,
+            "source_digest": first["provenance"]["source_files"]["structure"]["sha256"],
+        }
+        for source in first["provenance"]["source_files"].values():
+            assert source["sha256"].startswith("sha256:")
+            assert len(source["sha256"]) == 71
+            assert source["size_bytes"] > 0
+        assert first["claim_boundary"]["raw_capture_authority"] is False
+        assert first["claim_boundary"]["collision_or_physics_authority"] is False
+        assert first["claim_boundary"]["comparative_policy_ranking_verdict"] == (
+            "thesis_not_supported"
+        )
 
 
 # ----------------------------- structure -----------------------------

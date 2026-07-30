@@ -24,11 +24,33 @@ SPLAT_SUFFIXES = {".ply", ".spz"}
 DEFAULT_MAX_PROMPTS = 32
 DEFAULT_QUALITY = "medium"
 MIN_EXTENT_M = 0.02
+MAX_PLY_HEADER_BYTES = 1024 * 1024
+STANDARD_3DGS_VERTEX_PROPERTIES = {
+    "x",
+    "y",
+    "z",
+    "opacity",
+    "scale_0",
+    "scale_1",
+    "scale_2",
+    "rot_0",
+    "rot_1",
+    "rot_2",
+    "rot_3",
+    "f_dc_0",
+    "f_dc_1",
+    "f_dc_2",
+}
 CLAIM_BOUNDARY = {
     "artifact_purpose": "model_derived_3dgs_object_index_support",
     "source_is_gaussian_splat": True,
     "raw_capture_truth_preserved": True,
     "objects_are_model_derived_candidates": True,
+    "box_center_depth_sampling_is_approximate": True,
+    "depth_extent_is_inferred_not_observed": True,
+    "object_orientation_is_not_estimated": True,
+    "metric_oriented_box_validated": False,
+    "input_axis_convention_validated": False,
     "relationships_are_advisory_candidates": True,
     "robot_spawn_validated": False,
     "collision_or_contact_validated": False,
@@ -188,6 +210,83 @@ def _iter_mapping_paths(value: Any) -> Iterable[tuple[str, Any]]:
                 yield str(index), raw
     elif isinstance(value, str):
         yield "default", value
+
+
+def inspect_splat_analyzer_input(path: Path) -> Dict[str, Any]:
+    """Classify whether upstream Splat Analyzer can directly load an exact local asset."""
+
+    suffix = path.suffix.lower()
+    if suffix == ".spz":
+        return {
+            "input_profile": "spz",
+            "direct_splat_analyzer_compatible": True,
+            "world_axis_convention_verified": False,
+            "conversion_required": False,
+        }
+    if suffix != ".ply":
+        return {
+            "input_profile": "unsupported_splat_container",
+            "direct_splat_analyzer_compatible": False,
+            "world_axis_convention_verified": False,
+            "conversion_required": True,
+            "reason": "unsupported_splat_container",
+        }
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(MAX_PLY_HEADER_BYTES + 1)
+    except OSError as exc:
+        return {
+            "input_profile": "unreadable_ply",
+            "direct_splat_analyzer_compatible": False,
+            "world_axis_convention_verified": False,
+            "conversion_required": True,
+            "reason": f"ply_header_read_failed:{exc}",
+        }
+    marker = b"end_header"
+    marker_index = header.find(marker)
+    if marker_index < 0 or marker_index > MAX_PLY_HEADER_BYTES:
+        return {
+            "input_profile": "invalid_or_oversized_ply_header",
+            "direct_splat_analyzer_compatible": False,
+            "world_axis_convention_verified": False,
+            "conversion_required": True,
+            "reason": "ply_end_header_missing_within_limit",
+        }
+    header_text = header[: marker_index + len(marker)].decode("ascii", errors="replace")
+    properties = {
+        parts[2]
+        for line in header_text.splitlines()
+        if len(parts := line.strip().split()) == 3 and parts[0] == "property"
+    }
+    is_supersplat_compressed = {
+        "packed_position",
+        "packed_rotation",
+        "packed_scale",
+        "packed_color",
+    }.issubset(properties)
+    standard_missing = sorted(STANDARD_3DGS_VERTEX_PROPERTIES - properties)
+    compatible = not standard_missing and not is_supersplat_compressed
+    profile = (
+        "supersplat_chunked_compressed_ply"
+        if is_supersplat_compressed
+        else "standard_3dgs_ply"
+        if compatible
+        else "unknown_or_incomplete_ply"
+    )
+    result: Dict[str, Any] = {
+        "input_profile": profile,
+        "direct_splat_analyzer_compatible": compatible,
+        "world_axis_convention_verified": False,
+        "conversion_required": not compatible,
+        "missing_standard_properties": standard_missing,
+    }
+    if not compatible:
+        result["reason"] = "splat_analyzer_requires_standard_uncompressed_3dgs_properties"
+        result["required_next_step"] = (
+            "create_hash_bound_standard_3dgs_ply_derivative_and_record_source_digest_"
+            "conversion_runtime_digest_and_explicit_world_axis_transform"
+        )
+    return result
 
 
 def discover_splat_assets(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -520,7 +619,12 @@ def normalize_interactions(
                     "extents": _extents(raw),
                     "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                     "orientationQuaternion": [1.0, 0.0, 0.0, 0.0],
+                    "kind": "rough_axis_aligned_interaction_volume_candidate",
                 },
+                "bounding_box_role": "visualization_only_rough_interaction_volume",
+                "metric_placement_ready": False,
+                "physics_ready": False,
+                "geometry_source_class": "box_center_depth_proxy",
                 "mean_confidence": round(max(0.0, min(1.0, mean_confidence)), 4),
                 "confidence": round(max(0.0, min(1.0, confidence)), 4),
                 "n_total_detections": max(1, len(frames)),
@@ -546,7 +650,7 @@ def normalize_interactions(
                         "score_count": len(scores),
                     },
                     "canonical_truth": False,
-                    "presentation_only": False,
+                    "presentation_only": True,
                     "claim_boundary": dict(CLAIM_BOUNDARY),
                 },
             }
@@ -705,6 +809,14 @@ def _load_interactions_after_run(
             "reason": "splat_analyzer_command_not_configured",
             "execution_mode": mode,
         }
+    input_preflight = inspect_splat_analyzer_input(splat_path)
+    if input_preflight.get("direct_splat_analyzer_compatible") is not True:
+        return {}, {
+            "backend_status": "skipped",
+            "reason": "splat_analyzer_input_conversion_required",
+            "execution_mode": "input_preflight",
+            "input_preflight": input_preflight,
+        }
     try:
         proc = subprocess.run(command, check=False, text=True, capture_output=True, cwd=str(cwd) if cwd else None)
     except OSError as exc:
@@ -772,7 +884,10 @@ def run_splat_analyzer_backend(payload: Mapping[str, Any], *, output_path: Path)
             "claim_boundary": dict(CLAIM_BOUNDARY),
         }
     prompt = ", ".join(prompts)
-    asset_record = assets[0]
+    asset_record = dict(assets[0])
+    asset_record["input_preflight"] = inspect_splat_analyzer_input(
+        Path(str(asset_record.get("path"))).resolve()
+    )
     interactions_payload, execution = _load_interactions_after_run(
         asset_record=asset_record,
         prompt=prompt,

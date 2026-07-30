@@ -34,6 +34,7 @@ METHOD_KINDS = {
     "simready_usd_composition",
     "generated_visual_completion",
     "manual_owner_attested_correction",
+    "precomputed_external_reconstruction_import",
 }
 REPRESENTATIONS = {
     "decoded_observation_frames",
@@ -151,9 +152,7 @@ def build_reconstruction_method_profile(value: Mapping[str, Any]) -> dict[str, A
     profile["required_capture_authority_profiles"] = _strings(
         profile.get("required_capture_authority_profiles")
     )
-    profile["required_claim_ceiling_flags"] = _strings(
-        profile.get("required_claim_ceiling_flags")
-    )
+    profile["required_claim_ceiling_flags"] = _strings(profile.get("required_claim_ceiling_flags"))
     profile["qualified_claim_types"] = _strings(profile.get("qualified_claim_types"))
     if not isinstance(profile.get("execution_authorized"), bool):
         errors.append("execution_authorized:must_be_boolean")
@@ -230,8 +229,7 @@ def plan_reconstruction_methods(
                 reason = "provider_not_permitted"
             elif (
                 profile["required_capture_authority_profiles"]
-                and capture_authority_profile
-                not in profile["required_capture_authority_profiles"]
+                and capture_authority_profile not in profile["required_capture_authority_profiles"]
             ):
                 reason = "capture_authority_profile_not_supported"
             elif any(
@@ -239,11 +237,15 @@ def plan_reconstruction_methods(
                 for flag in profile["required_claim_ceiling_flags"]
             ):
                 reason = "required_capture_evidence_missing"
-            elif representation in {
-                "physics_layer",
-                "collision_geometry",
-                "articulated_object_asset",
-            } and profile["qualification_status"] != "qualified":
+            elif (
+                representation
+                in {
+                    "physics_layer",
+                    "collision_geometry",
+                    "articulated_object_asset",
+                }
+                and profile["qualification_status"] != "qualified"
+            ):
                 reason = "method_not_qualified_for_physics_output"
             elif profile["method_kind"] == "generated_visual_completion" and (
                 representation in GENERATED_FORBIDDEN_CLAIM_OUTPUTS
@@ -340,7 +342,9 @@ def plan_reconstruction_methods(
             "capture_digest": capture_digest,
             "capture_authority_profile": capture_authority_profile,
         },
-        "requested_claim_types": sorted({_text(item) for item in requested_claim_types if _text(item)}),
+        "requested_claim_types": sorted(
+            {_text(item) for item in requested_claim_types if _text(item)}
+        ),
         "required_representations": required,
         "selected_methods": selected,
         "missing_representations": missing,
@@ -366,7 +370,13 @@ def normalize_reconstruction_result(value: Mapping[str, Any]) -> dict[str, Any]:
     if supplied_schema not in (None, RESULT_SCHEMA_VERSION):
         errors.append("schema_version:mismatch")
     result["schema_version"] = RESULT_SCHEMA_VERSION
-    for key in ("result_id", "method_id", "method_version", "provider_identity", "runtime_identity"):
+    for key in (
+        "result_id",
+        "method_id",
+        "method_version",
+        "provider_identity",
+        "runtime_identity",
+    ):
         if not _text(result.get(key)):
             errors.append(f"{key}:missing")
     for key in (
@@ -399,8 +409,10 @@ def normalize_reconstruction_result(value: Mapping[str, Any]) -> dict[str, Any]:
     asset_references = result.get("asset_references")
     if isinstance(asset_references, Mapping):
         for key, reference in asset_references.items():
-            if not isinstance(reference, Mapping) or not _text(reference.get("uri")) or not _is_digest(
-                reference.get("digest")
+            if (
+                not isinstance(reference, Mapping)
+                or not _text(reference.get("uri"))
+                or not _is_digest(reference.get("digest"))
             ):
                 errors.append(f"asset_references.{key}:binding_invalid")
     for key in ("observed_regions", "generated_regions", "invalid_regions"):
@@ -410,7 +422,10 @@ def normalize_reconstruction_result(value: Mapping[str, Any]) -> dict[str, Any]:
     if generated and not all(_text(row.get("mask_reference")) for row in generated):
         errors.append("generated_regions:mask_reference_required")
     if generated and any(item in outputs for item in GENERATED_FORBIDDEN_CLAIM_OUTPUTS):
-        if result.get("claim_ceiling", {}).get("generated_regions_excluded_from_physics") is not True:
+        if (
+            result.get("claim_ceiling", {}).get("generated_regions_excluded_from_physics")
+            is not True
+        ):
             errors.append("generated_regions:physics_exclusion_required")
     trajectory_intersections = [
         row for row in generated if row.get("intersects_planned_trajectory") is True
@@ -483,7 +498,9 @@ def decide_simready_assets(
     required = bool(set(claims).intersection(PHYSICS_DEPENDENT_CLAIMS))
     assets = _rows(asset_candidates)
     decisions: list[dict[str, Any]] = []
-    for task_object in sorted(_rows(list(task_objects)), key=lambda item: _text(item.get("object_id"))):
+    for task_object in sorted(
+        _rows(list(task_objects)), key=lambda item: _text(item.get("object_id"))
+    ):
         object_id = _text(task_object.get("object_id"))
         if not object_id:
             raise ReconstructionContractError(["task_objects.object_id:missing"])
@@ -524,7 +541,9 @@ def decide_simready_assets(
                 )
             ):
                 verified.append(asset)
-        verified.sort(key=lambda item: (_text(item.get("asset_digest")), _text(item.get("asset_uri"))))
+        verified.sort(
+            key=lambda item: (_text(item.get("asset_digest")), _text(item.get("asset_uri")))
+        )
         selected = verified[0] if verified else None
         decisions.append(
             {
@@ -549,7 +568,9 @@ def decide_simready_assets(
                     "penetration",
                     "reprojection",
                     "independent_physics_properties",
-                ] if required else [],
+                ]
+                if required
+                else [],
             }
         )
     artifact = {
@@ -558,9 +579,9 @@ def decide_simready_assets(
         "capture_digest": capture_digest,
         "requested_claim_types": claims,
         "object_decisions": decisions,
-        "status": "blocked_missing_asset" if any(
-            row["status"] == "required_missing" for row in decisions
-        ) else "complete",
+        "status": "blocked_missing_asset"
+        if any(row["status"] == "required_missing" for row in decisions)
+        else "complete",
         "proof_boundary": {
             "visual_realism_proves_physics": False,
             "provider_output_self_qualifies": False,
@@ -685,7 +706,9 @@ def score_robot_placements(
         "rejected_candidates": rejected,
         "selected_candidate_id": selected["candidate_id"] if selected else None,
         "status": "candidate_selected" if selected else "abstained",
-        "next_cheapest_experiment": None if selected else {
+        "next_cheapest_experiment": None
+        if selected
+        else {
             "kind": "targeted_recapture_or_measurement",
             "instruction": "Capture the complete proposed robot placement area, access path, support surface, approach direction, and human clearance, then re-score exact candidates.",
         },

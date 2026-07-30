@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import subprocess
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -11,11 +14,13 @@ from PIL import Image
 
 from blueprint_pipeline import live_pipeline_intake_service as service
 from blueprint_pipeline.capture_intake import validate_capture_intake_envelope
+from blueprint_pipeline.capture_upload_intake import process_capture_upload_submission
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
 from blueprint_pipeline.local_reconstruction_adapters import (
     LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER,
     LOCAL_DECODED_OBSERVATION_ADAPTER,
+    LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER,
 )
 from blueprint_pipeline.reconstruction_control_plane import (
     ReconstructionControlPlaneError,
@@ -150,6 +155,90 @@ def _seed_capture_store(root: Path) -> tuple[str, str, str]:
     return session_id, intake_id, capture_digest
 
 
+def _seed_external_reconstruction_store(root: Path) -> tuple[str, str, str]:
+    session_id = "capture-session-external-1"
+    intake_id = "intake-external-1"
+    asset = (
+        b"ply\n"
+        b"format ascii 1.0\n"
+        b"element vertex 2\n"
+        b"property float x\n"
+        b"property float y\n"
+        b"property float z\n"
+        b"property uchar red\n"
+        b"property uchar green\n"
+        b"property uchar blue\n"
+        b"end_header\n"
+        b"0 0 0 255 0 0\n1 1 1 0 255 0\n"
+    )
+    submission = {
+        "schema_version": "capture_upload_transfer_submission.v1",
+        "capture_session_id": session_id,
+        "customer_id": "customer-1",
+        "organization_id": "org-1",
+        "request": {
+            "schema_version": "capture_upload_session_request.v1",
+            "intake_id": intake_id,
+            "idempotency_key": "org-1-intake-external-1",
+            "capture_authority_profile": "precomputed_external_reconstruction",
+            "source_type": "precomputed_external_reconstruction",
+            "scene_id": "scene-1",
+            "original_file": {
+                "original_filename": "polycam_pointcloud.ply",
+                "size_bytes": len(asset),
+                "media_type": "application/octet-stream",
+            },
+            "capture_device": {"manufacturer": "fixture", "model": "provider"},
+            "timing_declaration": {"status": "not_included_in_import"},
+            "coordinate_frame_declaration": {"status": "provider_declared_unverified"},
+            "available_sensor_streams": [
+                {"stream_type": "external_reconstruction", "status": "available"}
+            ],
+            "source_capture_binding": {
+                "source_capture_digest": "sha256:" + "b" * 64,
+                "provider_identity": "fixture-provider",
+            },
+            "governance": {
+                "rights": "accepted",
+                "consent": "accepted",
+                "privacy": "restricted_local_only",
+                "retention": {"max_days": 30},
+                "revocation": {
+                    "supported": True,
+                    "historical_tombstone_retained": True,
+                },
+                "provider_constraints": {"external_processing_allowed": False},
+                "allowed_uses": ["evaluation"],
+            },
+            "requested_task_evaluation_run_audience": "design_partner",
+            "known_task_specification": None,
+            "calibration_board_dimensions": None,
+            "operator_notes": [],
+            "permitted_reconstruction_providers": ["local_only"],
+            "permitted_evidence_uses": ["appearance_review"],
+        },
+        "transfer": {
+            "provider": "backblaze",
+            "url": "https://download.example.test/private/polycam_pointcloud.ply",
+            "authorization": "short-lived-test-grant",
+            "expires_at_iso": (
+                datetime.now(timezone.utc) + timedelta(minutes=10)
+            ).isoformat(),
+        },
+    }
+    receipt = process_capture_upload_submission(
+        submission,
+        store_root=root,
+        allowed_hosts=["download.example.test"],
+        transfer_opener=lambda **_kwargs: closing(io.BytesIO(asset)),
+        malware_scanner=lambda _path: {
+            "status": "passed",
+            "scanner": "fixture-clam",
+        },
+    )
+    return session_id, intake_id, str(receipt["capture_digest"])
+
+
 def _stub_media_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "blueprint_pipeline.local_reconstruction_adapters.shutil.which",
@@ -158,7 +247,9 @@ def _stub_media_tools(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         if command[-1] == "-version":
-            return subprocess.CompletedProcess(command, 0, f"{Path(command[0]).name} version test\n", "")
+            return subprocess.CompletedProcess(
+                command, 0, f"{Path(command[0]).name} version test\n", ""
+            )
         if "-show_frames" in command:
             return subprocess.CompletedProcess(
                 command,
@@ -186,9 +277,7 @@ def _stub_media_tools(monkeypatch: pytest.MonkeyPatch) -> None:
         Image.new("RGB", (8, 8), color=(40, 20, 10)).save(Path(command[-1]), format="PNG")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(
-        "blueprint_pipeline.local_reconstruction_adapters.subprocess.run", fake_run
-    )
+    monkeypatch.setattr("blueprint_pipeline.local_reconstruction_adapters.subprocess.run", fake_run)
 
 
 def test_plan_authorize_execute_and_inspect_local_decoded_observations(
@@ -248,12 +337,17 @@ def test_plan_authorize_execute_and_inspect_local_decoded_observations(
     assert executed["cost_usd"] == 0.0
     assert executed["results"][0]["outputs"] == ["decoded_observation_frames"]
     assert executed["results"][0]["claim_ceiling"]["metric_geometry"] is False
-    assert executed["proof_boundary"]["comparative_policy_ranking_verdict"] == "thesis_not_supported"
-    assert execute_reconstruction_plan(
-        state_root=state,
-        capture_store_root=store,
-        plan_id=planned["plan_id"],
-    )["already_exists"] is True
+    assert (
+        executed["proof_boundary"]["comparative_policy_ranking_verdict"] == "thesis_not_supported"
+    )
+    assert (
+        execute_reconstruction_plan(
+            state_root=state,
+            capture_store_root=store,
+            plan_id=planned["plan_id"],
+        )["already_exists"]
+        is True
+    )
 
     inspection = inspect_reconstruction_plan(state_root=state, plan_id=planned["plan_id"])
     assert inspection["state"] == "completed"
@@ -265,6 +359,70 @@ def test_plan_authorize_execute_and_inspect_local_decoded_observations(
         execution_result_digest=executed["execution_result_digest"],
     )
     assert compilation_inputs["reconstruction_plan"] == planned["reconstruction_plan"]
+    assert compilation_inputs["reconstruction_results"] == executed["results"]
+
+
+def test_external_reconstruction_import_executes_as_partial_appearance_only(
+    tmp_path: Path,
+) -> None:
+    store = tmp_path / "capture-store"
+    state = tmp_path / "state"
+    session_id, intake_id, asset_digest = _seed_external_reconstruction_store(store)
+    planned = prepare_reconstruction_plan(
+        state_root=state,
+        capture_store_root=store,
+        capture_session_id=session_id,
+        intake_id=intake_id,
+        requested_claim_types=["appearance_review"],
+        idempotency_key="plan-external-1",
+    )
+
+    assert planned["state"] == "authorization_required"
+    assert planned["authorization_candidates"] == [
+        {
+            "method_id": "local_external_reconstruction_import",
+            "method_profile_digest": planned["reconstruction_plan"]["selected_methods"][0][
+                "method_profile_digest"
+            ],
+            "adapter_reference": LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER,
+            "execution_authorized": False,
+        }
+    ]
+    assert (
+        planned["reconstruction_plan"]["missing_representations"][0]["representation"]
+        == "decoded_observation_frames"
+    )
+    authorization = authorize_reconstruction_plan(
+        state_root=state,
+        plan_id=planned["plan_id"],
+        reconstruction_plan_digest=planned["reconstruction_plan"]["reconstruction_plan_digest"],
+        authorized_adapter_references=[LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER],
+        actor={"role": "operator", "identity": "operator-1"},
+        idempotency_key="authorize-external-1",
+    )
+    assert authorization["paid_compute_authorized"] is False
+
+    executed = execute_reconstruction_plan(
+        state_root=state,
+        capture_store_root=store,
+        plan_id=planned["plan_id"],
+    )
+    assert executed["state"] == "partial"
+    assert executed["missing_representations"] == ["decoded_observation_frames"]
+    assert executed["results"][0]["capture_digest"] == asset_digest
+    assert executed["results"][0]["outputs"] == ["appearance_layer"]
+    assert executed["results"][0]["claim_ceiling"]["metric_geometry"] is False
+    assert executed["results"][0]["claim_ceiling"]["collision_geometry"] is False
+    assert executed["results"][0]["claim_ceiling"]["physical_task_success"] is False
+    assert (
+        executed["proof_boundary"]["comparative_policy_ranking_verdict"] == "thesis_not_supported"
+    )
+    compilation_inputs = load_reconstruction_compilation_inputs(
+        state_root=state,
+        capture_store_root=store,
+        plan_id=planned["plan_id"],
+        execution_result_digest=executed["execution_result_digest"],
+    )
     assert compilation_inputs["reconstruction_results"] == executed["results"]
 
 

@@ -8,10 +8,40 @@ from blueprint_pipeline.scene_placement import (
     build_perception_view,
     build_perception_views,
     build_perception_views_from_frames,
+    depth_payload_digest,
     depth_provider_from_map,
     detections_from_sam3,
     generate_view_ring,
+    qualify_metric_depth_evidence,
 )
+
+
+_DIGEST = "sha256:" + "a" * 64
+
+
+def _metric_depth_evidence(frame_id: str, depth_map=None) -> dict:
+    depth_map = depth_map if depth_map is not None else [[3.0, 3.0], [3.0, 3.0]]
+    return {
+        "source_capture_digest": _DIGEST,
+        "retained_frame_digest": "sha256:" + "b" * 64,
+        "depth_digest": "sha256:" + "c" * 64,
+        "depth_payload_digest": depth_payload_digest(depth_map),
+        "camera_calibration_digest": "sha256:" + "d" * 64,
+        "camera_pose_digest": "sha256:" + "e" * 64,
+        "sync_map_row_digest": "sha256:" + "f" * 64,
+        "depth_authority_profile": "iphone_arkit_lidar",
+        "units": "meters",
+        "depth_semantics": "z_depth",
+        "metric_scale_verified": True,
+        "frame_id": frame_id,
+        "decoded_pts_seconds": 1.25,
+        "camera_calibration_ref": "raw/arkit/intrinsics.json#frame-1",
+        "camera_pose_ref": "raw/arkit/poses.jsonl#frame-1",
+        "depth_confidence_ref": "raw/arkit/depth_confidence.bin#frame-1",
+        "depth_confidence_digest": "sha256:" + "1" * 64,
+        "translation_uncertainty_m": 0.02,
+        "reprojection_error_px": 0.8,
+    }
 
 
 # ----------------------------- detections_from_sam3 -----------------------------
@@ -84,10 +114,50 @@ def test_build_perception_view_shape() -> None:
     recs = [{"label": "faucet", "bbox_px": (300, 220, 340, 260), "confidence": 0.9}]
     depth_map = [[3.0, 3.0], [3.0, 3.0]]
     view = build_perception_view(cam, recs, depth_map)
-    assert set(view.keys()) == {"detections", "depth_provider", "camera", "samples_per_axis"}
+    assert set(view.keys()) == {
+        "detections",
+        "depth_provider",
+        "camera",
+        "samples_per_axis",
+        "metric_placement_authorized",
+        "depth_qualification",
+    }
     assert view["detections"][0]["label"] == "faucet"
     assert callable(view["depth_provider"])
     assert view["depth_provider"](320, 240) == 3.0
+    assert view["metric_placement_authorized"] is False
+    assert "source_capture_digest_missing_or_invalid" in view["depth_qualification"]["blockers"]
+
+
+def test_metric_depth_qualification_is_source_bound_and_fail_closed() -> None:
+    depth_map = [[3.0, 3.0], [3.0, 3.0]]
+    observed_digest = depth_payload_digest(depth_map)
+    qualified = qualify_metric_depth_evidence(
+        _metric_depth_evidence("frame-1", depth_map),
+        observed_depth_payload_digest=observed_digest,
+    )
+    assert qualified["metric_placement_authorized"] is True
+    assert qualified["blockers"] == []
+
+    stale = _metric_depth_evidence("frame-1", depth_map)
+    stale["depth_digest"] = "not-a-digest"
+    stale["metric_scale_verified"] = False
+    rejected = qualify_metric_depth_evidence(
+        stale,
+        observed_depth_payload_digest=observed_digest,
+    )
+    assert rejected["metric_placement_authorized"] is False
+    assert rejected["blockers"] == [
+        "depth_digest_missing_or_invalid",
+        "metric_scale_not_verified",
+    ]
+
+    mismatched = qualify_metric_depth_evidence(
+        _metric_depth_evidence("frame-1", depth_map),
+        observed_depth_payload_digest=depth_payload_digest([[9.0]]),
+    )
+    assert mismatched["metric_placement_authorized"] is False
+    assert mismatched["blockers"] == ["depth_payload_digest_mismatch"]
 
 
 def test_build_perception_view_requires_camera_resolution() -> None:
@@ -99,6 +169,13 @@ def test_build_perception_views_length_mismatch_raises() -> None:
     cams = [_cam((0, -3, 1), (0, 0, 1)), _cam((3, 0, 1), (0, 0, 1))]
     with pytest.raises(ValueError):
         build_perception_views(cams, [[]], [[[1.0]], [[1.0]]])
+    with pytest.raises(ValueError):
+        build_perception_views(
+            cams,
+            [[], []],
+            [[[1.0]], [[1.0]]],
+            depth_evidence_per_view=[_metric_depth_evidence("frame-1")],
+        )
 
 
 def test_end_to_end_sam3_da3_to_fused_object() -> None:
@@ -114,12 +191,42 @@ def test_end_to_end_sam3_da3_to_fused_object() -> None:
         [{"label": "faucet", "bbox_xyxy": (0.45, 0.42, 0.55, 0.58), "score": 0.9}],
     ]
     depth_maps = [[[3.0, 3.0], [3.0, 3.0]], [[3.0, 3.0], [3.0, 3.0]]]
-    views = build_perception_views(cams, recs_per_view, depth_maps)
+    views = build_perception_views(
+        cams,
+        recs_per_view,
+        depth_maps,
+        depth_evidence_per_view=[
+            _metric_depth_evidence("frame-1", depth_maps[0]),
+            _metric_depth_evidence("frame-2", depth_maps[1]),
+        ],
+    )
     objs = MultiViewPerceptionSceneSpatialIndex(views, merge_gap=0.3, min_views=1).objects()
     assert len(objs) == 1
     assert objs[0].extra["n_views"] == 2
     for i in range(3):
         assert objs[0].centroid[i] == pytest.approx(center[i], abs=1e-6)
+    assert objs[0].extra["metric_placement_authorized"] is True
+
+
+def test_unqualified_numeric_depth_cannot_drive_default_placement() -> None:
+    cam = _cam((0.0, -3.0, 1.0), (0.0, 0.0, 1.0))
+    views = build_perception_views(
+        [cam],
+        [[{"label": "faucet", "bbox_xyxy": (0.45, 0.42, 0.55, 0.58)}]],
+        [[[3.0, 3.0], [3.0, 3.0]]],
+    )
+    index = MultiViewPerceptionSceneSpatialIndex(views)
+    assert index.objects() == []
+    report = index.qualification_report()
+    assert report["placement_authorized"] is False
+    assert report["qualified_metric_view_count"] == 0
+
+    diagnostic = MultiViewPerceptionSceneSpatialIndex(
+        views,
+        require_metric_authority=False,
+    ).objects()
+    assert len(diagnostic) == 1
+    assert diagnostic[0].extra["metric_placement_authorized"] is False
 
 
 def test_build_views_from_frames_with_injected_models() -> None:
@@ -140,5 +247,15 @@ def test_build_views_from_frames_with_injected_models() -> None:
     views = build_perception_views_from_frames(frames, cams, detect=fake_detect, depth=fake_depth)
     assert len(views) == 3 and seen == frames           # ran detect once per frame, in order
     assert all(v["detections"][0]["label"] == "sink" for v in views)
+    assert all(v["metric_placement_authorized"] is False for v in views)
     with pytest.raises(ValueError):
         build_perception_views_from_frames(frames, cams[:2], detect=fake_detect, depth=fake_depth)
+
+    qualified_views = build_perception_views_from_frames(
+        frames,
+        cams,
+        detect=fake_detect,
+        depth=fake_depth,
+        depth_evidence=lambda frame, depth_map: _metric_depth_evidence(frame, depth_map),
+    )
+    assert all(view["metric_placement_authorized"] is True for view in qualified_views)

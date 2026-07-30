@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -11,8 +12,10 @@ from blueprint_pipeline import local_reconstruction_adapters as adapters
 from blueprint_pipeline.local_reconstruction_adapters import (
     LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER,
     LOCAL_DECODED_OBSERVATION_ADAPTER,
+    LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER,
     LocalArkitMetricScaffoldAdapter,
     LocalDecodedObservationAdapter,
+    LocalExternalReconstructionImportAdapter,
     LocalReconstructionAdapterError,
     authorized_local_reconstruction_adapter_registry,
     decoded_observation_method_profile,
@@ -44,7 +47,9 @@ def _stub_media_tools(
 
     def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         if command[-1] == "-version":
-            return subprocess.CompletedProcess(command, 0, f"{Path(command[0]).name} version test\n", "")
+            return subprocess.CompletedProcess(
+                command, 0, f"{Path(command[0]).name} version test\n", ""
+            )
         if "-show_frames" in command:
             return subprocess.CompletedProcess(
                 command,
@@ -81,9 +86,7 @@ def _stub_media_tools(
         Image.new("RGB", (64, 48), color=(value * 40, 20, 10)).save(output, format="PNG")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(
-        "blueprint_pipeline.local_reconstruction_adapters.subprocess.run", fake_run
-    )
+    monkeypatch.setattr("blueprint_pipeline.local_reconstruction_adapters.subprocess.run", fake_run)
 
 
 def test_ordinary_video_plans_decoded_observations_not_calibration() -> None:
@@ -100,12 +103,8 @@ def test_ordinary_video_plans_decoded_observations_not_calibration() -> None:
 
     assert plan["status"] == "planned"
     assert plan["required_representations"] == ["decoded_observation_frames"]
-    assert plan["selected_methods"][0]["representations"] == [
-        "decoded_observation_frames"
-    ]
-    assert plan["selected_methods"][0]["adapter_reference"] == (
-        LOCAL_DECODED_OBSERVATION_ADAPTER
-    )
+    assert plan["selected_methods"][0]["representations"] == ["decoded_observation_frames"]
+    assert plan["selected_methods"][0]["adapter_reference"] == (LOCAL_DECODED_OBSERVATION_ADAPTER)
     assert "calibrated_frames" not in plan["required_representations"]
 
 
@@ -358,11 +357,16 @@ def test_arkit_metric_scaffold_requires_exact_v32_bindings(
 def test_local_reconstruction_registry_is_empty_by_default() -> None:
     assert authorized_local_reconstruction_adapter_registry([]) == {}
     authorized = authorized_local_reconstruction_adapter_registry(
-        [LOCAL_DECODED_OBSERVATION_ADAPTER, LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER]
+        [
+            LOCAL_DECODED_OBSERVATION_ADAPTER,
+            LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER,
+            LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER,
+        ]
     )
     assert list(authorized) == [
         LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER,
         LOCAL_DECODED_OBSERVATION_ADAPTER,
+        LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER,
     ]
     with pytest.raises(
         LocalReconstructionAdapterError, match="local_reconstruction_adapter_not_registered"
@@ -474,3 +478,159 @@ def test_decoded_observation_treats_malicious_filename_as_opaque_data(
 
     assert result["claim_ceiling"]["captured_observation"] is True
     assert not (tmp_path / "owned").exists()
+
+
+def test_external_reconstruction_import_binds_ply_without_authority_upgrade(
+    tmp_path: Path,
+) -> None:
+    payload = (
+        b"ply\n"
+        b"format ascii 1.0\n"
+        b"element vertex 2\n"
+        b"property float x\n"
+        b"property float y\n"
+        b"property float z\n"
+        b"property uchar red\n"
+        b"property uchar green\n"
+        b"property uchar blue\n"
+        b"element face 0\n"
+        b"property list uchar int vertex_indices\n"
+        b"end_header\n"
+        b"0 0 0 255 0 0\n1 1 1 0 255 0\n"
+    )
+    capture_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    asset = tmp_path / "objects" / capture_digest[7:]
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(payload)
+    adapter = LocalExternalReconstructionImportAdapter()
+
+    result = adapter.execute(
+        intake_id="intake-external-1",
+        capture_digest=capture_digest,
+        source_capture_binding={
+            "source_capture_digest": "sha256:" + "b" * 64,
+            "provider_identity": "mushroom-polycam",
+        },
+        capture_root=tmp_path,
+        asset_relative_path=str(asset.relative_to(tmp_path)),
+        original_filename="polycam_pointcloud.ply",
+        output_root=tmp_path / "derived",
+        rights_and_retention={"privacy": "restricted_local_only"},
+        coordinate_frame_declaration={"status": "provider_declared_unverified"},
+    )
+    replay = adapter.execute(
+        intake_id="intake-external-1",
+        capture_digest=capture_digest,
+        source_capture_binding={
+            "source_capture_digest": "sha256:" + "b" * 64,
+            "provider_identity": "mushroom-polycam",
+        },
+        capture_root=tmp_path,
+        asset_relative_path=str(asset.relative_to(tmp_path)),
+        original_filename="polycam_pointcloud.ply",
+        output_root=tmp_path / "derived",
+        rights_and_retention={"privacy": "restricted_local_only"},
+        coordinate_frame_declaration={"status": "provider_declared_unverified"},
+    )
+
+    assert result == replay
+    assert result["outputs"] == ["appearance_layer"]
+    assert result["source_capture_binding"]["source_capture_digest"] == ("sha256:" + "b" * 64)
+    assert result["validation_metrics"]["ply_header"]["elements"] == {
+        "face": 0,
+        "vertex": 2,
+    }
+    assert result["claim_ceiling"]["appearance_review"] is True
+    assert result["claim_ceiling"]["raw_capture_authority"] is False
+    assert result["claim_ceiling"]["captured_observation"] is False
+    assert result["claim_ceiling"]["metric_geometry"] is False
+    assert result["claim_ceiling"]["collision_geometry"] is False
+    assert result["claim_ceiling"]["physical_task_success"] is False
+    assert result["claim_ceiling"]["comparative_policy_ranking_verdict"] == "thesis_not_supported"
+
+    with pytest.raises(LocalReconstructionAdapterError, match="format_not_supported"):
+        adapter.execute(
+            intake_id="intake-external-1",
+            capture_digest=capture_digest,
+            source_capture_binding={"source_capture_digest": "sha256:" + "b" * 64},
+            capture_root=tmp_path,
+            asset_relative_path=str(asset.relative_to(tmp_path)),
+            original_filename="scene.glb",
+            output_root=tmp_path / "other-derived",
+            rights_and_retention={},
+            coordinate_frame_declaration={},
+        )
+
+
+def test_external_reconstruction_import_accepts_supersplat_compressed_3dgs(
+    tmp_path: Path,
+) -> None:
+    header = (
+        b"ply\n"
+        b"format binary_little_endian 1.0\n"
+        b"element chunk 1\n"
+        b"property float min_x\nproperty float min_y\nproperty float min_z\n"
+        b"property float max_x\nproperty float max_y\nproperty float max_z\n"
+        b"element vertex 1\n"
+        b"property uint packed_position\n"
+        b"property uint packed_rotation\n"
+        b"property uint packed_scale\n"
+        b"property uint packed_color\n"
+        b"element sh 1\n"
+        b"property uchar f_rest_0\n"
+        b"end_header\n"
+    )
+    payload = header + (b"\x00" * 41)
+    capture_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    asset = tmp_path / "3dgs_compressed.ply"
+    asset.write_bytes(payload)
+
+    result = LocalExternalReconstructionImportAdapter().execute(
+        intake_id="intake-interiorgs-1",
+        capture_digest=capture_digest,
+        source_capture_binding={
+            "source_capture_digest": "sha256:" + "c" * 64,
+            "provider_identity": "interiorgs",
+        },
+        capture_root=tmp_path,
+        asset_relative_path=asset.name,
+        original_filename=asset.name,
+        output_root=tmp_path / "derived",
+        rights_and_retention={"allowed_use": "noncommercial_research_only"},
+        coordinate_frame_declaration={
+            "axes": {"x": "right", "y": "back", "z": "up"},
+            "units": "meters",
+            "status": "dataset_declared_unverified",
+        },
+    )
+
+    ply = result["validation_metrics"]["ply_header"]
+    assert ply["representation_profile"] == "supersplat_compressed_3dgs"
+    assert ply["elements"] == {"chunk": 1, "sh": 1, "vertex": 1}
+    assert result["outputs"] == ["appearance_layer"]
+    assert result["claim_ceiling"]["metric_geometry"] is False
+    assert result["claim_ceiling"]["collision_geometry"] is False
+    assert result["claim_ceiling"]["physical_task_success"] is False
+    assert result["claim_ceiling"]["comparative_policy_ranking_verdict"] == (
+        "thesis_not_supported"
+    )
+
+    colorless = tmp_path / "colorless.ply"
+    colorless_payload = (
+        b"ply\nformat ascii 1.0\nelement vertex 1\n"
+        b"property float x\nproperty float y\nproperty float z\n"
+        b"end_header\n0 0 0\n"
+    )
+    colorless.write_bytes(colorless_payload)
+    with pytest.raises(LocalReconstructionAdapterError, match="ply_vertex_color_missing"):
+        LocalExternalReconstructionImportAdapter().execute(
+            intake_id="intake-external-2",
+            capture_digest="sha256:" + hashlib.sha256(colorless_payload).hexdigest(),
+            source_capture_binding={"source_capture_digest": "sha256:" + "b" * 64},
+            capture_root=tmp_path,
+            asset_relative_path=colorless.name,
+            original_filename=colorless.name,
+            output_root=tmp_path / "colorless-derived",
+            rights_and_retention={},
+            coordinate_frame_declaration={},
+        )
