@@ -56,6 +56,9 @@ class SupervisorContext:
     # callable is never serialized into prompts and receives only digest-bound
     # arguments plus a supervisor-owned output directory.
     reconstruction_dataset_compiler: Any | None = None
+    arkit_metric_scaffold_compiler: Any | None = None
+    arkit_reconstruction_dataset_request: Mapping[str, Any] | None = None
+    arkit_reconstruction_dataset_exporter: Any | None = None
     native_360_normalizer: Any | None = None
     equirectangular_virtual_rig_compiler: Any | None = None
     # Phase 4 reconstruction workers receive already-validated typed requests.

@@ -38,6 +38,16 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
     "iphone_arkit_lidar": (
         ("verify_arkit_raw_contract", "capture_validation", "required_deterministic_gate"),
         ("compile_arkit_metric_scaffold", "lidar_depth_fusion", "registered_conditional"),
+        (
+            "export_arkit_reconstruction_dataset",
+            "calibrated_dataset_export",
+            "registered_conditional",
+        ),
+        (
+            "refine_arkit_anchored_poses",
+            "pose_refinement",
+            "required_not_registered",
+        ),
         ("train_pose_conditioned_3dgs", "gaussian_splat_3d", "required_not_registered"),
         ("validate_testbed_layers", "testbed_compilation", "required_deterministic_gate"),
     ),

@@ -19,6 +19,9 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 
 
 ARKIT_RECONSTRUCTION_DATASET_SCHEMA_VERSION = "arkit_reconstruction_dataset_export.v1"
+ARKIT_RECONSTRUCTION_DATASET_REQUEST_SCHEMA_VERSION = (
+    "arkit_reconstruction_dataset_export_request.v1"
+)
 CAMERA_OBSERVATION_SCHEMA_VERSION = "camera_observation_manifest.v1"
 CAMERA_CALIBRATION_SCHEMA_VERSION = "camera_calibration_manifest.v1"
 POSE_REFINEMENT_REQUEST_SCHEMA_VERSION = "pose_refinement_request.v1"
@@ -28,6 +31,85 @@ class ArkitReconstructionDatasetError(ValueError):
     def __init__(self, codes: Sequence[str]) -> None:
         self.codes = tuple(sorted(set(str(code) for code in codes if str(code))))
         super().__init__("; ".join(self.codes))
+
+
+def build_arkit_reconstruction_dataset_export_request(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate and digest-bind the trusted input to the ARKit exporter."""
+
+    request = json.loads(canonical_json(dict(value)))
+    errors: list[str] = []
+    if request.get("schema_version") != ARKIT_RECONSTRUCTION_DATASET_REQUEST_SCHEMA_VERSION:
+        errors.append("arkit_export_request_schema_invalid")
+    if not str(request.get("intake_id") or "").strip() or not _is_digest(
+        request.get("source_capture_digest")
+    ):
+        errors.append("arkit_export_request_source_binding_invalid")
+    if not _is_digest(request.get("implementation_digest")):
+        errors.append("arkit_export_request_implementation_invalid")
+    source_commit_sha = str(request.get("source_commit_sha") or "")
+    if len(source_commit_sha) != 40 or any(
+        character not in "0123456789abcdef" for character in source_commit_sha
+    ):
+        errors.append("arkit_export_request_source_commit_invalid")
+    for key in (
+        "dataset_manifest",
+        "split_manifest",
+        "candidate_manifest",
+        "metric_scaffold",
+        "authority_used",
+    ):
+        if not isinstance(request.get(key), Mapping):
+            errors.append(f"arkit_export_request_{key}_invalid")
+    if not _is_digest(request.get("metric_scaffold_digest")):
+        errors.append("arkit_export_request_metric_scaffold_digest_invalid")
+    if not str(request.get("timestamp") or "").strip():
+        errors.append("arkit_export_request_timestamp_missing")
+    if isinstance(request.get("candidate_manifest"), Mapping) and request[
+        "candidate_manifest"
+    ].get("heldout_pixels_included") is not False:
+        errors.append("arkit_export_request_hidden_heldout_exposed")
+    if not errors:
+        _validate_source_artifacts(
+            capture_digest=request["source_capture_digest"],
+            dataset=request["dataset_manifest"],
+            split=request["split_manifest"],
+            candidate=request["candidate_manifest"],
+            scaffold=request["metric_scaffold"],
+            scaffold_digest=request["metric_scaffold_digest"],
+        )
+    supplied_digest = request.pop("arkit_export_request_digest", None)
+    request["arkit_export_request_digest"] = canonical_digest(
+        request, digest_field="arkit_export_request_digest"
+    )
+    if supplied_digest is not None and supplied_digest != request["arkit_export_request_digest"]:
+        errors.append("arkit_export_request_digest_mismatch")
+    if errors:
+        raise ArkitReconstructionDatasetError(errors)
+    return request
+
+
+def export_bound_arkit_reconstruction_dataset(
+    *, source_artifact: Mapping[str, Any], output_root: str | Path
+) -> dict[str, Any]:
+    """Execute the local exporter from a validated, immutable request."""
+
+    request = build_arkit_reconstruction_dataset_export_request(source_artifact)
+    return compile_arkit_reconstruction_dataset(
+        output_root=output_root,
+        intake_id=request["intake_id"],
+        capture_digest=request["source_capture_digest"],
+        dataset_manifest=request["dataset_manifest"],
+        split_manifest=request["split_manifest"],
+        candidate_manifest=request["candidate_manifest"],
+        metric_scaffold=request["metric_scaffold"],
+        metric_scaffold_digest=request["metric_scaffold_digest"],
+        implementation_digest=request["implementation_digest"],
+        source_commit_sha=request["source_commit_sha"],
+        authority_used=request["authority_used"],
+        timestamp=request.get("timestamp"),
+    )
 
 
 def _is_digest(value: Any) -> bool:
@@ -317,9 +399,12 @@ def compile_arkit_reconstruction_dataset(
 
 __all__ = [
     "ARKIT_RECONSTRUCTION_DATASET_SCHEMA_VERSION",
+    "ARKIT_RECONSTRUCTION_DATASET_REQUEST_SCHEMA_VERSION",
     "ArkitReconstructionDatasetError",
     "CAMERA_CALIBRATION_SCHEMA_VERSION",
     "CAMERA_OBSERVATION_SCHEMA_VERSION",
     "POSE_REFINEMENT_REQUEST_SCHEMA_VERSION",
+    "build_arkit_reconstruction_dataset_export_request",
     "compile_arkit_reconstruction_dataset",
+    "export_bound_arkit_reconstruction_dataset",
 ]

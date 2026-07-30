@@ -13,6 +13,9 @@ import re
 from typing import Any, Callable, Mapping, Sequence
 
 from ..common import write_json
+from ..arkit_reconstruction_dataset import (
+    build_arkit_reconstruction_dataset_export_request,
+)
 from ..decision_evidence_contracts import canonical_digest
 from ..decision_evidence_router import route_decision_evidence
 from ..evaluation_run_contract import validate_evaluation_run_spec
@@ -28,6 +31,7 @@ from ..reconstruction_geometry_contracts import (
     build_nurec_openusd_packaging_request,
     build_nurec_openusd_packaging_result,
 )
+from ..reconstruction_capability import normalize_reconstruction_result
 from ..reconstruction_worker_contracts import (
     build_pose_estimation_request,
     build_pose_estimation_result,
@@ -99,6 +103,34 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "split_digest": {"type": "string"},
             "hidden_heldout_isolated": {"const": True},
             "candidate_can_change_split": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "compile_arkit_metric_scaffold": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "reconstruction_result_digest": {"type": "string"},
+            "metric_scaffold_digest": {"type": "string"},
+            "arkit_export_digest": {"type": "string"},
+            "decoded_pts_verified": {"const": True},
+            "raw_arkit_poses_modified": {"const": False},
+            "metric_scale_independently_validated": {"const": False},
+            "claim_ceiling": {"const": "sensor_declared_metric_scaffold"},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "export_arkit_reconstruction_dataset": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "arkit_export_digest": {"type": "string"},
+            "camera_calibration_digest": {"type": "string"},
+            "camera_observation_digest": {"type": "string"},
+            "pose_refinement_request_digest": {"type": "string"},
+            "hidden_heldout_pixels_included": {"const": False},
+            "raw_arkit_poses_modified": {"const": False},
+            "claim_ceiling": {"const": "calibrated_camera_trajectory"},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -425,6 +457,36 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
             minimum_mode="execute_non_spend",
             timeout_seconds=300.0,
+        ),
+        _descriptor(
+            "compile_arkit_metric_scaffold",
+            "arkit_metric_scaffold_compilation",
+            expected_artifacts=["reconstruction_result.v1", "arkit_metric_scaffold.v1"],
+            input_properties={
+                "capture_build_digest": {"type": "string"},
+                "capture_reconstruction_route_digest": {"type": "string"},
+            },
+            required_inputs=[
+                "capture_build_digest",
+                "capture_reconstruction_route_digest",
+            ],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=1_800.0,
+            idempotency="content_addressed_raw_contract_3_2_compilation",
+        ),
+        _descriptor(
+            "export_arkit_reconstruction_dataset",
+            "arkit_reconstruction_dataset_export",
+            expected_artifacts=["arkit_reconstruction_dataset_export.v1"],
+            input_properties={"arkit_export_request_digest": {"type": "string"}},
+            required_inputs=["arkit_export_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=600.0,
+            idempotency="content_addressed_candidate_only_export",
         ),
         _descriptor(
             "normalize_native_360_capture",
@@ -937,6 +999,8 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
         "compile_frozen_frame_dataset",
+        "compile_arkit_metric_scaffold",
+        "export_arkit_reconstruction_dataset",
         "normalize_native_360_capture",
         "compile_equirectangular_virtual_rig",
         "run_pose_estimation",
@@ -1344,6 +1408,202 @@ def _compile_frozen_frame_dataset(
             "artifact_path": str(path.relative_to(Path(root_value))),
             "artifact_digest": dataset_digest,
             "artifact_type": "reconstruction_dataset_manifest.v1",
+        }
+    ]
+
+
+def _capture_reconstruction_route_for_tool(
+    *, context: Any, arguments: Mapping[str, Any], required_profile: str
+) -> tuple[Mapping[str, Any], dict[str, Any]]:
+    capture_build = context.capture_build
+    expected_capture_digest = arguments.get("capture_build_digest")
+    actual_capture_digest = (
+        capture_build.get("capture_build_digest")
+        if isinstance(capture_build, Mapping)
+        else None
+    )
+    claim_types = sorted(
+        {
+            str(row.get("claim_type") or "").strip()
+            for row in (
+                context.decision_request.get("claims", [])
+                if isinstance(context.decision_request, Mapping)
+                else []
+            )
+            if isinstance(row, Mapping) and str(row.get("claim_type") or "").strip()
+        }
+    )
+    route = (
+        build_capture_reconstruction_route(
+            capture_build, requested_claim_types=claim_types
+        )
+        if isinstance(capture_build, Mapping)
+        and expected_capture_digest
+        and expected_capture_digest == actual_capture_digest
+        else None
+    )
+    if (
+        route is None
+        or route.get("status") != "route_proposed"
+        or route.get("capture_authority_profile") != required_profile
+        or arguments.get("capture_reconstruction_route_digest")
+        != route.get("capture_reconstruction_route_digest")
+    ):
+        raise ValueError("registered_tool_reconstruction_route_binding_mismatch")
+    return capture_build, route
+
+
+def _compile_arkit_metric_scaffold(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    compiler = getattr(context, "arkit_metric_scaffold_compiler", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError(
+            "registered_tool_execution_scope_missing:compile_arkit_metric_scaffold"
+        )
+    if not callable(compiler):
+        raise ValueError("arkit_metric_scaffold_compiler_not_injected")
+    _, route = _capture_reconstruction_route_for_tool(
+        context=context,
+        arguments=arguments,
+        required_profile="iphone_arkit_lidar",
+    )
+    output_root = Path(root_value) / "generated" / "arkit_metric_scaffold"
+    emitted = compiler(
+        request={
+            "capture_build_digest": route["capture_build_digest"],
+            "capture_reconstruction_route_digest": route[
+                "capture_reconstruction_route_digest"
+            ],
+            "capture_authority_profile": "iphone_arkit_lidar",
+            "requested_claim_types": route["requested_claim_types"],
+        },
+        output_root=output_root,
+    )
+    if not isinstance(emitted, Mapping):
+        raise ValueError("arkit_metric_scaffold_compiler_result_not_object")
+    try:
+        result = normalize_reconstruction_result(emitted)
+    except ValueError as exc:
+        raise ValueError("arkit_metric_scaffold_compiler_result_contract_invalid") from exc
+    assets = result.get("asset_references")
+    metrics = result.get("validation_metrics")
+    claim_ceiling = result.get("claim_ceiling")
+    metric_reference = assets.get("metric_scaffold") if isinstance(assets, Mapping) else None
+    export_reference = (
+        assets.get("arkit_reconstruction_dataset_export")
+        if isinstance(assets, Mapping)
+        else None
+    )
+    if (
+        result.get("method_id") != "local_arkit_metric_scaffold"
+        or not isinstance(metric_reference, Mapping)
+        or not isinstance(export_reference, Mapping)
+        or not isinstance(metrics, Mapping)
+        or metrics.get("decoded_pts_verified") is not True
+        or metrics.get("pose_refinement_executed") is not False
+        or metrics.get("independent_metric_scale_validation_passed") is not False
+        or not isinstance(claim_ceiling, Mapping)
+        or claim_ceiling.get("calibrated_camera_poses") is not True
+        or claim_ceiling.get("sensor_declared_metric_scale") is not True
+        or claim_ceiling.get("metric_scale") is not False
+        or claim_ceiling.get("metric_reference_layer") is not False
+        or claim_ceiling.get("collision_geometry") is not False
+        or claim_ceiling.get("physical_task_success") is not False
+    ):
+        raise ValueError("arkit_metric_scaffold_compiler_result_contract_invalid")
+    result_digest = result["reconstruction_result_digest"]
+    path = write_phase2_artifact(
+        root_value,
+        "generated/arkit_metric_scaffold/reconstruction_result.json",
+        result,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "reconstruction_result_digest": result_digest,
+        "metric_scaffold_digest": metric_reference["digest"],
+        "arkit_export_digest": export_reference["digest"],
+        "decoded_pts_verified": True,
+        "raw_arkit_poses_modified": False,
+        "metric_scale_independently_validated": False,
+        "claim_ceiling": "sensor_declared_metric_scaffold",
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": result_digest,
+            "artifact_type": "reconstruction_result.v1",
+        }
+    ]
+
+
+def _export_arkit_reconstruction_dataset(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    source_value = getattr(context, "arkit_reconstruction_dataset_request", None)
+    exporter = getattr(context, "arkit_reconstruction_dataset_exporter", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError(
+            "registered_tool_execution_scope_missing:export_arkit_reconstruction_dataset"
+        )
+    if not isinstance(source_value, Mapping) or not callable(exporter):
+        raise ValueError("arkit_reconstruction_dataset_exporter_not_injected")
+    try:
+        request = build_arkit_reconstruction_dataset_export_request(source_value)
+    except ValueError as exc:
+        raise ValueError("arkit_export_request_contract_invalid") from exc
+    expected_digest = arguments.get("arkit_export_request_digest")
+    if expected_digest != request["arkit_export_request_digest"]:
+        raise ValueError("registered_tool_source_digest_mismatch:export_arkit_reconstruction_dataset")
+    output_root = Path(root_value) / "generated" / "arkit_reconstruction_dataset_export"
+    emitted = exporter(source_artifact=request, output_root=output_root)
+    if not isinstance(emitted, Mapping):
+        raise ValueError("arkit_reconstruction_dataset_export_result_not_object")
+    result = dict(emitted)
+    result_digest = result.get("arkit_reconstruction_dataset_export_digest")
+    if (
+        result.get("schema_version") != "arkit_reconstruction_dataset_export.v1"
+        or result_digest
+        != canonical_digest(
+            result, digest_field="arkit_reconstruction_dataset_export_digest"
+        )
+        or result.get("source_capture_digest") != request["source_capture_digest"]
+        or result.get("reconstruction_dataset_digest")
+        != request["dataset_manifest"].get("dataset_manifest_digest")
+        or result.get("frozen_split_digest")
+        != request["split_manifest"].get("split_digest")
+        or result.get("metric_scaffold_digest") != request["metric_scaffold_digest"]
+        or result.get("hidden_heldout_pixels_included") is not False
+        or result.get("raw_arkit_poses_modified") is not False
+        or result.get("metric_scale_validation_status") != "not_executed"
+        or result.get("proof_effect") != "calibrated_reconstruction_request_only"
+        or result.get("claim_ceiling") != "calibrated_camera_trajectory"
+    ):
+        raise ValueError("arkit_reconstruction_dataset_export_result_contract_invalid")
+    path = write_phase2_artifact(
+        root_value,
+        "generated/arkit_reconstruction_dataset_export/arkit_reconstruction_dataset_export.json",
+        result,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "arkit_export_digest": result_digest,
+        "camera_calibration_digest": result["camera_calibration_digest"],
+        "camera_observation_digest": result["camera_observation_digest"],
+        "pose_refinement_request_digest": result["pose_refinement_request_digest"],
+        "hidden_heldout_pixels_included": False,
+        "raw_arkit_poses_modified": False,
+        "claim_ceiling": "calibrated_camera_trajectory",
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": result_digest,
+            "artifact_type": "arkit_reconstruction_dataset_export.v1",
         }
     ]
 
@@ -1928,6 +2188,12 @@ def _bound_artifact(
         }
     elif tool_id == "compile_frozen_frame_dataset":
         return _compile_frozen_frame_dataset(context=context, arguments=arguments)
+    elif tool_id == "compile_arkit_metric_scaffold":
+        return _compile_arkit_metric_scaffold(context=context, arguments=arguments)
+    elif tool_id == "export_arkit_reconstruction_dataset":
+        return _export_arkit_reconstruction_dataset(
+            context=context, arguments=arguments
+        )
     elif tool_id == "normalize_native_360_capture":
         return _normalize_native_360_capture(context=context, arguments=arguments)
     elif tool_id == "compile_equirectangular_virtual_rig":
@@ -2020,6 +2286,17 @@ def non_spend_tool_bindings(
     for tool_id in _CAPABILITY_TOOL_IDS.get(capability, ()):
         if tool_id == "compile_frozen_frame_dataset" and not callable(
             getattr(context, "reconstruction_dataset_compiler", None)
+        ):
+            continue
+        if tool_id == "compile_arkit_metric_scaffold" and not callable(
+            getattr(context, "arkit_metric_scaffold_compiler", None)
+        ):
+            continue
+        if tool_id == "export_arkit_reconstruction_dataset" and (
+            not callable(getattr(context, "arkit_reconstruction_dataset_exporter", None))
+            or not isinstance(
+                getattr(context, "arkit_reconstruction_dataset_request", None), Mapping
+            )
         ):
             continue
         if tool_id == "normalize_native_360_capture" and not callable(

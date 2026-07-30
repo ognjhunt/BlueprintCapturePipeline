@@ -8,11 +8,25 @@ import jsonschema
 import pytest
 
 from blueprint_pipeline.arkit_reconstruction_dataset import (
+    ARKIT_RECONSTRUCTION_DATASET_REQUEST_SCHEMA_VERSION,
     ArkitReconstructionDatasetError,
+    build_arkit_reconstruction_dataset_export_request,
     compile_arkit_reconstruction_dataset,
+    export_bound_arkit_reconstruction_dataset,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_frame_dataset import compile_frozen_frame_dataset
+from blueprint_pipeline.task_evaluation_supervisor import (
+    AutonomyMode,
+    SupervisorContext,
+    ToolRegistry,
+    build_capture_reconstruction_route,
+    load_capture_build_ingress,
+)
+from blueprint_pipeline.task_evaluation_supervisor.supervisor import (
+    default_authority_envelope,
+)
+from blueprint_pipeline.task_evaluation_supervisor.tools import non_spend_tool_bindings
 
 
 CAPTURE_DIGEST = "sha256:" + "a" * 64
@@ -192,3 +206,178 @@ def test_arkit_export_rejects_pixel_calibration_and_digest_spoofing(tmp_path: Pa
             candidate_manifest=candidate,
             metric_scaffold_digest="sha256:" + "9" * 64,
         )
+
+
+def test_registered_arkit_export_is_digest_bound_and_candidate_only(tmp_path: Path) -> None:
+    dataset, split, candidate, scaffold, scaffold_digest = _source_artifacts(
+        tmp_path / "source"
+    )
+    request = build_arkit_reconstruction_dataset_export_request(
+        {
+            "schema_version": ARKIT_RECONSTRUCTION_DATASET_REQUEST_SCHEMA_VERSION,
+            "intake_id": "intake-1",
+            "source_capture_digest": CAPTURE_DIGEST,
+            "dataset_manifest": dataset,
+            "split_manifest": split,
+            "candidate_manifest": candidate,
+            "metric_scaffold": scaffold,
+            "metric_scaffold_digest": scaffold_digest,
+            "implementation_digest": IMPLEMENTATION_DIGEST,
+            "source_commit_sha": SOURCE_COMMIT,
+            "authority_used": {"external_processing": False},
+            "timestamp": "2026-07-30T12:00:00Z",
+        }
+    )
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/arkit_reconstruction_dataset.v1.schema.json"
+        ).read_text()
+    )
+    jsonschema.Draft202012Validator(schema).validate(request)
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="arkit-export-tool",
+        customer_question="Export candidate-only ARKit observations.",
+        supervisor_output_dir=str(tmp_path / "run"),
+        arkit_reconstruction_dataset_request=request,
+        arkit_reconstruction_dataset_exporter=export_bound_arkit_reconstruction_dataset,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[request["arkit_export_request_digest"]],
+    ).to_mapping()
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+    }
+
+    observation = bindings["export_arkit_reconstruction_dataset"].invoke(
+        {"arkit_export_request_digest": request["arkit_export_request_digest"]}
+    )
+
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["hidden_heldout_pixels_included"] is False
+    assert observation["typed_result"]["raw_arkit_poses_modified"] is False
+    assert observation["typed_result"]["claim_ceiling"] == "calibrated_camera_trajectory"
+    refused = bindings["export_arkit_reconstruction_dataset"].invoke(
+        {"arkit_export_request_digest": "sha256:" + "9" * 64}
+    )
+    assert refused["status"] == "refused"
+    assert "source_digest_mismatch" in refused["typed_failure"]["reason"]
+
+
+def test_registered_arkit_scaffold_cannot_promote_sensor_scale(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    (capture_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint_raw_capture_manifest.v1",
+                "capture_id": "capture-arkit",
+                "scene_id": "scene-arkit",
+                "capture_authority_profile": "iphone_arkit_lidar",
+                "capture_modality": "iphone_arkit_lidar",
+            }
+        ),
+        encoding="utf-8",
+    )
+    capture_build = load_capture_build_ingress(capture_root)
+    route = build_capture_reconstruction_route(capture_build)
+
+    def compiler(*, request: dict, output_root: Path) -> dict:
+        assert request["capture_authority_profile"] == "iphone_arkit_lidar"
+        assert output_root.name == "arkit_metric_scaffold"
+        return {
+            "result_id": "arkit-scaffold-fixture",
+            "intake_id": "intake-1",
+            "capture_digest": CAPTURE_DIGEST,
+            "method_id": "local_arkit_metric_scaffold",
+            "method_version": "1",
+            "method_profile_digest": "sha256:" + "2" * 64,
+            "implementation_digest": IMPLEMENTATION_DIGEST,
+            "provider_identity": "local",
+            "runtime_identity": "fixture-runtime",
+            "runtime_digest": RUNTIME_DIGEST,
+            "outputs": ["calibrated_frames", "metric_reference_layer"],
+            "source_frames": {},
+            "camera_solution": {"status": "raw_contract_3_2_verified"},
+            "coordinate_system": {"units": "meters"},
+            "asset_references": {
+                "metric_scaffold": {"uri": "local://scaffold", "digest": scaffold_digest},
+                "arkit_reconstruction_dataset_export": {
+                    "uri": "local://export",
+                    "digest": "sha256:" + "3" * 64,
+                },
+            },
+            "coverage_map": {},
+            "observed_regions": [],
+            "generated_regions": [],
+            "uncertainty_map": {},
+            "invalid_regions": [],
+            "validation_metrics": {
+                "decoded_pts_verified": True,
+                "pose_refinement_executed": False,
+                "independent_metric_scale_validation_passed": False,
+            },
+            "cost_usd": 0.0,
+            "duration_seconds": 0.0,
+            "rights_and_retention": {"external_processing": False},
+            "claim_ceiling": {
+                "calibrated_camera_poses": True,
+                "sensor_declared_metric_scale": True,
+                "metric_scale": False,
+                "metric_reference_layer": False,
+                "collision_geometry": False,
+                "physical_task_success": False,
+            },
+        }
+
+    scaffold_digest = "sha256:" + "1" * 64
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="arkit-scaffold-tool",
+        customer_question="Compile the strict ARKit scaffold.",
+        capture_build=capture_build,
+        supervisor_output_dir=str(tmp_path / "run"),
+        arkit_metric_scaffold_compiler=compiler,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[capture_build["capture_build_digest"]],
+    ).to_mapping()
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+    }
+
+    observation = bindings["compile_arkit_metric_scaffold"].invoke(
+        {
+            "capture_build_digest": capture_build["capture_build_digest"],
+            "capture_reconstruction_route_digest": route[
+                "capture_reconstruction_route_digest"
+            ],
+        }
+    )
+
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["decoded_pts_verified"] is True
+    assert observation["typed_result"]["metric_scale_independently_validated"] is False
+    assert observation["typed_result"]["claim_ceiling"] == (
+        "sensor_declared_metric_scaffold"
+    )
+    assert observation["proof_effect"] == "none"

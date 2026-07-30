@@ -125,13 +125,21 @@ depth/confidence references. FFmpeg extraction explicitly disables display
 autorotation, records the extracted pixel dimensions, and refuses the export
 when those encoded pixels do not match the declared intrinsics.
 
-The compiler emits `camera_calibration_manifest.v1`,
+The compiler accepts a digest-bound
+`arkit_reconstruction_dataset_export_request.v1` and emits
+`camera_calibration_manifest.v1`,
 `camera_observation_manifest.v1`, `pose_refinement_request.v1`, and
 `arkit_reconstruction_dataset_export.v1`. Their shared Draft 2020-12 contract is
 `docs/schemas/arkit_reconstruction_dataset.v1.schema.json`. The candidate
 observation manifest contains training and validation paths only. It cannot
 change raw ARKit poses or the frozen split, cannot read held-out pixels, and
 cannot enable undeclared distortion or rolling-shutter models.
+
+Both `compile_arkit_metric_scaffold` and
+`export_arkit_reconstruction_dataset` are registered SDK tools. Their real
+implementations stay in trusted runtime state; the agent sees only the capture
+route digest or export-request digest. The tool observations cannot change
+proof state, calibration, raw poses, or split membership.
 
 The pose-refinement request remains deterministically blocked because a
 repository-approved drift threshold and executable anchored bundle-adjustment

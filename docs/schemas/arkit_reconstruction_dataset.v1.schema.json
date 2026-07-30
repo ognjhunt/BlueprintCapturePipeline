@@ -3,6 +3,7 @@
   "$id": "https://schemas.blueprint.ai/arkit_reconstruction_dataset.v1.schema.json",
   "title": "Blueprint ARKit Reconstruction Dataset Contracts v1",
   "oneOf": [
+    {"$ref": "#/$defs/export_request"},
     {"$ref": "#/$defs/export"},
     {"$ref": "#/$defs/calibration"},
     {"$ref": "#/$defs/observations"},
@@ -17,6 +18,35 @@
         "type": "array", "minItems": 4, "maxItems": 4,
         "items": {"type": "number"}
       }
+    },
+    "export_request": {
+      "type": "object",
+      "required": [
+        "schema_version", "intake_id", "source_capture_digest", "dataset_manifest",
+        "split_manifest", "candidate_manifest", "metric_scaffold",
+        "metric_scaffold_digest", "implementation_digest", "source_commit_sha",
+        "authority_used", "timestamp", "arkit_export_request_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "arkit_reconstruction_dataset_export_request.v1"},
+        "intake_id": {"type": "string", "minLength": 1},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "dataset_manifest": {"type": "object"},
+        "split_manifest": {"type": "object"},
+        "candidate_manifest": {
+          "type": "object",
+          "required": ["heldout_pixels_included"],
+          "properties": {"heldout_pixels_included": {"const": false}}
+        },
+        "metric_scaffold": {"type": "object"},
+        "metric_scaffold_digest": {"$ref": "#/$defs/sha256"},
+        "implementation_digest": {"$ref": "#/$defs/sha256"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "authority_used": {"type": "object"},
+        "timestamp": {"type": "string", "minLength": 1},
+        "arkit_export_request_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
     },
     "calibration": {
       "type": "object",
