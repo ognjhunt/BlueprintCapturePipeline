@@ -167,6 +167,7 @@ class ValidatedSupervisorArtifact:
     _canonical: str
     SCHEMA_VERSION: ClassVar[str]
     DIGEST_FIELD: ClassVar[str]
+    ALLOWED_FIELDS: ClassVar[frozenset[str]]
 
     @classmethod
     def from_mapping(cls: type[_ArtifactT], value: Mapping[str, Any]) -> _ArtifactT:
@@ -174,6 +175,9 @@ class ValidatedSupervisorArtifact:
             raise SupervisorContractError(["artifact:not_mapping"])
         normalized = _clone(value)
         errors: list[str] = []
+        unexpected = sorted(set(normalized) - cls.ALLOWED_FIELDS)
+        if unexpected:
+            errors.append(f"unexpected_fields:{','.join(unexpected)}")
         if _string(normalized.get("schema_version")) != cls.SCHEMA_VERSION:
             errors.append(f"schema_version:must_be:{cls.SCHEMA_VERSION}")
         errors.extend(cls._validation_errors(normalized))
@@ -203,6 +207,30 @@ class ValidatedSupervisorArtifact:
 class AuthorityEnvelope(ValidatedSupervisorArtifact):
     SCHEMA_VERSION: ClassVar[str] = AUTHORITY_ENVELOPE_SCHEMA_VERSION
     DIGEST_FIELD: ClassVar[str] = "authority_digest"
+    ALLOWED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "schema_version",
+            "authority_id",
+            "mode",
+            "allowed_tool_ids",
+            "max_cost_usd",
+            "agent_inference_budget_usd",
+            "agent_inference_allowed",
+            "action_spend_allowed",
+            "max_duration_seconds",
+            "max_retries",
+            "expires_at",
+            "preauthorization_receipt_digest",
+            "immutable_input_digests",
+            "proof_mutation_allowed",
+            "rights_mutation_allowed",
+            "budget_mutation_allowed",
+            "hidden_labels_accessible",
+            "physical_action_allowed",
+            "external_processing_allowed",
+            "authority_digest",
+        }
+    )
 
     @classmethod
     def _validation_errors(cls, value: Mapping[str, Any]) -> list[str]:
@@ -275,6 +303,29 @@ class AuthorityEnvelope(ValidatedSupervisorArtifact):
 class ToolDescriptor(ValidatedSupervisorArtifact):
     SCHEMA_VERSION: ClassVar[str] = TOOL_DESCRIPTOR_SCHEMA_VERSION
     DIGEST_FIELD: ClassVar[str] = "tool_digest"
+    ALLOWED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "schema_version",
+            "tool_id",
+            "version",
+            "category",
+            "mutability",
+            "idempotency",
+            "input_schema",
+            "output_schema",
+            "expected_artifacts",
+            "max_cost_usd",
+            "timeout_seconds",
+            "max_retries",
+            "safety_level",
+            "required_authority",
+            "allowed_modes",
+            "proof_effect",
+            "evidence_requirements",
+            "rollback",
+            "tool_digest",
+        }
+    )
 
     @classmethod
     def _validation_errors(cls, value: Mapping[str, Any]) -> list[str]:
@@ -343,6 +394,31 @@ class ToolObservation(ValidatedSupervisorArtifact):
 
     SCHEMA_VERSION: ClassVar[str] = TOOL_OBSERVATION_SCHEMA_VERSION
     DIGEST_FIELD: ClassVar[str] = "observation_digest"
+    ALLOWED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "schema_version",
+            "run_id",
+            "capability",
+            "tool_id",
+            "tool_version",
+            "status",
+            "typed_result",
+            "typed_failure",
+            "produced_artifact_references",
+            "input_digest",
+            "output_digest",
+            "runtime_identity",
+            "mutability",
+            "cost_usd",
+            "duration_seconds",
+            "retries",
+            "authority_digest",
+            "proof_effect",
+            "warnings",
+            "suggested_next_legal_actions",
+            "observation_digest",
+        }
+    )
 
     @classmethod
     def _validation_errors(cls, value: Mapping[str, Any]) -> list[str]:
@@ -467,6 +543,23 @@ class ToolObservation(ValidatedSupervisorArtifact):
 class ActionProposal(ValidatedSupervisorArtifact):
     SCHEMA_VERSION: ClassVar[str] = ACTION_PROPOSAL_SCHEMA_VERSION
     DIGEST_FIELD: ClassVar[str] = "proposal_digest"
+    ALLOWED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "schema_version",
+            "proposal_id",
+            "run_id",
+            "capability",
+            "action_type",
+            "tool_id",
+            "parameters",
+            "reasons",
+            "evidence_refs",
+            "estimated_cost_usd",
+            "requested_proof_effect",
+            "disposition",
+            "proposal_digest",
+        }
+    )
 
     @classmethod
     def _validation_errors(cls, value: Mapping[str, Any]) -> list[str]:
@@ -502,6 +595,26 @@ class ActionProposal(ValidatedSupervisorArtifact):
 class CapabilityResult(ValidatedSupervisorArtifact):
     SCHEMA_VERSION: ClassVar[str] = CAPABILITY_RESULT_SCHEMA_VERSION
     DIGEST_FIELD: ClassVar[str] = "capability_result_digest"
+    ALLOWED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "schema_version",
+            "result_id",
+            "run_id",
+            "capability",
+            "status",
+            "artifact",
+            "proposals",
+            "blockers",
+            "evidence_refs",
+            "authoritative",
+            "proof_booleans_mutable",
+            "proof_effect",
+            "proposal_dispositions",
+            "structured_observations",
+            "observations_are_non_authoritative",
+            "capability_result_digest",
+        }
+    )
 
     @classmethod
     def _validation_errors(cls, value: Mapping[str, Any]) -> list[str]:
@@ -535,6 +648,21 @@ class CapabilityResult(ValidatedSupervisorArtifact):
 class SupervisorEvent(ValidatedSupervisorArtifact):
     SCHEMA_VERSION: ClassVar[str] = EVENT_SCHEMA_VERSION
     DIGEST_FIELD: ClassVar[str] = "event_digest"
+    ALLOWED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "schema_version",
+            "event_id",
+            "run_id",
+            "sequence",
+            "event_type",
+            "phase",
+            "previous_event_digest",
+            "payload_digest",
+            "proof_effect",
+            "generated_at",
+            "event_digest",
+        }
+    )
 
     @classmethod
     def _validation_errors(cls, value: Mapping[str, Any]) -> list[str]:
@@ -568,6 +696,40 @@ class SupervisorEvent(ValidatedSupervisorArtifact):
 class AgentInvocationManifest(ValidatedSupervisorArtifact):
     SCHEMA_VERSION: ClassVar[str] = INVOCATION_SCHEMA_VERSION
     DIGEST_FIELD: ClassVar[str] = "invocation_digest"
+    ALLOWED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "schema_version",
+            "invocation_id",
+            "run_id",
+            "capability",
+            "provider",
+            "model",
+            "agent_harness",
+            "agents_sdk_version",
+            "adapter_id",
+            "adapter_version",
+            "instruction_digest",
+            "tool_registry_digest",
+            "authority_digest",
+            "input_artifact_digests",
+            "budget_state",
+            "structured_output_digest",
+            "validation_status",
+            "action_taken",
+            "refusal",
+            "usage",
+            "trace_id",
+            "cost_usd",
+            "cost_status",
+            "latency_seconds",
+            "proof_effect",
+            "uncertainty",
+            "tool_observation_references",
+            "parent_event_digest",
+            "generated_at",
+            "invocation_digest",
+        }
+    )
 
     @classmethod
     def _validation_errors(cls, value: Mapping[str, Any]) -> list[str]:
@@ -632,6 +794,26 @@ class AgentInvocationManifest(ValidatedSupervisorArtifact):
 class SupervisorRun(ValidatedSupervisorArtifact):
     SCHEMA_VERSION: ClassVar[str] = RUN_SCHEMA_VERSION
     DIGEST_FIELD: ClassVar[str] = "supervisor_run_digest"
+    ALLOWED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "schema_version",
+            "run_id",
+            "customer_question",
+            "mode",
+            "authority_digest",
+            "tool_registry_digest",
+            "proof_boundary_digest",
+            "input_artifact_digests",
+            "capabilities",
+            "agent_harness",
+            "manager_agent_required",
+            "manager_adapter_id",
+            "manager_adapter_version",
+            "status",
+            "generated_at",
+            "supervisor_run_digest",
+        }
+    )
 
     @classmethod
     def _validation_errors(cls, value: Mapping[str, Any]) -> list[str]:
@@ -660,6 +842,23 @@ class SupervisorRun(ValidatedSupervisorArtifact):
 class SupervisorState(ValidatedSupervisorArtifact):
     SCHEMA_VERSION: ClassVar[str] = STATE_SCHEMA_VERSION
     DIGEST_FIELD: ClassVar[str] = "supervisor_state_digest"
+    ALLOWED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "schema_version",
+            "run_id",
+            "mode",
+            "phase",
+            "next_sequence",
+            "last_event_digest",
+            "completed_capabilities",
+            "terminal",
+            "spent_cost_usd",
+            "remaining_cost_usd",
+            "proof_state_mutated_by_agent",
+            "terminal_report_digest",
+            "supervisor_state_digest",
+        }
+    )
 
     @classmethod
     def _validation_errors(cls, value: Mapping[str, Any]) -> list[str]:
@@ -695,6 +894,39 @@ class SupervisorState(ValidatedSupervisorArtifact):
 class TerminalSupervisorReport(ValidatedSupervisorArtifact):
     SCHEMA_VERSION: ClassVar[str] = TERMINAL_REPORT_SCHEMA_VERSION
     DIGEST_FIELD: ClassVar[str] = "terminal_report_digest"
+    ALLOWED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "schema_version",
+            "run_id",
+            "status",
+            "mode",
+            "customer_question",
+            "capability_results",
+            "invocation_manifests",
+            "manager_decisions",
+            "manager_invocations",
+            "manager_terminal_reason",
+            "manager_refusals",
+            "event_count",
+            "last_event_digest",
+            "proof_boundary_digest",
+            "tool_registry_digest",
+            "blockers",
+            "authoritative_decision_source",
+            "authoritative_decision_produced_by_agent",
+            "proof_state_mutated_by_agent",
+            "actions_executed",
+            "registered_tool_reads_executed",
+            "registered_non_spend_actions_executed",
+            "registered_preauthorized_actions_executed",
+            "customer_report_path",
+            "customer_report_digest",
+            "action_spend",
+            "inference_spend",
+            "generated_at",
+            "terminal_report_digest",
+        }
+    )
 
     @classmethod
     def _validation_errors(cls, value: Mapping[str, Any]) -> list[str]:

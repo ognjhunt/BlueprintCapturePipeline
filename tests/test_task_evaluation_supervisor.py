@@ -40,10 +40,12 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     AgentsSDKInvocationResult,
     AgentsSDKInvocationBlocked,
     AgentsSDKAgentSpec,
+    AgentInvocationManifest,
     AppendOnlyEventLedger,
     AuthorityEnvelope,
     AutonomyMode,
     CapabilityKind,
+    CapabilityResult,
     CandidatePolicyError,
     InferenceReservationAudit,
     InferenceReservationError,
@@ -56,10 +58,14 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     SupervisorEvaluationError,
     SupervisorLedgerError,
     SupervisorReplayError,
+    SupervisorEvent,
+    SupervisorRun,
+    SupervisorState,
     TaskEvaluationSupervisor,
     ToolDescriptor,
     ToolObservation,
     ToolRegistry,
+    TerminalSupervisorReport,
     Phase2ArtifactError,
     PreauthorizedRecoveryController,
     PreauthorizedRecoveryPolicy,
@@ -2671,6 +2677,64 @@ def test_contracts_reject_proof_and_authority_escalation() -> None:
     )
     assert disposition == "refused"
     assert blockers == ("unregistered_tool",)
+
+
+def test_all_proof_adjacent_supervisor_artifacts_reject_recomputed_unknown_fields(
+    tmp_path: Path,
+) -> None:
+    execution = TaskEvaluationSupervisor(agents_sdk_invoker=_FixtureAgentsSDKInvoker()).run(
+        _context(),
+        output_dir=tmp_path / "exact-artifact-contracts",
+        mode=AutonomyMode.SHADOW,
+        generated_at="2026-07-30T18:00:00Z",
+    )
+    first_event = json.loads(
+        (execution.output_dir / "supervisor_events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    first_tool = ToolRegistry.default().manifest()["tools"][0]
+    first_proposal = next(
+        proposal
+        for result in execution.capability_results
+        for proposal in result.to_mapping().get("proposals") or []
+    )
+    artifacts = (
+        (
+            AuthorityEnvelope,
+            json.loads((execution.output_dir / "authority_envelope.json").read_text()),
+            "authority_digest",
+        ),
+        (ToolDescriptor, first_tool, "tool_digest"),
+        (ActionProposal, first_proposal, "proposal_digest"),
+        (
+            CapabilityResult,
+            execution.capability_results[0].to_mapping(),
+            "capability_result_digest",
+        ),
+        (SupervisorEvent, first_event, "event_digest"),
+        (
+            AgentInvocationManifest,
+            execution.invocation_manifests[0].to_mapping(),
+            "invocation_digest",
+        ),
+        (SupervisorRun, execution.run.to_mapping(), "supervisor_run_digest"),
+        (SupervisorState, execution.state.to_mapping(), "supervisor_state_digest"),
+        (
+            TerminalSupervisorReport,
+            execution.report.to_mapping(),
+            "terminal_report_digest",
+        ),
+    )
+    for contract, artifact, digest_field in artifacts:
+        tampered = dict(artifact)
+        tampered["agent_selected_authority_override"] = True
+        tampered[digest_field] = canonical_digest(tampered, digest_field=digest_field)
+        with pytest.raises(
+            SupervisorContractError,
+            match="unexpected_fields:agent_selected_authority_override",
+        ):
+            contract.from_mapping(tampered)
 
 
 def test_advise_disposition_requires_approval_but_still_enforces_tool_limits() -> None:

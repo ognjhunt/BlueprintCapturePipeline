@@ -206,6 +206,13 @@ output digest, cost ceiling, and retry ceiling. Unknown fields or a mismatched
 binding are refused before the result can be written to the event ledger; raw
 injected tool text is not preserved as evidence.
 
+The same unknown-field refusal applies to every proof-adjacent supervisor
+artifact: authority envelopes, tool descriptors, action proposals, capability
+results, events, invocation manifests, durable runs, states, and terminal
+reports. Recomputing an artifact digest does not permit an agent-selected
+authority, proof, budget, hidden-label, or deployment field to hitchhike through
+an otherwise valid contract.
+
 Observation custody belongs to Blueprint's registered binding, not to the SDK
 adapter. The binding durably records each validated result inside the run before
 returning it to the agent harness. The adapter-reported observation set must
