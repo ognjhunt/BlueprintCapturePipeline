@@ -87,6 +87,25 @@ Live SDK inference additionally requires the explicit CLI admission, a positive
 inference budget, and `BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true`. Missing
 live authority produces a typed blocker, not a fabricated local answer.
 
+For the authenticated live capture-upload service, the equivalent deployment
+envelope is configured once with:
+
+```bash
+BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK=true
+BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD=2.50
+BLUEPRINT_CAPTURE_SUPERVISOR_AGENT_MODEL=gpt-5.6-terra
+BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true
+```
+
+The first three settings select the required supervisor's exact per-capture
+execution profile; the fourth remains the shared operator gate. Service-side
+live inference is disabled by default and is capped at USD 100 per run. An
+invalid Boolean, missing or non-finite live budget, nonzero budget while live
+inference is disabled, excessive budget, or malformed model identifier fails
+closed before upload processing. The configured budget authorizes only SDK
+inference inside `execute_non_spend`; it grants no provider recovery, physical
+action, proof mutation, or deployment authority.
+
 Capture metadata and customer text are untrusted data. Standalone manifest
 filenames are normalized to `submitted_manifest.json` before the projection is
 shown to an agent; task text remains visible as data because it is needed for

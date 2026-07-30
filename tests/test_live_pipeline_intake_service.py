@@ -32,6 +32,12 @@ def _write_json(path: Path, payload: object) -> None:
 def _allow_legacy_bearer_for_existing_intake_tests(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    for name in (
+        "BLUEPRINT_CAPTURE_SUPERVISOR_AGENT_MODEL",
+        "BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK",
+        "BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, "true")
     monkeypatch.setenv(
         service.INTAKE_NONCE_STORE_DIR_ENV,
@@ -497,6 +503,9 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
         service.CAPTURE_UPLOAD_STORE_ROOT_ENV,
         str(tmp_path / "capture-intakes"),
     )
+    monkeypatch.setenv("BLUEPRINT_CAPTURE_SUPERVISOR_AGENT_MODEL", "gpt-5-mini")
+    monkeypatch.setenv("BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK", "true")
+    monkeypatch.setenv("BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD", "0.5")
     seen: dict[str, object] = {}
 
     def process(payload, *, store_root):
@@ -540,18 +549,28 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
             "qa_report_digest": report["qa_report_digest"],
         },
     )
-    monkeypatch.setattr(
-        service,
-        "run_capture_build_supervisor",
-        lambda *, capture_root: {
+    def supervise(
+        *,
+        capture_root,
+        agent_model,
+        allow_live_agents_sdk,
+        agent_inference_budget_usd,
+    ):
+        seen["supervisor_options"] = {
+            "agent_model": agent_model,
+            "allow_live_agents_sdk": allow_live_agents_sdk,
+            "agent_inference_budget_usd": agent_inference_budget_usd,
+        }
+        return {
             "schema_version": "task_evaluation_capture_supervisor_lifecycle.v3",
             "status": "blocked",
             "run_id": "capture-supervisor-fixture",
             "capture_build_alone_can_start_run": True,
             "proof_state_mutated_by_agent": False,
             "capture_root": str(capture_root),
-        },
-    )
+        }
+
+    monkeypatch.setattr(service, "run_capture_build_supervisor", supervise)
     submission = {
         "schema_version": "capture_upload_transfer_submission.v1",
         "capture_session_id": "capture-upload-session-1",
@@ -580,6 +599,47 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
     assert "download.example.test" not in response.text
     assert seen["payload"] == submission
     assert seen["store_root"] == (tmp_path / "capture-intakes").resolve()
+    assert seen["supervisor_options"] == {
+        "agent_model": "gpt-5-mini",
+        "allow_live_agents_sdk": True,
+        "agent_inference_budget_usd": 0.5,
+    }
+
+
+def test_live_pipeline_capture_upload_refuses_invalid_supervisor_execution_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "token")
+    monkeypatch.setenv(
+        CONTROL_PLANE_OUTPUT_PATH_ENV,
+        str(tmp_path / "control" / "manifest.json"),
+    )
+    monkeypatch.setenv(
+        service.CAPTURE_UPLOAD_STORE_ROOT_ENV,
+        str(tmp_path / "capture-intakes"),
+    )
+    monkeypatch.setenv("BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK", "true")
+    monkeypatch.setenv("BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD", "0")
+    processing_started = False
+
+    def process(*_args, **_kwargs):
+        nonlocal processing_started
+        processing_started = True
+        raise AssertionError("capture processing must not start with invalid supervisor authority")
+
+    monkeypatch.setattr(service, "process_capture_upload_submission", process)
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/capture-upload-intakes",
+        json={
+            "schema_version": "capture_upload_transfer_submission.v1",
+            "capture_session_id": "invalid-supervisor-config",
+        },
+        headers={"x-blueprint-intake-token": "token"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "capture supervisor execution configuration is invalid"
+    assert processing_started is False
 
 
 def test_live_pipeline_capture_upload_starts_real_replayable_supervisor(

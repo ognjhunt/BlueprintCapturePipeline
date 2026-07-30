@@ -56,7 +56,12 @@ from .inference_reservations import (
     InferenceReservationError,
 )
 from .lifecycle import (
+    CAPTURE_SUPERVISOR_AGENT_MODEL_ENV,
+    CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK_ENV,
+    CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD_ENV,
     CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION,
+    MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD,
+    capture_supervisor_execution_options_from_env,
     capture_supervisor_execution_profile,
     run_capture_build_supervisor,
 )
@@ -163,6 +168,11 @@ __all__ = [
     "CandidatePolicyError",
     "CandidatePolicyRuntime",
     "CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION",
+    "CAPTURE_SUPERVISOR_AGENT_MODEL_ENV",
+    "CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK_ENV",
+    "CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD_ENV",
+    "MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD",
+    "capture_supervisor_execution_options_from_env",
     "CaptureBuildIngressError",
     "FrozenAgenticPolicyAdapter",
     "IndependentCandidateEvaluator",

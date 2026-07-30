@@ -77,7 +77,10 @@ from .task_evaluation_method_catalog import (
     TaskEvaluationMethodCatalogError,
     load_task_evaluation_method_catalog,
 )
-from .task_evaluation_supervisor import run_capture_build_supervisor
+from .task_evaluation_supervisor import (
+    capture_supervisor_execution_options_from_env,
+    run_capture_build_supervisor,
+)
 from .task_evaluation_run_webapp_sync import (
     TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV,
 )
@@ -1674,6 +1677,13 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid JSON body") from exc
         if not isinstance(payload, Mapping):
             raise HTTPException(status_code=400, detail="expected JSON object")
+        try:
+            supervisor_options = capture_supervisor_execution_options_from_env()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="capture supervisor execution configuration is invalid",
+            ) from exc
         store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
         if not store_root_text:
             raise HTTPException(
@@ -1727,6 +1737,7 @@ def create_app() -> FastAPI:
         supervisor = await run_in_threadpool(
             run_capture_build_supervisor,
             capture_root=artifact_root / "capture_intake_envelope.json",
+            **supervisor_options,
         )
         return {
             "schema_version": "capture_upload_processing_result.v1",

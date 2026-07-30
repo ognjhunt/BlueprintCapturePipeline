@@ -163,7 +163,12 @@ after server-side admission and QA it passes the immutable
 `capture_intake_envelope.json` to the bounded ingress and returns the resulting
 supervisor lifecycle record with the upload receipt. This starts the
 clarification/blocker loop from a capture alone; it does not wait for
-reconstruction or testbed compilation and does not authorize live inference.
+reconstruction or testbed compilation. Live inference remains disabled by
+default. A deployment may preconfigure a strict model and per-run SDK budget,
+but that profile is bounded to USD 100, digest-bound into the durable run ID,
+and still requires the shared live-operator gate. Invalid service configuration
+fails before upload processing and never grants recovery, physical, proof, or
+deployment authority.
 
 There is no `--skip-task-evaluation-supervisor` control.
 

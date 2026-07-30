@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
+import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from ..agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
 from ..decision_evidence_contracts import canonical_digest
@@ -15,6 +17,54 @@ from .supervisor import TaskEvaluationSupervisor
 
 
 CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION = "task_evaluation_capture_supervisor_lifecycle.v3"
+CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK_ENV = (
+    "BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK"
+)
+CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD_ENV = (
+    "BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD"
+)
+CAPTURE_SUPERVISOR_AGENT_MODEL_ENV = "BLUEPRINT_CAPTURE_SUPERVISOR_AGENT_MODEL"
+MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD = 100.0
+
+
+def capture_supervisor_execution_options_from_env(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Load one strict service-side inference envelope for capture ingress."""
+
+    source = os.environ if environ is None else environ
+    raw_allow = str(source.get(CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK_ENV, "")).strip().lower()
+    if raw_allow in {"", "0", "false", "no", "off"}:
+        allow_live = False
+    elif raw_allow in {"1", "true", "yes", "on"}:
+        allow_live = True
+    else:
+        raise ValueError("capture_supervisor_live_agents_sdk_env_invalid")
+
+    raw_budget = str(source.get(CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD_ENV, "")).strip()
+    try:
+        budget = 0.0 if not raw_budget else float(raw_budget)
+    except ValueError as exc:
+        raise ValueError("capture_supervisor_inference_budget_invalid") from exc
+    if not math.isfinite(budget) or budget < 0:
+        raise ValueError("capture_supervisor_inference_budget_invalid")
+    if budget > MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD:
+        raise ValueError("capture_supervisor_inference_budget_exceeds_service_ceiling")
+    if allow_live and budget <= 0:
+        raise ValueError("capture_supervisor_live_inference_requires_positive_budget")
+    if not allow_live and budget != 0:
+        raise ValueError("capture_supervisor_disabled_inference_budget_must_be_zero")
+
+    model = str(source.get(CAPTURE_SUPERVISOR_AGENT_MODEL_ENV, "")).strip()
+    if not model:
+        model = DEFAULT_SUPERVISOR_AGENT_MODEL
+    if len(model) > 256 or any(ord(character) < 32 for character in model):
+        raise ValueError("capture_supervisor_agent_model_invalid")
+    return {
+        "agent_model": model,
+        "allow_live_agents_sdk": allow_live,
+        "agent_inference_budget_usd": budget,
+    }
 
 
 def capture_supervisor_execution_profile(
@@ -128,7 +178,12 @@ def run_capture_build_supervisor(
 
 
 __all__ = [
+    "CAPTURE_SUPERVISOR_AGENT_MODEL_ENV",
+    "CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK_ENV",
+    "CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD_ENV",
     "CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION",
+    "MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD",
+    "capture_supervisor_execution_options_from_env",
     "capture_supervisor_execution_profile",
     "run_capture_build_supervisor",
 ]

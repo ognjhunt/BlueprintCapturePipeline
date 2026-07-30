@@ -3018,6 +3018,46 @@ def test_capture_build_alone_enters_required_supervisor_idempotently(
     assert len(events) == 3
 
 
+def test_capture_supervisor_service_execution_options_are_strict_and_bounded() -> None:
+    assert supervisor_lifecycle.capture_supervisor_execution_options_from_env({}) == {
+        "agent_model": supervisor_lifecycle.DEFAULT_SUPERVISOR_AGENT_MODEL,
+        "allow_live_agents_sdk": False,
+        "agent_inference_budget_usd": 0.0,
+    }
+    assert supervisor_lifecycle.capture_supervisor_execution_options_from_env(
+        {
+            "BLUEPRINT_CAPTURE_SUPERVISOR_AGENT_MODEL": "gpt-5.4-mini",
+            "BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK": "true",
+            "BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD": "2.5",
+        }
+    ) == {
+        "agent_model": "gpt-5.4-mini",
+        "allow_live_agents_sdk": True,
+        "agent_inference_budget_usd": 2.5,
+    }
+
+    invalid_environments = (
+        {"BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK": "sometimes"},
+        {
+            "BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK": "true",
+            "BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD": "0",
+        },
+        {"BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD": "1"},
+        {
+            "BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK": "true",
+            "BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD": "101",
+        },
+        {
+            "BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK": "true",
+            "BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD": "nan",
+        },
+        {"BLUEPRINT_CAPTURE_SUPERVISOR_AGENT_MODEL": "bad\nmodel"},
+    )
+    for environment in invalid_environments:
+        with pytest.raises(ValueError):
+            supervisor_lifecycle.capture_supervisor_execution_options_from_env(environment)
+
+
 def test_standalone_capture_intake_manifest_enters_supervisor_next_to_manifest(
     tmp_path: Path,
 ) -> None:
