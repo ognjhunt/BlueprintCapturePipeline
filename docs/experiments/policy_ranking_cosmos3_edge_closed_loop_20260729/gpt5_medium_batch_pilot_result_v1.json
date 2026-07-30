@@ -1,0 +1,70 @@
+{
+  "schema_version": "policy_ranking_gpt5_medium_batch_pilot_result.v1",
+  "status": "passed_full_gpt5_matrix_admitted",
+  "claim_class": "post_unseal_transport_and_cost_diagnostic_only",
+  "source_commit": "57a7e8b7e16065ba2f5f3a55bae762a87b39fad0",
+  "pilot_freeze": {
+    "path": "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/gpt5_medium_batch_pilot_freeze_v1.json",
+    "freeze_sha256": "e686028fd3b8e5d0015cc9d1a8b299064c52fdaea96b8ef5347d3f6abbd441f2",
+    "file_sha256": "6037133214f2fea6a837bb7929de5e841bb677c7cdff369107027aba06287ff2"
+  },
+  "provider_receipt": {
+    "batch_id": "batch_6a6ac9633c388190b115e9e8938aca41",
+    "input_file_id": "file-K14GGKr3rUDKcB2MLZN8mY",
+    "receipt_sha256": "5c7549f98ed593c27de76158a85d17d4dfebc57bf351f24777375332a10fef5a",
+    "file_sha256": "97d934c61e0129a6c4f95cbf5b91095e8c7b03830b17aaac383e97a87816c134",
+    "provider_called": true,
+    "request_count": 7
+  },
+  "collection": {
+    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/gpt5_medium_batch_pilot_v1/collection_v1.json",
+    "file_sha256": "edc5997d1d0f5f2df0805ac7a8bfcaff7f8732d9c2e0705231db36b171f2a7b6",
+    "report_sha256": "63de6bb9d00625fdd4ee4c2be232a625ac74e8cbdd3e0540b5f1f2f68180fd0f",
+    "status": "completed",
+    "result_count": 7,
+    "error_count": 0,
+    "input_file_deleted": true,
+    "physical_ground_truth_pixels_uploaded": false,
+    "policy_identity_uploaded": false,
+    "physical_outcome_uploaded": false
+  },
+  "usage": {
+    "input_tokens": [4859, 4859, 4859, 4859, 4859, 4859, 4859],
+    "output_tokens": [2216, 2377, 2090, 2492, 1872, 2574, 2078],
+    "batch_costs_usd": [0.014116875, 0.013553875, 0.013486875, 0.015496875, 0.012396875, 0.015906875, 0.013426875],
+    "measured_batch_cost_usd": 0.098385125,
+    "mean_cost_per_request_usd": 0.014055017857142858,
+    "sample_standard_deviation_usd": 0.001240301365068376,
+    "sample_standard_error_usd": 0.00046878985182069384,
+    "mean_plus_1_943_standard_errors_usd": 0.014965876539230465,
+    "pilot_max_cost_usd": 0.015906875,
+    "single_canary_batch_equivalent_cost_usd": 0.01175875,
+    "per_request_conservative_upper_usd": 0.015906875
+  },
+  "scientific_output_admission_boundary": {
+    "preferred_episode_counts": {"A": 1, "B": 0, "tie": 6},
+    "scientific_preferences_used_for_admission": false,
+    "labels_joined": false,
+    "ranking_credit": false
+  },
+  "budget": {
+    "successor_evaluator_api_cap_usd": 25.0,
+    "synchronous_canary_cost_usd": 0.0235175,
+    "realized_successor_evaluator_cost_usd": 0.121902625,
+    "pilot_results_reused_in_full_matrix": 7,
+    "remaining_gpt5_pair_count": 1316,
+    "remaining_gpt5_conservative_projection_usd": 20.9334475,
+    "projected_gpt5_total_including_realized_usd": 21.055350125,
+    "projected_gpt5_headroom_usd": 3.944649875,
+    "gpt5_full_matrix_admitted": true,
+    "gemini_missing_pair_conservative_projection_usd": 8.3633445,
+    "combined_two_judge_conservative_projection_usd": 29.418694625,
+    "gemini_missing_pair_matrix_admitted_now": false,
+    "gemini_reassessment_rule": "Reassess only after the complete GPT-5 matrix is collected, using realized GPT-5 spend and the already frozen Gemini upper estimate; never exceed the category cap."
+  },
+  "post_collection_provider_state": {
+    "active_responses_batches": 0,
+    "checked": true
+  },
+  "result_sha256": "3ea727397d343f06aa647ccf93fc1bd845764346ba9171f51bea20538dae8b4f"
+}
