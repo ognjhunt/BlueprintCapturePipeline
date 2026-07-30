@@ -138,6 +138,10 @@ used as blind confirmation.
 - `protocol_amendment_11_generated_observation_policy_requery_v1.md` —
   additive generated-view plus commanded-state policy observation contract,
   bound to the prior policy receipt and WAM request/result chain;
+- `protocol_amendment_12_gpt56_luna_challenger_v1.md` — prospectively replaces
+  the underspecified full-GPT-5 challenger with the cost-efficient
+  `gpt-5.6-luna` Responses Batch image-input arm while retaining Gemini 3.6
+  Flash as the primary native-video judge;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
