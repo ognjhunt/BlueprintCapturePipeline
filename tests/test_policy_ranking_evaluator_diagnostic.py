@@ -9,7 +9,11 @@ from blueprint_pipeline.policy_ranking_evaluator_diagnostic import (
     PAIR_RESULT_SCHEMA_VERSION,
     DiagnosticContractError,
     analyze_pair_results,
+    audit_frozen_gemini_subset_reuse,
+    build_complete_pair_inventory,
+    build_pair_subset_inventory,
     build_pair_inventory,
+    complete_graph_diagnostic_protocol,
     diagnostic_protocol,
     materialize_native_videos,
     pilot_cost_projection,
@@ -91,6 +95,73 @@ def test_cycle_inventory_includes_every_episode_twice_without_labels(tmp_path: P
     assert len(appearances) == 441
 
 
+def test_complete_graph_inventory_includes_all_pairs_without_labels(tmp_path: Path) -> None:
+    protocol = complete_graph_diagnostic_protocol()
+    inventory = build_complete_pair_inventory(_source_inventory(tmp_path))
+
+    assert protocol["comparison_graph"]["total_edges"] == 1323
+    assert protocol["method_attribution"] == (
+        "OSCAR_method_inspired_not_exact_code_reproduction"
+    )
+    assert inventory["pair_count"] == 1323
+    assert inventory["comparison_graph_kind"] == "complete_graph_per_session"
+    assert inventory["protocol_sha256"] == protocol["protocol_sha256"]
+    assert inventory["outcome_labels_accessed_to_build_pairs"] is False
+    assert len({pair["pair_id"] for pair in inventory["pairs"]}) == 1323
+    appearances = {}
+    for pair in inventory["pairs"]:
+        for side in ("episode_a", "episode_b"):
+            key = (pair["session_id"], pair[side]["policy_id_internal_only"])
+            appearances[key] = appearances.get(key, 0) + 1
+    assert len(appearances) == 441
+    assert set(appearances.values()) == {6}
+
+
+def test_frozen_cycle_results_map_exactly_into_complete_graph(tmp_path: Path) -> None:
+    source = _source_inventory(tmp_path)
+    prior_inventory = build_pair_inventory(source)
+    complete_inventory = build_complete_pair_inventory(source)
+    results = []
+    for pair in prior_inventory["pairs"]:
+        result = _result(pair, "tie")
+        result.update(
+            {
+                "provider": "google_gemini_api",
+                "model": "gemini-3.6-flash",
+                "transport": "gemini_batch_api_native_video",
+                "policy_identity_sent_to_provider": False,
+                "physical_outcome_sent_to_provider": False,
+                "physical_ground_truth_pixels_sent_to_provider": False,
+            }
+        )
+        result["result_sha256"] = canonical_sha256(
+            {key: value for key, value in result.items() if key != "result_sha256"}
+        )
+        results.append(result)
+    collection = {
+        "status": "completed",
+        "result_count": 441,
+        "error_count": 0,
+        "results": results,
+    }
+    collection["report_sha256"] = canonical_sha256(collection)
+
+    audit = audit_frozen_gemini_subset_reuse(
+        complete_inventory, prior_inventory, collection
+    )
+    missing = build_pair_subset_inventory(
+        complete_inventory, audit["missing_pair_ids"]
+    )
+
+    assert audit["status"] == "passed"
+    assert audit["reused_pair_count"] == 441
+    assert audit["same_orientation_count"] + audit["reversed_orientation_count"] == 441
+    assert audit["missing_pair_count"] == 882
+    assert audit["outcome_labels_accessed"] is False
+    assert missing["pair_count"] == 882
+    assert missing["parent_inventory_sha256"] == complete_inventory["inventory_sha256"]
+
+
 def test_bradley_terry_analysis_ranks_consistent_winner_first(tmp_path: Path) -> None:
     inventory = build_pair_inventory(_source_inventory(tmp_path))
     results = []
@@ -153,3 +224,16 @@ def test_pilot_cost_projection_uses_frozen_conservative_maximum() -> None:
         report["per_request_upper_estimate_usd"] * 441
     )
     assert report["arm_cost_admitted"] is True
+
+
+def test_pilot_cost_projection_supports_complete_graph_request_count() -> None:
+    report = pilot_cost_projection(
+        single_canary_batch_equivalent_cost_usd=0.01,
+        pilot_batch_costs_usd=[0.008, 0.009, 0.01, 0.011, 0.012, 0.013, 0.02],
+        arm_cap_usd=30,
+        matrix_request_count=1323,
+    )
+    assert report["matrix_request_count"] == 1323
+    assert report["projected_matrix_cost_usd"] == (
+        report["per_request_upper_estimate_usd"] * 1323
+    )

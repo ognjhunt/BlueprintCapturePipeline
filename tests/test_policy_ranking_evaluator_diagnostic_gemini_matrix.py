@@ -5,7 +5,11 @@ from pathlib import Path
 
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic_gemini_matrix import (
     _ledger_core,
+    _validate_inventory,
     submit_matrix_batch,
+)
+from blueprint_pipeline.policy_ranking_evaluator_diagnostic import (
+    complete_graph_diagnostic_protocol,
 )
 from blueprint_pipeline.policy_ranking_roboarena_calibration import canonical_sha256
 
@@ -38,23 +42,28 @@ def test_matrix_submission_is_idempotent_from_existing_valid_receipt(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("BLUEPRINT_ALLOW_ROBOARENA_DIAGNOSTIC_GEMINI", "1")
+    protocol = complete_graph_diagnostic_protocol()
+    pairs = [{"pair_id": f"pair-{index}"} for index in range(1323)]
+    inventory = {
+        "status": "ready",
+        "pair_count": 1323,
+        "protocol_sha256": protocol["protocol_sha256"],
+        "pairs": pairs,
+    }
+    inventory["inventory_sha256"] = canonical_sha256(inventory)
     previous = {
         "status": "JOB_STATE_PENDING",
         "batch_name": "batches/existing",
-        "arm_id": "gemini36_flash_native_video",
-        "request_count": 441,
+        "arm_id": "gemini36_flash_complete_graph",
+        "request_count": 1323,
+        "inventory_sha256": inventory["inventory_sha256"],
     }
     previous["receipt_sha256"] = canonical_sha256(previous)
     receipt = tmp_path / "receipt.json"
     receipt.write_text(json.dumps(previous))
 
     result = submit_matrix_batch(
-        {
-            "status": "ready",
-            "pair_count": 441,
-            "protocol_sha256": "wrong_but_not_reached_after_inventory_validation",
-            "pairs": [],
-        },
+        inventory,
         {},
         api_key_file=tmp_path / "unused",
         receipt_path=receipt,
@@ -62,3 +71,16 @@ def test_matrix_submission_is_idempotent_from_existing_valid_receipt(
     )
 
     assert result == previous
+
+
+def test_matrix_validator_accepts_registered_882_pair_subset() -> None:
+    protocol = complete_graph_diagnostic_protocol()
+    inventory = {
+        "status": "ready",
+        "pair_count": 882,
+        "protocol_sha256": protocol["protocol_sha256"],
+        "pairs": [{"pair_id": f"pair-{index}"} for index in range(882)],
+    }
+    inventory["inventory_sha256"] = canonical_sha256(inventory)
+
+    assert len(_validate_inventory(inventory)) == 882

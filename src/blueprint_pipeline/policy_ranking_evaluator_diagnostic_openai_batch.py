@@ -11,12 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from .common import write_json
-from .policy_ranking_evaluator_diagnostic import PAIR_RESULT_SCHEMA_VERSION
+from .policy_ranking_evaluator_diagnostic import (
+    PAIR_RESULT_SCHEMA_VERSION,
+    complete_graph_diagnostic_protocol,
+)
 from .policy_ranking_evaluator_diagnostic_openai import (
     GATE_ENV,
-    MODEL_ARM_IDS,
     MODEL_PRICES_STANDARD,
     _secure_file,
+    _request_config,
     _validate_payload,
     build_response_body,
 )
@@ -36,8 +39,20 @@ def _validate_inventory(inventory: Mapping[str, Any]) -> list[Mapping[str, Any]]
     if canonical_sha256(payload) != inventory.get("inventory_sha256"):
         raise OpenAIBatchDiagnosticError("pair_inventory_digest_invalid")
     pairs = inventory.get("pairs")
-    if inventory.get("status") != "ready" or not isinstance(pairs, list) or len(pairs) != 441:
-        raise OpenAIBatchDiagnosticError("pair_inventory_not_ready_441")
+    pair_count = inventory.get("pair_count")
+    if (
+        inventory.get("status") != "ready"
+        or pair_count not in {441, 1323}
+        or not isinstance(pairs, list)
+        or len(pairs) != pair_count
+        or len({str(pair.get("pair_id")) for pair in pairs}) != pair_count
+        or (
+            pair_count == 1323
+            and inventory.get("protocol_sha256")
+            != complete_graph_diagnostic_protocol()["protocol_sha256"]
+        )
+    ):
+        raise OpenAIBatchDiagnosticError("pair_inventory_not_ready_supported_matrix")
     return pairs
 
 
@@ -50,12 +65,28 @@ def prepare_shard(
     jsonl_path: str | Path,
     manifest_path: str | Path,
     source_commit: str,
+    reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
+    arm_id: str | None = None,
 ) -> dict[str, Any]:
     pairs = _validate_inventory(inventory)
     if model not in MODEL_PRICES_STANDARD:
         raise OpenAIBatchDiagnosticError("unregistered_openai_model")
     if offset < 0 or count <= 0 or offset + count > len(pairs) or count > 24:
         raise OpenAIBatchDiagnosticError("batch_shard_bounds_invalid")
+    resolved_effort, resolved_tokens, resolved_arm = _request_config(
+        model=model,
+        reasoning_effort=reasoning_effort,
+        max_output_tokens=max_output_tokens,
+        arm_id=arm_id,
+    )
+    if len(pairs) == 1323 and (
+        model != "gpt-5-2025-08-07"
+        or resolved_effort != "medium"
+        or resolved_tokens != 4000
+        or resolved_arm != "gpt5_complete_graph"
+    ):
+        raise OpenAIBatchDiagnosticError("complete_graph_gpt5_config_mismatch")
     selected = pairs[offset : offset + count]
     target = Path(jsonl_path).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -65,7 +96,12 @@ def prepare_shard(
                 "custom_id": pair["pair_id"],
                 "method": "POST",
                 "url": "/v1/responses",
-                "body": build_response_body(pair, model=model),
+                "body": build_response_body(
+                    pair,
+                    model=model,
+                    reasoning_effort=resolved_effort,
+                    max_output_tokens=resolved_tokens,
+                ),
             }
             handle.write(json.dumps(line, sort_keys=True, separators=(",", ":")) + "\n")
     shard_core = {
@@ -74,11 +110,14 @@ def prepare_shard(
         "count": count,
         "pair_ids": [pair["pair_id"] for pair in selected],
         "inventory_sha256": inventory["inventory_sha256"],
+        "reasoning_effort": resolved_effort,
+        "max_output_tokens": resolved_tokens,
+        "arm_id": resolved_arm,
     }
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "ready",
-        "arm_id": MODEL_ARM_IDS[model],
+        "arm_id": shard_core["arm_id"],
         **shard_core,
         "shard_id": canonical_sha256(shard_core),
         "jsonl_path": str(target),
@@ -324,6 +363,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     prepare.add_argument("--jsonl", required=True)
     prepare.add_argument("--manifest", required=True)
     prepare.add_argument("--source-commit", required=True)
+    prepare.add_argument("--reasoning-effort")
+    prepare.add_argument("--max-output-tokens", type=int)
+    prepare.add_argument("--arm-id")
     submit = commands.add_parser("submit")
     submit.add_argument("--manifest", required=True)
     submit.add_argument("--api-key-file", required=True)
@@ -345,6 +387,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             jsonl_path=args.jsonl,
             manifest_path=args.manifest,
             source_commit=args.source_commit,
+            reasoning_effort=args.reasoning_effort,
+            max_output_tokens=args.max_output_tokens,
+            arm_id=args.arm_id,
         )
     elif args.command == "submit":
         result = submit_shard(
