@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/reconstruction_hermetic_vertical_fixture_spec.v1.schema.json",
+  "title": "Reconstruction Hermetic Vertical Fixture Spec v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_commit_sha",
+    "implementation_digest",
+    "runtime_digest",
+    "timestamp",
+    "authority",
+    "iphone_arkit_lidar",
+    "camera_360_native",
+    "camera_360_equirectangular",
+    "proof_boundary"
+  ],
+  "properties": {
+    "schema_version": {"const": "reconstruction_hermetic_vertical_fixture_spec.v1"},
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "implementation_digest": {"$ref": "#/$defs/digest"},
+    "runtime_digest": {"$ref": "#/$defs/digest"},
+    "timestamp": {"type": "string", "pattern": "Z$"},
+    "authority": {
+      "type": "object",
+      "required": [
+        "source_capture_rights_valid",
+        "consent_valid",
+        "privacy_review_valid",
+        "retention_authorized",
+        "local_processing_authorized",
+        "provider_upload_authorized",
+        "paid_compute_authorized"
+      ],
+      "properties": {
+        "source_capture_rights_valid": {"const": true},
+        "consent_valid": {"const": true},
+        "privacy_review_valid": {"const": true},
+        "retention_authorized": {"const": true},
+        "local_processing_authorized": {"const": true},
+        "provider_upload_authorized": {"const": false},
+        "paid_compute_authorized": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "iphone_arkit_lidar": {"$ref": "#/$defs/profile"},
+    "camera_360_native": {"$ref": "#/$defs/profile"},
+    "camera_360_equirectangular": {"$ref": "#/$defs/profile"},
+    "proof_boundary": {
+      "type": "object",
+      "required": [
+        "fixture_is_real_capture_proof",
+        "fixture_is_worker_execution_proof",
+        "fixture_is_isaac_execution_proof",
+        "fixture_may_upgrade_physical_or_deployment_claims"
+      ],
+      "properties": {
+        "fixture_is_real_capture_proof": {"const": false},
+        "fixture_is_worker_execution_proof": {"const": false},
+        "fixture_is_isaac_execution_proof": {"const": false},
+        "fixture_may_upgrade_physical_or_deployment_claims": {"const": false}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "profile": {
+      "type": "object",
+      "required": ["source_capture_digest", "expected_terminal_blocker"],
+      "properties": {
+        "source_capture_digest": {"$ref": "#/$defs/digest"},
+        "expected_terminal_blocker": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

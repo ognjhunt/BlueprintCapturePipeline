@@ -1,0 +1,59 @@
+{
+  "schema_version": "reconstruction_hermetic_vertical_fixture_spec.v1",
+  "source_commit_sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "implementation_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "runtime_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "timestamp": "2026-07-30T20:00:00Z",
+  "authority": {
+    "source_capture_rights_valid": true,
+    "consent_valid": true,
+    "privacy_review_valid": true,
+    "retention_authorized": true,
+    "local_processing_authorized": true,
+    "provider_upload_authorized": false,
+    "paid_compute_authorized": false
+  },
+  "iphone_arkit_lidar": {
+    "source_capture_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "frame_count": 8,
+    "width": 64,
+    "height": 48,
+    "frame_interval_seconds": 0.1,
+    "source_pts_origin_seconds": 10.0,
+    "coordinate_frame_session_id": "fixture-arkit-session",
+    "intrinsics": {
+      "fx": 50.0,
+      "fy": 50.0,
+      "cx": 32.0,
+      "cy": 24.0,
+      "width": 64,
+      "height": 48
+    },
+    "expected_terminal_blocker": "resolved_reconstruction_worker_image_unavailable"
+  },
+  "camera_360_native": {
+    "source_capture_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "camera_model": "Insta360 hermetic fixture",
+    "width": 3840,
+    "height": 3840,
+    "lens_pts_seconds": [0.0, 0.033333, 0.066667],
+    "valid_pixel_mask_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "calibration_source_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "expected_terminal_blocker": "pose_worker_and_metric_anchor_unavailable"
+  },
+  "camera_360_equirectangular": {
+    "source_capture_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "width": 128,
+    "height": 64,
+    "stitching_receipt_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "original_source_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "expected_virtual_view_count": 12,
+    "expected_terminal_blocker": "pose_worker_and_metric_anchor_unavailable"
+  },
+  "proof_boundary": {
+    "fixture_is_real_capture_proof": false,
+    "fixture_is_worker_execution_proof": false,
+    "fixture_is_isaac_execution_proof": false,
+    "fixture_may_upgrade_physical_or_deployment_claims": false
+  }
+}

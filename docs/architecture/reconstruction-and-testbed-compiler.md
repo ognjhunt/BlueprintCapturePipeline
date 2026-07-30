@@ -125,6 +125,19 @@ hermetic fixtures. It does not prove camera calibration, ARKit alignment,
 metric scale, reconstruction quality, geometry, collision, physics, Isaac
 compatibility, simulator task success, physical success, or deployment.
 
+The committed `tests/fixtures/reconstruction_vertical_v1/fixture_spec.json`
+now drives three integrated, zero-spend vertical replays. The iPhone fixture
+compiles a frozen candidate/evaluator split and an ARKit-bound reconstruction
+dataset, then abstains because no resolved, smoke-tested worker image is
+available. The native 360 fixture preserves synthetic `.insv`-family bytes and
+a digest-bound recorded probe receipt, validates the dual-fisheye
+timing/calibration and fixed rig, then abstains before pose and
+metric scale. The stitched 360 fixture projects twelve deterministic
+shared-center views, then abstains before pose and scale. Each replay emits a
+deterministic terminal report preserving the blocker. These are hermetic
+contract fixtures—not representative real capture, trainer, provider, or
+Isaac execution evidence.
+
 ## Strict ARKit reconstruction export
 
 The strict V3.2 ARKit/LiDAR adapter now feeds the frozen frame kernel into
