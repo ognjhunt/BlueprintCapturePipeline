@@ -41,6 +41,7 @@ from .contracts import (
     AutonomyMode,
     CapabilityKind,
     CapabilityResult,
+    SupervisorContractError,
     SupervisorEvent,
     SupervisorPhase,
     SupervisorRun,
@@ -55,7 +56,7 @@ from .manager import (
 )
 from .phase2_artifacts import deterministic_customer_report, write_phase2_artifact
 from .recovery import PreauthorizedRecoveryController
-from .tools import ToolRegistry
+from .tools import ToolRegistry, validate_tool_observation_binding
 
 
 @dataclass(frozen=True)
@@ -389,9 +390,7 @@ class TaskEvaluationSupervisor:
                 else 0.0
             ),
             action_max_retries=(
-                int(
-                    self.recovery_controller.policy.receipt.get("granted_retry_count") or 0
-                )
+                int(self.recovery_controller.policy.receipt.get("granted_retry_count") or 0)
                 if selected_mode is AutonomyMode.EXECUTE_PREAUTHORIZED
                 and self.recovery_controller is not None
                 else 0
@@ -403,11 +402,7 @@ class TaskEvaluationSupervisor:
                 else 300
             ),
             preauthorization_receipt_digest=(
-                str(
-                    self.recovery_controller.policy.receipt.get(
-                        "authorization_receipt_digest"
-                    )
-                )
+                str(self.recovery_controller.policy.receipt.get("authorization_receipt_digest"))
                 if selected_mode is AutonomyMode.EXECUTE_PREAUTHORIZED
                 and self.recovery_controller is not None
                 else None
@@ -512,9 +507,7 @@ class TaskEvaluationSupervisor:
                     manager_step = int(event_type.removeprefix(manager_refusal_prefix))
                 except ValueError as exc:
                     raise ValueError("supervisor_resume_manager_refusal_step_invalid") from exc
-                refusal_path = (
-                    root / "manager" / "refusals" / f"step-{manager_step:03d}.json"
-                )
+                refusal_path = root / "manager" / "refusals" / f"step-{manager_step:03d}.json"
                 if not refusal_path.is_file():
                     raise ValueError("supervisor_resume_manager_refusal_missing")
                 refusal = dict(read_json(refusal_path))
@@ -523,10 +516,8 @@ class TaskEvaluationSupervisor:
                     digest_field="supervisor_manager_refusal_digest",
                 )
                 if (
-                    refusal.get("schema_version")
-                    != "task_evaluation_supervisor_manager_refusal.v1"
-                    or refusal.get("supervisor_manager_refusal_digest")
-                    != refusal_digest
+                    refusal.get("schema_version") != "task_evaluation_supervisor_manager_refusal.v1"
+                    or refusal.get("supervisor_manager_refusal_digest") != refusal_digest
                     or event_value.get("payload_digest") != refusal_digest
                     or refusal.get("step_index") != manager_step
                     or refusal.get("proof_effect") != "none"
@@ -544,9 +535,7 @@ class TaskEvaluationSupervisor:
                     raise ValueError("supervisor_resume_manager_step_invalid") from exc
                 if manager_step != len(manager_decisions):
                     raise ValueError("supervisor_resume_manager_step_invalid")
-                decision_path = (
-                    root / "manager" / "decisions" / f"step-{manager_step:03d}.json"
-                )
+                decision_path = root / "manager" / "decisions" / f"step-{manager_step:03d}.json"
                 manager_invocation_path = (
                     root / "manager" / "invocations" / f"step-{manager_step:03d}.json"
                 )
@@ -560,8 +549,7 @@ class TaskEvaluationSupervisor:
                 if (
                     decision.get("schema_version")
                     != "task_evaluation_supervisor_manager_decision.v1"
-                    or decision.get("supervisor_manager_decision_digest")
-                    != decision_digest
+                    or decision.get("supervisor_manager_decision_digest") != decision_digest
                     or event_value.get("payload_digest") != decision_digest
                     or decision.get("step_index") != manager_step
                     or decision.get("observed_capability_result_digests")
@@ -576,10 +564,8 @@ class TaskEvaluationSupervisor:
                 if (
                     manager_invocation.get("schema_version")
                     != "task_evaluation_supervisor_manager_invocation.v1"
-                    or manager_invocation.get("manager_invocation_digest")
-                    != invocation_digest
-                    or manager_invocation.get("structured_output_digest")
-                    != decision_digest
+                    or manager_invocation.get("manager_invocation_digest") != invocation_digest
+                    or manager_invocation.get("structured_output_digest") != decision_digest
                 ):
                     raise ValueError("supervisor_resume_manager_invocation_mismatch")
                 if decision.get("status") == "continue":
@@ -588,9 +574,7 @@ class TaskEvaluationSupervisor:
                             str(decision.get("next_capability") or "")
                         )
                     except ValueError as exc:
-                        raise ValueError(
-                            "supervisor_resume_manager_capability_invalid"
-                        ) from exc
+                        raise ValueError("supervisor_resume_manager_capability_invalid") from exc
                 elif decision.get("status") == "terminal":
                     manager_terminal_reason = str(decision.get("terminal_reason") or "")
                     if not manager_terminal_reason:
@@ -630,9 +614,7 @@ class TaskEvaluationSupervisor:
             invocations.append(invocation)
             pending_capability = None
         run_blockers: list[str] = (
-            ["supervisor_manager_output_invalid_or_failed"]
-            if manager_refusals
-            else []
+            ["supervisor_manager_output_invalid_or_failed"] if manager_refusals else []
         )
         for result in results:
             if result.to_mapping().get("status") == "blocked":
@@ -641,11 +623,7 @@ class TaskEvaluationSupervisor:
             float(row.to_mapping().get("cost_usd") or 0.0) for row in invocations
         ) + sum(float(row.get("cost_usd") or 0.0) for row in manager_invocations)
         recorded_reservations = [
-            float(
-                existing_inference_reservation_manifest[
-                    "reserved_max_cost_usd"
-                ]
-            ),
+            float(existing_inference_reservation_manifest["reserved_max_cost_usd"]),
             *[
                 float(
                     (row.to_mapping().get("budget_state") or {}).get(
@@ -657,10 +635,7 @@ class TaskEvaluationSupervisor:
             ],
             *[
                 float(
-                    (row.get("budget_state") or {}).get(
-                        "cumulative_reserved_cost_usd", 0.0
-                    )
-                    or 0.0
+                    (row.get("budget_state") or {}).get("cumulative_reserved_cost_usd", 0.0) or 0.0
                 )
                 for row in manager_invocations
             ],
@@ -691,10 +666,7 @@ class TaskEvaluationSupervisor:
             AutonomyMode.EXECUTE_PREAUTHORIZED,
         }:
             run_blockers.append(f"autonomy_mode_not_enabled_in_phase1:{selected_mode.value}")
-        if (
-            selected_mode is AutonomyMode.EXECUTE_PREAUTHORIZED
-            and self.recovery_controller is None
-        ):
+        if selected_mode is AutonomyMode.EXECUTE_PREAUTHORIZED and self.recovery_controller is None:
             can_invoke = False
             run_blockers.append("preauthorized_recovery_controller_missing")
 
@@ -709,9 +681,7 @@ class TaskEvaluationSupervisor:
             manager_decisions_dir.mkdir(parents=True, exist_ok=True)
             manager_invocations_dir.mkdir(parents=True, exist_ok=True)
             manager_refusals_dir.mkdir(parents=True, exist_ok=True)
-            capability_by_kind = {
-                capability.kind: capability for capability in self.capabilities
-            }
+            capability_by_kind = {capability.kind: capability for capability in self.capabilities}
 
             def managed_capability_order() -> Iterator[SupervisorCapability]:
                 nonlocal last_event
@@ -732,9 +702,7 @@ class TaskEvaluationSupervisor:
                             )
                         except Exception as exc:  # noqa: BLE001 - bounded manager refusal
                             refusal_value: dict[str, Any] = {
-                                "schema_version": (
-                                    "task_evaluation_supervisor_manager_refusal.v1"
-                                ),
+                                "schema_version": ("task_evaluation_supervisor_manager_refusal.v1"),
                                 "run_id": context.run_id,
                                 "step_index": manager_step,
                                 "status": "refused",
@@ -746,11 +714,9 @@ class TaskEvaluationSupervisor:
                                 "agent_harness": AGENTS_SDK_HARNESS_ID,
                                 "proof_effect": "none",
                             }
-                            refusal_value["supervisor_manager_refusal_digest"] = (
-                                canonical_digest(
-                                    refusal_value,
-                                    digest_field="supervisor_manager_refusal_digest",
-                                )
+                            refusal_value["supervisor_manager_refusal_digest"] = canonical_digest(
+                                refusal_value,
+                                digest_field="supervisor_manager_refusal_digest",
                             )
                             write_json(
                                 manager_refusals_dir / f"step-{manager_step:03d}.json",
@@ -763,9 +729,7 @@ class TaskEvaluationSupervisor:
                                 phase=SupervisorPhase.PLANNING,
                                 event_type=f"supervisor_manager_refused:{manager_step}",
                                 generated_at=timestamp,
-                                payload_digest=refusal_value[
-                                    "supervisor_manager_refusal_digest"
-                                ],
+                                payload_digest=refusal_value["supervisor_manager_refusal_digest"],
                             )
                             run_blockers.append("supervisor_manager_output_invalid_or_failed")
                             manager_terminal_reason = "blocked"
@@ -781,9 +745,7 @@ class TaskEvaluationSupervisor:
                         )
                         reported_cost_usd += manager_cost
                         manager_usage = dict(manager_decision.invocation.usage)
-                        cumulative_reserved = manager_usage.get(
-                            "cumulative_reserved_cost_usd"
-                        )
+                        cumulative_reserved = manager_usage.get("cumulative_reserved_cost_usd")
                         if isinstance(cumulative_reserved, (int, float)):
                             reserved_cost_usd = max(
                                 reserved_cost_usd,
@@ -796,9 +758,7 @@ class TaskEvaluationSupervisor:
                             self.agent_inference_budget_usd - reserved_cost_usd,
                         )
                         manager_invocation_value: dict[str, Any] = {
-                            "schema_version": (
-                                "task_evaluation_supervisor_manager_invocation.v1"
-                            ),
+                            "schema_version": ("task_evaluation_supervisor_manager_invocation.v1"),
                             "invocation_id": (
                                 f"{context.run_id}-manager-{manager_step}-invocation"
                             ),
@@ -817,9 +777,7 @@ class TaskEvaluationSupervisor:
                             "authority_digest": authority.digest,
                             "input_artifact_digests": [
                                 *input_digests,
-                                *decision_value[
-                                    "observed_capability_result_digests"
-                                ],
+                                *decision_value["observed_capability_result_digests"],
                             ],
                             "budget_state": {
                                 "max_cost_usd": self.agent_inference_budget_usd,
@@ -835,19 +793,15 @@ class TaskEvaluationSupervisor:
                             "trace_id": manager_decision.invocation.trace_id,
                             "cost_usd": manager_cost,
                             "cost_status": manager_decision.invocation.cost_status,
-                            "latency_seconds": (
-                                manager_decision.invocation.latency_seconds
-                            ),
+                            "latency_seconds": (manager_decision.invocation.latency_seconds),
                             "proof_effect": "none",
                             "uncertainty": "not_a_proof_signal",
                             "parent_event_digest": last_event.digest,
                             "generated_at": timestamp,
                         }
-                        manager_invocation_value["manager_invocation_digest"] = (
-                            canonical_digest(
-                                manager_invocation_value,
-                                digest_field="manager_invocation_digest",
-                            )
+                        manager_invocation_value["manager_invocation_digest"] = canonical_digest(
+                            manager_invocation_value,
+                            digest_field="manager_invocation_digest",
                         )
                         write_json(
                             manager_decisions_dir / f"step-{manager_step:03d}.json",
@@ -863,21 +817,14 @@ class TaskEvaluationSupervisor:
                             ledger=ledger,
                             run_id=context.run_id,
                             phase=SupervisorPhase.PLANNING,
-                            event_type=(
-                                "supervisor_manager_decision_recorded:"
-                                f"{manager_step}"
-                            ),
+                            event_type=(f"supervisor_manager_decision_recorded:{manager_step}"),
                             generated_at=timestamp,
                             payload_digest=manager_decision.digest,
                         )
                         if decision_value["status"] == "terminal":
-                            manager_terminal_reason = str(
-                                decision_value["terminal_reason"]
-                            )
+                            manager_terminal_reason = str(decision_value["terminal_reason"])
                             break
-                        pending_capability = CapabilityKind(
-                            str(decision_value["next_capability"])
-                        )
+                        pending_capability = CapabilityKind(str(decision_value["next_capability"]))
                     capability = capability_by_kind.get(pending_capability)
                     if capability is None:
                         run_blockers.append("supervisor_manager_capability_unavailable")
@@ -909,9 +856,7 @@ class TaskEvaluationSupervisor:
                     result = CapabilityResult.from_mapping(result_value)
                     validation_status = "accepted_as_proposal"
                     if result.to_mapping().get("status") == "blocked":
-                        run_blockers.append(
-                            f"capability_blocked:{capability.kind.value}"
-                        )
+                        run_blockers.append(f"capability_blocked:{capability.kind.value}")
                 except Exception as exc:  # noqa: BLE001 - persist bounded refusal evidence
                     result = CapabilityResult.from_mapping(
                         {
@@ -938,14 +883,50 @@ class TaskEvaluationSupervisor:
                     run_blockers.append(f"capability_blocked:{capability.kind.value}")
 
                 metadata_getter = getattr(capability, "invocation_metadata", None)
-                invocation_metadata = (
-                    dict(metadata_getter()) if callable(metadata_getter) else {}
-                )
-                tool_observations = [
-                    dict(row)
-                    for row in invocation_metadata.get("tool_observations") or []
-                    if isinstance(row, Mapping)
-                ]
+                invocation_metadata = dict(metadata_getter()) if callable(metadata_getter) else {}
+                raw_tool_observations = invocation_metadata.get("tool_observations") or []
+                try:
+                    if not isinstance(raw_tool_observations, list) or any(
+                        not isinstance(row, Mapping) for row in raw_tool_observations
+                    ):
+                        raise SupervisorContractError(
+                            ["tool_observations:must_be_list_of_mappings"]
+                        )
+                    tool_observations = [
+                        validate_tool_observation_binding(
+                            row,
+                            run_id=context.run_id,
+                            capability=capability.kind.value,
+                            registry=self.tool_registry,
+                            authority=authority.to_mapping(),
+                        )
+                        for row in raw_tool_observations
+                    ]
+                except (SupervisorContractError, ValueError):
+                    tool_observations = []
+                    result = CapabilityResult.from_mapping(
+                        {
+                            "schema_version": "task_evaluation_supervisor_capability_result.v1",
+                            "result_id": f"{context.run_id}-{capability.kind.value}",
+                            "run_id": context.run_id,
+                            "capability": capability.kind.value,
+                            "status": "blocked",
+                            "artifact": {
+                                "schema_version": "supervisor_tool_observation_refusal.v1",
+                                "error_type": "SupervisorContractError",
+                                "raw_tool_result_recorded": False,
+                            },
+                            "proposals": [],
+                            "proposal_dispositions": [],
+                            "blockers": ["tool_observation_contract_invalid"],
+                            "evidence_refs": [],
+                            "authoritative": False,
+                            "proof_booleans_mutable": False,
+                            "proof_effect": "none",
+                        }
+                    )
+                    validation_status = "refused"
+                    run_blockers.append(f"capability_blocked:{capability.kind.value}")
                 result_value = result.to_mapping()
                 result_value["structured_observations"] = [
                     {
@@ -1149,8 +1130,7 @@ class TaskEvaluationSupervisor:
             else "advise_complete"
             if selected_mode is AutonomyMode.ADVISE
             else "preauthorized_complete_with_failures"
-            if selected_mode is AutonomyMode.EXECUTE_PREAUTHORIZED
-            and preauthorized_failures
+            if selected_mode is AutonomyMode.EXECUTE_PREAUTHORIZED and preauthorized_failures
             else "preauthorized_complete"
             if selected_mode is AutonomyMode.EXECUTE_PREAUTHORIZED
             else "shadow_complete"
@@ -1161,13 +1141,11 @@ class TaskEvaluationSupervisor:
                 "status": terminal_status,
                 "capability_result_digests": [result.digest for result in results],
                 "supervisor_manager_decision_digests": [
-                    str(row["supervisor_manager_decision_digest"])
-                    for row in manager_decisions
+                    str(row["supervisor_manager_decision_digest"]) for row in manager_decisions
                 ],
                 "supervisor_manager_terminal_reason": manager_terminal_reason,
                 "supervisor_manager_refusal_digests": [
-                    str(row["supervisor_manager_refusal_digest"])
-                    for row in manager_refusals
+                    str(row["supervisor_manager_refusal_digest"]) for row in manager_refusals
                 ],
                 "blockers": sorted(set(run_blockers)),
             }
@@ -1282,9 +1260,7 @@ class TaskEvaluationSupervisor:
                     or registered_preauthorized_actions_executed > 0
                 ),
                 "registered_tool_reads_executed": registered_tool_reads_executed,
-                "registered_non_spend_actions_executed": (
-                    registered_non_spend_actions_executed
-                ),
+                "registered_non_spend_actions_executed": (registered_non_spend_actions_executed),
                 "registered_preauthorized_actions_executed": (
                     registered_preauthorized_actions_executed
                 ),
@@ -1295,8 +1271,7 @@ class TaskEvaluationSupervisor:
                         authority.to_mapping().get("max_cost_usd") or 0.0
                     ),
                     "reported_actual_cost_usd": sum(
-                        float(row.get("cost_usd") or 0.0)
-                        for row in executed_tool_observations
+                        float(row.get("cost_usd") or 0.0) for row in executed_tool_observations
                     ),
                     "reported_duration_seconds": sum(
                         float(row.get("duration_seconds") or 0.0)
@@ -1315,9 +1290,7 @@ class TaskEvaluationSupervisor:
                     ),
                     "live_invocation_count": live_invocation_count,
                     "manager_invocation_count": len(manager_invocations),
-                    "reservation_count": inference_reservation_manifest[
-                        "reservation_count"
-                    ],
+                    "reservation_count": inference_reservation_manifest["reservation_count"],
                     "in_flight_unknown_count": inference_reservation_manifest[
                         "in_flight_unknown_count"
                     ],
@@ -1327,10 +1300,7 @@ class TaskEvaluationSupervisor:
                     "reservation_manifest_path": "inference_reservations/manifest.json",
                     "reported_cost_is_final": (
                         live_invocation_count == 0
-                        and inference_reservation_manifest[
-                            "in_flight_unknown_count"
-                        ]
-                        == 0
+                        and inference_reservation_manifest["in_flight_unknown_count"] == 0
                     ),
                 },
                 "generated_at": timestamp,

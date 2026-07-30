@@ -42,6 +42,7 @@ from .contracts import (
     SupervisorState,
     TerminalSupervisorReport,
     ToolDescriptor,
+    ToolObservation,
     proof_boundary,
 )
 from .ledger import AppendOnlyEventLedger, SupervisorLedgerError
@@ -110,7 +111,11 @@ from .recorded_evaluation import (
     validate_supervisor_evaluation_configuration,
 )
 from .supervisor import SupervisorExecution, TaskEvaluationSupervisor
-from .tools import RegisteredToolBinding, ToolRegistry
+from .tools import (
+    RegisteredToolBinding,
+    ToolRegistry,
+    validate_tool_observation_binding,
+)
 from .vast_recovery_adapter import VastRecoveryAdapterError, VastWAMRecoveryAdapter
 
 __all__ = [
@@ -177,6 +182,7 @@ __all__ = [
     "TaskEvaluationSupervisor",
     "TerminalSupervisorReport",
     "ToolDescriptor",
+    "ToolObservation",
     "ToolRegistry",
     "VastRecoveryAdapterError",
     "VastWAMRecoveryAdapter",
@@ -208,5 +214,6 @@ __all__ = [
     "freeze_scenario_manifest",
     "freeze_candidate_policy_manifest",
     "scenario_proposal_set",
+    "validate_tool_observation_binding",
     "validate_pigey_license_attestation",
 ]

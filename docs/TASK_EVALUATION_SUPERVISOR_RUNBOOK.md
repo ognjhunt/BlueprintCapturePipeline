@@ -197,8 +197,12 @@ candidate presented with the older generic unbound grant is refused.
 
 Preserve the complete supervisor output directory. Replay verifies the
 append-only event hash chain, accepted contracts, generated-artifact digests,
-tool observations, and deterministic Decision Envelope. Replay does not ask a
-current model to regenerate prose.
+tool observations, reconstructed tool registry, and deterministic Decision
+Envelope. A tool observation is accepted only when its schema and digest match
+and it is bound to the recorded run, specialist capability, authority envelope,
+tool version, mutability, runtime identity, output digest, cost, and retry
+limits. Unknown or injected fields are refused before ledger persistence.
+Replay does not ask a current model to regenerate prose.
 
 The deterministic customer report must identify the original question,
 validated interpretation, claims, evidence, attempted/failed/skipped methods,

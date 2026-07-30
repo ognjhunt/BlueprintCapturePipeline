@@ -198,10 +198,21 @@ Every capability output is marked `authoritative=false`,
 classified against the tool registry and authority envelope. Shadow proposals
 are recorded but never executed.
 
+Every executed tool call returns a strict, versioned observation artifact. The
+same deterministic validator runs at tool creation, supervisor ingestion, and
+replay, binding the observation to the exact run, specialist capability,
+authority envelope, registered tool version and mutability, runtime identity,
+output digest, cost ceiling, and retry ceiling. Unknown fields or a mismatched
+binding are refused before the result can be written to the event ledger; raw
+injected tool text is not preserved as evidence.
+
 `replay_supervisor_run(...)` verifies the hash chain and all recorded contracts.
-When a deterministic Decision Envelope is present, replay reproduces its digest,
-outcome, and claim ceiling. Agent prose is intentionally not regenerated, so a
-changed future model cannot change the replayed proof result.
+Replay also reconstructs the recorded tool registry from its validated
+descriptors and rejects a manifest that grants undeclared shell, filesystem,
+network, provider, or proof authority. When a deterministic Decision Envelope
+is present, replay reproduces its digest, outcome, and claim ceiling. Agent prose
+is intentionally not regenerated, so a changed future model cannot change the
+replayed proof result.
 
 Run the current vertical slice with:
 

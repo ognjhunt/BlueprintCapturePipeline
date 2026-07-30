@@ -20,11 +20,18 @@ from .contracts import (
     AgentInvocationManifest,
     AuthorityEnvelope,
     CapabilityResult,
+    SupervisorContractError,
     SupervisorRun,
     TerminalSupervisorReport,
+    ToolDescriptor,
 )
 from .ledger import AppendOnlyEventLedger
 from .inference_reservations import InferenceReservationAudit
+from .tools import (
+    TOOL_REGISTRY_SCHEMA_VERSION,
+    ToolRegistry,
+    validate_tool_observation_binding,
+)
 
 
 REPLAY_REPORT_SCHEMA_VERSION = "task_evaluation_supervisor_replay_report.v1"
@@ -77,6 +84,32 @@ def replay_supervisor_run(
     authority_value = authority.to_mapping()
     if report_value["run_id"] != run_value["run_id"]:
         raise SupervisorReplayError("run_report_identity_mismatch")
+    if run_value["authority_digest"] != authority.digest:
+        raise SupervisorReplayError("run_authority_digest_mismatch")
+
+    tool_manifest = dict(read_json(root / "tool_registry_manifest.json"))
+    tool_manifest_digest = canonical_digest(
+        tool_manifest,
+        digest_field="tool_registry_digest",
+    )
+    tool_rows = tool_manifest.get("tools")
+    if (
+        tool_manifest.get("schema_version") != TOOL_REGISTRY_SCHEMA_VERSION
+        or tool_manifest.get("tool_registry_digest") != tool_manifest_digest
+        or run_value["tool_registry_digest"] != tool_manifest_digest
+        or report_value["tool_registry_digest"] != tool_manifest_digest
+        or not isinstance(tool_rows, list)
+        or any(not isinstance(row, Mapping) for row in tool_rows)
+    ):
+        raise SupervisorReplayError("tool_registry_manifest_mismatch")
+    try:
+        tool_registry = ToolRegistry.from_descriptors(
+            [ToolDescriptor.from_mapping(row) for row in tool_rows]
+        )
+    except (SupervisorContractError, ValueError) as exc:
+        raise SupervisorReplayError("tool_registry_manifest_mismatch") from exc
+    if tool_registry.manifest() != tool_manifest:
+        raise SupervisorReplayError("tool_registry_manifest_mismatch")
 
     events = AppendOnlyEventLedger(root / "supervisor_events.jsonl").read()
     if not events or events[-1].digest != report_value["last_event_digest"]:
@@ -287,27 +320,35 @@ def replay_supervisor_run(
         if root not in path.parents:
             raise SupervisorReplayError("invocation_artifact_path_escape")
         specialist_invocation = AgentInvocationManifest.from_mapping(read_json(path))
-        if specialist_invocation.digest != row["digest"]:
+        specialist_invocation_value = specialist_invocation.to_mapping()
+        if (
+            specialist_invocation.digest != row["digest"]
+            or specialist_invocation_value["run_id"] != run_value["run_id"]
+            or specialist_invocation_value["authority_digest"] != authority.digest
+            or specialist_invocation_value["tool_registry_digest"] != tool_registry.digest
+        ):
             raise SupervisorReplayError("invocation_artifact_digest_mismatch")
         invocation_digests.append(specialist_invocation.digest)
         invocation_observation_summaries: list[dict[str, Any]] = []
-        for observation_ref in (
-            specialist_invocation.to_mapping().get("tool_observation_references") or []
-        ):
+        for observation_ref in specialist_invocation_value.get("tool_observation_references") or []:
             if not isinstance(observation_ref, Mapping):
                 raise SupervisorReplayError("tool_observation_reference_invalid")
             observation_path = (root / str(observation_ref.get("artifact_path") or "")).resolve()
             if root not in observation_path.parents:
                 raise SupervisorReplayError("tool_observation_path_escape")
-            observation = read_json(observation_path)
-            digest = canonical_digest(observation, digest_field="observation_digest")
+            try:
+                observation = validate_tool_observation_binding(
+                    read_json(observation_path),
+                    run_id=str(run_value["run_id"]),
+                    capability=str(specialist_invocation_value["capability"]),
+                    registry=tool_registry,
+                    authority=authority_value,
+                )
+            except (SupervisorContractError, ValueError) as exc:
+                raise SupervisorReplayError("tool_observation_contract_mismatch") from exc
+            digest = str(observation["observation_digest"])
             observation_cost = float(observation.get("cost_usd") or 0.0)
-            if (
-                observation.get("observation_digest") != digest
-                or observation_ref.get("digest") != digest
-                or observation.get("proof_effect") != "none"
-                or observation_cost < 0
-            ):
+            if observation_ref.get("digest") != digest or observation.get("proof_effect") != "none":
                 raise SupervisorReplayError("tool_observation_contract_mismatch")
             if (
                 observation.get("runtime_identity") == "blueprint_local_deterministic_non_spend"

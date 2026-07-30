@@ -20,6 +20,7 @@ from ..decision_evidence_contracts import canonical_digest, canonical_json
 
 AUTHORITY_ENVELOPE_SCHEMA_VERSION = "task_evaluation_supervisor_authority.v1"
 TOOL_DESCRIPTOR_SCHEMA_VERSION = "task_evaluation_supervisor_tool.v1"
+TOOL_OBSERVATION_SCHEMA_VERSION = "task_evaluation_supervisor_tool_observation.v1"
 ACTION_PROPOSAL_SCHEMA_VERSION = "task_evaluation_supervisor_action_proposal.v1"
 CAPABILITY_RESULT_SCHEMA_VERSION = "task_evaluation_supervisor_capability_result.v1"
 EVENT_SCHEMA_VERSION = "task_evaluation_supervisor_event.v1"
@@ -217,6 +218,14 @@ class AuthorityEnvelope(ValidatedSupervisorArtifact):
         for key in ("max_cost_usd", "max_duration_seconds", "max_retries"):
             if not _number(value.get(key)):
                 errors.append(f"{key}:invalid")
+        if _number(value.get("max_duration_seconds")) and float(value["max_duration_seconds"]) <= 0:
+            errors.append("max_duration_seconds:must_be_positive")
+        if (
+            isinstance(value.get("max_retries"), bool)
+            or not isinstance(value.get("max_retries"), int)
+            or int(value.get("max_retries") or 0) < 0
+        ):
+            errors.append("max_retries:must_be_nonnegative_integer")
         if "agent_inference_budget_usd" in value and not _number(
             value.get("agent_inference_budget_usd")
         ):
@@ -287,6 +296,14 @@ class ToolDescriptor(ValidatedSupervisorArtifact):
         for key in ("max_cost_usd", "timeout_seconds", "max_retries"):
             if not _number(value.get(key)):
                 errors.append(f"{key}:invalid")
+        if _number(value.get("timeout_seconds")) and float(value["timeout_seconds"]) <= 0:
+            errors.append("timeout_seconds:must_be_positive")
+        if (
+            isinstance(value.get("max_retries"), bool)
+            or not isinstance(value.get("max_retries"), int)
+            or int(value.get("max_retries") or 0) < 0
+        ):
+            errors.append("max_retries:must_be_nonnegative_integer")
         if not _strings(value.get("allowed_modes"), nonempty=True):
             errors.append("allowed_modes:missing_or_invalid")
         else:
@@ -301,6 +318,148 @@ class ToolDescriptor(ValidatedSupervisorArtifact):
             errors.append("evidence_requirements:must_be_list")
         if not isinstance(value.get("expected_artifacts"), list):
             errors.append("expected_artifacts:must_be_list")
+        expected_safety = {
+            "read_only": "proof_safe_read_only",
+            "reversible_mutation": "proof_safe_reversible_non_spend",
+            "external_side_effect": "preauthorized_external_side_effect",
+        }.get(_string(value.get("mutability")))
+        if expected_safety is not None and value.get("safety_level") != expected_safety:
+            errors.append("safety_level:inconsistent_with_mutability")
+        rollback = value.get("rollback")
+        if not isinstance(rollback, Mapping):
+            errors.append("rollback:missing_or_invalid")
+        else:
+            expected_required = value.get("mutability") != "read_only"
+            if rollback.get("required") is not expected_required:
+                errors.append("rollback.required:inconsistent_with_mutability")
+            if not _string(rollback.get("reason")):
+                errors.append("rollback.reason:missing")
+        return errors
+
+
+@dataclass(frozen=True)
+class ToolObservation(ValidatedSupervisorArtifact):
+    """Strict result envelope for one registered tool invocation."""
+
+    SCHEMA_VERSION: ClassVar[str] = TOOL_OBSERVATION_SCHEMA_VERSION
+    DIGEST_FIELD: ClassVar[str] = "observation_digest"
+
+    @classmethod
+    def _validation_errors(cls, value: Mapping[str, Any]) -> list[str]:
+        errors: list[str] = []
+        allowed_fields = {
+            "schema_version",
+            "run_id",
+            "capability",
+            "tool_id",
+            "tool_version",
+            "status",
+            "typed_result",
+            "typed_failure",
+            "produced_artifact_references",
+            "input_digest",
+            "output_digest",
+            "runtime_identity",
+            "mutability",
+            "cost_usd",
+            "duration_seconds",
+            "retries",
+            "authority_digest",
+            "proof_effect",
+            "warnings",
+            "suggested_next_legal_actions",
+            "observation_digest",
+        }
+        unexpected = sorted(set(value) - allowed_fields)
+        missing = sorted(allowed_fields - set(value))
+        if unexpected:
+            errors.append(f"unexpected_fields:{','.join(unexpected)}")
+        if missing:
+            errors.append(f"missing_fields:{','.join(missing)}")
+        for key in ("run_id", "tool_id", "tool_version", "runtime_identity"):
+            _identifier(errors, value, key)
+        try:
+            CapabilityKind(_string(value.get("capability")))
+        except ValueError:
+            errors.append("capability:unsupported")
+        status = _string(value.get("status"))
+        if status not in {"completed", "failed", "refused"}:
+            errors.append("status:unsupported")
+        if not isinstance(value.get("typed_result"), Mapping):
+            errors.append("typed_result:must_be_mapping")
+        typed_failure = value.get("typed_failure")
+        if status == "completed" and typed_failure is not None:
+            errors.append("typed_failure:must_be_null_for_completed")
+        if status in {"failed", "refused"}:
+            if not isinstance(typed_failure, Mapping):
+                errors.append("typed_failure:must_be_mapping_for_failure")
+            else:
+                if not _string(typed_failure.get("failure_type")):
+                    errors.append("typed_failure.failure_type:missing")
+                if not _string(typed_failure.get("reason")):
+                    errors.append("typed_failure.reason:missing")
+                if not isinstance(typed_failure.get("retryable"), bool):
+                    errors.append("typed_failure.retryable:must_be_boolean")
+        if not _rows(value.get("produced_artifact_references")):
+            errors.append("produced_artifact_references:must_be_list")
+        else:
+            for index, reference in enumerate(value.get("produced_artifact_references") or []):
+                reference_fields = {"artifact_path", "artifact_digest", "artifact_type"}
+                optional_identity_fields = {
+                    "attempt_id",
+                    "plan_id",
+                    "proposal_set_id",
+                    "request_id",
+                    "run_id",
+                }
+                if not reference_fields.issubset(reference) or set(reference) - (
+                    reference_fields | optional_identity_fields
+                ):
+                    errors.append(f"produced_artifact_references[{index}]:fields_invalid")
+                    continue
+                for identity_key in sorted(optional_identity_fields & set(reference)):
+                    if not _string(reference.get(identity_key)):
+                        errors.append(
+                            f"produced_artifact_references[{index}].{identity_key}:missing"
+                        )
+                artifact_path = _string(reference.get("artifact_path"))
+                normalized_path = artifact_path.replace("\\", "/")
+                if (
+                    not artifact_path
+                    or normalized_path.startswith("/")
+                    or ".." in normalized_path.split("/")
+                ):
+                    errors.append(f"produced_artifact_references[{index}].artifact_path:unsafe")
+                if not _string(reference.get("artifact_type")):
+                    errors.append(f"produced_artifact_references[{index}].artifact_type:missing")
+                digest_errors: list[str] = []
+                _digest(digest_errors, reference, "artifact_digest")
+                errors.extend(
+                    f"produced_artifact_references[{index}].{error}" for error in digest_errors
+                )
+        for key in ("input_digest", "output_digest", "authority_digest", "observation_digest"):
+            _digest(errors, value, key)
+        if _string(value.get("mutability")) not in {
+            "read_only",
+            "reversible_mutation",
+            "external_side_effect",
+        }:
+            errors.append("mutability:unsupported")
+        for key in ("cost_usd", "duration_seconds"):
+            if not _number(value.get(key)):
+                errors.append(f"{key}:invalid")
+        if (
+            isinstance(value.get("retries"), bool)
+            or not isinstance(value.get("retries"), int)
+            or int(value.get("retries") or 0) < 0
+        ):
+            errors.append("retries:must_be_nonnegative_integer")
+        if _string(value.get("proof_effect")) != "none":
+            errors.append("proof_effect:must_be_none")
+        if not _strings(value.get("warnings")):
+            errors.append("warnings:must_be_list")
+        if not _strings(value.get("suggested_next_legal_actions")):
+            errors.append("suggested_next_legal_actions:must_be_list")
         return errors
 
 
@@ -665,6 +824,7 @@ __all__ = [
     "STATE_SCHEMA_VERSION",
     "TERMINAL_REPORT_SCHEMA_VERSION",
     "TOOL_DESCRIPTOR_SCHEMA_VERSION",
+    "TOOL_OBSERVATION_SCHEMA_VERSION",
     "ActionProposal",
     "AgentInvocationManifest",
     "AuthorityEnvelope",
@@ -679,6 +839,7 @@ __all__ = [
     "SupervisorState",
     "TerminalSupervisorReport",
     "ToolDescriptor",
+    "ToolObservation",
     "ValidatedSupervisorArtifact",
     "proof_boundary",
 ]

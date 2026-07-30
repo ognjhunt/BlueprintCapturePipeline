@@ -15,7 +15,14 @@ from ..common import write_json
 from ..decision_evidence_contracts import canonical_digest
 from ..decision_evidence_router import route_decision_evidence
 from ..evaluation_run_contract import validate_evaluation_run_spec
-from .contracts import ActionProposal, AuthorityEnvelope, AutonomyMode, ToolDescriptor
+from .contracts import (
+    TOOL_OBSERVATION_SCHEMA_VERSION,
+    ActionProposal,
+    AuthorityEnvelope,
+    AutonomyMode,
+    ToolDescriptor,
+    ToolObservation,
+)
 from .phase2_artifacts import (
     authorization_request,
     clarification_request,
@@ -25,7 +32,6 @@ from .phase2_artifacts import (
 
 
 TOOL_REGISTRY_SCHEMA_VERSION = "task_evaluation_supervisor_tool_registry.v1"
-TOOL_OBSERVATION_SCHEMA_VERSION = "task_evaluation_supervisor_tool_observation.v1"
 
 
 def _descriptor(
@@ -277,6 +283,13 @@ class ToolRegistry:
     def resolve(self, tool_id: str) -> ToolDescriptor | None:
         return self._tools.get(str(tool_id or "").strip())
 
+    def allowed_tool_ids_for_capability(self, capability: str) -> tuple[str, ...]:
+        return tuple(
+            tool_id
+            for tool_id in _CAPABILITY_TOOL_IDS.get(str(capability or ""), ())
+            if tool_id in self._tools
+        )
+
     def manifest(self) -> dict[str, Any]:
         descriptors = [self._tools[tool_id].to_mapping() for tool_id in sorted(self._tools)]
         value = {
@@ -374,6 +387,70 @@ class ToolRegistry:
             if check is not None and not check(value[key]):
                 errors.append(f"tool_input_type:{key}:{expected}")
         return errors
+
+
+def validate_tool_observation_binding(
+    observation_value: Mapping[str, Any],
+    *,
+    run_id: str,
+    capability: str,
+    registry: ToolRegistry,
+    authority: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate a tool result against the exact registered execution scope."""
+
+    observation = ToolObservation.from_mapping(observation_value).to_mapping()
+    validated_authority = AuthorityEnvelope.from_mapping(authority).to_mapping()
+    if observation["run_id"] != run_id:
+        raise ValueError("tool_observation_run_mismatch")
+    if observation["capability"] != capability:
+        raise ValueError("tool_observation_capability_mismatch")
+    if observation["authority_digest"] != validated_authority["authority_digest"]:
+        raise ValueError("tool_observation_authority_mismatch")
+    tool_id = str(observation["tool_id"])
+    descriptor = registry.resolve(tool_id)
+    if descriptor is None:
+        raise ValueError("tool_observation_unregistered_tool")
+    descriptor_value = descriptor.to_mapping()
+    if tool_id not in registry.allowed_tool_ids_for_capability(capability):
+        raise ValueError("tool_observation_capability_tool_mismatch")
+    if tool_id not in set(validated_authority.get("allowed_tool_ids") or []):
+        raise ValueError("tool_observation_tool_not_authorized")
+    if observation["tool_version"] != descriptor_value["version"]:
+        raise ValueError("tool_observation_version_mismatch")
+    if observation["mutability"] != descriptor_value["mutability"]:
+        raise ValueError("tool_observation_mutability_mismatch")
+    expected_runtime = (
+        "blueprint_preauthorized_recovery_controller"
+        if observation["mutability"] == "external_side_effect"
+        else "blueprint_local_deterministic_non_spend"
+    )
+    if observation["runtime_identity"] != expected_runtime:
+        raise ValueError("tool_observation_runtime_identity_mismatch")
+    if observation["output_digest"] != canonical_digest(observation["typed_result"]):
+        raise ValueError("tool_observation_output_digest_mismatch")
+    cost = float(observation["cost_usd"])
+    duration = float(observation["duration_seconds"])
+    retries = int(observation["retries"])
+    if cost > float(descriptor_value["max_cost_usd"]):
+        raise ValueError("tool_observation_tool_cost_exceeded")
+    if cost > float(validated_authority["max_cost_usd"]):
+        raise ValueError("tool_observation_authority_cost_exceeded")
+    if duration > float(descriptor_value["timeout_seconds"]):
+        raise ValueError("tool_observation_tool_duration_exceeded")
+    if duration > float(validated_authority["max_duration_seconds"]):
+        raise ValueError("tool_observation_authority_duration_exceeded")
+    if retries > int(descriptor_value["max_retries"]):
+        raise ValueError("tool_observation_tool_retries_exceeded")
+    if retries > int(validated_authority["max_retries"]):
+        raise ValueError("tool_observation_authority_retries_exceeded")
+    if observation["mutability"] != "external_side_effect" and cost != 0:
+        raise ValueError("tool_observation_non_spend_cost_nonzero")
+    if observation["mutability"] == "external_side_effect" and (
+        validated_authority["mode"] != AutonomyMode.EXECUTE_PREAUTHORIZED.value
+    ):
+        raise ValueError("tool_observation_external_side_effect_wrong_mode")
+    return observation
 
 
 @dataclass(frozen=True)
@@ -565,9 +642,7 @@ def _materialize_targeted_recapture_request(
             "contract_present": True,
             "digest_matches": True,
             "request_id": request["request_id"],
-            "targeted_recapture_request_digest": request[
-                "targeted_recapture_request_digest"
-            ],
+            "targeted_recapture_request_digest": request["targeted_recapture_request_digest"],
             "capture_started": False,
             "proof_state_changed": False,
         },
@@ -591,7 +666,9 @@ def _materialize_clarification_request(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     root_value = getattr(context, "supervisor_output_dir", None)
     if not isinstance(root_value, str) or not root_value:
-        raise ValueError("registered_tool_execution_scope_missing:materialize_clarification_request")
+        raise ValueError(
+            "registered_tool_execution_scope_missing:materialize_clarification_request"
+        )
     artifact = clarification_request(
         run_id=context.run_id,
         source_digest=_source_digest(context, arguments.get("source_digest")),
@@ -623,7 +700,9 @@ def _materialize_authorization_request(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     root_value = getattr(context, "supervisor_output_dir", None)
     if not isinstance(root_value, str) or not root_value:
-        raise ValueError("registered_tool_execution_scope_missing:materialize_authorization_request")
+        raise ValueError(
+            "registered_tool_execution_scope_missing:materialize_authorization_request"
+        )
     authority = context.authority_envelope or {}
     artifact = authorization_request(
         run_id=context.run_id,
@@ -705,10 +784,7 @@ def _execute_preauthorized_recovery(
     result = controller.execute(arguments)
     path = write_phase2_artifact(
         root_value,
-        (
-            "generated/recovery_attempts/"
-            f"{_safe_artifact_name(result['attempt_id'])}.json"
-        ),
+        (f"generated/recovery_attempts/{_safe_artifact_name(result['attempt_id'])}.json"),
         result,
     )
     reference = {
@@ -886,9 +962,7 @@ def non_spend_tool_bindings(
                     or typed_result.get("status") == "completed"
                     else "failed"
                 )
-                typed_failure = (
-                    typed_result.get("typed_failure") if status == "failed" else None
-                )
+                typed_failure = typed_result.get("typed_failure") if status == "failed" else None
             except ValueError as exc:
                 typed_result = {}
                 produced_artifact_references = []
@@ -929,7 +1003,13 @@ def non_spend_tool_bindings(
             observation["observation_digest"] = canonical_digest(
                 observation, digest_field="observation_digest"
             )
-            return observation
+            return validate_tool_observation_binding(
+                observation,
+                run_id=context.run_id,
+                capability=capability,
+                registry=registry,
+                authority=validated_authority,
+            )
 
         bindings.append(
             RegisteredToolBinding(
@@ -953,4 +1033,5 @@ __all__ = [
     "ToolRegistry",
     "default_tool_descriptors",
     "non_spend_tool_bindings",
+    "validate_tool_observation_binding",
 ]
