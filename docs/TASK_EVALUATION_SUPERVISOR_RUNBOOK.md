@@ -176,8 +176,16 @@ over the reservation.
 
 The organization Costs result is provider-reported spend evidence. Do not call
 it invoice reconciliation, and do not launch Pigey directly merely because the
-read-only cost adapter exists. Paid execution still requires an operator receipt,
-the shared paid-resource admission grant, and the canonical allocation path.
+read-only cost adapter exists. Paid execution still requires an operator receipt
+and must call `paid_resource_allocator.admit_pigey_candidate_runtime` in the same
+process that will execute the neutral suite. The allocator derives the
+worst-case Pigey runtime from its frozen scenario count and per-scenario timeout,
+binds the exact suite, authorization, source SHA, cost scope, license, spend,
+retry, watchdog, and teardown fields, persists
+`openai_api_candidate_allocation_admission.v1`, and injects an opaque grant into
+the runtime. `execute=False` is a readiness check only: it returns no grant.
+Copying or editing the JSON artifact cannot authorize execution. An OpenAI
+candidate presented with the older generic unbound grant is refused.
 
 ## Replay and customer report
 

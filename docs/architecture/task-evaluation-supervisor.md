@@ -324,10 +324,18 @@ evaluator. Candidate token totals never satisfy this gate. This is provider-
 reported cost evidence, not invoice settlement. The exact reviewed Pigey commit
 currently publishes no repository-level license, so the runtime also requires a
 digest-bound, independent license-or-permission attestation and remains blocked
-without rights-holder permission. A dedicated pre-provisioned OpenAI cost scope,
-canonical paid-allocation entry, and paid-execution authorization are still
-required before a live Pigey run. No live
-Pigey/provider run or physical validation is claimed.
+without rights-holder permission. The canonical allocator now has an
+`openai_api_candidate` admission entry and a Pigey-specific wrapper. It binds the
+exact frozen suite, operator receipt, Blueprint source commit, runtime digest,
+license attestation, independent cost authority, spend ceiling, retry count,
+worst-case runtime, watchdog, and teardown behavior before issuing an opaque
+in-process grant. A dry run writes the same prospective record but returns no
+grant, and a serialized admission record is never executable authority. OpenAI
+candidate grants must carry this allocation binding; the prior generic unbound
+paid grant is rejected. A dedicated pre-provisioned OpenAI cost scope, valid
+rights-holder permission, a live operator receipt, and explicit paid-execution
+authorization are still required before a live Pigey run. No live Pigey/provider
+run or physical validation is claimed.
 
 No phase may infer physical validation, deployment approval, safety
 certification, or policy-ranking support from simulation or generated media.

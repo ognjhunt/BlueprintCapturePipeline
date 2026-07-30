@@ -13,6 +13,7 @@ import json
 import math
 from pathlib import Path
 import re
+
 # Candidate execution uses an exact argv vector, no shell, and a frozen entrypoint.
 import subprocess  # nosec B404
 from typing import Any, Callable, Mapping, Sequence
@@ -246,6 +247,23 @@ class PigeySimCandidateRuntime:
             api_key_id=self.openai_api_key_id,
             scope_attestation_digest=self.openai_api_key_scope_attestation_digest,
         )
+
+    @property
+    def maximum_execution_seconds(self) -> float:
+        """Deterministic upper bound enforced by per-scenario subprocess timeouts."""
+
+        return len(self.scenario_bindings) * self.timeout_seconds_per_scenario
+
+    @property
+    def runtime_watchdog_enforced(self) -> bool:
+        return True
+
+    @property
+    def teardown_enforced(self) -> bool:
+        # Each scenario is a bounded foreground subprocess. subprocess.run
+        # kills and waits for the child when its timeout expires; Pigey creates
+        # no retained provider compute resource for Blueprint to tear down.
+        return True
 
     def __post_init__(self) -> None:
         self.checkout_root = self.checkout_root.expanduser().resolve()

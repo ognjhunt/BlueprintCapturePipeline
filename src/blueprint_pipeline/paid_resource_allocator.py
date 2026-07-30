@@ -14,7 +14,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from .common import ensure_dir, write_json
 from .groot_oscar_digitalocean_builder import (
@@ -59,7 +59,13 @@ from .g1_microwave_finetune_provider_job import (
     PROBE_KIND as G1_MICROWAVE_FINETUNE_PROBE_KIND,
     run_finetune_job as run_g1_microwave_finetune_job,
 )
-from .paid_resource_admission import require_paid_resource_admission
+from .openai_candidate_paid_admission import (
+    admit_openai_api_candidate as _admit_openai_api_candidate,
+    admit_pigey_candidate_runtime as _admit_pigey_candidate_runtime,
+)
+from .paid_resource_admission import (
+    require_paid_resource_admission,
+)
 from .openpi_policy_ranking_gpu_admission import (
     NEW_SITE_CANARY_PROBE_KIND,
     PROBE_KIND as OPENPI_POLICY_RANKING_PROBE_KIND,
@@ -100,6 +106,26 @@ FUTURE_CAMPAIGN_ALLOWANCE_SECONDS = 3_500
 COMBINED_GPU_PLAN_SECONDS = GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
 PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS = 36_000
 DETACHED_MODEL_VOLUME_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
+
+
+def admit_openai_api_candidate(**kwargs: Any) -> Any:
+    """Canonical source-bound entry for paid OpenAI candidate admission."""
+
+    return _admit_openai_api_candidate(
+        source_checkout_validator=_source_checkout_blockers,
+        checkout_state_reader=_current_checkout_source_state,
+        **kwargs,
+    )
+
+
+def admit_pigey_candidate_runtime(**kwargs: Any) -> Any:
+    """Canonical source-bound entry for the concrete Pigey runtime."""
+
+    return _admit_pigey_candidate_runtime(
+        source_checkout_validator=_source_checkout_blockers,
+        checkout_state_reader=_current_checkout_source_state,
+        **kwargs,
+    )
 
 
 def _current_checkout_source_state() -> tuple[str, bool]:
@@ -923,12 +949,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         output_secret_get_url_file=args.provider_output_get_url_file,
                         campaign_budget_ledger=args.campaign_budget_ledger,
                         campaign_initial_spent_usd=args.campaign_initial_spent_usd,
-                        campaign_initial_used_gpu_seconds=(
-                            args.campaign_initial_used_gpu_seconds
-                        ),
-                        campaign_total_spend_cap_usd=(
-                            args.campaign_total_spend_cap_usd
-                        ),
+                        campaign_initial_used_gpu_seconds=(args.campaign_initial_used_gpu_seconds),
+                        campaign_total_spend_cap_usd=(args.campaign_total_spend_cap_usd),
                         campaign_wall_cap_seconds=(
                             args.campaign_wall_cap_seconds
                             if args.campaign_wall_cap_seconds is not None
@@ -954,12 +976,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             missing = [name for name in required if not getattr(args, name, None)]
             if args.execute and not args.reasoner_session_budget_ledger:
                 missing.append("reasoner_session_budget_ledger")
-            if args.execute and not args.reasoner_public_base_url and not all(
-                getattr(args, name, None)
-                for name in (
-                    "provider_bundle_url_file",
-                    "provider_output_put_url_file",
-                    "provider_output_get_url_file",
+            if (
+                args.execute
+                and not args.reasoner_public_base_url
+                and not all(
+                    getattr(args, name, None)
+                    for name in (
+                        "provider_bundle_url_file",
+                        "provider_output_put_url_file",
+                        "provider_output_get_url_file",
+                    )
                 )
             ):
                 missing.append("reasoner_staging_transport")

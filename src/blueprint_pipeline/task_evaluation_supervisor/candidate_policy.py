@@ -714,6 +714,7 @@ def execute_neutral_candidate_policy_suite(
             require_paid_resource_admission_grant(
                 runtime.paid_resource_admission_grant,
                 resource_class=str(runtime.paid_resource_class),
+                require_allocation_binding=(runtime.paid_resource_class == "openai_api_candidate"),
             )
         except (AttributeError, PaidResourceAdmissionBlocked) as exc:
             raise CandidatePolicyError(
