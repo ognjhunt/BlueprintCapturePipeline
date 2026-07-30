@@ -43,6 +43,12 @@ from ..reconstruction_terminal_report import (
     build_reconstruction_terminal_report_request,
     generate_reconstruction_terminal_report,
 )
+from ..reconstruction_validation_contracts import (
+    build_camera_rig_validation_request,
+    build_metric_scale_validation_request,
+    validate_camera_rig,
+    validate_metric_scale,
+)
 from ..reconstruction_capability import normalize_reconstruction_result
 from ..reconstruction_worker_contracts import (
     build_pose_estimation_request,
@@ -183,6 +189,30 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "virtual_observation_count": {"type": "integer"},
             "shared_optical_center_required": {"const": True},
             "virtual_views_are_captured_evidence": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "validate_camera_rig": _output_schema(
+        {
+            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "validation_result_digest": {"type": "string"},
+            "status": {"enum": ["validated", "rejected"]},
+            "claim_ceiling": {
+                "enum": ["calibrated_camera_rig", "decoded_native_container"]
+            },
+            "metric_scale_proven": {"const": False},
+            "agent_altered_calibration": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "validate_metric_scale": _output_schema(
+        {
+            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "validation_result_digest": {"type": "string"},
+            "status": {"enum": ["validated", "rejected"]},
+            "relative_error": {"type": "number"},
+            "claim_ceiling": {"enum": ["metric_scale", "appearance_reconstruction"]},
+            "agent_changed_anchor_or_threshold": {"const": False},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -592,6 +622,24 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
             minimum_mode="execute_non_spend",
             timeout_seconds=600.0,
+        ),
+        _descriptor(
+            "validate_camera_rig", "camera_rig_validation",
+            expected_artifacts=["camera_rig_validation_result.v1"],
+            input_properties={"camera_rig_validation_request_digest": {"type": "string"}},
+            required_inputs=["camera_rig_validation_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend", timeout_seconds=30.0,
+        ),
+        _descriptor(
+            "validate_metric_scale", "metric_scale_validation",
+            expected_artifacts=["metric_scale_validation_result.v1"],
+            input_properties={"metric_scale_validation_request_digest": {"type": "string"}},
+            required_inputs=["metric_scale_validation_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend", timeout_seconds=30.0,
         ),
         _descriptor(
             "run_pose_estimation",
@@ -1117,7 +1165,9 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "export_arkit_reconstruction_dataset",
         "normalize_native_360_capture",
         "compile_equirectangular_virtual_rig",
+        "validate_camera_rig",
         "run_pose_estimation",
+        "validate_metric_scale",
         "train_gaussian_reconstruction",
         "evaluate_heldout_appearance",
         "compile_metric_geometry",
@@ -2347,6 +2397,75 @@ def _generate_reconstruction_report(
     ]
 
 
+def _execute_reconstruction_validation(
+    *, context: Any, tool_id: str, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    config = {
+        "validate_camera_rig": (
+            "camera_rig_validation_request",
+            "camera_rig_validation_request_digest",
+            build_camera_rig_validation_request,
+            validate_camera_rig,
+            "camera_rig_validation_result_digest",
+            "camera_rig_validation_result.v1",
+        ),
+        "validate_metric_scale": (
+            "metric_scale_validation_request",
+            "metric_scale_validation_request_digest",
+            build_metric_scale_validation_request,
+            validate_metric_scale,
+            "metric_scale_validation_result_digest",
+            "metric_scale_validation_result.v1",
+        ),
+    }[tool_id]
+    source_attr, request_digest_field, request_builder, validator, result_digest_field, artifact_type = config
+    root_value = getattr(context, "supervisor_output_dir", None)
+    source_value = getattr(context, source_attr, None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError(f"registered_tool_execution_scope_missing:{tool_id}")
+    if not isinstance(source_value, Mapping):
+        raise ValueError(f"registered_tool_request_not_injected:{tool_id}")
+    try:
+        request = request_builder(source_value)
+    except ValueError as exc:
+        raise ValueError(f"registered_tool_request_contract_invalid:{tool_id}") from exc
+    if arguments.get(request_digest_field) != request[request_digest_field]:
+        raise ValueError(f"registered_tool_source_digest_mismatch:{tool_id}")
+    result = validator(request)
+    path = write_phase2_artifact(
+        root_value, f"generated/{tool_id}/{artifact_type}.json", result
+    )
+    typed = {
+        "contract_present": True,
+        "digest_matches": True,
+        "validation_result_digest": result[result_digest_field],
+        "status": result["status"],
+        "claim_ceiling": result["claim_ceiling"],
+        "proof_state_changed": False,
+    }
+    if tool_id == "validate_camera_rig":
+        typed.update(
+            {
+                "metric_scale_proven": False,
+                "agent_altered_calibration": False,
+            }
+        )
+    else:
+        typed.update(
+            {
+                "relative_error": result["relative_error"],
+                "agent_changed_anchor_or_threshold": False,
+            }
+        )
+    return typed, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": result[result_digest_field],
+            "artifact_type": artifact_type,
+        }
+    ]
+
+
 def _bound_artifact(
     context: Any,
     *,
@@ -2490,6 +2609,10 @@ def _bound_artifact(
         return _generate_reconstruction_report(
             context=context, arguments=arguments
         )
+    elif tool_id in {"validate_camera_rig", "validate_metric_scale"}:
+        return _execute_reconstruction_validation(
+            context=context, tool_id=tool_id, arguments=arguments
+        )
     elif tool_id == "compile_deterministic_evidence_plan":
         value = context.evidence_plan
         expected = arguments.get("plan_digest")
@@ -2615,6 +2738,13 @@ def non_spend_tool_bindings(
             getattr(context, "reconstruction_terminal_report_request", None), Mapping
         ):
             continue
+        if tool_id in {"validate_camera_rig", "validate_metric_scale"}:
+            source_attr = {
+                "validate_camera_rig": "camera_rig_validation_request",
+                "validate_metric_scale": "metric_scale_validation_request",
+            }[tool_id]
+            if not isinstance(getattr(context, source_attr, None), Mapping):
+                continue
         descriptor = registry.resolve(tool_id)
         if descriptor is None:
             raise ValueError(f"registered_non_spend_tool_missing:{tool_id}")

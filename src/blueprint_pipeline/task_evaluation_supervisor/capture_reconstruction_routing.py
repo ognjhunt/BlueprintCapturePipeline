@@ -48,12 +48,13 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "pose_refinement",
             "required_not_registered",
         ),
+        ("validate_metric_scale", "metric_scale", "registered_conditional"),
         ("train_pose_conditioned_3dgs", "gaussian_splat_3d", "required_not_registered"),
         ("validate_testbed_layers", "testbed_compilation", "required_deterministic_gate"),
     ),
     "iphone_arkit_non_lidar": (
         ("verify_arkit_pose_intrinsics", "capture_validation", "required_deterministic_gate"),
-        ("verify_metric_scale_anchor", "metric_scaffold", "required_not_registered"),
+        ("validate_metric_scale", "metric_scaffold", "registered_conditional"),
         ("train_pose_conditioned_3dgs", "gaussian_splat_3d", "required_not_registered"),
         ("validate_testbed_layers", "testbed_compilation", "required_deterministic_gate"),
     ),
@@ -66,7 +67,7 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("estimate_camera_poses_with_sfm", "pose_sfm_estimation", "required_not_registered"),
         ("train_unscaled_appearance_3dgs", "gaussian_splat_3d", "required_not_registered"),
-        ("verify_metric_scale_anchor", "metric_scaffold", "required_not_registered"),
+        ("validate_metric_scale", "metric_scaffold", "registered_conditional"),
         ("validate_testbed_layers", "testbed_compilation", "required_deterministic_gate"),
     ),
     "camera_360_native": (
@@ -76,6 +77,7 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "native_360_normalization",
             "registered_conditional",
         ),
+        ("validate_camera_rig", "camera_rig_validation", "registered_conditional"),
         (
             "compile_equirectangular_virtual_rig",
             "equirectangular_normalization",
@@ -83,14 +85,14 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("estimate_camera_poses_with_sfm", "pose_sfm_estimation", "required_not_registered"),
         ("train_unscaled_appearance_3dgs", "gaussian_splat_3d", "required_not_registered"),
-        ("verify_metric_scale_anchor", "metric_scaffold", "required_not_registered"),
+        ("validate_metric_scale", "metric_scaffold", "registered_conditional"),
         ("validate_testbed_layers", "testbed_compilation", "required_deterministic_gate"),
     ),
     "monocular_video": (
         ("decode_retained_observation_frames", "decoded_observation_index", "registered"),
         ("estimate_camera_poses_with_sfm", "pose_sfm_estimation", "required_not_registered"),
         ("train_unscaled_appearance_3dgs", "gaussian_splat_3d", "required_not_registered"),
-        ("verify_metric_scale_anchor", "metric_scaffold", "required_not_registered"),
+        ("validate_metric_scale", "metric_scaffold", "registered_conditional"),
         ("validate_testbed_layers", "testbed_compilation", "required_deterministic_gate"),
     ),
     "precomputed_external_reconstruction": (

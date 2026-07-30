@@ -66,6 +66,9 @@ also names stages that are required but not yet registered, including
 spherical projection, SfM, 3DGS training, and independent scale validation.
 Native 360 normalization is registered conditionally: it appears as an SDK
 tool only when the trusted capture runtime injects a digest-bound normalizer.
+The subsequent `validate_camera_rig` tool independently rechecks the frozen rig
+declaration and dual-fisheye binding. It can establish fixed calibrated rig
+compatibility only; it cannot establish a trajectory or metric scale.
 This remains a planning aid: the control plane still owns method-profile
 eligibility and separate execution authorization.
 
@@ -79,6 +82,13 @@ rotation, pixel/color, and locally measurable image-quality metadata when those
 values are available. Duplicate or reordered PTS, undecodable media, symlinked
 inputs, unsafe paths, digest changes, and oversized retained video fail closed.
 The original retained video remains complete and authoritative.
+
+Metric scale now has a separate `metric_scale_anchor_declaration.v1` and
+`metric_scale_validation_result.v1` gate. Only a positive, independently
+verified physical reference may serve as an anchor; learned or monocular depth
+is explicitly rejected as the sole source. The registered validator compares a
+frozen estimated distance against the precommitted relative-error threshold and
+cannot let the agent change either value.
 
 The kernel emits five versioned, digest-bound artifacts governed by
 `docs/schemas/reconstruction_frame_dataset.v1.schema.json`:
