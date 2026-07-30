@@ -23,7 +23,13 @@ PACKET_DIRNAME = "openpi_policy_ranking_remote_build"
 BUILD_SCRIPT_NAME = "remote_build_openpi_policy_ranking_image.sh"
 RESULT_NAME = "openpi_policy_ranking_gpu_release.json"
 DEFAULT_IMAGE_REF = "docker.io/nijelhunt/blueprint-openpi-policy-ranking:20260726"
+DEFAULT_CTRL_WORLD_IMAGE_REF = (
+    "docker.io/nijelhunt/blueprint-openpi-ctrl-world-diagnostic:20260730-v1"
+)
 DOCKERFILE_RELATIVE_PATH = Path("deploy/docker/policy_ranking_openpi/Dockerfile")
+CTRL_WORLD_DOCKERFILE_RELATIVE_PATH = Path(
+    "deploy/docker/policy_ranking_openpi_ctrl_world/Dockerfile"
+)
 REQUIRED_CONTEXT_PATHS = (
     DOCKERFILE_RELATIVE_PATH,
     Path("pyproject.toml"),
@@ -39,6 +45,23 @@ REQUIRED_CONTEXT_PATHS = (
         "docs/experiments/policy_ranking_thesis_20260726/captured_site_ranking_aggregator_v1.json"
     ),
 )
+CTRL_WORLD_REQUIRED_CONTEXT_PATHS = (
+    CTRL_WORLD_DOCKERFILE_RELATIVE_PATH,
+    Path("deploy/docker/policy_ranking_openpi_ctrl_world/requirements.lock"),
+    Path("deploy/docker/policy_ranking_openpi_ctrl_world/ctrl_world_source_manifest.json"),
+    Path("pyproject.toml"),
+    Path("README.md"),
+    Path("LICENSE"),
+)
+DEFAULT_IMAGE_VARIANT = "openpi"
+CTRL_WORLD_IMAGE_VARIANT = "openpi_ctrl_world"
+IMAGE_VARIANTS = {
+    DEFAULT_IMAGE_VARIANT: (DOCKERFILE_RELATIVE_PATH, REQUIRED_CONTEXT_PATHS),
+    CTRL_WORLD_IMAGE_VARIANT: (
+        CTRL_WORLD_DOCKERFILE_RELATIVE_PATH,
+        CTRL_WORLD_REQUIRED_CONTEXT_PATHS,
+    ),
+}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 
@@ -64,8 +87,10 @@ def _versioned_image_ref(image_ref: str) -> bool:
     )
 
 
-def _context_sources(root: Path) -> tuple[list[Path], bool]:
-    paths = [root / relative for relative in REQUIRED_CONTEXT_PATHS]
+def _context_sources(
+    root: Path, *, required_context_paths: Sequence[Path]
+) -> tuple[list[Path], bool]:
+    paths = [root / relative for relative in required_context_paths]
     try:
         tracked = subprocess.run(
             ["git", "ls-files", "-z", "--", "src/blueprint_pipeline"],
@@ -85,6 +110,7 @@ def render_remote_build_script(
     source_commit: str,
     dockerfile_sha256: str,
     context_manifest_sha256: str,
+    dockerfile_relative_path: Path = DOCKERFILE_RELATIVE_PATH,
 ) -> str:
     """Return the exact remote script bound into the packet manifest."""
 
@@ -108,7 +134,7 @@ cleanup() {{
 }}
 trap cleanup EXIT
 
-test "$(sha256sum "$context_dir/{DOCKERFILE_RELATIVE_PATH.as_posix()}" | awk '{{print $1}}')" = "$dockerfile_sha256"
+test "$(sha256sum "$context_dir/{dockerfile_relative_path.as_posix()}" | awk '{{print $1}}')" = "$dockerfile_sha256"
 test -f "$username_file"
 test -f "$password_file"
 docker login -u "$(cat "$username_file")" --password-stdin < "$password_file"
@@ -117,7 +143,7 @@ docker buildx build \\
   --progress plain \\
   --metadata-file "$metadata" \\
   --build-arg "BLUEPRINT_SOURCE_COMMIT=$source_commit" \\
-  -f "$context_dir/{DOCKERFILE_RELATIVE_PATH.as_posix()}" \\
+  -f "$context_dir/{dockerfile_relative_path.as_posix()}" \\
   -t "$image_ref" \\
   --push \\
   "$context_dir"
@@ -176,10 +202,16 @@ def validate_openpi_policy_ranking_archive(packet: Mapping[str, Any]) -> list[st
     names = declared_names if isinstance(declared_names, list) else []
     declared_digests = packet.get("archive_member_sha256")
     digests = declared_digests if isinstance(declared_digests, Mapping) else {}
+    image_variant = str(packet.get("image_variant") or DEFAULT_IMAGE_VARIANT)
+    variant = IMAGE_VARIANTS.get(image_variant)
+    if variant is None:
+        blockers.append("builder_openpi_image_variant_invalid")
+        variant = IMAGE_VARIANTS[DEFAULT_IMAGE_VARIANT]
+    dockerfile_relative_path, required_context_paths = variant
     required_names = {
         f"{PACKET_DIRNAME}/README.md",
         f"{PACKET_DIRNAME}/{BUILD_SCRIPT_NAME}",
-        *(f"{PACKET_DIRNAME}/context/{path.as_posix()}" for path in REQUIRED_CONTEXT_PATHS),
+        *(f"{PACKET_DIRNAME}/context/{path.as_posix()}" for path in required_context_paths),
     }
     if names != sorted(names) or len(names) != len(set(names)) or not required_names <= set(names):
         blockers.append("builder_openpi_archive_member_contract_invalid")
@@ -230,7 +262,7 @@ def validate_openpi_policy_ranking_archive(packet: Mapping[str, Any]) -> list[st
         for name, payload in payloads.items()
     ):
         blockers.append("builder_openpi_archive_member_digest_mismatch")
-    dockerfile_name = f"{PACKET_DIRNAME}/context/{DOCKERFILE_RELATIVE_PATH.as_posix()}"
+    dockerfile_name = f"{PACKET_DIRNAME}/context/{dockerfile_relative_path.as_posix()}"
     if dockerfile_name in payloads and hashlib.sha256(
         payloads[dockerfile_name]
     ).hexdigest() != packet.get("dockerfile_sha256"):
@@ -240,6 +272,7 @@ def validate_openpi_policy_ranking_archive(packet: Mapping[str, Any]) -> list[st
         source_commit=str(packet.get("source_commit") or ""),
         dockerfile_sha256=str(packet.get("dockerfile_sha256") or ""),
         context_manifest_sha256=str(packet.get("context_manifest_sha256") or ""),
+        dockerfile_relative_path=dockerfile_relative_path,
     ).encode()
     if payloads.get(f"{PACKET_DIRNAME}/{BUILD_SCRIPT_NAME}") != expected_script:
         blockers.append("builder_openpi_archive_script_binding_mismatch")
@@ -254,12 +287,18 @@ def prepare_remote_build_packet(
     source_commit: str,
     source_worktree_dirty: bool,
     generated_at: str | None = None,
+    image_variant: str = DEFAULT_IMAGE_VARIANT,
 ) -> dict[str, Any]:
     root = Path(repo_root).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     packet = output / PACKET_DIRNAME
     context = packet / "context"
     blockers: list[str] = []
+    variant = IMAGE_VARIANTS.get(image_variant)
+    if variant is None:
+        blockers.append("openpi_image_variant_invalid")
+        variant = IMAGE_VARIANTS[DEFAULT_IMAGE_VARIANT]
+    dockerfile_relative_path, required_context_paths = variant
     if not _versioned_image_ref(image_ref):
         blockers.append("openpi_image_ref_not_versioned")
     if not _COMMIT.fullmatch(source_commit):
@@ -288,12 +327,14 @@ def prepare_remote_build_packet(
         blockers.append("openpi_packet_requires_clean_source_worktree")
 
     ensure_dir(context)
-    sources, tracked_source_available = _context_sources(root)
+    sources, tracked_source_available = _context_sources(
+        root, required_context_paths=required_context_paths
+    )
     if not tracked_source_available:
         blockers.append("openpi_tracked_source_inventory_unavailable")
     missing = [
         relative.as_posix()
-        for relative in REQUIRED_CONTEXT_PATHS
+        for relative in required_context_paths
         if not (root / relative).is_file()
     ]
     blockers.extend(f"openpi_context_file_missing:{name}" for name in missing)
@@ -305,7 +346,7 @@ def prepare_remote_build_packet(
         ensure_dir(destination.parent)
         shutil.copy2(source, destination)
         copied.append(destination)
-    dockerfile = context / DOCKERFILE_RELATIVE_PATH
+    dockerfile = context / dockerfile_relative_path
     dockerfile_sha256 = _sha256(dockerfile) if dockerfile.is_file() else ""
     context_member_sha256 = {
         destination.relative_to(context).as_posix(): _sha256(destination) for destination in copied
@@ -320,6 +361,7 @@ def prepare_remote_build_packet(
             source_commit=source_commit,
             dockerfile_sha256=dockerfile_sha256,
             context_manifest_sha256=context_manifest_sha256,
+            dockerfile_relative_path=dockerfile_relative_path,
         ),
         encoding="utf-8",
     )
@@ -346,6 +388,8 @@ def prepare_remote_build_packet(
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "packet_kind": PACKET_KIND,
+        "image_variant": image_variant,
+        "dockerfile_relative_path": dockerfile_relative_path.as_posix(),
         "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
         "status": "blocked" if blockers else "ready",
         "blockers": sorted(set(blockers)),
@@ -381,6 +425,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[2]))
     parser.add_argument("--image-ref", default=DEFAULT_IMAGE_REF)
+    parser.add_argument(
+        "--image-variant", choices=tuple(IMAGE_VARIANTS), default=DEFAULT_IMAGE_VARIANT
+    )
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--source-worktree-dirty", action="store_true")
     args = parser.parse_args(argv)
@@ -390,6 +437,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         image_ref=args.image_ref,
         source_commit=args.source_commit,
         source_worktree_dirty=args.source_worktree_dirty,
+        image_variant=args.image_variant,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "ready" else 2

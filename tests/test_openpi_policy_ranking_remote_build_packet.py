@@ -14,6 +14,8 @@ from blueprint_pipeline.groot_oscar_infrastructure_admission import (
     build_build_plane_admission,
 )
 from blueprint_pipeline.openpi_policy_ranking_remote_build_packet import (
+    CTRL_WORLD_IMAGE_VARIANT,
+    DEFAULT_CTRL_WORLD_IMAGE_REF,
     DEFAULT_IMAGE_REF,
     MENAGERIE_REVISION,
     OPENPI_REVISION,
@@ -87,6 +89,41 @@ def test_openpi_packet_binds_full_context_and_executable(tmp_path: Path) -> None
     assert result["menagerie_revision"] == MENAGERIE_REVISION
 
 
+def test_ctrl_world_variant_binds_combined_dockerfile_and_runtime_lock(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    result = prepare_remote_build_packet(
+        output_dir=tmp_path,
+        repo_root=repo,
+        image_ref=DEFAULT_CTRL_WORLD_IMAGE_REF,
+        source_commit=head,
+        source_worktree_dirty=True,
+        image_variant=CTRL_WORLD_IMAGE_VARIANT,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["image_variant"] == CTRL_WORLD_IMAGE_VARIANT
+    assert result["dockerfile_relative_path"] == (
+        "deploy/docker/policy_ranking_openpi_ctrl_world/Dockerfile"
+    )
+    assert validate_openpi_policy_ranking_archive(result) == []
+    assert any(
+        name.endswith("/policy_ranking_openpi_ctrl_world/requirements.lock")
+        for name in result["archive_members"]
+    )
+    assert any(
+        name.endswith("/policy_ranking_openpi_ctrl_world/ctrl_world_source_manifest.json")
+        for name in result["archive_members"]
+    )
+
+
 def test_openpi_packet_is_admitted_only_when_clean_source_claim_is_ready(
     tmp_path: Path,
 ) -> None:
@@ -131,8 +168,7 @@ def test_openpi_cloud_init_uses_governed_docker_builder() -> None:
 
 def test_openpi_runtime_installs_and_verifies_camera_render_thread_library() -> None:
     dockerfile = (
-        Path(__file__).resolve().parents[1]
-        / "deploy/docker/policy_ranking_openpi/Dockerfile"
+        Path(__file__).resolve().parents[1] / "deploy/docker/policy_ranking_openpi/Dockerfile"
     ).read_text(encoding="utf-8")
 
     assert "libglib2.0-0" in dockerfile
