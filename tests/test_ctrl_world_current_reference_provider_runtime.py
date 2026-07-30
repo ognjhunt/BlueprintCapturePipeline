@@ -101,6 +101,12 @@ def test_runtime_contract_with_fake_executor_never_needs_future_pixels(
 
     monkeypatch.setattr(runtime, "EXPECTED_WORLD_MODEL_SHA256", file_sha256(checkpoint))
     monkeypatch.setattr(runtime, "EXPECTED_STATE_STAT_SHA256", file_sha256(stats))
+    monkeypatch.setattr(
+        "cv2.imread",
+        lambda *_args, **_kwargs: pytest.fail(
+            "retained generated PNG decoding must not depend on provider OpenCV/libpng"
+        ),
+    )
 
     def executor(
         *, validated_request: dict[str, Any], output_dir: Path, **_: Any

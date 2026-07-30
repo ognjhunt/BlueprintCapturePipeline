@@ -84,6 +84,7 @@ def _write_generated_only_media(
 
     import cv2
     import numpy as np
+    from PIL import Image
 
     if set(sequences) != set(VIEW_ORDER) or set(hashes) != set(VIEW_ORDER):
         raise ValueError("ctrl_world_runtime_generated_media_view_set_invalid")
@@ -105,9 +106,20 @@ def _write_generated_only_media(
             digest = _sha256_file(path)
             if digest != expected_digest:
                 raise ValueError(f"ctrl_world_runtime_generated_media_hash_mismatch:{view_id}")
-            frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
-            if frame is None or frame.shape != (192, 320, 3):
+            # Decode retained PNGs with Pillow, which produced them above.  Some
+            # provider images expose an OpenCV/libpng and system-zlib mismatch
+            # that rejects otherwise valid Pillow PNGs during cv2.imread.
+            # VideoWriter still receives the required BGR uint8 arrays.
+            try:
+                with Image.open(path) as image:
+                    rgb_frame = np.asarray(image.convert("RGB"), dtype=np.uint8)
+            except (OSError, ValueError):
+                raise ValueError(
+                    f"ctrl_world_runtime_generated_media_decode_invalid:{view_id}"
+                ) from None
+            if rgb_frame.shape != (192, 320, 3):
                 raise ValueError(f"ctrl_world_runtime_generated_media_geometry_invalid:{view_id}")
+            frame = np.ascontiguousarray(rgb_frame[:, :, ::-1])
             decoded[view_id].append(frame)
             source_hashes[view_id].append(digest)
 

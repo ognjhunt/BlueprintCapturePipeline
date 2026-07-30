@@ -164,6 +164,10 @@ used as blind confirmation.
 - `protocol_amendment_16_first_wam_policy_seed_selection_v1.md` — prospectively
   freezes `pi05_droid`, `pickplace`, gripper maximum `0.75`, and seed 0 for the
   one-action first Ctrl-World generation before inspecting any WAM output;
+- `protocol_amendment_17_provider_png_decode_and_budget_ledger_separation_v1.md`
+  — preserves the first live attempt's post-generation libpng failure and
+  prospectively freezes a generic Pillow decode path plus distinct production
+  and provider-session budget-ledger paths for the identical-input retry;
 - `goal_cost_authorization_v1.json`,
   `compute_authorization_ctrl_world_allocation_1.json`, and
   `ctrl_world_current_reference_first_wam_gpu_profile_freeze_v1.json` — bind the
@@ -174,10 +178,12 @@ used as blind confirmation.
 
 ## Next finite gate
 
-The next finite gate is one separately attributable Ctrl-World current-reference
-generation from the frozen `pi05_droid` native action at seed 0. Its request,
-bundle, exact launch profile, budget reservation, watchdog, and teardown
-contracts must all pass before the provider call. If its generated-only
-three-view artifact passes the registered immediate reliability checks, the next
-gate is one three-interaction re-query episode with the same policy. Judges
-remain forbidden until a complete episode passes causal qualification.
+The first live generation completed diffusion and retained all 15 expected PNGs,
+then failed during OpenCV/libpng media reopening before a registered MP4 or
+successful WAM result existed. Provider teardown and provider-zero passed. The
+next finite gate is one identical-input retry at a new immutable SHA using the
+generic Pillow decode correction and separated budget ledgers. If its
+generated-only three-view artifact passes the registered immediate reliability
+checks, the next gate is one three-interaction re-query episode with the same
+policy. Judges remain forbidden until a complete episode passes causal
+qualification.
