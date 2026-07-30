@@ -92,6 +92,7 @@ class SupervisorContext:
     reconstruction_terminal_report_request: Mapping[str, Any] | None = None
     camera_rig_validation_request: Mapping[str, Any] | None = None
     metric_scale_validation_request: Mapping[str, Any] | None = None
+    generated_repair_candidate_request: Mapping[str, Any] | None = None
 
 
 class SupervisorCapability(Protocol):

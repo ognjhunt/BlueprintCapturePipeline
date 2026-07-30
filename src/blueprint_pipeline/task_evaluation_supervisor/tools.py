@@ -53,6 +53,10 @@ from ..reconstruction_pose_refinement import (
     build_pose_refinement_execution_request,
     build_pose_refinement_result,
 )
+from ..reconstruction_generated_repair import (
+    build_generated_repair_candidate_request,
+    run_generated_repair_candidate,
+)
 from ..reconstruction_capability import normalize_reconstruction_result
 from ..reconstruction_worker_contracts import (
     build_pose_estimation_request,
@@ -272,6 +276,18 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "decision": {
                 "enum": ["passed_appearance_only", "rejected_appearance_quality"]
             },
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "run_generated_repair_candidate": _output_schema(
+        {
+            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "result_digest": {"type": "string"},
+            "status": {"const": "blocked_not_qualified"},
+            "execution_started": {"const": False},
+            "baseline_preserved": {"const": True},
+            "hidden_heldout_available_to_candidate": {"const": False},
+            "claim_ceiling": {"const": "generated_visual_support"},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -705,6 +721,16 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             minimum_mode="execute_non_spend",
             timeout_seconds=1_800.0,
             idempotency="frozen_hidden_split_independent_evaluator",
+        ),
+        _descriptor(
+            "run_generated_repair_candidate", "generated_reconstruction_support",
+            expected_artifacts=["generated_repair_candidate_result.v1"],
+            input_properties={"generated_repair_candidate_request_digest": {"type": "string"}},
+            required_inputs=["generated_repair_candidate_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend", timeout_seconds=30.0,
+            idempotency="deterministic_qualification_rejection_no_execution",
         ),
         _descriptor(
             "compile_metric_geometry", "capture_reconstruction_metric_geometry",
@@ -1198,6 +1224,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "validate_metric_scale",
         "train_gaussian_reconstruction",
         "evaluate_heldout_appearance",
+        "run_generated_repair_candidate",
         "compile_metric_geometry",
         "compile_collision_candidate",
         "qualify_collision_candidate",
@@ -2568,6 +2595,51 @@ def _execute_reconstruction_validation(
     ]
 
 
+def _run_generated_repair_candidate(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    source_value = getattr(context, "generated_repair_candidate_request", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError(
+            "registered_tool_execution_scope_missing:run_generated_repair_candidate"
+        )
+    if not isinstance(source_value, Mapping):
+        raise ValueError("generated_repair_candidate_request_not_injected")
+    try:
+        request = build_generated_repair_candidate_request(source_value)
+    except ValueError as exc:
+        raise ValueError("generated_repair_candidate_request_contract_invalid") from exc
+    expected = arguments.get("generated_repair_candidate_request_digest")
+    if expected != request["generated_repair_candidate_request_digest"]:
+        raise ValueError(
+            "registered_tool_source_digest_mismatch:run_generated_repair_candidate"
+        )
+    result = run_generated_repair_candidate(request)
+    path = write_phase2_artifact(
+        root_value,
+        "generated/generated_repair_candidate/generated_repair_candidate_result.json",
+        result,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "result_digest": result["generated_repair_candidate_result_digest"],
+        "status": "blocked_not_qualified",
+        "execution_started": False,
+        "baseline_preserved": True,
+        "hidden_heldout_available_to_candidate": False,
+        "claim_ceiling": "generated_visual_support",
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": result["generated_repair_candidate_result_digest"],
+            "artifact_type": "generated_repair_candidate_result.v1",
+        }
+    ]
+
+
 def _bound_artifact(
     context: Any,
     *,
@@ -2717,6 +2789,10 @@ def _bound_artifact(
         return _execute_reconstruction_validation(
             context=context, tool_id=tool_id, arguments=arguments
         )
+    elif tool_id == "run_generated_repair_candidate":
+        return _run_generated_repair_candidate(
+            context=context, arguments=arguments
+        )
     elif tool_id == "compile_deterministic_evidence_plan":
         value = context.evidence_plan
         expected = arguments.get("plan_digest")
@@ -2854,6 +2930,10 @@ def non_spend_tool_bindings(
             }[tool_id]
             if not isinstance(getattr(context, source_attr, None), Mapping):
                 continue
+        if tool_id == "run_generated_repair_candidate" and not isinstance(
+            getattr(context, "generated_repair_candidate_request", None), Mapping
+        ):
+            continue
         descriptor = registry.resolve(tool_id)
         if descriptor is None:
             raise ValueError(f"registered_non_spend_tool_missing:{tool_id}")

@@ -393,6 +393,14 @@ baseline, excludes hidden held-out observations, and remains bounded to
 generated visual support with no metric, collision, physical, or deployment
 effect.
 
+`run_generated_repair_candidate` is a registered digest-only gate. Under the
+current audits it emits `generated_repair_candidate_result.v1` with
+`blocked_not_qualified`, no generated artifacts, zero cost, and the exact
+method-audit blockers. It cannot start ArtiFixer, Difix3D+, or Harmonizer by
+inventing a qualified status or altered audit digest. A future executable
+version requires a new reviewed contract after the relevant model/license,
+worker, checkpoint, and real held-out gates pass.
+
 Independent baseline and enhancement grading now uses the registered
 `evaluate_heldout_appearance` tool and the
 `heldout_appearance_evaluation_request.v1` /
