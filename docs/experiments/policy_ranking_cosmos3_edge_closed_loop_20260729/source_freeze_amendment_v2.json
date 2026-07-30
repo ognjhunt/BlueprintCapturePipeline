@@ -1,0 +1,20 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze_amendment.v2",
+  "amended_at": "2026-07-29T07:43:46-05:00",
+  "former_manifest": "source_freeze_v1.json",
+  "former_manifest_sha256": "b8590f33afd66cfe98665095df9344cdfd953b2a1be866d086920ae0cca540b0",
+  "successor_manifest": "source_freeze_v2.json",
+  "successor_manifest_sha256": "90729933493012540a47385d6482eef4886b5634539d5be03ebb0ae48f39b4e2",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "scientific_legitimacy": "The public OSCAR repository and checkpoint were verified before the first paid call. The amendment narrows and pins the already-registered OSCAR arm; it does not change predictions, thresholds, labels, policy identities, or outcomes.",
+  "changed_fields": [
+    "replace the paper-only OSCAR citation with the executable oscar-public source URL, exact commit, Apache-2.0 license hash, README hash, and inference-code hashes",
+    "add the exact public OSCAR-2B checkpoint revision and distributed-checkpoint file sizes and hashes",
+    "freeze OSCAR's first-frame, 81-frame skeleton-video, task-prompt, 480x640, 15 Hz input contract",
+    "forbid optional physical RGB future context in the closed-loop product path",
+    "state explicitly that a deterministic OSCAR skeleton may condition a registered Cosmos3 hybrid but OSCAR-generated world video may not feed Cosmos3"
+  ],
+  "amendment_sha256": "44775d9659d57289da6825bad4990d9793ba6e4fd34a11e576ab5a1fd35de3c4"
+}

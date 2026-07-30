@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/capture_quality_observations.v1.json",
+  "title": "Blueprint Capture Quality Observations v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source",
+    "intake_id",
+    "source_file_sha256",
+    "measurements"
+  ],
+  "properties": {
+    "schema_version": {"const": "capture_quality_observations.v1"},
+    "source": {
+      "enum": ["capture_sidecars", "local_analyzer", "operator_attested"]
+    },
+    "intake_id": {"type": "string", "minLength": 1},
+    "source_file_sha256": {"$ref": "#/$defs/sha256"},
+    "observations_digest": {"$ref": "#/$defs/sha256"},
+    "analyzer": {"type": "object"},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "measurements": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "sharp_frame_fraction": {"$ref": "#/$defs/fraction"},
+        "well_exposed_frame_fraction": {"$ref": "#/$defs/fraction"},
+        "visual_overlap_fraction": {"$ref": "#/$defs/fraction"},
+        "compression_quality_fraction": {"$ref": "#/$defs/fraction"},
+        "rolling_shutter_symptom_fraction": {"$ref": "#/$defs/fraction"},
+        "privacy_sensitive_content_detected": {"type": "boolean"},
+        "dynamic_people_detected": {"type": "boolean"},
+        "moving_task_objects_detected": {"type": "boolean"},
+        "task_critical_occlusion_detected": {"type": "boolean"},
+        "robot_placement_area_covered": {"type": "boolean"},
+        "scale_anchor_verified": {"type": "boolean"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"source": {"const": "operator_attested"}}},
+      "then": {
+        "properties": {
+          "measurements": {
+            "not": {
+              "anyOf": [
+                {"required": ["sharp_frame_fraction"]},
+                {"required": ["well_exposed_frame_fraction"]},
+                {"required": ["visual_overlap_fraction"]},
+                {"required": ["compression_quality_fraction"]},
+                {"required": ["rolling_shutter_symptom_fraction"]}
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "fraction": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

@@ -8,6 +8,9 @@ from urllib.error import URLError
 
 from blueprint_pipeline import openpi_policy_ranking_runpod as runpod_module
 from blueprint_pipeline import paid_provider_lane_lease as lease_module
+from blueprint_pipeline.new_site_diagnostic_canary_gpu import (
+    INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
+)
 from blueprint_pipeline.openpi_policy_ranking_runpod import (
     EXECUTION_MODE_ENV,
     GENERIC_OUTPUT_SECRET_URL_ENV,
@@ -420,6 +423,35 @@ def test_vast_launch_request_uses_frozen_floor_and_args_entrypoint(
     # Request construction is in-memory only.  The returned provider-native
     # request is passed directly to launch and never persisted with raw URLs.
     assert list(tmp_path.iterdir()) == []
+
+
+def test_vast_launch_request_routes_current_canary_receipt_to_canary_mode(
+    tmp_path: Path,
+) -> None:
+    release, bundle, _runpod_preflight, _spend = _inputs()
+    bundle["schema_version"] = CANARY_INPUT_RECEIPT_SCHEMA_VERSION
+    preflight = {
+        "provider": "vast",
+        "gpu_memory_bytes": 46_068_000_000,
+        "on_demand_price_usd_per_hour": 0.75,
+        "container_disk_bytes": 100 * 1024**3,
+        "capacity_request": {"min_gpu_ram_mb": 45_000},
+    }
+
+    request = _build_vast_launch_request(
+        provider=runpod_module.get_render_provider("vast"),
+        root=tmp_path,
+        pod_name="blueprint-groot-oscar-canary-openpi-ranking-vast-canary-shape",
+        release=release,
+        input_bundle=bundle,
+        preflight=preflight,
+        input_secret_url="https://storage.example/input?signature=secret",
+        output_secret_put_url="https://storage.example/output?signature=secret",
+    )
+
+    assert request["create_payload"]["env"][EXECUTION_MODE_ENV] == (
+        "new_site_diagnostic_canary"
+    )
 
 
 def test_openpi_campaign_dry_run_stays_mutation_free(tmp_path: Path) -> None:

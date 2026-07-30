@@ -1,0 +1,7 @@
+{
+  "schema_version": "policy_ranking_oscar_public_replay_smoke_inventory.v2",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "inventory_role": "not_applicable_inputs_frozen_inside_bundle",
+  "row_count": 0,
+  "physical_outcome_labels_accessed": false
+}

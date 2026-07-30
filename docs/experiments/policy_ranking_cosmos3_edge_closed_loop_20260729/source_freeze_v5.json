@@ -1,0 +1,40 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze.v5",
+  "frozen_at": "2026-07-29T09:35:00-0500",
+  "supersedes_manifest_sha256": "328e04599abd0fc54b7d989659ee0c91a8e469c772582a20c3deabe240982b66",
+  "inherits_all_sources_from": "source_freeze_v4.json",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "cosmos_framework": {
+    "repository": "https://github.com/NVIDIA/cosmos-framework",
+    "revision": "2f603cb114ff8b335e116060444d0b6caee3a85e",
+    "license": "OpenMDW-1.1",
+    "files": {
+      "cosmos_framework/scripts/action_policy_server_robolab.py": "0ea7c258e5e3250ffa9e259151fc856ab767164d94a05040518409e4a7e31423",
+      "cosmos_framework/inference/common/args.py": "519670d3fa04780467a24830a694f8f3ea99da2f3f97c99c00512c7af6b43ffe",
+      "cosmos_framework/inference/common/inference.py": "44d4ce88a509a727ea36a19614967095e6dfaa4fd66155c89fe75f98e76ba2ee",
+      "cosmos_framework/inference/inference.py": "b4400926af6727dbc5c252b4ab6e5b6a791ecc157af5f515915e60eed6c83b30",
+      "cosmos_framework/scripts/export_model.py": "a503a4261816532cf6697956c3a5851922a637582ac6fb190461fb366070bc31",
+      "tests/distilled_inference_smoke_test.py": "a9f8a6d4495ab350f0586f9e6a14f41975e3fa65064910ebb66f81e2762d84ea"
+    }
+  },
+  "guardrail_contract": {
+    "default_enabled": true,
+    "source_supported_disabled_value": false,
+    "separate_gated_model": "nvidia/Cosmos-Guardrail1",
+    "separate_gated_model_revision_observed": "d6d4bfa899a71454a700907664f3e88f503950cf",
+    "application_scope": "prompt and generated-video acceptance after generation",
+    "policy_weights_or_action_conditioning": false,
+    "blueprint_runtime_mode": "disabled_source_supported_post_generation_filter"
+  },
+  "wrapper_contract": {
+    "official_service_preserved": true,
+    "only_setup_field_overridden": "guardrails",
+    "native_action_shape_guard": [32, 8],
+    "server_metadata_records_override": true,
+    "startup_receipt_records_override": true,
+    "fails_closed_if_setup_field_drifts": true
+  },
+  "manifest_sha256": "0cb1f124def47bc6189dc00ed5f6dde5d951a5b408a15616be3a6920793e70df"
+}

@@ -1,0 +1,48 @@
+{
+  "schema_version": "policy_ranking_oscar_replay_canary_bundle_freeze.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T10:56:00-0500",
+  "bundle_version": 4,
+  "source_commit": "38518c3cacc8c1baa6adc81cbf72e8ba2961a483",
+  "source_commit_pushed": true,
+  "protocol_amendment_sha256": "c8a52f5ebbadcd66492f788d0453fa3c0c1ee2660d4350324994f560c9070111",
+  "source_freeze_sha256": "dcf03d35d1c454eeeb5615164a4dd6ae67150baa67689f99121c400e3090dff5",
+  "bundle": {
+    "external_evidence_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/oscar_public_replay_canary_v4/bundle_job/oscar_wam_provider_runtime_bundle.zip",
+    "size_bytes": 1135718,
+    "sha256": "d6447c8432eb9d484c64f61244eaec40739f9115d778390f6b1fef18c9564752",
+    "zip_integrity_passed": true,
+    "bundle_manifest_sha256": "26e497d99a4e26213f630ac6d7d37b9a586cc041b43319985ad07dc607cda203"
+  },
+  "inputs": {
+    "input_package_manifest_sha256": "122d5fdb2404b4ef0a111a33a151bcb94aa844e120651595619e0a40a8426abc",
+    "rollout_input_manifest_sha256": "d2219b3169c4d1bcec7565d3839eaa80743e8c531c3d7742073490409c48388d",
+    "first_frame_sha256": "2efae31ef115800a18f04302b668241a5891d36f3ad29734b22a46c791307a35",
+    "public_rgb_asset_sha256": "6280df33844427d754a0fd7aa1ed212b4d4edd9a5ec8d8a6468569b90d617439",
+    "public_skeleton_asset_sha256": "4ad9dd1c6cf2acd2bd62fd51a4e5c0744ee0a077b8ea06b7a0a35af24418d08c",
+    "public_caption_asset_sha256": "b0cc27da5134b36b62153e02a99509305dc14614ebcc383974a44e395bb659b5",
+    "physical_future_rgb_provided_to_model": false,
+    "physical_outcome_labels_accessed": false
+  },
+  "runtime": {
+    "source_revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "checkpoint_revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+    "entrypoint": "scripts/run_inference.sh",
+    "case": "droid_TRI",
+    "start_frame": 116,
+    "seed": 44,
+    "fps": 14.0,
+    "num_frames": 81,
+    "height": 480,
+    "width": 640,
+    "num_inference_steps": 35,
+    "guidance": 6.0,
+    "future_rgb_video_argument_enabled": false,
+    "sparse_texture_free_skeleton_signal_passed": true,
+    "explicit_public_skeleton_provenance_preserved": true
+  },
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "claim_boundary": "Immutable label-free exact-public replay canary bundle only; no WAM causal, ranking, captured-site, economics, physical-success, or thesis credit from bundle construction.",
+  "freeze_sha256": "ab54c3b8a2a4dd015532a6780ad7825177d2ba38490e6e6422778ce2920aedf5"
+}

@@ -1,0 +1,71 @@
+{
+  "schema_version": "policy_ranking_oscar_public_replay_failure.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-29T11:01:26-0500",
+  "allocation_id": "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-6",
+  "provider": "vast",
+  "provider_instance_id": 46206843,
+  "status": "blocked",
+  "authorization_consumed": true,
+  "paid_launch_attempted": true,
+  "executed_source_commit": "aacdbbcae5eea18def86b34203120d1bda9c1f3f",
+  "executed_bundle": {
+    "version": 1,
+    "sha256": "f505f7516e65e7faff13fd8b6868f599c23cea79bee586b40ce14323b8de4a24",
+    "runner_sha256": "fcbbe0bf0512cd30b43208713b9479bfa82ff77c5215b0ad142a7a21ef372343",
+    "fps": 15.0,
+    "seed": 42,
+    "public_script_ownership_guard_present": false
+  },
+  "frozen_corrected_bundle_not_executed": {
+    "version": 4,
+    "sha256": "d6447c8432eb9d484c64f61244eaec40739f9115d778390f6b1fef18c9564752",
+    "runner_sha256": "4b1367be37fc49b319b602c5cedbd40c66c5fe5d16afcf10697cccc8f0fa60e4",
+    "fps": 14.0,
+    "seed": 44,
+    "public_script_ownership_guard_present": true
+  },
+  "runtime": {
+    "exact_source_loaded": true,
+    "exact_checkpoint_downloaded": true,
+    "checkpoint_size_bytes": 4245466406,
+    "learned_wam_model_ran": false,
+    "generated_video_count": 0,
+    "blockers": [
+      "official_oscar_case_prepare_failed:RuntimeError",
+      "oscar_inference_command_nonzero",
+      "blocked_no_generated_oscar_mp4"
+    ],
+    "failure_layer": "stale_bundle_pre_inference_case_preparation"
+  },
+  "cost": {
+    "hourly_rate_usd": 1.7362962962962964,
+    "estimated_stage_cost_usd": 0.116064,
+    "prior_campaign_gpu_cost_usd": 3.228813,
+    "updated_campaign_gpu_cost_usd": 3.344877
+  },
+  "teardown": {
+    "destroy_request_completed": true,
+    "provider_zero_api_confirmed": true,
+    "provider_live_resource_count": 0
+  },
+  "evidence": {
+    "external_job_root": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/oscar_public_replay_provider_job_v1",
+    "provider_output_zip_sha256": "639298a9c62093de29695833547365728b1b965e2242f1809c5ce8822d306131",
+    "adapter_output_sha256": "661c62455b50f5d7cc8ce53e32381a5b0291136e58418932440c9562721b9075",
+    "budget_ledger_sha256": "8fe7a375ccf3a3177f8e66046e7a16cfa17b25e911a39d4f9b3cdf03b3453a95",
+    "retained_session_manifest_sha256": "60404ea4dc9c7b4256b81289d66881b8a3109cd5eede5fa6c66c4845ea161fd9",
+    "watchdog_manifest_sha256": "7fb9c1085323f252edfc236f6605bdc4dd74147ba6f1bf9aaffa3b56b142e77d"
+  },
+  "claims": {
+    "exact_public_oscar_runtime_compatibility": false,
+    "generated_media": false,
+    "closed_loop_policy_evaluation": false,
+    "wam_causal_validity": false,
+    "ranking_fidelity": false,
+    "captured_site_transfer": false,
+    "economics_and_speed": false,
+    "physical_success": false
+  },
+  "result_sha256": "3b28dba1b84ac28e839f409f990b2526e0c3a0863a1e4e6090816fe7113e2cb9"
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze_amendment.v6",
+  "frozen_at": "2026-07-29T09:45:00-0500",
+  "former_manifest": "source_freeze_v5.json",
+  "former_manifest_sha256": "0cb1f124def47bc6189dc00ed5f6dde5d951a5b408a15616be3a6920793e70df",
+  "successor_manifest": "source_freeze_v6.json",
+  "successor_manifest_sha256": "56db03603d72c5da25bc623b77e6b8443bdc4a10053e91554e779d0d4e779944",
+  "changed_fields": [
+    "pinned policy-server dependency-group source hashes",
+    "openpi-server and transitive openpi-client versions and wheel hashes",
+    "shared locked server-client virtual-environment contract"
+  ],
+  "scientific_inputs_changed": false,
+  "policy_checkpoint_or_action_contract_changed": false,
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "amendment_sha256": "e926e6010696c35c6276889e839ae70b0a50e8b5f8687f5f26f72142f222f035"
+}

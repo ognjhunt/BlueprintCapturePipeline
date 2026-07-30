@@ -21,6 +21,7 @@ from .policy_ranking_evaluator_diagnostic import (
     PAIR_OUTPUT_SCHEMA,
     PAIR_PROMPT,
     PAIR_RESULT_SCHEMA_VERSION,
+    complete_graph_diagnostic_protocol,
     diagnostic_protocol,
 )
 from .policy_ranking_roboarena_calibration import canonical_sha256, file_sha256
@@ -38,6 +39,7 @@ MODEL_ARM_IDS = {
 }
 MODEL_MAX_OUTPUT_TOKENS = {GPT5_MODEL: 4000, GPT54_MINI_MODEL: 3000}
 MODEL_REASONING_EFFORT = {GPT5_MODEL: "high", GPT54_MINI_MODEL: "medium"}
+SUPPORTED_REASONING_EFFORTS = {"minimal", "low", "medium", "high"}
 
 
 class OpenAIDiagnosticError(ValueError):
@@ -63,11 +65,41 @@ def _image_content(frame: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_response_body(pair: Mapping[str, Any], *, model: str) -> dict[str, Any]:
-    """Build a policy-identity-free Responses API body for one pair."""
-
+def _request_config(
+    *,
+    model: str,
+    reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
+    arm_id: str | None = None,
+) -> tuple[str, int, str]:
     if model not in MODEL_PRICES_STANDARD:
         raise OpenAIDiagnosticError("unregistered_openai_model")
+    effort = reasoning_effort or MODEL_REASONING_EFFORT[model]
+    tokens = max_output_tokens or MODEL_MAX_OUTPUT_TOKENS[model]
+    resolved_arm = arm_id or MODEL_ARM_IDS[model]
+    if effort not in SUPPORTED_REASONING_EFFORTS:
+        raise OpenAIDiagnosticError("reasoning_effort_not_supported")
+    if isinstance(tokens, bool) or not 1 <= int(tokens) <= 128_000:
+        raise OpenAIDiagnosticError("max_output_tokens_invalid")
+    if not resolved_arm:
+        raise OpenAIDiagnosticError("arm_id_missing")
+    return effort, int(tokens), resolved_arm
+
+
+def build_response_body(
+    pair: Mapping[str, Any],
+    *,
+    model: str,
+    reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Build a policy-identity-free Responses API body for one pair."""
+
+    effort, tokens, _ = _request_config(
+        model=model,
+        reasoning_effort=reasoning_effort,
+        max_output_tokens=max_output_tokens,
+    )
     metadata = {
         "task_instruction": pair["task_instruction"],
         "episode_a_frame_count": len(pair["episode_a"]["frames"]),
@@ -90,7 +122,7 @@ def build_response_body(pair: Mapping[str, Any], *, model: str) -> dict[str, Any
     content.extend(_image_content(frame) for frame in pair["episode_b"]["frames"])
     return {
         "model": model,
-        "reasoning": {"effort": MODEL_REASONING_EFFORT[model]},
+        "reasoning": {"effort": effort},
         "input": [{"role": "user", "content": content}],
         "text": {
             "format": {
@@ -100,7 +132,7 @@ def build_response_body(pair: Mapping[str, Any], *, model: str) -> dict[str, Any
                 "schema": PAIR_OUTPUT_SCHEMA,
             }
         },
-        "max_output_tokens": MODEL_MAX_OUTPUT_TOKENS[model],
+        "max_output_tokens": tokens,
         "store": False,
     }
 
@@ -138,15 +170,31 @@ def _validate_payload(payload: Mapping[str, Any]) -> None:
             raise OpenAIDiagnosticError(f"structured_field_missing:{field}")
 
 
-def score_canary(client: Any, pair: Mapping[str, Any], *, model: str) -> dict[str, Any]:
+def score_canary(
+    client: Any,
+    pair: Mapping[str, Any],
+    *,
+    model: str,
+    reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
+    arm_id: str | None = None,
+) -> dict[str, Any]:
+    effort, tokens, resolved_arm = _request_config(
+        model=model,
+        reasoning_effort=reasoning_effort,
+        max_output_tokens=max_output_tokens,
+        arm_id=arm_id,
+    )
     started = time.monotonic()
-    body = build_response_body(pair, model=model)
+    body = build_response_body(
+        pair, model=model, reasoning_effort=effort, max_output_tokens=tokens
+    )
     request_identity = canonical_sha256(
         {
             "model": model,
             "pair_id": pair["pair_id"],
-            "reasoning_effort": MODEL_REASONING_EFFORT[model],
-            "max_output_tokens": MODEL_MAX_OUTPUT_TOKENS[model],
+            "reasoning_effort": effort,
+            "max_output_tokens": tokens,
             "prompt_sha256": canonical_sha256(PAIR_PROMPT),
             "schema_sha256": canonical_sha256(PAIR_OUTPUT_SCHEMA),
         }
@@ -162,9 +210,11 @@ def score_canary(client: Any, pair: Mapping[str, Any], *, model: str) -> dict[st
         result = {
             "schema_version": "policy_ranking_openai_pair_incomplete_canary.v1",
             "pair_id": pair["pair_id"],
-            "arm_id": MODEL_ARM_IDS[model],
+            "arm_id": resolved_arm,
             "provider": "openai",
             "model": model,
+            "reasoning_effort": effort,
+            "max_output_tokens": tokens,
             "response_id": str(getattr(response, "id", "") or ""),
             "response_status": str(getattr(response, "status", "") or ""),
             "incomplete_details": details,
@@ -184,9 +234,11 @@ def score_canary(client: Any, pair: Mapping[str, Any], *, model: str) -> dict[st
     result: dict[str, Any] = {
         "schema_version": PAIR_RESULT_SCHEMA_VERSION,
         "pair_id": pair["pair_id"],
-        "arm_id": MODEL_ARM_IDS[model],
+        "arm_id": resolved_arm,
         "provider": "openai",
         "model": model,
+        "reasoning_effort": effort,
+        "max_output_tokens": tokens,
         "response_id": response.id,
         "response_status": response.status,
         "structured_response": payload,
@@ -211,24 +263,51 @@ def run_canary(
     rotation_attestation_file: str | Path,
     output: str | Path,
     source_commit: str,
+    reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
+    arm_id: str | None = None,
 ) -> dict[str, Any]:
     if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
         return {"status": "blocked", "blockers": [f"missing_env_{GATE_ENV}"]}
-    if inventory.get("status") != "ready" or inventory.get("pair_count") != 441:
-        return {"status": "blocked", "blockers": ["pair_inventory_not_ready_441"]}
-    protocol = diagnostic_protocol()
+    pair_count = inventory.get("pair_count")
+    if inventory.get("status") != "ready" or pair_count not in {441, 1323}:
+        return {"status": "blocked", "blockers": ["pair_inventory_not_ready_supported_matrix"]}
+    protocol = (
+        diagnostic_protocol() if pair_count == 441 else complete_graph_diagnostic_protocol()
+    )
     if inventory.get("protocol_sha256") != protocol["protocol_sha256"]:
         return {"status": "blocked", "blockers": ["protocol_digest_mismatch"]}
+    if pair_count == 1323 and (
+        model != GPT5_MODEL
+        or reasoning_effort != "medium"
+        or max_output_tokens != 4000
+        or arm_id != "gpt5_complete_graph"
+    ):
+        return {"status": "blocked", "blockers": ["complete_graph_gpt5_config_mismatch"]}
     key = _secure_file(api_key_file)
     attestation = validate_rotation_attestation(rotation_attestation_file)
     from openai import OpenAI
 
     client = OpenAI(api_key=key.read_text(encoding="utf-8").strip())
-    result = score_canary(client, inventory["pairs"][0], model=model)
-    projected_batch = result["usage"]["projected_batch_cost_same_usage_usd"] * 441
-    arm_cap = next(
-        arm["full_matrix_cap_usd"] for arm in protocol["arms"] if arm["model"] == model
+    result = score_canary(
+        client,
+        inventory["pairs"][0],
+        model=model,
+        reasoning_effort=reasoning_effort,
+        max_output_tokens=max_output_tokens,
+        arm_id=arm_id,
     )
+    projected_batch = (
+        result["usage"]["projected_batch_cost_same_usage_usd"] * pair_count
+    )
+    if pair_count == 441:
+        arm_cap = next(
+            arm["full_matrix_cap_usd"]
+            for arm in protocol["arms"]
+            if arm["model"] == model
+        )
+    else:
+        arm_cap = protocol["cost_boundary"]["successor_evaluator_api_cap_usd"]
     report: dict[str, Any] = {
         "schema_version": "policy_ranking_openai_pair_canary.v1",
         "status": (
@@ -237,7 +316,10 @@ def run_canary(
             else "blocked"
         ),
         "model": model,
-        "arm_id": MODEL_ARM_IDS[model],
+        "arm_id": result["arm_id"],
+        "reasoning_effort": result["reasoning_effort"],
+        "max_output_tokens": result["max_output_tokens"],
+        "matrix_request_count": pair_count,
         "result": result,
         "projected_full_batch_cost_usd_from_one_canary": projected_batch,
         "frozen_arm_cap_usd": arm_cap,
@@ -263,6 +345,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--rotation-attestation", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--reasoning-effort", choices=sorted(SUPPORTED_REASONING_EFFORTS))
+    parser.add_argument("--max-output-tokens", type=int)
+    parser.add_argument("--arm-id")
     args = parser.parse_args(argv)
     inventory = json.loads(Path(args.inventory).read_text(encoding="utf-8"))
     result = run_canary(
@@ -272,6 +357,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         rotation_attestation_file=args.rotation_attestation,
         output=args.output,
         source_commit=args.source_commit,
+        reasoning_effort=args.reasoning_effort,
+        max_output_tokens=args.max_output_tokens,
+        arm_id=args.arm_id,
     )
     print(json.dumps({key: value for key, value in result.items() if key != "result"}))
     return 0 if result.get("status") == "passed" else 2

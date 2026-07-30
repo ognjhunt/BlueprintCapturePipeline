@@ -1,0 +1,170 @@
+{
+  "schema_version": "policy_ranking_confirmation_availability_audit.v2",
+  "audited_on": "2026-07-29",
+  "status": "two_policy_confirmation_candidate_not_yet_executed",
+  "physical_outcome_labels_accessed": false,
+  "provider_called": false,
+  "paid_resources_used": false,
+  "cohort": {
+    "path": "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/confirmation_cohort_v1.json",
+    "file_sha256": "f90d8cf73dc38aefa44b580c49cfece2dd4e76a3543e87a77c6abd7841968dc6",
+    "cohort_sha256": "06df54ecaad7f8088487d590322a4b307f888b13c48146708f75d359ba9b0ae5",
+    "session_count": 17,
+    "selection_used_outcomes": false,
+    "same_snapshot_disjoint_sessions": true,
+    "newer_snapshot": false,
+    "outcomes_remain_sealed": true
+  },
+  "seven_policy_ideal": {
+    "physical_policy_ids_available": 7,
+    "public_checkpoint_locations_known": 7,
+    "all_checkpoint_bytes_frozen_downloaded_and_executed": false,
+    "all_policies_supported_by_one_qualified_closed_loop_WAM": false,
+    "status": "not_available",
+    "claim_ceiling": "No seven-policy confirmatory ranking can currently be run."
+  },
+  "ctrl_world_overlap": {
+    "physical_policy_ids_with_public_outcomes_and_released_ctrl_world_closed_loop": [
+      "pi0_droid",
+      "pi0_fast_droid"
+    ],
+    "released_ctrl_world_policy_without_matching_cohort_outcomes": [
+      "pi05_droid"
+    ],
+    "physical_cohort_policies_not_supported_by_released_ctrl_world_loop": [
+      "paligemma_binning_droid",
+      "paligemma_diffusion_droid",
+      "paligemma_fast_droid",
+      "paligemma_fast_specialist_droid",
+      "paligemma_vq_droid"
+    ],
+    "policy_droid_is_matching_physical_policy": false,
+    "minimum_valid_comparison": "pi0_droid_vs_pi0_fast_droid_across_14_complete_three_view_sessions",
+    "required_input_audit": [
+      "three_initial_DROID_views_exist_for_every_selected_session_and_policy",
+      "initial_joint_and_gripper_state_exist",
+      "camera_and_history_contract_matches_Ctrl_World",
+      "exact_pi0_and_pi0_fast_checkpoint_revisions_and_bytes_are_frozen",
+      "Ctrl_World_released_state_adapter_is_frozen_and_loaded",
+      "task_text_is_attributable_and_read_without_outcome_fields",
+      "physical_outcomes_remain_sealed_until_all_predictions_are_hashed"
+    ]
+  },
+  "local_input_availability": {
+    "checkout": "/Users/nijelhunt_1/workspace/policy-ranking-experiment-2-inputs/RoboArena_DataDump_07-17-2026",
+    "dataset_head": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "dataset_head_matches_frozen_revision": true,
+    "audit_scope": "17_selected_sessions_x_2_Ctrl_World_supported_policies_x_left_right_wrist_state_assets",
+    "expected_asset_paths": 136,
+    "sparse_worktree_pointer_paths": 32,
+    "sparse_worktree_absent_paths": 104,
+    "pinned_git_tree_pointer_paths": 130,
+    "pinned_git_tree_absent_paths": 6,
+    "unique_lfs_oids": 130,
+    "pointer_declared_target_bytes": 86555754,
+    "absent_assets": {
+      "kind": "right_camera_video",
+      "affected_policy_rows": 6,
+      "affected_sessions": 3,
+      "session_ids_internal_only": [
+        "c53bcbf0-c324-4e28-b342-761a0ac4a31c",
+        "71aadabf-b8b4-436e-ad44-fc293c13b232",
+        "bc84dde3-b274-4256-b532-38d608875f41"
+      ]
+    },
+    "complete_three_view_session_comparisons": 14,
+    "complete_three_view_sessions": 14,
+    "cached_lfs_objects_before_targeted_fetch": 0,
+    "targeted_fetch_attempt": {
+      "scope": "130_exact_non_metadata_paths_at_frozen_HEAD",
+      "method": "git_lfs_fetch_exact_include",
+      "first_attempt": "transport_stalled_with_zero_objects_then_terminated",
+      "retry_transport": "authenticated_public_Hugging_Face_origin",
+      "outcome": "complete",
+      "objects_downloaded": 130,
+      "bytes_downloaded": 86555754,
+      "oid_and_size_matches": 130,
+      "paid_cost_usd": 0.0,
+      "outcome_metadata_fetched": false
+    },
+    "cached_lfs_objects_after_targeted_fetch": 130,
+    "materialized_worktree_files": 0,
+    "payload_validation": {
+      "video_files_valid": 96,
+      "video_probe_failures": 0,
+      "views": {
+        "left": 34,
+        "right": 28,
+        "wrist": 34
+      },
+      "codec": "h264",
+      "width": 512,
+      "height": 288,
+      "frames_per_second": 10,
+      "pixel_format": "yuv420p",
+      "frame_count_min": 115,
+      "frame_count_max": 401,
+      "duration_seconds_min": 11.5,
+      "duration_seconds_max": 40.1,
+      "restricted_npz_files_valid": 34,
+      "restricted_npz_failures": 0,
+      "numpy_allow_pickle_used": false,
+      "state_fields": {
+        "joint_position_width": 7,
+        "gripper_position_width": 1,
+        "cartesian_position_width": 6,
+        "action_width": 8
+      },
+      "record_count_min": 115,
+      "record_count_max": 400,
+      "video_minus_state_frame_delta": [
+        0,
+        1
+      ],
+      "rows_with_only_left_and_wrist_views": 6,
+      "rows_with_all_three_views": 28
+    },
+    "outcome_metadata_opened": false,
+    "input_contract_auditable_from_local_bytes": false,
+    "closed_loop_initialization_contract": {
+      "uses_only_first_frame_from_each_view": true,
+      "repeats_first_frame_and_initial_state_to_seed_history": true,
+      "source_video_10_Hz_requires_resampling_for_closed_loop_initialization": false,
+      "view_order": [
+        "right_as_exterior_image_2_left",
+        "left_as_exterior_image_1_left",
+        "wrist_as_wrist_image_left"
+      ]
+    },
+    "open_loop_replay_temporal_contract": "blocked_for_these_10_Hz_exports_without_an_exact_published_adapter_to_Ctrl_World_15_to_5_Hz_training_timebase",
+    "interpretation": "All 130 pinned payloads are now cached and size-verified. Numeric state and available video contracts validate without unsafe NumPy pickle loading. The 10 Hz export does not affect public closed-loop initialization because only the first frame and state are repeated to seed history, but it blocks exact open-loop replay without a published temporal adapter. Six right-camera assets limit exact three-view closed-loop eligibility to 14 sessions."
+  },
+  "power_analysis": {
+    "independent_unit": "session",
+    "comparison_count_per_session": 1,
+    "session_count": 14,
+    "test": "exact_one_sided_binomial_pairwise_accuracy_vs_0_5",
+    "alpha": 0.05,
+    "critical_correct_count": 11,
+    "null_tail_probability_at_critical_count": 0.028686523438,
+    "true_pairwise_accuracy_needed_for_80_percent_power": 0.831248026047,
+    "interpretation": "The 14-session two-policy lane is powered only for a very large ordering effect; weaker but potentially useful effects remain inconclusive."
+  },
+  "fallback_ceiling": {
+    "if_two_policy_ctrl_world_closed_loop_executes": "small_disjoint_confirmatory_comparison_with_severe_power_and_policy_coverage_limits",
+    "if_only_recorded_traces_execute": "open_loop_replay_WAM_qualification_only",
+    "if_input_or_checkpoint_contract_fails": "confirmation_not_measured",
+    "reused_exposed_sessions": "diagnostic_only"
+  },
+  "current_blockers": [
+    "Ctrl_World_source_bytes_and_dependency_licenses_not_fully_frozen",
+    "six_right_camera_assets_absent_from_the_pinned_dataset_tree_limiting_confirmation_to_14_sessions",
+    "label_blind_task_instruction_extraction_not_yet_frozen",
+    "exact_reported_openpi_revision_and_pi0_pi0fast_checkpoint_revisions_not_published_by_Ctrl_World",
+    "exact_pi0_and_pi0_fast_checkpoint_bytes_not_frozen_for_this_successor",
+    "Ctrl_World_label_free_canary_not_yet_run",
+    "immutable_Blueprint_source_commit_not_yet_pushed"
+  ],
+  "phase_b_admitted": false,
+  "audit_sha256": "dfbc66481446f488c0636b74c0264bfe045d8386e983b43f82a540deab91fabc"
+}

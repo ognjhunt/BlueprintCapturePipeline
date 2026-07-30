@@ -1,0 +1,20 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze_amendment.v5",
+  "frozen_at": "2026-07-29T09:35:00-0500",
+  "former_manifest": "source_freeze_v4.json",
+  "former_manifest_sha256": "328e04599abd0fc54b7d989659ee0c91a8e469c772582a20c3deabe240982b66",
+  "successor_manifest": "source_freeze_v5.json",
+  "successor_manifest_sha256": "0cb1f124def47bc6189dc00ed5f6dde5d951a5b408a15616be3a6920793e70df",
+  "changed_fields": [
+    "pinned official guardrail setup schema and source hashes",
+    "source-supported guardrails=false compatibility mode",
+    "separate gated Cosmos-Guardrail1 dependency identity",
+    "wrapper fail-closed and provenance contract"
+  ],
+  "scientific_inputs_changed": false,
+  "policy_checkpoint_or_action_contract_changed": false,
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "amendment_sha256": "757a04d6d91f058bdf2c763460af4742d3d11406c06659b0abd037bd4084d5b6"
+}

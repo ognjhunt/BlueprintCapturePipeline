@@ -39,6 +39,8 @@ AI and engineer orientation maps live under [`docs/architecture/`](docs/architec
 - [`refactor-hotspots.md`](docs/architecture/refactor-hotspots.md)
 - [`evaluation-run-interface.md`](docs/architecture/evaluation-run-interface.md)
 - [`decision-evidence-router.md`](docs/architecture/decision-evidence-router.md)
+- [`task-evaluation-supervisor.md`](docs/architecture/task-evaluation-supervisor.md)
+- [`TASK_EVALUATION_SUPERVISOR_RUNBOOK.md`](docs/TASK_EVALUATION_SUPERVISOR_RUNBOOK.md)
 
 Provider-neutral Task Evaluation Run control-plane commands:
 
@@ -52,11 +54,53 @@ blueprint-route-task-evaluation execute --plan out/plan/evidence_plan.json \
 blueprint-route-task-evaluation aggregate --request request.json --testbed testbed.json \
   --plan out/plan/evidence_plan.json --result out/evidence/result-step.json \
   --output-dir out/decision
+blueprint-route-task-evaluation supervise --capture-build /path/to/completed-capture \
+  --mode shadow --output-dir out/supervisor
 ```
 
 `execute` is deliberately hermetic in v1: it requires explicit fixture-adapter
 authorization, performs no provider discovery, paid compute, or physical run,
 and fails closed otherwise.
+
+`supervise` uses OpenAI Agents SDK as the required harness for the durable
+supervisor and all six specialist agents. A capture build alone can start the
+run; absent task, robot, success, rights, or evidence contracts produce typed
+clarification or abstention. Live SDK inference additionally requires
+`--allow-live-agent-sdk` and the shared live-operator environment gate. Agent
+inference also requires a positive `--agent-inference-budget-usd`; each call
+reserves a conservative worst-case cost before execution. Agent output is
+advisory and cannot alter the deterministic proof result.
+
+The normal `run_e2e` capture-build path always enters this supervisor lifecycle
+after capture processing and records its status and artifacts in the stage
+ledger. There is no alternate production harness or flag that skips the
+supervisor; missing live-inference authority is recorded as a typed blocker.
+
+`execute_non_spend` exposes only capability-scoped registered tools through the
+Agents SDK. These include proof-safe reads plus deterministic materialization of
+a bound Evidence Plan and its validated leaf Evaluation Run specs into the
+supervisor's own generated-artifact directory, plus a review-only targeted
+recapture proposal that cannot start capture or infer rights. Every call
+produces a digest-bound, zero-cost typed observation with `proof_effect=none`;
+no shell, arbitrary filesystem, network, provider, paid, physical-action, or
+proof-mutation tool is available.
+
+`execute_preauthorized` additionally requires an operator-issued authorization
+receipt and an injected provider-neutral recovery controller. Recovery is bound
+to an immutable commit and input digests and is limited by receipt-bound
+provider/action allowlists, spend, controller-clock expiry/TTL, retries,
+watchdog, and mandatory teardown with explicit provider-zero proof. Vast is the
+preferred first live canary backend based on prior Blueprint execution evidence;
+RunPod remains a separately qualified fallback. No provider is chosen merely
+because its adapter exists. The generic allocator's older RunPod default applies
+only to its RunPod-specific strict-smoke launcher; it is not a supervisor
+default.
+
+Agentic robot stacks enter evaluation through
+`blueprint_agentic_candidate_policy@1`. Direct policy, decomposed planner+policy,
+and verify/recover supervisor candidates are frozen and compiled against the
+same scenario manifest, evaluator, predicates, claim ceiling, and hidden-test
+separation. Candidate agents receive no evaluator or proof authority.
 
 The model-neutral, fail-closed composition contract for scientific sim ranking,
 provider execution, buyer delivery, teardown, and billing is documented in
@@ -96,6 +140,8 @@ contract, SLOs, ownership, and promotion rules are defined in
 Primary product path:
 
 - raw capture materialization from `BlueprintCapture`
+- required OpenAI Agents SDK Task Evaluation Supervisor ingress for every
+  completed capture build
 - Gemini-backed multimodal capture review
 - capture evidence analysis and agent review
 - deterministic QA aggregation and trust/provenance assembly

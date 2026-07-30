@@ -1,0 +1,65 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_confirmation_cohort.v1",
+  "frozen_at": "2026-07-29T08:02:29-0500",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "dataset": {
+    "id": "RoboArena/DataDump_07-17-2026",
+    "revision": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "license": "MIT"
+  },
+  "required_policy_ids": [
+    "paligemma_binning_droid",
+    "paligemma_diffusion_droid",
+    "paligemma_fast_droid",
+    "paligemma_fast_specialist_droid",
+    "paligemma_vq_droid",
+    "pi0_droid",
+    "pi0_fast_droid"
+  ],
+  "selection_rule": {
+    "candidate_population": "sessions with all seven classic RoboArena DROID policy directories",
+    "candidate_population_count": 599,
+    "exclude_oscar_public_phase_a_sessions": 63,
+    "exclude_powered_native_cosmos_sessions": 17,
+    "exclude_diagnostic_unsealed_sessions": [
+      "3610ff4d-43bd-4c98-af69-32369d1ca258"
+    ],
+    "eligible_after_exclusions": 519,
+    "salt": "blueprint-edge-confirmation-v1:",
+    "ranking": "ascending SHA256(salt + session_id)",
+    "take": 17,
+    "tie_break": "ascending session_id",
+    "selection_inputs": "repository tree paths and filenames only; no metadata.yaml or outcome fields",
+    "historical_exposure_check": "all selected IDs absent from repository historical experiment/code artifacts and separate local evidence-store text manifests"
+  },
+  "selected_sessions": [
+    {"rank": 1, "session_id_internal_only": "647465d5-177c-4917-acd8-bc9ada7ff00c", "rank_sha256": "006343c25b77be19908052b61fad3efe6e436a26258847cc374e359485df82a8"},
+    {"rank": 2, "session_id_internal_only": "c53bcbf0-c324-4e28-b342-761a0ac4a31c", "rank_sha256": "008b7e6f607b2a4c85592fdc46ccd45e82eb7fe0ea93dd055268f86428def32b"},
+    {"rank": 3, "session_id_internal_only": "8c045222-b8fd-4d1d-ae84-56caffd221d8", "rank_sha256": "01871903f103fb14b7ceed15378089cbef2cc7c40e5d295489e3240125595d31"},
+    {"rank": 4, "session_id_internal_only": "95c9a9ef-6a51-4894-bac5-4d2e1c6624bc", "rank_sha256": "01a1bffa58d3a36002352ec6ad16299367fe9f32d8b7fd240b41bf877d504d09"},
+    {"rank": 5, "session_id_internal_only": "16724580-ce3b-4174-9def-b834309667e3", "rank_sha256": "022e17d7d7eddc4fe741f98b34467b862ccf80cdf249a9010c1f5b565e55ff24"},
+    {"rank": 6, "session_id_internal_only": "58437626-0f78-45e4-95e2-b9b913e3c13a", "rank_sha256": "023d6514d259faa1172cff2d6dbee40cf2ed523f60a74d94e7463fcf3e48af9d"},
+    {"rank": 7, "session_id_internal_only": "71aadabf-b8b4-436e-ad44-fc293c13b232", "rank_sha256": "03600cb8df5462660f928f5c303aba82603ff0000bf4e93c3fd229047fd76351"},
+    {"rank": 8, "session_id_internal_only": "d2b56f95-a02d-4173-9e0f-815267bff42e", "rank_sha256": "048be0867b951c246b3530deca2b389c41c813dce73f1748659fc49a0b7d54f9"},
+    {"rank": 9, "session_id_internal_only": "d40e2c68-068e-4f60-8546-3432f3190fcb", "rank_sha256": "04a02ec8fdd7f8c3065bc6de68ab7f4f6ca4d4db77b8ce797955e2d7a259dbec"},
+    {"rank": 10, "session_id_internal_only": "b9cf4b59-5a13-4347-aeab-3a6f469d7d54", "rank_sha256": "0511ffaa36c1167c574183d89023a9ef2863785580b0643830b13e7e1d1460ad"},
+    {"rank": 11, "session_id_internal_only": "8051a707-6c3b-4643-ba5a-59b900e3fc3d", "rank_sha256": "0526ed24e31a46831e19f1cfaee99d7e19196968d55bc6441f8dfa914e1f9d27"},
+    {"rank": 12, "session_id_internal_only": "6f1b35b4-f641-448d-9b20-153c1cc11f99", "rank_sha256": "0559341176b2a660a6dbaffe13d192355ff426b38561eb4ecc08b5a2de93c8bf"},
+    {"rank": 13, "session_id_internal_only": "a0497c52-7056-47f0-8e37-9e0c6b0a5e57", "rank_sha256": "05d74da0796d2220955c902299097d42d98e89dc379cc3028f16ddd1dcc3f794"},
+    {"rank": 14, "session_id_internal_only": "bc84dde3-b274-4256-b532-38d608875f41", "rank_sha256": "0646b5e8f63736e6547650282db6c8997eb43d35bfd0dc8231acb8c57528b9df"},
+    {"rank": 15, "session_id_internal_only": "f845aa64-4376-485c-b58a-ca33718ea83a", "rank_sha256": "06c0a3e2c9bcfebd768da20d73550f5816f4944db22554d2a321b31aa34bb995"},
+    {"rank": 16, "session_id_internal_only": "3f8a023f-ad3c-4194-bfe2-eeffd92bb6ab", "rank_sha256": "0709d30dd12f35e9561c5e9f5220e40e13d3bd59f6fb7e070c9907b2440268e9"},
+    {"rank": 17, "session_id_internal_only": "2d0b5b06-86f7-49e9-a263-d0f109f86f2c", "rank_sha256": "075566b6d5b6aef8fc988bdb6b3527a0cbd535d3bc8db316d85cbb684a61409a"}
+  ],
+  "independent_unit": "session",
+  "claim_ceiling": {
+    "closed_loop_confirmatory_if_runnable_frozen_endpoints_exist": true,
+    "recorded_trace_fallback": "open_loop_replay_wam_qualification_only",
+    "same_snapshot_disjoint_sessions": true,
+    "new_snapshot": false,
+    "physical_outcomes_remain_sealed_until_predictions_frozen": true
+  },
+  "cohort_sha256": "06df54ecaad7f8088487d590322a4b307f888b13c48146708f75d359ba9b0ae5"
+}

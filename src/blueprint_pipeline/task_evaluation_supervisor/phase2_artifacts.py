@@ -1,0 +1,528 @@
+"""Deterministic Phase 2 artifacts around non-authoritative agent proposals."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import math
+from pathlib import Path
+import re
+from typing import Any, Mapping, Sequence
+
+from ..common import write_json
+from ..decision_evidence_contracts import canonical_digest
+
+
+CUSTOMER_REPORT_SCHEMA_VERSION = "task_evaluation_customer_report.v1"
+CLARIFICATION_REQUEST_SCHEMA_VERSION = "task_evaluation_clarification_request.v1"
+CLARIFICATION_RECEIPT_SCHEMA_VERSION = "task_evaluation_clarification_receipt.v1"
+AUTHORIZATION_REQUEST_SCHEMA_VERSION = "task_evaluation_authorization_request.v1"
+AUTHORIZATION_RECEIPT_SCHEMA_VERSION = "task_evaluation_authorization_receipt.v1"
+SCENARIO_PROPOSAL_SET_SCHEMA_VERSION = "task_evaluation_scenario_proposal_set.v1"
+FROZEN_SCENARIO_MANIFEST_SCHEMA_VERSION = "task_evaluation_frozen_scenario_manifest.v1"
+_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+class Phase2ArtifactError(ValueError):
+    """Raised when a Phase 2 artifact would cross an authority boundary."""
+
+
+def _strings(
+    values: Any,
+    *,
+    field: str,
+    minimum: int = 1,
+    maximum: int = 50,
+    item_maximum: int = 500,
+) -> list[str]:
+    if not isinstance(values, list):
+        raise Phase2ArtifactError(f"{field}:must_be_list")
+    normalized = sorted(
+        {str(item).strip() for item in values if isinstance(item, str) and str(item).strip()}
+    )
+    if len(normalized) < minimum or len(normalized) > maximum:
+        raise Phase2ArtifactError(f"{field}:count_out_of_range")
+    if any(len(item) > item_maximum for item in normalized):
+        raise Phase2ArtifactError(f"{field}:item_too_long")
+    return normalized
+
+
+def _require_digest(value: Any, *, field: str) -> str:
+    rendered = str(value or "")
+    if not _SHA256_DIGEST.fullmatch(rendered):
+        raise Phase2ArtifactError(f"{field}:invalid_digest")
+    return rendered
+
+
+def _parse_time(value: Any, *, field: str) -> datetime:
+    text = str(value or "").replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise Phase2ArtifactError(f"{field}:invalid") from exc
+    if parsed.tzinfo is None:
+        raise Phase2ArtifactError(f"{field}:timezone_required")
+    return parsed.astimezone(timezone.utc)
+
+
+def _finalize(value: Mapping[str, Any], *, digest_field: str) -> dict[str, Any]:
+    result = dict(value)
+    result[digest_field] = canonical_digest(result, digest_field=digest_field)
+    return result
+
+
+def clarification_request(
+    *,
+    run_id: str,
+    source_digest: str,
+    questions: Sequence[str],
+    blocking_fields: Sequence[str],
+) -> dict[str, Any]:
+    value = {
+        "schema_version": CLARIFICATION_REQUEST_SCHEMA_VERSION,
+        "request_id": f"{run_id}-clarification",
+        "run_id": run_id,
+        "source_digest": _require_digest(source_digest, field="source_digest"),
+        "questions": _strings(list(questions), field="questions", maximum=20),
+        "blocking_fields": _strings(
+            list(blocking_fields), field="blocking_fields", maximum=30, item_maximum=100
+        ),
+        "status": "awaiting_customer_response",
+        "agent_may_answer": False,
+        "proof_effect": "none",
+    }
+    return _finalize(value, digest_field="clarification_request_digest")
+
+
+def clarification_receipt(
+    *,
+    request: Mapping[str, Any],
+    responder_id: str,
+    responses: Mapping[str, Any],
+    received_at: str,
+) -> dict[str, Any]:
+    expected = canonical_digest(request, digest_field="clarification_request_digest")
+    if request.get("clarification_request_digest") != expected:
+        raise Phase2ArtifactError("clarification_request_digest_mismatch")
+    if not responder_id.strip() or not received_at.strip() or not isinstance(responses, Mapping):
+        raise Phase2ArtifactError("clarification_receipt_missing_fields")
+    value = {
+        "schema_version": CLARIFICATION_RECEIPT_SCHEMA_VERSION,
+        "receipt_id": f"{request['request_id']}-receipt",
+        "run_id": request["run_id"],
+        "clarification_request_digest": expected,
+        "responder_id": responder_id.strip(),
+        "responses": dict(responses),
+        "received_at": received_at,
+        "accepted_as_customer_input": False,
+        "requires_deterministic_contract_validation": True,
+        "proof_effect": "none",
+    }
+    return _finalize(value, digest_field="clarification_receipt_digest")
+
+
+def authorization_request(
+    *,
+    run_id: str,
+    tool_id: str,
+    reason: str,
+    requested_max_cost_usd: float,
+    requested_ttl_seconds: int,
+    immutable_input_digests: Sequence[str],
+    requested_retry_count: int = 0,
+    requested_provider_ids: Sequence[str] = (),
+    requested_action_ids: Sequence[str] = (),
+) -> dict[str, Any]:
+    if (
+        not math.isfinite(float(requested_max_cost_usd))
+        or requested_max_cost_usd < 0
+        or requested_ttl_seconds < 1
+        or requested_retry_count < 0
+    ):
+        raise Phase2ArtifactError("authorization_request_envelope_invalid")
+    digests = sorted(
+        {_require_digest(value, field="immutable_input_digest") for value in immutable_input_digests}
+    )
+    if not tool_id.strip() or not reason.strip() or not digests:
+        raise Phase2ArtifactError("authorization_request_missing_fields")
+    provider_ids = _strings(
+        list(requested_provider_ids),
+        field="requested_provider_ids",
+        minimum=0,
+        maximum=20,
+        item_maximum=100,
+    )
+    action_ids = _strings(
+        list(requested_action_ids),
+        field="requested_action_ids",
+        minimum=0,
+        maximum=50,
+        item_maximum=100,
+    )
+    if tool_id == "execute_preauthorized_recovery" and (not provider_ids or not action_ids):
+        raise Phase2ArtifactError("recovery_authorization_scope_missing")
+    value = {
+        "schema_version": AUTHORIZATION_REQUEST_SCHEMA_VERSION,
+        "request_id": f"{run_id}-{tool_id}-authorization",
+        "run_id": run_id,
+        "tool_id": tool_id,
+        "reason": reason[:2_000],
+        "requested_max_cost_usd": float(requested_max_cost_usd),
+        "requested_ttl_seconds": requested_ttl_seconds,
+        "requested_retry_count": requested_retry_count,
+        "immutable_input_digests": digests,
+        "requested_provider_ids": provider_ids,
+        "requested_action_ids": action_ids,
+        "status": "awaiting_authorized_operator",
+        "agent_may_approve": False,
+        "proof_effect": "none",
+    }
+    return _finalize(value, digest_field="authorization_request_digest")
+
+
+def authorization_receipt(
+    *,
+    request: Mapping[str, Any],
+    operator_id: str,
+    approved: bool,
+    granted_max_cost_usd: float,
+    granted_ttl_seconds: int,
+    granted_retry_count: int,
+    issued_at: str,
+    expires_at: str,
+    granted_provider_ids: Sequence[str] = (),
+    granted_action_ids: Sequence[str] = (),
+) -> dict[str, Any]:
+    expected = canonical_digest(request, digest_field="authorization_request_digest")
+    if request.get("authorization_request_digest") != expected:
+        raise Phase2ArtifactError("authorization_request_digest_mismatch")
+    if not operator_id.strip() or not issued_at.strip() or not expires_at.strip():
+        raise Phase2ArtifactError("authorization_receipt_missing_fields")
+    requested_cost = float(request.get("requested_max_cost_usd") or 0.0)
+    requested_ttl = int(request.get("requested_ttl_seconds") or 0)
+    requested_retries = int(request.get("requested_retry_count") or 0)
+    requested_providers = set(
+        _strings(
+            request.get("requested_provider_ids") or [],
+            field="requested_provider_ids",
+            minimum=0,
+            maximum=20,
+            item_maximum=100,
+        )
+    )
+    requested_actions = set(
+        _strings(
+            request.get("requested_action_ids") or [],
+            field="requested_action_ids",
+            minimum=0,
+            maximum=50,
+            item_maximum=100,
+        )
+    )
+    granted_providers = _strings(
+        list(granted_provider_ids),
+        field="granted_provider_ids",
+        minimum=0,
+        maximum=20,
+        item_maximum=100,
+    )
+    granted_actions = _strings(
+        list(granted_action_ids),
+        field="granted_action_ids",
+        minimum=0,
+        maximum=50,
+        item_maximum=100,
+    )
+    issued = _parse_time(issued_at, field="authorization_receipt_issued_at")
+    expires = _parse_time(expires_at, field="authorization_receipt_expires_at")
+    if (
+        not math.isfinite(float(granted_max_cost_usd))
+        or granted_max_cost_usd < 0
+        or granted_max_cost_usd > requested_cost
+        or granted_ttl_seconds < 1
+        or granted_ttl_seconds > requested_ttl
+        or granted_retry_count < 0
+        or granted_retry_count > requested_retries
+        or not set(granted_providers).issubset(requested_providers)
+        or not set(granted_actions).issubset(requested_actions)
+        or expires <= issued
+        or (expires - issued).total_seconds() > granted_ttl_seconds
+    ):
+        raise Phase2ArtifactError("authorization_receipt_exceeds_request")
+    if not approved and (
+        granted_max_cost_usd != 0
+        or granted_retry_count != 0
+        or granted_providers
+        or granted_actions
+    ):
+        raise Phase2ArtifactError("denied_authorization_cannot_grant_authority")
+    if request.get("tool_id") == "execute_preauthorized_recovery" and (
+        not granted_providers or not granted_actions
+    ):
+        raise Phase2ArtifactError("recovery_authorization_scope_missing")
+    value = {
+        "schema_version": AUTHORIZATION_RECEIPT_SCHEMA_VERSION,
+        "receipt_id": f"{request['request_id']}-receipt",
+        "run_id": request["run_id"],
+        "authorization_request_digest": expected,
+        "operator_id": operator_id.strip(),
+        "approved": bool(approved),
+        "granted_tool_id": request["tool_id"],
+        "granted_max_cost_usd": float(granted_max_cost_usd),
+        "granted_ttl_seconds": granted_ttl_seconds,
+        "granted_retry_count": granted_retry_count,
+        "immutable_input_digests": list(request["immutable_input_digests"]),
+        "granted_provider_ids": granted_providers,
+        "granted_action_ids": granted_actions,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+        "issued_by_agent": False,
+        "proof_effect": "none",
+    }
+    return _finalize(value, digest_field="authorization_receipt_digest")
+
+
+def scenario_proposal_set(
+    *,
+    run_id: str,
+    request_digest: str,
+    scenarios: Sequence[Mapping[str, Any]],
+    candidate_results_observed: bool,
+) -> dict[str, Any]:
+    if candidate_results_observed:
+        raise Phase2ArtifactError("post_result_scenario_generation_forbidden")
+    if not scenarios or len(scenarios) > 100:
+        raise Phase2ArtifactError("scenario_count_out_of_range")
+    normalized: list[dict[str, Any]] = []
+    identities: set[str] = set()
+    for row in scenarios:
+        if not isinstance(row, Mapping):
+            raise Phase2ArtifactError("scenario_not_mapping")
+        scenario_id = str(row.get("scenario_id") or "").strip()
+        failure_mode = str(row.get("failure_mode") or "").strip()
+        description = str(row.get("description") or "").strip()
+        if not scenario_id or not failure_mode or not description:
+            raise Phase2ArtifactError("scenario_missing_fields")
+        if scenario_id in identities:
+            raise Phase2ArtifactError("scenario_id_duplicate")
+        identities.add(scenario_id)
+        normalized.append(
+            {
+                "scenario_id": scenario_id,
+                "failure_mode": failure_mode[:200],
+                "description": description[:2_000],
+                "success_predicate_proposed": row.get("success_predicate_proposed"),
+                "hidden_label": None,
+            }
+        )
+    value = {
+        "schema_version": SCENARIO_PROPOSAL_SET_SCHEMA_VERSION,
+        "proposal_set_id": f"{run_id}-scenario-proposals",
+        "run_id": run_id,
+        "request_digest": _require_digest(request_digest, field="request_digest"),
+        "scenarios": sorted(normalized, key=lambda row: row["scenario_id"]),
+        "candidate_results_observed": False,
+        "frozen": False,
+        "authoritative": False,
+        "proof_effect": "none",
+    }
+    return _finalize(value, digest_field="scenario_proposal_set_digest")
+
+
+def freeze_scenario_manifest(
+    *,
+    proposal_set: Mapping[str, Any],
+    authorization: Mapping[str, Any],
+    evaluator_digest: str,
+    success_predicate_digest: str,
+    hidden_label_manifest_digest: str,
+    frozen_at: str,
+) -> dict[str, Any]:
+    proposal_digest = canonical_digest(proposal_set, digest_field="scenario_proposal_set_digest")
+    if proposal_set.get("scenario_proposal_set_digest") != proposal_digest:
+        raise Phase2ArtifactError("scenario_proposal_set_digest_mismatch")
+    receipt_digest = canonical_digest(authorization, digest_field="authorization_receipt_digest")
+    if authorization.get("authorization_receipt_digest") != receipt_digest:
+        raise Phase2ArtifactError("scenario_freeze_authorization_digest_mismatch")
+    if authorization.get("approved") is not True or authorization.get("issued_by_agent") is not False:
+        raise Phase2ArtifactError("scenario_freeze_not_operator_authorized")
+    if authorization.get("granted_tool_id") != "freeze_scenario_manifest":
+        raise Phase2ArtifactError("scenario_freeze_wrong_authority")
+    if authorization.get("run_id") != proposal_set.get("run_id"):
+        raise Phase2ArtifactError("scenario_freeze_run_mismatch")
+    if authorization.get("immutable_input_digests") != [proposal_digest]:
+        raise Phase2ArtifactError("scenario_freeze_input_not_authorized")
+    frozen_time = _parse_time(frozen_at, field="scenario_frozen_at")
+    issued = _parse_time(authorization.get("issued_at"), field="scenario_authority_issued_at")
+    expires = _parse_time(
+        authorization.get("expires_at"), field="scenario_authority_expires_at"
+    )
+    if frozen_time < issued or frozen_time >= expires:
+        raise Phase2ArtifactError("scenario_freeze_authority_inactive")
+    if proposal_set.get("candidate_results_observed") is not False:
+        raise Phase2ArtifactError("post_result_scenario_freeze_forbidden")
+    value = {
+        "schema_version": FROZEN_SCENARIO_MANIFEST_SCHEMA_VERSION,
+        "manifest_id": f"{proposal_set['proposal_set_id']}-frozen",
+        "run_id": proposal_set["run_id"],
+        "scenario_proposal_set_digest": proposal_digest,
+        "scenario_ids": [row["scenario_id"] for row in proposal_set["scenarios"]],
+        "evaluator_digest": _require_digest(evaluator_digest, field="evaluator_digest"),
+        "success_predicate_digest": _require_digest(
+            success_predicate_digest, field="success_predicate_digest"
+        ),
+        "hidden_label_manifest_digest": _require_digest(
+            hidden_label_manifest_digest, field="hidden_label_manifest_digest"
+        ),
+        "hidden_labels_included": False,
+        "candidate_results_observed_before_freeze": False,
+        "authorization_receipt_digest": receipt_digest,
+        "frozen_at": frozen_at,
+        "frozen": True,
+        "proof_effect": "none",
+    }
+    return _finalize(value, digest_field="frozen_scenario_manifest_digest")
+
+
+def deterministic_customer_report(
+    *,
+    context: Any,
+    capability_results: Sequence[Mapping[str, Any]],
+    invocation_manifests: Sequence[Mapping[str, Any]],
+    generated_artifact_references: Sequence[Mapping[str, Any]],
+    tool_observations: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    request = dict(context.decision_request or {})
+    plan = dict(context.evidence_plan or {})
+    decision = dict(context.decision_envelope or {})
+    results = [dict(row) for row in context.evidence_results]
+    claims = [dict(row) for row in request.get("claims") or [] if isinstance(row, Mapping)]
+    claim_evidence: list[dict[str, Any]] = []
+    for claim in claims:
+        claim_id = claim.get("claim_id")
+        matching = [row for row in results if row.get("claim_id") == claim_id]
+        claim_evidence.append(
+            {
+                "claim_id": claim_id,
+                "claim_type": claim.get("claim_type"),
+                "evidence_result_digests": [row.get("result_digest") for row in matching],
+                "evidence_statuses": [row.get("status") for row in matching],
+                "accepted_by_agent": False,
+            }
+        )
+    methods_attempted = sorted(
+        {
+            str((row.get("method_profile_snapshot") or {}).get("method_id"))
+            for row in results
+            if isinstance(row.get("method_profile_snapshot"), Mapping)
+            and (row.get("method_profile_snapshot") or {}).get("method_id")
+        }
+    )
+    failed_methods = [
+        {
+            "result_digest": row.get("result_digest"),
+            "status": row.get("status"),
+            "failure_type": row.get("failure_type"),
+        }
+        for row in results
+        if row.get("status") not in {"valid", "accepted", "sufficient"}
+    ]
+    proposals = [
+        dict(proposal)
+        for result in capability_results
+        for proposal in result.get("proposals") or []
+        if isinstance(proposal, Mapping)
+    ]
+    outcome = decision.get("overall_outcome") or "abstention"
+    value = {
+        "schema_version": CUSTOMER_REPORT_SCHEMA_VERSION,
+        "run_id": context.run_id,
+        "customer_original_question": context.customer_question,
+        "validated_interpretation": request.get("decision_question"),
+        "accepted_leaf_claims": [row.get("claim_id") for row in claims],
+        "rejected_or_unresolved_interpretations": (
+            [] if request else ["validated_decision_request_missing"]
+        ),
+        "claim_evidence": claim_evidence,
+        "methods_attempted": methods_attempted,
+        "failed_methods": failed_methods,
+        "skipped_methods": [
+            row
+            for row in plan.get("claim_plans") or []
+            if isinstance(row, Mapping) and row.get("status") != "planned"
+        ],
+        "agent_actions_and_recommendations": proposals,
+        "agent_output_authoritative": False,
+        "deterministic_validations": {
+            "request_digest": request.get("request_digest"),
+            "testbed_digest": (context.testbed or {}).get("testbed_digest"),
+            "plan_digest": plan.get("plan_digest"),
+            "decision_envelope_digest": decision.get("decision_envelope_digest"),
+        },
+        "spending_and_runtime": {
+            "reported_agent_cost_usd": sum(
+                float(row.get("cost_usd") or 0.0) for row in invocation_manifests
+            ),
+            "invocation_count": len(invocation_manifests),
+            "reported_action_cost_usd": sum(
+                float(row.get("cost_usd") or 0.0) for row in tool_observations
+            ),
+            "reported_action_duration_seconds": sum(
+                float(row.get("duration_seconds") or 0.0) for row in tool_observations
+            ),
+            "tool_observation_count": len(tool_observations),
+        },
+        "decision": outcome,
+        "partial_decision": outcome == "partial_decision",
+        "abstention": outcome == "abstention",
+        "uncertainty_and_evidence_ceiling": decision.get("claim_ceiling"),
+        "next_experiments": [
+            row.get("next_cheapest_experiment")
+            for row in plan.get("claim_plans") or []
+            if isinstance(row, Mapping) and row.get("next_cheapest_experiment")
+        ],
+        "generated_artifact_references": [dict(row) for row in generated_artifact_references],
+        "blueprint_cannot_claim": sorted(
+            {
+                "agent_output_is_proof",
+                "provider_completion_proves_scientific_claim",
+                "simulation_proves_physical_success",
+                "deployment_readiness_without_qualified_evidence",
+                *[str(item) for item in decision.get("prohibited_claims") or []],
+            }
+        ),
+        "proof_state_mutated_by_report": False,
+    }
+    return _finalize(value, digest_field="customer_report_digest")
+
+
+def write_phase2_artifact(
+    output_dir: str | Path,
+    relative_path: str,
+    value: Mapping[str, Any],
+) -> Path:
+    root = Path(output_dir).expanduser().resolve()
+    path = (root / relative_path).resolve()
+    if root not in path.parents:
+        raise Phase2ArtifactError("phase2_artifact_path_escape")
+    write_json(path, value)
+    return path
+
+
+__all__ = [
+    "AUTHORIZATION_RECEIPT_SCHEMA_VERSION",
+    "AUTHORIZATION_REQUEST_SCHEMA_VERSION",
+    "CLARIFICATION_RECEIPT_SCHEMA_VERSION",
+    "CLARIFICATION_REQUEST_SCHEMA_VERSION",
+    "CUSTOMER_REPORT_SCHEMA_VERSION",
+    "FROZEN_SCENARIO_MANIFEST_SCHEMA_VERSION",
+    "Phase2ArtifactError",
+    "SCENARIO_PROPOSAL_SET_SCHEMA_VERSION",
+    "authorization_receipt",
+    "authorization_request",
+    "clarification_receipt",
+    "clarification_request",
+    "deterministic_customer_report",
+    "freeze_scenario_manifest",
+    "scenario_proposal_set",
+    "write_phase2_artifact",
+]

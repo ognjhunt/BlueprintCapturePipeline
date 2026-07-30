@@ -8,6 +8,7 @@ from this campaign can be promoted to independent confirmation.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import os
@@ -32,6 +33,8 @@ SESSION_COUNT = 63
 POLICY_COUNT = 7
 PAIR_COUNT_PER_SESSION = 7
 TOTAL_PAIR_COUNT = SESSION_COUNT * PAIR_COUNT_PER_SESSION
+COMPLETE_PAIR_COUNT_PER_SESSION = math.comb(POLICY_COUNT, 2)
+COMPLETE_TOTAL_PAIR_COUNT = SESSION_COUNT * COMPLETE_PAIR_COUNT_PER_SESSION
 
 GPT5_MODEL = "gpt-5-2025-08-07"
 GPT54_MINI_MODEL = "gpt-5.4-mini-2026-03-17"
@@ -111,6 +114,7 @@ def pilot_cost_projection(
     single_canary_batch_equivalent_cost_usd: float,
     pilot_batch_costs_usd: Sequence[float],
     arm_cap_usd: float,
+    matrix_request_count: int = TOTAL_PAIR_COUNT,
 ) -> dict[str, Any]:
     """Apply the frozen seven-row conservative matrix-cost projection."""
 
@@ -121,12 +125,15 @@ def pilot_cost_projection(
     cap = float(arm_cap_usd)
     if not math.isfinite(canary) or canary < 0 or not math.isfinite(cap) or cap <= 0:
         raise DiagnosticContractError("pilot_canary_or_arm_cap_invalid")
+    if isinstance(matrix_request_count, bool) or int(matrix_request_count) <= 0:
+        raise DiagnosticContractError("matrix_request_count_invalid")
+    matrix_request_count = int(matrix_request_count)
     mean_cost = statistics.fmean(costs)
     sample_standard_deviation = statistics.stdev(costs)
     sample_standard_error = sample_standard_deviation / math.sqrt(len(costs))
     mean_plus_one_sided_t95 = mean_cost + 1.943 * sample_standard_error
     per_request_upper = max(canary, max(costs), mean_plus_one_sided_t95)
-    matrix_projection = per_request_upper * TOTAL_PAIR_COUNT
+    matrix_projection = per_request_upper * matrix_request_count
     report: dict[str, Any] = {
         "schema_version": "policy_ranking_evaluator_pilot_cost_projection.v1",
         "sample_size": len(costs),
@@ -138,7 +145,7 @@ def pilot_cost_projection(
         "pilot_mean_plus_1_943_standard_errors_usd": mean_plus_one_sided_t95,
         "pilot_max_cost_usd": max(costs),
         "per_request_upper_estimate_usd": per_request_upper,
-        "matrix_request_count": TOTAL_PAIR_COUNT,
+        "matrix_request_count": matrix_request_count,
         "projected_matrix_cost_usd": matrix_projection,
         "frozen_arm_cap_usd": cap,
         "arm_cost_admitted": matrix_projection <= cap,
@@ -350,6 +357,128 @@ def diagnostic_protocol() -> dict[str, Any]:
     return protocol
 
 
+def complete_graph_diagnostic_protocol() -> dict[str, Any]:
+    """Return the successor complete-graph OSCAR-method-inspired diagnostic."""
+
+    protocol: dict[str, Any] = {
+        "schema_version": "policy_ranking_evaluator_diagnostic.v4",
+        "purpose": "post_unseal_complete_graph_evaluator_diagnosis",
+        "claim_class": "diagnostic_only",
+        "method_attribution": "OSCAR_method_inspired_not_exact_code_reproduction",
+        "private_oscar_prompt_code_and_raw_pair_responses_published": False,
+        "independent_confirmation_credit": False,
+        "phase_b_admission_credit": False,
+        "source_episode_count": 441,
+        "source_freeze": {
+            "OSCAR_public_policy_rollouts_revision": (
+                "db5edfaef285c15d0a41d5115177a983c08b4f5f"
+            ),
+            "outcomes_already_unsealed": True,
+            "outcomes_withheld_from_provider_prompts_and_pair_selection": True,
+        },
+        "comparison_graph": {
+            "kind": "complete_graph_per_session",
+            "session_count": SESSION_COUNT,
+            "policy_count": POLICY_COUNT,
+            "edges_per_session": COMPLETE_PAIR_COUNT_PER_SESSION,
+            "total_edges": COMPLETE_TOTAL_PAIR_COUNT,
+            "side_assignment": "sha256_session_pair_index_complete_graph_v1_parity",
+            "each_episode_appearances": POLICY_COUNT - 1,
+            "label_fields_used_to_select_edges": False,
+            "all_episodes_included": True,
+        },
+        "shared_judging_contract": {
+            "prompt": PAIR_PROMPT,
+            "prompt_sha256": canonical_sha256(PAIR_PROMPT),
+            "output_schema": PAIR_OUTPUT_SCHEMA,
+            "output_schema_sha256": canonical_sha256(PAIR_OUTPUT_SCHEMA),
+            "policy_identity_in_provider_payload": False,
+            "physical_outcome_in_provider_payload": False,
+            "physical_ground_truth_pixels_in_provider_payload": False,
+            "ties": "half_win_each_in_bradley_terry",
+            "abstentions": "retained_and_excluded_from_fit",
+        },
+        "judge_arms": [
+            {
+                "arm_id": "gpt5_complete_graph",
+                "provider": "openai",
+                "model": GPT5_MODEL,
+                "reasoning_effort": "medium",
+                "max_output_tokens_including_reasoning": 4000,
+                "media": "32_generated_only_frames_per_episode_64_per_pair",
+                "transport": "responses_batch_api",
+            },
+            {
+                "arm_id": "gemini36_flash_complete_graph",
+                "provider": "google",
+                "model": GEMINI_MODEL,
+                "thinking_level": "medium",
+                "max_output_tokens_including_thinking": 3000,
+                "media": "two_generated_only_native_mp4_videos",
+                "transport": "batch_api",
+                "prospective_requests": 882,
+                "frozen_prior_requests_reused": 441,
+            },
+        ],
+        "frozen_gemini_subset_reuse": {
+            "allowed": True,
+            "require_exact_unordered_episode_pair": True,
+            "side_orientation_remap": "deterministic_A_B_inversion_only",
+            "model": GEMINI_MODEL,
+            "thinking_level": "medium",
+            "max_output_tokens_including_thinking": 3000,
+            "prompt_sha256": canonical_sha256(PAIR_PROMPT),
+            "prior_inventory_sha256": (
+                "808999ee2160e7b3a5371f068875e35b623069d8e17ffa873d6ddc4553617ab2"
+            ),
+            "prior_collection_file_sha256": (
+                "f8a222bbede6e796d40722eda2e5b5990fad1fe3dfa954f0f06ef3f9cdbdd0c5"
+            ),
+            "prior_result_count": 441,
+            "prior_error_count": 0,
+            "prior_measured_batch_cost_usd": 3.14775225,
+            "prior_results_are_diagnostic_only": True,
+        },
+        "admission_and_stopping": {
+            "one_schema_transport_canary_per_arm": True,
+            "seven_pair_label_blind_pilot_per_new_configuration": True,
+            "full_matrix_requires_measured_projection_within_category_cap": True,
+            "partial_matrix_ranking_credit": False,
+            "scientifically_unfavorable_outputs_are_not_a_stop_reason": True,
+            "stop_reasons": [
+                "schema_or_transport_invalid",
+                "redaction_or_media_integrity_failure",
+                "measured_projection_exceeds_frozen_category_cap",
+                "campaign_category_or_total_cap_would_be_exceeded",
+            ],
+        },
+        "cost_boundary": {
+            "successor_evaluator_api_cap_usd": 25.0,
+            "historical_diagnostic_spend_is_reported_but_not_recharged": True,
+            "contingency_does_not_expand_category_cap": True,
+            "paid_execution_admitted": False,
+        },
+        "analysis": {
+            "ranking": "Bradley_Terry_maximum_likelihood",
+            "metrics": [
+                "full_seven_policy_vector",
+                "spearman_rho",
+                "kendall_tau_b",
+                "pairwise_ordering_accuracy",
+                "session_clustered_bootstrap_ci95",
+                "exact_or_permutation_small_n_uncertainty",
+                "top_policy_rank",
+                "abstention_coverage",
+                "cost_and_latency",
+            ],
+            "threshold_tuning_forbidden": True,
+        },
+        "evaluator_provider_called": False,
+    }
+    protocol["protocol_sha256"] = canonical_sha256(protocol)
+    return protocol
+
+
 def _validate_source_inventory(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     if source.get("status") != "ready" or source.get("request_count") != 441:
         raise DiagnosticContractError("source_inventory_not_complete_ready_441")
@@ -435,6 +564,253 @@ def build_pair_inventory(source: Mapping[str, Any]) -> dict[str, Any]:
         "source_inventory_sha256": source["inventory_sha256"],
         "session_count": len(by_session),
         "policy_count": POLICY_COUNT,
+        "pair_count": len(pairs),
+        "pairs": pairs,
+        "provider_called": False,
+        "outcome_labels_accessed_to_build_pairs": False,
+        "blockers": [],
+    }
+    inventory["inventory_sha256"] = canonical_sha256(inventory)
+    return inventory
+
+
+def build_complete_pair_inventory(source: Mapping[str, Any]) -> dict[str, Any]:
+    """Build every within-session policy pair without accessing outcome labels."""
+
+    rows = _validate_source_inventory(source)
+    by_session: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_session[str(row["session_id"])].append(row)
+    if len(by_session) != SESSION_COUNT:
+        raise DiagnosticContractError("session_count_not_63")
+
+    pairs: list[dict[str, Any]] = []
+    for session_id in sorted(by_session):
+        session_rows = sorted(
+            by_session[session_id], key=lambda value: str(value["policy_id_internal_only"])
+        )
+        if len(session_rows) != POLICY_COUNT:
+            raise DiagnosticContractError(f"policy_count_not_7:{session_id}")
+        if len({str(row["task_instruction"]) for row in session_rows}) != 1:
+            raise DiagnosticContractError(f"task_instruction_differs_within_session:{session_id}")
+        for pair_index, (first, second) in enumerate(itertools.combinations(session_rows, 2)):
+            left, right = first, second
+            side_digest = canonical_sha256(
+                {
+                    "session_id": session_id,
+                    "pair_index": pair_index,
+                    "side_rule": "complete_graph_v1",
+                }
+            )
+            if int(side_digest[-1], 16) % 2:
+                left, right = right, left
+            pair_core = {
+                "session_id": session_id,
+                "edge_index": pair_index,
+                "task_instruction": left["task_instruction"],
+                "episode_a": {
+                    "source_request_id": left["source_request_id"],
+                    "policy_id_internal_only": left["policy_id_internal_only"],
+                    "frames": left["frames"],
+                    "cropped_output_sha256": left["cropped_output_sha256"],
+                    "deterministic_collapse_flags": left.get(
+                        "deterministic_collapse_flags", []
+                    ),
+                },
+                "episode_b": {
+                    "source_request_id": right["source_request_id"],
+                    "policy_id_internal_only": right["policy_id_internal_only"],
+                    "frames": right["frames"],
+                    "cropped_output_sha256": right["cropped_output_sha256"],
+                    "deterministic_collapse_flags": right.get(
+                        "deterministic_collapse_flags", []
+                    ),
+                },
+                "policy_identity_in_provider_payload": False,
+                "physical_outcome_in_provider_payload": False,
+                "physical_ground_truth_pixels_in_provider_payload": False,
+            }
+            pair_core["pair_id"] = canonical_sha256(pair_core)
+            pairs.append(pair_core)
+
+    if len(pairs) != COMPLETE_TOTAL_PAIR_COUNT:
+        raise DiagnosticContractError("complete_pair_count_not_1323")
+    appearances: dict[tuple[str, str], int] = defaultdict(int)
+    for pair in pairs:
+        for side in ("episode_a", "episode_b"):
+            appearances[(pair["session_id"], pair[side]["policy_id_internal_only"])] += 1
+    if set(appearances.values()) != {POLICY_COUNT - 1}:
+        raise DiagnosticContractError("each_complete_graph_episode_must_appear_six_times")
+
+    protocol = complete_graph_diagnostic_protocol()
+    inventory: dict[str, Any] = {
+        "schema_version": PAIR_INVENTORY_SCHEMA_VERSION,
+        "status": "ready",
+        "protocol_sha256": protocol["protocol_sha256"],
+        "source_inventory_sha256": source["inventory_sha256"],
+        "comparison_graph_kind": "complete_graph_per_session",
+        "session_count": len(by_session),
+        "policy_count": POLICY_COUNT,
+        "pair_count": len(pairs),
+        "pairs": pairs,
+        "provider_called": False,
+        "outcome_labels_accessed_to_build_pairs": False,
+        "blockers": [],
+    }
+    inventory["inventory_sha256"] = canonical_sha256(inventory)
+    return inventory
+
+
+def audit_frozen_gemini_subset_reuse(
+    complete_inventory: Mapping[str, Any],
+    prior_inventory: Mapping[str, Any],
+    prior_collection: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Prove which frozen cycle results are exact pairs in the complete graph."""
+
+    def validate_digest(value: Mapping[str, Any], digest_key: str, error: str) -> None:
+        payload = {key: item for key, item in value.items() if key != digest_key}
+        if canonical_sha256(payload) != value.get(digest_key):
+            raise DiagnosticContractError(error)
+
+    validate_digest(complete_inventory, "inventory_sha256", "complete_inventory_digest_invalid")
+    validate_digest(prior_inventory, "inventory_sha256", "prior_inventory_digest_invalid")
+    validate_digest(prior_collection, "report_sha256", "prior_collection_digest_invalid")
+    complete_protocol = complete_graph_diagnostic_protocol()
+    prior_protocol = diagnostic_protocol()
+    if (
+        complete_inventory.get("status") != "ready"
+        or complete_inventory.get("pair_count") != COMPLETE_TOTAL_PAIR_COUNT
+        or complete_inventory.get("protocol_sha256") != complete_protocol["protocol_sha256"]
+    ):
+        raise DiagnosticContractError("complete_inventory_not_ready_bound_1323")
+    if (
+        prior_inventory.get("status") != "ready"
+        or prior_inventory.get("pair_count") != TOTAL_PAIR_COUNT
+        or prior_inventory.get("protocol_sha256") != prior_protocol["protocol_sha256"]
+    ):
+        raise DiagnosticContractError("prior_inventory_not_ready_bound_441")
+    prior_results = prior_collection.get("results")
+    if (
+        prior_collection.get("status") != "completed"
+        or prior_collection.get("result_count") != TOTAL_PAIR_COUNT
+        or prior_collection.get("error_count") != 0
+        or not isinstance(prior_results, list)
+        or len(prior_results) != TOTAL_PAIR_COUNT
+    ):
+        raise DiagnosticContractError("prior_collection_not_complete_error_free_441")
+
+    def source_key(pair: Mapping[str, Any]) -> tuple[str, str]:
+        return tuple(
+            sorted(
+                (
+                    str(pair["episode_a"]["source_request_id"]),
+                    str(pair["episode_b"]["source_request_id"]),
+                )
+            )
+        )
+
+    complete_by_key = {source_key(pair): pair for pair in complete_inventory["pairs"]}
+    if len(complete_by_key) != COMPLETE_TOTAL_PAIR_COUNT:
+        raise DiagnosticContractError("complete_inventory_unordered_pair_not_unique")
+    result_by_id = {str(result["pair_id"]): result for result in prior_results}
+    if len(result_by_id) != TOTAL_PAIR_COUNT:
+        raise DiagnosticContractError("prior_result_pair_id_not_unique_441")
+
+    mappings: list[dict[str, Any]] = []
+    matched_complete_ids: set[str] = set()
+    for prior_pair in prior_inventory["pairs"]:
+        prior_id = str(prior_pair["pair_id"])
+        result = result_by_id.get(prior_id)
+        if result is None:
+            raise DiagnosticContractError("prior_result_missing_for_inventory_pair")
+        validate_pair_result(result, prior_pair)
+        if (
+            result.get("provider") != "google_gemini_api"
+            or result.get("model") != GEMINI_MODEL
+            or result.get("transport") != "gemini_batch_api_native_video"
+            or result.get("policy_identity_sent_to_provider") is not False
+            or result.get("physical_outcome_sent_to_provider") is not False
+            or result.get("physical_ground_truth_pixels_sent_to_provider") is not False
+        ):
+            raise DiagnosticContractError("prior_result_provider_or_redaction_contract_invalid")
+        complete_pair = complete_by_key.get(source_key(prior_pair))
+        if complete_pair is None:
+            raise DiagnosticContractError("prior_pair_missing_from_complete_graph")
+        complete_id = str(complete_pair["pair_id"])
+        matched_complete_ids.add(complete_id)
+        same_orientation = (
+            prior_pair["episode_a"]["source_request_id"]
+            == complete_pair["episode_a"]["source_request_id"]
+        )
+        mappings.append(
+            {
+                "prior_pair_id": prior_id,
+                "complete_pair_id": complete_id,
+                "orientation": "same" if same_orientation else "reversed",
+                "prior_result_sha256": result["result_sha256"],
+            }
+        )
+    if len(matched_complete_ids) != TOTAL_PAIR_COUNT:
+        raise DiagnosticContractError("reused_complete_pair_id_not_unique_441")
+    all_complete_ids = {str(pair["pair_id"]) for pair in complete_inventory["pairs"]}
+    missing_pair_ids = sorted(all_complete_ids - matched_complete_ids)
+    if len(missing_pair_ids) != COMPLETE_TOTAL_PAIR_COUNT - TOTAL_PAIR_COUNT:
+        raise DiagnosticContractError("missing_complete_pair_count_not_882")
+
+    report: dict[str, Any] = {
+        "schema_version": "policy_ranking_frozen_gemini_subset_reuse_audit.v1",
+        "status": "passed",
+        "complete_inventory_sha256": complete_inventory["inventory_sha256"],
+        "prior_inventory_sha256": prior_inventory["inventory_sha256"],
+        "prior_collection_report_sha256": prior_collection["report_sha256"],
+        "prior_collection_file_sha256": (
+            complete_protocol["frozen_gemini_subset_reuse"][
+                "prior_collection_file_sha256"
+            ]
+        ),
+        "reused_pair_count": len(mappings),
+        "same_orientation_count": sum(row["orientation"] == "same" for row in mappings),
+        "reversed_orientation_count": sum(
+            row["orientation"] == "reversed" for row in mappings
+        ),
+        "missing_pair_count": len(missing_pair_ids),
+        "mappings": sorted(mappings, key=lambda row: row["complete_pair_id"]),
+        "missing_pair_ids": missing_pair_ids,
+        "outcome_labels_accessed": False,
+        "provider_called": False,
+        "claim_class": "post_unseal_diagnostic_only",
+    }
+    report["report_sha256"] = canonical_sha256(report)
+    return report
+
+
+def build_pair_subset_inventory(
+    complete_inventory: Mapping[str, Any], pair_ids: Sequence[str]
+) -> dict[str, Any]:
+    """Create a digest-bound provider inventory for a registered pair subset."""
+
+    payload = {
+        key: value for key, value in complete_inventory.items() if key != "inventory_sha256"
+    }
+    if canonical_sha256(payload) != complete_inventory.get("inventory_sha256"):
+        raise DiagnosticContractError("complete_inventory_digest_invalid")
+    wanted = [str(value) for value in pair_ids]
+    if len(wanted) != len(set(wanted)) or not wanted:
+        raise DiagnosticContractError("pair_subset_ids_empty_or_not_unique")
+    pair_by_id = {str(pair["pair_id"]): pair for pair in complete_inventory["pairs"]}
+    if not set(wanted) <= set(pair_by_id):
+        raise DiagnosticContractError("pair_subset_id_not_in_complete_inventory")
+    pairs = [pair_by_id[pair_id] for pair_id in sorted(wanted)]
+    inventory: dict[str, Any] = {
+        "schema_version": PAIR_INVENTORY_SCHEMA_VERSION,
+        "status": "ready",
+        "protocol_sha256": complete_inventory["protocol_sha256"],
+        "source_inventory_sha256": complete_inventory["source_inventory_sha256"],
+        "parent_inventory_sha256": complete_inventory["inventory_sha256"],
+        "comparison_graph_kind": "registered_complete_graph_subset",
+        "session_count": complete_inventory["session_count"],
+        "policy_count": complete_inventory["policy_count"],
         "pair_count": len(pairs),
         "pairs": pairs,
         "provider_called": False,
@@ -788,9 +1164,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     protocol = commands.add_parser("protocol")
     protocol.add_argument("--output", required=True)
+    complete_protocol = commands.add_parser("complete-graph-protocol")
+    complete_protocol.add_argument("--output", required=True)
     inventory = commands.add_parser("build-inventory")
     inventory.add_argument("--source-inventory", required=True)
     inventory.add_argument("--output", required=True)
+    complete_inventory = commands.add_parser("build-complete-inventory")
+    complete_inventory.add_argument("--source-inventory", required=True)
+    complete_inventory.add_argument("--output", required=True)
+    reuse = commands.add_parser("audit-gemini-reuse")
+    reuse.add_argument("--complete-inventory", required=True)
+    reuse.add_argument("--prior-inventory", required=True)
+    reuse.add_argument("--prior-collection", required=True)
+    reuse.add_argument("--output", required=True)
+    missing = commands.add_parser("build-missing-gemini-inventory")
+    missing.add_argument("--complete-inventory", required=True)
+    missing.add_argument("--reuse-audit", required=True)
+    missing.add_argument("--output", required=True)
     verify = commands.add_parser("verify-media")
     verify.add_argument("--inventory", required=True)
     verify.add_argument("--output", required=True)
@@ -804,9 +1194,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "protocol":
         result = diagnostic_protocol()
+    elif args.command == "complete-graph-protocol":
+        result = complete_graph_diagnostic_protocol()
     elif args.command == "build-inventory":
         source = json.loads(Path(args.source_inventory).read_text(encoding="utf-8"))
         result = build_pair_inventory(source)
+    elif args.command == "build-complete-inventory":
+        source = json.loads(Path(args.source_inventory).read_text(encoding="utf-8"))
+        result = build_complete_pair_inventory(source)
+    elif args.command == "audit-gemini-reuse":
+        complete = json.loads(Path(args.complete_inventory).read_text(encoding="utf-8"))
+        prior = json.loads(Path(args.prior_inventory).read_text(encoding="utf-8"))
+        collection = json.loads(Path(args.prior_collection).read_text(encoding="utf-8"))
+        result = audit_frozen_gemini_subset_reuse(complete, prior, collection)
+    elif args.command == "build-missing-gemini-inventory":
+        complete = json.loads(Path(args.complete_inventory).read_text(encoding="utf-8"))
+        reuse_audit = json.loads(Path(args.reuse_audit).read_text(encoding="utf-8"))
+        reuse_payload = {
+            key: value for key, value in reuse_audit.items() if key != "report_sha256"
+        }
+        if (
+            canonical_sha256(reuse_payload) != reuse_audit.get("report_sha256")
+            or reuse_audit.get("status") != "passed"
+            or reuse_audit.get("complete_inventory_sha256")
+            != complete.get("inventory_sha256")
+        ):
+            raise DiagnosticContractError("gemini_reuse_audit_not_passed_and_bound")
+        result = build_pair_subset_inventory(complete, reuse_audit["missing_pair_ids"])
     elif args.command == "verify-media":
         value = json.loads(Path(args.inventory).read_text(encoding="utf-8"))
         result = verify_pair_media(value)
@@ -826,7 +1240,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 key: value
                 for key, value in result.items()
-                if key not in {"pairs", "receipts"}
+                if key not in {"pairs", "receipts", "mappings", "missing_pair_ids"}
             }
         )
     )

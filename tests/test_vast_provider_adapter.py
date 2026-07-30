@@ -2844,6 +2844,71 @@ def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
     assert tunnel_token not in persisted
 
 
+def test_structured_policy_canary_output_does_not_require_video(tmp_path: Path) -> None:
+    native_action = [[float(row * 8 + column) for column in range(8)] for row in range(32)]
+    receipt = {
+        "native_action_shape": [32, 8],
+        "wam_prefix_action_shape": [16, 8],
+        "executed_prefix_steps": 8,
+        "server_identity_sha256": "a" * 64,
+        "observation_sha256": "b" * 64,
+        "native_action_sha256": "c" * 64,
+        "wam_prefix_action_sha256": "d" * 64,
+        "executed_prefix_action_sha256": "e" * 64,
+        "commanded_next_state_sha256": "f" * 64,
+        "receipt_sha256": "1" * 64,
+    }
+    output_zip = tmp_path / "policy-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "policy_structured_canary.json",
+            json.dumps(
+                {
+                    "status": "passed",
+                    "native_action": native_action,
+                    "wam_prefix_action": native_action[:16],
+                    "executed_action": native_action[:8],
+                    "commanded_next_joint_position": native_action[7][:7],
+                    "commanded_next_gripper_position": [native_action[7][7]],
+                    "policy_endpoint_evidence": {
+                        "identity_verified": True,
+                        "request_count": 1,
+                        "server_metadata": {
+                            "policy_id": "model/policy",
+                            "model_revision": "2" * 40,
+                        },
+                    },
+                    "policy_request_receipt": receipt,
+                }
+            ),
+        )
+
+    summary = vpa._inspect_structured_policy_canary_output(output_zip)
+    runtime_result = {
+        "status": "completed",
+        "runtime": "policy_structured_canary",
+        "structured_policy_canary_passed": True,
+        "learned_wam_model_ran": False,
+        "action_conditioned_video_rollout_generated": False,
+        "native_action_shape": [32, 8],
+        "wam_prefix_action_shape": [16, 8],
+        "executed_prefix_steps": 8,
+        "commanded_state_advance_proven": True,
+    }
+
+    assert summary["status"] == "passed"
+    assert summary["native_action_sha256"] == "c" * 64
+    assert vpa._structured_policy_canary_runtime_passed(runtime_result, summary) is True
+    assert vpa._provider_expected_video_count("wam") > 0
+    assert (
+        vpa._provider_expected_video_count_for_result("wam", structured_policy_canary_passed=True)
+        == 0
+    )
+
+    runtime_result["learned_wam_model_ran"] = True
+    assert vpa._structured_policy_canary_runtime_passed(runtime_result, summary) is False
+
+
 def test_vast_adapter_unitree_groot_bundle_completes_without_video_smoke(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

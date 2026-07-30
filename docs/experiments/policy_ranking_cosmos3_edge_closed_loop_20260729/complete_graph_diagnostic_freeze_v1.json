@@ -1,0 +1,79 @@
+{
+  "schema_version": "policy_ranking_complete_graph_diagnostic_freeze.v1",
+  "status": "frozen_not_paid",
+  "claim_class": "post_unseal_diagnostic_only",
+  "method_attribution": "OSCAR_method_inspired_not_exact_code_reproduction",
+  "protocol": {
+    "path": "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/complete_graph_diagnostic_protocol_v1.json",
+    "file_sha256": "c4d44cea887e9a6743c9ce0ffe030330388a4cb91d1ccfa23bcb8265004edd62",
+    "protocol_sha256": "4636d2e4a6b834f24f86f5073ef831e47c843925a11c1ad761d27663f8194954"
+  },
+  "source_inventory": {
+    "path": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728/phase_a_evaluator_inventory_v4.json",
+    "file_sha256": "6b32f0e8b7798b1782e3c42c8e14e1501ae36fcd288d8b09aae5cee4d8a6b6ba",
+    "inventory_sha256": "3e110b66b986c5f241329598987d1a885a2ca9f61e54eaa00db71a3eb31387d2",
+    "episode_count": 441,
+    "session_count": 63,
+    "policy_count": 7
+  },
+  "external_evidence_root": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1",
+  "complete_pair_inventory": {
+    "relative_path": "complete_pair_inventory_v1.json",
+    "file_sha256": "5e75b250a170d13b08a1901b2bce236e820854e52cdfe4d1aeb6b58c3d5c0b57",
+    "size_bytes": 37684969,
+    "inventory_sha256": "b60eb58c8a53d95d49f6fb1c221d276f13ea60d5289006d66bd3c08ef1f3f531",
+    "pair_count": 1323,
+    "unique_pair_count": 1323,
+    "episode_appearances": 6,
+    "outcome_labels_accessed_to_build_pairs": false
+  },
+  "frozen_gemini_subset_reuse_audit": {
+    "relative_path": "gemini_frozen_subset_reuse_audit_v1.json",
+    "file_sha256": "b52621253b686532b70b921f2a9d51a03ac8a7e9c3b0ea09f6ea7cf461ce26b5",
+    "size_bytes": 207700,
+    "report_sha256": "ec5e95d68be5e59d20506581f722b27250bf3bb7bab400a33040b0195633cf67",
+    "reused_pair_count": 441,
+    "same_orientation_count": 221,
+    "reversed_orientation_count": 220,
+    "missing_pair_count": 882,
+    "outcome_labels_accessed": false,
+    "provider_called": false
+  },
+  "gemini_missing_pair_inventory": {
+    "relative_path": "gemini_missing_pair_inventory_v1.json",
+    "file_sha256": "39fd1c5a893c183c85a1dbc1641d7dab3686a512e50477c5dfecdf46c519a79a",
+    "size_bytes": 25123591,
+    "inventory_sha256": "08bb90a8a13b435ea5b46e3f69cc68ec6855d8841f6b6fa2866062a1a243e132",
+    "parent_inventory_sha256": "b60eb58c8a53d95d49f6fb1c221d276f13ea60d5289006d66bd3c08ef1f3f531",
+    "pair_count": 882,
+    "unique_episode_count": 441
+  },
+  "official_openai_sources": {
+    "gpt5_model": "https://developers.openai.com/api/docs/models/gpt-5",
+    "batch_api": "https://developers.openai.com/api/docs/guides/batch",
+    "snapshot": "gpt-5-2025-08-07",
+    "responses_batch_supported": true,
+    "batch_discount_fraction": 0.5,
+    "completion_window": "24h"
+  },
+  "pre_canary_cost_planning_usd": {
+    "successor_api_category_cap": 25.0,
+    "historical_diagnostic_spend_reported_not_recharged": true,
+    "gpt5_prior_high_reasoning_canary_batch_equivalent_proxy_per_request": 0.01314375,
+    "gpt5_complete_graph_proxy": 17.38918125,
+    "gemini_missing_pairs_projection_from_prior_measured_mean": 6.2955045,
+    "gpt5_medium_canary_plus_seven_pair_pilot_proxy": 0.10515,
+    "combined_proxy": 23.78983575,
+    "proxy_headroom": 1.21016425,
+    "proxy_is_not_paid_admission": true
+  },
+  "paid_execution_admitted": false,
+  "paid_admission_blockers": [
+    "immutable_source_commit_not_yet_pushed",
+    "gpt5_medium_schema_transport_canary_not_yet_run",
+    "gpt5_medium_seven_pair_batch_pilot_not_yet_run",
+    "measured_complete_graph_projection_not_yet_frozen"
+  ],
+  "evaluator_provider_called": false,
+  "freeze_sha256": "1d8bf129b1d457e55c8683526ea8a20dff7ca720b5a13f2692ed1b8585436a09"
+}

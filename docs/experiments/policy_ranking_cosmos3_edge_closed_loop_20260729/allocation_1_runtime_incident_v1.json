@@ -1,0 +1,22 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_runtime_incident.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-29T09:06:00-0500",
+  "allocation_index": 1,
+  "source_commit": "aa5a75f0c67a1c901b3fd2264daa19953b65c445",
+  "bundle_version": 4,
+  "provider_instance_id": 46198409,
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "provider_runtime_status": "blocked",
+  "policy_inference_ran": false,
+  "wam_generation_ran": false,
+  "primary_blocker": "The packaged common compatibility module imported blueprint_pipeline.core, but the bundle omitted that package.",
+  "secondary_blocker": "The model and dependency workspace was inside the evidence output directory, so failure recovery began packaging the multi-gigabyte cache.",
+  "recovery": "The task-owned output packaging process was terminated after the runtime failure was preserved. Bundle v5 adds an import-closure test, includes blueprint_pipeline.core, moves cache outside output, and migrates a legacy cache on refresh.",
+  "estimated_gpu_cost_usd": 0.40797,
+  "actual_live_runtime_seconds_observed_by_adapter": 845.8763037500903,
+  "continuing_spend": false,
+  "provider_zero_verified": true,
+  "physical_outcome_labels_accessed": false,
+  "claim_boundary": "Implementation and failure-diagnosis evidence only; no policy, WAM, ranking, transfer, economics, or physical-success credit."
+}

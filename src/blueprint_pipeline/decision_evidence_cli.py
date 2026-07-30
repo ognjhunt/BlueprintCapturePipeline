@@ -1,4 +1,4 @@
-"""Plan, execute, aggregate, and ingest outcomes for one Task Evaluation Run.
+"""Plan, supervise, execute, aggregate, and ingest one Task Evaluation Run.
 
 The CLI is fail-closed. ``plan`` performs no execution. ``execute`` accepts only
 an explicitly enabled hermetic fixture-adapter registry in v1; live providers,
@@ -11,16 +11,24 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 from .common import read_json, write_json
 from .decision_evidence_execution import (
+    EvidenceMethodAdapter,
     EvidenceMethodAdapterRegistry,
     build_decision_envelope,
     execute_evidence_plan,
 )
 from .decision_evidence_router import route_decision_evidence
 from .physical_outcome_learning import join_physical_outcome
+from .task_evaluation_supervisor import (
+    AutonomyMode,
+    DEFAULT_SUPERVISOR_AGENT_MODEL,
+    SupervisorContext,
+    TaskEvaluationSupervisor,
+    load_capture_build_ingress,
+)
 
 
 def _read_many(paths: Sequence[Path]) -> list[dict[str, Any]]:
@@ -52,7 +60,7 @@ def _fixture_registry(path: Path) -> EvidenceMethodAdapterRegistry:
         if not reference or not isinstance(result, Mapping):
             raise ValueError(f"fixture_adapter_registry_binding_invalid:{index}")
         adapters.append(_FixtureResultAdapter(reference, dict(result)))
-    return EvidenceMethodAdapterRegistry(adapters)
+    return EvidenceMethodAdapterRegistry(cast(Sequence[EvidenceMethodAdapter], adapters))
 
 
 def _plan(args: argparse.Namespace) -> dict[str, Any]:
@@ -71,6 +79,88 @@ def _plan(args: argparse.Namespace) -> dict[str, Any]:
         "plan_digest": plan["plan_digest"],
         "output": str(args.output_dir / "evidence_plan.json"),
         "execution_started": False,
+    }
+
+
+def _supervise(args: argparse.Namespace) -> dict[str, Any]:
+    capture_build = load_capture_build_ingress(args.capture_build) if args.capture_build else None
+    request = read_json(args.request) if args.request else None
+    testbed = read_json(args.testbed) if args.testbed else None
+    if capture_build is None and request is None and testbed is None:
+        raise ValueError("supervisor_requires_capture_build_request_or_testbed")
+    plan = read_json(args.plan) if args.plan else None
+    decision = read_json(args.decision) if args.decision else None
+    results = _read_many(args.result)
+    identity = (
+        (request or {}).get("request_id")
+        or (testbed or {}).get("testbed_id")
+        or (capture_build or {}).get("capture_build_digest", "capture-build")[7:23]
+    )
+    run_id = str(args.run_id or f"supervisor-{identity}").strip()
+    question = str((request or {}).get("decision_question") or "").strip()
+    if not question:
+        question = (
+            "What task evaluations can this capture build currently support, "
+            "and what customer, robot, task, success, or evidence details are still missing?"
+        )
+    execution = TaskEvaluationSupervisor(
+        agent_model=args.agent_model,
+        allow_live_agents_sdk=args.allow_live_agent_sdk,
+        agent_inference_budget_usd=args.agent_inference_budget_usd,
+    ).run(
+        SupervisorContext(
+            run_id=run_id,
+            customer_question=question,
+            capture_build=capture_build,
+            decision_request=request,
+            testbed=testbed,
+            method_profiles=_read_many(args.method_profile),
+            qualifications=_read_many(args.qualification),
+            evidence_plan=plan,
+            evidence_results=results,
+            decision_envelope=decision,
+        ),
+        output_dir=args.output_dir,
+        mode=AutonomyMode(args.mode),
+    )
+    report = execution.report.to_mapping()
+    live_invocations = [
+        row.to_mapping()
+        for row in execution.invocation_manifests
+        if row.to_mapping().get("provider") == "openai"
+        and row.to_mapping().get("validation_status") == "accepted_as_proposal"
+    ]
+    actions_executed = report.get("actions_executed") is True
+    tool_execution_started = actions_executed or any(
+        int(report.get(key) or 0) > 0
+        for key in (
+            "registered_tool_reads_executed",
+            "registered_non_spend_actions_executed",
+            "registered_preauthorized_actions_executed",
+        )
+    )
+    return {
+        "schema_version": "decision_evidence_cli_result.v1",
+        "operation": "supervise",
+        "status": report["status"],
+        "mode": args.mode,
+        "supervisor_run_digest": execution.run.digest,
+        "terminal_report_digest": report["terminal_report_digest"],
+        "terminal_report": str(args.output_dir / "terminal_supervisor_report.json"),
+        "event_ledger": str(args.output_dir / "supervisor_events.jsonl"),
+        "capability_count": len(execution.capability_results),
+        "agent_harness": "openai_agents_sdk",
+        "agent_model": args.agent_model,
+        "agent_inference_budget_usd": args.agent_inference_budget_usd,
+        "capture_build_ingested": capture_build is not None,
+        "execution_started": tool_execution_started,
+        "actions_executed": actions_executed,
+        "agent_inference_started": bool(live_invocations),
+        "live_agent_inference": bool(live_invocations),
+        # Model inference is not an evidence-provider or robot-policy execution.
+        "live_provider_execution": False,
+        "physical_robot_run_initiated": False,
+        "proof_state_mutated_by_agent": False,
     }
 
 
@@ -166,6 +256,41 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--output-dir", required=True, type=Path)
     plan.set_defaults(handler=_plan)
 
+    supervise = subparsers.add_parser(
+        "supervise",
+        help="Run the proof-safe Task Evaluation Supervisor in an explicit autonomy mode.",
+    )
+    supervise.add_argument(
+        "--capture-build",
+        type=Path,
+        help="Completed capture root or capture-build manifest; sufficient to start supervision.",
+    )
+    supervise.add_argument("--request", type=Path)
+    supervise.add_argument("--testbed", type=Path)
+    supervise.add_argument("--method-profile", action="append", type=Path, default=[])
+    supervise.add_argument("--qualification", action="append", type=Path, default=[])
+    supervise.add_argument("--plan", type=Path)
+    supervise.add_argument("--result", action="append", type=Path, default=[])
+    supervise.add_argument("--decision", type=Path)
+    supervise.add_argument("--run-id")
+    supervise.add_argument("--agent-model", default=DEFAULT_SUPERVISOR_AGENT_MODEL)
+    supervise.add_argument("--agent-inference-budget-usd", type=float, default=0.0)
+    supervise.add_argument(
+        "--allow-live-agent-sdk",
+        action="store_true",
+        help=(
+            "Authorize live OpenAI Agents SDK inference for this run. The shared "
+            "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS gate is also required."
+        ),
+    )
+    supervise.add_argument(
+        "--mode",
+        choices=[mode.value for mode in AutonomyMode],
+        default=AutonomyMode.SHADOW.value,
+    )
+    supervise.add_argument("--output-dir", required=True, type=Path)
+    supervise.set_defaults(handler=_supervise)
+
     execute = subparsers.add_parser(
         "execute", help="Execute a plan through explicitly authorized hermetic fixture adapters."
     )
@@ -219,6 +344,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(result, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))
+    if args.operation == "supervise" and result.get("status") == "blocked":
+        return 2
     return 0
 
 

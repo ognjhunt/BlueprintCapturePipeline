@@ -1,0 +1,65 @@
+{
+  "schema_version": "policy_ranking_gpt5_complete_graph_execution_freeze.v1",
+  "status": "frozen_not_submitted",
+  "claim_class": "post_unseal_complete_graph_diagnostic_only",
+  "source_commit": "57a7e8b7e16065ba2f5f3a55bae762a87b39fad0",
+  "source_commit_pushed_and_remote_equal": true,
+  "protocol_sha256": "4636d2e4a6b834f24f86f5073ef831e47c843925a11c1ad761d27663f8194954",
+  "inventory": {
+    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/complete_pair_inventory_v1.json",
+    "file_sha256": "5e75b250a170d13b08a1901b2bce236e820854e52cdfe4d1aeb6b58c3d5c0b57",
+    "inventory_sha256": "b60eb58c8a53d95d49f6fb1c221d276f13ea60d5289006d66bd3c08ef1f3f531",
+    "pair_count": 1323
+  },
+  "configuration": {
+    "arm_id": "gpt5_complete_graph",
+    "model": "gpt-5-2025-08-07",
+    "reasoning_effort": "medium",
+    "max_output_tokens": 4000,
+    "transport": "responses_batch_api",
+    "images_per_pair": 64,
+    "policy_identity_sent": false,
+    "physical_outcome_sent": false,
+    "physical_ground_truth_pixels_sent": false
+  },
+  "pilot_reuse": {
+    "allowed_by_prospective_pilot_freeze": true,
+    "pair_inventory_offsets": [1, 2, 3, 4, 5, 6, 7],
+    "result_count": 7,
+    "collection_report_sha256": "63de6bb9d00625fdd4ee4c2be232a625ac74e8cbdd3e0540b5f1f2f68180fd0f",
+    "synchronous_canary_offset_0_reused": false
+  },
+  "remaining_shard_plan": {
+    "remaining_pair_count": 1316,
+    "shard_count": 56,
+    "first_shard": {"offset": 0, "count": 1},
+    "subsequent_rule": "For shard indices 1 through 55, offset equals 8 plus 24 times index minus 1; count equals min(24, 1323 minus offset).",
+    "last_shard": {"offset": 1304, "count": 19},
+    "maximum_rows_per_jsonl": 24,
+    "upload_limit_bytes": 200000000,
+    "pilot_jsonl_bytes_per_row_mean": 5549080.142857143,
+    "maximum_planned_jsonl_bytes_from_pilot_mean": 133177923.42857143,
+    "active_batch_wave_limit": 8,
+    "delete_uploaded_input_after_collection": true,
+    "retain_local_jsonl_until_collection": true
+  },
+  "budget_admission": {
+    "realized_before_full_matrix_usd": 0.121902625,
+    "per_remaining_request_conservative_upper_usd": 0.015906875,
+    "remaining_projection_usd": 20.9334475,
+    "projected_total_usd": 21.055350125,
+    "category_cap_usd": 25.0,
+    "full_gpt5_matrix_admitted": true,
+    "gemini_missing_matrix_admitted_concurrently": false,
+    "hard_stop_before_submit_if_realized_plus_active_upper_reserve_exceeds_cap": true
+  },
+  "completion_gate": {
+    "required_result_count": 1323,
+    "required_error_count": 0,
+    "partial_matrix_ranking_credit": false,
+    "freeze_predictions_before_any_label_join": true,
+    "retain_every_tie_and_abstention": true
+  },
+  "provider_called_for_remaining_matrix": false,
+  "freeze_sha256": "cbb7a37b7298f57d65f697537d60b99283867d43116464212259e7c762bce959"
+}

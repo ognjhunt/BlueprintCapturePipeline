@@ -1,0 +1,35 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v6",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-29T10:37:00-0500",
+  "supersedes_amendment_sha256": "1b12cac54047dd2e8812defb0399b6c59d9c5deef6e4b9daad5db0c5fce95fd1",
+  "phase": "phase_2_exact_public_oscar_compatibility",
+  "amendment_reason": "The exact frozen droid_TRI RGB and skeleton assets report an intrinsic 14/1 frame rate; the exact public script auto-detects this rate rather than using the generic 15 Hz fallback.",
+  "asset_probe": {
+    "case": "droid_TRI",
+    "rgb_fps": 14.0,
+    "skeleton_fps": 14.0,
+    "rgb_frame_count": 298,
+    "skeleton_frame_count": 298,
+    "start_frame": 116,
+    "requested_window_frames": 81,
+    "requested_window_duration_seconds": 5.785714285714286
+  },
+  "prospective_change": {
+    "former_expected_fps": 15.0,
+    "successor_fps_source": "auto_detect_from_exact_frozen_skeleton_asset",
+    "successor_fps": 14.0,
+    "forced_fps_argument": false,
+    "public_script_behavior_changed": false,
+    "source_or_checkpoint_changed": false,
+    "sampling_steps_or_guidance_changed": false,
+    "physical_future_rgb_admitted": false
+  },
+  "scientific_justification": "Using the exact public script and the asset's encoded frame rate is the released OSCAR conditioning convention. Forcing 15 Hz would create a Blueprint-specific mismatch.",
+  "maximum_successor_allocations_without_another_amendment": 1,
+  "paid_execution_admitted": false,
+  "provider_called_for_successor_bundle": false,
+  "physical_outcome_labels_accessed": false,
+  "claim_boundary": "This correction changes only the prospective exact-public replay canary timing. It cannot establish closed-loop execution, WAM causal validity, ranking fidelity, captured-site transfer, economics, physical success, or thesis support.",
+  "amendment_sha256": "a27cbeb11c58b1b2d0a2953f85ad44ca3a36d2a906dcb1cd5d5f028d498bac9a"
+}

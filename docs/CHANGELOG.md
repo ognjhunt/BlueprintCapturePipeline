@@ -4,37 +4,63 @@
 
 ### User-Facing
 
-- Aligned doctrine, entry docs, and evidence claims after a twelve-item
-  conflict audit: `AGENTS.md` is now the canonical agent-agnostic working
-  guide (Claude, Codex, and human engineers) with a sibling-checkout path
-  convention replacing literal `$HOME/workspace` paths; `CLAUDE.md` is a thin
-  harness summary; `VISION.md` joined the documented read order; the README
-  header now describes both active lanes (site/package and robot-evaluation
-  engine) and disambiguates legacy Cosmos-Predict2.5 from the preferred
-  `cosmos3_wam` candidate.
-- Recognized Policy Improvement Runs as a first-class buyer product across
-  `PLATFORM_CONTEXT.md` and `WORLD_MODEL_STRATEGY_CONTEXT.md`, added the
-  Commercial Wedge Overlay section that `VISION.md` references, resolved the
-  site-operator optional-vs-rung-2 tension as a lifecycle-stage distinction,
-  and blessed the evaluation-engine build focus as rung-1 execution of the
-  capture-first strategy.
-- Tightened `VISION.md` evidence claims: SC3-Eval's OOD Pearson is a wash
-  against its Cosmos-Predict2.5 baseline (0.870 vs 0.871, MMRV edge only),
-  OSCAR's published validation is open-loop only with chained-generation
-  exposure-bias collapse named as the open failure mode, and the evidence base
-  now folds in `docs/policy_and_wam_benchmark_research_2026-07-26.md`.
-- Added `docs/DOCTRINE_PRECEDENCE.md`: the resolution order when documentation
-  disagrees, for agents and humans.
+- Closed the Cosmos3-Nano successor follow-up `inconclusive`. The frozen
+  one-session screen produced ten valid, nonduplicate videos and all eight
+  active rows differed from same-seed zero-action output, but only one of eight
+  rejected the strongest temporal placebo and zero of four conditions passed
+  both-seed robustness. The powered causal, evaluator, benchmark, and
+  captured-site arms were therefore not admitted
+  (`docs/experiments/policy_ranking_cosmos3_followup_20260728/final_verdict.json`).
+- Closed the RoboArena full-stack calibration `inconclusive`. The complete
+  63-session, seven-policy, 441-episode frozen GPT-5 mini reproduction failed
+  its registered ranking and selective-use gates (Spearman 0.357143, Kendall
+  0.238095, pairwise accuracy 0.619048, selective coverage 0.050182). Gemini
+  3.6 Flash ranked better only as a post-unseal diagnostic and never abstained;
+  no disjoint closed-loop Phase B or captured-site Phase C ran
+  (`docs/experiments/policy_ranking_roboarena_full_stack_calibration_20260728/final_verdict_v1.json`).
+- Aligned the product doctrine around capture-first Task Evaluation Runs,
+  bounded Policy Improvement Runs, and Post-Training Data Packages. Added a
+  documented doctrine-precedence order, clarified site-operator lifecycle
+  roles and model replaceability, and tightened SC3-Eval and OSCAR evidence
+  claims (`PLATFORM_CONTEXT.md`, `WORLD_MODEL_STRATEGY_CONTEXT.md`,
+  `docs/DOCTRINE_PRECEDENCE.md`).
 
-### Internal
+### Employee-Facing
 
-- Renamed `src/blueprint_pipeline/qualification.py` to
-  `src/blueprint_pipeline/site_package_orchestrator.py`: the module is the core
-  capture->package orchestration spine, and the legacy name contradicted the
-  doctrine that readiness/review outputs are optional support layers.
-  `blueprint_pipeline.qualification` remains a deprecated import alias pinned
-  by `tests/test_qualification_alias_contract.py`; artifact contracts such as
-  `pipeline/qualification_summary.json` are unchanged.
+- Added fail-closed evaluator and paid-GPU admission paths for OpenAI, Gemini,
+  and Cosmos Reasoner diagnostics, including schema/runtime binding, signed
+  object transport, resumable media staging, idempotent submission, and a
+  pre-download Vast CUDA compatibility probe. Reasoner attempts V4--V6 yielded
+  no valid scientific ranking; V6 failed before model load with CUDA error 803
+  (`src/blueprint_pipeline/policy_ranking_evaluator_diagnostic.py`,
+  `src/blueprint_pipeline/vast_cuda_runtime_probe.py`).
+- Added a WAM rollout-reliability gate for action-motion, timing, degeneracy,
+  and rot6d validity, then made timing reliability aggregate explicitly by
+  session while hard failures remain immediate. Thresholds remain experiment-
+  specific and require calibration before scientific use
+  (`src/blueprint_pipeline/wam_rollout_reliability.py`).
+- Renamed the capture-to-package spine to
+  `src/blueprint_pipeline/site_package_orchestrator.py`; the deprecated
+  `blueprint_pipeline.qualification` import and existing artifact contracts
+  remain compatible. Known conservative RoboArena provider spend was
+  USD 6.909436375 excluding unavailable storage/transfer invoice evidence;
+  low request cost did not establish faster or cheaper physical evaluation.
+
+### Future-Agent-Facing
+
+- The America/Chicago window contains seventeen first-parent `main` commits,
+  `a00856dd` through `029a705b` (PRs #214--#225 and #227--#231). At review,
+  the worktree is clean and no attributable uncommitted July 28 work is
+  recorded. Local `HEAD == main == 029a705b`; `origin/main` is six later commits
+  ahead, so they are excluded from this day-bounded entry.
+- Do not rerun exposed-snapshot judges or another short Reasoner diagnostic.
+  The next scientifically valid experiment needs a genuinely new disjoint
+  labeled RoboArena/DROID snapshot, runnable frozen policies, prospectively
+  powered independent sessions, and the frozen reliability/evaluator gates.
+- Raw capture, provenance, rights, and privacy evidence remain authoritative.
+  Generated videos, benchmark reports, provider receipts, review galleries,
+  readiness summaries, and this changelog are downstream support artifacts;
+  none proves deployment, public readiness, or physical-robot success.
 ## 2026-07-27
 
 ### User-Facing

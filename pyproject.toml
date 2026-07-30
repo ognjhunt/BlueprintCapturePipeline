@@ -37,6 +37,9 @@ dependencies = [
     "google-cloud-storage>=2.10.0",
     "cryptography>=46.0.5",
     "defusedxml>=0.7.1",
+    # Canonical agent harness for the Task Evaluation Supervisor and its
+    # specialized agents. Blueprint contracts remain the proof authority.
+    "openai-agents>=0.18.1,<0.19",
     "uvicorn>=0.30.0",
     # Explicit uvicorn WebSocket protocol backend for hosted runtime sessions.
     "websockets>=12.0",
@@ -73,9 +76,9 @@ llm = [
     "google-genai>=1.0.0",
     "openai>=1.0.0",
 ]
-simulation-agents = [
-    "openai-agents>=0.3.0",
-]
+# Compatibility alias retained for existing install commands. The Agents SDK
+# is now a core runtime dependency because it is the shared agent harness.
+simulation-agents = []
 retrieval = [
     "torch>=2.2.0",
     # Retained for upstream vision transforms used by retrieval/model adapters.
@@ -165,6 +168,9 @@ dev = [
 ]
 
 [project.scripts]
+blueprint-intake-capture = "blueprint_pipeline.capture_intake:main"
+blueprint-qa-capture = "blueprint_pipeline.capture_qa:main"
+blueprint-analyze-capture-quality = "blueprint_pipeline.capture_quality_analyzer:main"
 blueprint-capture-pipeline = "blueprint_pipeline.capture_orchestrator:main"
 blueprint-render-splat-scene = "blueprint_pipeline.splat_scene_render:main"
 blueprint-render-splat-isaac = "blueprint_pipeline.isaac_particlefield_render_job:main"
@@ -179,6 +185,8 @@ blueprint-run-e2e = "blueprint_pipeline.run_e2e:main"
 blueprint-compile-evaluation-run = "blueprint_pipeline.evaluation_run_contract:main"
 blueprint-run-evaluation-run = "blueprint_pipeline.evaluation_run_execution:main"
 blueprint-route-task-evaluation = "blueprint_pipeline.decision_evidence_cli:main"
+blueprint-task-candidate-control = "blueprint_pipeline.task_candidate_control_plane_cli:main"
+blueprint-compile-site-task-testbed = "blueprint_pipeline.site_task_testbed_compiler_cli:main"
 blueprint-pubsub-handoff-listener = "blueprint_pipeline.pubsub_handoff_listener:main"
 blueprint-build-object-index = "blueprint_pipeline.object_index_stage:main"
 blueprint-sync-skills = "blueprint_pipeline.agent_runtime.skill_sync:main"

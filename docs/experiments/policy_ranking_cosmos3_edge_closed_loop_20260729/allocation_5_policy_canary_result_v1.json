@@ -1,0 +1,99 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_policy_canary_result.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-29T10:17:40-0500",
+  "allocation_index": 5,
+  "authorization_id": "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-5",
+  "orchestration_source_commit": "404842503d4c058d9d72366c2aa261d5ae125685",
+  "provider_bundle_source_commit": "79911f43c1033e9981dc946ae7d254dc94a37a6f",
+  "bundle_version": 9,
+  "bundle_sha256": "0fcbcae301629d3a1efe9ae07d2fcd628d4bb7eeb6873e1f87b0749297230ff7",
+  "content_addressed_staging_manifest_sha256": "d400533ac565b86d6a0c1859cfb1f445c1c5deba32ec4ccf8398c46c567fb7c0",
+  "provider_runtime_output_zip_sha256": "e42b2d7dc1112fb84bbe9415cb5cc4fa2c04e6d5aa1d0a10600726796a7f348d",
+  "provider_runtime_output_zip_size_bytes": 17864,
+  "structured_canary_sha256": "9f24fb086f32095bd3ceb626b1e74c15aa87dbbd7a780aa6eb3ac208e1906956",
+  "runtime_result_sha256": "f32788e166f88bf28ea284ca05d82fe8d90f07fd60c532b64def6c835ed2d77a",
+  "policy_server_startup_sha256": "4536dfb8ae649cb025a4ff6e772745b3464f8ec3fc015e33f673fe175f944e9c",
+  "status": "passed_policy_endpoint_canary",
+  "model": {
+    "repository": "nvidia/Cosmos3-Edge-Policy-DROID",
+    "revision": "3ea407af3e156c0af3b4bb6edd85842cc9a58777",
+    "cosmos_framework_revision": "2f603cb114ff8b335e116060444d0b6caee3a85e",
+    "snapshot_file_count": 21,
+    "snapshot_size_bytes": 9154401203,
+    "snapshot_verified": true,
+    "server_identity_sha256": "9dfc6797b2d9599bf17a787c8b3e1efbfacea54e14da4818c593c4cd8b5b0e09",
+    "role": "candidate_policy_only",
+    "neutral_wam": false
+  },
+  "transport": {
+    "openpi_client_version": "0.1.2",
+    "client_running_in_pinned_cosmos_venv": true,
+    "request_count": 1,
+    "identity_verified": true,
+    "observation_sha256": "50c6db7cd3f02646e3878bbbe1207a70be46bea4664942a11dafd67bc7b67906",
+    "request_receipt_sha256": "fcba4fe5c690e98779279184d2f7d7085f8fbd8e3b97c45b6524ec2ee4d5dad8"
+  },
+  "action_contract": {
+    "action_space": "absolute_joint_position_plus_gripper",
+    "native_shape": [32, 8],
+    "native_action_sha256": "05c9df1a50dac8a5b216c71d1de4fa7e103cbbe35a4756df85a1abd45392fda1",
+    "native_action_all_finite": true,
+    "wam_prefix_shape": [16, 8],
+    "wam_prefix_action_sha256": "af8b624aa64b796253e236d31249120f2f75fd24cbc57a55b6d47a350ae2ab4d",
+    "wam_prefix_is_exact_first_16_native_rows": true,
+    "executed_prefix_shape": [8, 8],
+    "executed_prefix_action_sha256": "47a1c56e97eb6fd367a34511a094940e809f74b7dc2bdc685d21e66d463eff23",
+    "executed_prefix_is_exact_first_8_native_rows": true,
+    "commanded_next_state_sha256": "56acf9d17ab7d13783fad519fd9a1187b861f6888e9507fd12015e74a2ad230b",
+    "commanded_next_state_equals_native_row_7": true,
+    "conditioning_fps": 15.0,
+    "derived_executed_duration_seconds": 0.5333333333333333
+  },
+  "runtime": {
+    "policy_server_load_seconds": 55.00560736656189,
+    "policy_inference_latency_seconds": 19.633824825286865,
+    "total_provider_runtime_seconds": 236.7676932811737,
+    "gpu_memory_after_inference_used_mb": 9805,
+    "gpu_memory_total_mb": 97887,
+    "nvidia_guardrails_enabled": false,
+    "guardrail_mode": "disabled_source_supported_post_generation_filter",
+    "policy_checkpoint_or_action_contract_modified_by_guardrail_override": false,
+    "blueprint_action_and_abstention_gates_remain_enabled": true
+  },
+  "adapter_classification": {
+    "observed_status": "blocked",
+    "observed_reason": "vast_blueprint_video_smoke_blocked",
+    "observed_blocker": "mp4_count_below_expected_video_smoke_camera_count",
+    "diagnosis": "false wrapper blocker because a structured candidate-policy canary intentionally emits no rollout MP4",
+    "generic_fix_landed_with_focused_test": true,
+    "paid_rerun_required": false
+  },
+  "cost": {
+    "allocation_gpu_cost_usd": 0.184416,
+    "session_gpu_cost_usd": 1.002701,
+    "campaign_gpu_cost_usd": 3.228813,
+    "session_budget_ledger_sha256": "714d14c38d559370e5b4789e61bf7a9864e4192fef3f32382454d8dbeeadabce"
+  },
+  "provider_close": {
+    "teardown_completed": true,
+    "continuing_spend": false,
+    "post_allocation_preflight_sha256": "7729b5768f3f60ad54921529a5b882de20f75f700eff08f8d24321f3c94b8824",
+    "provider_inventory_verified_zero": true,
+    "billable_live_resource_count": 0,
+    "task_live_resource_count": 0
+  },
+  "claim_boundary": {
+    "candidate_policy_endpoint_contract_proven": true,
+    "learned_wam_model_ran": false,
+    "action_conditioned_video_rollout_generated": false,
+    "wam_causal_validity_proven": false,
+    "ranking_fidelity_proven": false,
+    "captured_site_transfer_proven": false,
+    "economics_and_speed_proven": false,
+    "physical_performance_proven": false,
+    "thesis_credit": false
+  },
+  "historical_frozen_stack_verdict_unchanged": "thesis_not_supported",
+  "record_sha256": "25097f15e3dbcb4a5a2a435e95a1ed02f9ca66df57a6c76a2966e2604867d236"
+}

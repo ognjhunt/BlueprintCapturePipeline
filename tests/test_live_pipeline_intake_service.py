@@ -410,6 +410,7 @@ def test_live_pipeline_intake_service_error_edges(tmp_path: Path, monkeypatch: p
 
     endpoints = [
         "/api/live-pipeline/job-requests",
+        "/api/live-pipeline/capture-upload-intakes",
         "/api/live-pipeline/capture-handoffs",
         "/api/live-pipeline/policy-packages",
         "/api/live-pipeline/real-robot-pov",
@@ -431,6 +432,121 @@ def test_live_pipeline_intake_service_error_edges(tmp_path: Path, monkeypatch: p
     assert client.get("/api/live-pipeline/intake-audit", headers=headers).status_code == 404
     _write_json(manifest_path.parent / "live_pipeline_input_intake_audit.json", ["bad"])
     assert client.get("/api/live-pipeline/intake-audit", headers=headers).status_code == 500
+
+
+def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "token")
+    monkeypatch.setenv(
+        CONTROL_PLANE_OUTPUT_PATH_ENV,
+        str(tmp_path / "control" / "manifest.json"),
+    )
+    monkeypatch.setenv(
+        service.CAPTURE_UPLOAD_STORE_ROOT_ENV,
+        str(tmp_path / "capture-intakes"),
+    )
+    seen: dict[str, object] = {}
+
+    def process(payload, *, store_root):
+        seen["payload"] = payload
+        seen["store_root"] = store_root
+        return {
+            "schema_version": "capture_upload_intake_receipt.v1",
+            "capture_session_id": "capture-upload-session-1",
+            "intake_id": "intake-1",
+            "request_digest": f"sha256:{'1' * 64}",
+            "envelope_digest": f"sha256:{'2' * 64}",
+            "capture_digest": f"sha256:{'3' * 64}",
+            "size_bytes": 12,
+            "admission_status": "accepted",
+            "state": "capture_accepted",
+            "claim_ceiling": {"physical_task_success": False},
+            "artifact_reference": {
+                "uri": "intakes/intake-1/fixture",
+                "envelope_digest": f"sha256:{'2' * 64}",
+            },
+            "malware_content_validation": {
+                "status": "passed",
+                "scanner": "fixture",
+            },
+            "capture_qa_report": {"qa_report_digest": f"sha256:{'4' * 64}"},
+            "already_exists": False,
+            "proof_boundary": {
+                "capture_qa_completed": False,
+                "physical_task_success_established": False,
+                "comparative_policy_ranking_verdict": "thesis_not_supported",
+            },
+        }
+
+    monkeypatch.setattr(service, "process_capture_upload_submission", process)
+    monkeypatch.setattr(
+        service,
+        "build_capture_qa_webapp_publication",
+        lambda *, capture_session_id, report: {
+            "schema_version": "capture_qa_publication.v1",
+            "capture_session_id": capture_session_id,
+            "qa_report_digest": report["qa_report_digest"],
+        },
+    )
+    submission = {
+        "schema_version": "capture_upload_transfer_submission.v1",
+        "capture_session_id": "capture-upload-session-1",
+        "transfer": {
+            "url": "https://download.example.test/file/capture.mp4",
+            "authorization": "ephemeral-secret",
+        },
+    }
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/capture-upload-intakes",
+        json=submission,
+        headers={"x-blueprint-intake-token": "token"},
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["schema_version"] == "capture_upload_processing_result.v1"
+    assert result["receipt"]["capture_digest"] == f"sha256:{'3' * 64}"
+    assert result["capture_qa_publication"]["qa_report_digest"] == f"sha256:{'4' * 64}"
+    assert "ephemeral-secret" not in response.text
+    assert "download.example.test" not in response.text
+    assert seen["payload"] == submission
+    assert seen["store_root"] == (tmp_path / "capture-intakes").resolve()
+
+
+def test_live_pipeline_capture_upload_intake_returns_typed_fail_closed_blockers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "token")
+    monkeypatch.setenv(
+        CONTROL_PLANE_OUTPUT_PATH_ENV,
+        str(tmp_path / "control" / "manifest.json"),
+    )
+    monkeypatch.setenv(service.CAPTURE_UPLOAD_STORE_ROOT_ENV, str(tmp_path / "store"))
+
+    def reject(*_args, **_kwargs):
+        raise service.CaptureUploadTransferError(["malware_detected"])
+
+    monkeypatch.setattr(service, "process_capture_upload_submission", reject)
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/capture-upload-intakes",
+        json={"schema_version": "capture_upload_transfer_submission.v1"},
+        headers={"x-blueprint-intake-token": "token"},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "schema_version": "capture_upload_intake_rejection.v1",
+        "status": "rejected",
+        "blockers": ["malware_detected"],
+        "proof_boundary": {
+            "capture_qa_completed": False,
+            "task_success_established": False,
+            "physical_task_success_established": False,
+            "deployment_or_safety_approved": False,
+            "comparative_policy_ranking_verdict": "thesis_not_supported",
+        },
+    }
 
 
 def test_capture_handoff_blocked_after_conversion_and_main(

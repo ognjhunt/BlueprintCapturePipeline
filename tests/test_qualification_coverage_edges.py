@@ -155,7 +155,7 @@ def test_qualification_small_helpers_and_handoff_paths(
         task_targets_payload={},
     )
     assert warning_report["task_hypothesis_status"] == "needs_confirmation"
-    accepted_report = q._build_task_hypothesis_report(
+    grounded_high_confidence_report = q._build_task_hypothesis_report(
         descriptor=_descriptor(environment_type_hint="warehouse"),
         raw_task_hypothesis={
             "source": "ai_inferred",
@@ -167,8 +167,11 @@ def test_qualification_small_helpers_and_handoff_paths(
         object_index_entries=[{"id": "tote-1", "label": "tote"}],
         task_targets_payload={},
     )
-    assert accepted_report["task_hypothesis_status"] == "accepted"
-    accepted_with_warnings = q._build_task_hypothesis_report(
+    assert grounded_high_confidence_report["task_hypothesis_status"] == "needs_confirmation"
+    assert "requires explicit customer or operator approval" in " ".join(
+        grounded_high_confidence_report["warnings"]
+    )
+    grounded_medium_confidence_report = q._build_task_hypothesis_report(
         descriptor=_descriptor(environment_type_hint="warehouse"),
         raw_task_hypothesis={
             "source": "ai_inferred",
@@ -180,7 +183,7 @@ def test_qualification_small_helpers_and_handoff_paths(
         object_index_entries=[],
         task_targets_payload={},
     )
-    assert accepted_with_warnings["task_hypothesis_status"] == "accepted_with_warnings"
+    assert grounded_medium_confidence_report["task_hypothesis_status"] == "needs_confirmation"
 
     effective = q._effective_task_metadata(
         descriptor,

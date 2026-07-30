@@ -161,6 +161,19 @@ def _write_dark_conditioning_mp4(path: Path) -> None:
     writer.release()
 
 
+def _write_sparse_texture_free_skeleton_mp4(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (64, 64))
+    assert writer.isOpened()
+    for index in range(8):
+        frame = np.zeros((64, 64, 3), dtype=np.uint8)
+        cv2.line(frame, (8 + index, 54), (32, 12 + index), (0, 255, 255), 2)
+        cv2.line(frame, (32, 12 + index), (52, 34), (255, 0, 0), 2)
+        cv2.circle(frame, (32, 12 + index), 2, (255, 255, 255), -1)
+        writer.write(frame)
+    writer.release()
+
+
 SCENE_FAITHFUL_ISAAC_POLICY_ACTION_TRACE_CLAIM = {
     "policy_derived_action_conditioning": True,
     "official_wbc_or_sim_bridge_used": False,
@@ -664,6 +677,7 @@ def test_build_oscar_wam_provider_bundle_from_existing_inputs(tmp_path: Path) ->
     assert "rgb_context.mp4" in runner_text
     assert "official_case_rgb_video" in runner_text
     assert "official_case_use_script" in runner_text
+    assert "if official_case_smoke and not official_case_use_script:" in runner_text
     assert "scripts/run_inference.sh" in runner_text
     assert "_prepare_official_script_runtime" in runner_text
     assert "(official_case_smoke or runtime_rgb_expected)" not in runner_text
@@ -966,6 +980,81 @@ def test_build_oscar_wam_provider_bundle_blocks_invalid_existing_conditioning_vi
         "oscar_input_skeleton_conditioning_proxy_conditioning_foreground_fraction_too_low"
         in low_signal["blockers"]
     )
+
+
+def test_exact_public_sparse_texture_free_skeleton_uses_model_input_signal_gate(
+    tmp_path: Path,
+) -> None:
+    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
+    rollout_input.write_text(
+        json.dumps({"task_prompts": [{"task_prompt": "Move toward the handle."}]}),
+        encoding="utf-8",
+    )
+    oscar_input = tmp_path / "oscar_input"
+    oscar_input.mkdir()
+    _write_review_png(oscar_input / "first_frame.png")
+    skeleton = oscar_input / "blueprint_proxy_skeleton_conditioning.mp4"
+    _write_sparse_texture_free_skeleton_mp4(skeleton)
+    package_manifest = tmp_path / "oscar_wam_input_package_manifest.json"
+    package_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint_oscar_wam_input_package.v1",
+                "skeleton_video": {
+                    "conditioning_mode": "exact_public_oscar_droid_skeleton",
+                    "skeleton_stream_separate_from_rgb": True,
+                    "skeleton_stream_texture_free": True,
+                    "skeleton_stream_image_aligned_to_rgb": True,
+                    "visual_signal": {"status": "completed", "blockers": []},
+                },
+                "claim_boundary": {
+                    "skeleton_conditioning_is_proxy_from_mujoco_trace": False,
+                    "true_robot_proprioceptive_skeleton_available": True,
+                    "runtime_uses_frozen_official_droid_assets": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = build_oscar_wam_provider_bundle(
+        job_dir=tmp_path / "sparse-skeleton-job",
+        wam_rollout_input_manifest=rollout_input,
+        oscar_input_dir=oscar_input,
+        oscar_input_package_manifest=package_manifest,
+        generated_at="2026-07-29T00:00:00+00:00",
+    )
+
+    assert completed["status"] == "completed"
+    assert completed["input_package_conditioning_video_blockers"] == []
+    signal = completed["input_package_contract_diagnostic"]
+    assert signal["status"] == "ready"
+    with zipfile.ZipFile(Path(completed["bundle_path"])) as archive:
+        runtime_manifest = json.loads(
+            archive.read("provider_runtime/wam_provider_runtime_manifest.json")
+        )
+    sparse_signal = runtime_manifest["input_package"]["skeleton_video"][
+        "texture_free_skeleton_signal"
+    ]
+    assert sparse_signal["status"] == "passed_sparse_texture_free_skeleton"
+    assert sparse_signal["minimum_foreground_fraction"] > 0
+    runtime_claims = runtime_manifest["input_package"]["claim_boundary"]
+    assert runtime_claims["skeleton_conditioning_is_proxy_from_mujoco_trace"] is False
+    assert runtime_claims["true_robot_proprioceptive_skeleton_available"] is True
+    assert runtime_claims["runtime_uses_frozen_official_droid_assets"] is True
+
+    _write_dark_conditioning_mp4(skeleton)
+    blocked = build_oscar_wam_provider_bundle(
+        job_dir=tmp_path / "blank-skeleton-job",
+        wam_rollout_input_manifest=rollout_input,
+        oscar_input_dir=oscar_input,
+        oscar_input_package_manifest=package_manifest,
+        generated_at="2026-07-29T00:01:00+00:00",
+    )
+
+    assert blocked["status"] == "blocked"
+    assert "oscar_input_skeleton_conditioning_video_not_visually_useful" in blocked["blockers"]
+    assert "oscar_input_skeleton_conditioning_video_visual_smoke_failed" in blocked["blockers"]
 
 
 def test_action_conditioned_projected_skeleton_trace_must_be_temporal(

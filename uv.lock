@@ -253,6 +253,7 @@ dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "openai-agents" },
     { name = "pillow" },
     { name = "pyyaml" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
@@ -325,9 +326,6 @@ runtime = [
     { name = "trimesh" },
     { name = "ultralytics" },
 ]
-simulation-agents = [
-    { name = "openai-agents" },
-]
 validation = [
     { name = "jsonschema" },
 ]
@@ -383,7 +381,7 @@ requires-dist = [
     { name = "ninja", marker = "extra == 'groot-libero-cpu'", specifier = ">=1.11.0" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "openai", marker = "extra == 'llm'", specifier = ">=1.0.0" },
-    { name = "openai-agents", marker = "extra == 'simulation-agents'", specifier = ">=0.3.0" },
+    { name = "openai-agents", specifier = ">=0.18.1,<0.19" },
     { name = "opencv-python-headless", marker = "extra == 'dev'", specifier = ">=4.10.0" },
     { name = "opencv-python-headless", marker = "extra == 'runtime'", specifier = ">=4.10.0" },
     { name = "peft", marker = "extra == 'groot-libero-cpu'", specifier = ">=0.14.0" },

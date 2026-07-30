@@ -15,6 +15,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -300,6 +301,14 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
     if provider_bundle_kind == "unitree_groot_n17_sonic":
         return DEFAULT_UNITREE_GROOT_N17_SONIC_VIDEO_COUNT
     return 0
+
+
+def _provider_expected_video_count_for_result(
+    provider_bundle_kind: str, *, structured_policy_canary_passed: bool
+) -> int:
+    if structured_policy_canary_passed:
+        return 0
+    return _provider_expected_video_count(provider_bundle_kind)
 
 
 def _mapping(value: Any) -> Dict[str, Any]:
@@ -2016,11 +2025,66 @@ def _blueprint_bundle_preflight(
                     f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}"
                 )
             missing_entries = sorted(required_entries - set(zip_entries))
-            if missing_entries and not (
+            wam_registered_alternative_present = (
                 provider_bundle_kind == "wam"
                 and wam_registered_alternative_inputs_present(
-                    bundle_path=bundle_path, zip_entries=zip_entries
+                    bundle_path=bundle_path,
+                    zip_entries=zip_entries,
                 )
+            )
+            cosmos3_reference_inputs_present = all(
+                f"provider_runtime/cosmos3_droid_reference/{name}" in zip_entries
+                for name in (
+                    "canary_manifest.json",
+                    "initial_observation.png",
+                    "action_streams.json",
+                )
+            )
+            powered_packet_name = "provider_runtime/cosmos3_powered_droid/packet.json"
+            cosmos3_powered_inputs_present = False
+            if powered_packet_name in zip_entries:
+                try:
+                    with zipfile.ZipFile(bundle_path) as powered_archive:
+                        powered_packet = json.loads(
+                            powered_archive.read(powered_packet_name).decode("utf-8")
+                        )
+                    powered_rows = powered_packet.get("rows")
+                    powered_images = (
+                        {
+                            "provider_runtime/cosmos3_powered_droid/"
+                            + str(row.get("initial_observation_relative_path") or "")
+                            for row in powered_rows
+                            if isinstance(row, Mapping)
+                        }
+                        if isinstance(powered_rows, list)
+                        else set()
+                    )
+                    cosmos3_powered_inputs_present = (
+                        powered_packet.get("schema_version")
+                        == "policy_ranking_powered_droid_provider_packet.v1"
+                        and len(powered_rows or []) == 51
+                        and powered_images.issubset(set(zip_entries))
+                        and all(
+                            name in zip_entries
+                            for name in (
+                                "provider_runtime/cosmos3_powered_droid/official_canary/"
+                                "canary_manifest.json",
+                                "provider_runtime/cosmos3_powered_droid/official_canary/"
+                                "initial_observation.png",
+                                "provider_runtime/cosmos3_powered_droid/official_canary/"
+                                "action_streams.json",
+                            )
+                        )
+                    )
+                except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
+                    cosmos3_powered_inputs_present = False
+            wam_registered_alternative_present = (
+                wam_registered_alternative_present
+                or cosmos3_reference_inputs_present
+                or cosmos3_powered_inputs_present
+            )
+            if missing_entries and not (
+                provider_bundle_kind == "wam" and wam_registered_alternative_present
             ):
                 blockers.append("provider_runtime_bundle_required_entries_missing")
             if zip_testzip_result is not None:
@@ -2424,7 +2488,11 @@ def _resolve_launch_mode(
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     if requested == "auto":
-        if enable_blueprint_bundle and provider_bundle_kind in {"wam", "evaluator", "unitree_unifolm"}:
+        if enable_blueprint_bundle and provider_bundle_kind in {
+            "wam",
+            "evaluator",
+            "unitree_unifolm",
+        }:
             return "ssh_direct"
         return "args" if enable_isaac_smoke else "ssh_direct"
     return requested
@@ -3550,6 +3618,131 @@ def _inspect_provider_runtime_output_zip(
     )
 
 
+def _inspect_structured_policy_canary_output(path: Path | None) -> dict[str, Any]:
+    """Validate a structured policy canary without requiring rollout video."""
+
+    blockers: list[str] = []
+    payload: dict[str, Any] = {}
+    if path is None or not path.is_file():
+        blockers.append("structured_policy_canary_output_zip_missing")
+    else:
+        try:
+            with zipfile.ZipFile(path) as archive:
+                if "policy_structured_canary.json" not in archive.namelist():
+                    blockers.append("structured_policy_canary_member_missing")
+                else:
+                    value = json.loads(archive.read("policy_structured_canary.json"))
+                    payload = _mapping(value)
+        except (OSError, UnicodeError, json.JSONDecodeError, zipfile.BadZipFile):
+            blockers.append("structured_policy_canary_member_invalid")
+
+    native_action = payload.get("native_action")
+    wam_prefix = payload.get("wam_prefix_action")
+    executed_action = payload.get("executed_action")
+    commanded_joint = payload.get("commanded_next_joint_position")
+    commanded_gripper = payload.get("commanded_next_gripper_position")
+    endpoint = _mapping(payload.get("policy_endpoint_evidence"))
+    receipt = _mapping(payload.get("policy_request_receipt"))
+    server_metadata = _mapping(endpoint.get("server_metadata"))
+    if payload and payload.get("status") != "passed":
+        blockers.append("structured_policy_canary_status_not_passed")
+    if payload and endpoint.get("identity_verified") is not True:
+        blockers.append("structured_policy_canary_identity_not_verified")
+    if payload and endpoint.get("request_count") != 1:
+        blockers.append("structured_policy_canary_request_count_invalid")
+    native_shape_valid = bool(
+        isinstance(native_action, list)
+        and len(native_action) == 32
+        and all(isinstance(row, list) and len(row) == 8 for row in native_action)
+    )
+    if payload and not native_shape_valid:
+        blockers.append("structured_policy_canary_native_action_shape_invalid")
+    if (
+        payload
+        and native_shape_valid
+        and not all(
+            type(value) in {int, float} and math.isfinite(float(value))
+            for row in native_action
+            for value in row
+        )
+    ):
+        blockers.append("structured_policy_canary_native_action_not_finite")
+    if payload and not (
+        isinstance(wam_prefix, list)
+        and len(wam_prefix) == 16
+        and isinstance(native_action, list)
+        and wam_prefix == native_action[:16]
+    ):
+        blockers.append("structured_policy_canary_wam_prefix_invalid")
+    if payload and not (
+        isinstance(executed_action, list)
+        and len(executed_action) == 8
+        and isinstance(native_action, list)
+        and executed_action == native_action[:8]
+    ):
+        blockers.append("structured_policy_canary_executed_prefix_invalid")
+    if payload and not (
+        isinstance(native_action, list)
+        and len(native_action) == 32
+        and commanded_joint == native_action[7][:7]
+        and commanded_gripper == [native_action[7][7]]
+    ):
+        blockers.append("structured_policy_canary_commanded_state_invalid")
+    expected_receipt_shapes = {
+        "native_action_shape": [32, 8],
+        "wam_prefix_action_shape": [16, 8],
+        "executed_prefix_steps": 8,
+    }
+    for key, expected in expected_receipt_shapes.items():
+        if payload and receipt.get(key) != expected:
+            blockers.append(f"structured_policy_canary_receipt_{key}_invalid")
+    for key in (
+        "server_identity_sha256",
+        "observation_sha256",
+        "native_action_sha256",
+        "wam_prefix_action_sha256",
+        "executed_prefix_action_sha256",
+        "commanded_next_state_sha256",
+        "receipt_sha256",
+    ):
+        if payload and not re.fullmatch(r"[0-9a-f]{64}", _string(receipt.get(key))):
+            blockers.append(f"structured_policy_canary_receipt_{key}_invalid")
+
+    return {
+        "status": "passed" if payload and not blockers else "blocked",
+        "blockers": blockers,
+        "identity_verified": endpoint.get("identity_verified") is True,
+        "request_count": endpoint.get("request_count"),
+        "policy_id": server_metadata.get("policy_id"),
+        "model_revision": server_metadata.get("model_revision"),
+        "server_identity_sha256": receipt.get("server_identity_sha256"),
+        "observation_sha256": receipt.get("observation_sha256"),
+        "native_action_sha256": receipt.get("native_action_sha256"),
+        "wam_prefix_action_sha256": receipt.get("wam_prefix_action_sha256"),
+        "executed_prefix_action_sha256": receipt.get("executed_prefix_action_sha256"),
+        "commanded_next_state_sha256": receipt.get("commanded_next_state_sha256"),
+        "receipt_sha256": receipt.get("receipt_sha256"),
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _structured_policy_canary_runtime_passed(
+    runtime_result: Mapping[str, Any], canary_summary: Mapping[str, Any]
+) -> bool:
+    return bool(
+        canary_summary.get("status") == "passed"
+        and runtime_result.get("status") == "completed"
+        and runtime_result.get("runtime") == "policy_structured_canary"
+        and runtime_result.get("structured_policy_canary_passed") is True
+        and runtime_result.get("learned_wam_model_ran") is False
+        and runtime_result.get("action_conditioned_video_rollout_generated") is False
+        and runtime_result.get("native_action_shape") == [32, 8]
+        and runtime_result.get("wam_prefix_action_shape") == [16, 8]
+        and runtime_result.get("executed_prefix_steps") == 8
+        and runtime_result.get("commanded_state_advance_proven") is True
+    )
+
+
 def _runtime_result_artifact_summary(
     runtime_result: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -3878,9 +4071,11 @@ def run_vast_provider_adapter(
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
-    resolved_image_login_mode = _string(ngc_image_login_mode) or _string(
-        os.getenv(VAST_IMAGE_LOGIN_MODE_ENV)
-    ) or DEFAULT_NGC_IMAGE_LOGIN_MODE
+    resolved_image_login_mode = (
+        _string(ngc_image_login_mode)
+        or _string(os.getenv(VAST_IMAGE_LOGIN_MODE_ENV))
+        or DEFAULT_NGC_IMAGE_LOGIN_MODE
+    )
     if resolved_image_login_mode not in NGC_IMAGE_LOGIN_MODES:
         raise ValueError(f"unsupported_ngc_image_login_mode:{resolved_image_login_mode}")
     resolved_job_dir = Path(job_dir).expanduser().resolve()
@@ -5743,6 +5938,15 @@ def run_vast_provider_adapter(
             runtime_result = _mapping(output_zip_inspection.get("runtime_result"))
             runtime_result_status = _string(runtime_result.get("status"))
             expected_provider_video_count = _provider_expected_video_count(provider_bundle_kind)
+            structured_policy_canary = _inspect_structured_policy_canary_output(output_zip_path)
+            structured_policy_canary_passed = _structured_policy_canary_runtime_passed(
+                runtime_result,
+                structured_policy_canary,
+            )
+            expected_provider_video_count = _provider_expected_video_count_for_result(
+                provider_bundle_kind,
+                structured_policy_canary_passed=structured_policy_canary_passed,
+            )
             provider_status = (
                 "completed"
                 if remote_proven and provider_runtime_output_zip_produced and runtime_result_present
@@ -5796,6 +6000,8 @@ def run_vast_provider_adapter(
                     "blueprint_provider_bundle_execution_proven": provider_status == "completed",
                     "video_smoke_proven": video_smoke_proven,
                     "video_smoke_expected_video_count": expected_provider_video_count,
+                    "structured_policy_canary": structured_policy_canary,
+                    "structured_policy_canary_passed": structured_policy_canary_passed,
                     "blockers": completion_blockers,
                     "proof_boundary": (
                         "Provider bundle execution proves remote bundle download, entrypoint "
@@ -5803,6 +6009,7 @@ def run_vast_provider_adapter(
                         "controller-grade or official policy execution was not proven."
                     ),
                     **_truth_boundaries(),
+                    "official_policy_execution_proven": structured_policy_canary_passed,
                 },
             )
             write_json(
@@ -6208,6 +6415,9 @@ def run_vast_provider_adapter(
             expected_video_count = int(_number(video_smoke.get("expected_video_count")) or 0)
             video_smoke_required = enable_blueprint_bundle and expected_video_count > 0
             video_smoke_blocked = video_smoke_required and video_smoke.get("status") != "completed"
+            structured_policy_canary_passed = (
+                provider.get("structured_policy_canary_passed") is True
+            )
             requested_provider_blocked = enable_blueprint_bundle and (
                 provider_status != "completed" or video_smoke_blocked
             )
@@ -6231,6 +6441,8 @@ def run_vast_provider_adapter(
                     + video_smoke_blockers,
                     "api_call_performed": True,
                     "vast_side_effects_may_have_occurred": bool(instance_ids),
+                    "official_policy_execution_proven": structured_policy_canary_passed,
+                    "structured_policy_canary_passed": structured_policy_canary_passed,
                 }
             )
         base_result.update(

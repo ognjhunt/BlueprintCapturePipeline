@@ -30,6 +30,17 @@ EVIDENCE_NAME = WATCHDOG_EVIDENCE_NAME
 write_owner_teardown_cancel_request = _write_owner_teardown_cancel_request
 SUPPORTED_PROVIDERS = ("runpod", "vast")
 VAST_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
+CANARY_NAME_PREFIXES = (
+    "blueprint-groot-oscar-canary-",
+    "blueprint-native-warehouse-camera-",
+)
+CAMPAIGN_PENDING_TEARDOWN_LANES = {
+    "persistent_policy_wam_loop": "runpod_wam_async",
+    "openpi_policy_ranking": "openpi_policy_ranking_gpu_canary",
+    "nvidia_warehouse_native_camera": (
+        "nvidia_warehouse_native_camera_gpu_canary"
+    ),
+}
 
 
 def _provider_name(value: Any) -> str:
@@ -348,7 +359,7 @@ def arm_watchdog(
 ) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    if not pod_name_prefix.startswith("blueprint-groot-oscar-canary-"):
+    if not pod_name_prefix.startswith(CANARY_NAME_PREFIXES):
         raise ValueError("watchdog_pod_name_prefix_not_canary_scoped")
     if float(deadline_epoch) <= time.time() + 60:
         raise ValueError("watchdog_deadline_must_be_more_than_60_seconds_future")
@@ -768,21 +779,20 @@ def run_watchdog(
                 pending_record = json.loads(Path(pending_path).read_text(encoding="utf-8"))
             except (OSError, ValueError, json.JSONDecodeError):
                 pending_record = {}
+            campaign_kind = str(receipt.get("campaign_kind") or "")
+            expected_pending_lane = CAMPAIGN_PENDING_TEARDOWN_LANES.get(
+                campaign_kind,
+                "groot_oscar_gpu_canary" if not campaign_kind else "",
+            )
+            declared_paid_lane = str(receipt.get("paid_lane") or "")
+            if declared_paid_lane and declared_paid_lane != expected_pending_lane:
+                expected_pending_lane = ""
             pending_valid = bool(
                 isinstance(pending_record, Mapping)
                 and pending_record.get("status") == "open"
                 and pending_record.get("provider") == resolved_provider
-                and pending_record.get("lane")
-                == (
-                    "runpod_wam_async"
-                    if receipt.get("campaign_kind")
-                    == "persistent_policy_wam_loop"
-                    else (
-                        "openpi_policy_ranking_gpu_canary"
-                        if receipt.get("campaign_kind") == "openpi_policy_ranking"
-                        else "groot_oscar_gpu_canary"
-                    )
-                )
+                and expected_pending_lane
+                and pending_record.get("lane") == expected_pending_lane
                 and pending_record.get("resource_kind") == "compute_instance"
                 and str(pending_record.get("resource_name") or "").startswith(
                     pod_name_prefix
@@ -819,7 +829,7 @@ def run_watchdog(
             if receipt.get("provider_lane_release_mode") == "watchdog_direct_compute":
                 terminal_reconciliation = build_paid_provider_lane_reconciliation(
                     provider=resolved_provider,
-                    lane="openpi_policy_ranking_gpu_canary",
+                    lane=expected_pending_lane,
                     provider_inventory=(
                         result.get("final_inventory")
                         if isinstance(result.get("final_inventory"), Mapping)
@@ -832,7 +842,7 @@ def run_watchdog(
                         lease_path_value=str(receipt.get("lease_path") or ""),
                         teardown_owner_pid=os.getpid(),
                         terminal_reconciliation=terminal_reconciliation,
-                        reason="openpi_watchdog_provider_and_pending_terminal",
+                        reason="gpu_canary_watchdog_provider_and_pending_terminal",
                     )
                 )
             else:

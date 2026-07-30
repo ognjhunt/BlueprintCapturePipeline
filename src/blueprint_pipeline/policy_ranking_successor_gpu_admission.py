@@ -25,6 +25,12 @@ from pathlib import Path
 from typing import Any
 
 from .common import utc_now_iso, write_json
+from .oscar_official_release import (
+    OFFICIAL_OSCAR_HF_REPO,
+    OFFICIAL_OSCAR_HF_REVISION,
+    OFFICIAL_OSCAR_SOURCE_COMMIT,
+    OFFICIAL_OSCAR_WAM_IMAGE_REF,
+)
 from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     PaidResourceAdmissionBlocked,
@@ -97,7 +103,15 @@ class SuccessorGPUProfile:
     hard_ttl_seconds: int
     reference_bundle: bool = False
     powered_bundle: bool = False
-    cosmos_revision: str = COSMOS_REVISION
+    edge_policy_canary_bundle: bool = False
+    oscar_replay_bundle: bool = False
+    provider_bundle_kind: str = "wam"
+    bundle_schema: str = BUNDLE_SCHEMA
+    checkpoint_repository: str = CHECKPOINT_REPOSITORY
+    checkpoint_revision: str = CHECKPOINT_REVISION
+    public_image: str = PUBLIC_IMAGE
+    min_gpu_ram_mb: int = 95_000
+    cosmos_revision: str | None = COSMOS_REVISION
     cosmos_framework_revision: str = COSMOS_FRAMEWORK_REVISION
     vllm_omni_revision: str | None = None
     allowed_providers: tuple[str, ...] = ("vast",)
@@ -319,6 +333,106 @@ POWERED_DROID_PROFILE = SuccessorGPUProfile(
     allowed_providers=("vast", "runpod"),
     compatible_gpu_keywords=("RTX PRO 6000", "H100"),
 )
+EDGE_CLOSED_LOOP_PROFILE = SuccessorGPUProfile(
+    experiment_id="policy_ranking_cosmos3_edge_closed_loop_20260729",
+    admission_schema="policy_ranking_cosmos3_edge_closed_loop_gpu_admission.v1",
+    authorization_schema=("policy_ranking_cosmos3_edge_closed_loop_compute_authorization.v1"),
+    preflight_schema="policy_ranking_cosmos3_edge_closed_loop_vast_preflight.v1",
+    receipt_schema="cosmos_edge_closed_loop_bundle_receipt.v1",
+    authorization_ids_by_allocation_index={
+        1: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-1",
+        2: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-2",
+        3: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-3",
+        4: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-4",
+        5: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-5",
+    },
+    cost_authorization_binding_sha256=(
+        "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
+    ),
+    expected_bundle_sha256="0fcbcae301629d3a1efe9ae07d2fcd628d4bb7eeb6873e1f87b0749297230ff7",
+    expected_bundle_size_bytes=767_197,
+    expected_embedded_input_hashes={
+        "runtime_manifest_sha256": (
+            "82ebd4f929b02dd986b5c95f174930910cfd9a5e773fc0c147c505001edac053"
+        ),
+        "canary_input_sha256": ("0dc1b72a90dace038a8b9ea3b444fffa8daf51b0db6ef3228e5fe1a8010a2974"),
+        "runner_sha256": ("3ea9a53a7258d0d8be450d4f7d90ca8df0d9425b6ea66429143971eef00abe67"),
+        "entrypoint_sha256": ("f104ef7f92d9af3f1f79cea025c6d6eaf81705df80ee0c1ff5b033147526fa3e"),
+    },
+    qualification_canary_request_count=1,
+    scientific_matrix_request_count=0,
+    total_initial_generation_request_count=1,
+    request_budget_amendment_sha256=None,
+    max_compute_cap_usd=8.0,
+    max_hourly_rate_usd=2.05,
+    target_spend_usd=5.0,
+    hard_ttl_seconds=7_200,
+    edge_policy_canary_bundle=True,
+    bundle_schema="cosmos_edge_closed_loop_provider_bundle.v1",
+    checkpoint_repository="nvidia/Cosmos3-Edge-Policy-DROID",
+    checkpoint_revision="3ea407af3e156c0af3b4bb6edd85842cc9a58777",
+    min_gpu_ram_mb=80_000,
+    cosmos_revision=None,
+    cosmos_framework_revision="2f603cb114ff8b335e116060444d0b6caee3a85e",
+    vllm_omni_revision=None,
+    allowed_providers=("vast",),
+    compatible_gpu_keywords=("H100", "RTX PRO 6000"),
+)
+OSCAR_PUBLIC_REPLAY_PROFILE = SuccessorGPUProfile(
+    experiment_id="policy_ranking_cosmos3_edge_closed_loop_20260729",
+    admission_schema="policy_ranking_oscar_public_replay_gpu_admission.v2",
+    authorization_schema=("policy_ranking_cosmos3_edge_closed_loop_compute_authorization.v1"),
+    preflight_schema="policy_ranking_oscar_public_replay_vast_preflight.v2",
+    receipt_schema="oscar_public_replay_bundle_receipt.v2",
+    authorization_ids_by_allocation_index={
+        7: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-7",
+    },
+    cost_authorization_binding_sha256=(
+        "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
+    ),
+    expected_bundle_sha256="d6447c8432eb9d484c64f61244eaec40739f9115d778390f6b1fef18c9564752",
+    expected_bundle_size_bytes=1_135_718,
+    expected_embedded_input_hashes={
+        "runtime_manifest_file_sha256": (
+            "2cc85cf88be3318fc1692fd2872aeb802ee3de24f993f80ced0d2b5b348205f2"
+        ),
+        "rollout_manifest_file_sha256": (
+            "2b50a0abf072ba691e68f612ab95d8d5e3856688c90be0e81741785d4929d823"
+        ),
+        "first_frame_sha256": (
+            "2efae31ef115800a18f04302b668241a5891d36f3ad29734b22a46c791307a35"
+        ),
+        "skeleton_video_sha256": (
+            "4ad9dd1c6cf2acd2bd62fd51a4e5c0744ee0a077b8ea06b7a0a35af24418d08c"
+        ),
+        "runner_sha256": (
+            "4b1367be37fc49b319b602c5cedbd40c66c5fe5d16afcf10697cccc8f0fa60e4"
+        ),
+        "entrypoint_sha256": (
+            "194f4809624cc82e1f3a88f64e12304451708986dad5880695af0518a0efb19c"
+        ),
+    },
+    qualification_canary_request_count=1,
+    scientific_matrix_request_count=0,
+    total_initial_generation_request_count=1,
+    request_budget_amendment_sha256=None,
+    max_compute_cap_usd=5.0,
+    max_hourly_rate_usd=2.05,
+    target_spend_usd=5.0,
+    hard_ttl_seconds=7_200,
+    oscar_replay_bundle=True,
+    provider_bundle_kind="wam",
+    bundle_schema="wam_provider_runtime_manifest.v1",
+    checkpoint_repository=OFFICIAL_OSCAR_HF_REPO,
+    checkpoint_revision=OFFICIAL_OSCAR_HF_REVISION,
+    public_image=OFFICIAL_OSCAR_WAM_IMAGE_REF,
+    min_gpu_ram_mb=80_000,
+    cosmos_revision=None,
+    cosmos_framework_revision=OFFICIAL_OSCAR_SOURCE_COMMIT,
+    vllm_omni_revision=None,
+    allowed_providers=("vast",),
+    compatible_gpu_keywords=("RTX PRO 6000", "H100"),
+)
 RTX_ALLOWED_KEYWORDS = ("RTX PRO 6000",)
 RTX_SELECTION_POLICY: Mapping[str, Any] = {
     "policy_id": "policy_ranking_successor_rtx_pro_6000_blackwell_preflight",
@@ -367,6 +481,33 @@ POWERED_BUNDLE_ENTRIES = frozenset(
         "provider_runtime/cosmos3_powered_droid/official_canary/action_streams.json",
     }
 )
+EDGE_POLICY_CANARY_BUNDLE_ENTRIES = frozenset(
+    {
+        "provider_runtime/wam_provider_runtime_runner.py",
+        "provider_runtime/run_wam_provider_runtime.sh",
+        "provider_runtime/wam_provider_runtime_manifest.json",
+        "provider_runtime/wam_rollout_input_manifest.json",
+        "provider_runtime/policy_canary/input.json",
+        "provider_runtime/policy_canary/view_0.png",
+        "provider_runtime/policy_canary/view_1.png",
+        "provider_runtime/policy_canary/view_2.png",
+        "provider_runtime/policy_snapshot_manifest.json",
+        "provider_runtime/blueprint_pipeline/core/__init__.py",
+        "provider_runtime/blueprint_pipeline/core/common.py",
+        "provider_runtime/oscar_input/first_frame.png",
+        "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
+    }
+)
+OSCAR_PUBLIC_REPLAY_BUNDLE_ENTRIES = frozenset(
+    {
+        "provider_runtime/wam_provider_runtime_runner.py",
+        "provider_runtime/run_wam_provider_runtime.sh",
+        "provider_runtime/wam_provider_runtime_manifest.json",
+        "provider_runtime/wam_rollout_input_manifest.json",
+        "provider_runtime/oscar_input/first_frame.png",
+        "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
+    }
+)
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -398,16 +539,19 @@ def collect_successor_vast_preflight(
     provider = get_render_provider("vast")
     request = {
         "max_hourly_rate_usd": profile.max_hourly_rate_usd,
-        "min_gpu_ram_mb": MIN_GPU_RAM_MB,
+        "min_gpu_ram_mb": profile.min_gpu_ram_mb,
         "min_reliability": MIN_RELIABILITY,
         "require_avx": True,
         "require_known_supported_isaac_driver": False,
         "require_direct_port": False,
-        "preferred_gpu_keywords": list(RTX_ALLOWED_KEYWORDS),
+        "preferred_gpu_keywords": list(profile.compatible_gpu_keywords),
         "min_compute_cap": 1200,
         "max_compute_cap": 0,
         "prefer_isaac_rt": False,
-        "gpu_selection_policy": RTX_SELECTION_POLICY,
+        "gpu_selection_policy": {
+            **RTX_SELECTION_POLICY,
+            "allowed_gpu_keywords": profile.compatible_gpu_keywords,
+        },
     }
     capacity = provider.capacity_preflight(request)
     task_inventory = provider.billable_inventory(name_prefix=name_prefix)
@@ -416,9 +560,12 @@ def collect_successor_vast_preflight(
         dict(row)
         for row in capacity.get("viable_gpu_types", [])
         if isinstance(row, Mapping)
-        and "RTX PRO 6000" in str(row.get("gpu_name") or "").upper()
+        and any(
+            keyword.upper() in str(row.get("gpu_name") or "").upper()
+            for keyword in profile.compatible_gpu_keywords
+        )
         and int(row.get("num_gpus") or 0) == 1
-        and int(row.get("gpu_ram_mb") or 0) >= MIN_GPU_RAM_MB
+        and int(row.get("gpu_ram_mb") or 0) >= profile.min_gpu_ram_mb
         and 0 < float(row.get("hourly_rate_usd") or 0) <= profile.max_hourly_rate_usd
         and float(row.get("reliability") or 0) >= MIN_RELIABILITY
     ]
@@ -438,7 +585,7 @@ def collect_successor_vast_preflight(
     if not inventory_zero:
         blockers.append("successor_vast_inventory_not_zero")
     if not selected:
-        blockers.append("successor_compatible_single_rtx_pro_6000_offer_unavailable")
+        blockers.append("successor_compatible_single_gpu_offer_unavailable")
     result: dict[str, Any] = {
         "schema_version": profile.preflight_schema,
         "status": "verified" if not blockers else "blocked",
@@ -554,6 +701,7 @@ def inspect_successor_bundle(
     blockers: list[str] = []
     names: set[str] = set()
     manifest: Mapping[str, Any] = {}
+    rollout_manifest: Mapping[str, Any] = {}
     embedded_hashes: dict[str, str] = {}
     entrypoint_text = ""
     runner_text = ""
@@ -573,6 +721,13 @@ def inspect_successor_bundle(
                         )
                     )
                     manifest = _mapping(manifest_value)
+                if "provider_runtime/wam_rollout_input_manifest.json" in names:
+                    rollout_manifest_value = json.loads(
+                        archive.read("provider_runtime/wam_rollout_input_manifest.json").decode(
+                            "utf-8"
+                        )
+                    )
+                    rollout_manifest = _mapping(rollout_manifest_value)
                 if "provider_runtime/run_wam_provider_runtime.sh" in names:
                     entrypoint_text = archive.read(
                         "provider_runtime/run_wam_provider_runtime.sh"
@@ -581,7 +736,50 @@ def inspect_successor_bundle(
                     runner_text = archive.read(
                         "provider_runtime/wam_provider_runtime_runner.py"
                     ).decode("utf-8")
-                if profile.powered_bundle:
+                if profile.edge_policy_canary_bundle:
+                    canary_input = json.loads(
+                        archive.read("provider_runtime/policy_canary/input.json").decode("utf-8")
+                    )
+                    recorded_manifest_sha256 = manifest.get("manifest_sha256")
+                    computed_manifest_sha256 = canonical_sha256(
+                        {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+                    )
+                    if recorded_manifest_sha256 != computed_manifest_sha256:
+                        blockers.append("successor_edge_runtime_manifest_hash_invalid")
+                    embedded_hashes = {
+                        "runtime_manifest_sha256": computed_manifest_sha256,
+                        "canary_input_sha256": canonical_sha256(canary_input),
+                        "runner_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_provider_runtime_runner.py")
+                        ).hexdigest(),
+                        "entrypoint_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/run_wam_provider_runtime.sh")
+                        ).hexdigest(),
+                    }
+                elif profile.oscar_replay_bundle:
+                    embedded_hashes = {
+                        "runtime_manifest_file_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_provider_runtime_manifest.json")
+                        ).hexdigest(),
+                        "rollout_manifest_file_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_rollout_input_manifest.json")
+                        ).hexdigest(),
+                        "first_frame_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/oscar_input/first_frame.png")
+                        ).hexdigest(),
+                        "skeleton_video_sha256": hashlib.sha256(
+                            archive.read(
+                                "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4"
+                            )
+                        ).hexdigest(),
+                        "runner_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_provider_runtime_runner.py")
+                        ).hexdigest(),
+                        "entrypoint_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/run_wam_provider_runtime.sh")
+                        ).hexdigest(),
+                    }
+                elif profile.powered_bundle:
                     powered_packet = json.loads(
                         archive.read("provider_runtime/cosmos3_powered_droid/packet.json").decode(
                             "utf-8"
@@ -717,7 +915,11 @@ def inspect_successor_bundle(
         ):
             blockers.append("successor_cosmos_provider_bundle_unreadable")
     required_entries = (
-        POWERED_BUNDLE_ENTRIES
+        EDGE_POLICY_CANARY_BUNDLE_ENTRIES
+        if profile.edge_policy_canary_bundle
+        else OSCAR_PUBLIC_REPLAY_BUNDLE_ENTRIES
+        if profile.oscar_replay_bundle
+        else POWERED_BUNDLE_ENTRIES
         if profile.powered_bundle
         else REFERENCE_BUNDLE_ENTRIES
         if profile.reference_bundle
@@ -736,18 +938,77 @@ def inspect_successor_bundle(
         blockers.append("successor_cosmos_provider_bundle_entries_missing")
     blockers.extend(
         provider_runtime_contract_blockers(
-            provider_bundle_kind="wam",
+            provider_bundle_kind=profile.provider_bundle_kind,
             entrypoint_text=entrypoint_text,
             runner_text=runner_text,
         )
     )
-    if manifest.get("schema_version") != BUNDLE_SCHEMA:
+    if manifest.get("schema_version") != profile.bundle_schema:
         blockers.append("successor_cosmos_provider_bundle_manifest_invalid")
-    if manifest.get("experiment_id") != profile.experiment_id:
+    bundle_experiment_id = (
+        rollout_manifest.get("experiment_id")
+        if profile.oscar_replay_bundle
+        else manifest.get("experiment_id")
+    )
+    if bundle_experiment_id != profile.experiment_id:
         blockers.append("successor_cosmos_provider_bundle_experiment_mismatch")
-    if manifest.get("checkpoint_revision") != CHECKPOINT_REVISION:
+    if profile.edge_policy_canary_bundle:
+        policy = _mapping(manifest.get("policy"))
+        framework = _mapping(manifest.get("cosmos_framework"))
+        if policy.get("model_id") != profile.checkpoint_repository:
+            blockers.append("successor_cosmos_provider_bundle_checkpoint_repository_mismatch")
+        if policy.get("revision") != profile.checkpoint_revision:
+            blockers.append("successor_cosmos_provider_bundle_checkpoint_mismatch")
+        if framework.get("revision") != profile.cosmos_framework_revision:
+            blockers.append("successor_cosmos_provider_bundle_framework_mismatch")
+    elif profile.oscar_replay_bundle:
+        if manifest.get("oscar_hf_repo") != profile.checkpoint_repository:
+            blockers.append("successor_oscar_bundle_checkpoint_repository_mismatch")
+        if manifest.get("oscar_hf_revision") != profile.checkpoint_revision:
+            blockers.append("successor_oscar_bundle_checkpoint_mismatch")
+        if manifest.get("oscar_source_ref") != profile.cosmos_framework_revision:
+            blockers.append("successor_oscar_bundle_source_mismatch")
+        if manifest.get("official_case_smoke") != "droid_TRI":
+            blockers.append("successor_oscar_bundle_official_case_mismatch")
+        if "if official_case_smoke and not official_case_use_script:" not in runner_text:
+            blockers.append("successor_oscar_bundle_public_script_ownership_guard_missing")
+        if str(manifest.get("official_case_use_script") or "").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            blockers.append("successor_oscar_bundle_official_script_disabled")
+        if str(manifest.get("official_case_rgb_video") or "").strip().lower() not in {
+            "",
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
+            blockers.append("successor_oscar_bundle_physical_future_rgb_enabled")
+        expected_runtime = {
+            "fps": 14.0,
+            "num_frames": 81,
+            "height": 480,
+            "width": 640,
+            "num_steps": 35,
+            "guidance": 6.0,
+            "seed": 44,
+        }
+        if any(manifest.get(key) != value for key, value in expected_runtime.items()):
+            blockers.append("successor_oscar_bundle_runtime_settings_mismatch")
+        if rollout_manifest.get("arm_id") != "oscar_public_replay":
+            blockers.append("successor_oscar_bundle_arm_mismatch")
+        if rollout_manifest.get("case_id") != "droid_TRI":
+            blockers.append("successor_oscar_bundle_rollout_case_mismatch")
+        if rollout_manifest.get("physical_future_rgb_provided_to_model") is not False:
+            blockers.append("successor_oscar_bundle_future_rgb_boundary_invalid")
+        if rollout_manifest.get("physical_outcome_labels_accessed") is not False:
+            blockers.append("successor_oscar_bundle_label_boundary_invalid")
+    elif manifest.get("checkpoint_revision") != profile.checkpoint_revision:
         blockers.append("successor_cosmos_provider_bundle_checkpoint_mismatch")
-    if manifest.get("public_image") != PUBLIC_IMAGE:
+    if not profile.oscar_replay_bundle and manifest.get("public_image") != profile.public_image:
         blockers.append("successor_cosmos_provider_bundle_image_mismatch")
     expected_request_budget = {
         "qualification_canary_request_count": profile.qualification_canary_request_count,
@@ -758,7 +1019,9 @@ def inspect_successor_bundle(
         expected_request_budget["request_budget_amendment_sha256"] = (
             profile.request_budget_amendment_sha256
         )
-    if any(manifest.get(key) != value for key, value in expected_request_budget.items()):
+    if not profile.oscar_replay_bundle and any(
+        manifest.get(key) != value for key, value in expected_request_budget.items()
+    ):
         blockers.append("successor_cosmos_provider_bundle_request_budget_mismatch")
     receipt_value = _mapping(receipt)
     bundle_sha256 = _sha256_file(resolved) if resolved.is_file() else None
@@ -779,7 +1042,9 @@ def inspect_successor_bundle(
         if embedded_hashes.get(key) != expected or receipt_value.get(key) != expected:
             blockers.append(f"successor_cosmos_provider_bundle_receipt_{key}_mismatch")
     if (
-        not profile.reference_bundle
+        not profile.edge_policy_canary_bundle
+        and not profile.oscar_replay_bundle
+        and not profile.reference_bundle
         and not profile.powered_bundle
         and smoke_inventory is not None
         and receipt_value.get("smoke_inventory_sha256") != canonical_sha256(smoke_inventory)
@@ -793,6 +1058,7 @@ def inspect_successor_bundle(
         "bundle_size_bytes": bundle_size_bytes,
         "required_entry_count": len(required_entries),
         "manifest": dict(manifest),
+        "rollout_manifest": dict(rollout_manifest),
         "embedded_input_hashes": embedded_hashes,
     }
 
@@ -815,18 +1081,23 @@ def build_successor_gpu_admission(
     upstream = _mapping(environment.get("upstream_source"))
     cosmos = _mapping(upstream.get("cosmos"))
     framework = _mapping(upstream.get("cosmos_framework"))
+    oscar = _mapping(upstream.get("oscar"))
     vllm = _mapping(upstream.get("vllm_omni"))
     if environment.get("experiment_id") != profile.experiment_id:
         blockers.append("successor_environment_experiment_mismatch")
-    if cosmos.get("revision") != profile.cosmos_revision:
-        blockers.append("successor_cosmos_revision_mismatch")
-    if framework.get("revision") != profile.cosmos_framework_revision:
-        blockers.append("successor_framework_revision_mismatch")
-    if checkpoint.get("repository") != CHECKPOINT_REPOSITORY:
+    if profile.oscar_replay_bundle:
+        if oscar.get("revision") != profile.cosmos_framework_revision:
+            blockers.append("successor_oscar_source_revision_mismatch")
+    else:
+        if profile.cosmos_revision is not None and cosmos.get("revision") != profile.cosmos_revision:
+            blockers.append("successor_cosmos_revision_mismatch")
+        if framework.get("revision") != profile.cosmos_framework_revision:
+            blockers.append("successor_framework_revision_mismatch")
+    if checkpoint.get("repository") != profile.checkpoint_repository:
         blockers.append("successor_checkpoint_repository_mismatch")
-    if checkpoint.get("revision") != CHECKPOINT_REVISION:
+    if checkpoint.get("revision") != profile.checkpoint_revision:
         blockers.append("successor_checkpoint_revision_mismatch")
-    if vllm.get("runtime_image") != PUBLIC_IMAGE:
+    if vllm.get("runtime_image") != profile.public_image:
         blockers.append("successor_runtime_image_mismatch")
     if (
         profile.vllm_omni_revision is not None
@@ -838,11 +1109,20 @@ def build_successor_gpu_admission(
     ):
         blockers.append("successor_remote_code_policy_invalid")
 
-    if profile.reference_bundle or profile.powered_bundle:
+    if (
+        profile.edge_policy_canary_bundle
+        or profile.oscar_replay_bundle
+        or profile.reference_bundle
+        or profile.powered_bundle
+    ):
         inventory_validation = {
             "status": "not_applicable",
             "reason": (
-                "powered_droid_inputs_are_frozen_inside_the_bundle"
+                "edge_policy_canary_inputs_are_frozen_inside_the_bundle"
+                if profile.edge_policy_canary_bundle
+                else "official_oscar_replay_inputs_are_frozen_inside_the_bundle"
+                if profile.oscar_replay_bundle
+                else "powered_droid_inputs_are_frozen_inside_the_bundle"
                 if profile.powered_bundle
                 else "official_droid_reference_inputs_are_frozen_inside_the_bundle"
             ),
@@ -873,7 +1153,7 @@ def build_successor_gpu_admission(
     gpu_name = str(
         offer.get("gpu_name") or offer.get("gpu_type_id") or offer.get("display_name") or ""
     )
-    if not any(keyword in gpu_name.upper() for keyword in profile.compatible_gpu_keywords):
+    if not any(keyword.upper() in gpu_name.upper() for keyword in profile.compatible_gpu_keywords):
         blockers.append("successor_provider_preflight_gpu_not_compatible")
     try:
         gpu_ram_mb = int(offer.get("gpu_ram_mb") or 0)
@@ -883,7 +1163,7 @@ def build_successor_gpu_admission(
         reliability = float(offer.get("reliability") or 0.0)
     except (TypeError, ValueError):
         gpu_ram_mb, hourly_rate, reliability = 0, 0.0, 0.0
-    minimum_gpu_ram_mb = 80_000 if provider_name == "runpod" else MIN_GPU_RAM_MB
+    minimum_gpu_ram_mb = profile.min_gpu_ram_mb
     if gpu_ram_mb < minimum_gpu_ram_mb:
         blockers.append("successor_provider_preflight_gpu_ram_below_minimum")
     if not 0.0 < hourly_rate <= profile.max_hourly_rate_usd:
@@ -965,8 +1245,8 @@ def build_successor_gpu_admission(
         "execute_requested": bool(execute),
         "blockers": sorted(set(blockers)),
         "source_commit": source_commit or None,
-        "public_image": PUBLIC_IMAGE,
-        "checkpoint_revision": CHECKPOINT_REVISION,
+        "public_image": profile.public_image,
+        "checkpoint_revision": profile.checkpoint_revision,
         "smoke_inventory_validation": inventory_validation,
         "smoke_inventory_sha256": canonical_sha256(smoke_inventory),
         "provider_preflight_sha256": canonical_sha256(provider_preflight),
@@ -1286,8 +1566,8 @@ def _run_successor_runpod(
             max_spend_usd=profile.max_compute_cap_usd,
             allow_paid_runpod_launch=True,
             gpu_type_ids=(gpu_name,),
-            image_name=PUBLIC_IMAGE,
-            provider_bundle_kind="wam",
+            image_name=profile.public_image,
+            provider_bundle_kind=profile.provider_bundle_kind,
             container_disk_gb=100,
             volume_gb=20,
             cloud_type="SECURE",
@@ -1423,7 +1703,11 @@ def run_successor_gpu_lane(
     provider_preflight = load_input("provider_preflight", provider_preflight_path)
     bundle_receipt = load_input("bundle_receipt", provider_bundle_receipt_path)
     receipt_schema = bundle_receipt.get("schema_version")
-    if receipt_schema == POWERED_DROID_PROFILE.receipt_schema:
+    if receipt_schema == OSCAR_PUBLIC_REPLAY_PROFILE.receipt_schema:
+        profile = OSCAR_PUBLIC_REPLAY_PROFILE
+    elif receipt_schema == EDGE_CLOSED_LOOP_PROFILE.receipt_schema:
+        profile = EDGE_CLOSED_LOOP_PROFILE
+    elif receipt_schema == POWERED_DROID_PROFILE.receipt_schema:
         profile = POWERED_DROID_PROFILE
     elif receipt_schema == DROID_REFERENCE_PROFILE.receipt_schema:
         profile = DROID_REFERENCE_PROFILE
@@ -1503,7 +1787,7 @@ def run_successor_gpu_lane(
         "source_commit": expected_source_commit,
         "provider": str(provider_preflight.get("provider") or "").strip().lower(),
         "probe_kind": PROBE_KIND,
-        "public_image": PUBLIC_IMAGE,
+        "public_image": profile.public_image,
         "provider_bundle_sha256": bundle.get("bundle_sha256"),
         "smoke_inventory_sha256": canonical_sha256(smoke_inventory),
         "request_budget": admission.get("request_budget"),
@@ -1692,15 +1976,18 @@ def run_successor_gpu_lane(
         max_live_minutes=requested_live_minutes,
         session_max_live_minutes=int(session_limit["session_max_live_runtime_minutes"]),
         startup_timeout_seconds=3600,
-        public_image=PUBLIC_IMAGE,
+        public_image=profile.public_image,
         disk_gb=DISK_GB,
-        min_gpu_ram_mb=MIN_GPU_RAM_MB,
+        min_gpu_ram_mb=profile.min_gpu_ram_mb,
         min_compute_cap=1200,
         max_compute_cap=0,
         min_reliability=MIN_RELIABILITY,
-        preferred_gpu_keywords=RTX_ALLOWED_KEYWORDS,
+        preferred_gpu_keywords=profile.compatible_gpu_keywords,
         prefer_isaac_rt=False,
-        gpu_selection_policy=RTX_SELECTION_POLICY,
+        gpu_selection_policy={
+            **RTX_SELECTION_POLICY,
+            "allowed_gpu_keywords": profile.compatible_gpu_keywords,
+        },
         require_independent_watchdog=True,
         retain_instance_on_runtime_failure=True,
         # Cosmos3-Nano at the frozen revision is publicly downloadable.  Do not
@@ -1714,12 +2001,13 @@ def run_successor_gpu_lane(
             "authorization_receipt_sha256": _sha256_file(
                 Path(provider_bundle_receipt_path).expanduser().resolve()
             ),
-            "image_digest": VLLM_IMAGE_DIGEST,
-            "checkpoint": CHECKPOINT_REPOSITORY,
-            "checkpoint_revision": CHECKPOINT_REVISION,
+            "image_digest": profile.public_image.split("@", maxsplit=1)[-1],
+            "checkpoint": profile.checkpoint_repository,
+            "checkpoint_revision": profile.checkpoint_revision,
         },
         paid_resource_admission_grant=grant,
         pre_provider_mutation_hook=consume_immediately_before_provider_mutation,
+        provider_bundle_kind=profile.provider_bundle_kind,
     )
     if consumption["status"] != "consumed":
         blockers = [str(item) for item in result.get("blockers") or []]
@@ -1749,6 +2037,8 @@ __all__ = [
     "MAX_COMPUTE_CAP_USD",
     "PREFLIGHT_SCHEMA",
     "DROID_REFERENCE_PROFILE",
+    "EDGE_CLOSED_LOOP_PROFILE",
+    "OSCAR_PUBLIC_REPLAY_PROFILE",
     "POWERED_DROID_PROFILE",
     "PHASE_B_PROFILE",
     "PHASE_B_POSITIVE_CONTROL_PROFILE",

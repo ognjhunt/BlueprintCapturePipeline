@@ -1,0 +1,97 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol.v1",
+  "frozen_at": "2026-07-29T07:36:53-05:00",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "purpose": "Run Blueprint's real policy-to-WAM-to-same-policy loop with the frozen Cosmos3-Edge DROID policy while keeping skeleton-only, OSCAR, and native Cosmos WAM evidence separately attributable.",
+  "action_contract": {
+    "policy_output_shape": [16, 8],
+    "policy_output_semantics": "absolute Franka joint positions 7D plus explicit gripper 1D",
+    "policy_conditioning_fps": 15.0,
+    "executed_prefix_steps": 8,
+    "executed_prefix_seconds_derived": 0.5333333333333333,
+    "required_views": [
+      "observation/wrist_image_left",
+      "observation/exterior_image_1_left",
+      "observation/exterior_image_2_left"
+    ],
+    "view_composition_for_policy_only": "wrist full-width top; exterior 1 bottom-left; exterior 2 bottom-right",
+    "wam_generation_rule": "generate each calibrated camera view independently with the same frozen WAM arm; compose only when querying the policy"
+  },
+  "stages": [
+    {
+      "stage": "offline_contract",
+      "admission": "focused tests pass for three-view policy observation, policy endpoint identity, policy action shape, WAM attribution, and no physical-future leakage"
+    },
+    {
+      "stage": "policy_structured_canary",
+      "requests": 1,
+      "admission": "exact snapshot verified; stock empty server metadata rejected; identity-bound metadata verified; one [16,8] finite action chunk returned"
+    },
+    {
+      "stage": "oscar_engineering_closed_loop_smoke",
+      "mode": "engineering_smoke",
+      "maximum_policy_queries": 3,
+      "terminal": "task terminal, reliability abstention, collapse abstention, or maximum horizon",
+      "claim_ceiling": "proves orchestration and observation compatibility only; no scientific WAM, ranking, transfer, or physical-success credit"
+    },
+    {
+      "stage": "oscar_scientific_closed_loop",
+      "admission": "backend-matched WAM conditioning-fidelity certificate passes with at least four seeds and recorded/no-motion/shuffled controls",
+      "terminal": "complete episode, reliability abstention, collapse abstention, or frozen maximum horizon",
+      "claim_ceiling": "whole-stack qualification on the tested data only; independent policy-rank confirmation still requires disjoint labels"
+    },
+    {
+      "stage": "native_edge_forward_dynamics_diagnostic",
+      "admission": "vendor-native UMI conditioning certificate passes, then the exact DROID 8D joint-position policy to 10D ee-pose conversion is independently validated",
+      "claim_ceiling": "separate native Edge WAM evidence; never attributed to OSCAR"
+    }
+  ],
+  "wam_arms": [
+    {
+      "arm": "skeleton_only",
+      "input": "policy actions rendered with calibrated kinematics",
+      "output": "intended-motion evidence only"
+    },
+    {
+      "arm": "oscar_purpose_built_wam",
+      "input": "first RGB frame plus camera-aligned skeleton video",
+      "output": "OSCAR-attributable predicted world video"
+    },
+    {
+      "arm": "native_cosmos3_edge",
+      "input": "first RGB frame plus verified native numeric action trajectory",
+      "output": "Edge-attributable predicted world video"
+    }
+  ],
+  "forbidden": [
+    "OSCAR-generated world video feeding Cosmos",
+    "Cosmos-generated world video feeding OSCAR",
+    "Policy-DROID used as the neutral WAM",
+    "One WAM grading another",
+    "A policy or WAM grading itself",
+    "Invented 8D-to-10D action conversion",
+    "Physical future frames used to re-query the policy",
+    "Evaluator calls before a complete or abstained episode exists"
+  ],
+  "evaluator": {
+    "primary_after_complete_episode": "Gemini native-video challenger",
+    "independent": true,
+    "no_policy_identity": true,
+    "no_physical_ground_truth_pixels": true,
+    "claim_boundary": "Evaluator scoring cannot erase WAM causal failure and already-unsealed data remains diagnostic only."
+  },
+  "cost_authority": {
+    "maximum_concurrent_gpus": 1,
+    "campaign_gpu_category_cap_usd": 50.0,
+    "gpu_spend_already_recorded_usd": 2.226112,
+    "campaign_total_cap_usd": 100.0,
+    "next_stage_target_cap_usd": 5.0,
+    "next_stage_hard_cap_usd": 8.0,
+    "allocation_requires_new_prospective_admission": true
+  },
+  "success_condition": "The learned policy is re-queried from three WAM-predicted camera views and commanded state for a complete episode without collapse; the selected WAM passes causal controls; Blueprint's reliability gate abstains on unreliable outputs; and later policy ranking agrees with independently frozen disjoint physical outcomes.",
+  "failure_interpretation": "A failed engineering smoke diagnoses adapter/runtime incompatibility. A causally failed WAM receives no WAM credit. Missing disjoint labels keeps rank confirmation inconclusive rather than converting generated behavior into physical evidence.",
+  "protocol_sha256": "76a2e0d32804c8c928c435828a18a5fbbc3eb95f3746b59c117e08beb41b60e6"
+}

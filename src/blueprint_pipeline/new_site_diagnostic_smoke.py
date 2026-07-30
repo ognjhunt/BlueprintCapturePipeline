@@ -65,13 +65,36 @@ def build_protocol(
     parent_protocol: str | Path | Mapping[str, Any] | None = None,
     disclosures: Sequence[str] = (),
     scene_reference_manifest: str | Path | None = None,
+    scene_spec_path: str | Path = SCENE_SPEC,
 ) -> dict[str, Any]:
     root = Path(repo_root).expanduser().resolve()
-    scene_path = root / SCENE_SPEC
+    configured_scene_path = Path(scene_spec_path).expanduser()
+    scene_path = (
+        configured_scene_path.resolve()
+        if configured_scene_path.is_absolute()
+        else (root / configured_scene_path).resolve()
+    )
+    try:
+        scene_spec_relative = scene_path.relative_to(root).as_posix()
+    except ValueError:
+        raise ValueError("diagnostic_scene_spec_must_be_inside_repo") from None
     cohort_path = root / POLICY_COHORT
     split_path = root / CONFIRMATION_SPLIT
     reliability_path = root / RELIABILITY_FREEZE
     scene = _read(scene_path)
+    site_visual = scene.get("site_visual")
+    site_visual = site_visual if isinstance(site_visual, Mapping) else {}
+    environment = scene.get("environment")
+    environment = environment if isinstance(environment, Mapping) else {}
+    scene_representation = str(
+        site_visual.get("representation") or environment.get("representation") or ""
+    )
+    scene_source_revision = str(
+        site_visual.get("source_revision") or environment.get("source_revision") or ""
+    )
+    scene_source_sha256 = str(site_visual.get("sha256") or environment.get("sha256") or "")
+    if not scene_representation or not scene_source_revision or len(scene_source_sha256) != 64:
+        raise ValueError("diagnostic_scene_source_identity_invalid")
     cohort = _read(cohort_path)
     split = _read(split_path)
     reliability = _read(reliability_path)
@@ -111,10 +134,12 @@ def build_protocol(
             raise ValueError("local_scene_asset_unavailable")
         scene_input = {
             "local_path": str(scene_asset_path),
-            "representation": "decoded_standard_3dgs_ply",
+            "representation": (
+                "openusd" if scene_representation == "usd" else "decoded_standard_3dgs_ply"
+            ),
             "bytes": scene_asset_path.stat().st_size,
             "sha256": file_sha256(scene_asset_path),
-            "derived_from_source_sha256": scene["site_visual"]["sha256"],
+            "derived_from_source_sha256": scene_source_sha256,
             "authoritative_source_replacement": False,
         }
     protocol: dict[str, Any] = {
@@ -179,14 +204,16 @@ def build_protocol(
         "scene": {
             "scene_id": scene["scene_id"],
             "task_instruction": scene["task_semantics"]["instruction"],
-            "source_revision": scene["site_visual"]["source_revision"],
-            "source_sha256": scene["site_visual"]["sha256"],
-            "scene_spec_path": SCENE_SPEC.as_posix(),
+            "source_revision": scene_source_revision,
+            "source_sha256": scene_source_sha256,
+            "source_representation": scene_representation,
+            "scene_spec_path": scene_spec_relative,
             "scene_spec_sha256": file_sha256(scene_path),
             "previously_exposed_development_scene": True,
             "independent_confirmation_scene": False,
             "local_scene_input": scene_input,
             "supporting_reference": scene_reference,
+            "native_isaac_initial_observation_required": scene_representation == "usd",
         },
         "policy_freeze": {
             "selection_rule": "first_three_primary_cohort_entries_in_manifest_order",
@@ -280,7 +307,8 @@ def build_protocol(
             "individual_camera_videos_required": ["external", "wrist"],
             "failure_media_retained": True,
             "non_cherry_picked_gallery": True,
-            "interiorgs_redistribution_forbidden": True,
+            "interiorgs_redistribution_forbidden": scene_representation != "usd",
+            "nvidia_cc_by_attribution_required": scene_representation == "usd",
         },
         "execution": {
             "offline_preparation_may_run_in_parallel": True,

@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .capture_bridge import _normalize_requested_lanes
+from .capture_intake import (
+    CaptureIntakeError,
+    build_capture_admission,
+    verify_capture_intake_bytes,
+)
 from .capture_orientation import (  # noqa: F401 - preserve established helper imports
     _capture_orientation_from_dimensions,
     _capture_orientation_from_metadata,
@@ -834,6 +839,32 @@ def _raw_video_candidates(raw_root: Path) -> List[str]:
         path = raw_root / name
         if path.is_file():
             out.append(name)
+    intake_envelope = _read_optional_json(raw_root / "capture_intake_envelope.json")
+    resolved_raw_root = raw_root.resolve()
+    for row in intake_envelope.get("original_files") or []:
+        if not isinstance(row, Mapping):
+            continue
+        relative = str(row.get("relative_path") or "").strip().replace("\\", "/")
+        relative_path = Path(relative)
+        if (
+            not relative
+            or relative in out
+            or relative_path.is_absolute()
+            or ".." in relative_path.parts
+            or relative_path.suffix.lower() not in {".mp4", ".mov"}
+        ):
+            continue
+        candidate = raw_root / relative_path
+        try:
+            resolved_candidate = candidate.resolve(strict=True)
+        except FileNotFoundError:
+            continue
+        if (
+            resolved_raw_root in resolved_candidate.parents
+            and resolved_candidate.is_file()
+            and not candidate.is_symlink()
+        ):
+            out.append(relative)
     return out
 
 
@@ -951,6 +982,12 @@ def _capture_source(manifest: Mapping[str, Any], context: Mapping[str, Any]) -> 
         return "glasses"
     if profile.startswith("iphone_"):
         return "iphone"
+    if profile.startswith("camera_360_"):
+        return "camera_360"
+    if profile == "monocular_video":
+        return "monocular_video"
+    if profile == "precomputed_external_reconstruction":
+        return "external_reconstruction"
     for candidate in (
         str(manifest.get("capture_source") or "").strip().lower(),
         str(context.get("captureSource") or "").strip().lower(),
@@ -999,6 +1036,12 @@ def _capture_tier(source: str, manifest: Mapping[str, Any]) -> str:
         return "tier2_glasses"
     if source == "android":
         return "tier2_android"
+    if source == "camera_360":
+        return "tier2_360"
+    if source == "monocular_video":
+        return "tier3_video"
+    if source == "external_reconstruction":
+        return "derived_external_reconstruction"
     return "tier1_iphone"
 
 
@@ -1029,6 +1072,10 @@ def _capture_modality(
         "glasses_plus_scaffolding",
         "android_video_only",
         "android_plus_scaffolding",
+        "camera_360_equirectangular",
+        "camera_360_native",
+        "monocular_video",
+        "precomputed_external_reconstruction",
     }:
         return explicit
     if explicit_profile in {
@@ -1039,6 +1086,10 @@ def _capture_modality(
         "android_camera_only",
         "glasses_pov",
         "glasses_pov_companion_phone",
+        "camera_360_equirectangular",
+        "camera_360_native",
+        "monocular_video",
+        "precomputed_external_reconstruction",
     }:
         return explicit_profile
     if source == "iphone":
@@ -1489,11 +1540,38 @@ def build_capture_bundle_records(
 
     manifest_path = raw_root / "manifest.json"
     intake_path = raw_root / "intake_packet.json"
+    capture_intake_envelope_path = raw_root / "capture_intake_envelope.json"
+    capture_intake_admission_path = raw_root / "capture_intake_admission.json"
     task_hypothesis_path = raw_root / "task_hypothesis.json"
     context_path = raw_root / "capture_context.json"
 
     manifest = _merge_manifest_with_sidecars(_read_optional_json(manifest_path), raw_root)
     intake = _read_optional_json(intake_path)
+    capture_intake_envelope = _read_optional_json(capture_intake_envelope_path)
+    capture_intake_admission: Dict[str, Any] = {}
+    capture_intake_verified_object_count = 0
+    if capture_intake_envelope:
+        try:
+            verified_envelope, verified_objects = verify_capture_intake_bytes(
+                capture_intake_envelope, upload_root=raw_root
+            )
+            capture_intake_admission = build_capture_admission(verified_envelope)
+        except CaptureIntakeError as exc:
+            raise PipelineError("capture_intake_invalid:" + ",".join(exc.errors)) from exc
+        supplied_admission = _read_optional_json(capture_intake_admission_path)
+        if supplied_admission and supplied_admission != capture_intake_admission:
+            raise PipelineError("capture_intake_admission_mismatch")
+        if capture_intake_admission.get("status") != "accepted":
+            raise PipelineError(
+                "capture_intake_not_admitted:"
+                + str(capture_intake_admission.get("status") or "unknown")
+            )
+        declared_profile = str(manifest.get("capture_profile_id") or "").strip()
+        intake_profile = str(verified_envelope.get("capture_authority_profile") or "")
+        if declared_profile and declared_profile != intake_profile:
+            raise PipelineError("capture_intake_profile_manifest_mismatch")
+        manifest["capture_profile_id"] = intake_profile
+        capture_intake_verified_object_count = len(verified_objects)
     task_hypothesis = _read_optional_json(task_hypothesis_path)
     context = _read_optional_json(context_path)
     capture_orientation = _resolve_capture_orientation(
@@ -1584,7 +1662,7 @@ def build_capture_bundle_records(
         if task_hypothesis_path.is_file()
         else None
     )
-    intake_complete = _has_minimum_intake(intake)
+    intake_complete = _has_minimum_intake(intake) or bool(capture_intake_admission)
     validated_scale_raw = context.get("validatedScaleMeters") or manifest.get("validated_scale_m")
     validated_scale_m = None
     if validated_scale_raw is not None:
@@ -1736,6 +1814,11 @@ def build_capture_bundle_records(
         ),
         "media_metadata": media_metadata,
         "capture_profile_id": str(manifest.get("capture_profile_id") or "").strip() or None,
+        "capture_intake": capture_intake_admission or None,
+        "capture_intake_byte_verification": {
+            "status": "verified" if capture_intake_admission else "not_supplied",
+            "verified_original_object_count": capture_intake_verified_object_count,
+        },
         "capture_capabilities": dict(capture_capabilities)
         if isinstance(capture_capabilities, Mapping)
         else {},
@@ -2045,6 +2128,7 @@ def build_capture_bundle_records(
             "recommended_lane": recommended_lane,
             "derived_only": True,
         },
+        "capture_intake": capture_intake_admission or None,
     }
 
     final_intake_verification = verify_canonical_raw_bundle_path(

@@ -1,0 +1,18 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze_amendment.v4",
+  "amended_at": "2026-07-29T08:11:20-0500",
+  "former_manifest": "source_freeze_v3.json",
+  "former_manifest_sha256": "a8ad40aed9fae224ec6bb7f4de7d9f49ff29a7f23fb0a74e9940956472434128",
+  "successor_manifest": "source_freeze_v4.json",
+  "successor_manifest_sha256": "328e04599abd0fc54b7d989659ee0c91a8e469c772582a20c3deabe240982b66",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "scientific_legitimacy": "The exact checkpoint metadata and official executable server were inspected before any paid call. Correcting the native policy horizon prevents an off-training 16-row generation configuration and changes no labels, predictions, WAM outputs, or thresholds.",
+  "changed_fields": [
+    "supersede the erroneous 16x8 published policy shape with the checkpoint-native 32x8 shape",
+    "freeze the official 32-row server and 33-frame tokenizer evidence",
+    "retain the first 16 rows prospectively as Blueprint's WAM-prefix adapter rather than claiming the policy natively returns 16"
+  ],
+  "amendment_sha256": "bafac27a7468dddf05707129f3186f8d3fc28f34055da66c3644a3cde0757b32"
+}

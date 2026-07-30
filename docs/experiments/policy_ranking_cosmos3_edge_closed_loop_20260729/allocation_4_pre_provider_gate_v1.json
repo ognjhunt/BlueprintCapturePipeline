@@ -1,0 +1,26 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_pre_provider_gate.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-29T09:36:00-0500",
+  "allocation_index": 4,
+  "source_commit": "25c370fdf219b18191e4ce23b564c3ad0fc16e74",
+  "bundle_version": 7,
+  "bundle_sha256": "706e3d0e6d94667fee221bee1b8ce94dab086b89e046d05daf70e374df5cda3d",
+  "admission_status": "admitted",
+  "adapter_status": "blocked",
+  "adapter_reason": "provider_launch_env_gate_blocked_before_authorization_consumption",
+  "blockers": [
+    "missing_env_BLUEPRINT_ALLOW_VAST_API_CALLS",
+    "missing_env_BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"
+  ],
+  "authorization_consumed": false,
+  "provider_mutations_performed": 0,
+  "provider_instance_created": false,
+  "estimated_gpu_cost_usd": 0.0,
+  "provider_zero_verified_by_preflight": true,
+  "continuing_spend": false,
+  "physical_outcome_labels_accessed": false,
+  "successor_treatment": "The unconsumed authorization is superseded prospectively by compute_authorization_allocation_4_v2.json for immutable bundle v8.",
+  "claim_boundary": "Local admission and fail-closed environment-gate evidence only; this was not a provider allocation and earns no policy, WAM, ranking, transfer, economics, or physical-success credit.",
+  "record_sha256": "4ea3d2813d490acfc63ebc23cc838340d1ac16db283191852d47b90c0396f00a"
+}

@@ -65,6 +65,10 @@ from .openpi_policy_ranking_gpu_admission import (
     PROBE_KIND as OPENPI_POLICY_RANKING_PROBE_KIND,
 )
 from .openpi_policy_ranking_runpod import run_openpi_policy_ranking_campaign
+from .nvidia_warehouse_native_camera_gpu_admission import (
+    PROBE_KIND as NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
+    run_native_camera_gpu_lane,
+)
 from .policy_ranking_successor_gpu_admission import (
     PROBE_KIND as POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
     run_successor_gpu_lane,
@@ -572,6 +576,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             G1_MICROWAVE_FINETUNE_PROBE_KIND,
             OPENPI_POLICY_RANKING_PROBE_KIND,
             NEW_SITE_CANARY_PROBE_KIND,
+            NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
         ),
@@ -588,6 +593,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--provider-bootstrap-url-file")
     gpu.add_argument("--finetune-provider-bundle")
     gpu.add_argument("--openpi-input-bundle-receipt")
+    gpu.add_argument("--native-camera-input-bundle-receipt")
     gpu.add_argument("--openpi-input-secret-url-file")
     gpu.add_argument("--openpi-output-secret-put-url-file")
     gpu.add_argument("--openpi-output-secret-get-url-file")
@@ -847,6 +853,92 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND:
+            missing = [
+                name
+                for name in (
+                    "release_evidence",
+                    "native_camera_input_bundle_receipt",
+                    "preflight_bundle",
+                    "admission_out",
+                    "bound_request_out",
+                    "adapter_output",
+                    "pod_name",
+                    "expected_source_commit",
+                )
+                if not getattr(args, name, None)
+            ]
+            if args.provider != "vast":
+                missing.append("provider_must_be_vast")
+            if args.execute:
+                missing.extend(
+                    name
+                    for name in (
+                        "provider_bundle_url_file",
+                        "provider_output_put_url_file",
+                        "provider_output_get_url_file",
+                        "campaign_budget_ledger",
+                        "campaign_initial_spent_usd",
+                        "campaign_initial_used_gpu_seconds",
+                    )
+                    if getattr(args, name, None) is None
+                )
+            if missing:
+                result = {
+                    "status": "blocked",
+                    "blockers": [
+                        "native_camera_gpu_required_arguments_missing:"
+                        + ",".join(sorted(set(missing)))
+                    ],
+                    "provider_mutations_performed": 0,
+                }
+                write_json(Path(args.admission_out), result)
+            else:
+                source_blockers, checkout_commit = _source_checkout_blockers(
+                    args.expected_source_commit or "",
+                    allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
+                )
+                if source_blockers:
+                    result = {
+                        "status": "blocked",
+                        "blockers": source_blockers,
+                        "provider_mutations_performed": 0,
+                    }
+                    write_json(Path(args.admission_out), result)
+                else:
+                    result = run_native_camera_gpu_lane(
+                        release_evidence=args.release_evidence,
+                        input_bundle_receipt=args.native_camera_input_bundle_receipt,
+                        preflight_bundle=args.preflight_bundle,
+                        admission_out=args.admission_out,
+                        bound_request_out=args.bound_request_out,
+                        adapter_output=args.adapter_output,
+                        pod_name=args.pod_name,
+                        expected_source_commit=checkout_commit,
+                        execute=args.execute,
+                        hard_ttl_seconds=args.openpi_hard_ttl_seconds,
+                        max_spend_usd=args.openpi_max_spend_usd,
+                        input_secret_url_file=args.provider_bundle_url_file,
+                        output_secret_put_url_file=args.provider_output_put_url_file,
+                        output_secret_get_url_file=args.provider_output_get_url_file,
+                        campaign_budget_ledger=args.campaign_budget_ledger,
+                        campaign_initial_spent_usd=args.campaign_initial_spent_usd,
+                        campaign_initial_used_gpu_seconds=(
+                            args.campaign_initial_used_gpu_seconds
+                        ),
+                        campaign_total_spend_cap_usd=(
+                            args.campaign_total_spend_cap_usd
+                        ),
+                        campaign_wall_cap_seconds=(
+                            args.campaign_wall_cap_seconds
+                            if args.campaign_wall_cap_seconds is not None
+                            else 36_000
+                        ),
+                        provider_name=args.provider,
+                    )
+            success = result.get("status") in {"dry_run_ready", "completed"}
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == POLICY_RANKING_COSMOS_REASONER_PROBE_KIND:
             required = (
                 "provider_launch_request",

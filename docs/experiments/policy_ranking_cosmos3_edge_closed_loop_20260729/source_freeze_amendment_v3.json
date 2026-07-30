@@ -1,0 +1,19 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze_amendment.v3",
+  "amended_at": "2026-07-29T08:02:29-0500",
+  "former_manifest": "source_freeze_v2.json",
+  "former_manifest_sha256": "90729933493012540a47385d6482eef4886b5634539d5be03ebb0ae48f39b4e2",
+  "successor_manifest": "source_freeze_v3.json",
+  "successor_manifest_sha256": "a8ad40aed9fae224ec6bb7f4de7d9f49ff29a7f23fb0a74e9940956472434128",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "scientific_legitimacy": "Before any new paid call, this amendment pins the exact public calibration implementations and checkpoint files required to construct OSCAR-style camera-aligned skeletons. It changes no labels, outcomes, predictions, prompts, ranking thresholds, or WAM outputs.",
+  "changed_fields": [
+    "add exact MoGe-v2 source, model revision, license, sizes, and hashes",
+    "add exact CtRNet-X source, public weight distributions, extracted weight hashes, and Panda URDF hash",
+    "record that Blueprint's wrapper is OSCAR-inspired because OSCAR's exact calibration pipeline is unpublished",
+    "freeze fail-closed calibration and static-versus-dynamic camera rules"
+  ],
+  "amendment_sha256": "0d9aee17716a55648251729b5b646c32486bab02b36a30bd455ec2877dbc2fa2"
+}

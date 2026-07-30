@@ -3,7 +3,9 @@ import pytest
 
 from blueprint_pipeline.droid_policy_bridge import (
     DROID_CONTROL_HZ,
+    DROID_EXTERIOR_VIEW_2,
     DROID_INNER_CONTROL_HZ,
+    DROID_ROBOARENA_CONCAT_VIEWS,
     droid_joint_position_action_to_mujoco_targets,
     droid_action_to_mujoco_targets,
     validate_droid_action_chunk,
@@ -35,6 +37,20 @@ def test_openpi_droid_contract_rejects_camera_and_action_shape_drift() -> None:
         "invalid_image_shape:observation/wrist_image_left"
     ]
     assert validate_droid_action_chunk(np.zeros((8, 8))) == ["invalid_action_chunk_shape"]
+
+
+def test_roboarena_concat_policy_contract_requires_all_three_views() -> None:
+    observation = _observation()
+    assert validate_droid_observation(
+        observation, required_views=DROID_ROBOARENA_CONCAT_VIEWS
+    ) == [f"invalid_image_shape:{DROID_EXTERIOR_VIEW_2}"]
+    observation[DROID_EXTERIOR_VIEW_2] = np.zeros((224, 224, 3), dtype=np.uint8)
+    assert (
+        validate_droid_observation(
+            observation, required_views=DROID_ROBOARENA_CONCAT_VIEWS
+        )
+        == []
+    )
 
 
 def test_joint_velocity_mapping_matches_public_droid_runtime() -> None:

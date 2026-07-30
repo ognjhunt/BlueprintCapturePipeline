@@ -9,7 +9,9 @@ from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.run_e2e import main, run_end_to_end
 
 
-def test_run_e2e_supports_opt_in_agent_review_and_standalone_evaluation_prep(monkeypatch, tmp_path: Path) -> None:
+def test_run_e2e_supports_opt_in_agent_review_and_standalone_evaluation_prep(
+    monkeypatch, tmp_path: Path
+) -> None:
     capture_root = tmp_path / "capture"
     capture_root.mkdir()
     (capture_root / "capture_descriptor.json").write_text("{}", encoding="utf-8")
@@ -26,19 +28,36 @@ def test_run_e2e_supports_opt_in_agent_review_and_standalone_evaluation_prep(mon
         descriptor_path=capture_root / "capture_descriptor.json",
     )
 
-    monkeypatch.setattr("blueprint_pipeline.run_e2e.resolve_local_capture_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr("blueprint_pipeline.run_e2e.build_capture_preflight_report", lambda *_args, **_kwargs: {"status": "passed", "missing_required_inputs": []})
-    monkeypatch.setattr("blueprint_pipeline.run_e2e.materialize_capture_bundle", lambda **_kwargs: {"status": "ok"})
-    monkeypatch.setattr("blueprint_pipeline.run_e2e.run_capture_pipeline", lambda **_kwargs: {"status": "completed"})
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.resolve_local_capture_context",
+        lambda *_args, **_kwargs: context,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.build_capture_preflight_report",
+        lambda *_args, **_kwargs: {"status": "passed", "missing_required_inputs": []},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.materialize_capture_bundle", lambda **_kwargs: {"status": "ok"}
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.run_capture_pipeline", lambda **_kwargs: {"status": "completed"}
+    )
     monkeypatch.setattr(
         "blueprint_pipeline.run_e2e.run_agent_review",
-        lambda **_kwargs: {"final_memo_path": "memo.md", "final_bundle_path": "bundle.json", "artifacts": {"readiness_report": "report.md"}},
+        lambda **_kwargs: {
+            "final_memo_path": "memo.md",
+            "final_bundle_path": "bundle.json",
+            "artifacts": {"readiness_report": "report.md"},
+        },
     )
     monkeypatch.setattr(
         "blueprint_pipeline.run_e2e.run_evaluation_prep_stage",
         lambda **_kwargs: {
             "manifest_path": "evaluation_prep_manifest.json",
-            "webapp_sync_result": {"status": "succeeded", "syncs": {"evaluation_prep": {"attachment_payload": {"truth": True}}}},
+            "webapp_sync_result": {
+                "status": "succeeded",
+                "syncs": {"evaluation_prep": {"attachment_payload": {"truth": True}}},
+            },
             "hosted_review_readiness": {"status": "ready"},
             "proof_path_status": {"next_truthful_step": "operator_can_start_hosted_review"},
         },
@@ -59,7 +78,9 @@ def test_run_e2e_supports_opt_in_agent_review_and_standalone_evaluation_prep(mon
     assert "simready" not in result
 
 
-def test_run_e2e_supports_full_lane_and_optional_cosmos_validation(monkeypatch, tmp_path: Path) -> None:
+def test_run_e2e_supports_full_lane_and_optional_cosmos_validation(
+    monkeypatch, tmp_path: Path
+) -> None:
     capture_root = tmp_path / "capture"
     capture_root.mkdir()
     (capture_root / "capture_descriptor.json").write_text("{}", encoding="utf-8")
@@ -76,16 +97,28 @@ def test_run_e2e_supports_full_lane_and_optional_cosmos_validation(monkeypatch, 
         descriptor_path=capture_root / "capture_descriptor.json",
     )
 
-    monkeypatch.setattr("blueprint_pipeline.run_e2e.resolve_local_capture_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr("blueprint_pipeline.run_e2e.build_capture_preflight_report", lambda *_args, **_kwargs: {"status": "passed", "missing_required_inputs": []})
-    monkeypatch.setattr("blueprint_pipeline.run_e2e.materialize_capture_bundle", lambda **_kwargs: {"status": "ok"})
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.resolve_local_capture_context",
+        lambda *_args, **_kwargs: context,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.build_capture_preflight_report",
+        lambda *_args, **_kwargs: {"status": "passed", "missing_required_inputs": []},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.materialize_capture_bundle", lambda **_kwargs: {"status": "ok"}
+    )
     monkeypatch.setattr(
         "blueprint_pipeline.run_e2e.run_capture_pipeline",
         lambda **kwargs: {"status": "completed", "lanes": [kwargs["lane"]]},
     )
     monkeypatch.setattr(
         "blueprint_pipeline.run_e2e.run_agent_review",
-        lambda **_kwargs: {"final_memo_path": "memo.md", "final_bundle_path": "bundle.json", "artifacts": {"readiness_report": "report.md"}},
+        lambda **_kwargs: {
+            "final_memo_path": "memo.md",
+            "final_bundle_path": "bundle.json",
+            "artifacts": {"readiness_report": "report.md"},
+        },
     )
     monkeypatch.setattr(
         "blueprint_pipeline.run_e2e._run_legacy_cosmos_predict2_5_validation",

@@ -189,6 +189,12 @@ DEFAULT_EVALUATION_RUN_ADAPTERS = (
         "policy_adapter", "robot_eval_policy_package", "1", ("multi_modality",)
     ),
     EvaluationRunAdapterDescriptor(
+        "policy_adapter",
+        "blueprint_agentic_candidate_policy",
+        "1",
+        ("frozen_manifest", "composite_agent", "no_evaluator_authority"),
+    ),
+    EvaluationRunAdapterDescriptor(
         "policy_adapter", "http_policy_worker", "1", ("http", "persistent_worker")
     ),
     EvaluationRunAdapterDescriptor(

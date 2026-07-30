@@ -339,12 +339,36 @@ does not send the shared value as a bearer credential.
 The service exposes:
 
 - `GET /health`
+- `POST /api/live-pipeline/capture-upload-intakes`
 - `POST /api/live-pipeline/job-requests`
 - `POST /api/live-pipeline/policy-packages`
 - `POST /api/live-pipeline/real-robot-pov`
 - `POST /api/live-pipeline/deployment-outcomes`
 - `POST /api/live-pipeline/live-closure-evidence`
 - `GET /api/live-pipeline/intake-audit`
+
+The capture-upload intake endpoint is a separate Task Evaluation Run product
+seam; it does not use the legacy robot-evaluation capture-handoff converter or a
+caller-selected local capture root. Configure it with:
+
+```bash
+PIPELINE_CAPTURE_INTAKE_STORE_ROOT=/var/lib/blueprint/capture-intakes
+PIPELINE_CAPTURE_TRANSFER_ALLOWED_HOSTS=f005.backblazeb2.com
+PIPELINE_CAPTURE_MALWARE_SCANNER_ARGV_JSON='["/usr/bin/clamdscan","--no-summary"]'
+```
+
+The host list must contain the exact HTTPS download host returned by the current
+B2 account authorization. The scanner argv must name an absolute installed
+executable; no shell expansion is used. The endpoint consumes an HMAC-authenticated,
+short-lived object-prefix grant, rejects redirects outside the same allowlist,
+streams into quarantine, verifies exact size and media shape, requires a clean
+scanner result, computes SHA-256, writes an immutable content-addressed Capture
+Intake receipt, and runs deterministic Capture QA against the same verified
+bytes. It returns the intake receipt and a separately digest-validated Capture QA
+publication; it never persists or echoes the URL or grant. Capture QA may accept
+the input or request exact recapture, but neither artifact establishes
+reconstruction, task success, physical success, deployment readiness, safety
+certification, or policy-ranking support.
 
 Signed intake headers are required by default. Temporary legacy bearer support
 exists only when `BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER=true` is
