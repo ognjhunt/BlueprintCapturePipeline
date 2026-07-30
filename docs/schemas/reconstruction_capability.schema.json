@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/reconstruction-capability.v1.schema.json",
+  "title": "Blueprint Reconstruction Capability Artifacts",
+  "oneOf": [
+    {"$ref": "#/$defs/method_profile"},
+    {"$ref": "#/$defs/plan"},
+    {"$ref": "#/$defs/result"},
+    {"$ref": "#/$defs/simready_decision"},
+    {"$ref": "#/$defs/robot_placement"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "source_capture": {
+      "type": "object",
+      "required": ["intake_id", "capture_digest", "capture_authority_profile"],
+      "properties": {
+        "intake_id": {"type": "string", "minLength": 1},
+        "capture_digest": {"$ref": "#/$defs/digest"},
+        "capture_authority_profile": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "method_profile": {
+      "type": "object",
+      "required": [
+        "schema_version", "method_id", "version", "implementation_digest",
+        "method_kind", "provider_identity", "execution_mode", "outputs",
+        "required_capture_authority_profiles", "required_claim_ceiling_flags",
+        "qualified_claim_types", "execution_authorized", "qualification_status",
+        "expected_cost_usd", "provider_constraints", "rights_constraints",
+        "failure_modes", "method_profile_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_method_profile.v1"},
+        "implementation_digest": {"$ref": "#/$defs/digest"},
+        "method_profile_digest": {"$ref": "#/$defs/digest"},
+        "execution_authorized": {"type": "boolean"},
+        "qualification_status": {"enum": ["qualified", "debug_only", "not_qualified"]},
+        "expected_cost_usd": {"type": "number", "minimum": 0},
+        "outputs": {"type": "array", "minItems": 1, "uniqueItems": true}
+      },
+      "additionalProperties": true
+    },
+    "plan": {
+      "type": "object",
+      "required": [
+        "schema_version", "source_capture", "requested_claim_types",
+        "required_representations", "selected_methods", "missing_representations",
+        "estimated_cost_usd", "status", "proof_boundary",
+        "reconstruction_plan_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_plan.v1"},
+        "source_capture": {"$ref": "#/$defs/source_capture"},
+        "selected_methods": {"type": "array"},
+        "missing_representations": {"type": "array"},
+        "estimated_cost_usd": {"type": "number", "minimum": 0},
+        "status": {"enum": ["planned", "partial_plan"]},
+        "reconstruction_plan_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "schema_version", "result_id", "intake_id", "capture_digest",
+        "method_id", "method_version", "method_profile_digest",
+        "implementation_digest", "provider_identity", "runtime_identity",
+        "runtime_digest", "outputs", "source_frames", "camera_solution",
+        "coordinate_system", "asset_references", "coverage_map", "observed_regions",
+        "generated_regions", "uncertainty_map", "invalid_regions",
+        "validation_metrics", "cost_usd", "duration_seconds", "provider_receipt",
+        "rights_and_retention", "deletion_evidence", "claim_ceiling",
+        "reconstruction_result_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_result.v1"},
+        "capture_digest": {"$ref": "#/$defs/digest"},
+        "method_profile_digest": {"$ref": "#/$defs/digest"},
+        "implementation_digest": {"$ref": "#/$defs/digest"},
+        "runtime_digest": {"$ref": "#/$defs/digest"},
+        "reconstruction_result_digest": {"$ref": "#/$defs/digest"},
+        "generated_regions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["mask_reference"],
+            "properties": {"mask_reference": {"type": "string", "minLength": 1}},
+            "additionalProperties": true
+          }
+        },
+        "cost_usd": {"type": "number", "minimum": 0},
+        "duration_seconds": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "simready_decision": {
+      "type": "object",
+      "required": [
+        "schema_version", "approved_task_digest", "capture_digest",
+        "requested_claim_types", "object_decisions", "status", "proof_boundary",
+        "simready_decision_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "simready_asset_decision.v1"},
+        "approved_task_digest": {"$ref": "#/$defs/digest"},
+        "capture_digest": {"$ref": "#/$defs/digest"},
+        "status": {"enum": ["complete", "blocked_missing_asset"]},
+        "simready_decision_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "robot_placement": {
+      "type": "object",
+      "required": [
+        "schema_version", "robot_binding", "robot_binding_digest",
+        "approved_task_digest", "capture_digest", "task_object_id",
+        "target_region_id", "minimum_coverage", "accepted_candidates",
+        "rejected_candidates", "selected_candidate_id", "status",
+        "next_cheapest_experiment", "proof_boundary", "robot_placement_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "robot_placement_result.v1"},
+        "robot_binding_digest": {"$ref": "#/$defs/digest"},
+        "approved_task_digest": {"$ref": "#/$defs/digest"},
+        "capture_digest": {"$ref": "#/$defs/digest"},
+        "minimum_coverage": {"type": "number", "minimum": 0, "maximum": 1},
+        "status": {"enum": ["candidate_selected", "abstained"]},
+        "robot_placement_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

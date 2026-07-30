@@ -230,6 +230,12 @@ def _validate_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
     return envelope
 
 
+def validate_capture_intake_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a detached, integrity-checked intake envelope."""
+
+    return _validate_envelope(value)
+
+
 def _governance_blockers(envelope: Mapping[str, Any]) -> list[str]:
     governance = envelope.get("governance")
     governance = governance if isinstance(governance, Mapping) else {}
