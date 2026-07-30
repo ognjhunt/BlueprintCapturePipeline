@@ -340,3 +340,88 @@ def test_bootstrap_routes_ctrl_world_to_isolated_runtime(
     assert observed["ctrl_world_runner"] is runner
     assert observed["seed"] == 23
     assert observed["initial_camera_paths"] == cameras
+
+
+def test_bootstrap_routes_oscar_to_resident_multiview_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL", "https://storage.example/input"
+    )
+    monkeypatch.setenv("BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256", "a" * 64)
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL",
+        "https://storage.example/output",
+    )
+    monkeypatch.setenv("BLUEPRINT_OPENPI_EXECUTION_MODE", EXECUTION_MODE_NEW_SITE_CANARY)
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_download_signed_input",
+        lambda _url, destination, **_kwargs: destination.write_bytes(b"placeholder"),
+    )
+    cameras = {
+        "image": str(tmp_path / "external.png"),
+        "wrist_image": str(tmp_path / "wrist.png"),
+    }
+    monkeypatch.setattr(
+        bootstrap_module,
+        "extract_canary_input_bundle",
+        lambda **_kwargs: {
+            "manifest": {"arm_id": "oscar", "wam_seed": 42},
+            "protocol_path": str(tmp_path / "protocol.json"),
+            "background_path": str(tmp_path / "background.png"),
+            "initial_camera_paths": cameras,
+        },
+    )
+
+    class FakeRuntime:
+        entered = False
+        exited = False
+
+        def __enter__(self):
+            self.entered = True
+            return self
+
+        def __exit__(self, *_exc):
+            self.exited = True
+
+    runtime = FakeRuntime()
+
+    class FakeRuntimeFactory:
+        @classmethod
+        def from_environment(cls, *, evidence_dir):
+            assert evidence_dir.name == "oscar_runtime"
+            return runtime
+
+    monkeypatch.setattr(
+        bootstrap_module, "OscarMultiViewReferenceRuntime", FakeRuntimeFactory
+    )
+    observed: dict = {}
+
+    def run_canary(**kwargs):
+        observed.update(kwargs)
+        output = Path(kwargs["output_dir"])
+        output.mkdir(parents=True)
+        manifest = {
+            "schema_version": "new_site_diagnostic_canary_gpu.v1",
+            "status": "completed",
+            "manifest_sha256": "c" * 64,
+        }
+        (output / "new_site_diagnostic_canary_gpu.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        return manifest
+
+    monkeypatch.setattr(bootstrap_module, "run_oscar_canary", run_canary)
+    monkeypatch.setattr(bootstrap_module, "_upload_output", lambda *_args: 200)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = run_signed_gpu_bootstrap(workspace=workspace)
+
+    assert result["status"] == "completed"
+    assert observed["oscar_generator"] is runtime
+    assert observed["seed"] == 42
+    assert observed["initial_camera_paths"] == cameras
+    assert runtime.entered is True
+    assert runtime.exited is True

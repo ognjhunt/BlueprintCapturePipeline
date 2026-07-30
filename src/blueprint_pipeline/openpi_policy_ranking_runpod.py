@@ -211,21 +211,49 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
             canary = manifest.get("canary")
             canary = canary if isinstance(canary, Mapping) else {}
             if canary_status == "completed":
+                arm_id = str(manifest.get("arm_id") or "")
                 if (
-                    manifest.get("arm_id") != "skeleton_only"
+                    arm_id not in {"skeleton_only", "oscar", "ctrl_world"}
                     or canary.get("status") not in {"passed", "failed"}
                     or canary.get("label_free") is not True
                     or canary.get("model_invoked") is not True
+                    or (arm_id == "oscar" and manifest.get("learned_wam_invoked") is not True)
                 ):
                     blockers.append("openpi_output_completed_canary_invalid")
-                expected_media = {
-                    "external": any(
-                        name.endswith("query_000_external_skeleton.mp4") for name in names
-                    ),
-                    "wrist": any(
-                        name.endswith("query_000_wrist_skeleton.mp4") for name in names
-                    ),
-                }
+                if arm_id == "skeleton_only":
+                    expected_media = {
+                        "external": any(
+                            name.endswith("query_000_external_skeleton.mp4") for name in names
+                        ),
+                        "wrist": any(
+                            name.endswith("query_000_wrist_skeleton.mp4") for name in names
+                        ),
+                    }
+                elif arm_id == "oscar":
+                    expected_media = {
+                        "external": any(
+                            "observation_exterior_image_1/" in name
+                            and name.endswith("oscar_generated.mp4")
+                            for name in names
+                        ),
+                        "wrist": any(
+                            "observation_wrist_image/" in name
+                            and name.endswith("oscar_generated.mp4")
+                            for name in names
+                        ),
+                    }
+                else:
+                    expected_media = {
+                        "external_2": any(
+                            name.endswith("ctrl_world_generated_view_0.mp4") for name in names
+                        ),
+                        "external": any(
+                            name.endswith("ctrl_world_generated_view_1.mp4") for name in names
+                        ),
+                        "wrist": any(
+                            name.endswith("ctrl_world_generated_view_2.mp4") for name in names
+                        ),
+                    }
                 if not all(expected_media.values()):
                     blockers.append("openpi_output_canary_individual_camera_media_missing")
             elif canary_status == "blocked":

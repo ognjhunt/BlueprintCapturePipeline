@@ -14,8 +14,11 @@ from typing import Any
 from .common import write_json
 from .gpu_render_providers import get_render_provider
 from .new_site_diagnostic_canary_gpu import (
+    BUNDLE_SUPPORTED_ARMS,
+    CTRL_WORLD_CANARY_SEED,
     INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
     INPUT_SCHEMA_VERSION as CANARY_INPUT_SCHEMA_VERSION,
+    OSCAR_CANARY_SEED,
 )
 from .paid_resource_admission import build_paid_lane_admission
 from .policy_ranking_thesis import canonical_sha256
@@ -279,8 +282,9 @@ def build_openpi_policy_ranking_gpu_admission(
     if not _SHA256.fullmatch(str(manifest.get("background_sha256") or "")):
         blockers.append("openpi_gpu_input_background_sha256_invalid")
     if is_canary:
+        arm_id = str(manifest.get("arm_id") or "")
         if (
-            manifest.get("arm_id") != "skeleton_only"
+            arm_id not in BUNDLE_SUPPORTED_ARMS
             or manifest.get("label_free") is not True
             or manifest.get("variant") != "center"
             or not str(manifest.get("scene_id") or "")
@@ -289,6 +293,16 @@ def build_openpi_policy_ranking_gpu_admission(
             or not _SHA256.fullmatch(str(manifest.get("protocol_sha256") or ""))
         ):
             blockers.append("openpi_gpu_input_canary_freeze_invalid")
+        if arm_id in {"oscar", "ctrl_world"} and manifest.get(
+            "initial_observation_source"
+        ) != "native_isaac_simready_warehouse_camera_canary":
+            blockers.append("openpi_gpu_input_canary_native_camera_source_invalid")
+        expected_wam_seed = {
+            "oscar": OSCAR_CANARY_SEED,
+            "ctrl_world": CTRL_WORLD_CANARY_SEED,
+        }.get(arm_id)
+        if expected_wam_seed is not None and manifest.get("wam_seed") != expected_wam_seed:
+            blockers.append("openpi_gpu_input_canary_wam_seed_invalid")
         declared_manifest_sha = str(manifest.get("manifest_sha256") or "")
         manifest_payload = dict(manifest)
         manifest_payload.pop("manifest_sha256", None)

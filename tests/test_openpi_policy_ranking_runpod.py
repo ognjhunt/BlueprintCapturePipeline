@@ -125,6 +125,73 @@ def test_completed_canary_output_requires_individual_camera_media() -> None:
     }
 
 
+def _learned_canary_archive(arm_id: str, media_names: list[str]) -> bytes:
+    manifest = {
+        "schema_version": "new_site_diagnostic_canary_gpu.v1",
+        "status": "completed",
+        "arm_id": arm_id,
+        "protocol_sha256": "a" * 64,
+        "learned_wam_invoked": arm_id == "oscar",
+        "canary": {
+            "status": "passed",
+            "label_free": True,
+            "model_invoked": True,
+            "freeze_bindings": {"scene_id": "nvidia_warehouse"},
+        },
+        "claim_boundary": {
+            "ranking_accuracy": False,
+            "physical_success": False,
+            "captured_site_transfer_validation": False,
+            "phase_b_confirmation": False,
+        },
+    }
+    manifest["manifest_sha256"] = canonical_sha256(manifest)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("new_site_diagnostic_canary_gpu.json", json.dumps(manifest))
+        for name in media_names:
+            archive.writestr(name, b"video")
+    return buffer.getvalue()
+
+
+def test_completed_oscar_canary_requires_learned_external_and_wrist_media() -> None:
+    archive = _learned_canary_archive(
+        "oscar",
+        [
+            "loop/transition_0000/observation_exterior_image_1/oscar_generated.mp4",
+            "loop/transition_0000/observation_wrist_image/oscar_generated.mp4",
+        ],
+    )
+
+    result = _validate_output_archive(archive)
+
+    assert result["status"] == "completed"
+    assert result["individual_camera_media_present"] == {
+        "external": True,
+        "wrist": True,
+    }
+
+
+def test_completed_ctrl_world_canary_requires_all_three_camera_videos() -> None:
+    archive = _learned_canary_archive(
+        "ctrl_world",
+        [
+            "loop/transition_0000/ctrl_world_generated_view_0.mp4",
+            "loop/transition_0000/ctrl_world_generated_view_1.mp4",
+            "loop/transition_0000/ctrl_world_generated_view_2.mp4",
+        ],
+    )
+
+    result = _validate_output_archive(archive)
+
+    assert result["status"] == "completed"
+    assert result["individual_camera_media_present"] == {
+        "external_2": True,
+        "external": True,
+        "wrist": True,
+    }
+
+
 def test_monitor_collects_output_then_proves_provider_and_budget_terminal(
     tmp_path: Path, monkeypatch
 ) -> None:

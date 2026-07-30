@@ -26,8 +26,10 @@ from .new_site_diagnostic_canary_gpu import (
     extract_canary_input_bundle,
     materialize_canary_background,
     run_ctrl_world_canary,
+    run_oscar_canary,
     run_skeleton_only_canary,
 )
+from .oscar_multiview_reference_runtime import OscarMultiViewReferenceRuntime
 from .openpi_policy_ranking_gpu_job import run_openpi_policy_ranking_gpu_campaign
 from .policy_ranking_thesis import canonical_sha256
 
@@ -316,6 +318,16 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
             }
             if arm_id == "skeleton_only":
                 campaign = run_skeleton_only_canary(**shared)
+            elif arm_id == "oscar":
+                runtime = OscarMultiViewReferenceRuntime.from_environment(
+                    evidence_dir=campaign_output / "oscar_runtime"
+                )
+                with runtime:
+                    campaign = run_oscar_canary(
+                        **shared,
+                        oscar_generator=runtime,
+                        seed=canary_manifest.get("wam_seed"),
+                    )
             elif arm_id == "ctrl_world":
                 model_root = os.getenv("BLUEPRINT_CTRL_WORLD_MODEL_ROOT", "").strip()
                 if not model_root:

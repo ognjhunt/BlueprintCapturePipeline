@@ -1,3 +1,5 @@
+import pytest
+
 from blueprint_pipeline.openpi_policy_ranking_gpu_admission import (
     build_openpi_policy_ranking_gpu_admission,
     collect_openpi_policy_ranking_runpod_preflight,
@@ -126,6 +128,51 @@ def test_openpi_gpu_admission_accepts_one_arm_label_free_canary_receipt() -> Non
     assert result["status"] == "admitted"
     assert result["probe_kind"] == "new-site-diagnostic-canary"
     assert result["execution_mode"] == "new_site_diagnostic_canary"
+
+
+@pytest.mark.parametrize(("arm_id", "wam_seed"), [("oscar", 42), ("ctrl_world", 23)])
+def test_openpi_gpu_admission_accepts_native_learned_wam_canary_receipt(
+    arm_id: str, wam_seed: int
+) -> None:
+    release, _bundle, preflight, spend = _inputs()
+    manifest = {
+        "schema_version": INPUT_SCHEMA_VERSION,
+        "experiment_id": "diagnostic_v6",
+        "protocol_filename": "protocol.json",
+        "protocol_file_sha256": "f" * 64,
+        "protocol_sha256": "1" * 64,
+        "arm_id": arm_id,
+        "wam_seed": wam_seed,
+        "scene_id": "nvidia_warehouse",
+        "task_instruction": "Pick up the spray can and place it inside the marked tray.",
+        "policy_id": "pi05_droid_jointpos_polaris",
+        "variant": "center",
+        "background_filename": "captured_site_background.png",
+        "background_sha256": "d" * 64,
+        "background_size_bytes": 123,
+        "raw_3dgs_included": False,
+        "redistribution_authorized": False,
+        "label_free": True,
+        "purpose": "private_internal_noncommercial_new_site_diagnostic_canary",
+        "initial_observation_source": "native_isaac_simready_warehouse_camera_canary",
+    }
+    manifest["manifest_sha256"] = canonical_sha256(manifest)
+    bundle = {
+        "schema_version": INPUT_RECEIPT_SCHEMA_VERSION,
+        "bundle_sha256": "c" * 64,
+        "manifest": manifest,
+    }
+
+    result = build_openpi_policy_ranking_gpu_admission(
+        release=release,
+        input_bundle=bundle,
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit="a" * 40,
+        observed_now_epoch=1001.0,
+    )
+
+    assert result["status"] == "admitted"
 
 
 def test_openpi_gpu_admission_blocks_rights_robot_and_budget_regressions() -> None:
