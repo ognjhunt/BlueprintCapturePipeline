@@ -1,0 +1,94 @@
+{
+  "schema_version": "policy_ranking_confirmation_availability_audit.v2",
+  "audited_on": "2026-07-29",
+  "status": "two_policy_confirmation_candidate_not_yet_executed",
+  "physical_outcome_labels_accessed": false,
+  "provider_called": false,
+  "paid_resources_used": false,
+  "cohort": {
+    "path": "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/confirmation_cohort_v1.json",
+    "file_sha256": "f90d8cf73dc38aefa44b580c49cfece2dd4e76a3543e87a77c6abd7841968dc6",
+    "cohort_sha256": "06df54ecaad7f8088487d590322a4b307f888b13c48146708f75d359ba9b0ae5",
+    "session_count": 17,
+    "selection_used_outcomes": false,
+    "same_snapshot_disjoint_sessions": true,
+    "newer_snapshot": false,
+    "outcomes_remain_sealed": true
+  },
+  "seven_policy_ideal": {
+    "physical_policy_ids_available": 7,
+    "public_checkpoint_locations_known": 7,
+    "all_checkpoint_bytes_frozen_downloaded_and_executed": false,
+    "all_policies_supported_by_one_qualified_closed_loop_WAM": false,
+    "status": "not_available",
+    "claim_ceiling": "No seven-policy confirmatory ranking can currently be run."
+  },
+  "ctrl_world_overlap": {
+    "physical_policy_ids_with_public_outcomes_and_released_ctrl_world_closed_loop": [
+      "pi0_droid",
+      "pi0_fast_droid"
+    ],
+    "released_ctrl_world_policy_without_matching_cohort_outcomes": [
+      "pi05_droid"
+    ],
+    "physical_cohort_policies_not_supported_by_released_ctrl_world_loop": [
+      "paligemma_binning_droid",
+      "paligemma_diffusion_droid",
+      "paligemma_fast_droid",
+      "paligemma_fast_specialist_droid",
+      "paligemma_vq_droid"
+    ],
+    "policy_droid_is_matching_physical_policy": false,
+    "minimum_valid_comparison": "pi0_droid_vs_pi0_fast_droid_across_17_sessions",
+    "required_input_audit": [
+      "three_initial_DROID_views_exist_for_every_selected_session_and_policy",
+      "initial_joint_and_gripper_state_exist",
+      "camera_and_history_contract_matches_Ctrl_World",
+      "exact_pi0_and_pi0_fast_checkpoint_revisions_and_bytes_are_frozen",
+      "Ctrl_World_released_state_adapter_is_frozen_and_loaded",
+      "task_text_is_attributable_and_read_without_outcome_fields",
+      "physical_outcomes_remain_sealed_until_all_predictions_are_hashed"
+    ]
+  },
+  "local_input_availability": {
+    "checkout": "/Users/nijelhunt_1/workspace/policy-ranking-experiment-2-inputs/RoboArena_DataDump_07-17-2026",
+    "audit_scope": "17_selected_sessions_x_2_Ctrl_World_supported_policies_x_left_right_wrist_state_assets",
+    "expected_asset_paths": 136,
+    "present_asset_paths": 32,
+    "missing_asset_paths": 104,
+    "present_paths_are_git_lfs_pointers": 32,
+    "materialized_data_files": 0,
+    "pointer_declared_target_bytes": 25163684,
+    "outcome_metadata_opened": false,
+    "input_contract_auditable_from_local_bytes": false,
+    "interpretation": "The sparse local checkout contains no realized image or state bytes for this candidate lane, and most expected selected paths are absent even as pointers. Three-view and state compatibility therefore cannot yet be verified."
+  },
+  "power_analysis": {
+    "independent_unit": "session",
+    "comparison_count_per_session": 1,
+    "session_count": 17,
+    "test": "exact_one_sided_binomial_pairwise_accuracy_vs_0_5",
+    "alpha": 0.05,
+    "critical_correct_count": 13,
+    "null_tail_probability_at_critical_count": 0.024520874023,
+    "true_pairwise_accuracy_needed_for_80_percent_power": 0.812715987107,
+    "interpretation": "The 17-session two-policy lane is powered only for a very large ordering effect; weaker but potentially useful effects remain inconclusive."
+  },
+  "fallback_ceiling": {
+    "if_two_policy_ctrl_world_closed_loop_executes": "small_disjoint_confirmatory_comparison_with_severe_power_and_policy_coverage_limits",
+    "if_only_recorded_traces_execute": "open_loop_replay_WAM_qualification_only",
+    "if_input_or_checkpoint_contract_fails": "confirmation_not_measured",
+    "reused_exposed_sessions": "diagnostic_only"
+  },
+  "current_blockers": [
+    "Ctrl_World_source_bytes_and_dependency_licenses_not_fully_frozen",
+    "selected_session_three_view_state_input_contract_not_verifiable_from_current_sparse_LFS_checkout",
+    "104_of_136_expected_selected_input_asset_paths_missing_locally",
+    "32_present_selected_input_assets_are_unmaterialized_Git_LFS_pointers",
+    "exact_pi0_and_pi0_fast_checkpoint_bytes_not_frozen_for_this_successor",
+    "Ctrl_World_label_free_canary_not_yet_run",
+    "immutable_Blueprint_source_commit_not_yet_pushed"
+  ],
+  "phase_b_admitted": false,
+  "audit_sha256": "9ad674c0b7d0c2d563f94637aaa46f3598d55afa119cc4dc3f8f213932052453"
+}

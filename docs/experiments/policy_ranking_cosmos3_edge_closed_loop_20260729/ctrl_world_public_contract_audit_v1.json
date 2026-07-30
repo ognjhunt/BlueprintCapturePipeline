@@ -1,0 +1,155 @@
+{
+  "schema_version": "blueprint_ctrl_world_public_contract_audit.v1",
+  "audited_on": "2026-07-29",
+  "status": "contract_qualified_source_bytes_not_yet_fully_frozen",
+  "claim_class": "prospective_distinct_WAM_reference_arm",
+  "attribution": "Ctrl-World_not_Cosmos_not_OSCAR",
+  "primary_sources": {
+    "paper": {
+      "url": "https://arxiv.org/html/2510.10125v3",
+      "version": "v3",
+      "published_date": "2026-03-01",
+      "pdf_sha256_from_prior_verified_freeze": "5acee75221001b53171078e8b02f85151147b6dc629b36cf086d91d1c921ba0f"
+    },
+    "code": {
+      "url": "https://github.com/Robert-gyj/Ctrl-World",
+      "revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+      "license": "MIT",
+      "public_root_inspected": true,
+      "raw_archive_downloaded_and_hashed_this_phase": false
+    },
+    "ctrl_world_checkpoint": {
+      "model_id": "yjguo/Ctrl-World",
+      "revision": "8cf814693f411962dc866a2ddb5b785afd17a93a",
+      "file": "checkpoint-10000.pt",
+      "size_bytes": 9281040326,
+      "lfs_sha256": "ed17de48180d4e6f89fd33c53e9fb7a0196189c1a67d44c2c486a279a80ea8a8",
+      "gated": false,
+      "model_card_license": "MIT"
+    },
+    "stable_video_diffusion_base": {
+      "model_id": "stabilityai/stable-video-diffusion-img2vid",
+      "revision": "9cf024d5bfa8f56622af86c884f26a52f6676f2e",
+      "gated": false,
+      "license_tag": "stable-video-diffusion-community",
+      "license_file_revision": "796695f",
+      "license_last_updated": "2024-07-05",
+      "license_source": "https://huggingface.co/stabilityai/stable-video-diffusion-img2vid/blob/9cf024d5bfa8f56622af86c884f26a52f6676f2e/LICENSE.md",
+      "evaluation_and_testing_expressly_included_as_non_commercial_purpose": true,
+      "commercial_use_has_registration_revenue_and_attribution_conditions": true,
+      "license_review_completed_for_research_evaluation_canary": true
+    },
+    "clip_encoder": {
+      "model_id": "openai/clip-vit-base-patch32",
+      "revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
+      "gated": false,
+      "license_tag_observed": null,
+      "license_file_observed_in_pinned_Hugging_Face_revision": false,
+      "upstream_openai_CLIP_code_license": "MIT",
+      "upstream_code_license_source": "https://github.com/openai/CLIP/blob/main/LICENSE",
+      "Hugging_Face_model_weight_license_explicitly_published": false,
+      "license_review_required_before_paid_download": true
+    }
+  },
+  "native_world_model_contract": {
+    "training_dataset": "DROID_about_95k_trajectories_564_scenes",
+    "views": [
+      "third_person_camera_0",
+      "third_person_camera_1",
+      "wrist_camera"
+    ],
+    "joint_multiview_prediction": true,
+    "native_frame_shape_per_view": [
+      192,
+      320,
+      3
+    ],
+    "downsample": "15_Hz_to_5_Hz",
+    "future_frames_per_interaction": 5,
+    "history_pose_count": 6,
+    "history_indices": [
+      0,
+      0,
+      -12,
+      -9,
+      -6,
+      -3
+    ],
+    "action_dimension": 7,
+    "action_semantics": "absolute_cartesian_xyz_euler_xyz_plus_gripper_pose",
+    "action_normalization": "DROID_state_01_state_99_to_minus1_plus1_with_clipping",
+    "text_conditioning": true,
+    "frame_level_action_conditioning": true,
+    "generated_frames_are_returned_to_policy": true,
+    "closed_loop": true
+  },
+  "released_modes": {
+    "exact_public_replay": {
+      "entrypoint": "scripts/rollout_replay_traj.py",
+      "initial_condition": "recorded_DROID_multiview_observation_state_and_task",
+      "action_source": "recorded_DROID_cartesian_state_trajectory",
+      "claim_ceiling": "open_loop_replay_reference_not_policy_evaluation"
+    },
+    "exact_public_policy_in_loop": {
+      "entrypoint": "scripts/rollout_interact_pi_eval.py",
+      "supported_policy_configs": [
+        "pi0_droid",
+        "pi0fast_droid",
+        "pi05_droid"
+      ],
+      "policy_observation": [
+        "generated_exterior_image_1_left_224x224",
+        "generated_wrist_image_left_224x224",
+        "adapter_advanced_joint_position_7",
+        "adapter_advanced_gripper_position_1",
+        "task_prompt"
+      ],
+      "policy_native_action": "joint_velocity_7_plus_gripper_1",
+      "released_state_adapter": "models/action_adapter/model2_15_9.pth",
+      "adapter_operation": "15_step_joint_velocity_to_future_joint_position_then_FK_to_7D_cartesian_pose",
+      "same_policy_requeried": true,
+      "complete_episode_interactions": "task_specific_12_or_15",
+      "claim_ceiling": "closed_loop_reference_only_until_Blueprint_executes_and_independently_judges_it"
+    }
+  },
+  "blueprint_compatibility": {
+    "exact_public_replay_mode": "technically_valid_pending_source_and_license_freeze_then_GPU_canary",
+    "exact_public_pi_policy_mode": "technically_valid_only_for_released_pi0_pi0fast_pi05_endpoints_and_released_adapter",
+    "policy_droid_mode": "technically_blocked",
+    "policy_droid_blocker": "No published Ctrl-World adapter maps Cosmos3-Edge-Policy-DROID native action and state contract into Ctrl-World's released pi-policy joint-velocity adapter contract.",
+    "fabricated_adapter_forbidden": true,
+    "oscar_video_consumed": false,
+    "cosmos_output_consumed": false
+  },
+  "evaluation_truth_audit": {
+    "paper_says_human_annotators_judged_instruction_following_and_task_success": true,
+    "paper_reports_20_trials_per_task_policy_cell": true,
+    "paper_reports_three_policies_and_seven_tasks": true,
+    "raw_human_labels_found_in_inspected_public_release": false,
+    "runtime_artifact_success_field": "hard_coded_integer_1",
+    "runtime_success_field_is_ground_truth": false,
+    "runtime_success_field_must_be_ignored": true,
+    "public_gallery_or_runtime_video_is_physical_ground_truth": false,
+    "independent_judge_required": true
+  },
+  "execution_gate": {
+    "paid_execution_admitted": false,
+    "next_valid_run": "one_label_free_exact_public_replay_canary",
+    "required_before_run": [
+      "raw_code_archive_and_relevant_file_hashes_frozen",
+      "CLIP_model_weight_license_disposition_recorded",
+      "immutable_Blueprint_source_commit_pushed",
+      "checkpoint_and_input_bundle_hashes_frozen",
+      "GPU_cost_TTL_watchdog_and_teardown_admission_passed"
+    ],
+    "current_blockers": [
+      "GitHub_git_and_API_transport_unreachable_from_shell",
+      "Blueprint_commit_fc8bc89a_not_yet_pushed",
+      "CLIP_Hugging_Face_model_weight_license_not_explicitly_published"
+    ]
+  },
+  "provider_called": false,
+  "gpu_allocated": false,
+  "physical_robot_used": false,
+  "audit_sha256": "073d27b51addf3fd7ec5a7262f228ecb5897b667ef8de4006996239c95db1480"
+}
