@@ -147,9 +147,79 @@ def test_fixture_interactions_normalize_to_blueprint_objects(
     assert cabinet["articulation_hints"]["interactive"] is True
     assert cabinet["provenance"]["source"] == "splat_analyzer"
     assert cabinet["provenance"]["canonical_truth"] is False
+    assert cabinet["provenance"]["presentation_only"] is True
+    assert cabinet["metric_placement_ready"] is False
+    assert cabinet["physics_ready"] is False
+    assert cabinet["boundingBox"]["kind"] == "rough_axis_aligned_interaction_volume_candidate"
     assert cabinet["provenance"]["claim_boundary"]["robot_spawn_validated"] is False
+    assert cabinet["provenance"]["claim_boundary"]["metric_oriented_box_validated"] is False
     assert result["scene_relationship_candidates"]
     assert result["claim_boundary"]["physical_robot_readiness_proven"] is False
+
+
+def test_input_preflight_distinguishes_standard_and_supersplat_ply(tmp_path: Path) -> None:
+    standard = tmp_path / "standard.ply"
+    standard.write_bytes(
+        (
+            "ply\nformat binary_little_endian 1.0\nelement vertex 1\n"
+            + "\n".join(
+                f"property float {name}"
+                for name in sorted(runner.STANDARD_3DGS_VERTEX_PROPERTIES)
+            )
+            + "\nend_header\n"
+        ).encode("ascii")
+    )
+    standard_report = runner.inspect_splat_analyzer_input(standard)
+    assert standard_report["input_profile"] == "standard_3dgs_ply"
+    assert standard_report["direct_splat_analyzer_compatible"] is True
+    assert standard_report["world_axis_convention_verified"] is False
+
+    compressed = tmp_path / "interiorgs.ply"
+    compressed.write_bytes(
+        b"ply\nformat binary_little_endian 1.0\nelement chunk 1\n"
+        b"property float min_x\nelement vertex 1\n"
+        b"property uint packed_position\nproperty uint packed_rotation\n"
+        b"property uint packed_scale\nproperty uint packed_color\nend_header\n"
+    )
+    compressed_report = runner.inspect_splat_analyzer_input(compressed)
+    assert compressed_report["input_profile"] == "supersplat_chunked_compressed_ply"
+    assert compressed_report["direct_splat_analyzer_compatible"] is False
+    assert compressed_report["conversion_required"] is True
+    assert "hash_bound_standard_3dgs_ply_derivative" in compressed_report["required_next_step"]
+
+
+def test_compressed_ply_fails_closed_before_external_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_splat_env(monkeypatch)
+    capture_root = _capture_root(tmp_path)
+    compressed = capture_root / "pipeline" / "worldlabs_assets" / "compressed.ply"
+    compressed.write_bytes(
+        b"ply\nformat binary_little_endian 1.0\nelement chunk 1\n"
+        b"property float min_x\nelement vertex 1\n"
+        b"property uint packed_position\nproperty uint packed_rotation\n"
+        b"property uint packed_scale\nproperty uint packed_color\nend_header\n"
+    )
+    _write_materialized_manifest(
+        capture_root,
+        {"kind": "splat_ply", "local_path": "compressed.ply", "quality": "high"},
+    )
+    monkeypatch.setenv("SPLAT_ANALYZER_COMMAND", "must-not-run {SPLAT_PATH}")
+
+    result = runner.run_splat_analyzer_backend(
+        {
+            "capture_root": str(capture_root),
+            "raw_root": str(capture_root / "raw"),
+            "prompt_bank": {"all": ["cabinet"]},
+        },
+        output_path=tmp_path / "artifacts" / "splat_output.json",
+    )
+
+    assert result["backend_status"] == "skipped"
+    assert result["reason"] == "splat_analyzer_input_conversion_required"
+    assert result["execution"]["execution_mode"] == "input_preflight"
+    assert result["splat_asset"]["input_preflight"]["input_profile"] == "supersplat_chunked_compressed_ply"
 
 
 def test_missing_runtime_skips_without_failing(

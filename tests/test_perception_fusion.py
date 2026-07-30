@@ -142,7 +142,9 @@ def test_multiview_index_fuses_two_camera_angles_into_one_object() -> None:
         },
     ]
     # orthogonal views -> thin cross boxes (IoU ~0) but coincident centroids: merge_gap fuses.
-    idx = MultiViewPerceptionSceneSpatialIndex(views, merge_gap=0.3)
+    idx = MultiViewPerceptionSceneSpatialIndex(
+        views, merge_gap=0.3, require_metric_authority=False
+    )
     assert isinstance(idx, SceneSpatialIndex)        # satisfies the protocol
     objs = idx.objects()
     assert len(objs) == 1
@@ -164,7 +166,9 @@ def test_multiview_index_skips_malformed_view() -> None:
                        "vfov": 1.0, "width": w, "height": h},
         },
     ]
-    objs = MultiViewPerceptionSceneSpatialIndex(views, min_views=1).objects()
+    objs = MultiViewPerceptionSceneSpatialIndex(
+        views, min_views=1, require_metric_authority=False
+    ).objects()
     assert len(objs) == 1                            # the one good view still contributes
     assert math.isclose(objs[0].centroid[2], 1.0, abs_tol=1e-6)
 

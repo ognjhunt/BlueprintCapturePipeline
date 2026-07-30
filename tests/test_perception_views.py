@@ -84,7 +84,9 @@ def test_assemble_views_zips_and_validates_lengths() -> None:
     assert len(views) == 2
     assert set(views[0].keys()) == {"detections", "depth_provider", "camera"}
     # feeds straight into the multi-view index without massaging
-    objs = MultiViewPerceptionSceneSpatialIndex(views, min_views=1).objects()
+    objs = MultiViewPerceptionSceneSpatialIndex(
+        views, min_views=1, require_metric_authority=False
+    ).objects()
     assert isinstance(objs, list)
     with pytest.raises(ValueError):
         assemble_views(cams, dets, depths[:1])     # length mismatch is a caller bug
@@ -101,7 +103,9 @@ def test_full_chain_bounds_to_fused_object() -> None:
     def det():
         return [{"label": "sink", "bbox_px": (300, 220, 340, 260), "confidence": 0.9}]
     views = assemble_views(cams, [det() for _ in cams], [(lambda px, py: radius) for _ in cams])
-    objs = MultiViewPerceptionSceneSpatialIndex(views, merge_gap=0.25, min_views=1).objects()
+    objs = MultiViewPerceptionSceneSpatialIndex(
+        views, merge_gap=0.25, min_views=1, require_metric_authority=False
+    ).objects()
     assert len(objs) == 1                            # all views fuse to one object...
     assert objs[0].extra["n_views"] == 6
     for i in range(3):

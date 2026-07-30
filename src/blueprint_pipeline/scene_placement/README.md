@@ -20,8 +20,8 @@ inference) are all lazy and/or injected. 177 tests across 5 dedicated suites (te
 | Backend | Use when | Source of truth |
 |---|---|---|
 | `UsdSceneSpatialIndex(usd_path=… or stage=…)` | the scene is a USD (sim / assembled NuRec) | exact world AABBs via `UsdGeom.BBoxCache` |
-| `PerceptionSceneSpatialIndex(detections, depth_provider, camera)` | one rendered view of a raw scene/splat | SAM3 2D boxes + DA3 depth, unprojected to 3D |
-| `MultiViewPerceptionSceneSpatialIndex(views)` | a raw scene/splat, multiple views (preferred) | the above, fused across views (1 box/object) |
+| `PerceptionSceneSpatialIndex(detections, depth_provider, camera)` | diagnostic analysis of one rendered view | 2D boxes + a supplied depth array; not placement authority by itself |
+| `MultiViewPerceptionSceneSpatialIndex(views)` | qualified multi-view metric placement support | only views carrying source-bound metric depth, pose, calibration, timing, and validation evidence are admitted by default |
 
 `build_scene_index("usd" | "perception", **kw)` is the factory.
 
@@ -40,8 +40,11 @@ query on GPU, or a stub in tests.
 ### Perception helpers (raw-scene path)
 
 - `view_ring_for_bounds(bbox_min, bbox_max, *, n_azimuths=8, …)` → camera ring around the scene.
-- `build_perception_views_from_frames(frames, cameras, *, detect, depth)` → run injected SAM3/DA3
-  per frame and assemble the `views` list. `detect(frame)->records`, `depth(frame)->HxW meters`.
+- `build_perception_views_from_frames(frames, cameras, *, detect, depth, depth_evidence=None)` →
+  run injected segmentation/depth callables per frame and assemble the `views` list.
+  `depth_evidence(frame, depth_map)` must bind exact source/frame/depth and loaded-payload digests,
+  decoded PTS plus its sync-map row, calibration,
+  pose, metric scale, units, depth semantics, and validation metrics before placement is allowed.
 - `build_perception_views(cameras, sam3_records_per_view, depth_maps)` → if you already have outputs.
 - `fuse_scene_objects(objects, *, merge_iou=0.25, merge_gap=None, min_views=1, max_spread=None)` →
   cluster same-object detections (complete-linkage + spread cap; `min_views≥2` drops false positives).
@@ -68,18 +71,25 @@ from blueprint_pipeline.scene_placement import (
 
 cams   = view_ring_for_bounds(scene_min, scene_max, n_azimuths=8, width=1280, height=960)
 frames = [render(cam) for cam in cams]                       # GPU: your splat/USD renderer
-views  = build_perception_views_from_frames(frames, cams,    # GPU: SAM3 + DA3 inference
-                                            detect=sam3_detect, depth=da3_depth)
+views  = build_perception_views_from_frames(                 # GPU inference is injected
+    frames, cams, detect=sam3_detect, depth=depth_model,
+    depth_evidence=qualified_depth_evidence_for_frame,
+)
 index  = MultiViewPerceptionSceneSpatialIndex(views, min_views=2)
 pose   = place_robot_for_task(index, "open the drawer", probe=physx_overlap_probe)
 ```
 
 ## The GPU boundary
 
-Only two things need a GPU to **execute** (everything else is pure and runs anywhere): rendering
-the view-ring frames, and the SAM3/DA3 inference behind `detect`/`depth`. Those are injected, so the
-package and all its tests run with no GPU. The USD backend needs only `pxr` (lazy; its one test skips
-when `pxr` is absent).
+Only rendering and model inference may need a GPU; those operations are injected. The repository's
+current `scripts/sam3_detect.py` remains fail-closed until a project-specific SAM 3.1 tracker is
+enabled. A model name or numeric depth array never establishes metric scale. The USD backend needs
+only `pxr` (lazy; its one test skips when `pxr` is absent).
+
+The existing Splat Analyzer adapter is a candidate generator only. Its upstream implementation
+uses small box-center depth samples, an inferred depth extent, identity orientation, and distance
+clustering. Blueprint therefore marks those boxes visualization-only and does not use them for
+metric placement, collision, contact, or physics qualification.
 
 ## In the Isaac runner
 

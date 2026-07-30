@@ -275,6 +275,12 @@ def _merge_cluster(members: Sequence[SceneObject]) -> SceneObject:
             "n_views": len(members),
             "member_ids": [o.id for o in members],
             "member_confidences": [round(float(o.confidence), 6) for o in members],
+            "metric_placement_authorized": all(
+                o.extra.get("metric_placement_authorized") is True for o in members
+            ),
+            "depth_qualifications": [
+                dict(o.extra.get("depth_qualification") or {}) for o in members
+            ],
         },
     )
 
@@ -353,6 +359,7 @@ class MultiViewPerceptionSceneSpatialIndex:
         min_views: int = 1,
         max_spread: Optional[float] = None,
         samples_per_axis: int = 3,
+        require_metric_authority: bool = True,
     ) -> None:
         """
         Args:
@@ -369,6 +376,7 @@ class MultiViewPerceptionSceneSpatialIndex:
         self._min_views = min_views
         self._max_spread = max_spread
         self._samples_per_axis = samples_per_axis
+        self._require_metric_authority = bool(require_metric_authority)
 
     def _view_field(self, view: Mapping[str, object], name: str):
         if isinstance(view, Mapping):
@@ -384,13 +392,24 @@ class MultiViewPerceptionSceneSpatialIndex:
             if detections is None or depth_provider is None or camera is None:
                 # A malformed view is skipped, not fatal — other views still contribute.
                 continue
+            metric_authorized = self._view_field(view, "metric_placement_authorized") is True
+            if self._require_metric_authority and not metric_authorized:
+                continue
             single = PerceptionSceneSpatialIndex(
                 detections,            # type: ignore[arg-type]
                 depth_provider,        # type: ignore[arg-type]
                 camera,                # type: ignore[arg-type]
                 samples_per_axis=self._samples_per_axis,
             )
-            pooled.extend(single.objects())
+            depth_qualification = self._view_field(view, "depth_qualification")
+            for item in single.objects():
+                item.extra["metric_placement_authorized"] = metric_authorized
+                item.extra["depth_qualification"] = (
+                    dict(depth_qualification)
+                    if isinstance(depth_qualification, Mapping)
+                    else {}
+                )
+                pooled.append(item)
         return fuse_scene_objects(
             pooled,
             merge_iou=self._merge_iou,
@@ -398,6 +417,37 @@ class MultiViewPerceptionSceneSpatialIndex:
             min_views=self._min_views,
             max_spread=self._max_spread,
         )
+
+    def qualification_report(self) -> Mapping[str, object]:
+        """Summarize which views can drive placement without executing inference."""
+
+        qualified = 0
+        blockers: List[str] = []
+        malformed = 0
+        for view in self._views:
+            if not isinstance(view, Mapping):
+                malformed += 1
+                continue
+            if view.get("metric_placement_authorized") is True:
+                qualified += 1
+            qualification = view.get("depth_qualification")
+            if isinstance(qualification, Mapping):
+                raw_blockers = qualification.get("blockers")
+                if isinstance(raw_blockers, list):
+                    blockers.extend(str(item) for item in raw_blockers if str(item))
+        return {
+            "view_count": len(self._views),
+            "qualified_metric_view_count": qualified,
+            "diagnostic_or_rejected_view_count": len(self._views) - qualified,
+            "malformed_view_count": malformed,
+            "require_metric_authority": self._require_metric_authority,
+            "blockers": sorted(set(blockers)),
+            "placement_authorized": qualified > 0,
+            "claim_boundary": {
+                "segmentation_alone_is_not_metric_geometry": True,
+                "qualified_depth_does_not_establish_collision_or_physics": True,
+            },
+        }
 
 
 __all__ = [

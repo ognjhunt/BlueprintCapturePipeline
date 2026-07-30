@@ -37,6 +37,12 @@ from .ios_manifest import (
     verify_canonical_raw_bundle_path,
 )
 from .local_capture import resolve_local_capture_context
+from .object_index_backend_objects import (
+    normalize_existing_objects as _normalize_existing_objects,
+)
+from .object_index_backend_objects import (
+    validated_metric_geometry_evidence as _validated_metric_geometry_evidence,
+)
 from .world_model_policy import WorldModelPolicy, build_output_linkage, build_provenance_record
 
 
@@ -866,46 +872,6 @@ def _normalize_detection_payload(
     )
 
 
-def _normalize_existing_objects(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    raw_objects = payload.get("objects")
-    if not isinstance(raw_objects, list):
-        return []
-    objects: List[Dict[str, Any]] = []
-    for index, item in enumerate(raw_objects):
-        if not isinstance(item, Mapping):
-            continue
-        label = str(item.get("label") or item.get("name") or "").strip()
-        if not label:
-            continue
-        bbox = item.get("boundingBox") if isinstance(item.get("boundingBox"), Mapping) else {}
-        center = bbox.get("center") if isinstance(bbox.get("center"), list) else [float(index), 0.0, 0.0]
-        extents = bbox.get("extents") if isinstance(bbox.get("extents"), list) else list(_DEFAULT_BOX_EXTENTS)
-        objects.append(
-            {
-                "id": str(item.get("id") or item.get("object_id") or f"obj_{index+1:04d}"),
-                "label": label,
-                "boundingBox": {
-                    "center": [_safe_float(center[idx] if idx < len(center) else 0.0, 0.0) for idx in range(3)],
-                    "extents": [max(_MIN_BOX_EXTENT, _safe_float(extents[idx] if idx < len(extents) else 0.25, 0.25)) for idx in range(3)],
-                    "axes": bbox.get("axes") if isinstance(bbox.get("axes"), list) else [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-                    "orientationQuaternion": bbox.get("orientationQuaternion") if isinstance(bbox.get("orientationQuaternion"), list) else [1.0, 0.0, 0.0, 0.0],
-                },
-                "mean_confidence": _safe_float(item.get("mean_confidence"), _safe_float(item.get("confidence"), 0.0)),
-                "n_total_detections": _safe_int(item.get("n_total_detections"), 1),
-                "n_frame_detections": _safe_int(item.get("n_frame_detections"), 1),
-                "reference_crop": str(item.get("reference_crop") or "").strip(),
-                "all_crops": [str(value).strip() for value in item.get("all_crops", []) if str(value).strip()] if isinstance(item.get("all_crops"), list) else [],
-                "task_relevance": dict(item.get("task_relevance")) if isinstance(item.get("task_relevance"), Mapping) else {},
-                "articulation_hints": dict(item.get("articulation_hints")) if isinstance(item.get("articulation_hints"), Mapping) else {},
-                "evidence_frames": list(item.get("evidence_frames")) if isinstance(item.get("evidence_frames"), list) else [],
-                "source_prompts": list(item.get("source_prompts")) if isinstance(item.get("source_prompts"), list) else [],
-                "provenance": dict(item.get("provenance")) if isinstance(item.get("provenance"), Mapping) else {},
-                "mean_box_px": dict(item.get("mean_box_px")) if isinstance(item.get("mean_box_px"), Mapping) else {},
-            }
-        )
-    return objects
-
-
 def _normalize_relationship_payload(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
     raw_relationships = payload.get("scene_relationship_candidates")
     if not isinstance(raw_relationships, list):
@@ -1147,61 +1113,6 @@ def _synthesized_bbox(
         "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         "orientationQuaternion": [1.0, 0.0, 0.0, 0.0],
     }
-
-
-def _validated_metric_geometry_evidence(cluster: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    """Return only explicitly calibrated metric observations from a 2D cluster."""
-
-    allowed_methods = {
-        "calibrated_depth_ray",
-        "multiview_triangulation",
-        "validated_provider_metric_reconstruction",
-    }
-    evidence: List[Dict[str, Any]] = []
-    for item in cluster:
-        center = item.get("world_center")
-        extents = item.get("world_extents")
-        details = item.get("metric_geometry_evidence")
-        if not (
-            isinstance(center, list)
-            and len(center) == 3
-            and isinstance(extents, list)
-            and len(extents) == 3
-            and isinstance(details, Mapping)
-        ):
-            continue
-        try:
-            center_values = [float(value) for value in center]
-            extent_values = [float(value) for value in extents]
-            uncertainty_m = float(details.get("translation_uncertainty_m"))
-            reprojection_error_px = float(details.get("reprojection_error_px"))
-        except (TypeError, ValueError):
-            continue
-        method = str(details.get("method") or "").strip().lower()
-        calibration_ref = str(details.get("camera_calibration_ref") or "").strip()
-        if (
-            method not in allowed_methods
-            or not calibration_ref
-            or not all(math.isfinite(value) for value in [*center_values, *extent_values, uncertainty_m, reprojection_error_px])
-            or any(value <= 0.0 for value in extent_values)
-            or uncertainty_m < 0.0
-            or uncertainty_m > 0.25
-            or reprojection_error_px < 0.0
-            or reprojection_error_px > 5.0
-        ):
-            continue
-        evidence.append(
-            {
-                "method": method,
-                "camera_calibration_ref": calibration_ref,
-                "translation_uncertainty_m": uncertainty_m,
-                "reprojection_error_px": reprojection_error_px,
-                "frame_index": _safe_int(item.get("frame_index"), -1),
-                "world_center": center_values,
-                "world_extents": extent_values,
-            }
-        )
-    return evidence
 
 
 def _build_objects(
@@ -2090,7 +2001,10 @@ def run_object_index_stage(
         detections_per_backend[backend_name] = 0
         if not isinstance(payload, Mapping):
             continue
-        normalized_existing = _normalize_existing_objects(payload)
+        normalized_existing = _normalize_existing_objects(
+            payload,
+            backend_name=backend_name,
+        )
         existing_objects.extend(normalized_existing)
         parsed_detections, manip, artic, tasks = _normalize_detection_payload(
             backend_name=backend_name,
@@ -2196,6 +2110,14 @@ def run_object_index_stage(
     published_object_index_path = run_root / "object_index.json"
     canonical_object_index_uri = _object_index_uri(context, published_object_index_path)
     object_index_path = staging_root / "object_index.json"
+    canonical_object_count = sum(
+        1
+        for item in objects
+        if item.get("metric_placement_ready") is True
+        and isinstance(item.get("provenance"), Mapping)
+        and item.get("provenance", {}).get("canonical_truth") is True
+    )
+    all_objects_canonical = bool(objects) and canonical_object_count == len(objects)
     write_json(
         object_index_path,
         {
@@ -2209,7 +2131,15 @@ def run_object_index_stage(
                 authoritative_record=True,
             ),
             "provenance": build_provenance_record(
-                grounding_level="observed" if objects else "inferred",
+                grounding_level=(
+                    "observed_metric"
+                    if all_objects_canonical
+                    else "mixed_observed_and_candidate"
+                    if canonical_object_count
+                    else "model_derived_candidate"
+                    if objects
+                    else "inferred"
+                ),
                 evidence_sources=[str(item.get("image_path") or "") for item in keyframe_payload],
                 observation_coverage={
                     "keyframe_count": len(keyframes),
@@ -2217,8 +2147,16 @@ def run_object_index_stage(
                     "object_count": len(objects),
                 },
                 confidence=1.0 if objects else 0.0,
-                canonical_truth=True,
+                canonical_truth=all_objects_canonical,
                 presentation_only=False,
+                extra={
+                    "canonical_metric_object_count": canonical_object_count,
+                    "candidate_or_unqualified_object_count": len(objects) - canonical_object_count,
+                    "contains_only_presentation_geometry": (
+                        bool(objects) and canonical_object_count == 0
+                    ),
+                    "authoritative_catalog_record_does_not_make_candidates_capture_truth": True,
+                },
             ),
         },
     )
