@@ -58,9 +58,7 @@ def test_vast_watchdog_reaps_only_active_label_prefix_matches_and_proves_absence
         api_calls.append((kwargs["method"], kwargs["path"]))
         return 200, {"instances": list(rows)}
 
-    monkeypatch.setattr(
-        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
-    )
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
 
     class VastProvider:
         name = "vast"
@@ -85,9 +83,7 @@ def test_vast_watchdog_reaps_only_active_label_prefix_matches_and_proves_absence
     assert result["initial_inventory"]["live_resource_count"] == 1
     assert result["initial_inventory"]["resources"][0]["instance_id"] == "101"
     assert result["final_inventory"]["live_resource_count"] == 0
-    assert result["terminations"] == [
-        {"instance_id": "101", "status": "stopped", "http": 204}
-    ]
+    assert result["terminations"] == [{"instance_id": "101", "status": "stopped", "http": 204}]
     assert api_calls == [("GET", "/instances/"), ("GET", "/instances/")]
     assert "vast-secret" not in json.dumps(result)
 
@@ -97,9 +93,7 @@ def test_vast_watchdog_deletes_recorded_terminal_instance_and_proves_exact_absen
 ) -> None:
     prefix = "blueprint-groot-oscar-canary-single-episode-"
     instance_id = "45121866"
-    (tmp_path / "started_vast_instance_id.txt").write_text(
-        instance_id, encoding="utf-8"
-    )
+    (tmp_path / "started_vast_instance_id.txt").write_text(instance_id, encoding="utf-8")
     monkeypatch.setattr(
         "blueprint_pipeline.vast_provider_adapter._api_json",
         lambda **_kwargs: (
@@ -188,9 +182,7 @@ def test_vast_watchdog_deletes_recorded_terminal_instance_and_proves_exact_absen
         "scope_confirmed": True,
         "pod_name_prefix": prefix,
     }
-    assert result["recorded_vast_instance_teardown"][
-        "provider_absence_confirmed"
-    ] is True
+    assert result["recorded_vast_instance_teardown"]["provider_absence_confirmed"] is True
     assert [row["instance_id"] for row in result["terminations"]] == [
         instance_id,
         instance_id,
@@ -202,9 +194,7 @@ def test_vast_watchdog_refuses_absence_when_recorded_id_survives_repeated_delete
 ) -> None:
     prefix = "blueprint-groot-oscar-canary-single-episode-"
     instance_id = "45121866"
-    (tmp_path / "started_vast_instance_id.txt").write_text(
-        instance_id, encoding="utf-8"
-    )
+    (tmp_path / "started_vast_instance_id.txt").write_text(instance_id, encoding="utf-8")
     monkeypatch.setattr(
         watchdog_module,
         "_vast_billable_inventory",
@@ -258,9 +248,7 @@ def test_vast_watchdog_refuses_absence_when_recorded_id_survives_repeated_delete
     assert result["final_inventory"]["live_resource_count"] == 0
     assert result["provider_absence_confirmed"] is False
     assert result["status"] == "teardown_unverified"
-    assert result["recorded_vast_instance_teardown"]["status"] == (
-        "teardown_unverified"
-    )
+    assert result["recorded_vast_instance_teardown"]["status"] == ("teardown_unverified")
 
 
 def test_vast_watchdog_still_deletes_recorded_id_when_initial_inventory_raises(
@@ -268,9 +256,7 @@ def test_vast_watchdog_still_deletes_recorded_id_when_initial_inventory_raises(
 ) -> None:
     prefix = "blueprint-groot-oscar-canary-single-episode-"
     instance_id = "45121866"
-    (tmp_path / "started_vast_instance_id.txt").write_text(
-        instance_id, encoding="utf-8"
-    )
+    (tmp_path / "started_vast_instance_id.txt").write_text(instance_id, encoding="utf-8")
     inventory_calls = 0
 
     def inventory(**_kwargs):
@@ -328,13 +314,9 @@ def test_vast_watchdog_still_deletes_recorded_id_when_initial_inventory_raises(
     assert "secret provider response" not in json.dumps(result)
 
 
-def test_vast_watchdog_started_id_file_requires_exact_armed_prefix(
-    tmp_path, monkeypatch
-) -> None:
+def test_vast_watchdog_started_id_file_requires_exact_armed_prefix(tmp_path, monkeypatch) -> None:
     prefix = "blueprint-groot-oscar-canary-single-episode-"
-    (tmp_path / "started_vast_instance_id.txt").write_text(
-        "45121866", encoding="utf-8"
-    )
+    (tmp_path / "started_vast_instance_id.txt").write_text("45121866", encoding="utf-8")
     monkeypatch.setattr(
         watchdog_module,
         "_vast_billable_inventory",
@@ -402,9 +384,7 @@ def test_vast_watchdog_fails_closed_on_active_instance_without_label(
     assert result["status"] == "teardown_unverified"
     assert result["provider_absence_confirmed"] is False
     assert result["initial_inventory"]["api_confirmed"] is False
-    assert result["initial_inventory"]["blockers"] == [
-        "vast_active_instance_label_missing"
-    ]
+    assert result["initial_inventory"]["blockers"] == ["vast_active_instance_label_missing"]
     assert result["terminations"] == []
 
 
@@ -445,9 +425,7 @@ def test_run_watchdog_selects_vast_provider_without_changing_default_contract(
     assert result["provider"] == "vast"
     assert result["status"] == "provider_terminal"
     persisted = json.loads(
-        (tmp_path / "groot_oscar_runpod_canary_watchdog.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "groot_oscar_runpod_canary_watchdog.json").read_text(encoding="utf-8")
     )
     assert persisted == result
 
@@ -517,9 +495,7 @@ def test_owner_teardown_cancel_runs_zero_verification_before_deadline(
         "instance_id": "pod-terminated",
         "pod_name_prefix": prefix,
         "provider_absence_confirmed": True,
-        "provider_absence_evidence": (
-            "provider_api_exact_id_prefix_and_global_inventory"
-        ),
+        "provider_absence_evidence": ("provider_api_exact_id_prefix_and_global_inventory"),
     }
     cancel_path = tmp_path / watchdog_module.OWNER_TEARDOWN_CANCEL_NAME
     cancel_path.write_text(json.dumps(cancel), encoding="utf-8")
@@ -560,9 +536,7 @@ def test_owner_teardown_cancel_runs_zero_verification_before_deadline(
     ]
 
 
-def test_owner_teardown_cancel_requires_global_provider_zero(
-    tmp_path, monkeypatch
-) -> None:
+def test_owner_teardown_cancel_requires_global_provider_zero(tmp_path, monkeypatch) -> None:
     now = {"value": 100.0}
     deadline = 200.0
     prefix = "blueprint-groot-oscar-canary-attempt-"
@@ -571,17 +545,13 @@ def test_owner_teardown_cancel_requires_global_provider_zero(
     cancel_path.write_text(
         json.dumps(
             {
-                "schema_version": (
-                    watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION
-                ),
+                "schema_version": (watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION),
                 "requested_by": "qualification_owner_teardown",
                 "provider": "runpod",
                 "instance_id": "pod-terminated",
                 "pod_name_prefix": prefix,
                 "provider_absence_confirmed": True,
-                "provider_absence_evidence": (
-                    "provider_api_exact_id_prefix_and_global_inventory"
-                ),
+                "provider_absence_evidence": ("provider_api_exact_id_prefix_and_global_inventory"),
             }
         ),
         encoding="utf-8",
@@ -612,16 +582,10 @@ def test_owner_teardown_cancel_requires_global_provider_zero(
 
     assert result["owner_teardown_cancel_requested"] is False
     assert any(name_prefix == "" for _, name_prefix in observed)
-    assert all(
-        observed_at < deadline
-        for observed_at, name_prefix in observed
-        if name_prefix == ""
-    )
+    assert all(observed_at < deadline for observed_at, name_prefix in observed if name_prefix == "")
 
 
-def test_vast_owner_cancel_requires_exact_recorded_id_absence(
-    tmp_path, monkeypatch
-) -> None:
+def test_vast_owner_cancel_requires_exact_recorded_id_absence(tmp_path, monkeypatch) -> None:
     now = 100.0
     deadline = 200.0
     prefix = "blueprint-groot-oscar-canary-qualification-attempt-"
@@ -643,17 +607,13 @@ def test_vast_owner_cancel_requires_exact_recorded_id_absence(
     cancel_path.write_text(
         json.dumps(
             {
-                "schema_version": (
-                    watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION
-                ),
+                "schema_version": (watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION),
                 "requested_by": "qualification_owner_teardown",
                 "provider": "vast",
                 "instance_id": instance_id,
                 "pod_name_prefix": prefix,
                 "provider_absence_confirmed": True,
-                "provider_absence_evidence": (
-                    "provider_api_exact_id_prefix_and_global_inventory"
-                ),
+                "provider_absence_evidence": ("provider_api_exact_id_prefix_and_global_inventory"),
             }
         ),
         encoding="utf-8",
@@ -686,15 +646,76 @@ def test_vast_owner_cancel_requires_exact_recorded_id_absence(
 
     assert result["status"] == "provider_terminal"
     assert result["provider_mutations_performed"] == 0
-    assert result["recorded_vast_instance_teardown"][
-        "provider_absence_confirmed"
-    ] is True
+    assert result["recorded_vast_instance_teardown"]["provider_absence_confirmed"] is True
     assert len(result["recorded_vast_instance_teardown"]["inspect_attempts"]) == 2
 
 
-def test_vast_owner_cancel_does_not_hide_recorded_contract(
+def test_vast_owner_cancel_without_recorded_id_accepts_repeated_global_zero(
     tmp_path, monkeypatch
 ) -> None:
+    now = 100.0
+    deadline = 200.0
+    prefix = "blueprint-groot-oscar-canary-openpi-ranking-"
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: now)
+    inventory_prefixes: list[str] = []
+
+    def zero_inventory(*, provider, name_prefix: str) -> dict:
+        del provider
+        inventory_prefixes.append(name_prefix)
+        return {
+            "status": "observed",
+            "provider": "vast",
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        }
+
+    monkeypatch.setattr(watchdog_module, "_vast_billable_inventory", zero_inventory)
+    cancel_path = tmp_path / watchdog_module.OWNER_TEARDOWN_CANCEL_NAME
+    cancel_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION),
+                "requested_by": "qualification_owner_teardown",
+                "provider": "vast",
+                "instance_id": prefix + "no-instance-created",
+                "pod_name_prefix": prefix,
+                "provider_absence_confirmed": True,
+                "provider_absence_evidence": ("provider_api_exact_id_prefix_and_global_inventory"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cancel_path.chmod(0o600)
+
+    class Provider:
+        name = "vast"
+
+        def inspect(self, _instance_id: str) -> dict:
+            pytest.fail("no synthetic exact-id inspection is allowed")
+
+        def terminate(self, _instance_id: str) -> dict:
+            pytest.fail("zero-inventory cancellation must not mutate the provider")
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=deadline,
+        provider_name="vast",
+        provider_factory=lambda _name: Provider(),
+        clock=lambda: now,
+        sleeper=lambda _seconds: pytest.fail("double zero must cancel immediately"),
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["provider_absence_confirmed"] is True
+    assert result["provider_mutations_performed"] == 0
+    assert result["owner_teardown_cancel_request_valid"] is True
+    assert result["recorded_vast_instance"]["status"] == "not_recorded"
+    assert inventory_prefixes == [prefix, "", prefix, ""]
+
+
+def test_vast_owner_cancel_does_not_hide_recorded_contract(tmp_path, monkeypatch) -> None:
     now = {"value": 100.0}
     deadline = 200.0
     prefix = "blueprint-groot-oscar-canary-qualification-attempt-"
@@ -716,17 +737,13 @@ def test_vast_owner_cancel_does_not_hide_recorded_contract(
     cancel_path.write_text(
         json.dumps(
             {
-                "schema_version": (
-                    watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION
-                ),
+                "schema_version": (watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION),
                 "requested_by": "qualification_owner_teardown",
                 "provider": "vast",
                 "instance_id": instance_id,
                 "pod_name_prefix": prefix,
                 "provider_absence_confirmed": True,
-                "provider_absence_evidence": (
-                    "provider_api_exact_id_prefix_and_global_inventory"
-                ),
+                "provider_absence_evidence": ("provider_api_exact_id_prefix_and_global_inventory"),
             }
         ),
         encoding="utf-8",
@@ -781,17 +798,13 @@ def test_owner_teardown_cancel_never_terminates_live_resource_before_deadline(
     cancel_path.write_text(
         json.dumps(
             {
-                "schema_version": (
-                    watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION
-                ),
+                "schema_version": (watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION),
                 "requested_by": "qualification_owner_teardown",
                 "provider": "runpod",
                 "instance_id": "pod-active",
                 "pod_name_prefix": prefix,
                 "provider_absence_confirmed": True,
-                "provider_absence_evidence": (
-                    "provider_api_exact_id_prefix_and_global_inventory"
-                ),
+                "provider_absence_evidence": ("provider_api_exact_id_prefix_and_global_inventory"),
             }
         ),
         encoding="utf-8",
@@ -878,9 +891,7 @@ def test_watchdog_persists_provider_factory_error(tmp_path) -> None:
         sleeper=lambda _seconds: None,
     )
     persisted = json.loads(
-        (tmp_path / "groot_oscar_runpod_canary_watchdog.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "groot_oscar_runpod_canary_watchdog.json").read_text(encoding="utf-8")
     )
     assert result == persisted
     assert persisted["status"] == "teardown_unverified"
@@ -888,9 +899,7 @@ def test_watchdog_persists_provider_factory_error(tmp_path) -> None:
     assert "secret provider initialization" not in json.dumps(persisted)
 
 
-def test_watchdog_closes_pod_record_and_returns_lane_owner(
-    tmp_path, monkeypatch
-) -> None:
+def test_watchdog_closes_pod_record_and_returns_lane_owner(tmp_path, monkeypatch) -> None:
     pending_path = tmp_path / "pending.json"
     pending_path.write_text(
         json.dumps(
@@ -1108,9 +1117,7 @@ def test_watchdog_closes_guarded_compute_lane_and_settles_budget(
     assert result["campaign_budget_settlement"]["charged_gpu_seconds"] == 100
 
 
-def test_watchdog_accepts_persistent_carrier_runner_pending_lane(
-    tmp_path, monkeypatch
-) -> None:
+def test_watchdog_accepts_persistent_carrier_runner_pending_lane(tmp_path, monkeypatch) -> None:
     prefix = "blueprint-groot-oscar-canary-persistent-"
     pending_path = tmp_path / "persistent-pending.json"
     pending_path.write_text(
@@ -1228,9 +1235,7 @@ def test_unverified_teardown_retains_open_campaign_reservation(tmp_path) -> None
     assert snapshot["reservations"][0]["status"] == "open"
 
 
-def test_elapsed_beyond_reservation_retains_open_budget_breach(
-    tmp_path, monkeypatch
-) -> None:
+def test_elapsed_beyond_reservation_retains_open_budget_breach(tmp_path, monkeypatch) -> None:
     pending_path = tmp_path / "pending.json"
     pending_path.write_text(
         json.dumps(

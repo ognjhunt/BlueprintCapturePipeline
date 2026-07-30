@@ -22,6 +22,10 @@ An offline audit of the replacement codeload archive then exposed two frozen
 repo-local gstack symlinks outside the runtime tree. Protocol Amendment 3 admits
 skipping only those exact members without extraction; every other link or
 special member remains terminal.
+The subsequent global-zero cleanup exposed a no-instance-ID watchdog settlement
+gap. Protocol Amendment 4 adds a double prefix-plus-global-zero early-close rule
+without inventing an ID or mutating the provider. The already running older
+watchdog remains authoritative until its own hard-deadline settlement.
 
 The scientific admission state is:
 
@@ -106,6 +110,8 @@ used as blind confirmation.
   mandatory new immutable retry identity;
 - `protocol_amendment_3_runtime_source_symlink_handling_v1.md` — exact codeload
   symlink audit and fail-closed, two-path skip rule without link extraction;
+- `protocol_amendment_4_vast_no_id_watchdog_settlement_v1.md` — no-ID repeated
+  zero proof, mutation-free early settlement, and old-watchdog ownership rule;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
