@@ -8,7 +8,7 @@
   "protocol_amendment_sha256": "c8a52f5ebbadcd66492f788d0453fa3c0c1ee2660d4350324994f560c9070111",
   "source_freeze_sha256": "dcf03d35d1c454eeeb5615164a4dd6ae67150baa67689f99121c400e3090dff5",
   "bundle": {
-    "external_evidence_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/oscar_public_replay_canary_v4/bundle_job/oscar_wam_provider_runtime_bundle.zip",
+    "external_evidence_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/oscar_public_replay_canary_v4/bundle_job/oscar_wam_provider_runtime_bundle.zip",
     "size_bytes": 1135718,
     "sha256": "d6447c8432eb9d484c64f61244eaec40739f9115d778390f6b1fef18c9564752",
     "zip_integrity_passed": true,
@@ -44,5 +44,5 @@
   "paid_execution_admitted": false,
   "provider_called": false,
   "claim_boundary": "Immutable label-free exact-public replay canary bundle only; no WAM causal, ranking, captured-site, economics, physical-success, or thesis credit from bundle construction.",
-  "freeze_sha256": "ab54c3b8a2a4dd015532a6780ad7825177d2ba38490e6e6422778ce2920aedf5"
+  "freeze_sha256": "eabf816e66b3008a0aa025895d6781f64e8f38cf77f7125809f695f522e0d92e"
 }

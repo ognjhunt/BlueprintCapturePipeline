@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+from urllib.parse import urlsplit
 
 from .common import parse_bool
 from .launch_proof_policy import buyer_access_required, production_forces_false, production_forces_true
@@ -19,6 +20,22 @@ from .launch_proof_policy import buyer_access_required, production_forces_false,
 
 class WebappSyncError(RuntimeError):
     """Raised when pipeline-to-webapp sync is configured as required and fails."""
+
+
+def validated_https_sync_url(value: str) -> str:
+    """Return an operator-configured HTTPS endpoint after fail-closed URL checks."""
+
+    text = str(value or "").strip()
+    parsed = urlsplit(text)
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        raise ValueError("webapp_sync_endpoint_must_be_credential_free_https_url")
+    return text
 
 
 ROBOT_EVAL_WEBAPP_STATUS_PROJECTION_SCHEMA_VERSION = "webapp_robot_eval_status_projection.v1"

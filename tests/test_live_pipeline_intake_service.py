@@ -164,6 +164,31 @@ def _webapp_request(capture_root: Path, *, job_id: str = "webapp-job-1") -> dict
     }
 
 
+def _decision_evidence_envelope() -> dict[str, object]:
+    return {
+        "queue_contract": "blueprint.decision_evidence_request_inbox.v1",
+        "request_id": "decision-request-1",
+        "decision_id": "buyer-decision-1",
+        "decision_request": {
+            "schema_version": "blueprint.decision_evidence_request.v1",
+            "request_id": "decision-request-1",
+            "decision_id": "buyer-decision-1",
+            "testbed": {"manifest_uri": "gs://local-blueprint/testbed.json"},
+            "site_task": {
+                "site_id": "site-1",
+                "site_name": "site-one",
+                "task_id": "task-a",
+            },
+            "candidates": [{"candidate_id": "policy-a", "kind": "policy"}],
+            "routing_authority": {
+                "system": "BlueprintCapturePipeline",
+                "webapp_backend_selection_allowed": False,
+            },
+            "authorization": {"access_state": "provisioned"},
+        },
+    }
+
+
 def _capture_handoff() -> dict[str, object]:
     return {
         "schema_version": "blueprint_capture_pipeline_handoff.v1",
@@ -942,6 +967,40 @@ def test_live_pipeline_intake_service_stages_webapp_request(
     assert Path(payload["webapp_staging"]["target_path"]).is_file()
     assert payload["trigger"]["status"] == "not_configured"
     assert payload["proof_boundary"]["intake_sets_proof_booleans"] is False
+
+
+def test_live_pipeline_intake_service_translates_and_idempotently_retries_decision_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
+    monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE", "true")
+    client = TestClient(create_app())
+
+    responses = [
+        client.post(
+            "/api/live-pipeline/job-requests",
+            json=_decision_evidence_envelope(),
+            headers={"authorization": "Bearer test-intake-token"},
+        )
+        for _ in range(2)
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    payload = responses[-1].json()
+    assert payload["status"] == "staged_for_control_plane"
+    assert responses[0].json()["webapp_staging"]["target_path"] == payload[
+        "webapp_staging"
+    ]["target_path"]
+    staged_path = Path(payload["webapp_staging"]["target_path"])
+    staged = json.loads(staged_path.read_text(encoding="utf-8"))
+    request = staged["job_request"]
+    assert request["job_id"] == "decision-request-1"
+    assert request["site_package"]["capture_root"] == str(capture_root)
+    assert request["decision_evidence_request"]["decision_id"] == "buyer-decision-1"
+    assert request["proof_boundary"]["translation_proves_decision"] is False
 
 
 def test_live_pipeline_intake_service_converts_capture_handoff_to_webapp_request(

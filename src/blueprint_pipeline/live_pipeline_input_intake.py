@@ -1,7 +1,7 @@
 """Validate and optionally stage live external inputs for the control plane.
 
 The intake command is a preflight for real external handoffs. It can inspect a
-WebApp ``robot_eval_job_request.v1`` file and an owner-system Arena result
+WebApp decision-evidence queue envelope or ``robot_eval_job_request.v1`` file and an owner-system Arena result
 directory against the current live control-plane manifest. It never runs live
 simulators, calls providers, uploads storage, or promotes proof claims.
 """
@@ -32,6 +32,8 @@ LIVE_PIPELINE_INPUT_INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_input_intak
 LIVE_CLOSURE_EVIDENCE_ARTIFACT_NAME = "live_eval_closure_evidence.json"
 POLICY_PACKAGE_ARTIFACT_NAME = "policy_package.json"
 LOCAL_WEBAPP_REHEARSAL_SOURCE_KIND = "local_first_gpu_rehearsal_request"
+DECISION_EVIDENCE_QUEUE_CONTRACT = "blueprint.decision_evidence_request_inbox.v1"
+DECISION_EVIDENCE_REQUEST_SCHEMA_VERSION = "blueprint.decision_evidence_request.v1"
 POLICY_MODALITY_ORDER = (
     "policy_api_endpoint",
     "docker_container",
@@ -142,7 +144,98 @@ def _sha_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _request_from_payload(payload: Mapping[str, Any]) -> Dict[str, Any] | None:
+def translate_decision_evidence_envelope_to_legacy_execution_request(
+    payload: Mapping[str, Any], *, expected_capture_root: Path | None
+) -> Dict[str, Any] | None:
+    """Translate the WebApp product envelope into the legacy execution adapter input.
+
+    The original decision request remains the provenance authority. This bounded
+    adapter only supplies the legacy simulator scheduler fields while the Task
+    Evaluation Run control plane replaces that execution spine.
+    """
+
+    if payload.get("queue_contract") != DECISION_EVIDENCE_QUEUE_CONTRACT:
+        return None
+    decision_request = _mapping(payload.get("decision_request"))
+    if decision_request.get("schema_version") != DECISION_EVIDENCE_REQUEST_SCHEMA_VERSION:
+        return None
+    routing = _mapping(decision_request.get("routing_authority"))
+    authorization = _mapping(decision_request.get("authorization"))
+    if (
+        routing.get("system") != "BlueprintCapturePipeline"
+        or routing.get("webapp_backend_selection_allowed") is not False
+        or authorization.get("access_state") != "provisioned"
+        or expected_capture_root is None
+    ):
+        return None
+    request_id = _string(decision_request.get("request_id") or payload.get("request_id"))
+    decision_id = _string(decision_request.get("decision_id") or payload.get("decision_id"))
+    site_task = _mapping(decision_request.get("site_task"))
+    testbed = _mapping(decision_request.get("testbed"))
+    candidates = decision_request.get("candidates")
+    candidate = _mapping(candidates[0]) if isinstance(candidates, list) and candidates else {}
+    candidate_reference = _mapping(candidate.get("reference"))
+    task_id = _string(site_task.get("task_id"))
+    site_slug = _string(site_task.get("site_name") or site_task.get("site_id"))
+    if not all((request_id, decision_id, task_id, site_slug)) or not _safe_job_id(request_id):
+        return None
+    capture_id = expected_capture_root.name
+    policy_id = _string(
+        candidate.get("candidate_id")
+        or candidate_reference.get("external_id")
+        or "decision_evidence_candidate"
+    )
+    return {
+        "schema_version": WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
+        "job_id": request_id,
+        "request_id": request_id,
+        "buyer_request_id": decision_id,
+        "requested_tasks": [{"task_id": task_id, "scenario_ids": []}],
+        "site_package": {
+            "capture_root": str(expected_capture_root),
+            "capture_id": capture_id,
+            "site_slug": site_slug,
+            "site_submission_id": _string(site_task.get("site_id")),
+            "buyer_request_id": decision_id,
+            "capture_job_id": request_id,
+            "package_uri": _string(testbed.get("manifest_uri")) or None,
+        },
+        "owner_system": {
+            "name": "Blueprint-WebApp",
+            "request_id": request_id,
+            "buyer_request_id": decision_id,
+            "site_submission_id": _string(site_task.get("site_id")),
+            "capture_job_id": request_id,
+            "capture_id": capture_id,
+        },
+        "policy": {"policy_id": policy_id},
+        "source": {
+            "system": "Blueprint-WebApp",
+            "source_kind": "decision_evidence_request_legacy_execution_adapter",
+            "selection_state": {
+                "source_kind": "decision_evidence_request_legacy_execution_adapter",
+                "task_id": task_id,
+                "policy_id": policy_id,
+            },
+        },
+        "decision_evidence_request": decision_request,
+        "proof_boundary": {
+            "translation_grants_method_qualification": False,
+            "translation_proves_decision": False,
+            "translation_proves_physical_success": False,
+            "public_claim_upgrade_allowed": False,
+        },
+    }
+
+
+def _request_from_payload(
+    payload: Mapping[str, Any], *, expected_capture_root: Path | None = None
+) -> Dict[str, Any] | None:
+    decision_request = translate_decision_evidence_envelope_to_legacy_execution_request(
+        payload, expected_capture_root=expected_capture_root
+    )
+    if decision_request is not None:
+        return decision_request
     if payload.get("queue_contract") == WEBAPP_JOB_REQUEST_QUEUE_CONTRACT:
         request = payload.get("job_request")
         if isinstance(request, Mapping) and request.get("schema_version") == WEBAPP_JOB_REQUEST_SCHEMA_VERSION:
@@ -221,7 +314,9 @@ def _audit_webapp_request(
             "path": str(request_path),
             "blockers": [f"webapp_job_request_read_failed:{type(exc).__name__}"],
         }
-    request = _request_from_payload(payload)
+    request = _request_from_payload(
+        payload, expected_capture_root=expected_capture_root
+    )
     if request is None:
         return {
             "status": "blocked",
@@ -940,7 +1035,27 @@ def _stage_webapp_request(
             "target_path": str(target),
             "blockers": blockers,
         }
-    shutil.copy2(request_path, target)
+    payload = _read_mapping(request_path)
+    if payload.get("queue_contract") == DECISION_EVIDENCE_QUEUE_CONTRACT:
+        normalized_request = _request_from_payload(
+            payload,
+            expected_capture_root=Path(_string(audit.get("request_capture_root"))).resolve(),
+        )
+        if normalized_request is None:
+            return {
+                "status": "blocked",
+                "performed": False,
+                "target_path": str(target),
+                "blockers": ["webapp_request_normalization_failed"],
+            }
+        staged_payload: Mapping[str, Any] = {
+            "queue_contract": WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
+            "source_kind": "decision_evidence_request_legacy_execution_adapter",
+            "job_request": normalized_request,
+        }
+        write_json(target, staged_payload)
+    else:
+        shutil.copy2(request_path, target)
     return {
         "status": "staged",
         "performed": True,

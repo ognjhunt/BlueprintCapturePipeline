@@ -3,7 +3,7 @@
   "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
   "frozen_at": "2026-07-29T11:01:26-0500",
   "bundle_source_commit": "38518c3cacc8c1baa6adc81cbf72e8ba2961a483",
-  "bundle_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/oscar_public_replay_canary_v4/bundle_job/oscar_wam_provider_runtime_bundle.zip",
+  "bundle_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/oscar_public_replay_canary_v4/bundle_job/oscar_wam_provider_runtime_bundle.zip",
   "bundle_sha256": "d6447c8432eb9d484c64f61244eaec40739f9115d778390f6b1fef18c9564752",
   "bundle_size_bytes": 1135718,
   "runtime_manifest_file_sha256": "2cc85cf88be3318fc1692fd2872aeb802ee3de24f993f80ced0d2b5b348205f2",
@@ -18,5 +18,5 @@
   "seed": 44,
   "future_rgb_video_enabled": false,
   "physical_outcome_labels_accessed": false,
-  "receipt_sha256": "79717defe8f946bd0342549fd31c5dcac4db7b995b3f6e11b0fb93195fcdd277"
+  "receipt_sha256": "b7a2c78c51510b9d347fec8a270d7a41fef582a61eaf1ceba393c327ed9fc54e"
 }

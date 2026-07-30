@@ -26,7 +26,7 @@ from .task_candidate_discovery import (
     record_task_candidate_decision,
     validate_task_candidate_discovery,
 )
-from .webapp_sync import _pipeline_sync_headers
+from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 
 
 CONTROL_PLANE_SCHEMA_VERSION = "task_candidate_control_plane_state.v1"
@@ -210,6 +210,7 @@ def sync_task_candidate_discovery_to_webapp(
             "discovery_digest": payload["discovery_digest"],
             "proof_boundary": payload["proof_boundary"],
         }
+    resolved_url = validated_https_sync_url(resolved_url)
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     attempts = max(1, min(int(max_attempts), 10))
     last_reason = "sync_unknown_failure"
@@ -221,7 +222,10 @@ def sync_task_candidate_discovery_to_webapp(
             method="POST",
         )
         try:
-            with urllib_request.urlopen(outbound, timeout=max(0.1, timeout_seconds)) as response:
+            # URL structure is validated immediately above; Bandit cannot infer that guard.
+            with urllib_request.urlopen(  # nosec B310
+                outbound, timeout=max(0.1, timeout_seconds)
+            ) as response:
                 raw = response.read().decode("utf-8")
         except urllib_error.HTTPError as exc:
             last_reason = f"http_error:{exc.code}"

@@ -17,7 +17,7 @@
     "request_count": 7
   },
   "collection": {
-    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/gpt5_medium_batch_pilot_v1/collection_v1.json",
+    "path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/gpt5_medium_batch_pilot_v1/collection_v1.json",
     "file_sha256": "edc5997d1d0f5f2df0805ac7a8bfcaff7f8732d9c2e0705231db36b171f2a7b6",
     "report_sha256": "63de6bb9d00625fdd4ee4c2be232a625ac74e8cbdd3e0540b5f1f2f68180fd0f",
     "status": "completed",

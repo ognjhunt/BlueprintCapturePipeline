@@ -50,7 +50,7 @@
     "provider_live_resource_count": 0
   },
   "evidence": {
-    "external_job_root": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/oscar_public_replay_provider_job_v1",
+    "external_job_root": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/oscar_public_replay_provider_job_v1",
     "provider_output_zip_sha256": "639298a9c62093de29695833547365728b1b965e2242f1809c5ce8822d306131",
     "adapter_output_sha256": "661c62455b50f5d7cc8ce53e32381a5b0291136e58418932440c9562721b9075",
     "budget_ledger_sha256": "8fe7a375ccf3a3177f8e66046e7a16cfa17b25e911a39d4f9b3cdf03b3453a95",
@@ -67,5 +67,5 @@
     "economics_and_speed": false,
     "physical_success": false
   },
-  "result_sha256": "3b28dba1b84ac28e839f409f990b2526e0c3a0863a1e4e6090816fe7113e2cb9"
+  "result_sha256": "15d7a423ba9141a78e9efcf5a33d7c0049fc034c24cd3b50b75c90c3d8ebe573"
 }

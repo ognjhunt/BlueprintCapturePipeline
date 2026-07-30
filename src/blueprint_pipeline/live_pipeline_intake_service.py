@@ -42,7 +42,11 @@ from .live_pipeline_control_plane import (
     WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
     WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
 )
-from .live_pipeline_input_intake import build_live_pipeline_input_intake
+from .live_pipeline_input_intake import (
+    DECISION_EVIDENCE_QUEUE_CONTRACT,
+    build_live_pipeline_input_intake,
+    translate_decision_evidence_envelope_to_legacy_execution_request,
+)
 from .core.security_controls import json_shape_within_limits, strict_identifier
 from .task_candidate_control_plane import (
     TaskCandidateControlPlaneError,
@@ -163,6 +167,8 @@ def _safe_stem(value: str) -> str:
 def _request_from_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     if payload.get("queue_contract") == WEBAPP_JOB_REQUEST_QUEUE_CONTRACT:
         return _mapping(payload.get("job_request"))
+    if payload.get("queue_contract") == DECISION_EVIDENCE_QUEUE_CONTRACT:
+        return _mapping(payload.get("decision_request"))
     if payload.get("schema_version") == WEBAPP_JOB_REQUEST_SCHEMA_VERSION:
         return payload
     return {}
@@ -628,6 +634,23 @@ def _bind_payload_to_server_capture_root(
     """Replace every caller root with the authenticated server-side mapping."""
 
     bound = json.loads(json.dumps(dict(payload)))
+    if bound.get("queue_contract") == DECISION_EVIDENCE_QUEUE_CONTRACT:
+        root = _server_capture_root_for_client(
+            payload=bound,
+            client_id=client_id,
+            manifest_capture_root=manifest_capture_root,
+        )
+        translated = translate_decision_evidence_envelope_to_legacy_execution_request(
+            bound,
+            expected_capture_root=root,
+        )
+        if translated is None:
+            return bound
+        return {
+            "queue_contract": WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
+            "source_kind": "decision_evidence_request_legacy_execution_adapter",
+            "job_request": translated,
+        }
     request = _request_from_payload(bound)
     if not request:
         return bound

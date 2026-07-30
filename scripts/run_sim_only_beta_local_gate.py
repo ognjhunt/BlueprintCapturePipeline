@@ -1002,6 +1002,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     beta_env = {
         **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            part
+            for part in (str(SRC_ROOT), os.environ.get("PYTHONPATH", ""))
+            if part
+        ),
         "BLUEPRINT_SIM_ONLY_BETA_DEFAULT_TASK_EVAL": "true",
         "BLUEPRINT_SIM_ONLY_BETA_AUTONOMY": "true",
         "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION": "true",
@@ -1050,6 +1055,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             str(manifest_path),
         ],
         cwd=_repo_root(),
+        env=beta_env,
         timeout_seconds=args.command_timeout_seconds,
     )
     run_stage(
@@ -1066,13 +1072,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             str(staged_inputs_path),
         ],
         cwd=_repo_root(),
+        env=beta_env,
         timeout_seconds=args.command_timeout_seconds,
     )
 
     port = args.port or _free_port()
     forward_url = f"http://127.0.0.1:{port}/api/live-pipeline/job-requests"
     intake_env = {
-        **os.environ,
+        **beta_env,
         "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN": args.token,
         "BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE": "true",
         "BLUEPRINT_LIVE_PIPELINE_ALLOW_PER_REQUEST_CAPTURE_ROOT": "true",

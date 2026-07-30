@@ -46,6 +46,9 @@
     "src/blueprint_pipeline/live_pipeline_control_plane.py": [
       "tests/test_live_pipeline_control_plane.py"
     ],
+    "src/blueprint_pipeline/live_pipeline_intake_service.py": [
+      "tests/test_live_pipeline_intake_service.py"
+    ],
     "src/blueprint_pipeline/live_robot_eval_closure.py": [
       "tests/test_live_robot_eval_closure_coverage_edges.py"
     ],
@@ -84,6 +87,9 @@
     ],
     "src/blueprint_pipeline/policy_autoresearch.py": [
       "tests/test_policy_autoresearch.py"
+    ],
+    "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py": [
+      "tests/test_policy_ranking_successor_gpu_admission.py"
     ],
     "src/blueprint_pipeline/post_training_data_package.py": [
       "tests/test_post_training_data_package.py"
@@ -199,6 +205,7 @@
     "src/blueprint_pipeline/isaac_runtime_task_backend.py": 3580,
     "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": 3212,
     "src/blueprint_pipeline/live_pipeline_control_plane.py": 2313,
+    "src/blueprint_pipeline/live_pipeline_intake_service.py": 2464,
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
     "src/blueprint_pipeline/materialization.py": 2198,
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6059,
@@ -209,10 +216,11 @@
     "src/blueprint_pipeline/oscar_cosmos_wam_evaluator.py": 6607,
     "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": 8183,
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
-    "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5783,
+    "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5872,
     "src/blueprint_pipeline/policy_autoresearch.py": 2563,
+    "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py": 2053,
     "src/blueprint_pipeline/post_training_data_package.py": 6713,
-    "src/blueprint_pipeline/site_package_orchestrator.py": 5572,
+    "src/blueprint_pipeline/site_package_orchestrator.py": 5573,
     "src/blueprint_pipeline/retrieval_index_stage.py": 2215,
     "src/blueprint_pipeline/robot_eval_dataset.py": 4959,
     "src/blueprint_pipeline/robot_eval_execution.py": 6252,
@@ -228,12 +236,12 @@
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py": 4648,
     "src/blueprint_pipeline/site_eval_director.py": 2145,
     "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": 10104,
-    "src/blueprint_pipeline/vast_provider_adapter.py": 6517,
+    "src/blueprint_pipeline/vast_provider_adapter.py": 6725,
     "src/blueprint_pipeline/wam_derived_observation_harness.py": 3066,
     "src/blueprint_pipeline/wam_fixture_evaluator.py": 4605,
     "src/blueprint_pipeline/wam_generated_video_review.py": 2412
   },
-  "max_project_scripts": 159,
+  "max_project_scripts": 163,
   "policy_owner": "@ognjhunt",
   "review_by": "2026-10-12",
   "schema_version": "blueprint.source_governance_policy.v1"

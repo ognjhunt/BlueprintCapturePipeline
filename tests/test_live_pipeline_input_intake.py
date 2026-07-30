@@ -69,6 +69,82 @@ def _webapp_request(capture_root: Path, *, job_id: str = "webapp-job-1") -> dict
     }
 
 
+def _decision_evidence_envelope(capture_root: Path) -> dict[str, object]:
+    return {
+        "queue_contract": "blueprint.decision_evidence_request_inbox.v1",
+        "request_id": "decision-request-1",
+        "decision_id": "buyer-decision-1",
+        "decision_request": {
+            "schema_version": "blueprint.decision_evidence_request.v1",
+            "request_id": "decision-request-1",
+            "decision_id": "buyer-decision-1",
+            "testbed": {
+                "testbed_id": "site-1",
+                "version": "v1",
+                "digest_sha256": "sha256:" + "a" * 64,
+                "manifest_uri": str(capture_root / "pipeline" / "robot_eval_dataset" / "robot_eval_dataset_manifest.json"),
+            },
+            "decision_question": "Can policy-a complete task-a?",
+            "site_task": {
+                "site_id": "site-1",
+                "site_name": "site-one",
+                "task_id": "task-a",
+                "task_description": "Complete task A",
+                "conditions": ["fixture"],
+            },
+            "candidates": [
+                {
+                    "candidate_id": "policy-a",
+                    "kind": "policy",
+                    "label": "Policy A",
+                    "reference": {"external_id": "policy-a"},
+                }
+            ],
+            "routing_authority": {
+                "system": "BlueprintCapturePipeline",
+                "method_selection": "pipeline_qualified_least_cost_sufficient_evidence",
+                "webapp_backend_selection_allowed": False,
+            },
+            "authorization": {
+                "entitlement_id": "entitlement-1",
+                "access_state": "provisioned",
+                "verified_by": "server_marketplace_entitlement",
+            },
+        },
+    }
+
+
+def test_decision_evidence_envelope_stages_bounded_legacy_execution_adapter(
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    manifest_path = _control_manifest(tmp_path, capture_root)
+    request_path = tmp_path / "decision-envelope.json"
+    _write_json(request_path, _decision_evidence_envelope(capture_root))
+
+    result = build_live_pipeline_input_intake(
+        manifest_path=manifest_path,
+        webapp_job_request=request_path,
+        stage_webapp_request=True,
+        overwrite=True,
+        staged_inputs_path=tmp_path / "staged-inputs.json",
+    )
+
+    assert result["status"] == "staged_for_control_plane"
+    staged_path = Path(result["webapp_staging"]["target_path"])
+    staged = json.loads(staged_path.read_text(encoding="utf-8"))
+    assert staged["queue_contract"] == "robot_eval_job_request_inbox.v1"
+    request = staged["job_request"]
+    assert request["schema_version"] == "robot_eval_job_request.v1"
+    assert request["job_id"] == "decision-request-1"
+    assert request["requested_tasks"] == [{"task_id": "task-a", "scenario_ids": []}]
+    assert request["site_package"]["capture_root"] == str(capture_root)
+    assert request["source"]["source_kind"] == (
+        "decision_evidence_request_legacy_execution_adapter"
+    )
+    assert request["proof_boundary"]["translation_grants_method_qualification"] is False
+
+
 def _webapp_site_library_request(
     capture_root: Path, *, job_id: str = "webapp-job-1"
 ) -> dict[str, object]:

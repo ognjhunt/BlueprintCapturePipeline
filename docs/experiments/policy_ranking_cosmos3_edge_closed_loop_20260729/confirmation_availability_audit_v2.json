@@ -51,7 +51,7 @@
     ]
   },
   "local_input_availability": {
-    "checkout": "/Users/nijelhunt_1/workspace/policy-ranking-experiment-2-inputs/RoboArena_DataDump_07-17-2026",
+    "checkout": "${BLUEPRINT_ROBOARENA_DATASET_ROOT}",
     "dataset_head": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
     "dataset_head_matches_frozen_revision": true,
     "audit_scope": "17_selected_sessions_x_2_Ctrl_World_supported_policies_x_left_right_wrist_state_assets",

@@ -6,7 +6,7 @@
   "source_commit_pushed_and_remote_equal": true,
   "protocol_sha256": "4636d2e4a6b834f24f86f5073ef831e47c843925a11c1ad761d27663f8194954",
   "inventory": {
-    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/complete_pair_inventory_v1.json",
+    "path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/complete_pair_inventory_v1.json",
     "file_sha256": "5e75b250a170d13b08a1901b2bce236e820854e52cdfe4d1aeb6b58c3d5c0b57",
     "inventory_sha256": "b60eb58c8a53d95d49f6fb1c221d276f13ea60d5289006d66bd3c08ef1f3f531",
     "pair_count": 1323
