@@ -189,7 +189,7 @@ with confidence value 2, and feeds the shared frozen-split kernel. Candidate
 RGB, cameras, and depth live in candidate-only artifacts; held-out RGB,
 cameras, and depth live in evaluator-only artifacts.
 
-The accepted local scene `40958756` run is bound to source digest
+The first accepted local scene `40958756` run is bound to source digest
 `sha256:bc493651dcc0950146e49bab91c9303a4d5f49c319c3e0b1048de1344d568e04`,
 commit `ddbff2998e00fdd728cf36e3c9a1c022b378b8b0`, frozen split digest
 `sha256:be386b4cd681f520fa6689b669b4efbb5b8534f991b2df815f37dfa989eed020`,
@@ -199,6 +199,22 @@ It decoded 1,013 frames from 1,014 timed metadata samples, found 163 exact
 pose/RGB/depth/confidence/intrinsics timestamp joins, and froze 40 observations
 as 32 candidate plus 8 hidden evaluator frames. Exact-SHA replay and all six
 authoritative source hashes were revalidated locally.
+
+A current-tree replay at clean commit
+`b2d7297fc3b28d2bb0a7b02ff3901137d70f51d3` independently downloaded the
+same six Apple-hosted source artifacts, reproduced the same aggregate source
+digest, decoded 1,013 frames, joined the same 163 exact multimodal timestamps,
+and froze 28 training, 4 validation, and 8 hidden held-out observations. Its
+configuration-bound split digest is
+`sha256:8d12da972bc99eabddd6061476121bcfff9d266435ae088ed32247f83a0f058c`
+and terminal digest is
+`sha256:0a37ab5a1a7b52c8917c58c840d6a8110e6e981463ffd89c1466c44c5991b22e`.
+All proxy and shared dataset schemas passed, the terminal self-digest passed,
+and an identical rerun preserved the first timestamp and terminal bytes. The
+exact compact receipt is committed at
+`docs/evidence/arkitscenes_raw_proxy_40958756_b2d7297f.json`; public dataset
+bytes remain outside Git. The downloaded Apple license text had SHA-256
+`1b6a8700127de50c9d56f8f33eb202a64f6f212fd4b133435f7c8b6bccd3db59`.
 
 This is iPad public-dataset proxy evidence only. ARKitScenes lacks Blueprint's
 encoder-attempt and retained-frame ledger and does not provide the required

@@ -10,11 +10,16 @@ import pytest
 from PIL import Image
 
 from blueprint_pipeline import arkitscenes_raw_proxy as proxy
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
 IMPLEMENTATION_DIGEST = "sha256:" + "a" * 64
 RUNTIME_DIGEST = "sha256:" + "b" * 64
 SOURCE_COMMIT = "c" * 40
+RECORDED_REAL_PROXY = (
+    Path(__file__).parents[1]
+    / "docs/evidence/arkitscenes_raw_proxy_40958756_b2d7297f.json"
+)
 AUTHORITY = {
     "arkitscenes_license_accepted": True,
     "license_acceptance_authority": "explicit_test_authority",
@@ -306,3 +311,27 @@ def test_proxy_source_digest_changes_with_authoritative_bytes(tmp_path: Path) ->
     (scene / "source" / "12345678.mov").write_bytes(b"changed-authoritative-bytes")
 
     assert _digest(scene / "source" / "12345678.mov") != before
+
+
+def test_recorded_real_scene_proxy_preserves_reduced_authority_contract() -> None:
+    receipt = json.loads(RECORDED_REAL_PROXY.read_text(encoding="utf-8"))
+
+    jsonschema.Draft202012Validator(
+        _schema("arkitscenes_raw_proxy.v1.schema.json"),
+        format_checker=jsonschema.FormatChecker(),
+    ).validate(receipt)
+    assert receipt["arkitscenes_proxy_compilation_digest"] == canonical_digest(
+        receipt, digest_field="arkitscenes_proxy_compilation_digest"
+    )
+    assert receipt["source_commit_sha"] == "b2d7297fc3b28d2bb0a7b02ff3901137d70f51d3"
+    assert receipt["source_capture_digest"] == (
+        "sha256:bc493651dcc0950146e49bab91c9303a4d5f49c319c3e0b1048de1344d568e04"
+    )
+    assert len(receipt["original_file_references"]) == 6
+    assert receipt["selected_frame_count"] == 40
+    assert receipt["hidden_heldout_pixels_exposed_to_candidate"] is False
+    assert receipt["raw_contract_3_2_proven"] is False
+    assert receipt["iphone_route_proven"] is False
+    assert receipt["metric_geometry_proven"] is False
+    assert receipt["collision_or_physics_proven"] is False
+    assert receipt["isaac_compatibility_proven"] is False
