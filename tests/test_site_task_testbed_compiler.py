@@ -6,12 +6,14 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import jsonschema
 import pytest
 from fastapi.testclient import TestClient
 
 from blueprint_pipeline.capture_intake import validate_capture_intake_envelope
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import live_pipeline_intake_service as service
+from blueprint_pipeline import live_pipeline_reconstruction_testbed_routes as routes
 from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
 from blueprint_pipeline.reconstruction_capability import (
     decide_simready_assets,
@@ -22,6 +24,10 @@ from blueprint_pipeline.site_task_testbed_compiler import (
     SiteTaskTestbedCompilerError,
     compile_site_task_testbed,
     write_testbed_version,
+)
+from blueprint_pipeline.site_task_testbed_compilation_contract import (
+    testbed_compilation_submission_schema,
+    validate_testbed_compilation_submission,
 )
 from blueprint_pipeline.site_task_testbed_compiler_cli import main as compiler_cli_main
 from blueprint_pipeline.site_task_testbed_webapp_sync import (
@@ -34,6 +40,115 @@ from blueprint_pipeline.task_candidate_discovery import compile_approved_task_de
 SHA_A = "sha256:" + "a" * 64
 SHA_B = "sha256:" + "b" * 64
 SHA_C = "sha256:" + "c" * 64
+
+
+def _service_compilation_payload(approved_task_digest: str, execution_digest: str) -> dict:
+    binding = _robot_binding()
+    return {
+        "schema_version": "site_task_testbed_compilation_submission.v2",
+        "capture_session_id": "capture-session-1",
+        "intake_id": "intake-1",
+        "testbed_id": "site-task-service",
+        "version": "1",
+        "approved_task_digest": approved_task_digest,
+        "reconstruction_plan_id": "reconstruction-plan-1",
+        "reconstruction_execution_result_digest": execution_digest,
+        "robot_binding": binding,
+        "decision_request_constraints": {
+            "request_id": "request-service-1",
+            "decision_id": "decision-service-1",
+            "candidates": [{
+                "robot_id": binding["robot_id"],
+                "embodiment_version": binding["embodiment_version"],
+                "robot_binding": binding,
+            }],
+            "claims": [{
+                "claim_id": "reach",
+                "claim_type": "reachability",
+                "subject": "fixture-arm:item-1:tote-1",
+                "measurable_threshold": {
+                    "operator": ">=",
+                    "value": 0.95,
+                    "units": "fraction",
+                    "metric": "collision_free_reach_fraction",
+                },
+                "false_safe_consequence": "moderate",
+                "acceptable_false_safe_risk": 0.05,
+                "desired_confidence_or_coverage": {
+                    "minimum_coverage": 0.95,
+                    "minimum_independent_methods": 1,
+                },
+                "permitted_abstention_behavior": {"allowed": True},
+                "task_family": "rigid_object_pick_place",
+                "site_domain_conditions": {"scope": "accepted_capture_observation"},
+                "embodiment": {
+                    "robot_id": binding["robot_id"],
+                    "version": binding["embodiment_version"],
+                    "base_footprint": binding["base_footprint"],
+                    "reach_envelope": binding["reach_envelope"],
+                    "end_effector_id": binding["end_effector_id"],
+                },
+                "sensors": binding["sensors"],
+                "controller_action_representation": {
+                    "controller_id": binding["controller_id"]
+                },
+            }],
+            "budget": {"max_cost_usd": 0.0, "max_latency_seconds": 10.0},
+            "deadline": "2026-07-30T00:00:00Z",
+            "permitted_evidence_methods": ["analytic_geometry_kinematics"],
+            "restrictions": {
+                "external_processing_allowed": False,
+                "webapp_provider_selection_allowed": False,
+                "live_robot_execution_allowed": False,
+                "paid_compute_authorized": False,
+            },
+            "requested_result_audience": "design_partner",
+            "idempotency_key": "request-service-1",
+        },
+    }
+
+
+def test_testbed_compilation_submission_schema_is_closed_and_runtime_exact() -> None:
+    schema = testbed_compilation_submission_schema()
+    checked_in = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/site_task_testbed_compilation_submission.v2.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert checked_in == schema
+    jsonschema.Draft202012Validator.check_schema(schema)
+    validator = jsonschema.Draft202012Validator(
+        schema,
+        format_checker=jsonschema.Draft202012Validator.FORMAT_CHECKER,
+    )
+    payload = _service_compilation_payload(SHA_A, SHA_C)
+    validator.validate(payload)
+    assert validate_testbed_compilation_submission(payload)["robot_binding"] == (
+        payload["robot_binding"]
+    )
+
+    scientific_override = {**payload, "simready_decision": {"status": "qualified"}}
+    assert any(
+        error.validator == "additionalProperties"
+        for error in validator.iter_errors(scientific_override)
+    )
+    with pytest.raises(ValueError, match="extra_forbidden"):
+        validate_testbed_compilation_submission(scientific_override)
+
+    mismatched = copy.deepcopy(payload)
+    mismatched["decision_request_constraints"]["claims"][0]["embodiment"][
+        "robot_id"
+    ] = "another-robot"
+    with pytest.raises(ValueError, match="decision claim does not match robot_binding"):
+        validate_testbed_compilation_submission(mismatched)
+
+    provider_selected = copy.deepcopy(payload)
+    provider_selected["decision_request_constraints"]["restrictions"][
+        "selected_provider"
+    ] = "caller-provider"
+    with pytest.raises(ValueError, match="request method selection forbidden"):
+        validate_testbed_compilation_submission(provider_selected)
 
 
 def _beta_fixture(case_id: str) -> dict:
@@ -616,56 +731,29 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
     envelope = _envelope()
     qa = _qa(envelope)
     plan = _plan(qa)
-    payload = {
-        "schema_version": "site_task_testbed_compilation_submission.v1",
-        "capture_session_id": "capture-session-1",
-        "intake_id": "intake-1",
-        "testbed_id": "site-task-service",
-        "version": "1",
-        "approved_task_digest": approved["approved_task_digest"],
-        "capture_intake_envelope": envelope,
-        "capture_qa_report": qa,
-        "reconstruction_plan": plan,
-        "reconstruction_results": [_result(plan)],
-        "simready_decision": _simready(),
-        "robot_placement_result": _placement(),
-        "artifact_references": _refs(),
-        "supported_condition_ranges": {"lighting_lux": [300, 600]},
-        "previous_testbed": None,
-        "decision_request_constraints": {
-            "request_id": "request-service-1",
-            "decision_id": "decision-service-1",
-            "candidates": [{"robot_id": "fixture-arm"}],
-            "claims": [{
-                "claim_id": "reach",
-                "claim_type": "reachability",
-                "subject": "fixture-arm:item-1:tote-1",
-                "measurable_threshold": {
-                    "operator": ">=",
-                    "value": 0.95,
-                    "units": "fraction",
-                },
-                "false_safe_consequence": "moderate",
-                "acceptable_false_safe_risk": 0.05,
-                "desired_confidence_or_coverage": {
-                    "minimum_coverage": 0.95,
-                    "minimum_independent_methods": 1,
-                },
-                "permitted_abstention_behavior": {"allowed": True},
-                "task_family": "rigid_object_pick_place",
-                "site_domain_conditions": {"lighting_lux": [300, 600]},
-                "embodiment": {"robot_id": "fixture-arm"},
-                "sensors": {"camera": "rgb-v1"},
-                "controller_action_representation": {"type": "joint_position"},
-            }],
-            "budget": {"max_cost_usd": 0.0, "max_latency_seconds": 10.0},
-            "deadline": "2026-07-30T00:00:00Z",
-            "permitted_evidence_methods": ["analytic_geometry_kinematics"],
-            "restrictions": {"external_processing_allowed": False},
-            "requested_result_audience": "design_partner",
-            "idempotency_key": "request-service-1",
+    execution_digest = SHA_C
+    monkeypatch.setattr(
+        routes,
+        "load_reconstruction_compilation_inputs",
+        lambda **_: {
+            "context": {
+                "capture_session_id": "capture-session-1",
+                "intake_id": "intake-1",
+            },
+            "capture_intake_envelope": envelope,
+            "capture_qa_report": qa,
+            "reconstruction_plan": plan,
+            "reconstruction_results": [_result(plan)],
+            "execution_result": {
+                "state": "completed",
+                "execution_result_digest": execution_digest,
+            },
         },
-    }
+    )
+    monkeypatch.setenv(service.CAPTURE_UPLOAD_STORE_ROOT_ENV, str(tmp_path / "capture-store"))
+    payload = _service_compilation_payload(
+        approved["approved_task_digest"], execution_digest
+    )
     body = json.dumps(payload, separators=(",", ":"))
     timestamp = datetime.now(timezone.utc).isoformat()
     nonce = "testbed-compile-nonce-1"
@@ -695,11 +783,52 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
     assert "artifact_path" not in json.dumps(result)
     assert result["proof_boundary"]["deployment_or_safety_approved"] is False
     assert result["webapp_sync"]["status"] == "skipped"
+    placement_evidence = next(
+        row
+        for row in result["testbed"]["evidence_inventory"]
+        if row["evidence_id"] == "robot_placement"
+    )
+    assert placement_evidence["status"] == "abstained"
+    assert "robot_placement_not_established" in result["testbed"][
+        "known_unsupported_conditions"
+    ]
+    version_root = (
+        work_dir / "maintained_site_task_testbeds" / "site-task-service" / "1"
+    )
+    assert (version_root / "evaluator.json").is_file()
+    assert (version_root / "reset.json").is_file()
     assert result["decision_evidence_request"]["testbed_digest"] == result["testbed_digest"]
     assert result["decision_evidence_request_artifact"]["request_digest"] == (
         result["decision_evidence_request"]["request_digest"]
     )
     assert "artifact_path" not in json.dumps(result["decision_evidence_request_artifact"])
+
+    caller_scientific_payload = {**payload, "simready_decision": _simready()}
+    caller_scientific_body = json.dumps(caller_scientific_payload, separators=(",", ":"))
+    caller_scientific_nonce = "testbed-compile-nonce-2"
+    caller_scientific_signature = hmac.new(
+        token.encode("utf-8"),
+        (
+            f"{timestamp}.blueprint-webapp.{caller_scientific_nonce}."
+            f"{caller_scientific_body}"
+        ).encode("utf-8"),
+        "sha256",
+    ).hexdigest()
+    rejected = TestClient(service.create_app()).post(
+        "/api/live-pipeline/testbeds/compile",
+        content=caller_scientific_body,
+        headers={
+            "content-type": "application/json",
+            "x-blueprint-pipeline-timestamp": timestamp,
+            "x-blueprint-pipeline-client-id": "blueprint-webapp",
+            "x-blueprint-pipeline-nonce": caller_scientific_nonce,
+            "x-blueprint-pipeline-signature": f"sha256={caller_scientific_signature}",
+        },
+    )
+    assert rejected.status_code == 422
+    assert "Pipeline-owned scientific inputs forbidden:simready_decision" in (
+        rejected.json()["detail"]
+    )
 
 
 def test_testbed_webapp_publication_is_exactly_bound_and_receipt_verified(

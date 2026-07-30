@@ -135,6 +135,7 @@ def test_streams_scans_hashes_and_materializes_without_persisting_transfer_grant
     assert first["admission_status"] == "accepted"
     assert first["state"] == "capture_accepted"
     assert first["capture_digest"].startswith("sha256:")
+    assert datetime.fromisoformat(first["capture_upload_received_at"]).tzinfo is not None
     assert first["proof_boundary"] == {
         "server_sha256_verified": True,
         "raw_input_content_addressed": True,
