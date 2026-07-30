@@ -52,6 +52,12 @@ from .semantic_gaussian_lifting import (
     canonical_json_digest,
     lift_semantic_masks_to_gaussians,
 )
+from .semantic_oriented_box import (
+    FIT_METHOD as SEMANTIC_ORIENTED_BOX_FIT_METHOD,
+    REQUEST_SCHEMA_VERSION as SEMANTIC_ORIENTED_BOX_REQUEST_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION as SEMANTIC_ORIENTED_BOX_RESULT_SCHEMA_VERSION,
+    fit_semantic_oriented_boxes,
+)
 from .placement import compute_stand_pose, ring_scan_stand_pose
 from .robot_profile import (
     DEFAULT_ROBOT_ID,
@@ -136,6 +142,10 @@ __all__ = [
     "SEMANTIC_GAUSSIAN_LIFTING_RESULT_SCHEMA_VERSION",
     "canonical_json_digest",
     "lift_semantic_masks_to_gaussians",
+    "SEMANTIC_ORIENTED_BOX_FIT_METHOD",
+    "SEMANTIC_ORIENTED_BOX_REQUEST_SCHEMA_VERSION",
+    "SEMANTIC_ORIENTED_BOX_RESULT_SCHEMA_VERSION",
+    "fit_semantic_oriented_boxes",
     "resolve_target",
     "resolve_target_by_label",
     "compute_stand_pose",
