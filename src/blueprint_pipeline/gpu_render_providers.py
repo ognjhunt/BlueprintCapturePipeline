@@ -27,6 +27,7 @@ launch layer scoped to the splat render bundle contract.
 
 Secrets are file-based under ``~/.blueprint-secrets`` and never logged.
 """
+
 from __future__ import annotations
 
 import base64
@@ -75,8 +76,11 @@ def _read_secret(name: str) -> str | None:
 # from the RTX review lane (no RT cores) but remain valid for explicitly
 # compute-only policy/model workers.
 DEFAULT_RUNPOD_RENDER_GPU_TYPES: tuple = (
-    "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40",
-    "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA A40",
+    "NVIDIA RTX A6000",
+    "NVIDIA L40",
+    "NVIDIA L40S",
+    "NVIDIA RTX 6000 Ada Generation",
     "NVIDIA RTX PRO 6000 Blackwell Server Edition",
 )
 
@@ -139,6 +143,7 @@ class RenderLaunchSpec:
 
 
 # ----------------------------- provider base -----------------------------
+
 
 class GpuRenderProvider:
     """Uniform launch/stop surface. ``build_request`` produces the provider-native body
@@ -205,16 +210,17 @@ class GpuRenderProvider:
 
 # ----------------------------- RunPod -----------------------------
 
+
 def _runpod_call(method: str, path: str, body: dict | None, *, key: str, timeout: int = 90):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
-        RUNPOD_API + path, data=data, method=method,
+        RUNPOD_API + path,
+        data=data,
+        method=method,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
     try:
-        r = safe_outbound_http.open_request(
-            req, policy=_RUNPOD_API_POLICY, timeout_seconds=timeout
-        )
+        r = safe_outbound_http.open_request(req, policy=_RUNPOD_API_POLICY, timeout_seconds=timeout)
         raw = r.body.decode()
         return r.status, (json.loads(raw) if raw.strip() else {})
     except urllib.error.HTTPError as e:
@@ -271,9 +277,7 @@ def _record_started_id(path: Path, instance_id: str) -> dict[str, Any]:
         }
 
 
-def _normalize_provider_instance_id(
-    value: Any, *, numeric_only: bool = False
-) -> str | None:
+def _normalize_provider_instance_id(value: Any, *, numeric_only: bool = False) -> str | None:
     """Accept only provider IDs whose wire type and shape are trustworthy.
 
     Stringifying a bool, mapping, or other malformed success value can produce
@@ -295,8 +299,7 @@ def _normalize_provider_instance_id(
             return None
         return candidate if int(candidate) > 0 else None
     if not candidate.isascii() or any(
-        not (character.isalnum() or character in "-_.")
-        for character in candidate
+        not (character.isalnum() or character in "-_.") for character in candidate
     ):
         return None
     return candidate
@@ -384,9 +387,7 @@ def _render_prelaunch_guard_blockers(
     return []
 
 
-def _redact_provider_error_body(
-    body: str, *, request_env: Mapping[str, Any]
-) -> str:
+def _redact_provider_error_body(body: str, *, request_env: Mapping[str, Any]) -> str:
     """Keep a bounded diagnostic without persisting signed request values."""
 
     sanitized = str(body or "")
@@ -434,8 +435,11 @@ class RunPodRenderProvider(GpuRenderProvider):
 
     def available(self) -> dict:
         key = self._key()
-        return {"provider": self.name, "available": bool(key),
-                "reason": None if key else "runpod_api_key_missing"}
+        return {
+            "provider": self.name,
+            "available": bool(key),
+            "reason": None if key else "runpod_api_key_missing",
+        }
 
     def capacity_preflight(self, request: Mapping[str, Any] | None = None) -> dict:
         """Read-only RTX stock and price probe for the requested RunPod pool."""
@@ -451,9 +455,7 @@ class RunPodRenderProvider(GpuRenderProvider):
         cloud_type = str(req.get("cloudType") or "SECURE").strip().upper()
         secure_cloud = cloud_type != "COMMUNITY"
         secure_literal = "true" if secure_cloud else "false"
-        requested_types = tuple(
-            _string_list(req.get("gpuTypeIds")) or _runpod_gpu_types_from_env()
-        )
+        requested_types = tuple(_string_list(req.get("gpuTypeIds")) or _runpod_gpu_types_from_env())
         requested_data_centers = _string_list(req.get("dataCenterIds"))
         requested_cuda_versions = _string_list(req.get("allowedCudaVersions"))
         data_center_filter = (
@@ -486,11 +488,7 @@ class RunPodRenderProvider(GpuRenderProvider):
         """
         status, payload = _runpod_graphql_call(query, key=key, timeout=60)
         data = _mapping(_mapping(payload).get("data"))
-        rows = [
-            dict(row)
-            for row in data.get("gpuTypes", [])
-            if isinstance(row, Mapping)
-        ]
+        rows = [dict(row) for row in data.get("gpuTypes", []) if isinstance(row, Mapping)]
         if status != 200 or not rows or _mapping(payload).get("errors"):
             return {
                 "status": "blocked",
@@ -532,9 +530,7 @@ class RunPodRenderProvider(GpuRenderProvider):
                 and (not counts or 1 in counts)
             )
             capacity_data_center_id = (
-                requested_data_centers[0]
-                if len(requested_data_centers) == 1
-                else None
+                requested_data_centers[0] if len(requested_data_centers) == 1 else None
             )
             record = {
                 "gpu_type_id": gpu_type,
@@ -562,9 +558,7 @@ class RunPodRenderProvider(GpuRenderProvider):
                 blockers.append("gpu_type_not_listed")
             if not pool_capable:
                 blockers.append(
-                    "secure_cloud_unavailable"
-                    if secure_cloud
-                    else "community_cloud_unavailable"
+                    "secure_cloud_unavailable" if secure_cloud else "community_cloud_unavailable"
                 )
             if min_gpu_ram_mb and memory_gb * 1000 < min_gpu_ram_mb:
                 blockers.append("below_min_gpu_ram")
@@ -591,7 +585,9 @@ class RunPodRenderProvider(GpuRenderProvider):
         overall_confidence = (
             "advisory"
             if "advisory" in confidences
-            else "unknown" if "unknown" in confidences else "unavailable"
+            else "unknown"
+            if "unknown" in confidences
+            else "unavailable"
         )
         return {
             "status": "available" if viable else "blocked",
@@ -631,21 +627,25 @@ class RunPodRenderProvider(GpuRenderProvider):
             }
         )
         return {
-            "name": spec.name, "imageName": spec.image,
-            "gpuTypeIds": list(spec.gpu_types), "gpuTypePriority": "availability",
-            "cloudType": "SECURE", "gpuCount": spec.gpu_count,
-            "containerDiskInGb": spec.container_disk_gb, "volumeInGb": spec.volume_gb,
+            "name": spec.name,
+            "imageName": spec.image,
+            "gpuTypeIds": list(spec.gpu_types),
+            "gpuTypePriority": "availability",
+            "cloudType": "SECURE",
+            "gpuCount": spec.gpu_count,
+            "containerDiskInGb": spec.container_disk_gb,
+            "volumeInGb": spec.volume_gb,
             "volumeMountPath": spec.volume_mount_path,
-            "minVCPUPerGPU": spec.min_vcpu, "minRAMPerGPU": spec.min_ram_gb,
+            "minVCPUPerGPU": spec.min_vcpu,
+            "minRAMPerGPU": spec.min_ram_gb,
             "max_hourly_rate_usd": spec.max_hourly_rate_usd,
-            "env": environment, "dockerEntrypoint": list(spec.entrypoint),
+            "env": environment,
+            "dockerEntrypoint": list(spec.entrypoint),
             "dockerStartCmd": list(spec.bootstrap_argv),
             "blueprintStorageContract": {
                 "container_disk": "temporary_wiped_on_restart",
                 "persistent_volume": "survives_restart_bills_while_stopped",
-                "resumable_state_root": str(
-                    Path(spec.volume_mount_path) / "blueprint-resumable"
-                ),
+                "resumable_state_root": str(Path(spec.volume_mount_path) / "blueprint-resumable"),
                 "terminal_delete_pod_and_volume_required": True,
             },
         }
@@ -666,23 +666,31 @@ class RunPodRenderProvider(GpuRenderProvider):
                 resource_class="gpu_render",
             )
         except PaidResourceAdmissionBlocked as exc:
-            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
+            return {
+                "status": "blocked",
+                "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers],
+                "allocation_created": False,
+            }
         key = self._key()
         if not key:
-            return {"status": "blocked", "blockers": ["runpod_api_key_missing"], "allocation_created": False, "spend_occurred": False}
+            return {
+                "status": "blocked",
+                "blockers": ["runpod_api_key_missing"],
+                "allocation_created": False,
+                "spend_occurred": False,
+            }
         prelaunch_blockers = _runpod_render_prelaunch_guard_blockers(request)
         if prelaunch_blockers:
             return {
                 "status": "blocked",
                 "blockers": prelaunch_blockers,
                 "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard")) or None,
-                "allocation_created": False, "spend_occurred": False,
+                "allocation_created": False,
+                "spend_occurred": False,
             }
         launch_request = dict(request)
         rate_cap = _positive_float(
-            _mapping(request.get("prelaunch_spend_guard")).get(
-                "max_hourly_rate_usd"
-            )
+            _mapping(request.get("prelaunch_spend_guard")).get("max_hourly_rate_usd")
         ) or _positive_float(request.get("max_hourly_rate_usd"))
         # Internal admission/cleanup evidence is consumed locally and is not
         # part of RunPod's public Pod request schema.
@@ -697,9 +705,19 @@ class RunPodRenderProvider(GpuRenderProvider):
         launch_request.pop("requires_rtx", None)
         attempts: list[dict] = []
         if not cold and self.warm_candidates:
-            upd = {k: launch_request[k] for k in (
-                "imageName", "containerDiskInGb", "volumeInGb", "volumeMountPath",
-                "env", "dockerEntrypoint", "dockerStartCmd") if k in launch_request}
+            upd = {
+                k: launch_request[k]
+                for k in (
+                    "imageName",
+                    "containerDiskInGb",
+                    "volumeInGb",
+                    "volumeMountPath",
+                    "env",
+                    "dockerEntrypoint",
+                    "dockerStartCmd",
+                )
+                if k in launch_request
+            }
             for pid in self.warm_candidates:
                 attempt: dict = {"pod_id": pid}
                 s, get_body = _runpod_call("GET", f"/pods/{pid}", None, key=key)
@@ -714,9 +732,7 @@ class RunPodRenderProvider(GpuRenderProvider):
                     attempts.append(attempt)
                     continue
                 if rate_cap is not None:
-                    observed_rate = _positive_float(
-                        _mapping(get_body).get("costPerHr")
-                    )
+                    observed_rate = _positive_float(_mapping(get_body).get("costPerHr"))
                     if observed_rate is None or observed_rate > rate_cap:
                         attempt["rate_cap_status"] = "blocked"
                         attempt["rate_cap_usd_per_hour"] = rate_cap
@@ -764,12 +780,14 @@ class RunPodRenderProvider(GpuRenderProvider):
                         "allocation_outcome_ambiguous": True,
                     }
                 if 200 <= ss < 300:
-                    started_id_record = _record_started_id(
-                        job_dir / "started_pod_id.txt", pid
-                    )
-                    return {"status": "launched", "instance_id": pid,
-                            "mode": "warm_restart", "attempts": attempts,
-                            "started_id_record": started_id_record}
+                    started_id_record = _record_started_id(job_dir / "started_pod_id.txt", pid)
+                    return {
+                        "status": "launched",
+                        "instance_id": pid,
+                        "mode": "warm_restart",
+                        "attempts": attempts,
+                        "started_id_record": started_id_record,
+                    }
         if not cold and self.warm_candidates and not allow_cold_fallback:
             rate_blockers = [
                 str(attempt.get("rate_cap_blocker"))
@@ -778,8 +796,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             ]
             return {
                 "status": "blocked",
-                "blockers": rate_blockers
-                or ["warm_restart_failed_cold_fallback_disabled"],
+                "blockers": rate_blockers or ["warm_restart_failed_cold_fallback_disabled"],
                 "attempts": attempts,
                 "allocation_created": False,
             }
@@ -799,9 +816,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             ]
             attempts.append(
                 {
-                    "pre_mutation_rate_cap_status": (
-                        "passed" if eligible_ids else "blocked"
-                    ),
+                    "pre_mutation_rate_cap_status": ("passed" if eligible_ids else "blocked"),
                     "rate_cap_usd_per_hour": rate_cap,
                     "eligible_gpu_type_ids": eligible_ids,
                     "capacity_status": rate_preflight.get("status"),
@@ -817,18 +832,23 @@ class RunPodRenderProvider(GpuRenderProvider):
                 }
             launch_request["gpuTypeIds"] = eligible_ids
         s, r = _runpod_call("POST", "/pods", launch_request, key=key)
-        created_pid = _normalize_provider_instance_id(
-            r.get("id") if isinstance(r, dict) else None
+        created_pid = _normalize_provider_instance_id(r.get("id") if isinstance(r, dict) else None)
+        attempts.append(
+            {
+                "cold_create_status": s,
+                "pod_id": created_pid,
+                "error": r.get("error") if isinstance(r, dict) else None,
+            }
         )
-        attempts.append({"cold_create_status": s, "pod_id": created_pid,
-                         "error": r.get("error") if isinstance(r, dict) else None})
         if created_pid:
-            started_id_record = _record_started_id(
-                job_dir / "started_pod_id.txt", created_pid
-            )
-            return {"status": "launched", "instance_id": created_pid,
-                    "mode": "cold_create", "attempts": attempts,
-                    "started_id_record": started_id_record}
+            started_id_record = _record_started_id(job_dir / "started_pod_id.txt", created_pid)
+            return {
+                "status": "launched",
+                "instance_id": created_pid,
+                "mode": "cold_create",
+                "attempts": attempts,
+                "started_id_record": started_id_record,
+            }
         if s == 0:
             return {
                 "status": "blocked",
@@ -838,9 +858,7 @@ class RunPodRenderProvider(GpuRenderProvider):
                 "spend_occurred": None,
             }
         capacity_outcome = _runpod_create_capacity_unavailable(s, r)
-        explicit_rejection = bool(
-            capacity_outcome or s in {400, 401, 403, 404, 409, 422, 429}
-        )
+        explicit_rejection = bool(capacity_outcome or s in {400, 401, 403, 404, 409, 422, 429})
         if not explicit_rejection:
             return {
                 "status": "blocked",
@@ -907,9 +925,7 @@ class RunPodRenderProvider(GpuRenderProvider):
               }}
             }}
             """
-            runtime_probe_http, runtime_payload = _runpod_graphql_call(
-                query, key=key, timeout=30
-            )
+            runtime_probe_http, runtime_payload = _runpod_graphql_call(query, key=key, timeout=30)
             graphql_runtime = _mapping(
                 _mapping(_mapping(runtime_payload).get("data")).get("pod")
             ).get("runtime")
@@ -925,13 +941,10 @@ class RunPodRenderProvider(GpuRenderProvider):
             and float(runtime_uptime_seconds) >= 0.0
         )
         runtime_ready = bool(
-            runtime_present
-            and (runtime_source != "graphql" or graphql_runtime_ready)
+            runtime_present and (runtime_source != "graphql" or graphql_runtime_ready)
         )
         gpu_rows = [
-            _mapping(row)
-            for row in runtime_map.get("gpus", [])
-            if isinstance(row, Mapping)
+            _mapping(row) for row in runtime_map.get("gpus", []) if isinstance(row, Mapping)
         ]
         public_ip = str(body.get("publicIp") or "").strip()
         return {
@@ -945,9 +958,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             "runtime_probe_http": runtime_probe_http,
             "runtime_uptime_seconds": runtime_uptime_seconds,
             "gpu_util_percent": [row.get("gpuUtilPercent") for row in gpu_rows],
-            "gpu_memory_util_percent": [
-                row.get("memoryUtilPercent") for row in gpu_rows
-            ],
+            "gpu_memory_util_percent": [row.get("memoryUtilPercent") for row in gpu_rows],
             "public_ip_present": bool(public_ip),
             "machineId": body.get("machineId"),
             "costPerHr": body.get("costPerHr"),
@@ -990,8 +1001,7 @@ class RunPodRenderProvider(GpuRenderProvider):
             }
         prefix = str(name_prefix or "")
         warm_candidate_ids = {
-            str(candidate).strip() for candidate in self.warm_candidates
-            if str(candidate).strip()
+            str(candidate).strip() for candidate in self.warm_candidates if str(candidate).strip()
         }
         resources = []
         for row in rows:
@@ -1053,7 +1063,8 @@ VAST_SSH_CONTROL_ACTIONS = (
 )
 VAST_SSH_CONTROL_COMPONENTS = (
     "bootstrap",
-    "groot_server", "groot_microwave_finetune",
+    "groot_server",
+    "groot_microwave_finetune",
     "gear_sonic_controller",
     "isaac_task_executor",
     "gear_sonic_isaac_dds_bridge",
@@ -1066,8 +1077,7 @@ VAST_SSH_KNOWN_HOSTS_NAME = "vast_ssh_known_hosts"
 VAST_SSH_HOST_KEY_FINGERPRINT_NAME = "vast_ssh_host_key_fingerprint.json"
 VAST_SSH_MAX_OUTPUT_BYTES = 16_384
 VAST_SSH_OUTPUT_TRUNCATION_MARKER = (
-    "[VAST_SSH_OUTPUT_TRUNCATED: oldest redacted bytes omitted; "
-    "newest output follows]\n"
+    "[VAST_SSH_OUTPUT_TRUNCATED: oldest redacted bytes omitted; newest output follows]\n"
 )
 
 
@@ -1124,9 +1134,7 @@ def _sanitized_vast_direct_ports(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, Mapping):
         return []
     sanitized: list[dict[str, Any]] = []
-    for raw_container_port, raw_entries in sorted(
-        value.items(), key=lambda item: str(item[0])
-    ):
+    for raw_container_port, raw_entries in sorted(value.items(), key=lambda item: str(item[0])):
         match = re.fullmatch(r"(\d{1,5})(?:/(tcp|udp))?", str(raw_container_port))
         if not match:
             continue
@@ -1159,9 +1167,7 @@ def _sanitized_vast_direct_ports(value: Any) -> list[dict[str, Any]]:
 
 def _vast_ssh_connection_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
     public_ipaddr = _sanitized_vast_public_ip(row.get("public_ipaddr"))
-    direct_ports = _sanitized_vast_direct_ports(
-        row.get("ports") or row.get("port_mappings")
-    )
+    direct_ports = _sanitized_vast_direct_ports(row.get("ports") or row.get("port_mappings"))
     ssh_mapping = next(
         (
             item
@@ -1195,9 +1201,7 @@ def _vast_ssh_connection_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
         "ssh_port": ssh_port,
         "ssh_endpoint_source": ssh_endpoint_source,
         "public_ipaddr": public_ipaddr,
-        "image_runtype": _sanitized_vast_runtype(
-            row.get("image_runtype") or row.get("runtype")
-        ),
+        "image_runtype": _sanitized_vast_runtype(row.get("image_runtype") or row.get("runtype")),
         "direct_port_count": direct_port_count,
         "direct_port_ready": direct_port_ready,
         "direct_port_metadata": {
@@ -1311,9 +1315,7 @@ def _latest_redacted_vast_ssh_output(
     }
 
 
-def _latest_redacted_vast_ssh_output_fields(
-    *, stdout: Any, stderr: Any
-) -> dict[str, Any]:
+def _latest_redacted_vast_ssh_output_fields(*, stdout: Any, stderr: Any) -> dict[str, Any]:
     redacted_stdout, stdout_truncation = _latest_redacted_vast_ssh_output(stdout)
     redacted_stderr, stderr_truncation = _latest_redacted_vast_ssh_output(stderr)
     return {
@@ -1485,12 +1487,10 @@ def enroll_vast_ssh_host_key(
         if normalized in pinned_lines:
             continue
         pinned_lines.append(normalized)
-        fingerprint = base64.b64encode(hashlib.sha256(decoded_key).digest()).decode(
-            "ascii"
-        ).rstrip("=")
-        fingerprints.append(
-            {"key_type": fields[1], "sha256_fingerprint": f"SHA256:{fingerprint}"}
+        fingerprint = (
+            base64.b64encode(hashlib.sha256(decoded_key).digest()).decode("ascii").rstrip("=")
         )
+        fingerprints.append({"key_type": fields[1], "sha256_fingerprint": f"SHA256:{fingerprint}"})
     if not pinned_lines:
         return {
             "status": "blocked",
@@ -1520,9 +1520,7 @@ def enroll_vast_ssh_host_key(
         _write_private_ssh_artifact(known_hosts, known_hosts_payload)
         _write_private_ssh_artifact(
             fingerprint_path,
-            (json.dumps(fingerprint_artifact, indent=2, sort_keys=True) + "\n").encode(
-                "utf-8"
-            ),
+            (json.dumps(fingerprint_artifact, indent=2, sort_keys=True) + "\n").encode("utf-8"),
         )
     except OSError as exc:
         return {
@@ -1618,9 +1616,7 @@ def run_vast_ssh_control(
             or parsed_url.username is not None
             or parsed_url.password is not None
             or bool(parsed_url.fragment)
-            or not re.fullmatch(
-                r"[0-9a-f]{64}", str(request.get("refresh_payload_sha256") or "")
-            )
+            or not re.fullmatch(r"[0-9a-f]{64}", str(request.get("refresh_payload_sha256") or ""))
             or not isinstance(request.get("target_revision"), int)
             or int(request.get("target_revision") or 0) < 2
             or not isinstance(immutable, Mapping)
@@ -1769,6 +1765,7 @@ def run_vast_ssh_control(
         "raw_remote_output_recorded": False,
     }
 
+
 class VastRenderProvider(GpuRenderProvider):
     name = "vast"
 
@@ -1804,28 +1801,39 @@ class VastRenderProvider(GpuRenderProvider):
             f'b=gzip.decompress(base64.b64decode(os.environ.pop("{payload_env}")));'
             f'e=os.environ.pop("{digest_env}");'
             'sys.exit("vast_bootstrap_sha256_mismatch") '
-            'if hashlib.sha256(b).hexdigest()!=e else None;'
+            "if hashlib.sha256(b).hexdigest()!=e else None;"
             's=b.decode();os.execv("/bin/bash",["bash","-lc",s])\''
         )
-        return env_launcher, "gzip_base64_env", {
-            payload_env: encoded,
-            digest_env: digest,
-        }
+        return (
+            env_launcher,
+            "gzip_base64_env",
+            {
+                payload_env: encoded,
+                digest_env: digest,
+            },
+        )
 
     def _key(self) -> str | None:
         return _read_secret("vast_api_key")
 
     def available(self) -> dict:
         key = self._key()
-        return {"provider": self.name, "available": bool(key),
-                "reason": None if key else "vast_api_key_missing"}
+        return {
+            "provider": self.name,
+            "available": bool(key),
+            "reason": None if key else "vast_api_key_missing",
+        }
 
     def build_request(self, spec: RenderLaunchSpec, job_dir: Path) -> dict:
         # Reuse the proven Vast request builders so offer-search + create-instance shaping
         # stays consistent with the rest of the repo's Vast tooling.
         from .vast_provider_adapter import (
-            VAST_API_BASE, _create_payload, _search_payload,
+            VAST_API_BASE,
+            _create_payload,
+            _resolve_image_login,
+            _search_payload,
         )
+
         search_payload = _search_payload(limit=100, max_hourly_rate=spec.max_hourly_rate_usd)
         launch_mode = str(spec.vast_launch_mode or "").strip().lower()
         if launch_mode not in VAST_RENDER_LAUNCH_MODES:
@@ -1839,9 +1847,22 @@ class VastRenderProvider(GpuRenderProvider):
             script_transport = "onstart_plain"
             bootstrap_env = {}
         launch_env = {**dict(spec.env), **bootstrap_env}
+        # Resolve only the redacted credential posture here.  The raw login is
+        # injected immediately before the provider create call in ``launch`` so
+        # the portable request returned by this method remains safe to retain.
+        _, image_login_summary = _resolve_image_login(
+            image=spec.image,
+            ngc_key="",
+            docker_username=_read_secret("docker_username") or "",
+            docker_pat=_read_secret("docker_pat") or "",
+            mode="auto",
+        )
         create_payload = _create_payload(
-            image=spec.image, label=spec.name, launch_mode=launch_mode,
-            probe_script=probe_script, disk_gb=spec.container_disk_gb,
+            image=spec.image,
+            label=spec.name,
+            launch_mode=launch_mode,
+            probe_script=probe_script,
+            disk_gb=spec.container_disk_gb,
             env=launch_env,
         )
         # Vast's args runtype preserves the image ENTRYPOINT unless ``onstart``
@@ -1869,7 +1890,8 @@ class VastRenderProvider(GpuRenderProvider):
             "search_payload": search_payload,
             "create_endpoint": "PUT /asks/{ask_contract_id}/",
             "create_payload": create_payload,
-            "image": spec.image, "disk": spec.container_disk_gb,
+            "image": spec.image,
+            "disk": spec.container_disk_gb,
             "min_gpu_ram_mb": spec.min_gpu_ram_mb,
             "max_hourly_rate_usd": spec.max_hourly_rate_usd,
             "requires_rtx": spec.requires_rtx,
@@ -1877,6 +1899,7 @@ class VastRenderProvider(GpuRenderProvider):
             "require_direct_port": require_direct_port,
             "bootstrap_transport": script_transport,
             "bootstrap_transport_env_keys": sorted(bootstrap_env),
+            "image_login_summary": image_login_summary,
             "entrypoint_override": entrypoint_override,
             "bootstrap_source_length": len(spec.bootstrap_script),
             "provider_args_length": len(str(create_payload.get("args_str") or "")),
@@ -1911,9 +1934,7 @@ class VastRenderProvider(GpuRenderProvider):
         max_rate = _positive_float(req.get("max_hourly_rate_usd")) or 5.0
         min_ram = _positive_int(req.get("min_gpu_ram_mb")) or 0
         min_reliability = _positive_float(req.get("min_reliability")) or 0.0
-        require_known_driver = (
-            req.get("require_known_supported_isaac_driver") is True
-        )
+        require_known_driver = req.get("require_known_supported_isaac_driver") is True
         require_avx = req.get("require_avx") is True
         require_direct_port = req.get("require_direct_port") is True
         preferred_gpu_keywords = _string_list(req.get("preferred_gpu_keywords"))
@@ -1983,9 +2004,7 @@ class VastRenderProvider(GpuRenderProvider):
                 {
                     **summary,
                     "gpu_type_id": summary.get("gpu_name"),
-                    "on_demand_price_usd_per_hour": summary.get(
-                        "hourly_rate_usd"
-                    ),
+                    "on_demand_price_usd_per_hour": summary.get("hourly_rate_usd"),
                     "capacity_confidence": "advisory",
                     "reservation_proven": False,
                 }
@@ -2034,23 +2053,36 @@ class VastRenderProvider(GpuRenderProvider):
                 resource_class="gpu_render",
             )
         except PaidResourceAdmissionBlocked as exc:
-            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
+            return {
+                "status": "blocked",
+                "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers],
+                "allocation_created": False,
+            }
         key = self._key()
         if not key:
-            return {"status": "blocked", "blockers": ["vast_api_key_missing"], "allocation_created": False, "spend_occurred": False}
-        prelaunch_blockers = _render_prelaunch_guard_blockers(
-            request, provider_name="vast"
-        )
+            return {
+                "status": "blocked",
+                "blockers": ["vast_api_key_missing"],
+                "allocation_created": False,
+                "spend_occurred": False,
+            }
+        prelaunch_blockers = _render_prelaunch_guard_blockers(request, provider_name="vast")
         if prelaunch_blockers:
             return {
                 "status": "blocked",
                 "blockers": prelaunch_blockers,
                 "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard")) or None,
-                "allocation_created": False, "spend_occurred": False,
+                "allocation_created": False,
+                "spend_occurred": False,
             }
         from .vast_provider_adapter import (
-            _api_json, _offer_id, _offers_from_response, _select_offer,
+            _api_json,
+            _offer_id,
+            _offers_from_response,
+            _resolve_image_login,
+            _select_offer,
         )
+
         attempts: list[dict] = []
         search_payload = request.get("search_payload") or {}
         max_rate = float(request.get("max_hourly_rate_usd") or 2.0)
@@ -2059,23 +2091,28 @@ class VastRenderProvider(GpuRenderProvider):
         require_avx = request.get("require_avx") is True
         launch_mode = str(request.get("vast_launch_mode") or "args")
         require_direct_port = (
-            request.get("require_direct_port") is True
-            or launch_mode == "ssh_direct"
+            request.get("require_direct_port") is True or launch_mode == "ssh_direct"
         )
-        require_known_driver = (
-            request.get("require_known_supported_isaac_driver") is True
-        )
-        preferred_gpu_keywords = _string_list(
-            request.get("preferred_gpu_keywords")
-        )
+        require_known_driver = request.get("require_known_supported_isaac_driver") is True
+        preferred_gpu_keywords = _string_list(request.get("preferred_gpu_keywords"))
         if require_avx:
             search_payload = {**search_payload, "has_avx": {"eq": True}}
         try:
-            s, resp = _api_json(method="POST", path="/bundles/", api_key=key,
-                                payload=search_payload, timeout_seconds=45)
+            s, resp = _api_json(
+                method="POST",
+                path="/bundles/",
+                api_key=key,
+                payload=search_payload,
+                timeout_seconds=45,
+            )
         except Exception as e:  # noqa: BLE001
-            return {"status": "blocked", "blockers": ["vast_offer_search_failed"],
-                    "error": repr(e)[:200], "allocation_created": False, "spend_occurred": False}
+            return {
+                "status": "blocked",
+                "blockers": ["vast_offer_search_failed"],
+                "error": repr(e)[:200],
+                "allocation_created": False,
+                "spend_occurred": False,
+            }
         offers = _offers_from_response(resp)
         attempts.append(
             {
@@ -2084,10 +2121,28 @@ class VastRenderProvider(GpuRenderProvider):
                 "require_avx": require_avx,
             }
         )
-        create_payload = request.get("create_payload") or {}
+        create_payload = dict(request.get("create_payload") or {})
+        if not create_payload.get("image_login"):
+            image_login, image_login_summary = _resolve_image_login(
+                image=str(request.get("image") or create_payload.get("image") or ""),
+                ngc_key="",
+                docker_username=_read_secret("docker_username") or "",
+                docker_pat=_read_secret("docker_pat") or "",
+                mode="auto",
+            )
+            if image_login_summary.get("reason") == "docker_pat_missing":
+                return {
+                    "status": "blocked",
+                    "blockers": ["vast_image_login_unavailable"],
+                    "image_login_summary": image_login_summary,
+                    "allocation_created": False,
+                    "spend_occurred": False,
+                }
+            if image_login:
+                create_payload["image_login"] = image_login
         # Offers go stale between search and create (bundle staging can take minutes),
-        # and a stale ask 400s. Walk up to 3 candidate offers before giving up so one
-        # expired ask can't dud the whole provider in a race.
+        # and a stale ask can return 400 or 410. Walk up to 3 candidate offers before
+        # giving up so one expired ask cannot dud the whole provider in a race.
         remaining = list(offers)
         last_blocker = "no_vast_offer_matching_rate_and_gpu_memory"
         for _try in range(3):
@@ -2118,8 +2173,13 @@ class VastRenderProvider(GpuRenderProvider):
                 != ask_id
             ]
             try:
-                cs, cresp = _api_json(method="PUT", path=f"/asks/{ask_id}/", api_key=key,
-                                      payload=create_payload, timeout_seconds=45)
+                cs, cresp = _api_json(
+                    method="PUT",
+                    path=f"/asks/{ask_id}/",
+                    api_key=key,
+                    payload=create_payload,
+                    timeout_seconds=45,
+                )
             except urllib.error.HTTPError as e:
                 body = ""
                 try:
@@ -2130,11 +2190,16 @@ class VastRenderProvider(GpuRenderProvider):
                     )
                 except Exception:  # noqa: BLE001
                     pass
-                attempts.append({"create_http_status": e.code, "ask_id": ask_id,
-                                 "create_error_body": body,
-                                 "gpu_name": offer.get("gpu_name"),
-                                 "has_avx": offer.get("has_avx")})
-                if e.code not in {400, 404, 409, 422}:
+                attempts.append(
+                    {
+                        "create_http_status": e.code,
+                        "ask_id": ask_id,
+                        "create_error_body": body,
+                        "gpu_name": offer.get("gpu_name"),
+                        "has_avx": offer.get("has_avx"),
+                    }
+                )
+                if e.code not in {400, 404, 409, 410, 422}:
                     return {
                         "status": "blocked",
                         "blockers": ["vast_create_outcome_ambiguous"],
@@ -2154,22 +2219,30 @@ class VastRenderProvider(GpuRenderProvider):
             iid = None
             if isinstance(cresp, dict):
                 for k in ("new_contract", "instance_id", "id"):
-                    iid = _normalize_provider_instance_id(
-                        cresp.get(k), numeric_only=True
-                    )
+                    iid = _normalize_provider_instance_id(cresp.get(k), numeric_only=True)
                     if iid:
                         break
-            attempts.append({"create_status": cs, "instance_id": iid,
-                             "gpu_name": offer.get("gpu_name"),
-                             "has_avx": offer.get("has_avx"),
-                             "hourly_rate_usd": offer.get("hourly_rate_usd")})
+            attempts.append(
+                {
+                    "create_status": cs,
+                    "instance_id": iid,
+                    "gpu_name": offer.get("gpu_name"),
+                    "has_avx": offer.get("has_avx"),
+                    "hourly_rate_usd": offer.get("hourly_rate_usd"),
+                }
+            )
             if iid:
                 started_id_record = _record_started_id(
                     job_dir / "started_vast_instance_id.txt", iid
                 )
-                return {"status": "launched", "instance_id": iid, "mode": "vast_on_demand",
-                        "vast_launch_mode": launch_mode,
-                        "attempts": attempts, "started_id_record": started_id_record}
+                return {
+                    "status": "launched",
+                    "instance_id": iid,
+                    "mode": "vast_on_demand",
+                    "vast_launch_mode": launch_mode,
+                    "attempts": attempts,
+                    "started_id_record": started_id_record,
+                }
             if cs not in {400, 404, 409, 422}:
                 return {
                     "status": "blocked",
@@ -2187,9 +2260,7 @@ class VastRenderProvider(GpuRenderProvider):
 
     def inspect(self, instance_id: str) -> dict:
         """Read one Vast instance without exposing its runtime secrets."""
-        normalized_id = _normalize_provider_instance_id(
-            instance_id, numeric_only=True
-        )
+        normalized_id = _normalize_provider_instance_id(instance_id, numeric_only=True)
         if normalized_id is None:
             return {
                 "status": "blocked",
@@ -2251,9 +2322,7 @@ class VastRenderProvider(GpuRenderProvider):
                 "api_confirmed": False,
                 "raw_provider_response_recorded": False,
             }
-        if status in {404, 410} or (
-            status == 200 and response.get("instances", {}) is None
-        ):
+        if status in {404, 410} or (status == 200 and response.get("instances", {}) is None):
             return {
                 "status": "absent",
                 "provider": self.name,
@@ -2391,20 +2460,14 @@ class VastRenderProvider(GpuRenderProvider):
         names_by_id: dict[str, str] = {}
         for raw_row in _instance_list_rows(response):
             raw_id = _normalize_provider_instance_id(
-                raw_row.get("id")
-                or raw_row.get("instance_id")
-                or raw_row.get("contract_id"),
+                raw_row.get("id") or raw_row.get("instance_id") or raw_row.get("contract_id"),
                 numeric_only=True,
             )
             if raw_id:
-                names_by_id[raw_id] = str(
-                    raw_row.get("label") or raw_row.get("name") or ""
-                )
+                names_by_id[raw_id] = str(raw_row.get("label") or raw_row.get("name") or "")
         resources: list[dict[str, Any]] = []
         for row in _active_instance_rows_from_payload(response):
-            resource_id = _normalize_provider_instance_id(
-                row.get("id"), numeric_only=True
-            )
+            resource_id = _normalize_provider_instance_id(row.get("id"), numeric_only=True)
             name = names_by_id.get(resource_id or "", "")
             if prefix and not name.startswith(prefix):
                 continue
@@ -2440,9 +2503,11 @@ class VastRenderProvider(GpuRenderProvider):
         if not key:
             return {"status": "blocked", "blockers": ["vast_api_key_missing"]}
         from .vast_provider_adapter import _api_json
+
         try:
-            s, _ = _api_json(method="DELETE", path=f"/instances/{instance_id}/",
-                             api_key=key, timeout_seconds=30)
+            s, _ = _api_json(
+                method="DELETE", path=f"/instances/{instance_id}/", api_key=key, timeout_seconds=30
+            )
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return {"status": "stopped", "http": e.code, "already_gone": True}
@@ -2459,9 +2524,9 @@ class VastRenderProvider(GpuRenderProvider):
 # ----------------------------- DigitalOcean GPU Droplets -----------------------------
 
 DO_API = "https://api.digitalocean.com/v2"
-DEFAULT_DO_GPU_SIZE = "gpu-6000adax1-48gb"   # RTX 6000 Ada: 3rd-gen RT cores + 48GB, $1.57/hr
-DEFAULT_DO_GPU_REGION = "atl1"               # GPU droplet regions: nyc2, tor1, atl1, ric1, ams3
-DO_GPU_BASE_IMAGE = "gpu-h100x1-base"        # "NVIDIA AI/ML Ready": Ubuntu + drivers + docker
+DEFAULT_DO_GPU_SIZE = "gpu-6000adax1-48gb"  # RTX 6000 Ada: 3rd-gen RT cores + 48GB, $1.57/hr
+DEFAULT_DO_GPU_REGION = "atl1"  # GPU droplet regions: nyc2, tor1, atl1, ric1, ams3
+DO_GPU_BASE_IMAGE = "gpu-h100x1-base"  # "NVIDIA AI/ML Ready": Ubuntu + drivers + docker
 DEFAULT_DO_GPU_SIZE_CANDIDATES = (
     DEFAULT_DO_GPU_SIZE,
     "gpu-l40sx1-48gb",
@@ -2509,13 +2574,13 @@ _DO_API_POLICY = safe_outbound_http.pinned_api_policy(DO_API)
 def _do_call(method: str, path: str, body: dict | None = None, *, token: str, timeout: int = 90):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
-        DO_API + path, data=data, method=method,
+        DO_API + path,
+        data=data,
+        method=method,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     try:
-        r = safe_outbound_http.open_request(
-            req, policy=_DO_API_POLICY, timeout_seconds=timeout
-        )
+        r = safe_outbound_http.open_request(req, policy=_DO_API_POLICY, timeout_seconds=timeout)
         raw = r.body.decode()
         return r.status, (json.loads(raw) if raw.strip() else {})
     except urllib.error.HTTPError as e:
@@ -2659,17 +2724,21 @@ def _filter_do_size_candidates_by_budget(
     for size in size_candidates:
         hourly = DO_GPU_HOURLY_RATE_USD.get(size)
         if hourly is None:
-            rejected.append({
-                "size": size,
-                "reason": "unknown_hourly_rate",
-            })
+            rejected.append(
+                {
+                    "size": size,
+                    "reason": "unknown_hourly_rate",
+                }
+            )
             continue
         if hourly > max_hourly:
-            rejected.append({
-                "size": size,
-                "hourly_rate_usd": hourly,
-                "reason": "over_max_hourly_rate",
-            })
+            rejected.append(
+                {
+                    "size": size,
+                    "hourly_rate_usd": hourly,
+                    "reason": "over_max_hourly_rate",
+                }
+            )
             continue
         allowed.append(size)
     return allowed, {
@@ -2703,19 +2772,23 @@ def _filter_do_size_candidates_by_gpu_ram(
     for size in size_candidates:
         gpu_ram_mb = DO_GPU_SIZE_VRAM_MB.get(size)
         if gpu_ram_mb is None:
-            rejected.append({
-                "size": size,
-                "min_gpu_ram_mb": min_gpu_ram_mb,
-                "reason": "unknown_gpu_ram",
-            })
+            rejected.append(
+                {
+                    "size": size,
+                    "min_gpu_ram_mb": min_gpu_ram_mb,
+                    "reason": "unknown_gpu_ram",
+                }
+            )
             continue
         if gpu_ram_mb < min_gpu_ram_mb:
-            rejected.append({
-                "size": size,
-                "gpu_ram_mb": gpu_ram_mb,
-                "min_gpu_ram_mb": min_gpu_ram_mb,
-                "reason": "below_min_gpu_ram",
-            })
+            rejected.append(
+                {
+                    "size": size,
+                    "gpu_ram_mb": gpu_ram_mb,
+                    "min_gpu_ram_mb": min_gpu_ram_mb,
+                    "reason": "below_min_gpu_ram",
+                }
+            )
             continue
         allowed.append(size)
     return allowed, {
@@ -2777,8 +2850,7 @@ def _configured_do_ssh_key_ids() -> tuple[list[int | str], dict]:
             "account_lookup_performed": False,
         }
     path = Path(
-        (os.getenv(DO_SSH_KEY_IDS_FILE_ENV) or "").strip()
-        or DEFAULT_DO_SSH_KEY_IDS_FILE
+        (os.getenv(DO_SSH_KEY_IDS_FILE_ENV) or "").strip() or DEFAULT_DO_SSH_KEY_IDS_FILE
     ).expanduser()
     if path.is_file():
         configured = path.read_text(encoding="utf-8").strip()
@@ -2861,8 +2933,11 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
 
     def available(self) -> dict:
         ok = self._token() is not None
-        return {"provider": self.name, "available": ok,
-                "reason": None if ok else "digitalocean_token_missing"}
+        return {
+            "provider": self.name,
+            "available": ok,
+            "reason": None if ok else "digitalocean_token_missing",
+        }
 
     def build_request(self, spec: RenderLaunchSpec, job_dir: Path) -> dict:
         import os
@@ -2912,8 +2987,8 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             size_candidates,
             req,
         )
-        size_candidates, render_capability_policy = (
-            _filter_do_size_candidates_by_render_capability(size_candidates, req)
+        size_candidates, render_capability_policy = _filter_do_size_candidates_by_render_capability(
+            size_candidates, req
         )
         region_candidates = _do_region_candidates(initial_region)
         if not size_candidates:
@@ -3029,19 +3104,20 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                 resource_class="gpu_render",
             )
         except PaidResourceAdmissionBlocked as exc:
-            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
+            return {
+                "status": "blocked",
+                "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers],
+                "allocation_created": False,
+            }
         token = self._token()
         if not token:
             return {"status": "blocked", "blockers": ["digitalocean_token_missing"]}
-        prelaunch_blockers = _render_prelaunch_guard_blockers(
-            request, provider_name="digitalocean"
-        )
+        prelaunch_blockers = _render_prelaunch_guard_blockers(request, provider_name="digitalocean")
         if prelaunch_blockers:
             return {
                 "status": "blocked",
                 "blockers": prelaunch_blockers,
-                "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard"))
-                or None,
+                "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard")) or None,
             }
         launch_request = dict(request)
         launch_request.pop("prelaunch_spend_guard", None)
@@ -3052,19 +3128,13 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
         min_gpu_ram_mb = _requested_do_min_gpu_ram_mb(launch_request)
         launch_request.pop("min_gpu_ram_mb", None)
         requires_rtx = launch_request.pop("requires_rtx", True) is not False
-        budget_request = {
-            "max_hourly_rate_usd": launch_request.pop("max_hourly_rate_usd", None)
-        }
+        budget_request = {"max_hourly_rate_usd": launch_request.pop("max_hourly_rate_usd", None)}
         size_filter_request = {
             **budget_request,
             "min_gpu_ram_mb": min_gpu_ram_mb,
             "requires_rtx": requires_rtx,
         }
-        if (
-            isinstance(worker_env, dict)
-            and worker_image
-            and isinstance(bootstrap_argv, list)
-        ):
+        if isinstance(worker_env, dict) and worker_image and isinstance(bootstrap_argv, list):
             launch_request["user_data"] = _do_user_data(
                 RenderLaunchSpec(
                     name=str(launch_request.get("name") or "blueprint-isaac-g1-kitchen-parity"),
@@ -3101,11 +3171,9 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
             size_candidates,
             size_filter_request,
         )
-        size_candidates, render_capability_policy = (
-            _filter_do_size_candidates_by_render_capability(
-                size_candidates,
-                size_filter_request,
-            )
+        size_candidates, render_capability_policy = _filter_do_size_candidates_by_render_capability(
+            size_candidates,
+            size_filter_request,
         )
         if not size_candidates:
             blockers = ["digitalocean_gpu_size_below_min_vram"]
@@ -3126,19 +3194,19 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
                 attempt_request = dict(launch_request, size=size, region=region)
                 s, body = _do_call("POST", "/droplets", attempt_request, token=token)
                 droplet = _mapping(_mapping(body).get("droplet"))
-                iid = _normalize_provider_instance_id(
-                    droplet.get("id"), numeric_only=True
-                )
+                iid = _normalize_provider_instance_id(droplet.get("id"), numeric_only=True)
                 if s in (201, 202) and iid:
                     started_id_record = _record_started_id(
                         Path(job_dir) / "started_do_droplet_id.txt", iid
                     )
-                    create_attempts.append({
-                        "create_status": s,
-                        "droplet_id": iid,
-                        "size": size,
-                        "region": region,
-                    })
+                    create_attempts.append(
+                        {
+                            "create_status": s,
+                            "droplet_id": iid,
+                            "size": size,
+                            "region": region,
+                        }
+                    )
                     return {
                         "status": "launched",
                         "instance_id": iid,
@@ -3201,14 +3269,20 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
     def inspect(self, instance_id: str) -> dict:
         token = self._token()
         if not token:
-            return {"status": "unavailable", "reason": "digitalocean_token_missing",
-                    "instance_id": instance_id}
+            return {
+                "status": "unavailable",
+                "reason": "digitalocean_token_missing",
+                "instance_id": instance_id,
+            }
         s, body = _do_call("GET", f"/droplets/{instance_id}", token=token)
         droplet = (body or {}).get("droplet") if isinstance(body, dict) else None
-        return {"status": "ok" if s == 200 else "unavailable", "http": s,
-                "instance_id": instance_id,
-                "droplet_status": (droplet or {}).get("status"),
-                "raw_provider_response_recorded": False}
+        return {
+            "status": "ok" if s == 200 else "unavailable",
+            "http": s,
+            "instance_id": instance_id,
+            "droplet_status": (droplet or {}).get("status"),
+            "raw_provider_response_recorded": False,
+        }
 
     def billable_inventory(self, *, name_prefix: str) -> dict:
         token = self._token()
@@ -3268,11 +3342,15 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
         token = self._token()
         if not token:
             return {"status": "blocked", "blockers": ["digitalocean_token_missing"]}
-        s, _body = _do_call("POST", f"/droplets/{instance_id}/actions",
-                            {"type": "power_off"}, token=token)
-        return {"status": "stopped" if s in (200, 201) else "stop_failed", "http": s,
-                "warning": "powered-off droplets keep full billing until destroyed; "
-                           "use terminate() to stop spend"}
+        s, _body = _do_call(
+            "POST", f"/droplets/{instance_id}/actions", {"type": "power_off"}, token=token
+        )
+        return {
+            "status": "stopped" if s in (200, 201) else "stop_failed",
+            "http": s,
+            "warning": "powered-off droplets keep full billing until destroyed; "
+            "use terminate() to stop spend",
+        }
 
     def terminate(self, instance_id: str) -> dict:
         token = self._token()
@@ -3284,7 +3362,9 @@ class DigitalOceanRenderProvider(GpuRenderProvider):
         return {"status": "terminate_failed", "http": s}
 
 
-def get_render_provider(name: str | None, *, warm_candidates: Sequence[str] = ()) -> GpuRenderProvider:
+def get_render_provider(
+    name: str | None, *, warm_candidates: Sequence[str] = ()
+) -> GpuRenderProvider:
     key = (name or "runpod").strip().lower()
     if key == "runpod":
         return RunPodRenderProvider(warm_candidates=warm_candidates)
@@ -3294,19 +3374,21 @@ def get_render_provider(name: str | None, *, warm_candidates: Sequence[str] = ()
         return DigitalOceanRenderProvider()
     if key == "gcp":
         from .cloud_vm_render_providers import GCPRenderProvider
+
         return GCPRenderProvider()
     if key == "aws":
         from .cloud_vm_render_providers import AWSRenderProvider
+
         return AWSRenderProvider()
     raise ValueError(
-        f"unknown_render_provider:{name!r} "
-        "(known: runpod, vast, digitalocean, gcp, aws)"
+        f"unknown_render_provider:{name!r} (known: runpod, vast, digitalocean, gcp, aws)"
     )
 
 
 def list_render_providers() -> list[dict]:
     """Report each provider and whether its credentials are present in this env."""
     from .cloud_vm_render_providers import AWSRenderProvider, GCPRenderProvider
+
     return [
         RunPodRenderProvider().available(),
         VastRenderProvider().available(),

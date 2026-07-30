@@ -4,6 +4,7 @@ Covers: the neutral RenderLaunchSpec, the registry, per-provider request transla
 (RunPod pod body vs Vast offer-search/create-instance), credential availability, the
 fail-closed no-spend guards, and provider-parameterized teardown.
 """
+
 from __future__ import annotations
 
 import base64
@@ -61,6 +62,7 @@ def _issue_test_only_provider_grant(monkeypatch: pytest.MonkeyPatch) -> None:
         expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
     )
     for provider_class, original in _ORIGINAL_PROVIDER_LAUNCHES.items():
+
         def granted_launch(self, *args, _original=original, **kwargs):
             kwargs.setdefault("paid_resource_admission_grant", grant)
             return _original(self, *args, **kwargs)
@@ -127,6 +129,7 @@ def _with_prelaunch_guard(request: dict) -> dict:
 
 # ----------------------------- spec + registry -----------------------------
 
+
 def test_render_launch_spec_bootstrap_script_is_last_argv() -> None:
     spec = _spec(bootstrap_argv=["-lc", "the-script-body"])
     assert spec.bootstrap_script == "the-script-body"
@@ -155,6 +158,7 @@ def test_list_render_providers_reports_both_with_availability() -> None:
 
 # ----------------------------- RunPod translation -----------------------------
 
+
 def test_runpod_build_request_is_pod_body(tmp_path: Path) -> None:
     body = RunPodRenderProvider().build_request(_spec(), tmp_path)
     assert body["imageName"] == "img:tag"
@@ -167,9 +171,7 @@ def test_runpod_build_request_is_pod_body(tmp_path: Path) -> None:
     assert body["max_hourly_rate_usd"] == pytest.approx(5.0)
     assert body["env"]["BLUEPRINT_RUNPOD_CONTAINER_DISK_EPHEMERAL"] == "1"
     assert body["env"]["BLUEPRINT_RESUMABLE_STATE_ROOT"].startswith("/workspace/")
-    assert body["blueprintStorageContract"]["persistent_volume"].startswith(
-        "survives_restart"
-    )
+    assert body["blueprintStorageContract"]["persistent_volume"].startswith("survives_restart")
 
 
 def test_runpod_launch_strips_local_capability_filters_before_create(
@@ -183,9 +185,7 @@ def test_runpod_launch_strips_local_capability_filters_before_create(
             return 400, {"error": "no capacity"}
         raise AssertionError((method, path))
 
-    monkeypatch.setattr(
-        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
-    )
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
     monkeypatch.setattr(
         RunPodRenderProvider,
         "_key",
@@ -290,8 +290,7 @@ def test_runpod_capacity_preflight_requires_secure_rtx_stock(monkeypatch) -> Non
     assert result["viable_gpu_types"][0]["available_gpu_counts"] == []
     assert result["viable_gpu_types"][0]["single_gpu_offer_available"] is True
     a6000 = next(
-        row for row in result["considered_gpu_types"]
-        if row["gpu_type_id"] == "NVIDIA RTX A6000"
+        row for row in result["considered_gpu_types"] if row["gpu_type_id"] == "NVIDIA RTX A6000"
     )
     assert "single_gpu_stock_unavailable" in a6000["blockers"]
 
@@ -340,9 +339,7 @@ def test_runpod_capacity_preflight_scopes_price_and_stock_to_data_center(
     assert result["requested_data_center_ids"] == ["US-TX-3"]
     assert result["requested_allowed_cuda_versions"] == ["12.6"]
     assert result["viable_gpu_types"][0]["capacity_data_center_id"] == "US-TX-3"
-    assert result["viable_gpu_types"][0]["capacity_allowed_cuda_versions"] == [
-        "12.6"
-    ]
+    assert result["viable_gpu_types"][0]["capacity_allowed_cuda_versions"] == ["12.6"]
 
 
 def test_runpod_capacity_preflight_supports_explicit_community_pool(monkeypatch) -> None:
@@ -682,9 +679,7 @@ def test_runpod_rechecks_and_filters_rate_cap_before_cold_create(
         sent.update(body)
         return 201, {"id": "pod-1"}
 
-    monkeypatch.setattr(
-        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
-    )
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
     request = _guarded_runpod_request(
         gpuTypeIds=["NVIDIA A40", "NVIDIA L40S"],
         max_hourly_rate_usd=0.5,
@@ -697,9 +692,7 @@ def test_runpod_rechecks_and_filters_rate_cap_before_cold_create(
     assert "max_hourly_rate_usd" not in sent
 
 
-def test_runpod_blocks_when_fresh_price_cannot_meet_rate_cap(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_runpod_blocks_when_fresh_price_cannot_meet_rate_cap(tmp_path: Path, monkeypatch) -> None:
     provider = RunPodRenderProvider()
     monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
     monkeypatch.setattr(
@@ -731,9 +724,7 @@ def test_runpod_blocks_when_fresh_price_cannot_meet_rate_cap(
     assert result["blockers"] == ["runpod_pre_mutation_rate_cap_unverified"]
 
 
-def test_runpod_warm_rate_cap_blocks_before_start_mutation(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_runpod_warm_rate_cap_blocks_before_start_mutation(tmp_path: Path, monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
 
     def fake_call(method, path, body, *, key, timeout=90):
@@ -746,9 +737,7 @@ def test_runpod_warm_rate_cap_blocks_before_start_mutation(
         }
 
     monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
-    monkeypatch.setattr(
-        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
-    )
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
     request = _guarded_runpod_request()
     request["prelaunch_spend_guard"]["max_hourly_rate_usd"] = 0.5
 
@@ -761,9 +750,7 @@ def test_runpod_warm_rate_cap_blocks_before_start_mutation(
 
     assert result["status"] == "blocked"
     assert result["allocation_created"] is False
-    assert result["blockers"] == [
-        "runpod_warm_hourly_rate_exceeds_spend_cap"
-    ]
+    assert result["blockers"] == ["runpod_warm_hourly_rate_exceeds_spend_cap"]
     assert calls == [("GET", "/pods/warm-1")]
 
 
@@ -798,7 +785,9 @@ def test_runpod_launch_classifies_create_resource_500_as_capacity(
     assert result["attempts"][0]["pod_id"] is None
 
 
-def test_runpod_warm_start_rejection_is_recorded_before_cold_fallback(tmp_path: Path, monkeypatch) -> None:
+def test_runpod_warm_start_rejection_is_recorded_before_cold_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
     calls: list[tuple[str, str]] = []
 
     def fake_key(_self):
@@ -876,7 +865,9 @@ def test_runpod_warm_only_blocks_without_cold_create(tmp_path: Path, monkeypatch
     assert ("POST", "/pods") not in calls
 
 
-def test_runpod_warm_update_failure_does_not_start_stale_command(tmp_path: Path, monkeypatch) -> None:
+def test_runpod_warm_update_failure_does_not_start_stale_command(
+    tmp_path: Path, monkeypatch
+) -> None:
     calls: list[tuple[str, str]] = []
 
     def fake_key(_self):
@@ -938,9 +929,7 @@ def test_runpod_warm_mutation_lost_response_never_falls_back_to_cold_create(
         raise AssertionError((method, path, body))
 
     monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
-    monkeypatch.setattr(
-        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
-    )
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
 
     result = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
         tmp_path, _guarded_runpod_request(), cold=False
@@ -969,9 +958,7 @@ def test_runpod_generic_start_conflict_is_ambiguous_not_cold_fallback(
         raise AssertionError((method, path, body))
 
     monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
-    monkeypatch.setattr(
-        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
-    )
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
 
     result = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
         tmp_path, _guarded_runpod_request(), cold=False
@@ -981,9 +968,7 @@ def test_runpod_generic_start_conflict_is_ambiguous_not_cold_fallback(
     assert ("POST", "/pods") not in calls
 
 
-def test_runpod_warm_start_accepts_any_successful_2xx_response(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_runpod_warm_start_accepts_any_successful_2xx_response(tmp_path: Path, monkeypatch) -> None:
     def fake_call(method, path, body, *, key, timeout=90):
         if path == "/pods/warm-1" and method == "GET":
             return 200, {"id": "warm-1", "desiredStatus": "STOPPED"}
@@ -994,9 +979,7 @@ def test_runpod_warm_start_accepts_any_successful_2xx_response(
         raise AssertionError((method, path, body))
 
     monkeypatch.setattr(RunPodRenderProvider, "_key", lambda _self: "rp-key")
-    monkeypatch.setattr(
-        "blueprint_pipeline.gpu_render_providers._runpod_call", fake_call
-    )
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_call", fake_call)
 
     result = RunPodRenderProvider(warm_candidates=("warm-1",)).launch(
         tmp_path, _guarded_runpod_request(), cold=False
@@ -1019,9 +1002,7 @@ def test_runpod_cold_create_lost_response_is_not_explicit_no_allocation(
         ),
     )
 
-    result = RunPodRenderProvider().launch(
-        tmp_path, _guarded_runpod_request(), cold=True
-    )
+    result = RunPodRenderProvider().launch(tmp_path, _guarded_runpod_request(), cold=True)
 
     assert result["status"] == "blocked"
     assert result["blockers"] == ["runpod_create_outcome_ambiguous"]
@@ -1046,9 +1027,7 @@ def test_runpod_no_id_without_definitive_rejection_is_ambiguous(
         lambda method, path, request, *, key, timeout=90: (status, body),
     )
 
-    result = RunPodRenderProvider().launch(
-        tmp_path, _guarded_runpod_request(), cold=True
-    )
+    result = RunPodRenderProvider().launch(tmp_path, _guarded_runpod_request(), cold=True)
 
     assert result["blockers"] == ["runpod_create_outcome_ambiguous"]
     assert result["allocation_outcome_ambiguous"] is True
@@ -1068,9 +1047,7 @@ def test_runpod_malformed_success_id_is_ambiguous(
         lambda *_args, **_kwargs: (201, {"id": malformed_id}),
     )
 
-    result = RunPodRenderProvider().launch(
-        tmp_path, _guarded_runpod_request(), cold=True
-    )
+    result = RunPodRenderProvider().launch(tmp_path, _guarded_runpod_request(), cold=True)
 
     assert result["status"] == "blocked"
     assert result["blockers"] == ["runpod_create_outcome_ambiguous"]
@@ -1168,18 +1145,14 @@ def test_runpod_inspect_uses_graphql_runtime_fallback(monkeypatch) -> None:
                 "pod": {
                     "runtime": {
                         "uptimeInSeconds": 17,
-                        "gpus": [
-                            {"gpuUtilPercent": 83, "memoryUtilPercent": 61}
-                        ],
+                        "gpus": [{"gpuUtilPercent": 83, "memoryUtilPercent": 61}],
                         "container": {"cpuPercent": 12, "memoryPercent": 4},
                     }
                 }
             }
         }
 
-    monkeypatch.setattr(
-        "blueprint_pipeline.gpu_render_providers._runpod_graphql_call", graphql
-    )
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers._runpod_graphql_call", graphql)
 
     result = RunPodRenderProvider().inspect("pod-1")
 
@@ -1212,9 +1185,7 @@ def test_runpod_inspect_negative_graphql_uptime_is_not_runtime_ready(
                     "pod": {
                         "runtime": {
                             "uptimeInSeconds": -7,
-                            "gpus": [
-                                {"gpuUtilPercent": 0, "memoryUtilPercent": 0}
-                            ],
+                            "gpus": [{"gpuUtilPercent": 0, "memoryUtilPercent": 0}],
                         }
                     }
                 }
@@ -1230,6 +1201,7 @@ def test_runpod_inspect_negative_graphql_uptime_is_not_runtime_ready(
 
 
 # ----------------------------- Vast translation -----------------------------
+
 
 def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:
     spec = _spec()
@@ -1259,6 +1231,101 @@ def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:
     assert req["require_direct_port"] is False
 
 
+def test_vast_private_docker_login_is_injected_only_at_create(tmp_path: Path, monkeypatch) -> None:
+    import blueprint_pipeline.gpu_render_providers as providers
+
+    secret_values = {
+        "docker_username": "private-owner",
+        "docker_pat": "docker-pat-must-not-be-recorded",
+    }
+    monkeypatch.setattr(providers, "_read_secret", lambda name: secret_values.get(name))
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
+    captured_create_payload: dict = {}
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        if method == "POST":
+            return 200, {"offers": ["raw"]}
+        captured_create_payload.update(payload or {})
+        return 200, {"new_contract": 777}
+
+    offer = {
+        "ask_contract_id": "ask-private",
+        "gpu_name": "RTX 4090",
+        "hourly_rate_usd": 0.4,
+    }
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._offers_from_response",
+        lambda _response: [offer],
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._select_offer",
+        lambda offers, **_kwargs: offers[0] if offers else None,
+    )
+
+    provider = VastRenderProvider()
+    request = provider.build_request(
+        _spec(image="docker.io/private-owner/private-image@sha256:abc"), tmp_path
+    )
+
+    assert request["image_login_summary"] == {
+        "mode": "auto",
+        "reason": "docker_hub_image_login_supplied",
+        "image_login_supplied": True,
+        "docker_secret_file_present": True,
+        "docker_username_present": True,
+        "docker_registry": "docker.io",
+    }
+    assert "image_login" not in request["create_payload"]
+    assert secret_values["docker_pat"] not in json.dumps(request)
+
+    result = provider.launch(tmp_path, _with_prelaunch_guard(request))
+
+    assert result["status"] == "launched"
+    assert captured_create_payload["image_login"] == (
+        "-u private-owner -p docker-pat-must-not-be-recorded docker.io"
+    )
+    assert secret_values["docker_pat"] not in json.dumps(result)
+
+
+def test_vast_private_docker_login_missing_pat_blocks_before_create(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import blueprint_pipeline.gpu_render_providers as providers
+
+    monkeypatch.setattr(
+        providers,
+        "_read_secret",
+        lambda name: "private-owner" if name == "docker_username" else None,
+    )
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
+    calls: list[tuple[str, str]] = []
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        calls.append((method, path))
+        if method == "POST":
+            return 200, {"offers": ["raw"]}
+        raise AssertionError("private image create must fail before provider mutation")
+
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._offers_from_response",
+        lambda _response: [{"ask_contract_id": "ask-private"}],
+    )
+    provider = VastRenderProvider()
+    request = provider.build_request(
+        _spec(image="docker.io/private-owner/private-image@sha256:abc"), tmp_path
+    )
+
+    result = provider.launch(tmp_path, _with_prelaunch_guard(request))
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["vast_image_login_unavailable"]
+    assert result["allocation_created"] is False
+    assert result["spend_occurred"] is False
+    assert calls == [("POST", "/bundles/")]
+
+
 def test_vast_build_request_ssh_direct_uses_exact_onstart_without_args_rewrite(
     tmp_path: Path,
 ) -> None:
@@ -1280,9 +1347,7 @@ def test_vast_build_request_ssh_direct_uses_exact_onstart_without_args_rewrite(
 
 def test_vast_build_request_rejects_unknown_launch_mode(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="vast_render_launch_mode_unsupported"):
-        VastRenderProvider().build_request(
-            _spec(vast_launch_mode="interactive_shell"), tmp_path
-        )
+        VastRenderProvider().build_request(_spec(vast_launch_mode="interactive_shell"), tmp_path)
 
 
 def test_vast_build_request_compresses_large_bootstrap_below_api_limit(
@@ -1306,8 +1371,7 @@ def test_vast_build_request_moves_oversize_compressed_bootstrap_to_env(
 ) -> None:
     spec = _spec()
     script = "set -euo pipefail\n" + "".join(
-        f"# {hashlib.sha256(str(index).encode()).hexdigest()}\n"
-        for index in range(1_500)
+        f"# {hashlib.sha256(str(index).encode()).hexdigest()}\n" for index in range(1_500)
     )
     spec.bootstrap_argv = ["-lc", script]
 
@@ -1319,9 +1383,7 @@ def test_vast_build_request_moves_oversize_compressed_bootstrap_to_env(
     encoded = create_payload["env"][payload_env]
     decoded = gzip.decompress(base64.b64decode(encoded)).decode()
     assert decoded == script
-    assert create_payload["env"][digest_env] == hashlib.sha256(
-        script.encode()
-    ).hexdigest()
+    assert create_payload["env"][digest_env] == hashlib.sha256(script.encode()).hexdigest()
     assert req["bootstrap_transport"] == "gzip_base64_env"
     assert req["bootstrap_transport_env_keys"] == sorted([digest_env, payload_env])
     assert req["provider_args_length"] < 16_384
@@ -1361,9 +1423,7 @@ def test_vast_launch_blocks_without_prelaunch_guard_before_provider_call(
     assert calls == []
 
 
-def test_vast_offer_search_failure_is_definitive_no_allocation(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_vast_offer_search_failure_is_definitive_no_allocation(tmp_path: Path, monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
 
     def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
@@ -1371,9 +1431,7 @@ def test_vast_offer_search_failure_is_definitive_no_allocation(
         raise TimeoutError("marketplace unavailable before create")
 
     monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
-    monkeypatch.setattr(
-        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
-    )
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
     provider = VastRenderProvider()
     request = _with_prelaunch_guard(provider.build_request(_spec(), tmp_path))
 
@@ -1417,8 +1475,12 @@ def test_vast_launch_writes_started_instance_id(tmp_path: Path, monkeypatch) -> 
 
     monkeypatch.setattr(VastRenderProvider, "_key", fake_key)
     monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
-    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._offers_from_response", lambda _resp: [offer])
-    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._select_offer", lambda offers, **_kw: offers[0])
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._offers_from_response", lambda _resp: [offer]
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._select_offer", lambda offers, **_kw: offers[0]
+    )
 
     req = _with_prelaunch_guard(VastRenderProvider().build_request(_spec(), tmp_path))
     res = VastRenderProvider().launch(tmp_path, req)
@@ -1515,9 +1577,7 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
         }
 
     monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
-    monkeypatch.setattr(
-        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
-    )
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
     provider = VastRenderProvider()
     request = provider.build_request(_spec(), Path("/unused"))
     request.update(
@@ -1545,9 +1605,7 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
     assert result["selected_offer"]["gpu_type_id"] == "L40S"
     assert result["selected_offer"]["on_demand_price_usd_per_hour"] == 0.99
     assert result["selected_offer"]["has_avx"] is True
-    assert all(
-        offer["machine_id"] != 54812 for offer in result["viable_gpu_types"]
-    )
+    assert all(offer["machine_id"] != 54812 for offer in result["viable_gpu_types"])
     assert len(result["viable_gpu_types"]) == 1
     assert result["selection_policy"] == {
         "max_hourly_rate_usd": 5.0,
@@ -1595,9 +1653,7 @@ def test_vast_ssh_direct_capacity_requires_offer_with_direct_port(
         }
 
     monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
-    monkeypatch.setattr(
-        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
-    )
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
     request = VastRenderProvider().build_request(
         _spec(vast_launch_mode="ssh_direct"), Path("/unused")
     )
@@ -1650,9 +1706,7 @@ def test_vast_inspect_is_get_only_sanitized_and_404_proves_absence(
         }
 
     monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
-    monkeypatch.setattr(
-        "blueprint_pipeline.vast_provider_adapter._api_json", observed_api_json
-    )
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", observed_api_json)
     result = VastRenderProvider().inspect("123")
 
     assert calls == [("GET", "/instances/123/")]
@@ -1669,9 +1723,7 @@ def test_vast_inspect_is_get_only_sanitized_and_404_proves_absence(
     assert result["direct_port_ready"] is True
     assert result["direct_port_metadata"] == {
         "ssh_endpoint_present": True,
-        "mapped_ports": [
-            {"container_port": 22, "host_port": 22022, "protocol": "tcp"}
-        ],
+        "mapped_ports": [{"container_port": 22, "host_port": 22022, "protocol": "tcp"}],
         "raw_provider_response_recorded": False,
     }
     serialized = json.dumps(result)
@@ -1701,9 +1753,7 @@ def test_vast_inspect_is_get_only_sanitized_and_404_proves_absence(
             io.BytesIO(b'{"secret":"must-not-surface"}'),
         )
 
-    monkeypatch.setattr(
-        "blueprint_pipeline.vast_provider_adapter._api_json", absent_api_json
-    )
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", absent_api_json)
     absent = VastRenderProvider().inspect("123")
     assert absent["status"] == "absent"
     assert absent["http"] == 404
@@ -1754,19 +1804,13 @@ def test_vast_ssh_host_key_enrollment_tofu_pins_attempt_local_artifacts(
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=(
-                f"# scanner comment\n[ssh5.vast.ai]:22022 ssh-ed25519 {public_key}\n"
-            ).encode(),
+            stdout=(f"# scanner comment\n[ssh5.vast.ai]:22022 ssh-ed25519 {public_key}\n").encode(),
             stderr=b"",
         )
 
-    monkeypatch.setattr(
-        "blueprint_pipeline.gpu_render_providers.subprocess.run", fake_run
-    )
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.subprocess.run", fake_run)
 
-    enrolled = enroll_vast_ssh_host_key(
-        connection, attempt_dir=tmp_path, timeout_seconds=12
-    )
+    enrolled = enroll_vast_ssh_host_key(connection, attempt_dir=tmp_path, timeout_seconds=12)
 
     assert enrolled["status"] == "enrolled"
     assert enrolled["tofu_pinned"] is True
@@ -1781,9 +1825,7 @@ def test_vast_ssh_host_key_enrollment_tofu_pins_attempt_local_artifacts(
     assert artifact["trust_model"] == "trust_on_first_use"
     assert artifact["ssh_host"] == "ssh5.vast.ai"
     assert artifact["ssh_port"] == 22022
-    assert artifact["known_hosts_sha256"] == hashlib.sha256(
-        known_hosts.read_bytes()
-    ).hexdigest()
+    assert artifact["known_hosts_sha256"] == hashlib.sha256(known_hosts.read_bytes()).hexdigest()
     assert artifact["fingerprints"][0]["sha256_fingerprint"].startswith("SHA256:")
     assert calls[0] == [
         "ssh-keyscan",
@@ -1796,18 +1838,14 @@ def test_vast_ssh_host_key_enrollment_tofu_pins_attempt_local_artifacts(
         "ssh5.vast.ai",
     ]
 
-    reenrolled = enroll_vast_ssh_host_key(
-        connection, attempt_dir=tmp_path, timeout_seconds=12
-    )
+    reenrolled = enroll_vast_ssh_host_key(connection, attempt_dir=tmp_path, timeout_seconds=12)
     assert reenrolled["status"] == "enrolled"
     assert reenrolled["already_enrolled"] is True
     assert len(calls) == 1
 
 
 @pytest.mark.parametrize("control_action", ["tail", "status"])
-@pytest.mark.parametrize(
-    "control_component", ["isaac_task_executor", "groot_microwave_finetune"]
-)
+@pytest.mark.parametrize("control_component", ["isaac_task_executor", "groot_microwave_finetune"])
 def test_vast_ssh_control_is_fixed_strict_redacted_and_pin_bound(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1826,9 +1864,7 @@ def test_vast_ssh_control_is_fixed_strict_redacted_and_pin_bound(
             return subprocess.CompletedProcess(
                 command,
                 0,
-                stdout=(
-                    f"[203.0.113.8]:22022 ssh-ed25519 {public_key}\n"
-                ).encode(),
+                stdout=(f"[203.0.113.8]:22022 ssh-ed25519 {public_key}\n").encode(),
                 stderr=b"",
             )
         assert command[0] == "ssh"
@@ -1846,9 +1882,7 @@ def test_vast_ssh_control_is_fixed_strict_redacted_and_pin_bound(
             stderr=b"PASSWORD: another-secret\n",
         )
 
-    monkeypatch.setattr(
-        "blueprint_pipeline.gpu_render_providers.subprocess.run", fake_run
-    )
+    monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.subprocess.run", fake_run)
     enrollment = enroll_vast_ssh_host_key(connection, attempt_dir=tmp_path)
     assert enrollment["status"] == "enrolled"
     identity = tmp_path / "id_ed25519"
@@ -1881,8 +1915,7 @@ def test_vast_ssh_control_is_fixed_strict_redacted_and_pin_bound(
     assert stdout_truncation["retention"] == "newest"
     assert stdout_truncation["omitted_redacted_bytes"] > 0
     assert (
-        stdout_truncation["retained_redacted_bytes"]
-        + stdout_truncation["omitted_redacted_bytes"]
+        stdout_truncation["retained_redacted_bytes"] + stdout_truncation["omitted_redacted_bytes"]
         == stdout_truncation["redacted_bytes_before_truncation"]
     )
     assert stdout_truncation["returned_bytes"] == 16_384
@@ -1958,9 +1991,7 @@ def test_vast_ssh_control_is_fixed_strict_redacted_and_pin_bound(
     assert invalid["blockers"] == ["vast_ssh_control_action_not_allowed"]
     assert len(subprocess_calls) == call_count
 
-    Path(enrollment["known_hosts_file"]).write_text(
-        "tampered-host-key\n", encoding="utf-8"
-    )
+    Path(enrollment["known_hosts_file"]).write_text("tampered-host-key\n", encoding="utf-8")
     Path(enrollment["known_hosts_file"]).chmod(0o600)
     tampered = run_vast_ssh_control(
         connection,
@@ -2009,12 +2040,8 @@ def test_vast_billable_inventory_is_get_only_prefix_scoped_and_sanitized(
         }
 
     monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
-    monkeypatch.setattr(
-        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
-    )
-    result = VastRenderProvider().billable_inventory(
-        name_prefix="blueprint-single-episode-"
-    )
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    result = VastRenderProvider().billable_inventory(name_prefix="blueprint-single-episode-")
 
     assert calls == [("GET", "/instances/")]
     assert result["status"] == "observed"
@@ -2036,9 +2063,7 @@ def test_vast_billable_inventory_is_get_only_prefix_scoped_and_sanitized(
     assert "provider-runtime-secret" not in json.dumps(result)
 
 
-def test_vast_launch_forwards_episode_offer_selection_policy(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_vast_launch_forwards_episode_offer_selection_policy(monkeypatch, tmp_path: Path) -> None:
     selection_calls: list[dict[str, object]] = []
     offer = {
         "ask_contract_id": 17,
@@ -2060,12 +2085,8 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
         return offer if offers else None
 
     monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
-    monkeypatch.setattr(
-        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
-    )
-    monkeypatch.setattr(
-        "blueprint_pipeline.vast_provider_adapter._select_offer", fake_select
-    )
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._select_offer", fake_select)
     provider = VastRenderProvider()
     request = _with_prelaunch_guard(provider.build_request(_spec(), tmp_path))
     request.update(
@@ -2095,6 +2116,7 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
 
 
 # ----------------------------- availability reflects secrets -----------------------------
+
 
 def test_availability_reflects_secret_presence(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("blueprint_pipeline.gpu_render_providers.SECRETS", tmp_path)
@@ -2133,7 +2155,9 @@ def test_watch_and_collect_tears_down_via_provider(tmp_path: Path) -> None:
     assert res["teardown"]["status"] == "terminated"
 
 
-def test_watch_and_collect_terminates_no_output_pod_even_when_preserve_requested(tmp_path: Path) -> None:
+def test_watch_and_collect_terminates_no_output_pod_even_when_preserve_requested(
+    tmp_path: Path,
+) -> None:
     from blueprint_pipeline.isaac_particlefield_render_job import watch_and_collect
 
     class _FakeProvider:
@@ -2208,7 +2232,9 @@ def test_watch_and_collect_stops_successful_pod_for_warm_reuse(tmp_path: Path, m
     (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
     fake = _FakeProvider()
 
-    res = job.watch_and_collect(job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1)
+    res = job.watch_and_collect(
+        job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1
+    )
 
     assert res["status"] == "completed"
     assert fake.stopped == "inst-9"
@@ -2255,7 +2281,9 @@ def test_watch_and_collect_terminates_digitalocean_runner_done(
     (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
     fake = _FakeProvider()
 
-    res = job.watch_and_collect(job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1)
+    res = job.watch_and_collect(
+        job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1
+    )
 
     assert res["status"] == "completed"
     assert fake.terminated == "inst-9"
@@ -2264,7 +2292,9 @@ def test_watch_and_collect_terminates_digitalocean_runner_done(
     assert res["teardown"]["status"] == "terminated"
 
 
-def test_watch_and_collect_stops_blocked_runner_pod_for_warm_reuse(tmp_path: Path, monkeypatch) -> None:
+def test_watch_and_collect_stops_blocked_runner_pod_for_warm_reuse(
+    tmp_path: Path, monkeypatch
+) -> None:
     from blueprint_pipeline import isaac_particlefield_render_job as job
 
     class _FakeProvider:
@@ -2285,10 +2315,15 @@ def test_watch_and_collect_stops_blocked_runner_pod_for_warm_reuse(tmp_path: Pat
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("bootstrap.json", json.dumps({"phase": "runner_done", "rc": 0}))
-        zf.writestr("isaac_runtime_result.json", json.dumps({
-            "status": "blocked",
-            "blockers": ["placement_validation_failed"],
-        }))
+        zf.writestr(
+            "isaac_runtime_result.json",
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": ["placement_validation_failed"],
+                }
+            ),
+        )
     payload_bytes = payload.getvalue()
 
     class _Response:
@@ -2302,7 +2337,9 @@ def test_watch_and_collect_stops_blocked_runner_pod_for_warm_reuse(tmp_path: Pat
     (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
     fake = _FakeProvider()
 
-    res = job.watch_and_collect(job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1)
+    res = job.watch_and_collect(
+        job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1
+    )
 
     assert res["status"] == "blocked"
     assert fake.stopped == "inst-9"
@@ -2400,10 +2437,15 @@ def test_watch_and_collect_terminates_runner_timeout(tmp_path: Path, monkeypatch
 
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("bootstrap.json", json.dumps({
-            "phase": "runner_timeout",
-            "timeout_seconds": 840,
-        }))
+        zf.writestr(
+            "bootstrap.json",
+            json.dumps(
+                {
+                    "phase": "runner_timeout",
+                    "timeout_seconds": 840,
+                }
+            ),
+        )
         zf.writestr("runner_console.log", "SimulationApp boot did not finish\n")
     payload_bytes = payload.getvalue()
 
@@ -2418,7 +2460,9 @@ def test_watch_and_collect_terminates_runner_timeout(tmp_path: Path, monkeypatch
     (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
     fake = _FakeProvider()
 
-    res = job.watch_and_collect(job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1)
+    res = job.watch_and_collect(
+        job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1
+    )
 
     assert res["status"] == "blocked"
     assert res["runner_timeout_observed"] is True
@@ -2428,7 +2472,9 @@ def test_watch_and_collect_terminates_runner_timeout(tmp_path: Path, monkeypatch
     assert fake.stopped is None
 
 
-def test_watch_and_collect_ignores_stale_result_before_runner_done(tmp_path: Path, monkeypatch) -> None:
+def test_watch_and_collect_ignores_stale_result_before_runner_done(
+    tmp_path: Path, monkeypatch
+) -> None:
     from blueprint_pipeline import isaac_particlefield_render_job as job
 
     class _FakeProvider:
@@ -2449,10 +2495,15 @@ def test_watch_and_collect_ignores_stale_result_before_runner_done(tmp_path: Pat
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("bootstrap.json", json.dumps({"phase": "kitchen_fetching"}))
-        zf.writestr("isaac_g1_kitchen_parity_result.json", json.dumps({
-            "status": "blocked",
-            "blockers": ["stale_previous_run"],
-        }))
+        zf.writestr(
+            "isaac_g1_kitchen_parity_result.json",
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "blockers": ["stale_previous_run"],
+                }
+            ),
+        )
     payload_bytes = payload.getvalue()
 
     class _Response:
@@ -2468,7 +2519,9 @@ def test_watch_and_collect_ignores_stale_result_before_runner_done(tmp_path: Pat
     (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/out.zip?sig=C")
     fake = _FakeProvider()
 
-    res = job.watch_and_collect(job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1)
+    res = job.watch_and_collect(
+        job_dir, tmp_path / "out", "inst-9", provider=fake, max_seconds=1, poll=1
+    )
 
     assert res["status"] == "blocked"
     assert res["last_bootstrap"]["phase"] == "kitchen_fetching"
@@ -2501,15 +2554,25 @@ def test_watch_and_collect_terminates_current_final_result_without_runner_done(
 
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("bootstrap.json", json.dumps({
-            "phase": "runner_starting",
-            "launch_session_id": "launch-123",
-        }))
-        zf.writestr("isaac_runtime_result.json", json.dumps({
-            "status": "blocked",
-            "scenarios_executed": 0,
-            "blockers": ["isaac_runner_exception_before_scenario_outcome"],
-        }))
+        zf.writestr(
+            "bootstrap.json",
+            json.dumps(
+                {
+                    "phase": "runner_starting",
+                    "launch_session_id": "launch-123",
+                }
+            ),
+        )
+        zf.writestr(
+            "isaac_runtime_result.json",
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "scenarios_executed": 0,
+                    "blockers": ["isaac_runner_exception_before_scenario_outcome"],
+                }
+            ),
+        )
     payload_bytes = payload.getvalue()
 
     class _Response:
@@ -2610,8 +2673,11 @@ def test_runpod_terminate_is_delete_and_fail_closed(tmp_path: Path, monkeypatch)
     assert hasattr(RunPodRenderProvider(), "terminate") and hasattr(RunPodRenderProvider(), "stop")
 
 
-def test_vast_launch_retries_next_offer_on_create_400(tmp_path: Path, monkeypatch) -> None:
-    """A stale ask 400s at create; the launch must record the error body and
+@pytest.mark.parametrize("stale_status", [400, 410])
+def test_vast_launch_retries_next_offer_on_stale_create(
+    tmp_path: Path, monkeypatch, stale_status: int
+) -> None:
+    """A stale ask fails at create; the launch must record the error body and
     fall through to the next candidate offer instead of blocking the race."""
     import io
     import urllib.error
@@ -2624,12 +2690,16 @@ def test_vast_launch_retries_next_offer_on_create_400(tmp_path: Path, monkeypatc
             return 200, {"offers": ["raw"]}
         if method == "PUT" and path == "/asks/ask-stale/":
             raise urllib.error.HTTPError(
-                "https://vast/asks/ask-stale/", 400, "Bad Request", None,
+                "https://vast/asks/ask-stale/",
+                stale_status,
+                "Stale Ask",
+                None,
                 io.BytesIO(
                     b'{"success": false, "msg": "ask expired", '
                     b'"echo": "https://spaces.example/bundle.zip?sig=A", '
                     b'"query": "signature=do-not-record"}'
-                ))
+                ),
+            )
         if method == "PUT" and path == "/asks/ask-fresh/":
             return 200, {"new_contract": 777}
         raise AssertionError((method, path))
@@ -2642,8 +2712,10 @@ def test_vast_launch_retries_next_offer_on_create_400(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(VastRenderProvider, "_key", fake_key)
     monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
-    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._offers_from_response",
-                        lambda _resp: [stale, fresh])
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._offers_from_response",
+        lambda _resp: [stale, fresh],
+    )
     monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._select_offer", fake_select)
 
     req = _with_prelaunch_guard(VastRenderProvider().build_request(_spec(), tmp_path))
@@ -2651,7 +2723,9 @@ def test_vast_launch_retries_next_offer_on_create_400(tmp_path: Path, monkeypatc
 
     assert res["status"] == "launched"
     assert res["instance_id"] == "777"
-    create_errors = [a for a in res.get("attempts", []) if a.get("create_http_status") == 400]
+    create_errors = [
+        a for a in res.get("attempts", []) if a.get("create_http_status") == stale_status
+    ]
     assert create_errors and "ask expired" in str(create_errors[0].get("create_error_body"))
     recorded_error = str(create_errors[0].get("create_error_body"))
     assert "spaces.example" not in recorded_error
@@ -2685,9 +2759,7 @@ def test_vast_ambiguous_create_never_tries_a_second_offer(
         {"ask_contract_id": "ask-2", "gpu_name": "RTX", "hourly_rate_usd": 0.5},
     ]
     monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
-    monkeypatch.setattr(
-        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
-    )
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
     monkeypatch.setattr(
         "blueprint_pipeline.vast_provider_adapter._offers_from_response",
         lambda _response: offers,
@@ -2728,9 +2800,7 @@ def test_vast_malformed_success_id_is_ambiguous(
         {"ask_contract_id": "ask-2", "gpu_name": "RTX", "hourly_rate_usd": 0.5},
     ]
     monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
-    monkeypatch.setattr(
-        "blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json
-    )
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
     monkeypatch.setattr(
         "blueprint_pipeline.vast_provider_adapter._offers_from_response",
         lambda _response: offers,
@@ -2764,8 +2834,11 @@ def test_default_runpod_gpu_types_exclude_consumer_4090_pool(monkeypatch) -> Non
     assert spec.gpu_types[0] == "NVIDIA A40"
     assert spec.gpu_types[1] == "NVIDIA RTX A6000"
     assert set(spec.gpu_types) == {
-        "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40",
-        "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA A40",
+        "NVIDIA RTX A6000",
+        "NVIDIA L40",
+        "NVIDIA L40S",
+        "NVIDIA RTX 6000 Ada Generation",
         "NVIDIA RTX PRO 6000 Blackwell Server Edition",
     }
     assert not any(("H100" in g or "H200" in g) for g in spec.gpu_types)
@@ -2781,6 +2854,7 @@ def test_default_runpod_gpu_types_exclude_consumer_4090_pool(monkeypatch) -> Non
 
 # ----------------------------- DigitalOcean GPU Droplets -----------------------------
 
+
 def test_digitalocean_provider_is_registered() -> None:
     from blueprint_pipeline.gpu_render_providers import DigitalOceanRenderProvider
 
@@ -2795,9 +2869,9 @@ def test_digitalocean_build_request_wraps_worker_in_user_data(monkeypatch, tmp_p
     monkeypatch.delenv("BLUEPRINT_DO_GPU_REGION", raising=False)
     spec = _spec()
     body = DigitalOceanRenderProvider().build_request(spec, tmp_path)
-    assert body["size"] == "gpu-6000adax1-48gb"   # RT cores + 48GB default
+    assert body["size"] == "gpu-6000adax1-48gb"  # RT cores + 48GB default
     assert body["region"] == "atl1"
-    assert body["image"] == "gpu-h100x1-base"     # NVIDIA AI/ML-ready (drivers+docker)
+    assert body["image"] == "gpu-h100x1-base"  # NVIDIA AI/ML-ready (drivers+docker)
     assert body["min_gpu_ram_mb"] == spec.min_gpu_ram_mb
     assert body["requires_rtx"] is True
     assert "max_hourly_rate_usd" not in body
@@ -2918,18 +2992,17 @@ def test_digitalocean_capacity_preflight_rejects_h100_h200_for_rtx_render(
 
     monkeypatch.setattr(G, "_do_call", fake_call)
 
-    default_budget = G.DigitalOceanRenderProvider().capacity_preflight(
-        {"min_gpu_ram_mb": 48000}
-    )
+    default_budget = G.DigitalOceanRenderProvider().capacity_preflight({"min_gpu_ram_mb": 48000})
     launcher_budget = G.DigitalOceanRenderProvider().capacity_preflight(
         {"min_gpu_ram_mb": 48000, "max_hourly_rate_usd": 3.5}
     )
 
     assert default_budget["status"] == "blocked"
     assert "digitalocean_gpu_size_region_unavailable" in default_budget["blockers"]
-    assert {
-        row["size"] for row in default_budget["budget_policy"]["rejected_size_candidates"]
-    } == {"gpu-h100x1-80gb", "gpu-h200x1-141gb"}
+    assert {row["size"] for row in default_budget["budget_policy"]["rejected_size_candidates"]} == {
+        "gpu-h100x1-80gb",
+        "gpu-h200x1-141gb",
+    }
     assert launcher_budget["status"] == "blocked"
     assert launcher_budget["blockers"] == ["digitalocean_gpu_size_region_unavailable"]
     rejected = launcher_budget["render_capability_policy"]["rejected_size_candidates"]
@@ -3215,7 +3288,9 @@ def test_digitalocean_launch_regenerates_user_data_after_nonce_injection(
     assert "BLUEPRINT_LAUNCH_SESSION_ID=nonce-123" in env_text
 
 
-def test_digitalocean_launch_uses_configured_ssh_keys_without_account_lookup(monkeypatch, tmp_path: Path) -> None:
+def test_digitalocean_launch_uses_configured_ssh_keys_without_account_lookup(
+    monkeypatch, tmp_path: Path
+) -> None:
     from blueprint_pipeline import gpu_render_providers as G
 
     tok = tmp_path / "do_token"
@@ -3235,9 +3310,7 @@ def test_digitalocean_launch_uses_configured_ssh_keys_without_account_lookup(mon
     monkeypatch.setattr(G, "_do_call", fake_call)
     res = G.DigitalOceanRenderProvider().launch(
         tmp_path,
-        _with_prelaunch_guard(
-            G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)
-        ),
+        _with_prelaunch_guard(G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)),
     )
 
     assert res["status"] == "launched"
@@ -3245,7 +3318,9 @@ def test_digitalocean_launch_uses_configured_ssh_keys_without_account_lookup(mon
     assert calls == [("POST", "/droplets")]
 
 
-def test_digitalocean_launch_retries_gpu_size_region_unavailable(monkeypatch, tmp_path: Path) -> None:
+def test_digitalocean_launch_retries_gpu_size_region_unavailable(
+    monkeypatch, tmp_path: Path
+) -> None:
     from blueprint_pipeline import gpu_render_providers as G
 
     tok = tmp_path / "do_token"
@@ -3269,9 +3344,7 @@ def test_digitalocean_launch_retries_gpu_size_region_unavailable(monkeypatch, tm
     monkeypatch.setattr(G, "_do_call", fake_call)
     res = G.DigitalOceanRenderProvider().launch(
         tmp_path,
-        _with_prelaunch_guard(
-            G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)
-        ),
+        _with_prelaunch_guard(G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)),
     )
 
     assert res["status"] == "launched"
@@ -3349,9 +3422,7 @@ def test_digitalocean_launch_blocks_h200_without_hourly_budget_override(
     monkeypatch.setattr(G, "_do_call", fake_call)
     res = G.DigitalOceanRenderProvider().launch(
         tmp_path,
-        _with_prelaunch_guard(
-            G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)
-        ),
+        _with_prelaunch_guard(G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)),
     )
 
     assert res["status"] == "blocked"
@@ -3382,9 +3453,7 @@ def test_digitalocean_launch_blocks_without_ssh_key(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(G, "_do_call", fake_call)
     res = G.DigitalOceanRenderProvider().launch(
         tmp_path,
-        _with_prelaunch_guard(
-            G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)
-        ),
+        _with_prelaunch_guard(G.DigitalOceanRenderProvider().build_request(_spec(), tmp_path)),
     )
 
     assert res["status"] == "blocked"
@@ -3438,7 +3507,12 @@ def test_runpod_billable_inventory_is_api_confirmed_and_prefix_scoped(monkeypatc
         lambda *args, **kwargs: (
             200,
             [
-                {"id": "pod-1", "name": "blueprint-isaac-g1-supervised-a", "desiredStatus": "RUNNING", "costPerHr": 0.49},
+                {
+                    "id": "pod-1",
+                    "name": "blueprint-isaac-g1-supervised-a",
+                    "desiredStatus": "RUNNING",
+                    "costPerHr": 0.49,
+                },
                 {"id": "pod-2", "name": "unrelated", "desiredStatus": "RUNNING", "costPerHr": 1.0},
             ],
         ),
@@ -3473,9 +3547,9 @@ def test_runpod_billable_inventory_includes_explicit_legacy_warm_candidate(monke
         ),
     )
 
-    result = G.RunPodRenderProvider(
-        warm_candidates=("legacy-warm-id",)
-    ).billable_inventory(name_prefix="blueprint-isaac-g1")
+    result = G.RunPodRenderProvider(warm_candidates=("legacy-warm-id",)).billable_inventory(
+        name_prefix="blueprint-isaac-g1"
+    )
 
     assert result["api_confirmed"] is True
     assert result["live_resource_count"] == 1
@@ -3494,7 +3568,13 @@ def test_digitalocean_billable_inventory_counts_powered_off_resources(monkeypatc
             200,
             {
                 "droplets": [
-                    {"id": 4, "name": "blueprint-isaac-g1-supervised-a", "status": "off", "size_slug": "gpu", "region": {"slug": "tor1"}},
+                    {
+                        "id": 4,
+                        "name": "blueprint-isaac-g1-supervised-a",
+                        "status": "off",
+                        "size_slug": "gpu",
+                        "region": {"slug": "tor1"},
+                    },
                     {"id": 5, "name": "unrelated", "status": "active"},
                 ]
             },
