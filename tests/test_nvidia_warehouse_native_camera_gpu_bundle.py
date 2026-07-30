@@ -265,6 +265,7 @@ def test_gpu_worker_uploads_hash_bound_failure_media_and_exits_transport_cleanly
     assert validation["status"] == "completed"
     assert validation["canary_status"] == "failed"
     assert validation["canary_result"]["failure_evidence"]["error_type"] == "TypeError"
+    assert validation["canary_result"]["failure_evidence"]["failure_code"] is None
     assert validation["canary_result"]["claim_boundary"]["policy_wam_loop_proven"] is False
 
 
@@ -299,6 +300,41 @@ def test_gpu_worker_records_safe_missing_module_without_exception_message(tmp_pa
     assert evidence["error_type"] == "ModuleNotFoundError"
     assert evidence["missing_module"] == "isaacsim.core.api"
     assert "signed-url-secret" not in json.dumps(validation)
+
+
+def test_gpu_worker_records_allowlisted_failure_code_without_arbitrary_message(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.zip"
+    source.write_bytes(b"hash-bound-input")
+    uploaded: dict[str, bytes] = {}
+
+    def downloader(_url: str, destination: Path) -> None:
+        destination.write_bytes(source.read_bytes())
+
+    def runner(**_kwargs):
+        raise ValueError("native_franka_joint_hold_apply_action_failed:ValueError")
+
+    def uploader(url: str, path: Path) -> None:
+        uploaded[url] = path.read_bytes()
+
+    output_url = "https://storage.example/output?secret=value"
+    run_native_camera_gpu_worker(
+        workspace=tmp_path / "worker",
+        environment={
+            INPUT_SECRET_URL_ENV: "https://storage.example/input?secret=value",
+            INPUT_SHA256_ENV: file_sha256(source),
+            OUTPUT_SECRET_PUT_URL_ENV: output_url,
+        },
+        downloader=downloader,
+        uploader=uploader,
+        bundle_runner=runner,
+    )
+    validation = validate_native_camera_gpu_output_archive(uploaded[output_url])
+    evidence = validation["canary_result"]["failure_evidence"]
+    assert evidence["failure_code"] == (
+        "native_franka_joint_hold_apply_action_failed:ValueError"
+    )
 
 
 def test_gpu_worker_rejects_non_https_signed_urls_before_download(tmp_path: Path) -> None:

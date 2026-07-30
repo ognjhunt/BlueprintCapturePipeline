@@ -440,8 +440,22 @@ def _safe_missing_module(exc: BaseException) -> str | None:
     return value if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", value) else None
 
 
+def _safe_failure_code(exc: BaseException) -> str | None:
+    value = str(exc).strip()
+    if len(value) > 200:
+        return None
+    if not value.startswith(("native_", "nvidia_warehouse_")):
+        return None
+    return value if re.fullmatch(r"[A-Za-z0-9_:,.-]+", value) else None
+
+
 def _write_worker_failure_output(
-    *, output_dir: Path, phase: str, error_type: str, missing_module: str | None = None
+    *,
+    output_dir: Path,
+    phase: str,
+    error_type: str,
+    missing_module: str | None = None,
+    failure_code: str | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     failure_dir = output_dir / "failure"
@@ -453,6 +467,7 @@ def _write_worker_failure_output(
         "phase": str(phase),
         "error_type": str(error_type),
         "missing_module": missing_module,
+        "failure_code": failure_code,
         "failure_before_frames": True,
         "label_free": True,
         "rankings_or_policy_outcomes_accessed": False,
@@ -473,6 +488,7 @@ def _write_worker_failure_output(
             "phase": str(phase),
             "error_type": str(error_type),
             "missing_module": missing_module,
+            "failure_code": failure_code,
             "failure_before_frames": True,
             "media": [
                 {
@@ -539,6 +555,7 @@ def run_native_camera_gpu_worker(
             phase=phase,
             error_type=type(exc).__name__,
             missing_module=_safe_missing_module(exc),
+            failure_code=_safe_failure_code(exc),
         )
     output_zip = root / "output.zip"
     _archive_worker_output(root / "execution" / "output", output_zip)

@@ -130,26 +130,36 @@ def _matrix_array(matrix: Any) -> np.ndarray:
 
 
 def _apply_and_measure_held_joint_pose(
-    *, robot: Any, joint_positions: Any, phase: str, step: Callable[[], None], step_count: int
+    *,
+    robot: Any,
+    joint_positions: Any,
+    phase: str,
+    step: Callable[[], None],
+    step_count: int,
+    action_factory: Callable[..., Any],
 ) -> dict[str, Any]:
-    """Apply one joint pose through state and drive targets, then measure it."""
+    """Apply one joint pose through state and the public articulation action API."""
 
     requested = np.asarray(joint_positions, dtype=float).reshape(-1)
     zeros = np.zeros_like(requested)
     required = {
         "set_joint_positions": getattr(robot, "set_joint_positions", None),
         "set_joint_velocities": getattr(robot, "set_joint_velocities", None),
-        "set_joint_position_targets": getattr(robot, "set_joint_position_targets", None),
-        "set_joint_velocity_targets": getattr(robot, "set_joint_velocity_targets", None),
+        "apply_action": getattr(robot, "apply_action", None),
         "get_joint_positions": getattr(robot, "get_joint_positions", None),
     }
     missing = sorted(name for name, method in required.items() if not callable(method))
     if missing:
         raise ValueError("native_franka_joint_hold_api_missing:" + ",".join(missing))
-    required["set_joint_positions"](requested)
-    required["set_joint_velocities"](zeros)
-    required["set_joint_position_targets"](requested)
-    required["set_joint_velocity_targets"](zeros)
+    try:
+        required["set_joint_positions"](requested)
+        required["set_joint_velocities"](zeros)
+        action = action_factory(joint_positions=requested, joint_velocities=zeros)
+        required["apply_action"](action)
+    except Exception as exc:
+        raise ValueError(
+            "native_franka_joint_hold_apply_action_failed:" + type(exc).__name__
+        ) from exc
     for _ in range(int(step_count)):
         step()
     measured = np.asarray(required["get_joint_positions"](), dtype=float).reshape(-1)
@@ -157,12 +167,12 @@ def _apply_and_measure_held_joint_pose(
         raise ValueError("native_franka_joint_hold_measurement_invalid")
     return {
         "phase": str(phase),
-        "mode": "state_plus_position_velocity_targets",
+        "mode": "state_plus_articulation_action_position_velocity_targets",
         "requested_joint_positions_rad": requested.tolist(),
         "measured_joint_positions_rad": measured.tolist(),
         "max_abs_position_error_rad": float(np.max(np.abs(measured - requested))),
         "zero_velocity_state_and_target_applied": True,
-        "position_target_applied": True,
+        "position_target_applied_through_articulation_action": True,
         "settle_step_count": int(step_count),
     }
 
@@ -334,6 +344,7 @@ def isaac_sim_6_backend(
     try:
         from isaacsim.core.api import World
         from isaacsim.core.prims import SingleArticulation
+        from isaacsim.core.utils.types import ArticulationAction
         from isaacsim.core.utils.stage import add_reference_to_stage
         from isaacsim.sensors.camera import Camera
         from isaacsim.storage.native import get_assets_root_path
@@ -428,6 +439,7 @@ def isaac_sim_6_backend(
             phase="initial_precalibration",
             step=lambda: world.step(render=True),
             step_count=20,
+            action_factory=ArticulationAction,
         )
 
         def camera_matrix(path: str) -> np.ndarray:
@@ -464,6 +476,7 @@ def isaac_sim_6_backend(
             phase="initial_observation",
             step=lambda: world.step(render=True),
             step_count=4,
+            action_factory=ArticulationAction,
         )
 
         wrist_local_initial = _matrix_array(
@@ -530,6 +543,7 @@ def isaac_sim_6_backend(
             phase="commanded_observation",
             step=lambda: world.step(render=True),
             step_count=20,
+            action_factory=ArticulationAction,
         )
         commanded_step = save_frames("commanded")
         wrist_world_commanded = camera_matrix(wrist_path)
@@ -558,8 +572,8 @@ def isaac_sim_6_backend(
             "views": frames,
             "wrist_mount_calibration": wrist_mount_calibration,
             "franka_joint_position_hold": {
-                "mode": "state_plus_position_velocity_targets",
-                "required_target_apis_applied": True,
+                "mode": "state_plus_articulation_action_position_velocity_targets",
+                "required_articulation_action_api_applied": True,
                 "precalibration": precalibration_joint_hold,
                 "initial": initial_joint_hold,
                 "commanded": commanded_joint_hold,
@@ -702,8 +716,8 @@ def assess_native_camera_backend_result(
     hold_value = backend_result.get("franka_joint_position_hold")
     hold = hold_value if isinstance(hold_value, Mapping) else {}
     if (
-        hold.get("mode") != "state_plus_position_velocity_targets"
-        or hold.get("required_target_apis_applied") is not True
+        hold.get("mode") != "state_plus_articulation_action_position_velocity_targets"
+        or hold.get("required_articulation_action_api_applied") is not True
     ):
         blockers.append("native_franka_joint_position_hold_missing_or_invalid")
     hold_evidence: dict[str, Any] = {}
@@ -730,7 +744,9 @@ def assess_native_camera_backend_result(
         "wrist_mount_calibration": dict(mount),
         "franka_joint_position_hold": {
             "mode": hold.get("mode"),
-            "required_target_apis_applied": hold.get("required_target_apis_applied"),
+            "required_articulation_action_api_applied": hold.get(
+                "required_articulation_action_api_applied"
+            ),
             "max_abs_position_error_rad": MAX_HELD_JOINT_POSITION_ERROR_RAD,
             **hold_evidence,
         },

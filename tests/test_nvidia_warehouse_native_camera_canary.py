@@ -72,8 +72,8 @@ def _backend(*, output_dir: Path, **_kwargs):
             "per_frame_task_reaim_performed": False,
         },
         "franka_joint_position_hold": {
-            "mode": "state_plus_position_velocity_targets",
-            "required_target_apis_applied": True,
+            "mode": "state_plus_articulation_action_position_velocity_targets",
+            "required_articulation_action_api_applied": True,
             "initial": {"max_abs_position_error_rad": 0.001},
             "commanded": {"max_abs_position_error_rad": 0.001},
         },
@@ -141,7 +141,7 @@ def test_wrist_mount_calibration_handles_world_up_parallel_to_gaze() -> None:
     assert abs(np.dot(evidence["mount_forward_parent"], evidence["mount_up_parent"])) < 1e-9
 
 
-def test_joint_pose_is_applied_through_state_and_drive_targets_before_measurement() -> None:
+def test_joint_pose_uses_public_articulation_action_before_measurement() -> None:
     calls: list[tuple[str, np.ndarray]] = []
 
     class Robot:
@@ -153,11 +153,8 @@ def test_joint_pose_is_applied_through_state_and_drive_targets_before_measuremen
         def set_joint_velocities(self, value):
             calls.append(("set_joint_velocities", np.asarray(value)))
 
-        def set_joint_position_targets(self, value):
-            calls.append(("set_joint_position_targets", np.asarray(value)))
-
-        def set_joint_velocity_targets(self, value):
-            calls.append(("set_joint_velocity_targets", np.asarray(value)))
+        def apply_action(self, value):
+            calls.append(("apply_action", value))
 
         def get_joint_positions(self):
             return self.measured
@@ -169,21 +166,22 @@ def test_joint_pose_is_applied_through_state_and_drive_targets_before_measuremen
         phase="initial",
         step=lambda: steps.append(1),
         step_count=4,
+        action_factory=lambda **values: values,
     )
 
     assert [name for name, _value in calls] == [
         "set_joint_positions",
         "set_joint_velocities",
-        "set_joint_position_targets",
-        "set_joint_velocity_targets",
+        "apply_action",
     ]
     assert np.array_equal(calls[1][1], np.zeros(3))
-    assert np.array_equal(calls[3][1], np.zeros(3))
+    assert np.array_equal(calls[2][1]["joint_positions"], np.asarray([0.1, -0.2, 0.3]))
+    assert np.array_equal(calls[2][1]["joint_velocities"], np.zeros(3))
     assert len(steps) == 4
     assert result["max_abs_position_error_rad"] == pytest.approx(0.0)
 
 
-def test_joint_pose_hold_fails_closed_without_drive_target_api() -> None:
+def test_joint_pose_hold_fails_closed_without_articulation_action_api() -> None:
     class Robot:
         def set_joint_positions(self, _value):
             pass
@@ -201,6 +199,35 @@ def test_joint_pose_hold_fails_closed_without_drive_target_api() -> None:
             phase="initial",
             step=lambda: None,
             step_count=1,
+            action_factory=lambda **values: values,
+        )
+
+
+def test_joint_pose_hold_wraps_articulation_action_failure_in_safe_code() -> None:
+    class Robot:
+        def set_joint_positions(self, _value):
+            pass
+
+        def set_joint_velocities(self, _value):
+            pass
+
+        def apply_action(self, _value):
+            raise RuntimeError("opaque provider detail")
+
+        def get_joint_positions(self):
+            return np.zeros(2)
+
+    with pytest.raises(
+        ValueError,
+        match="native_franka_joint_hold_apply_action_failed:RuntimeError",
+    ):
+        _apply_and_measure_held_joint_pose(
+            robot=Robot(),
+            joint_positions=[0.0, 0.0],
+            phase="initial",
+            step=lambda: None,
+            step_count=1,
+            action_factory=lambda **values: values,
         )
 
 

@@ -142,6 +142,10 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
     }
     assert "mount_forward_parent" not in spec["cameras"]["wrist"]
     assert (
+        "franka_joint_positions_are_held_by_public_articulation_action_targets"
+        in spec["required_checks"]
+    )
+    assert (
         "at_least_two_policy_calls_separated_by_one_wam_generated_observation"
         in spec["required_checks"]
     )
