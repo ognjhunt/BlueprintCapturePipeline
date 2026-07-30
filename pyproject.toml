@@ -39,7 +39,7 @@ dependencies = [
     "defusedxml>=0.7.1",
     # Canonical agent harness for the Task Evaluation Supervisor and its
     # specialized agents. Blueprint contracts remain the proof authority.
-    "openai-agents>=0.18.1,<0.19",
+    "openai-agents>=0.19.1,<0.20",
     "uvicorn>=0.30.0",
     # Explicit uvicorn WebSocket protocol backend for hosted runtime sessions.
     "websockets>=12.0",
