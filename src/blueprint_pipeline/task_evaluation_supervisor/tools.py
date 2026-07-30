@@ -84,6 +84,21 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "proof_state_changed": {"const": False},
         }
     ),
+    "normalize_native_360_capture": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "normalization_digest": {"type": "string"},
+            "rig_declaration_digest": {"type": "string"},
+            "dual_fisheye_binding_digest": {"type": "string"},
+            "status": {"enum": ["normalized", "blocked"]},
+            "claim_ceiling": {
+                "enum": ["calibrated_camera_rig", "decoded_native_container"]
+            },
+            "agent_altered_calibration": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
     "validate_proposed_claim_graph": _output_schema(
         {
             "contract_present": {"const": True},
@@ -278,6 +293,23 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             "compile_frozen_frame_dataset",
             "capture_reconstruction_dataset_compilation",
             expected_artifacts=["reconstruction_dataset_manifest.v1"],
+            input_properties={
+                "capture_build_digest": {"type": "string"},
+                "capture_reconstruction_route_digest": {"type": "string"},
+            },
+            required_inputs=[
+                "capture_build_digest",
+                "capture_reconstruction_route_digest",
+            ],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=300.0,
+        ),
+        _descriptor(
+            "normalize_native_360_capture",
+            "native_360_normalization",
+            expected_artifacts=["native_360_capture_normalization.v1"],
             input_properties={
                 "capture_build_digest": {"type": "string"},
                 "capture_reconstruction_route_digest": {"type": "string"},
@@ -675,6 +707,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
         "compile_frozen_frame_dataset",
+        "normalize_native_360_capture",
         "propose_targeted_recapture",
     ),
     "evaluation_method_router": (
@@ -1076,6 +1109,138 @@ def _compile_frozen_frame_dataset(
     ]
 
 
+def _normalize_native_360_capture(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    normalizer = getattr(context, "native_360_normalizer", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError(
+            "registered_tool_execution_scope_missing:normalize_native_360_capture"
+        )
+    if not callable(normalizer):
+        raise ValueError("native_360_normalizer_not_injected")
+    capture_build = context.capture_build
+    expected_capture_digest = arguments.get("capture_build_digest")
+    actual_capture_digest = (
+        capture_build.get("capture_build_digest")
+        if isinstance(capture_build, Mapping)
+        else None
+    )
+    claim_types = sorted(
+        {
+            str(row.get("claim_type") or "").strip()
+            for row in (
+                context.decision_request.get("claims", [])
+                if isinstance(context.decision_request, Mapping)
+                else []
+            )
+            if isinstance(row, Mapping) and str(row.get("claim_type") or "").strip()
+        }
+    )
+    route = (
+        build_capture_reconstruction_route(
+            capture_build, requested_claim_types=claim_types
+        )
+        if isinstance(capture_build, Mapping)
+        and expected_capture_digest
+        and expected_capture_digest == actual_capture_digest
+        else None
+    )
+    expected_route_digest = arguments.get("capture_reconstruction_route_digest")
+    if (
+        route is None
+        or route.get("status") != "route_proposed"
+        or route.get("capture_authority_profile") != "camera_360_native"
+        or expected_route_digest != route.get("capture_reconstruction_route_digest")
+    ):
+        raise ValueError("registered_tool_native_360_route_binding_mismatch")
+    output_root = Path(root_value) / "generated" / "native_360_normalization"
+    normalized = normalizer(
+        request={
+            "capture_build_digest": actual_capture_digest,
+            "capture_reconstruction_route_digest": expected_route_digest,
+            "capture_authority_profile": route["capture_authority_profile"],
+            "requested_claim_types": claim_types,
+        },
+        output_root=output_root,
+    )
+    if not isinstance(normalized, Mapping):
+        raise ValueError("native_360_normalizer_result_not_object")
+    result = dict(normalized)
+    result_digest = result.get("native_360_normalization_digest")
+    parent = result.get("parent_artifact_or_event")
+    status = result.get("status")
+    blockers = result.get("blockers")
+    status_consistent = bool(
+        (status == "normalized" and blockers == [])
+        or (status == "blocked" and isinstance(blockers, list) and blockers)
+    )
+    proof_consistent = bool(
+        (
+            status == "normalized"
+            and result.get("proof_effect") == "calibrated_native_360_rig_only"
+            and result.get("claim_ceiling") == "calibrated_camera_rig"
+        )
+        or (
+            status == "blocked"
+            and result.get("proof_effect") == "none"
+            and result.get("claim_ceiling") == "decoded_native_container"
+        )
+    )
+    if (
+        result.get("schema_version") != "native_360_capture_normalization.v1"
+        or not isinstance(parent, Mapping)
+        or parent.get("capture_build_digest") != actual_capture_digest
+        or parent.get("capture_reconstruction_route_digest") != expected_route_digest
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(result_digest or "")) is None
+        or result_digest
+        != canonical_digest(result, digest_field="native_360_normalization_digest")
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(result.get("rig_declaration_digest") or "")
+        )
+        is None
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(result.get("dual_fisheye_binding_digest") or ""),
+        )
+        is None
+        or not status_consistent
+        or not proof_consistent
+        or result.get("raw_native_bytes_remain_authoritative") is not True
+        or result.get("original_native_bytes_modified") is not False
+        or result.get("agent_altered_calibration") is not False
+        or result.get("metric_scale_status") != "not_established"
+        or result.get("appearance_reconstruction_proven") is not False
+        or result.get("metric_geometry_proven") is not False
+        or result.get("collision_geometry_proven") is not False
+        or result.get("isaac_compatibility_proven") is not False
+    ):
+        raise ValueError("native_360_normalizer_result_contract_invalid")
+    path = write_phase2_artifact(
+        root_value,
+        "generated/native_360_normalization/native_360_capture_normalization.json",
+        result,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "normalization_digest": result_digest,
+        "rig_declaration_digest": result["rig_declaration_digest"],
+        "dual_fisheye_binding_digest": result["dual_fisheye_binding_digest"],
+        "status": status,
+        "claim_ceiling": result["claim_ceiling"],
+        "agent_altered_calibration": False,
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": result_digest,
+            "artifact_type": "native_360_capture_normalization.v1",
+        }
+    ]
+
+
 def _bound_artifact(
     context: Any,
     *,
@@ -1158,6 +1323,8 @@ def _bound_artifact(
         }
     elif tool_id == "compile_frozen_frame_dataset":
         return _compile_frozen_frame_dataset(context=context, arguments=arguments)
+    elif tool_id == "normalize_native_360_capture":
+        return _normalize_native_360_capture(context=context, arguments=arguments)
     elif tool_id == "compile_deterministic_evidence_plan":
         value = context.evidence_plan
         expected = arguments.get("plan_digest")
@@ -1236,6 +1403,10 @@ def non_spend_tool_bindings(
     for tool_id in _CAPABILITY_TOOL_IDS.get(capability, ()):
         if tool_id == "compile_frozen_frame_dataset" and not callable(
             getattr(context, "reconstruction_dataset_compiler", None)
+        ):
+            continue
+        if tool_id == "normalize_native_360_capture" and not callable(
+            getattr(context, "native_360_normalizer", None)
         ):
             continue
         descriptor = registry.resolve(tool_id)

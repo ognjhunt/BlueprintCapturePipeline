@@ -86,7 +86,7 @@ def test_iphone_lidar_and_360_capture_receive_different_reconstruction_routes(
 @pytest.mark.parametrize(
     ("profile", "required_stage"),
     [
-        ("camera_360_native", "normalize_native_360_container"),
+        ("camera_360_native", "normalize_native_360_capture"),
         ("monocular_video", "estimate_camera_poses_with_sfm"),
         ("precomputed_external_reconstruction", "verify_source_capture_binding"),
     ],
@@ -389,6 +389,101 @@ def test_agents_sdk_executes_injected_frozen_dataset_compiler_without_proof_auth
     )
 
     refused = bindings["compile_frozen_frame_dataset"].invoke(
+        {
+            "capture_build_digest": capture_build["capture_build_digest"],
+            "capture_reconstruction_route_digest": "sha256:" + "0" * 64,
+        }
+    )
+    assert refused["status"] == "refused"
+    assert "route_binding_mismatch" in refused["typed_failure"]["reason"]
+
+
+def test_agents_sdk_executes_digest_bound_native_360_normalizer_without_proof_authority(
+    tmp_path: Path,
+) -> None:
+    capture_build = _capture_build(tmp_path, profile="camera_360_native")
+    route = build_capture_reconstruction_route(
+        capture_build, requested_claim_types=["reachability"]
+    )
+
+    def normalizer(*, request: dict, output_root: Path) -> dict:
+        assert output_root.name == "native_360_normalization"
+        assert request["requested_claim_types"] == ["reachability"]
+        result = {
+            "schema_version": "native_360_capture_normalization.v1",
+            "source_capture_digest": "sha256:" + "1" * 64,
+            "rig_declaration_digest": "sha256:" + "2" * 64,
+            "dual_fisheye_binding_digest": "sha256:" + "3" * 64,
+            "status": "normalized",
+            "blockers": [],
+            "proof_effect": "calibrated_native_360_rig_only",
+            "claim_ceiling": "calibrated_camera_rig",
+            "raw_native_bytes_remain_authoritative": True,
+            "original_native_bytes_modified": False,
+            "agent_altered_calibration": False,
+            "metric_scale_status": "not_established",
+            "appearance_reconstruction_proven": False,
+            "metric_geometry_proven": False,
+            "collision_geometry_proven": False,
+            "isaac_compatibility_proven": False,
+            "parent_artifact_or_event": {
+                "capture_build_digest": request["capture_build_digest"],
+                "capture_reconstruction_route_digest": request[
+                    "capture_reconstruction_route_digest"
+                ],
+            },
+        }
+        result["native_360_normalization_digest"] = canonical_digest(
+            result, digest_field="native_360_normalization_digest"
+        )
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="native-360-normalizer-tool",
+        customer_question="Normalize the native dual-fisheye capture.",
+        capture_build=capture_build,
+        decision_request={"claims": [{"claim_type": "reachability"}]},
+        supervisor_output_dir=str(tmp_path / "run"),
+        native_360_normalizer=normalizer,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[capture_build["capture_build_digest"]],
+    ).to_mapping()
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+    }
+
+    assert "normalize_native_360_capture" in bindings
+    observation = bindings["normalize_native_360_capture"].invoke(
+        {
+            "capture_build_digest": capture_build["capture_build_digest"],
+            "capture_reconstruction_route_digest": route[
+                "capture_reconstruction_route_digest"
+            ],
+        }
+    )
+
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["claim_ceiling"] == "calibrated_camera_rig"
+    assert observation["typed_result"]["agent_altered_calibration"] is False
+    assert observation["typed_result"]["proof_state_changed"] is False
+    assert observation["proof_effect"] == "none"
+    assert observation["cost_usd"] == 0.0
+    assert observation["produced_artifact_references"][0]["artifact_type"] == (
+        "native_360_capture_normalization.v1"
+    )
+
+    refused = bindings["normalize_native_360_capture"].invoke(
         {
             "capture_build_digest": capture_build["capture_build_digest"],
             "capture_reconstruction_route_digest": "sha256:" + "0" * 64,

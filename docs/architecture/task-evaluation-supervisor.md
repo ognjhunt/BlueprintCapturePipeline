@@ -40,6 +40,8 @@ agent explanation cannot set proof booleans or upgrade a claim.
 | `decision_evidence_execution.py` | Explicit adapter registry, normalized evidence, and deterministic Decision Envelope aggregation | Remains execution and verdict authority |
 | `evaluation_run_contract.py` | Stable provider-neutral leaf-run contract | Remains the compilation target |
 | `agent_runtime/orchestrator.py` | Capture-readiness review with deterministic builders and optional provider overrides | Candidate input/adapter source for the capture-testbed capability; not the durable run supervisor |
+| `reconstruction_frame_dataset.py` and `arkitscenes_raw_proxy.py` | Frozen candidate/evaluator splits plus a reduced-authority public ARKit data compiler | Typed non-spend compilation support; cannot set proof or promote the proxy to Raw Contract 3.2/iPhone evidence |
+| `native_360_normalization.py` | Source-preserving `.insv` probe, calibration, rig, and synchronization validation | Conditionally injected typed tool; the agent receives only capture/route digests and cannot alter calibration |
 | `agent_operator_runtime.py` | Gated one-shot OpenAI/Codex operator wrappers | Shared live-Agents-SDK admission gate only; not the supervisor harness |
 | `site_eval_director.py` | Deterministic site/simulation planning plus optional advisory operators | Future registered non-spend tool surface after contract qualification |
 | `stance_configuration_agent.py` | Deterministic bounded recovery/search | Candidate deterministic recovery tool, despite its historical “agent” name |

@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/native_360_normalization.v1.schema.json",
+  "title": "Blueprint native 360 normalization contracts v1",
+  "oneOf": [
+    {"$ref": "#/$defs/probe"},
+    {"$ref": "#/$defs/rig"},
+    {"$ref": "#/$defs/binding"},
+    {"$ref": "#/$defs/result"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "artifact_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "digest"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "probe_stream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stream_index", "media_type", "codec_name", "width", "height",
+        "time_base", "pts_seconds", "metadata"
+      ],
+      "properties": {
+        "stream_index": {"type": "integer", "minimum": 0},
+        "media_type": {"type": "string"},
+        "codec_name": {"type": "string"},
+        "width": {"type": ["integer", "null"]},
+        "height": {"type": ["integer", "null"]},
+        "time_base": {"type": "string"},
+        "pts_seconds": {
+          "type": "array", "items": {"type": "number"}
+        },
+        "metadata": {"type": "object"}
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "probe_status", "source_file_digest", "runtime_identity",
+        "runtime_digest", "format_metadata", "streams", "probe_receipt_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "native_360_probe_receipt.v1"},
+        "probe_status": {"const": "decodable"},
+        "source_file_digest": {"$ref": "#/$defs/sha256"},
+        "runtime_identity": {"type": "string", "minLength": 1},
+        "runtime_digest": {"$ref": "#/$defs/sha256"},
+        "format_metadata": {"type": "object"},
+        "streams": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/probe_stream"}},
+        "probe_receipt_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "rig": {
+      "type": "object",
+      "required": [
+        "schema_version", "capture_digest", "camera_model", "capture_mode",
+        "firmware_version", "lens_calibrations", "rig_extrinsics", "rig_is_fixed",
+        "calibration_status", "metric_scale_status", "agent_may_alter_calibration",
+        "blockers", "rig_declaration_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "camera_360_rig_declaration.v1"},
+        "capture_digest": {"$ref": "#/$defs/sha256"},
+        "camera_model": {"type": "string", "minLength": 1},
+        "capture_mode": {"type": "string", "minLength": 1},
+        "firmware_version": {"type": "string"},
+        "lens_calibrations": {"type": "array", "maxItems": 2},
+        "rig_extrinsics": {"type": "object"},
+        "rig_is_fixed": {"type": "boolean"},
+        "calibration_status": {"enum": ["valid", "invalid"]},
+        "metric_scale_status": {"const": "not_established"},
+        "agent_may_alter_calibration": {"const": false},
+        "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "rig_declaration_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "binding": {
+      "type": "object",
+      "required": [
+        "schema_version", "capture_digest", "camera_model", "capture_mode", "segments",
+        "synchronization_tolerance_seconds", "all_segments_synchronized",
+        "original_distorted_pixels_preserved", "agent_may_rebind_lens_streams",
+        "blockers", "dual_fisheye_binding_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "dual_fisheye_stream_binding.v1"},
+        "capture_digest": {"$ref": "#/$defs/sha256"},
+        "camera_model": {"type": "string", "minLength": 1},
+        "capture_mode": {"type": "string", "minLength": 1},
+        "segments": {"type": "array", "minItems": 1},
+        "synchronization_tolerance_seconds": {"type": "number", "minimum": 0},
+        "all_segments_synchronized": {"type": "boolean"},
+        "original_distorted_pixels_preserved": {"const": true},
+        "agent_may_rebind_lens_streams": {"const": false},
+        "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "dual_fisheye_binding_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "schema_version", "stable_run_identity", "source_capture_identity",
+        "source_capture_digest", "producing_method", "source_commit_sha",
+        "implementation_version", "container_image_digest",
+        "deterministic_configuration_digest", "original_file_references",
+        "camera_metadata_digest", "probe_runtime_digest", "input_digests",
+        "output_digests", "artifact_references", "train_heldout_split_digest",
+        "camera_calibration_binding", "coordinate_frame_declaration", "units", "status",
+        "blockers", "warnings", "metric_scale_status", "camera_trajectory_status",
+        "raw_native_bytes_remain_authoritative", "original_native_bytes_modified",
+        "provider_runtime_identity", "authority_used", "cost_usd", "duration_seconds",
+        "proof_effect", "claim_ceiling", "parent_artifact_or_event", "timestamp",
+        "legal_next_actions", "agent_selected_camera_model", "agent_altered_calibration",
+        "appearance_reconstruction_proven", "metric_geometry_proven",
+        "collision_geometry_proven", "isaac_compatibility_proven",
+        "native_360_normalization_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "native_360_capture_normalization.v1"},
+        "stable_run_identity": {"type": "string", "minLength": 1},
+        "source_capture_identity": {"type": "string", "minLength": 1},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "producing_method": {"const": "deterministic_native_360_normalizer.v1"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "implementation_version": {"$ref": "#/$defs/sha256"},
+        "container_image_digest": {"type": "null"},
+        "deterministic_configuration_digest": {"$ref": "#/$defs/sha256"},
+        "original_file_references": {"type": "array", "minItems": 1},
+        "camera_metadata_digest": {"$ref": "#/$defs/sha256"},
+        "probe_runtime_digest": {"type": ["string", "null"]},
+        "input_digests": {"type": "object"},
+        "output_digests": {"type": "object"},
+        "artifact_references": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["camera_360_rig_declaration", "dual_fisheye_stream_binding"],
+          "properties": {
+            "camera_360_rig_declaration": {"$ref": "#/$defs/artifact_reference"},
+            "dual_fisheye_stream_binding": {"$ref": "#/$defs/artifact_reference"}
+          }
+        },
+        "train_heldout_split_digest": {"type": "null"},
+        "camera_calibration_binding": {"$ref": "#/$defs/sha256"},
+        "coordinate_frame_declaration": {"type": "object"},
+        "units": {"const": "meters_and_source_stream_seconds"},
+        "status": {"enum": ["normalized", "blocked"]},
+        "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "warnings": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "metric_scale_status": {"const": "not_established"},
+        "camera_trajectory_status": {"const": "not_established"},
+        "raw_native_bytes_remain_authoritative": {"const": true},
+        "original_native_bytes_modified": {"const": false},
+        "provider_runtime_identity": {"type": "object"},
+        "authority_used": {"type": "object"},
+        "cost_usd": {"const": 0.0},
+        "duration_seconds": {"const": 0.0},
+        "proof_effect": {"enum": ["calibrated_native_360_rig_only", "none"]},
+        "claim_ceiling": {"enum": ["calibrated_camera_rig", "decoded_native_container"]},
+        "parent_artifact_or_event": {"type": "object"},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "legal_next_actions": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "agent_selected_camera_model": {"const": false},
+        "agent_altered_calibration": {"const": false},
+        "appearance_reconstruction_proven": {"const": false},
+        "metric_geometry_proven": {"const": false},
+        "collision_geometry_proven": {"const": false},
+        "isaac_compatibility_proven": {"const": false},
+        "native_360_normalization_digest": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

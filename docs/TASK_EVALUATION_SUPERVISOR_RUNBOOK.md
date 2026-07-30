@@ -128,7 +128,13 @@ authorization requests, write targeted recapture proposals, and materialize
 pre-evaluation scenario proposals. It can also call the read-only
 `plan_capture_reconstruction_route` tool against the exact capture-build digest.
 That tool identifies registered versus missing reconstruction stages but does
-not execute them. It cannot start capture, run a provider,
+not execute them. When the trusted runtime injects the corresponding bounded
+service, the same capability may invoke `compile_frozen_frame_dataset` or
+`normalize_native_360_capture`. Those tools receive only capture-build and
+route digests, write under the supervisor-owned output root, cost zero, and
+return non-authoritative typed observations. They cannot select a profile,
+change a split or calibration, raise a claim ceiling, or access a generic
+filesystem or shell. The supervisor cannot start capture, run a provider,
 spend money, expose hidden labels, or mutate proof state.
 
 Clarification responses and authorization grants are separate receipts created

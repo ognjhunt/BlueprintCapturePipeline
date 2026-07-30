@@ -1,7 +1,8 @@
 # Reconstruction Capability and Testbed Compiler
 
-Status: implemented local contract boundary plus deterministic frame/split kernel,
-version 1 (2026-07-30)
+Status: implemented local contract boundary, deterministic frame/split kernel,
+ARKitScenes raw proxy compiler, and native dual-fisheye normalization, version 1
+(2026-07-30)
 
 ## Decision
 
@@ -43,7 +44,12 @@ planned hermetic adapter. The initial executable adapters are:
   scale, geometry, collision, physics, or physical success;
 - `local://arkit-metric-scaffold-v1`, which accepts only a complete Capture Raw
   Contract V3.2 LiDAR bundle whose decoded PTS, encoder retention, AR poses,
-  intrinsics, coordinate semantics, and depth/confidence pairs agree.
+  intrinsics, coordinate semantics, and depth/confidence pairs agree;
+- `local://native-360-normalization-v1`, which preserves original `.insv`
+  bytes, consumes only digest-bound probe receipts and declared stream
+  bindings, validates per-lens calibration and fixed rig extrinsics, and
+  refuses calibrated-rig claims when lens timing, dimensions, provenance,
+  rights, consent, privacy, or retention authority are invalid.
 
 A single MP4 uploaded with an iPhone profile does not activate the bundle
 adapter. Missing authority produces a partial plan, abstention, or next
@@ -55,10 +61,12 @@ Before this control plane is invoked, the Task Evaluation Capture and Testbed
 Supervisor may emit `task_evaluation_capture_reconstruction_route.v1`. That
 artifact separates iPhone ARKit/LiDAR, non-LiDAR ARKit, equirectangular 360,
 native 360, monocular video, and external-reconstruction import sequences. It
-also names stages that are required but not yet registered, including 360
-normalization, SfM, 3DGS training, and independent scale validation. This is a
-planning aid only: the control plane still owns method-profile eligibility and
-separate execution authorization.
+also names stages that are required but not yet registered, including
+spherical projection, SfM, 3DGS training, and independent scale validation.
+Native 360 normalization is registered conditionally: it appears as an SDK
+tool only when the trusted capture runtime injects a digest-bound normalizer.
+This remains a planning aid: the control plane still owns method-profile
+eligibility and separate execution authorization.
 
 ## Deterministic frame dataset and hidden split
 
@@ -133,12 +141,62 @@ longer says metric scale or a metric reference layer is independently proven:
 confidence filtering, RGB-depth alignment, metric-scale validation, and
 geometric held-out evaluation have not run.
 
+## ARKitScenes raw proxy execution
+
+`arkitscenes_raw_proxy.py` is an explicitly reduced-authority public-dataset
+adapter. It parses the retained MOV timed-metadata stream, joins decoded frames
+through original video PTS to the recorded capture timestamp and intrinsics,
+binds the official timestamped trajectory, filters depth to positive samples
+with confidence value 2, and feeds the shared frozen-split kernel. Candidate
+RGB, cameras, and depth live in candidate-only artifacts; held-out RGB,
+cameras, and depth live in evaluator-only artifacts.
+
+The accepted local scene `40958756` run is bound to source digest
+`sha256:bc493651dcc0950146e49bab91c9303a4d5f49c319c3e0b1048de1344d568e04`,
+commit `ddbff2998e00fdd728cf36e3c9a1c022b378b8b0`, frozen split digest
+`sha256:be386b4cd681f520fa6689b669b4efbb5b8534f991b2df815f37dfa989eed020`,
+and terminal digest
+`sha256:4c1d69c959ce1df03be4196b4dc2cf6c762c73fd4f474bc2c95d6cf94f64b0f6`.
+It decoded 1,013 frames from 1,014 timed metadata samples, found 163 exact
+pose/RGB/depth/confidence/intrinsics timestamp joins, and froze 40 observations
+as 32 candidate plus 8 hidden evaluator frames. Exact-SHA replay and all six
+authoritative source hashes were revalidated locally.
+
+This is iPad public-dataset proxy evidence only. ARKitScenes lacks Blueprint's
+encoder-attempt and retained-frame ledger and does not provide the required
+tracking/relocalization state. It therefore proves neither Raw Contract 3.2 nor
+the iPhone route, independent metric scale, appearance quality, collision,
+Isaac compatibility, physical success, or deployment readiness.
+
+## Native dual-fisheye normalization
+
+`native_360_normalization.py` implements the source-preserving native lane. Its
+probe receipt binds exact source bytes, runtime, streams, dimensions, time
+bases, and monotonic PTS. The normalizer requires exact `.insv` filename, size,
+and digest declarations; deterministic segment order; explicit front/rear
+stream bindings; calibrated per-lens intrinsics, distortion, masks and source
+provenance; a rigid nonzero-baseline rig transform; coordinate semantics; and
+explicit local rights, consent, privacy, retention, no-upload, and no-paid-
+compute authority.
+
+It emits `camera_360_rig_declaration.v1`,
+`dual_fisheye_stream_binding.v1`, and
+`native_360_capture_normalization.v1`. Unsynchronized lenses, dimension/count
+mismatch, calibration/stream mismatch, unknown calibration, inconsistent probe
+runtimes, missing sensor declarations, unsafe paths, symlinks, digest drift,
+oversized media, or unbound probe receipts fail closed. Even a valid result has
+the ceiling `calibrated_camera_rig`: it establishes no trajectory, metric
+scale, reconstruction, geometry, collision, or Isaac result. The Task
+Evaluation Supervisor exposes it only through a typed, zero-cost, digest-bound
+registered tool backed by an injected trusted runtime; the agent receives no
+filesystem path or generic execution handle.
+
 ## Remaining reconstruction qualification gaps
 
 The executable local kernel should be extended, not replaced. Remaining work
-includes confidence-filtered ARKit depth fusion and bounded pose refinement;
-native `.insv` normalization and calibrated dual-fisheye/shared-center virtual
-rigs; frozen pose-method comparison; a pinned headless CUDA/ONNX COLMAP plus
+includes bounded ARKit pose refinement; calibrated shared-center virtual rigs
+and real native `.insv` execution; frozen pose-method comparison; a pinned
+headless CUDA/ONNX COLMAP plus
 gsplat/3DGUT worker; independent appearance and geometry evaluation;
 metric-anchor and collider qualification; reproducible NuRec/OpenUSD packaging;
 headless Isaac load/render/contact checks; provider-governed external imports;

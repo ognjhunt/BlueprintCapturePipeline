@@ -56,6 +56,7 @@ class SupervisorContext:
     # callable is never serialized into prompts and receives only digest-bound
     # arguments plus a supervisor-owned output directory.
     reconstruction_dataset_compiler: Any | None = None
+    native_360_normalizer: Any | None = None
 
 
 class SupervisorCapability(Protocol):

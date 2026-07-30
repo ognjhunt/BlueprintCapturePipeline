@@ -61,7 +61,11 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
     "camera_360_native": (
         ("retain_native_360_originals", "capture_validation", "required_deterministic_gate"),
-        ("normalize_native_360_container", "native_360_normalization", "required_not_registered"),
+        (
+            "normalize_native_360_capture",
+            "native_360_normalization",
+            "registered_conditional",
+        ),
         (
             "project_spherical_to_perspective_views",
             "equirectangular_normalization",
@@ -179,6 +183,11 @@ def build_capture_reconstruction_route(
     executable_adapters = (
         ["local://arkit-metric-scaffold-v1", "local://decoded-observation-index-v1"]
         if profile == "iphone_arkit_lidar"
+        else [
+            "local://decoded-observation-index-v1",
+            "local://native-360-normalization-v1",
+        ]
+        if profile == "camera_360_native"
         else ["local://decoded-observation-index-v1"]
         if profile in _VIDEO_PROFILES
         else []
@@ -290,6 +299,11 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
         expected_adapters = (
             ["local://arkit-metric-scaffold-v1", "local://decoded-observation-index-v1"]
             if profile == "iphone_arkit_lidar"
+            else [
+                "local://decoded-observation-index-v1",
+                "local://native-360-normalization-v1",
+            ]
+            if profile == "camera_360_native"
             else ["local://decoded-observation-index-v1"]
             if profile in _VIDEO_PROFILES
             else []

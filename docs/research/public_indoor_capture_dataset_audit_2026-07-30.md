@@ -143,10 +143,17 @@ Do not calibrate thresholds on held-out views.
 
 ### P1: raw iPhone/video contract test
 
-Use one qualifying ARKitScenes scene only after organizational license
-eligibility is recorded, or wait for the user's BlueprintCapture bundle. Test
-video decode, monotonic PTS, depth/pose joins, and reduced authority. Only an
-actual Raw Contract 3.2 bundle can test retained-frame/encoder-attempt truth.
+The user explicitly accepted the ARKitScenes license for local evaluation and
+authorized scene `40958756`. The accepted exact-commit proxy run decoded the
+MOV, bound original video PTS to timed ARKit timestamps and intrinsics, joined
+all 163 official trajectory samples to RGB/depth/confidence/intrinsics, froze
+40 observations into disjoint 32-candidate/8-held-out partitions, filtered
+depth to confidence 2 plus positive samples, and replayed identically. Its
+terminal digest is
+`sha256:4c1d69c959ce1df03be4196b4dc2cf6c762c73fd4f474bc2c95d6cf94f64b0f6`.
+This remains local public-dataset proxy evidence. Only an actual Raw Contract
+3.2 bundle can test retained-frame/encoder-attempt truth, and separate legal
+review is still required before any broader organizational/commercial use.
 
 ### P1: 360 projection tests
 
@@ -183,4 +190,3 @@ only.
 - [Seam360GS](https://openaccess.thecvf.com/content/ICCV2025/html/Shin_Seam360GS_Seamless_360deg_Gaussian_Splatting_from_Real-World_Omnidirectional_Images_ICCV_2025_paper.html)
 - [ODGS-SLAM](https://odgs-slam.github.io/)
 - [Original 3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting)
-
