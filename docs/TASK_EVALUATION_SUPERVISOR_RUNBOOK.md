@@ -288,6 +288,12 @@ terminal report to bind that same digest. Editing a boundary Boolean and
 recomputing its digest cannot enable proof mutation, hidden-label access,
 deployment approval, or physical-success claims.
 
+Terminal action accounting is reconstructed from the validated observation
+inventory. Read, reversible non-spend, and preauthorized counts, the
+`actions_executed` Boolean, actual cost, duration, authorized ceiling, and
+receipt digest must exactly match the terminal report. A rewritten but
+self-consistently hashed terminal total is refused.
+
 The customer report has its own exact-schema validator at creation and replay.
 It rejects unknown fields, non-finite or negative spend, inconsistent
 decision/partial/abstention flags, agent-authoritative output, proof mutation,

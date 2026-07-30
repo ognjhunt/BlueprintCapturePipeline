@@ -496,6 +496,38 @@ def replay_supervisor_run(
         raise SupervisorReplayError("tool_observation_inventory_mismatch")
     if replayed_tool_cost_usd > float(authority_value.get("max_cost_usd") or 0.0):
         raise SupervisorReplayError("replayed_tool_cost_exceeds_authority")
+    accounted_observations = [
+        row for row in tool_observation_values if row.get("status") in {"completed", "failed"}
+    ]
+    replayed_read_count = sum(
+        row.get("status") == "completed" and row.get("mutability") == "read_only"
+        for row in accounted_observations
+    )
+    replayed_non_spend_count = sum(
+        row.get("status") == "completed" and row.get("mutability") == "reversible_mutation"
+        for row in accounted_observations
+    )
+    replayed_preauthorized_count = sum(
+        row.get("mutability") == "external_side_effect" for row in accounted_observations
+    )
+    replayed_action_duration = sum(
+        float(row.get("duration_seconds") or 0.0) for row in accounted_observations
+    )
+    action_spend = dict(report_value["action_spend"])
+    if (
+        int(report_value["registered_tool_reads_executed"]) != replayed_read_count
+        or int(report_value["registered_non_spend_actions_executed"]) != replayed_non_spend_count
+        or int(report_value["registered_preauthorized_actions_executed"])
+        != replayed_preauthorized_count
+        or bool(report_value["actions_executed"])
+        is not (replayed_non_spend_count > 0 or replayed_preauthorized_count > 0)
+        or float(action_spend["authorized_max_cost_usd"]) != float(authority_value["max_cost_usd"])
+        or float(action_spend["reported_actual_cost_usd"]) != replayed_tool_cost_usd
+        or float(action_spend["reported_duration_seconds"]) != replayed_action_duration
+        or action_spend.get("preauthorization_receipt_digest")
+        != authority_value.get("preauthorization_receipt_digest")
+    ):
+        raise SupervisorReplayError("terminal_action_accounting_mismatch")
 
     inputs_manifest = read_json(root / "kernel_inputs_manifest.json")
     expected_manifest_digest = inputs_manifest.get("kernel_inputs_manifest_digest")

@@ -3206,6 +3206,19 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     with pytest.raises(SupervisorReplayError, match="customer_report_rebuild_mismatch"):
         replay_supervisor_run(rewritten_run)
 
+    rewritten_accounting_run = tmp_path / "rewritten-terminal-accounting"
+    shutil.copytree(execution.output_dir, rewritten_accounting_run)
+    rewritten_accounting_path = rewritten_accounting_run / "terminal_supervisor_report.json"
+    rewritten_accounting = json.loads(rewritten_accounting_path.read_text(encoding="utf-8"))
+    rewritten_accounting["registered_non_spend_actions_executed"] += 1
+    rewritten_accounting["terminal_report_digest"] = canonical_digest(
+        rewritten_accounting,
+        digest_field="terminal_report_digest",
+    )
+    rewritten_accounting_path.write_text(json.dumps(rewritten_accounting), encoding="utf-8")
+    with pytest.raises(SupervisorReplayError, match="terminal_action_accounting_mismatch"):
+        replay_supervisor_run(rewritten_accounting_run)
+
     authority = json.loads(
         (execution.output_dir / "authority_envelope.json").read_text(encoding="utf-8")
     )
