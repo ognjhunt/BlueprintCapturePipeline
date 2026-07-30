@@ -23,7 +23,7 @@ SPLIT = "sha256:" + "c" * 64
 COMMIT = "d" * 40
 RECORDED_REAL_EXPORT = (
     Path(__file__).parents[1]
-    / "docs/evidence/arkitscenes_colmap_training_dataset_40958756_15994335.json"
+    / "docs/evidence/arkitscenes_colmap_training_dataset_40958756_cb96cbfc.json"
 )
 
 
@@ -238,6 +238,9 @@ def test_recorded_real_export_is_candidate_only_and_self_digesting() -> None:
         receipt, digest_field="colmap_training_dataset_export_result_digest"
     )
     assert receipt["image_count"] == 32
+    assert len(receipt["observation_ids"]) == 32
+    assert len(set(receipt["observation_ids"])) == 32
+    assert receipt["rejected_observation_ids"] == []
     assert receipt["initialization_point_count"] == 83757
     assert receipt["hidden_heldout_pixels_included"] is False
     assert receipt["raw_input_poses_modified"] is False
