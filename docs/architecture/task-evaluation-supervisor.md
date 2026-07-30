@@ -225,7 +225,7 @@ change those artifacts.
 | --- | --- |
 | `disabled` | Explicit fail-closed administrative/test mode; writes lifecycle/proof-boundary evidence and invokes no capability. It is not an alternate product harness or a normal capture-build path. |
 | `shadow` | Runs the SDK manager and only specialists whose deterministic prerequisites are present; records proposals and executes no proposed action |
-| `advise` | Recognized but blocked until operator-approval receipts exist |
+| `advise` | Runs the SDK manager and eligible specialists, validates their registered action proposals, and marks every valid proposal as requiring operator approval. It exposes no callable SDK tools, executes no action, spends no action budget, and grants no authority. An approved proposal must enter a separately authorized execution mode through a validated receipt. |
 | `execute_non_spend` | Runs SDK agents with capability-scoped, registered read-only inspection tools. Tool observations are digest-bound, zero-cost, replay-validated, and have `proof_effect=none`; broader non-spend actions remain gated. |
 | `execute_preauthorized` | Operational only when an operator-issued, digest-bound receipt and a scoped recovery controller are injected; otherwise blocked. The current receipt is not a cryptographic signature. The controller enforces provider/action allowlists, SHA/input bindings, spend, TTL, retries, watchdog, and teardown. |
 | `candidate_policy` | The mode remains fail closed in the generic supervisor runner; candidate execution is compiled through the separate frozen neutral PolicyAdapter suite so candidate code never inherits supervisor/evaluator authority. |

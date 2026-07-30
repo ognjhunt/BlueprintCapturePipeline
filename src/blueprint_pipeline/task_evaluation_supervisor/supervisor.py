@@ -377,6 +377,7 @@ class TaskEvaluationSupervisor:
                 and selected_mode
                 in {
                     AutonomyMode.SHADOW,
+                    AutonomyMode.ADVISE,
                     AutonomyMode.EXECUTE_NON_SPEND,
                     AutonomyMode.EXECUTE_PREAUTHORIZED,
                 }
@@ -678,12 +679,14 @@ class TaskEvaluationSupervisor:
         )
         can_invoke = selected_mode in {
             AutonomyMode.SHADOW,
+            AutonomyMode.ADVISE,
             AutonomyMode.EXECUTE_NON_SPEND,
             AutonomyMode.EXECUTE_PREAUTHORIZED,
         }
         if selected_mode not in {
             AutonomyMode.DISABLED,
             AutonomyMode.SHADOW,
+            AutonomyMode.ADVISE,
             AutonomyMode.EXECUTE_NON_SPEND,
             AutonomyMode.EXECUTE_PREAUTHORIZED,
         }:
@@ -1143,6 +1146,8 @@ class TaskEvaluationSupervisor:
             if run_blockers
             else "non_spend_complete"
             if selected_mode is AutonomyMode.EXECUTE_NON_SPEND
+            else "advise_complete"
+            if selected_mode is AutonomyMode.ADVISE
             else "preauthorized_complete_with_failures"
             if selected_mode is AutonomyMode.EXECUTE_PREAUTHORIZED
             and preauthorized_failures

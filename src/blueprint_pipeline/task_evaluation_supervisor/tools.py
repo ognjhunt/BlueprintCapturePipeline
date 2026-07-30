@@ -315,11 +315,18 @@ class ToolRegistry:
         if tool_id and tool is None:
             blockers.append("unregistered_tool")
         tool_value = tool.to_mapping() if tool is not None else {}
-        if tool is not None and mode.value not in set(tool_value.get("allowed_modes") or []):
+        if (
+            tool is not None
+            and mode is not AutonomyMode.ADVISE
+            and mode.value not in set(tool_value.get("allowed_modes") or [])
+        ):
             blockers.append("tool_not_allowed_in_mode")
         if tool_id and tool_id not in set(authority.get("allowed_tool_ids") or []):
             blockers.append("tool_not_in_authority_envelope")
-        if float(proposal.get("estimated_cost_usd") or 0) > float(
+        proposal_cost = float(proposal.get("estimated_cost_usd") or 0)
+        if tool is not None and proposal_cost > float(tool_value.get("max_cost_usd") or 0):
+            blockers.append("proposal_exceeds_tool_cost_limit")
+        if mode is not AutonomyMode.ADVISE and proposal_cost > float(
             authority.get("max_cost_usd") or 0
         ):
             blockers.append("proposal_exceeds_cost_authority")

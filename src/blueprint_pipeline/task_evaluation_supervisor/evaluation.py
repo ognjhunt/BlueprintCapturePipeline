@@ -392,6 +392,7 @@ def evaluate_supervisor_execution(
     )
     allowed_actions_by_mode = {
         "shadow": {"none_shadow_mode"},
+        "advise": {"none_shadow_mode"},
         "execute_non_spend": {
             "none_shadow_mode",
             "registered_read_only_tool_calls",

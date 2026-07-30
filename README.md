@@ -81,6 +81,14 @@ after capture processing and records its status and artifacts in the stage
 ledger. There is no alternate production harness or flag that skips the
 supervisor; missing live-inference authority is recorded as a typed blocker.
 
+`advise` runs the same SDK manager and eligible specialists, but exposes no
+callable tools and executes no action. Blueprint validates each proposed action
+against the registered tool contract; a valid proposal is recorded as
+`requires_operator_approval`, while an unregistered, malformed, oversized, or
+proof-changing proposal is refused. Approval is not implicit: an operator must
+issue the appropriate validated receipt and start a separately authorized
+execution mode.
+
 `execute_non_spend` exposes only capability-scoped registered tools through the
 Agents SDK. These include proof-safe reads plus deterministic materialization of
 a bound Evidence Plan and its validated leaf Evaluation Run specs into the

@@ -556,8 +556,8 @@ class DeterministicScenarioAdversarialProposer:
             tool_id="propose_adversarial_scenarios",
             parameters={
                 "request_digest": request["request_digest"],
-                "scenario_count": len(scenarios),
-                "freeze_requested": False,
+                "scenarios": scenarios,
+                "candidate_results_observed": False,
             },
         )
         return _result(

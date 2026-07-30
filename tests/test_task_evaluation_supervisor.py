@@ -1197,6 +1197,48 @@ def test_shadow_supervisor_manager_triggers_only_eligible_capabilities_without_p
     assert events[-1].digest == report["last_event_digest"]
 
 
+def test_advise_supervisor_records_approval_requests_without_executing_tools(
+    tmp_path: Path,
+) -> None:
+    execution = _sdk_supervisor().run(
+        _context(),
+        output_dir=tmp_path / "advise",
+        mode=AutonomyMode.ADVISE,
+        generated_at="2026-07-29T12:00:00+00:00",
+    )
+
+    report = execution.report.to_mapping()
+    assert report["status"] == "advise_complete"
+    assert report["manager_terminal_reason"] == "needs_authorization"
+    assert report["actions_executed"] is False
+    assert report["registered_tool_reads_executed"] == 0
+    assert report["registered_non_spend_actions_executed"] == 0
+    assert report["registered_preauthorized_actions_executed"] == 0
+    assert report["action_spend"]["authorized_max_cost_usd"] == 0.0
+    assert report["action_spend"]["reported_actual_cost_usd"] == 0.0
+    assert not (execution.output_dir / "observations").exists()
+
+    results = [result.to_mapping() for result in execution.capability_results]
+    dispositions = [
+        disposition
+        for result in results
+        for disposition in result["proposal_dispositions"]
+    ]
+    assert dispositions
+    assert {row["disposition"] for row in dispositions} == {
+        "requires_operator_approval"
+    }
+    assert all(row["blockers"] == [] and row["executed"] is False for row in dispositions)
+    assert all(
+        invocation.to_mapping()["action_taken"] == "none_shadow_mode"
+        for invocation in execution.invocation_manifests
+    )
+
+    replay = replay_supervisor_run(execution.output_dir)
+    assert replay["status"] == "replay_verified"
+    assert replay["proof_result_reproduced"] is False
+
+
 def test_prompt_injection_is_untrusted_content_not_authority(tmp_path: Path) -> None:
     execution = _sdk_supervisor().run(
         _context(
@@ -1538,6 +1580,70 @@ def test_contracts_reject_proof_and_authority_escalation() -> None:
     )
     assert disposition == "refused"
     assert blockers == ("unregistered_tool",)
+
+
+def test_advise_disposition_requires_approval_but_still_enforces_tool_limits() -> None:
+    registry = ToolRegistry.default()
+    authority = AuthorityEnvelope.from_mapping(
+        {
+            "schema_version": "task_evaluation_supervisor_authority.v1",
+            "authority_id": "advise-authority",
+            "mode": "advise",
+            "allowed_tool_ids": [row["tool_id"] for row in registry.manifest()["tools"]],
+            "max_cost_usd": 0,
+            "agent_inference_budget_usd": 0,
+            "agent_inference_allowed": False,
+            "action_spend_allowed": False,
+            "external_processing_allowed": False,
+            "max_duration_seconds": 1,
+            "max_retries": 0,
+            "immutable_input_digests": [SHA_A],
+            "proof_mutation_allowed": False,
+            "rights_mutation_allowed": False,
+            "budget_mutation_allowed": False,
+            "hidden_labels_accessible": False,
+            "physical_action_allowed": False,
+        }
+    )
+
+    def proposal(*, proposal_id: str, estimated_cost_usd: float) -> ActionProposal:
+        return ActionProposal.from_mapping(
+            {
+                "schema_version": "task_evaluation_supervisor_action_proposal.v1",
+                "proposal_id": proposal_id,
+                "run_id": "run-1",
+                "capability": "runtime_failure_recovery",
+                "action_type": "bounded_provider_retry",
+                "tool_id": "execute_preauthorized_recovery",
+                "parameters": {
+                    "action_id": "bounded_provider_retry",
+                    "provider_id": "fixture-provider",
+                    "immutable_commit_sha": "a" * 40,
+                    "input_digests": [SHA_A],
+                    "projected_cost_usd": estimated_cost_usd,
+                    "failure_type": "provider_capacity",
+                },
+                "reasons": ["typed_provider_failure"],
+                "evidence_refs": [],
+                "estimated_cost_usd": estimated_cost_usd,
+                "requested_proof_effect": "none",
+                "disposition": "shadow_only",
+            }
+        )
+
+    disposition, blockers = registry.disposition(
+        proposal(proposal_id="bounded-advice", estimated_cost_usd=1.0).to_mapping(),
+        authority.to_mapping(),
+    )
+    assert disposition == "requires_operator_approval"
+    assert blockers == ()
+
+    disposition, blockers = registry.disposition(
+        proposal(proposal_id="oversized-advice", estimated_cost_usd=101.0).to_mapping(),
+        authority.to_mapping(),
+    )
+    assert disposition == "refused"
+    assert blockers == ("proposal_exceeds_tool_cost_limit",)
 
 
 def test_ledger_detects_partial_records_and_existing_run_reuse(tmp_path: Path) -> None:

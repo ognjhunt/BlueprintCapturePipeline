@@ -543,6 +543,7 @@ class TerminalSupervisorReport(ValidatedSupervisorArtifact):
         _identifier(errors, value, "run_id")
         if _string(value.get("status")) not in {
             "shadow_complete",
+            "advise_complete",
             "non_spend_complete",
             "preauthorized_complete",
             "preauthorized_complete_with_failures",
