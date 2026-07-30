@@ -395,6 +395,10 @@ def test_arkit_metric_scaffold_records_explicit_depth_surface_readiness(
     )
     _write_json(depth_path, depth)
     _write_json(confidence_path, confidence)
+    recording_path = capture_root / "recording_session.json"
+    recording = json.loads(recording_path.read_text(encoding="utf-8"))
+    recording["up_axis"] = "Y"
+    _write_json(recording_path, recording)
 
     result = LocalArkitMetricScaffoldAdapter().execute(
         intake_id="intake-1",

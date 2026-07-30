@@ -12,6 +12,7 @@ from PIL import Image
 from blueprint_pipeline.arkit_depth_surface_compiler import (
     REQUEST_SCHEMA,
     ArkitDepthSurfaceCompilerError,
+    build_arkit_depth_surface_compilation_request,
     compile_arkit_depth_surface,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -29,6 +30,14 @@ from blueprint_pipeline.task_evaluation_supervisor.tools import (
 
 def _digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _artifact_digest(value: dict) -> str:
+    payload = (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 def _write_inputs(
@@ -154,6 +163,112 @@ def _compile(root: Path, request: dict) -> tuple[dict, dict]:
     return result, surface
 
 
+def _build_request_from_scaffold(
+    root: Path, *, split: str = "training", up_axis: str | None = "Z"
+) -> dict:
+    depth_path, confidence_path = _write_inputs(root)
+    capture_digest = "sha256:" + "1" * 64
+    declaration = {
+        "depth_encoding": "uint16_png",
+        "scale_to_meters": 0.001,
+        "camera_ray_convention": "arkit_x_right_y_up_z_backward",
+        "depth_intrinsics": {
+            "width": 3,
+            "height": 3,
+            "fx": 1.0,
+            "fy": 1.0,
+            "cx": 1.0,
+            "cy": 1.0,
+        },
+        "depth_registered_to_arkit_camera": True,
+        "confidence_encoding": "uint8_png",
+        "accepted_confidence_values": [2],
+    }
+    declaration["declaration_digest"] = canonical_digest(
+        declaration, digest_field="declaration_digest"
+    )
+    binding = {
+        "frame_id": "frame-0001",
+        "depth_relative_path": "inputs/depth.png",
+        "depth_digest": _digest(depth_path),
+        "confidence_relative_path": "inputs/confidence.png",
+        "confidence_digest": _digest(confidence_path),
+    }
+    scaffold = {
+        "schema_version": "arkit_metric_scaffold.v1",
+        "capture_digest": capture_digest,
+        "coordinate_system": {
+            "world_frame_definition": "arkit_world_origin_at_session_start",
+            "units": "meters",
+            "handedness": "right_handed",
+            "gravity_aligned": True,
+            "up_axis": up_axis,
+        },
+        "depth_confidence_pairs": [binding],
+        "depth_surface_source_readiness": {
+            "schema_version": "arkit_depth_surface_source_readiness.v1",
+            "status": "ready_for_confidence_filtered_backprojection",
+            "blockers": [],
+            "source_declaration": declaration,
+            "agent_may_override": False,
+        },
+        "source_artifact_digests": {
+            "inputs/depth.png": _digest(depth_path),
+            "inputs/confidence.png": _digest(confidence_path),
+        },
+    }
+    scaffold_digest = _artifact_digest(scaffold)
+    calibration = {
+        "schema_version": "camera_calibration_manifest.v1",
+        "capture_digest": capture_digest,
+        "source_metric_scaffold_digest": scaffold_digest,
+    }
+    calibration["calibration_digest"] = canonical_digest(
+        calibration, digest_field="calibration_digest"
+    )
+    observations = {
+        "schema_version": "camera_observation_manifest.v1",
+        "capture_digest": capture_digest,
+        "split_digest": "sha256:" + "3" * 64,
+        "calibration_digest": calibration["calibration_digest"],
+        "candidate_splits_only": True,
+        "hidden_heldout_pixels_included": False,
+        "observations": [
+            {
+                "observation_id": "decoded-frame-0001",
+                "capture_frame_id": "frame-0001",
+                "split": split,
+                "T_world_camera": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                "depth_confidence_binding": binding,
+            }
+        ],
+    }
+    observations["camera_observation_digest"] = canonical_digest(
+        observations, digest_field="camera_observation_digest"
+    )
+    return build_arkit_depth_surface_compilation_request(
+        stable_run_identity="arkit-depth-builder-run",
+        source_capture_identity="capture-1",
+        source_capture_digest=capture_digest,
+        source_commit_sha="a" * 40,
+        metric_scaffold=scaffold,
+        metric_scaffold_digest=scaffold_digest,
+        camera_observation_manifest=observations,
+        camera_calibration_manifest=calibration,
+        artifact_root=root,
+        authority_used={"mode": "execute_non_spend"},
+        timestamp="2026-07-30T23:30:00Z",
+        pixel_stride=1,
+        maximum_edge_length_m=1.5,
+        maximum_depth_discontinuity_m=0.2,
+    )
+
+
 def test_arkit_depth_backprojection_is_metric_explicit_and_replayable(tmp_path: Path) -> None:
     request = _request(tmp_path)
     result, surface = _compile(tmp_path, request)
@@ -174,6 +289,31 @@ def test_arkit_depth_backprojection_is_metric_explicit_and_replayable(tmp_path: 
         if row["source_pixel"] == {"frame_id": "frame-0001", "u": 1, "v": 1}
     )
     assert center["position_m"] == pytest.approx([0.0, 0.0, -1.0])
+
+
+def test_request_builder_joins_only_candidate_depth_observations(tmp_path: Path) -> None:
+    request = _build_request_from_scaffold(tmp_path)
+    result, surface = _compile(tmp_path, request)
+
+    assert request["frames"][0]["split"] == "training"
+    assert request["candidate_may_read_hidden_heldout"] is False
+    assert request["coordinate_frame_declaration"]["up_axis"] == "Z"
+    assert request["unsupported_region_ids"] == ["arkit-unobserved-regions"]
+    assert result["hidden_heldout_observations_accessed"] is False
+    assert surface["unsupported_region_ids"] == ["arkit-unobserved-regions"]
+
+    other = tmp_path / "heldout"
+    other.mkdir()
+    with pytest.raises(ArkitDepthSurfaceCompilerError, match="hidden_or_invalid_split"):
+        _build_request_from_scaffold(other, split="held_out")
+
+    missing_axis = tmp_path / "missing-axis"
+    missing_axis.mkdir()
+    with pytest.raises(
+        ArkitDepthSurfaceCompilerError,
+        match="coordinate_frame_declaration_incomplete",
+    ):
+        _build_request_from_scaffold(missing_axis, up_axis=None)
 
 
 def test_low_confidence_and_depth_discontinuity_remain_missing(tmp_path: Path) -> None:

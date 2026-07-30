@@ -221,6 +221,251 @@ def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> str:
     return digest
 
 
+def _canonical_artifact_digest(value: Mapping[str, Any]) -> str:
+    payload = (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def build_arkit_depth_surface_compilation_request(
+    *,
+    stable_run_identity: str,
+    source_capture_identity: str,
+    source_capture_digest: str,
+    source_commit_sha: str,
+    metric_scaffold: Mapping[str, Any],
+    metric_scaffold_digest: str,
+    camera_observation_manifest: Mapping[str, Any],
+    camera_calibration_manifest: Mapping[str, Any],
+    artifact_root: str | Path,
+    authority_used: Mapping[str, Any],
+    timestamp: str,
+    pixel_stride: int = 2,
+    maximum_edge_length_m: float = 0.25,
+    maximum_depth_discontinuity_m: float = 0.05,
+) -> dict[str, Any]:
+    """Bind candidate-only ARKit observations to explicit depth declarations."""
+
+    scaffold = json.loads(json.dumps(dict(metric_scaffold)))
+    observations = json.loads(json.dumps(dict(camera_observation_manifest)))
+    calibration = json.loads(json.dumps(dict(camera_calibration_manifest)))
+    errors: list[str] = []
+    if (
+        scaffold.get("schema_version") != "arkit_metric_scaffold.v1"
+        or metric_scaffold_digest != _canonical_artifact_digest(scaffold)
+    ):
+        errors.append("metric_scaffold_invalid")
+    observation_digest = observations.get("camera_observation_digest")
+    if (
+        observations.get("schema_version") != "camera_observation_manifest.v1"
+        or observation_digest
+        != canonical_digest(
+            observations, digest_field="camera_observation_digest"
+        )
+        or observations.get("candidate_splits_only") is not True
+        or observations.get("hidden_heldout_pixels_included") is not False
+    ):
+        errors.append("candidate_camera_observation_manifest_invalid")
+    calibration_digest = calibration.get("calibration_digest")
+    if (
+        calibration.get("schema_version") != "camera_calibration_manifest.v1"
+        or calibration_digest
+        != canonical_digest(calibration, digest_field="calibration_digest")
+    ):
+        errors.append("camera_calibration_manifest_invalid")
+    capture_bindings = {
+        scaffold.get("capture_digest"),
+        observations.get("capture_digest"),
+        calibration.get("capture_digest"),
+    }
+    if capture_bindings != {source_capture_digest}:
+        errors.append("source_capture_binding_mismatch")
+    if (
+        observations.get("calibration_digest") != calibration_digest
+        or calibration.get("source_metric_scaffold_digest")
+        != metric_scaffold_digest
+    ):
+        errors.append("camera_calibration_binding_mismatch")
+    split_digest = observations.get("split_digest")
+    if not isinstance(split_digest, str) or _DIGEST.fullmatch(split_digest) is None:
+        errors.append("frozen_split_binding_invalid")
+    readiness = scaffold.get("depth_surface_source_readiness")
+    declaration = (
+        readiness.get("source_declaration")
+        if isinstance(readiness, Mapping)
+        else None
+    )
+    if (
+        not isinstance(readiness, Mapping)
+        or readiness.get("status")
+        != "ready_for_confidence_filtered_backprojection"
+        or readiness.get("blockers") != []
+        or readiness.get("agent_may_override") is not False
+        or not isinstance(declaration, Mapping)
+        or declaration.get("declaration_digest")
+        != canonical_digest(declaration, digest_field="declaration_digest")
+    ):
+        errors.append("depth_surface_source_declaration_not_ready")
+    coordinate = scaffold.get("coordinate_system")
+    if (
+        not isinstance(coordinate, Mapping)
+        or coordinate.get("units") != "meters"
+        or coordinate.get("handedness") != "right_handed"
+        or coordinate.get("gravity_aligned") is not True
+        or coordinate.get("up_axis") not in {"X", "Y", "Z"}
+        or not str(coordinate.get("world_frame_definition") or "").strip()
+    ):
+        errors.append("coordinate_frame_declaration_incomplete")
+    if errors:
+        raise ArkitDepthSurfaceCompilerError(errors)
+    assert isinstance(declaration, Mapping)
+    assert isinstance(coordinate, Mapping)
+    root = Path(artifact_root)
+    source_references: dict[tuple[str, str], dict[str, str]] = {}
+    source_digests = scaffold.get("source_artifact_digests")
+    if not isinstance(source_digests, Mapping) or not source_digests:
+        raise ArkitDepthSurfaceCompilerError(["source_artifact_digests_missing"])
+    for relative_path, digest_value in sorted(source_digests.items()):
+        path = _safe_input(root, relative_path, label="source_artifact")
+        digest = str(digest_value or "")
+        if _DIGEST.fullmatch(digest) is None or _sha256(path) != digest:
+            raise ArkitDepthSurfaceCompilerError(["source_artifact_digest_mismatch"])
+        source_references[(path.relative_to(root.resolve()).as_posix(), digest)] = {
+            "artifact_id": f"source-{digest[7:23]}",
+            "digest": digest,
+            "relative_path": path.relative_to(root.resolve()).as_posix(),
+        }
+    depth_by_frame = {
+        str(row.get("frame_id")): dict(row)
+        for row in scaffold.get("depth_confidence_pairs", [])
+        if isinstance(row, Mapping) and str(row.get("frame_id") or "")
+    }
+    frames: list[dict[str, Any]] = []
+    for observation in observations.get("observations", []):
+        if not isinstance(observation, Mapping):
+            raise ArkitDepthSurfaceCompilerError(["camera_observation_invalid"])
+        split = observation.get("split")
+        if split not in {"training", "validation"}:
+            raise ArkitDepthSurfaceCompilerError(["hidden_or_invalid_split_forbidden"])
+        capture_frame_id = str(observation.get("capture_frame_id") or "")
+        binding = observation.get("depth_confidence_binding")
+        expected_binding = depth_by_frame.get(capture_frame_id)
+        if binding is None and expected_binding is None:
+            continue
+        if not isinstance(binding, Mapping) or dict(binding) != expected_binding:
+            raise ArkitDepthSurfaceCompilerError(
+                [f"depth_confidence_observation_binding_mismatch:{capture_frame_id}"]
+            )
+        depth_path = _safe_input(
+            root, binding.get("depth_relative_path"), label="depth_asset"
+        )
+        confidence_path = _safe_input(
+            root,
+            binding.get("confidence_relative_path"),
+            label="confidence_asset",
+        )
+        depth_digest = _sha256(depth_path)
+        confidence_digest = _sha256(confidence_path)
+        if (
+            depth_digest != binding.get("depth_digest")
+            or confidence_digest != binding.get("confidence_digest")
+        ):
+            raise ArkitDepthSurfaceCompilerError(
+                [f"depth_confidence_digest_mismatch:{capture_frame_id}"]
+            )
+        for label, path, digest in (
+            ("depth", depth_path, depth_digest),
+            ("confidence", confidence_path, confidence_digest),
+        ):
+            relative = path.relative_to(root.resolve()).as_posix()
+            source_references[(relative, digest)] = {
+                "artifact_id": f"{label}-{capture_frame_id}",
+                "digest": digest,
+                "relative_path": relative,
+            }
+        frames.append(
+            {
+                "frame_id": capture_frame_id,
+                "split": split,
+                "region_id": "arkit-observed-frusta",
+                "depth_asset": {
+                    "relative_path": depth_path.relative_to(root.resolve()).as_posix(),
+                    "digest": depth_digest,
+                    "encoding": declaration["depth_encoding"],
+                    "scale_to_meters": declaration["scale_to_meters"],
+                },
+                "confidence_asset": {
+                    "relative_path": confidence_path.relative_to(root.resolve()).as_posix(),
+                    "digest": confidence_digest,
+                    "encoding": declaration["confidence_encoding"],
+                },
+                "depth_intrinsics": declaration["depth_intrinsics"],
+                "T_world_camera": observation.get("T_world_camera"),
+            }
+        )
+    if not frames:
+        raise ArkitDepthSurfaceCompilerError(
+            ["candidate_depth_observations_missing_without_heldout_access"]
+        )
+    configuration = {
+        "implementation_version": IMPLEMENTATION_VERSION,
+        "metric_scaffold_digest": metric_scaffold_digest,
+        "camera_observation_digest": observation_digest,
+        "camera_calibration_digest": calibration_digest,
+        "depth_source_declaration_digest": declaration["declaration_digest"],
+        "pixel_stride": pixel_stride,
+        "maximum_edge_length_m": maximum_edge_length_m,
+        "maximum_depth_discontinuity_m": maximum_depth_discontinuity_m,
+    }
+    request = {
+        "schema_version": REQUEST_SCHEMA,
+        "stable_run_identity": stable_run_identity,
+        "source_capture_identity": source_capture_identity,
+        "source_capture_digest": source_capture_digest,
+        "original_file_references": sorted(
+            source_references.values(), key=lambda row: row["artifact_id"]
+        ),
+        "source_commit_sha": source_commit_sha,
+        "deterministic_configuration_digest": canonical_digest(configuration),
+        "train_heldout_split_digest": split_digest,
+        "camera_calibration_binding": {
+            "digest": calibration_digest,
+            "source_metric_scaffold_digest": metric_scaffold_digest,
+        },
+        "coordinate_frame_declaration": {
+            "frame": coordinate["world_frame_definition"],
+            "units": "meters",
+            "up_axis": coordinate["up_axis"],
+            "handedness": "right_handed",
+            "gravity_aligned": True,
+        },
+        "authority_used": dict(authority_used),
+        "timestamp": timestamp,
+        "capture_profile": "iphone_arkit_lidar",
+        "camera_ray_convention": declaration["camera_ray_convention"],
+        "metric_scale_status": "sensor_metric_unvalidated",
+        "pixel_stride": pixel_stride,
+        "accepted_confidence_values": declaration["accepted_confidence_values"],
+        "maximum_edge_length_m": maximum_edge_length_m,
+        "maximum_depth_discontinuity_m": maximum_depth_discontinuity_m,
+        "declared_region_ids": [
+            "arkit-observed-frusta",
+            "arkit-unobserved-regions",
+        ],
+        "unsupported_region_ids": ["arkit-unobserved-regions"],
+        "generated_fill_used": False,
+        "candidate_may_read_hidden_heldout": False,
+        "warnings": ["metric_scale_not_independently_validated"],
+        "frames": sorted(frames, key=lambda row: row["frame_id"]),
+    }
+    request["arkit_depth_surface_compilation_request_digest"] = canonical_digest(
+        request, digest_field="arkit_depth_surface_compilation_request_digest"
+    )
+    return request
+
+
 def compile_arkit_depth_surface(
     *, source_artifact: Mapping[str, Any], artifact_root: str | Path, output_root: str | Path
 ) -> dict[str, Any]:
@@ -514,5 +759,6 @@ __all__ = [
     "OUTPUT_SURFACE_SCHEMA",
     "REQUEST_SCHEMA",
     "RESULT_SCHEMA",
+    "build_arkit_depth_surface_compilation_request",
     "compile_arkit_depth_surface",
 ]

@@ -1111,6 +1111,17 @@ class LocalArkitMetricScaffoldAdapter:
         if errors:
             raise LocalReconstructionAdapterError(errors)
         depth_pairs, depth_surface_readiness = _verified_depth_pairs(root)
+        up_axis = _text(recording.get("up_axis"))
+        if up_axis not in {"X", "Y", "Z"}:
+            depth_surface_readiness = {
+                "schema_version": "arkit_depth_surface_source_readiness.v1",
+                "status": "blocked_missing_source_declarations",
+                "blockers": sorted(
+                    set(depth_surface_readiness["blockers"])
+                    | {"coordinate_up_axis_missing_or_invalid"}
+                ),
+                "agent_may_override": False,
+            }
         if any(pair["frame_id"] not in pose_by_id for pair in depth_pairs):
             raise LocalReconstructionAdapterError(
                 ["metric_scaffold:depth_pair_pose_binding_missing"]
@@ -1136,6 +1147,7 @@ class LocalArkitMetricScaffoldAdapter:
                 "units": "meters",
                 "handedness": "right_handed",
                 "gravity_aligned": True,
+                "up_axis": up_axis or None,
             },
             "intrinsics": normalized_intrinsics,
             "camera_frames": [
