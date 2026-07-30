@@ -10,6 +10,8 @@ Ctrl-World's separately trained learned adapter.
 from __future__ import annotations
 
 import math
+import importlib.util
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +29,9 @@ OFFICIAL_LOCAL_ACTION_ADAPTER_SHA256 = (
 )
 CTRL_WORLD_RELEASED_ACTION_ADAPTER_SOURCE_SHA256 = (
     "44e5c91d8339512c1a121b72159e77a4aa469dbb134d3f0b373a7447af8a88e2"
+)
+CTRL_WORLD_RELEASED_FK_SOURCE_SHA256 = (
+    "bd9af90afdf379b95c2dfc7c3a5f8f6b8c6f1edc92ef8b8b7b59d08868ecfae3"
 )
 CTRL_WORLD_RELEASED_ACTION_ROWS = 15
 CTRL_WORLD_FUTURE_FRAME_INDICES = (0, 2, 4, 6, 8)
@@ -179,10 +184,7 @@ class CtrlWorldReleasedJointVelocityAdapter:
             raise ValueError("ctrl_world_current_joint_position_invalid")
         if current_gripper.shape != (1,) or not np.isfinite(current_gripper).all():
             raise ValueError("ctrl_world_current_gripper_position_invalid")
-        if (
-            history.shape != (CTRL_WORLD_HISTORY_ROWS, 7)
-            or not np.isfinite(history).all()
-        ):
+        if history.shape != (CTRL_WORLD_HISTORY_ROWS, 7) or not np.isfinite(history).all():
             raise ValueError("ctrl_world_history_cartesian_pose_must_be_finite_6x7")
         if not math.isfinite(self.gripper_max) or not 0.0 < self.gripper_max <= 1.0:
             raise ValueError("ctrl_world_gripper_max_invalid")
@@ -246,9 +248,7 @@ class CtrlWorldReleasedJointVelocityAdapter:
             "next_cartesian_pose_7d": pose_series[next_index],
             "future_frame_indices": list(CTRL_WORLD_FUTURE_FRAME_INDICES),
             "official_ctrl_world_learned_action_adapter_used": True,
-            "official_action_adapter_checkpoint_sha256": (
-                OFFICIAL_LOCAL_ACTION_ADAPTER_SHA256
-            ),
+            "official_action_adapter_checkpoint_sha256": (OFFICIAL_LOCAL_ACTION_ADAPTER_SHA256),
             "official_action_adapter_source_sha256": (
                 CTRL_WORLD_RELEASED_ACTION_ADAPTER_SOURCE_SHA256
             ),
@@ -265,6 +265,119 @@ class CtrlWorldReleasedJointVelocityAdapter:
         }
         result["conditioning_sha256"] = canonical_sha256(identity_material)
         return result
+
+
+@dataclass(frozen=True)
+class LoadedCtrlWorldReleasedActionRuntime:
+    """Exact released Dynamics/FK binding plus immutable asset evidence."""
+
+    adapter: CtrlWorldReleasedJointVelocityAdapter
+    evidence: Mapping[str, Any]
+
+
+def _load_released_dynamics(
+    source_path: Path, checkpoint_path: Path, device: str
+) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover - pinned provider runtime owns torch
+        raise RuntimeError("ctrl_world_released_dynamics_torch_missing") from exc
+    module_name = "blueprint_frozen_ctrl_world_released_dynamics"
+    spec = importlib.util.spec_from_file_location(module_name, source_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("ctrl_world_released_dynamics_import_spec_invalid")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(module_name, None)
+    model = module.Dynamics(action_dim=7, action_num=15, hidden_size=512).to(device)
+    state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    model.load_state_dict(state_dict)
+    model.eval()
+
+    def execute(current_joint: np.ndarray, joint_velocity: np.ndarray) -> np.ndarray:
+        with torch.no_grad():
+            result = model(
+                current_joint[None, :],
+                joint_velocity,
+                None,
+                training=False,
+            )
+        return np.asarray(result, dtype=np.float64)
+
+    return execute
+
+
+def _load_released_forward_kinematics(source_path: Path) -> Callable[[np.ndarray], Any]:
+    module_name = "blueprint_frozen_ctrl_world_released_fk"
+    spec = importlib.util.spec_from_file_location(module_name, source_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("ctrl_world_released_fk_import_spec_invalid")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(module_name, None)
+    return module.get_fk_solution
+
+
+def load_ctrl_world_released_joint_velocity_adapter(
+    *,
+    ctrl_world_source_dir: str | Path,
+    gripper_max: float,
+    device: str = "cpu",
+    dynamics_loader: Callable[
+        [Path, Path, str], Callable[[np.ndarray, np.ndarray], np.ndarray]
+    ] = _load_released_dynamics,
+    forward_kinematics_loader: Callable[[Path], Callable[[np.ndarray], Any]] = (
+        _load_released_forward_kinematics
+    ),
+) -> LoadedCtrlWorldReleasedActionRuntime:
+    """Load only exact public Ctrl-World adapter bytes, failing closed on drift."""
+
+    root = Path(ctrl_world_source_dir).expanduser().resolve()
+    source = root / "models/action_adapter/train2.py"
+    checkpoint = root / "models/action_adapter/model2_15_9.pth"
+    fk_source = root / "models/utils.py"
+    assets = (
+        (source, CTRL_WORLD_RELEASED_ACTION_ADAPTER_SOURCE_SHA256, "source"),
+        (checkpoint, OFFICIAL_LOCAL_ACTION_ADAPTER_SHA256, "checkpoint"),
+        (fk_source, CTRL_WORLD_RELEASED_FK_SOURCE_SHA256, "fk_source"),
+    )
+    observed: dict[str, Any] = {}
+    for path, expected_digest, name in assets:
+        if not path.is_file() or path.is_symlink() or path.stat().st_size <= 0:
+            raise ValueError(f"ctrl_world_released_action_{name}_invalid")
+        digest = file_sha256(path)
+        if digest != expected_digest:
+            raise ValueError(f"ctrl_world_released_action_{name}_hash_mismatch")
+        observed[name] = {
+            "path": str(path),
+            "sha256": digest,
+            "size_bytes": path.stat().st_size,
+        }
+    dynamics = dynamics_loader(source, checkpoint, device)
+    forward_kinematics = forward_kinematics_loader(fk_source)
+    adapter = CtrlWorldReleasedJointVelocityAdapter(
+        dynamics_adapter=dynamics,
+        forward_kinematics=forward_kinematics,
+        gripper_max=gripper_max,
+    )
+    evidence: dict[str, Any] = {
+        "schema_version": "ctrl_world_released_action_runtime.v1",
+        "status": "loaded",
+        "device": device,
+        "assets": observed,
+        "native_action_space": "joint_velocity_plus_gripper_position",
+        "target_action_space": "ctrl_world_cartesian_xyz_euler_xyz_plus_gripper",
+        "official_released_dynamics_and_fk_loaded": True,
+        "absolute_joint_position_conversion_supported": False,
+    }
+    evidence["runtime_sha256"] = canonical_sha256(evidence)
+    return LoadedCtrlWorldReleasedActionRuntime(adapter=adapter, evidence=evidence)
 
 
 @dataclass(frozen=True)
@@ -341,11 +454,14 @@ __all__ = [
     "CTRL_WORLD_FUTURE_FRAME_INDICES",
     "CTRL_WORLD_HISTORY_ROWS",
     "CTRL_WORLD_RELEASED_ACTION_ADAPTER_SOURCE_SHA256",
+    "CTRL_WORLD_RELEASED_FK_SOURCE_SHA256",
     "CTRL_WORLD_RELEASED_ACTION_ROWS",
     "CtrlWorldReleasedJointVelocityAdapter",
     "FrankaCtrlWorldJointPositionAdapter",
+    "LoadedCtrlWorldReleasedActionRuntime",
     "OFFICIAL_LOCAL_ACTION_ADAPTER_SHA256",
     "SCHEMA_VERSION",
     "cartesian_pose_rows_to_reliability_actions_10d",
+    "load_ctrl_world_released_joint_velocity_adapter",
     "validate_ctrl_world_runtime_assets",
 ]

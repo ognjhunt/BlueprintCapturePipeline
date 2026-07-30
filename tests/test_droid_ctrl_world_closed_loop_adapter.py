@@ -10,6 +10,7 @@ from PIL import Image
 from blueprint_pipeline.ctrl_world_droid_action_adapter import (
     CTRL_WORLD_FUTURE_FRAME_INDICES,
     CtrlWorldReleasedJointVelocityAdapter,
+    load_ctrl_world_released_joint_velocity_adapter,
 )
 from blueprint_pipeline.droid_ctrl_world_closed_loop_adapter import (
     CTRL_WORLD_RELEASED_VIEW_ORDER,
@@ -26,6 +27,7 @@ from blueprint_pipeline.policy_wam_closed_loop import (
     ClosedLoopConfig,
     run_policy_wam_closed_loop,
 )
+from blueprint_pipeline.policy_ranking_thesis import file_sha256
 
 
 def _dynamics(current_joint: np.ndarray, joint_velocity: np.ndarray) -> np.ndarray:
@@ -240,4 +242,77 @@ def test_openpi_config_binds_native_action_rows() -> None:
             action_adapter=_released_adapter(),
             openpi_config_name="pi05_droid",
             action_chunk_rows=10,
+        )
+
+
+def test_released_action_runtime_binds_exact_source_checkpoint_and_fk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import ctrl_world_droid_action_adapter as action_module
+
+    root = tmp_path / "ctrl_world"
+    source = root / "models/action_adapter/train2.py"
+    checkpoint = root / "models/action_adapter/model2_15_9.pth"
+    fk_source = root / "models/utils.py"
+    for path, content in (
+        (source, b"source"),
+        (checkpoint, b"checkpoint"),
+        (fk_source, b"fk"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    monkeypatch.setattr(
+        action_module, "CTRL_WORLD_RELEASED_ACTION_ADAPTER_SOURCE_SHA256", file_sha256(source)
+    )
+    monkeypatch.setattr(
+        action_module, "OFFICIAL_LOCAL_ACTION_ADAPTER_SHA256", file_sha256(checkpoint)
+    )
+    monkeypatch.setattr(
+        action_module, "CTRL_WORLD_RELEASED_FK_SOURCE_SHA256", file_sha256(fk_source)
+    )
+    loaded = load_ctrl_world_released_joint_velocity_adapter(
+        ctrl_world_source_dir=root,
+        gripper_max=0.75,
+        device="fixture",
+        dynamics_loader=lambda source_path, checkpoint_path, device: (
+            _dynamics
+            if (source_path, checkpoint_path, device) == (source, checkpoint, "fixture")
+            else None
+        ),
+        forward_kinematics_loader=lambda path: _fk if path == fk_source else None,
+    )
+
+    result = loaded.adapter.adapt(
+        policy_action=np.zeros((15, 8)),
+        current_joint_position=np.zeros(7),
+        current_gripper_position=np.zeros(1),
+        history_cartesian_pose_7d=np.zeros((6, 7)),
+        source_action_space="joint_velocity_plus_gripper_position",
+    )
+    assert result["action_conditioning_shape"] == [11, 7]
+    assert loaded.evidence["official_released_dynamics_and_fk_loaded"] is True
+    assert loaded.evidence["absolute_joint_position_conversion_supported"] is False
+
+
+def test_released_action_runtime_rejects_asset_hash_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import ctrl_world_droid_action_adapter as action_module
+
+    root = tmp_path / "ctrl_world"
+    for relative in (
+        "models/action_adapter/train2.py",
+        "models/action_adapter/model2_15_9.pth",
+        "models/utils.py",
+    ):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative, encoding="utf-8")
+    monkeypatch.setattr(action_module, "CTRL_WORLD_RELEASED_ACTION_ADAPTER_SOURCE_SHA256", "0" * 64)
+    with pytest.raises(ValueError, match="source_hash_mismatch"):
+        load_ctrl_world_released_joint_velocity_adapter(
+            ctrl_world_source_dir=root,
+            gripper_max=0.75,
+            dynamics_loader=lambda *_: _dynamics,
+            forward_kinematics_loader=lambda _: _fk,
         )
