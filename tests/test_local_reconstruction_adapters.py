@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 
@@ -431,6 +431,60 @@ def test_external_reconstruction_import_binds_ply_without_authority_upgrade(
             coordinate_frame_declaration={},
         )
 
+
+def test_external_reconstruction_import_accepts_supersplat_compressed_3dgs(
+    tmp_path: Path,
+) -> None:
+    header = (
+        b"ply\n"
+        b"format binary_little_endian 1.0\n"
+        b"element chunk 1\n"
+        b"property float min_x\nproperty float min_y\nproperty float min_z\n"
+        b"property float max_x\nproperty float max_y\nproperty float max_z\n"
+        b"element vertex 1\n"
+        b"property uint packed_position\n"
+        b"property uint packed_rotation\n"
+        b"property uint packed_scale\n"
+        b"property uint packed_color\n"
+        b"element sh 1\n"
+        b"property uchar f_rest_0\n"
+        b"end_header\n"
+    )
+    payload = header + (b"\x00" * 41)
+    capture_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    asset = tmp_path / "3dgs_compressed.ply"
+    asset.write_bytes(payload)
+
+    result = LocalExternalReconstructionImportAdapter().execute(
+        intake_id="intake-interiorgs-1",
+        capture_digest=capture_digest,
+        source_capture_binding={
+            "source_capture_digest": "sha256:" + "c" * 64,
+            "provider_identity": "interiorgs",
+        },
+        capture_root=tmp_path,
+        asset_relative_path=asset.name,
+        original_filename=asset.name,
+        output_root=tmp_path / "derived",
+        rights_and_retention={"allowed_use": "noncommercial_research_only"},
+        coordinate_frame_declaration={
+            "axes": {"x": "right", "y": "back", "z": "up"},
+            "units": "meters",
+            "status": "dataset_declared_unverified",
+        },
+    )
+
+    ply = result["validation_metrics"]["ply_header"]
+    assert ply["representation_profile"] == "supersplat_compressed_3dgs"
+    assert ply["elements"] == {"chunk": 1, "sh": 1, "vertex": 1}
+    assert result["outputs"] == ["appearance_layer"]
+    assert result["claim_ceiling"]["metric_geometry"] is False
+    assert result["claim_ceiling"]["collision_geometry"] is False
+    assert result["claim_ceiling"]["physical_task_success"] is False
+    assert result["claim_ceiling"]["comparative_policy_ranking_verdict"] == (
+        "thesis_not_supported"
+    )
+
     colorless = tmp_path / "colorless.ply"
     colorless_payload = (
         b"ply\nformat ascii 1.0\nelement vertex 1\n"
@@ -439,7 +493,7 @@ def test_external_reconstruction_import_binds_ply_without_authority_upgrade(
     )
     colorless.write_bytes(colorless_payload)
     with pytest.raises(LocalReconstructionAdapterError, match="ply_vertex_color_missing"):
-        adapter.execute(
+        LocalExternalReconstructionImportAdapter().execute(
             intake_id="intake-external-2",
             capture_digest="sha256:" + hashlib.sha256(colorless_payload).hexdigest(),
             source_capture_binding={"source_capture_digest": "sha256:" + "b" * 64},
