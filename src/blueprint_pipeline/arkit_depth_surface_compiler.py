@@ -34,6 +34,7 @@ CAMERA_CONVENTIONS = {
     "arkit_x_right_y_up_z_backward",
     "opencv_x_right_y_down_z_forward",
 }
+CAPTURE_PROFILES = {"iphone_arkit_lidar", "public_dataset_arkitscenes_proxy"}
 MAX_FRAME_COUNT = 10_000
 MAX_IMAGE_BYTES = 512 * 1024 * 1024
 MAX_PIXELS_PER_FRAME = 64 * 1024 * 1024
@@ -484,8 +485,8 @@ def compile_arkit_depth_surface(
         raise ArkitDepthSurfaceCompilerError(["arkit_depth_surface_request_invalid"])
     if _COMMIT.fullmatch(str(request.get("source_commit_sha") or "")) is None:
         raise ArkitDepthSurfaceCompilerError(["source_commit_sha_invalid"])
-    if request.get("capture_profile") != "iphone_arkit_lidar":
-        raise ArkitDepthSurfaceCompilerError(["iphone_arkit_lidar_profile_required"])
+    if request.get("capture_profile") not in CAPTURE_PROFILES:
+        raise ArkitDepthSurfaceCompilerError(["arkit_depth_capture_profile_unsupported"])
     if request.get("camera_ray_convention") not in CAMERA_CONVENTIONS:
         raise ArkitDepthSurfaceCompilerError(["camera_ray_convention_unsupported"])
     if request.get("metric_scale_status") not in {
@@ -702,6 +703,7 @@ def compile_arkit_depth_surface(
     surface_path = output / "arkit_observed_surface.json"
     surface_digest = _write_immutable_json(surface_path, surface)
     relative_path = surface_path.resolve().relative_to(root.resolve()).as_posix()
+    is_public_proxy = request["capture_profile"] == "public_dataset_arkitscenes_proxy"
     result = {
         "schema_version": RESULT_SCHEMA,
         "stable_run_identity": request["stable_run_identity"],
@@ -730,6 +732,7 @@ def compile_arkit_depth_surface(
         "blockers": [],
         "parent_artifact_or_event": {"digest": request_digest},
         "timestamp": request["timestamp"],
+        "capture_profile": request["capture_profile"],
         "status": "compiled_observed_surface_candidate",
         "surface_asset": {"relative_path": relative_path, "digest": surface_digest},
         "accepted_high_confidence_pixel_count": accepted_pixel_count,
@@ -742,8 +745,18 @@ def compile_arkit_depth_surface(
         "hidden_heldout_observations_accessed": False,
         "generated_fill_used": False,
         "raw_arkit_poses_modified": False,
-        "proof_effect": "metric_reference_candidate_only",
-        "claim_ceiling": "observed_arkit_depth_surface_candidate",
+        "blueprint_raw_contract_3_2_proven": False,
+        "iphone_route_proven": False,
+        "proof_effect": (
+            "public_dataset_observed_depth_surface_proxy_only"
+            if is_public_proxy
+            else "metric_reference_candidate_only"
+        ),
+        "claim_ceiling": (
+            "public_dataset_arkit_depth_surface_proxy"
+            if is_public_proxy
+            else "observed_arkit_depth_surface_candidate"
+        ),
     }
     result["arkit_depth_surface_compilation_result_digest"] = canonical_digest(
         result, digest_field="arkit_depth_surface_compilation_result_digest"
@@ -753,6 +766,7 @@ def compile_arkit_depth_surface(
 
 __all__ = [
     "ArkitDepthSurfaceCompilerError",
+    "CAPTURE_PROFILES",
     "CAMERA_CONVENTIONS",
     "IMPLEMENTATION_VERSION",
     "METHOD_ID",

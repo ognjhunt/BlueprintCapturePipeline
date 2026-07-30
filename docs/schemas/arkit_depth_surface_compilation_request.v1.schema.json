@@ -35,7 +35,9 @@
     "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
     "deterministic_configuration_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
     "train_heldout_split_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
-    "capture_profile": {"const": "iphone_arkit_lidar"},
+    "capture_profile": {
+      "enum": ["iphone_arkit_lidar", "public_dataset_arkitscenes_proxy"]
+    },
     "camera_ray_convention": {
       "enum": [
         "arkit_x_right_y_up_z_backward",

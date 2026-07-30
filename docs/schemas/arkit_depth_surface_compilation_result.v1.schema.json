@@ -28,6 +28,7 @@
     "blockers",
     "parent_artifact_or_event",
     "timestamp",
+    "capture_profile",
     "status",
     "surface_asset",
     "accepted_high_confidence_pixel_count",
@@ -40,6 +41,8 @@
     "hidden_heldout_observations_accessed",
     "generated_fill_used",
     "raw_arkit_poses_modified",
+    "blueprint_raw_contract_3_2_proven",
+    "iphone_route_proven",
     "proof_effect",
     "claim_ceiling",
     "arkit_depth_surface_compilation_result_digest"
@@ -56,6 +59,9 @@
     "cost_usd": {"const": 0.0},
     "duration_seconds": {"const": 0.0},
     "status": {"const": "compiled_observed_surface_candidate"},
+    "capture_profile": {
+      "enum": ["iphone_arkit_lidar", "public_dataset_arkitscenes_proxy"]
+    },
     "surface_asset": {
       "type": "object",
       "required": ["relative_path", "digest"],
@@ -73,8 +79,20 @@
     "hidden_heldout_observations_accessed": {"const": false},
     "generated_fill_used": {"const": false},
     "raw_arkit_poses_modified": {"const": false},
-    "proof_effect": {"const": "metric_reference_candidate_only"},
-    "claim_ceiling": {"const": "observed_arkit_depth_surface_candidate"},
+    "blueprint_raw_contract_3_2_proven": {"const": false},
+    "iphone_route_proven": {"const": false},
+    "proof_effect": {
+      "enum": [
+        "metric_reference_candidate_only",
+        "public_dataset_observed_depth_surface_proxy_only"
+      ]
+    },
+    "claim_ceiling": {
+      "enum": [
+        "observed_arkit_depth_surface_candidate",
+        "public_dataset_arkit_depth_surface_proxy"
+      ]
+    },
     "arkit_depth_surface_compilation_result_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$"
     }

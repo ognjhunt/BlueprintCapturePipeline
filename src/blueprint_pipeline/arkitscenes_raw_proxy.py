@@ -23,6 +23,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image
 
+from .arkit_depth_surface_compiler import compile_arkit_depth_surface
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .local_reconstruction_adapters import _probe_video, _tool_identity
 from .reconstruction_frame_dataset import compile_frozen_frame_dataset
@@ -32,6 +33,7 @@ ARKITSCENES_PROXY_SCHEMA_VERSION = "arkitscenes_raw_proxy_compilation.v1"
 ARKITSCENES_SCAFFOLD_SCHEMA_VERSION = "arkitscenes_metric_scaffold_proxy.v1"
 ARKITSCENES_OBSERVATIONS_SCHEMA_VERSION = "arkitscenes_camera_observations_proxy.v1"
 ARKITSCENES_PROXY_COMPILER_VERSION = "arkitscenes_raw_proxy_compiler.v1"
+ARKITSCENES_OFFICIAL_HELPER_COMMIT = "7283761bf26c27570ec59a5dc0f8686fbff07726"
 _REQUIRED_SOURCE_FILES = (
     "{video_id}.mov",
     "lowres_wide.zip",
@@ -860,10 +862,197 @@ def compile_arkitscenes_raw_proxy(
     return _write_immutable_json(artifact_root / "arkitscenes_raw_proxy_compilation.json", report)
 
 
+def compile_arkitscenes_depth_surface_proxy(
+    *, scene_root: str | Path, proxy_artifact_root: str | Path, output_root: str | Path
+) -> dict[str, Any]:
+    """Back-project candidate-only public iPad depth using Apple's helper convention."""
+
+    scene = Path(scene_root).expanduser().resolve(strict=True)
+    proxy_root = Path(proxy_artifact_root).expanduser().resolve(strict=True)
+    try:
+        report = json.loads(
+            _safe_file(proxy_root, "arkitscenes_raw_proxy_compilation.json").read_text()
+        )
+        observations = json.loads(
+            _safe_file(proxy_root, "camera_observations_proxy.json").read_text()
+        )
+        scaffold = json.loads(
+            _safe_file(proxy_root, "candidate_metric_scaffold_proxy.json").read_text()
+        )
+    except json.JSONDecodeError as exc:
+        raise ArkitScenesProxyError(["arkitscenes_proxy_artifact_invalid_json"]) from exc
+    if (
+        report.get("schema_version") != ARKITSCENES_PROXY_SCHEMA_VERSION
+        or report.get("arkitscenes_proxy_compilation_digest")
+        != canonical_digest(report, digest_field="arkitscenes_proxy_compilation_digest")
+        or observations.get("schema_version") != ARKITSCENES_OBSERVATIONS_SCHEMA_VERSION
+        or observations.get("camera_observation_digest")
+        != canonical_digest(observations, digest_field="camera_observation_digest")
+        or scaffold.get("schema_version") != ARKITSCENES_SCAFFOLD_SCHEMA_VERSION
+        or scaffold.get("metric_scaffold_digest")
+        != canonical_digest(scaffold, digest_field="metric_scaffold_digest")
+    ):
+        raise ArkitScenesProxyError(["arkitscenes_proxy_artifact_digest_invalid"])
+    if (
+        observations.get("candidate_splits_only") is not True
+        or observations.get("hidden_heldout_pixels_included") is not False
+        or observations.get("candidate_may_access_hidden_heldout") is not False
+        or scaffold.get("access_scope") != "candidate_training_and_validation_only"
+        or scaffold.get("unseen_or_rejected_depth_filled") is not False
+    ):
+        raise ArkitScenesProxyError(["arkitscenes_proxy_candidate_scope_invalid"])
+    capture_digest = report["source_capture_digest"]
+    if (
+        observations.get("capture_digest") != capture_digest
+        or scaffold.get("capture_digest") != capture_digest
+        or observations.get("split_digest") != scaffold.get("split_digest")
+    ):
+        raise ArkitScenesProxyError(["arkitscenes_proxy_source_binding_mismatch"])
+    original_references: dict[tuple[str, str], dict[str, Any]] = {}
+    for index, reference in enumerate(report.get("original_file_references", [])):
+        if not isinstance(reference, Mapping):
+            raise ArkitScenesProxyError(["arkitscenes_proxy_original_reference_invalid"])
+        relative = str(reference.get("relative_path") or "")
+        digest = str(reference.get("digest") or "")
+        if _sha256_file(_safe_file(scene, relative)) != digest:
+            raise ArkitScenesProxyError(["arkitscenes_proxy_original_digest_mismatch"])
+        original_references[(relative, digest)] = {
+            "artifact_id": f"arkitscenes-source-{index:02d}",
+            "relative_path": relative,
+            "digest": digest,
+        }
+    frames: list[dict[str, Any]] = []
+    for observation in observations.get("observations", []):
+        if not isinstance(observation, Mapping) or observation.get("split") not in {
+            "training",
+            "validation",
+        }:
+            raise ArkitScenesProxyError(["arkitscenes_proxy_hidden_or_invalid_split"])
+        camera = observation.get("camera")
+        binding = observation.get("depth_confidence_binding")
+        if not isinstance(camera, Mapping) or not isinstance(binding, Mapping):
+            raise ArkitScenesProxyError(["arkitscenes_proxy_depth_camera_binding_missing"])
+        frame_id = str(camera.get("frame_id") or "")
+        if frame_id != binding.get("frame_id") or frame_id != observation.get(
+            "observation_id"
+        ):
+            raise ArkitScenesProxyError(["arkitscenes_proxy_frame_binding_mismatch"])
+        depth_relative = str(binding.get("source_depth_relative_path") or "")
+        confidence_relative = str(binding.get("source_confidence_relative_path") or "")
+        depth_digest = _sha256_file(_safe_file(scene, depth_relative))
+        confidence_digest = _sha256_file(_safe_file(scene, confidence_relative))
+        if (
+            depth_digest != binding.get("source_depth_digest")
+            or confidence_digest != binding.get("source_confidence_digest")
+        ):
+            raise ArkitScenesProxyError(["arkitscenes_proxy_depth_digest_mismatch"])
+        for label, relative, digest in (
+            ("depth", depth_relative, depth_digest),
+            ("confidence", confidence_relative, confidence_digest),
+        ):
+            original_references[(relative, digest)] = {
+                "artifact_id": f"arkitscenes-{label}-{frame_id}",
+                "relative_path": relative,
+                "digest": digest,
+            }
+        frames.append(
+            {
+                "frame_id": frame_id,
+                "split": observation["split"],
+                "region_id": "arkitscenes-observed-frusta",
+                "depth_asset": {
+                    "relative_path": depth_relative,
+                    "digest": depth_digest,
+                    "encoding": "uint16_png",
+                    "scale_to_meters": 0.001,
+                },
+                "confidence_asset": {
+                    "relative_path": confidence_relative,
+                    "digest": confidence_digest,
+                    "encoding": "uint8_png",
+                },
+                "depth_intrinsics": camera.get("depth_intrinsics"),
+                "T_world_camera": camera.get("T_world_camera"),
+            }
+        )
+    configuration = {
+        "adapter": "arkitscenes_depth_surface_proxy.v1",
+        "arkitscenes_proxy_compilation_digest": report[
+            "arkitscenes_proxy_compilation_digest"
+        ],
+        "camera_observation_digest": observations["camera_observation_digest"],
+        "metric_scaffold_digest": scaffold["metric_scaffold_digest"],
+        "official_helper_commit": ARKITSCENES_OFFICIAL_HELPER_COMMIT,
+        "camera_ray_convention": "opencv_x_right_y_down_z_forward",
+        "depth_scale_to_meters": 0.001,
+        "pixel_stride": 4,
+        "maximum_edge_length_m": 0.25,
+        "maximum_depth_discontinuity_m": 0.1,
+    }
+    request = {
+        "schema_version": "arkit_depth_surface_compilation_request.v1",
+        "stable_run_identity": f"arkitscenes-surface-{capture_digest[7:31]}",
+        "source_capture_identity": report["source_capture_identity"],
+        "source_capture_digest": capture_digest,
+        "original_file_references": sorted(
+            original_references.values(), key=lambda row: row["artifact_id"]
+        ),
+        "source_commit_sha": report["source_commit_sha"],
+        "deterministic_configuration_digest": canonical_digest(configuration),
+        "train_heldout_split_digest": observations["split_digest"],
+        "camera_calibration_binding": {
+            "camera_observation_digest": observations["camera_observation_digest"],
+            "metric_scaffold_digest": scaffold["metric_scaffold_digest"],
+            "official_helper_commit": ARKITSCENES_OFFICIAL_HELPER_COMMIT,
+        },
+        "coordinate_frame_declaration": {
+            "frame": "arkitscenes_official_loader_world",
+            "units": "meters",
+            "up_axis": "not_independently_validated",
+            "handedness": "not_explicitly_declared_by_dataset",
+            "gravity_aligned": False,
+        },
+        "authority_used": report["authority_used"],
+        "timestamp": report["timestamp"],
+        "capture_profile": "public_dataset_arkitscenes_proxy",
+        "camera_ray_convention": "opencv_x_right_y_down_z_forward",
+        "metric_scale_status": "sensor_metric_unvalidated",
+        "pixel_stride": 4,
+        "accepted_confidence_values": [2],
+        "maximum_edge_length_m": 0.25,
+        "maximum_depth_discontinuity_m": 0.1,
+        "declared_region_ids": [
+            "arkitscenes-observed-frusta",
+            "arkitscenes-unobserved-regions",
+        ],
+        "unsupported_region_ids": ["arkitscenes-unobserved-regions"],
+        "generated_fill_used": False,
+        "candidate_may_read_hidden_heldout": False,
+        "warnings": [
+            "public_ipad_dataset_not_blueprint_raw_contract_3_2",
+            "world_handedness_up_axis_and_gravity_not_independently_validated",
+        ],
+        "frames": sorted(frames, key=lambda row: row["frame_id"]),
+    }
+    request["arkit_depth_surface_compilation_request_digest"] = canonical_digest(
+        request, digest_field="arkit_depth_surface_compilation_request_digest"
+    )
+    output = Path(output_root).expanduser().resolve()
+    _write_immutable_json(output / "arkit_depth_surface_proxy_request.json", request)
+    result = compile_arkit_depth_surface(
+        source_artifact=request, artifact_root=scene, output_root=output
+    )
+    return _write_immutable_json(
+        output / "arkit_depth_surface_proxy_result.json", result
+    )
+
+
 __all__ = [
     "ARKITSCENES_OBSERVATIONS_SCHEMA_VERSION",
     "ARKITSCENES_PROXY_SCHEMA_VERSION",
     "ARKITSCENES_SCAFFOLD_SCHEMA_VERSION",
+    "ARKITSCENES_OFFICIAL_HELPER_COMMIT",
     "ArkitScenesProxyError",
     "compile_arkitscenes_raw_proxy",
+    "compile_arkitscenes_depth_surface_proxy",
 ]

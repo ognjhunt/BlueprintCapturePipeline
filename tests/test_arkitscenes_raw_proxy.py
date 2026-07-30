@@ -11,6 +11,10 @@ from PIL import Image
 
 from blueprint_pipeline import arkitscenes_raw_proxy as proxy
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.reconstruction_geometry_compiler import (
+    ReconstructionGeometryCompilerError,
+    compile_metric_geometry,
+)
 
 
 IMPLEMENTATION_DIGEST = "sha256:" + "a" * 64
@@ -251,6 +255,73 @@ def test_proxy_compiler_binds_source_pts_and_isolates_heldout_scaffold(
     jsonschema.Draft202012Validator(
         _schema("reconstruction_frame_dataset.v1.schema.json")
     ).validate(selection)
+
+
+def test_proxy_depth_surface_uses_official_opencv_convention_without_claim_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scene = _scene(tmp_path / "scene")
+    output = tmp_path / "output"
+    _install_media_stubs(monkeypatch)
+    _compile(scene, output, timestamp="2026-07-30T17:00:00Z")
+    artifact_root = next(output.glob("arkitscenes_proxy_*"))
+
+    result = proxy.compile_arkitscenes_depth_surface_proxy(
+        scene_root=scene,
+        proxy_artifact_root=artifact_root,
+        output_root=scene / "derived" / "depth-surface",
+    )
+
+    assert result["capture_profile"] == "public_dataset_arkitscenes_proxy"
+    assert result["emitted_vertex_count"] > 0
+    assert result["emitted_triangle_count"] > 0
+    assert result["hidden_heldout_observations_accessed"] is False
+    assert result["blueprint_raw_contract_3_2_proven"] is False
+    assert result["iphone_route_proven"] is False
+    assert result["claim_ceiling"] == "public_dataset_arkit_depth_surface_proxy"
+    request = json.loads(
+        (scene / "derived/depth-surface/arkit_depth_surface_proxy_request.json").read_text()
+    )
+    assert request["camera_ray_convention"] == "opencv_x_right_y_down_z_forward"
+    assert request["camera_calibration_binding"]["official_helper_commit"] == (
+        proxy.ARKITSCENES_OFFICIAL_HELPER_COMMIT
+    )
+    assert request["candidate_may_read_hidden_heldout"] is False
+    assert request["coordinate_frame_declaration"]["up_axis"] == (
+        "not_independently_validated"
+    )
+    metric_request = {
+        "schema_version": "metric_geometry_compilation_request.v1",
+        "source_artifact_digest": None,
+        "source_asset": result["surface_asset"],
+        "original_file_references": [
+            {
+                "artifact_id": "arkitscenes-observed-surface-proxy",
+                "digest": result["surface_asset"]["digest"],
+            }
+        ],
+        "coordinate_frame_declaration": request["coordinate_frame_declaration"],
+        "metric_scale_status": "sensor_metric_unvalidated",
+        "minimum_confidence": 1.0,
+        "declared_region_ids": ["arkitscenes-observed-frusta"],
+        "unsupported_region_ids": ["arkitscenes-unobserved-regions"],
+        "generated_fill_used": False,
+        "appearance_asset_used_as_geometry_truth": False,
+        "warnings": [],
+        "blockers": ["coordinate_frame_qualification_required"],
+    }
+    metric_request["source_artifact_digest"] = canonical_digest(
+        metric_request, digest_field="source_artifact_digest"
+    )
+    with pytest.raises(
+        ReconstructionGeometryCompilerError,
+        match="observed_surface_metric_z_up_frame_required",
+    ):
+        compile_metric_geometry(
+            source_artifact=metric_request,
+            artifact_root=scene,
+            output_root=scene / "derived/metric-geometry",
+        )
 
 
 def test_proxy_compiler_is_idempotent_and_preserves_first_timestamp(
