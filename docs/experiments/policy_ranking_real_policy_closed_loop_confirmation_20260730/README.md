@@ -173,6 +173,10 @@ used as blind confirmation.
   `ctrl_world_current_reference_first_wam_gpu_profile_freeze_v1.json` — bind the
   first WAM request to the exact bundle, one allocation, one request, registered
   ceilings, watchdog, teardown, and provider-zero controls;
+- `compute_authorization_ctrl_world_allocation_2.json` and
+  `ctrl_world_current_reference_first_wam_gpu_profile_freeze_v2.json` — bind the
+  identical-input media-decode retry to its new immutable bundle and single-use
+  allocation while retaining all prior ceilings and teardown controls;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
