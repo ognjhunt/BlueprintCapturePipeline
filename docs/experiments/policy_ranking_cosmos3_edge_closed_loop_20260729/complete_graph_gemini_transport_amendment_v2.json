@@ -1,0 +1,64 @@
+{
+  "schema_version": "policy_ranking_complete_graph_gemini_transport_amendment.v2",
+  "status": "prospectively_frozen_before_any_evaluator_output",
+  "claim_class": "post_unseal_diagnostic_only",
+  "parent_amendment_sha256": "ec0d27dc36168162d32bfe0780c1d2842a7376c0d785f14364a7a29a43697c47",
+  "triggering_shard_zero_incident": {
+    "request_count": 63,
+    "provider_batch_created": false,
+    "provider_generation_rows_created": 0,
+    "new_evaluator_spend_usd": 0.0,
+    "all_441_temporary_provider_video_files_deleted": true,
+    "receipt_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/gemini_complete_graph_shards_v1/shard_00_receipt.json",
+    "receipt_file_sha256": "0e878f513b98a2d00a7ff7889ae7e2cc184379a207812d2e275d258bfb44e9af",
+    "receipt_sha256": "4d6f40a930821c11645310d7f52c9894459ec05f5afbb2b776d37d60739cfe60",
+    "provider_code": 400,
+    "provider_status": "FAILED_PRECONDITION",
+    "provider_message": "Precondition check failed.",
+    "provider_structured_details_preserved": false
+  },
+  "implementation_defect_evidence": {
+    "all_v2_media_ledger_upload_states": "FileState.ACTIVE",
+    "v2_media_ledger_ready_at_utc": "2026-07-30T07:28:10.278006Z",
+    "submission_followed_immediately_after_final_upload": true,
+    "prior_successful_same_model_same_media_contract_ready_at_utc": "2026-07-28T17:06:34.671320Z",
+    "prior_successful_same_model_same_media_contract_submitted_at_utc": "2026-07-28T17:07:48.135462Z",
+    "prior_successful_ready_to_submit_delay_seconds": 73.464142,
+    "provider_forum_reports_failed_precondition_for_files_not_yet_usable_despite_processing_state": true,
+    "cross_service_file_readiness_propagation_is_an_inference_not_a_confirmed_provider_cause": true
+  },
+  "prospective_correction": {
+    "minimum_media_ready_age_seconds": 90,
+    "age_source": "digest_bound_media_ledger_updated_at_utc",
+    "submission_fails_closed_before_provider_call_when_grace_not_elapsed": true,
+    "provider_error_fields_preserved_after_correction": [
+      "error_type",
+      "provider_code",
+      "provider_status",
+      "provider_message",
+      "provider_details"
+    ],
+    "shard_count": 14,
+    "pairs_per_shard": 63,
+    "maximum_concurrent_gemini_batches": 1
+  },
+  "unchanged_scientific_and_cost_contract": {
+    "model": "gemini-3.6-flash",
+    "arm_id": "gemini36_flash_complete_graph",
+    "prompt_sha256": "ebe714130b8ade9305f8b5c6df77fa414fa7b9ac33d843d5a25c2905da41943c",
+    "thinking_level": "medium",
+    "max_output_tokens_including_thinking": 3000,
+    "missing_inventory_sha256": "08bb90a8a13b435ea5b46e3f69cc68ec6855d8841f6b6fa2866062a1a243e132",
+    "missing_graph_hard_cap_usd": 9.0,
+    "campaign_api_hard_cap_usd": 25.0,
+    "partial_matrix_ranking_credit": false,
+    "confirmation_or_phase_b_credit": false
+  },
+  "execution_binding": {
+    "parent_source_commit": "b7de08d5e6038f0e4efa6b2e2d3490e6129e4a3a",
+    "exact_execution_source_commit": "bound_by_the_new_v3_paid_admission_after_this_amendment_is_committed_and_pushed",
+    "new_v3_paid_admission_required": true,
+    "old_v1_or_v2_paid_admission_reuse_for_corrected_execution_forbidden": true
+  },
+  "amendment_sha256": "aaafb9f16770ed51dd6c8f48d31b2d59dbd0d11461e4a8f0e2d1dac515228e2b"
+}

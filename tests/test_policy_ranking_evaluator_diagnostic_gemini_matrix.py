@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic_gemini_matrix import (
     GeminiMatrixError,
     _ledger_core,
+    _media_ledger_ready_age_seconds,
     _provider_error_payload,
     _require_complete_graph_paid_admission,
     _shard_pairs,
@@ -245,6 +247,7 @@ def test_provider_error_payload_preserves_sanitized_code_status_and_message() ->
         code = 400
         status = "INVALID_ARGUMENT"
         message = "request exceeds an active provider limit"
+        details = {"error": {"reason": "EXAMPLE_PRECONDITION"}}
 
     payload = _provider_error_payload(ExampleClientError("raw response object omitted"))
 
@@ -253,7 +256,17 @@ def test_provider_error_payload_preserves_sanitized_code_status_and_message() ->
         "provider_code": 400,
         "provider_status": "INVALID_ARGUMENT",
         "provider_message": "request exceeds an active provider limit",
+        "provider_details": {"error": {"reason": "EXAMPLE_PRECONDITION"}},
     }
+
+
+def test_media_ledger_ready_age_is_measured_from_frozen_utc_timestamp() -> None:
+    age = _media_ledger_ready_age_seconds(
+        {"updated_at_utc": "2026-07-30T07:00:00Z"},
+        now=datetime(2026, 7, 30, 7, 1, 31, tzinfo=timezone.utc),
+    )
+
+    assert age == 91.0
 
 
 def test_matrix_validator_accepts_registered_882_pair_subset() -> None:

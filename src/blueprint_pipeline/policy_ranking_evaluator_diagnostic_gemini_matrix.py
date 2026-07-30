@@ -34,7 +34,7 @@ from .policy_ranking_roboarena_calibration import canonical_sha256, file_sha256
 
 
 LEDGER_SCHEMA = "policy_ranking_gemini_matrix_media_ledger.v1"
-PAID_ADMISSION_SCHEMA = "policy_ranking_gemini_complete_graph_paid_admission.v2"
+PAID_ADMISSION_SCHEMA = "policy_ranking_gemini_complete_graph_paid_admission.v3"
 PAID_RESOURCE_CLASS = "evaluator_api"
 COMPLETE_GRAPH_ARM_ID = "gemini36_flash_complete_graph"
 COMPLETE_GRAPH_MODEL = "gemini-3.6-flash"
@@ -43,6 +43,7 @@ COMPLETE_PAIR_COUNT = 1323
 NATIVE_VIDEO_COUNT = 441
 MISSING_GRAPH_SHARD_COUNT = 14
 PAIRS_PER_SHARD = 63
+MINIMUM_MEDIA_READY_AGE_SECONDS = 90
 
 
 class GeminiMatrixError(ValueError):
@@ -196,6 +197,7 @@ def build_complete_graph_paid_admission(
             "batch_shard_count": MISSING_GRAPH_SHARD_COUNT,
             "pairs_per_batch_shard": PAIRS_PER_SHARD,
             "shard_assignment": "contiguous_frozen_inventory_order",
+            "minimum_media_ready_age_seconds": MINIMUM_MEDIA_READY_AGE_SECONDS,
             "temporary_uploads_expected": NATIVE_VIDEO_COUNT,
             "upload_idempotency_required": True,
             "cleanup_on_submission_or_collection_terminal": True,
@@ -262,6 +264,7 @@ def _require_complete_graph_paid_admission(
         or contract.get("batch_shard_count") != MISSING_GRAPH_SHARD_COUNT
         or contract.get("pairs_per_batch_shard") != PAIRS_PER_SHARD
         or contract.get("shard_assignment") != "contiguous_frozen_inventory_order"
+        or contract.get("minimum_media_ready_age_seconds") != MINIMUM_MEDIA_READY_AGE_SECONDS
     ):
         blockers.append("complete_graph_paid_admission_claim_boundary_invalid")
     if blockers:
@@ -354,12 +357,32 @@ def _shard_pairs(
 def _provider_error_payload(exc: Exception) -> dict[str, Any]:
     """Preserve provider diagnostics without serializing response/request objects."""
 
+    details = getattr(exc, "details", None)
+    try:
+        provider_details = json.loads(json.dumps(details))
+    except (TypeError, ValueError):
+        provider_details = None
     return {
         "error_type": type(exc).__name__,
         "provider_code": getattr(exc, "code", None),
         "provider_status": getattr(exc, "status", None),
         "provider_message": getattr(exc, "message", None),
+        "provider_details": provider_details,
     }
+
+
+def _media_ledger_ready_age_seconds(
+    ledger: Mapping[str, Any], *, now: datetime | None = None
+) -> float:
+    raw = str(ledger.get("updated_at_utc") or "")
+    try:
+        ready_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GeminiMatrixError("matrix_media_ledger_ready_time_invalid") from exc
+    if ready_at.tzinfo is None:
+        raise GeminiMatrixError("matrix_media_ledger_ready_time_not_utc")
+    current = now or datetime.now(timezone.utc)
+    return (current - ready_at).total_seconds()
 
 
 def _delete_receipts(client: Any, receipts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -572,6 +595,8 @@ def submit_matrix_batch(
         or ledger.get("uploaded_video_count") != 441
     ):
         raise GeminiMatrixError("matrix_media_ledger_not_ready_bound_and_valid_441")
+    if _media_ledger_ready_age_seconds(ledger) < MINIMUM_MEDIA_READY_AGE_SECONDS:
+        raise GeminiMatrixError("matrix_media_ready_propagation_grace_not_elapsed")
     key_path = _secure_file(api_key_file)
     from google import genai
     from google.genai import types
