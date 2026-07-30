@@ -1,0 +1,87 @@
+{
+  "schema_version": "ctrl_world_public_replay_review_views_result.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-30T05:52:10-0500",
+  "arm_id": "ctrl_world_public_replay_reduced_canary",
+  "allocation_id": "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-12",
+  "status": "completed",
+  "review_scope": {
+    "generated_only": true,
+    "physical_comparison_pixels_present": false,
+    "physical_outcome_labels_accessed": false,
+    "all_returned_views_reviewed": true,
+    "all_returned_frames_reviewed": true,
+    "cherry_picked": false,
+    "frame_count_per_view": 5,
+    "fps": 4.0,
+    "duration_seconds": 1.25
+  },
+  "media": [
+    {
+      "view": "three_view_composite",
+      "video_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/ctrl_world_replay_provider_job_allocation_12_v1/vast_provider_runtime_output_videos/000_ctrl_world_generated_three_view.mp4",
+      "video_sha256": "c98d98ce10a4e839ad5defdd5237b0c59f9e057a939af7e3a0a9b0b9aa3d9a8a",
+      "width": 960,
+      "height": 192,
+      "contact_sheet_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/ctrl_world_replay_provider_job_allocation_12_v1/review_contact_sheets/000_ctrl_world_generated_three_view_all_frames.png",
+      "contact_sheet_sha256": "40d8593e458a68f2e25f1067ac1ba30177f2313083cd0e31e3aedd227660767a",
+      "motion_mean": 0.218951,
+      "motion_max": 0.485799
+    },
+    {
+      "view": "external_0",
+      "video_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/ctrl_world_replay_provider_job_allocation_12_v1/vast_provider_runtime_output_videos/001_ctrl_world_generated_view_0.mp4",
+      "video_sha256": "8933602a397bb4554505179192b5403de6a9451aa1382d31e9fa70b1c7216ad4",
+      "width": 320,
+      "height": 192,
+      "contact_sheet_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/ctrl_world_replay_provider_job_allocation_12_v1/review_contact_sheets/001_ctrl_world_generated_view_0_all_frames.png",
+      "contact_sheet_sha256": "96846287633b05c1002ef28aef8622dd134539c5ebe483d7bf2ec680666f6845",
+      "motion_mean": 0.131291,
+      "motion_max": 0.281163
+    },
+    {
+      "view": "external_1",
+      "video_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/ctrl_world_replay_provider_job_allocation_12_v1/vast_provider_runtime_output_videos/002_ctrl_world_generated_view_1.mp4",
+      "video_sha256": "db1cde24233511527ea130f6e0aee1e23ae08cfa492a7e5da0c4e11ec7bb15dc",
+      "width": 320,
+      "height": 192,
+      "contact_sheet_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/ctrl_world_replay_provider_job_allocation_12_v1/review_contact_sheets/002_ctrl_world_generated_view_1_all_frames.png",
+      "contact_sheet_sha256": "7ce38e2007dd59fe166e5a1b2d8f7189b62e86c9f50c01b51b09be0a2253b1b2",
+      "motion_mean": 0.178959,
+      "motion_max": 0.396074
+    },
+    {
+      "view": "wrist_2",
+      "video_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/ctrl_world_replay_provider_job_allocation_12_v1/vast_provider_runtime_output_videos/003_ctrl_world_generated_view_2.mp4",
+      "video_sha256": "f67f1b67b8cfa9faf0b5f814ff80fea8b63c5ff197180f5b279e4af2156c646e",
+      "width": 320,
+      "height": 192,
+      "contact_sheet_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/ctrl_world_replay_provider_job_allocation_12_v1/review_contact_sheets/003_ctrl_world_generated_view_2_all_frames.png",
+      "contact_sheet_sha256": "5ee0a4cc4a952bb1fc05927eb4d906e32cc5e66811b2c13bb19ce4e4ed02abe8",
+      "motion_mean": 1.408154,
+      "motion_max": 3.236397
+    }
+  ],
+  "review_findings": {
+    "scene_content_visually_coherent_over_five_frames": true,
+    "nonzero_generated_motion_present_in_all_views": true,
+    "external_views_have_limited_visible_change": true,
+    "wrist_view_has_stronger_visible_change": true,
+    "task_success_visually_established": false,
+    "task_success_label_assigned": false,
+    "causal_action_response_established": false,
+    "ctrl_world_specific_reliability_gate_run": false,
+    "reliability_gate_reason": "The registered canary contains one active replay and no action controls; the generic Blueprint reliability module expects a 10D rot6d action contract while exact public Ctrl-World replay uses its own 7D Cartesian action contract. No adapter or threshold was fabricated after seeing output.",
+    "unfavorable_evidence_retained": "All five low-resolution frames are shown; the short horizon and weak external-view change prevent policy-progress or success conclusions."
+  },
+  "claim_effect": {
+    "technical_generated_media_review_completed": true,
+    "wam_causal_validity_advanced": false,
+    "ranking_fidelity_advanced": false,
+    "abstention_calibration_advanced": false,
+    "captured_site_transfer_advanced": false,
+    "economics_and_speed_advanced": false
+  },
+  "claim_ceiling": "label_free_exact_public_open_loop_replay_review_only",
+  "result_sha256": "d766b8bb3d5ee87cec15fb1b3b8077f092f51df591ac9b3715761600273a4ada"
+}
