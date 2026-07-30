@@ -325,6 +325,19 @@ tree, recipe and dependency-lock digests, license-review receipt, budget, TTL,
 retry cap, and authority. Allocation and image-build success are explicitly not
 scientific success.
 
+The current clean-SHA admission at
+`ff9deb59bd2ac96a3ffc72d2ea70abdeb6fb9912` binds the exact Git tree,
+Dockerfile, dependency lock, and candidate stack manifest. It is deterministically
+`blocked` only by `worker_license_review_receipt_missing`, the missing numeric
+budget, TTL, retry cap, and paid-authority identity. The recorded stack and
+admission artifacts are
+`docs/evidence/reconstruction_worker_stack_manifest_ff9deb59.json` and
+`docs/evidence/reconstruction_worker_build_admission_ff9deb59.json`. No build or
+provider launch occurred. The recorded ARKitScenes candidate dataset is also
+regression-tested against `reconstruction_training_request.v1`: without a
+resolved digest-pinned worker image, request compilation fails closed before
+any trainer can receive candidate pixels.
+
 `reconstruction_worker_remote_build_packet.v1` materializes the corresponding
 exact-source build context for that seam. It includes only tracked package
 sources and the required Docker recipe/lock files, records every member digest,

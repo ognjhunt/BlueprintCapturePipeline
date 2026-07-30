@@ -6,6 +6,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_worker_contracts import (
     FAILURE_CODES,
     PINNED_MODEL_ASSETS,
@@ -43,6 +44,18 @@ D4 = "sha256:" + "4" * 64
 D5 = "sha256:" + "5" * 64
 SHA = "a" * 40
 IMAGE = "registry.example/blueprint/reconstruction@sha256:" + "b" * 64
+RECORDED_PROXY_PATH = (
+    Path(__file__).parents[1]
+    / "docs/evidence/arkitscenes_raw_proxy_40958756_b2d7297f.json"
+)
+RECORDED_WORKER_STACK_PATH = (
+    Path(__file__).parents[1]
+    / "docs/evidence/reconstruction_worker_stack_manifest_ff9deb59.json"
+)
+RECORDED_WORKER_ADMISSION_PATH = (
+    Path(__file__).parents[1]
+    / "docs/evidence/reconstruction_worker_build_admission_ff9deb59.json"
+)
 
 
 def _common(**overrides):
@@ -670,3 +683,120 @@ def test_worker_build_packet_can_become_ready_but_never_launches_or_selects_prov
         ).read_text(encoding="utf-8")
     )
     jsonschema.validate(packet, schema)
+
+
+def test_recorded_proxy_cannot_enter_trainer_without_resolved_worker_image() -> None:
+    proxy = json.loads(RECORDED_PROXY_PATH.read_text(encoding="utf-8"))
+    stack = json.loads(RECORDED_WORKER_STACK_PATH.read_text(encoding="utf-8"))
+    admission = json.loads(RECORDED_WORKER_ADMISSION_PATH.read_text(encoding="utf-8"))
+    schema_root = Path(__file__).parents[1] / "docs/schemas"
+
+    jsonschema.validate(
+        stack,
+        json.loads(
+            (schema_root / "reconstruction_worker_stack_manifest.v1.schema.json").read_text(
+                encoding="utf-8"
+            )
+        ),
+    )
+    jsonschema.validate(
+        admission,
+        json.loads(
+            (schema_root / "reconstruction_worker_build_packet.v1.schema.json").read_text(
+                encoding="utf-8"
+            )
+        ),
+    )
+    assert stack["worker_stack_manifest_digest"] == canonical_digest(
+        stack, digest_field="worker_stack_manifest_digest"
+    )
+    assert admission["build_packet_digest"] == canonical_digest(
+        admission, digest_field="build_packet_digest"
+    )
+    assert admission["status"] == "blocked"
+    assert set(admission["blockers"]) == {
+        "worker_build_explicit_budget_missing",
+        "worker_build_explicit_retry_cap_missing",
+        "worker_build_explicit_ttl_missing",
+        "worker_build_paid_authority_missing",
+        "worker_license_review_receipt_missing",
+    }
+
+    outputs = proxy["output_digests"]
+    value = {
+        "stable_run_identity": "arkitscenes-40958756-training-admission",
+        "source_capture_identity": proxy["source_capture_identity"],
+        "source_capture_digest": proxy["source_capture_digest"],
+        "original_file_references": [
+            {
+                "artifact_id": row["relative_path"],
+                "digest": row["digest"],
+            }
+            for row in proxy["original_file_references"]
+        ],
+        "producing_method": "blueprint-training-request-compiler",
+        "implementation_version": "reconstruction-training-admission.v1",
+        "container_image_digest": None,
+        "source_commit_sha": stack["source_commit_sha"],
+        "deterministic_configuration_digest": proxy[
+            "deterministic_configuration_digest"
+        ],
+        "input_digests": [
+            {"artifact_id": key, "digest": digest}
+            for key, digest in sorted(outputs.items())
+        ],
+        "output_digests": [],
+        "train_heldout_split_digest": proxy["train_heldout_split_digest"],
+        "camera_calibration_binding": {
+            "calibration_digest": outputs["camera_observation_digest"]
+        },
+        "coordinate_frame_declaration": proxy["coordinate_frame_declaration"],
+        "units": "meters",
+        "metric_scale_status": "sensor_metric_unvalidated",
+        "provider_runtime_identity": {"provider": None, "runtime": None},
+        "cost_usd": 0.0,
+        "duration_seconds": 0.0,
+        "authority_used": {
+            "local_processing_authorized": True,
+            "paid_compute_authorized": False,
+        },
+        "warnings": ["public_dataset_proxy_not_blueprint_raw_contract_3_2"],
+        "blockers": ["resolved_worker_image_missing"],
+        "proof_effect": "none",
+        "claim_ceiling": "request_only",
+        "parent_artifact_or_event": {
+            "arkitscenes_proxy_compilation_digest": proxy[
+                "arkitscenes_proxy_compilation_digest"
+            ]
+        },
+        "timestamp": "2026-07-30T21:04:07Z",
+        "method_profile_id": "gsplat_3dgut_mcmc_v1",
+        "reconstruction_dataset_digest": outputs["dataset_manifest_digest"],
+        "calibration_digest": outputs["camera_observation_digest"],
+        "initialization_geometry_digest": outputs[
+            "candidate_metric_scaffold_digest"
+        ],
+        "pose_result_digest": outputs["camera_observation_digest"],
+        "worker_stack_manifest_digest": stack["worker_stack_manifest_digest"],
+        "evaluation_contract_digest": outputs["evaluator_metric_scaffold_digest"],
+        "camera_model": "PINHOLE",
+        "densification_configuration": {
+            "strategy": "mcmc",
+            "max_gaussians": 1000000,
+        },
+        "random_seed": 23,
+        "iteration_budget": 30000,
+        "resource_request": {"gpu_count": 1, "minimum_vram_gb": 24},
+        "timeout_seconds": 7200,
+        "spend_cap_usd": 0,
+        "output_contract": {"appearance_asset": "standard_3dgs_ply"},
+        "candidate_dataset_contains_hidden_heldout_pixels": False,
+        "candidate_can_change_split": False,
+        "candidate_may_read_hidden_heldout": False,
+        "trainer_may_grade_heldout": False,
+    }
+    with pytest.raises(
+        ReconstructionWorkerContractError,
+        match="request_requires_resolved_worker_image",
+    ):
+        build_training_request(value)
