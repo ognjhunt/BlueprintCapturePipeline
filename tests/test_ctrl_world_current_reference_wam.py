@@ -21,6 +21,7 @@ from blueprint_pipeline.droid_ctrl_world_closed_loop_adapter import (
     CTRL_WORLD_SELECTED_HISTORY_INDICES,
 )
 from blueprint_pipeline.policy_ranking_thesis import file_sha256
+from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
 
 
 def _request(tmp_path: Path) -> dict[str, Any]:
@@ -168,3 +169,98 @@ def test_callable_arm_rejects_unbound_or_unsafe_runtime_result(tmp_path: Path) -
     arm = CallableCtrlWorldCurrentReferenceWamArm(runner=runner, seed=3)
     with pytest.raises(ValueError, match="physical_future_observation_used_not_false"):
         arm.predict(_request(tmp_path), output_dir=tmp_path / "prediction")
+
+
+def test_result_validator_rebases_portable_provider_paths(tmp_path: Path) -> None:
+    from blueprint_pipeline.ctrl_world_current_reference_wam import (
+        validate_ctrl_world_current_reference_result,
+    )
+
+    receipt = stage_ctrl_world_current_reference_request(
+        _request(tmp_path), output_dir=tmp_path / "request", seed=41
+    )
+    root = tmp_path / "extracted"
+    sequences: dict[str, list[str]] = {}
+    hashes: dict[str, list[str]] = {}
+    for view_index, view_id in enumerate(CTRL_WORLD_RELEASED_VIEW_ORDER):
+        sequences[view_id] = []
+        hashes[view_id] = []
+        for frame_index in range(5):
+            relative = Path(f"view_{view_index}/frame_{frame_index}.png")
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (320, 192), (view_index, frame_index, 0)).save(path)
+            sequences[view_id].append(relative.as_posix())
+            hashes[view_id].append(file_sha256(path))
+    media = []
+    for role in ("combined_three_view", "view_0", "view_1", "view_2"):
+        relative = Path("generated_video") / f"{role}.mp4"
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"video:{role}".encode())
+        media.append({"role": role, "path": relative.as_posix(), "sha256": file_sha256(path)})
+    result = {
+        "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
+        "status": "completed",
+        "arm_id": ARM_ID,
+        "request_sha256": receipt["request_sha256"],
+        "seed": 41,
+        "model_freeze": MODEL_FREEZE,
+        "artifact_path_mode": "result_root_relative",
+        "generated_view_frame_sequences": sequences,
+        "generated_view_frame_sha256": hashes,
+        "generated_media": {"generated_only": True, "media": media},
+        "same_frozen_wam_generated_all_views": True,
+        "physical_future_observation_used": False,
+        "physical_outcome_labels_accessed": False,
+        "recorded_action_trace_used": False,
+        "wam_to_wam_chaining": False,
+    }
+    result["result_sha256"] = canonical_sha256(result)
+
+    validated = validate_ctrl_world_current_reference_result(
+        result, request_receipt=receipt, seed=41, result_root=root
+    )
+
+    assert all(
+        Path(path).is_absolute()
+        for paths in validated["generated_view_frame_sequences"].values()
+        for path in paths
+    )
+    assert Path(validated["generated_rollout_video_path"]).is_absolute()
+
+
+def test_portable_result_requires_explicit_extraction_root(tmp_path: Path) -> None:
+    from blueprint_pipeline.ctrl_world_current_reference_wam import (
+        validate_ctrl_world_current_reference_result,
+    )
+
+    receipt = stage_ctrl_world_current_reference_request(
+        _request(tmp_path), output_dir=tmp_path / "request", seed=43
+    )
+    with pytest.raises(ValueError, match="result_root_required"):
+        validate_ctrl_world_current_reference_result(
+            {
+                "schema_version": RUNTIME_RESULT_SCHEMA_VERSION,
+                "status": "completed",
+                "arm_id": ARM_ID,
+                "request_sha256": receipt["request_sha256"],
+                "seed": 43,
+                "model_freeze": MODEL_FREEZE,
+                "artifact_path_mode": "result_root_relative",
+                "generated_view_frame_sequences": {
+                    view: ["frame.png"] * 5 for view in CTRL_WORLD_RELEASED_VIEW_ORDER
+                },
+                "generated_view_frame_sha256": {
+                    view: ["0" * 64] * 5 for view in CTRL_WORLD_RELEASED_VIEW_ORDER
+                },
+                "same_frozen_wam_generated_all_views": True,
+                "physical_future_observation_used": False,
+                "physical_outcome_labels_accessed": False,
+                "recorded_action_trace_used": False,
+                "wam_to_wam_chaining": False,
+                "result_sha256": "0" * 64,
+            },
+            request_receipt=receipt,
+            seed=43,
+        )

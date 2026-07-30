@@ -295,10 +295,24 @@ def stage_ctrl_world_current_reference_request(
 
 
 def validate_ctrl_world_current_reference_result(
-    result: Mapping[str, Any], *, request_receipt: Mapping[str, Any], seed: int
+    result: Mapping[str, Any],
+    *,
+    request_receipt: Mapping[str, Any],
+    seed: int,
+    result_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Fail closed unless the runtime returns only attributable generated views."""
 
+    portable = result.get("artifact_path_mode") == "result_root_relative"
+    root = Path(result_root).expanduser().resolve() if result_root is not None else None
+    if portable and root is None:
+        raise ValueError("ctrl_world_current_reference_result_root_required")
+    recorded_result_sha256 = result.get("result_sha256")
+    if recorded_result_sha256 is not None or portable:
+        digest_payload = dict(result)
+        digest_payload.pop("result_sha256", None)
+        if recorded_result_sha256 != canonical_sha256(digest_payload):
+            raise ValueError("ctrl_world_current_reference_result_digest_invalid")
     if result.get("schema_version") != RUNTIME_RESULT_SCHEMA_VERSION:
         raise ValueError("ctrl_world_current_reference_result_schema_invalid")
     if result.get("status") != "completed":
@@ -330,6 +344,21 @@ def validate_ctrl_world_current_reference_result(
         raise ValueError("ctrl_world_current_reference_result_view_hashes_invalid")
     normalized_sequences: dict[str, list[str]] = {}
     normalized_hashes: dict[str, list[str]] = {}
+
+    def resolve_result_file(value: Any, *, reason: str) -> Path:
+        candidate = Path(str(value or "")).expanduser()
+        if portable:
+            if candidate.is_absolute() or ".." in candidate.parts or root is None:
+                raise ValueError(reason)
+            path = root.joinpath(*candidate.parts).resolve()
+            if not path.is_relative_to(root):
+                raise ValueError(reason)
+        else:
+            path = candidate.resolve()
+        if not path.is_file() or path.is_symlink() or path.stat().st_size <= 0:
+            raise ValueError(reason)
+        return path
+
     for view_id in CTRL_WORLD_RELEASED_VIEW_ORDER:
         paths = sequences[view_id]
         digests = hashes[view_id]
@@ -340,7 +369,7 @@ def validate_ctrl_world_current_reference_result(
         normalized_sequences[view_id] = []
         normalized_hashes[view_id] = []
         for path_value, expected_digest in zip(paths, digests, strict=True):
-            path = _safe_regular_file(
+            path = resolve_result_file(
                 path_value, reason=f"ctrl_world_current_reference_generated_frame_invalid:{view_id}"
             )
             digest = file_sha256(path)
@@ -353,6 +382,36 @@ def validate_ctrl_world_current_reference_result(
     validated = dict(result)
     validated["generated_view_frame_sequences"] = normalized_sequences
     validated["generated_view_frame_sha256"] = normalized_hashes
+    media = result.get("generated_media")
+    if media is not None:
+        if not isinstance(media, Mapping) or media.get("generated_only") is not True:
+            raise ValueError("ctrl_world_current_reference_generated_media_invalid")
+        rows = media.get("media")
+        if not isinstance(rows, list) or len(rows) != 4:
+            raise ValueError("ctrl_world_current_reference_generated_media_count_invalid")
+        normalized_media_rows: list[dict[str, Any]] = []
+        expected_roles = {"combined_three_view", "view_0", "view_1", "view_2"}
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise ValueError("ctrl_world_current_reference_generated_media_row_invalid")
+            path = resolve_result_file(
+                row.get("path"), reason="ctrl_world_current_reference_generated_media_file_invalid"
+            )
+            if row.get("sha256") != file_sha256(path):
+                raise ValueError("ctrl_world_current_reference_generated_media_hash_mismatch")
+            normalized_media_rows.append({**dict(row), "path": str(path)})
+        if {str(row.get("role")) for row in normalized_media_rows} != expected_roles:
+            raise ValueError("ctrl_world_current_reference_generated_media_roles_invalid")
+        normalized_media = dict(media)
+        normalized_media["media"] = normalized_media_rows
+        combined = next(
+            row for row in normalized_media_rows if row["role"] == "combined_three_view"
+        )
+        if media.get("combined_three_view_sha256") not in {None, combined["sha256"]}:
+            raise ValueError("ctrl_world_current_reference_generated_media_combined_mismatch")
+        normalized_media["combined_three_view_path"] = combined["path"]
+        validated["generated_media"] = normalized_media
+        validated["generated_rollout_video_path"] = combined["path"]
     validated["result_sha256"] = canonical_sha256(
         {key: value for key, value in validated.items() if key != "result_sha256"}
     )
@@ -382,7 +441,10 @@ class CallableCtrlWorldCurrentReferenceWamArm:
         if not isinstance(result, Mapping):
             raise ValueError("ctrl_world_current_reference_runtime_result_not_mapping")
         validated = validate_ctrl_world_current_reference_result(
-            result, request_receipt=request_receipt, seed=self.seed
+            result,
+            request_receipt=request_receipt,
+            seed=self.seed,
+            result_root=runtime_dir,
         )
         evidence = {
             **validated,

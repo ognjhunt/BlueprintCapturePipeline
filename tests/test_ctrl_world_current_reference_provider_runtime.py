@@ -155,7 +155,71 @@ def test_runtime_contract_with_fake_executor_never_needs_future_pixels(
     assert result["recorded_action_trace_used"] is False
     assert result["candidate_policy_loaded_by_wam_runtime"] is False
     assert all(len(paths) == 5 for paths in result["generated_view_frame_sequences"].values())
+    assert result["generated_media"]["status"] == "completed"
+    assert len(result["generated_media"]["media"]) == 4
+    assert result["generated_media"]["physical_pixels_included"] is False
+    assert result["artifact_path_mode"] == "result_root_relative"
+    assert not Path(result["generated_rollout_video_path"]).is_absolute()
+    assert (tmp_path / "output" / result["generated_rollout_video_path"]).is_file()
+    assert all(row["frame_count"] == 5 for row in result["generated_media"]["media"])
     assert (tmp_path / "output/wam_runtime_result.json").is_file()
+
+
+def test_runtime_rejects_generated_png_hash_drift_before_media_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = _staged(tmp_path)
+    source = tmp_path / "source"
+    source.mkdir()
+    source_file = source / "models.py"
+    source_file.write_text("# frozen fixture\n", encoding="utf-8")
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    stats = tmp_path / "stat.json"
+    stats.write_text('{"state_01":[0,0,0,0,0,0,0],"state_99":[1,1,1,1,1,1,1]}')
+    from blueprint_pipeline import ctrl_world_current_reference_provider_runtime as runtime
+
+    monkeypatch.setattr(runtime, "EXPECTED_WORLD_MODEL_SHA256", file_sha256(checkpoint))
+    monkeypatch.setattr(runtime, "EXPECTED_STATE_STAT_SHA256", file_sha256(stats))
+
+    def executor(*, output_dir: Path, **_: Any) -> dict[str, Any]:
+        sequences: dict[str, list[str]] = {}
+        hashes: dict[str, list[str]] = {}
+        for view_index, view_id in enumerate(VIEW_ORDER):
+            sequences[view_id] = []
+            hashes[view_id] = []
+            for frame_index in range(5):
+                path = output_dir / f"v{view_index}_{frame_index}.png"
+                Image.new("RGB", (320, 192), (view_index, frame_index, 0)).save(path)
+                sequences[view_id].append(str(path))
+                hashes[view_id].append("0" * 64)
+        return {
+            "generated_view_frame_sequences": sequences,
+            "generated_view_frame_sha256": hashes,
+        }
+
+    with pytest.raises(ValueError, match="generated_media_hash_mismatch"):
+        run_ctrl_world_current_reference_runtime(
+            request_manifest_path=manifest_path,
+            output_dir=tmp_path / "output",
+            source_root=source,
+            source_manifest={
+                "repository": MODEL_FREEZE["ctrl_world_source"]["repository"],
+                "revision": MODEL_FREEZE["ctrl_world_source"]["revision"],
+                "files": [
+                    {
+                        "relative_path": "models.py",
+                        "size_bytes": source_file.stat().st_size,
+                        "sha256": file_sha256(source_file),
+                    }
+                ],
+            },
+            world_model_checkpoint=checkpoint,
+            svd_model_root=tmp_path / "svd",
+            clip_model_root=tmp_path / "clip",
+            state_stat_path=stats,
+            executor=executor,
+        )
 
 
 def test_runtime_frozen_hash_constants_are_full_sha256() -> None:

@@ -73,6 +73,149 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(dict(value), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _write_generated_only_media(
+    *,
+    sequences: Mapping[str, Any],
+    hashes: Mapping[str, Any],
+    output_dir: Path,
+    fps: float = 7.0,
+) -> dict[str, Any]:
+    """Encode retained generated PNGs into per-view and combined MP4 evidence."""
+
+    import cv2
+    import numpy as np
+
+    if set(sequences) != set(VIEW_ORDER) or set(hashes) != set(VIEW_ORDER):
+        raise ValueError("ctrl_world_runtime_generated_media_view_set_invalid")
+    decoded: dict[str, list[np.ndarray]] = {}
+    source_hashes: dict[str, list[str]] = {}
+    for view_id in VIEW_ORDER:
+        paths = sequences[view_id]
+        digests = hashes[view_id]
+        if not isinstance(paths, list) or len(paths) != 5:
+            raise ValueError(f"ctrl_world_runtime_generated_media_frame_count_invalid:{view_id}")
+        if not isinstance(digests, list) or len(digests) != 5:
+            raise ValueError(f"ctrl_world_runtime_generated_media_hash_count_invalid:{view_id}")
+        decoded[view_id] = []
+        source_hashes[view_id] = []
+        for path_value, expected_digest in zip(paths, digests, strict=True):
+            path = Path(str(path_value)).expanduser().resolve()
+            if not path.is_file() or path.is_symlink():
+                raise ValueError(f"ctrl_world_runtime_generated_media_frame_missing:{view_id}")
+            digest = _sha256_file(path)
+            if digest != expected_digest:
+                raise ValueError(f"ctrl_world_runtime_generated_media_hash_mismatch:{view_id}")
+            frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if frame is None or frame.shape != (192, 320, 3):
+                raise ValueError(f"ctrl_world_runtime_generated_media_geometry_invalid:{view_id}")
+            decoded[view_id].append(frame)
+            source_hashes[view_id].append(digest)
+
+    video_dir = output_dir / "generated_video"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    video_specs = [
+        (
+            "combined_three_view",
+            video_dir / "ctrl_world_generated_three_view.mp4",
+            (960, 192),
+        ),
+        *[
+            (
+                f"view_{index}",
+                video_dir / f"ctrl_world_generated_view_{index}.mp4",
+                (320, 192),
+            )
+            for index in range(3)
+        ],
+    ]
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # type: ignore[attr-defined]
+    writers = {
+        name: cv2.VideoWriter(str(path), fourcc, fps, geometry)
+        for name, path, geometry in video_specs
+    }
+    if not all(writer.isOpened() for writer in writers.values()):
+        for writer in writers.values():
+            writer.release()
+        raise RuntimeError("ctrl_world_runtime_generated_media_writer_failed")
+    try:
+        for frame_index in range(5):
+            per_view = [decoded[view_id][frame_index] for view_id in VIEW_ORDER]
+            writers["combined_three_view"].write(np.concatenate(per_view, axis=1))
+            for view_index, frame in enumerate(per_view):
+                writers[f"view_{view_index}"].write(frame)
+    finally:
+        for writer in writers.values():
+            writer.release()
+
+    media: list[dict[str, Any]] = []
+    for name, path, geometry in video_specs:
+        capture = cv2.VideoCapture(str(path))
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        capture.release()
+        if (
+            not path.is_file()
+            or path.stat().st_size <= 0
+            or frame_count != 5
+            or (width, height) != geometry
+        ):
+            raise RuntimeError(f"ctrl_world_runtime_generated_media_validation_failed:{name}")
+        media.append(
+            {
+                "role": name,
+                "path": str(path),
+                "sha256": _sha256_file(path),
+                "size_bytes": path.stat().st_size,
+                "frame_count": frame_count,
+                "width": width,
+                "height": height,
+                "fps": fps,
+            }
+        )
+    return {
+        "status": "completed",
+        "media": media,
+        "combined_three_view_path": media[0]["path"],
+        "combined_three_view_sha256": media[0]["sha256"],
+        "source_png_sha256_by_view": source_hashes,
+        "physical_pixels_included": False,
+        "generated_only": True,
+    }
+
+
+def _result_root_relative(path_value: Any, *, root: Path) -> str:
+    path = Path(str(path_value)).expanduser().resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("ctrl_world_runtime_result_artifact_outside_output_root")
+    return path.relative_to(root).as_posix()
+
+
+def _portable_generated_artifacts(
+    *,
+    sequences: Mapping[str, Any],
+    generated_media: Mapping[str, Any],
+    output_dir: Path,
+) -> tuple[dict[str, list[str]], dict[str, Any]]:
+    portable_sequences = {
+        view_id: [_result_root_relative(path, root=output_dir) for path in sequences[view_id]]
+        for view_id in VIEW_ORDER
+    }
+    portable_media = dict(generated_media)
+    portable_media["media"] = [
+        {
+            **dict(row),
+            "path": _result_root_relative(row["path"], root=output_dir),
+        }
+        for row in generated_media["media"]
+    ]
+    portable_media["combined_three_view_path"] = _result_root_relative(
+        generated_media["combined_three_view_path"], root=output_dir
+    )
+    portable_media["artifact_path_mode"] = "result_root_relative"
+    return portable_sequences, portable_media
+
+
 def _contained_file(root: Path, relative_value: Any, *, reason: str) -> Path:
     relative = Path(str(relative_value or ""))
     if relative.is_absolute() or ".." in relative.parts:
@@ -480,6 +623,16 @@ def run_ctrl_world_current_reference_runtime(
         clip_model_root=Path(clip_model_root).expanduser().resolve(),
         state_stat_path=Path(state_stat_path).expanduser().resolve(),
     )
+    generated_media = _write_generated_only_media(
+        sequences=generated["generated_view_frame_sequences"],
+        hashes=generated["generated_view_frame_sha256"],
+        output_dir=output,
+    )
+    portable_sequences, portable_media = _portable_generated_artifacts(
+        sequences=generated["generated_view_frame_sequences"],
+        generated_media=generated_media,
+        output_dir=output,
+    )
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "completed",
@@ -488,8 +641,11 @@ def run_ctrl_world_current_reference_runtime(
         "seed": validated["seed"],
         "model_freeze": MODEL_FREEZE,
         "runtime_assets": assets,
-        "generated_view_frame_sequences": generated["generated_view_frame_sequences"],
+        "artifact_path_mode": "result_root_relative",
+        "generated_view_frame_sequences": portable_sequences,
         "generated_view_frame_sha256": generated["generated_view_frame_sha256"],
+        "generated_media": portable_media,
+        "generated_rollout_video_path": portable_media["combined_three_view_path"],
         "same_frozen_wam_generated_all_views": True,
         ACTION_ROLLOUT_MARKER: True,
         "physical_future_observation_used": False,

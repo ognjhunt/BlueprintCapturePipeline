@@ -129,6 +129,12 @@ used as blind confirmation.
 - `protocol_amendment_8_ctrl_world_causal_control_construction_v1.md` —
   prospective six-condition native action construction, distinct real-policy
   swap, and pairwise executed-prefix collision gate;
+- `protocol_amendment_9_ctrl_world_generated_video_transport_v1.md` —
+  prospective generated-only per-view and combined MP4 transport required by
+  the canonical paid WAM completion path;
+- `protocol_amendment_10_provider_artifact_path_portability_v1.md` —
+  prospective result-root-relative provider artifacts and post-download
+  hash-verified rebasing;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
