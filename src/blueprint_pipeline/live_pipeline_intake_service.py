@@ -49,6 +49,16 @@ from .site_task_testbed_webapp_sync import (
     TESTBED_WEBAPP_SYNC_REQUIRED_ENV,
     sync_site_task_testbed_to_webapp,
 )
+from .task_evaluation_run_control_plane import (
+    TaskEvaluationRunControlPlaneError,
+    authorize_task_evaluation_run,
+    execute_and_aggregate_task_evaluation_run,
+    prepare_task_evaluation_run,
+)
+from .task_evaluation_run_state import (
+    TaskEvaluationRunStateError,
+    TaskEvaluationRunStateStore,
+)
 
 
 DEFAULT_MANIFEST_PATH = (
@@ -121,6 +131,10 @@ def _task_candidate_control_plane_root(manifest_path: Path) -> Path:
 
 def _maintained_testbed_root(manifest_path: Path) -> Path:
     return _work_dir(manifest_path).expanduser().resolve() / "maintained_site_task_testbeds"
+
+
+def _task_evaluation_run_root(manifest_path: Path) -> Path:
+    return _work_dir(manifest_path).expanduser().resolve() / "task_evaluation_runs"
 
 
 def _safe_stem(value: str) -> str:
@@ -1814,6 +1828,104 @@ def create_app() -> FastAPI:
             "testbed": testbed,
             "webapp_sync": webapp_sync,
             "proof_boundary": testbed["proof_boundary"],
+        }
+
+    @app.post(
+        "/api/live-pipeline/task-evaluation-runs/plan",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def plan_task_evaluation_run(request: Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        if payload.get("schema_version") != "task_evaluation_run_plan_submission.v1":
+            raise HTTPException(status_code=422, detail="run plan schema version mismatch")
+        manifest_path = _manifest_path().resolve()
+        if not manifest_path.is_file():
+            raise HTTPException(status_code=503, detail="control-plane manifest missing")
+        methods = payload.get("method_profiles")
+        qualifications = payload.get("qualifications")
+        if not isinstance(methods, list) or not isinstance(qualifications, list):
+            raise HTTPException(status_code=422, detail="method profiles and qualifications must be lists")
+        try:
+            return prepare_task_evaluation_run(
+                state_root=_task_evaluation_run_root(manifest_path),
+                run_id=str(payload.get("run_id") or ""),
+                request_value=_mapping(payload.get("decision_evidence_request")),
+                testbed_value=_mapping(payload.get("testbed")),
+                method_values=[dict(row) for row in methods if isinstance(row, Mapping)],
+                qualification_values=[
+                    dict(row) for row in qualifications if isinstance(row, Mapping)
+                ],
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+            )
+        except (TaskEvaluationRunControlPlaneError, TaskEvaluationRunStateError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/live-pipeline/task-evaluation-runs/{run_id}/authorize",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def authorize_task_evaluation_run_execution(
+        run_id: str, request: Request
+    ) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        if payload.get("schema_version") != "task_evaluation_run_authorization_submission.v1":
+            raise HTTPException(status_code=422, detail="run authorization schema version mismatch")
+        manifest_path = _manifest_path().resolve()
+        references = payload.get("authorized_adapter_references")
+        actor = payload.get("actor")
+        if not isinstance(references, list) or not isinstance(actor, Mapping):
+            raise HTTPException(status_code=422, detail="authorization references or actor invalid")
+        try:
+            return authorize_task_evaluation_run(
+                state_root=_task_evaluation_run_root(manifest_path),
+                run_id=run_id,
+                plan_digest=str(payload.get("plan_digest") or ""),
+                authorized_adapter_references=[str(row) for row in references],
+                actor=dict(actor),
+                idempotency_key=str(payload.get("idempotency_key") or ""),
+            )
+        except (TaskEvaluationRunControlPlaneError, TaskEvaluationRunStateError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/live-pipeline/task-evaluation-runs/{run_id}/execute",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def execute_task_evaluation_run(run_id: str) -> Dict[str, Any]:
+        manifest_path = _manifest_path().resolve()
+        try:
+            return execute_and_aggregate_task_evaluation_run(
+                state_root=_task_evaluation_run_root(manifest_path),
+                run_id=run_id,
+            )
+        except (TaskEvaluationRunControlPlaneError, TaskEvaluationRunStateError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/live-pipeline/task-evaluation-runs/{run_id}",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def inspect_task_evaluation_run(run_id: str) -> Dict[str, Any]:
+        manifest_path = _manifest_path().resolve()
+        try:
+            state = TaskEvaluationRunStateStore(
+                _task_evaluation_run_root(manifest_path)
+            ).inspect(run_id)
+        except TaskEvaluationRunStateError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "schema_version": "task_evaluation_run_inspection.v1",
+            **state,
         }
 
     @app.post("/api/live-pipeline/capture-handoffs", dependencies=[Depends(_require_admission)])

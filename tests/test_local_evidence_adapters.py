@@ -27,6 +27,7 @@ def _testbed() -> dict:
         },
         "target_regions": [{
             "region_id": "tote-1",
+            "position_site_m": [0.6, 0.1, 0.7],
             "supporting_frames": ["frame-2", "frame-1", "frame-1"],
             "captured_coverage": 0.9,
         }],
@@ -38,7 +39,7 @@ def test_analytic_reachability_uses_only_explicit_metric_inputs() -> None:
     result = AnalyticReachabilityAdapter().execute(
         claim={
             "claim_type": "analytic_reachability",
-            "subject": {"target_position_site_m": [0.6, 0.1, 0.7]},
+            "subject": "tote-1",
         },
         testbed=_testbed(),
     )
@@ -54,7 +55,7 @@ def test_analytic_reachability_uses_only_explicit_metric_inputs() -> None:
     abstention = AnalyticReachabilityAdapter().execute(
         claim={
             "claim_type": "analytic_reachability",
-            "subject": {"target_position_site_m": [0.6, 0.1, 0.7]},
+            "subject": "tote-1",
         },
         testbed=missing,
     )

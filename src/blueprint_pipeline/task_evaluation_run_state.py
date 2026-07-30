@@ -157,7 +157,7 @@ class TaskEvaluationRunStateStore:
         if to_state not in RUN_STATES or (from_state is not None and from_state not in RUN_STATES):
             raise TaskEvaluationRunStateError("run_state:unsupported")
         bound = _clone(dict(binding))
-        for field in ("intake_digest", "testbed_digest", "request_digest"):
+        for field in ("intake_digest", "capture_digest", "testbed_digest", "request_digest"):
             if field in bound and bound[field] is not None:
                 _digest(bound[field], field=f"binding.{field}")
         payload_artifacts = _clone(dict(artifacts or {}))

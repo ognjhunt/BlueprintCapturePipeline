@@ -100,6 +100,17 @@ retained supporting-frame IDs. Either adapter abstains when those inputs are
 missing. Neither is registered by default, launches a provider or robot, or
 upgrades its result to physical success, deployment readiness, or safety.
 
+The signed run facade exposes plan, authorize, execute, and inspect operations
+under `/api/live-pipeline/task-evaluation-runs`. Planning persists the exact
+request, testbed, method profiles, qualification records, and deterministic
+Evidence Plan before entering `authorization_required`. Authorization is a
+separate immutable record bound to the plan digest and names the exact local
+adapter references. Execute will not proceed without that record, cannot enable
+paid/provider/physical execution, normalizes every attempted result, and always
+aggregates the attempt into a Decision Envelope whose terminal state is
+`decided`, `partially_decided`, or `abstained`. Exact retries return the prior
+immutable envelope.
+
 Hermetic compilation proves deterministic composition and contract integrity.
 It does not prove reconstruction fidelity, collision correctness, task success,
 deployment readiness, safety certification, or physical performance. The

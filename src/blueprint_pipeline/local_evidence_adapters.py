@@ -72,12 +72,24 @@ class AnalyticReachabilityAdapter:
         testbed = _mapping(kwargs.get("testbed"))
         if str(claim.get("claim_type") or "") not in {"reachability", "analytic_reachability"}:
             return _unavailable("analytic_reachability_claim_type_not_supported")
-        subject = _mapping(claim.get("subject"))
+        subject_value = claim.get("subject")
+        subject = _mapping(subject_value)
         bindings = _mapping(testbed.get("robot_sensor_controller_bindings"))
         embodiment = _mapping(bindings.get("embodiment"))
         placement = _mapping(bindings.get("selected_robot_placement"))
         base = _vector3(placement.get("base_position_site_m"))
+        target_region_id = str(
+            subject.get("target_region_id") or (
+                subject_value if isinstance(subject_value, str) else ""
+            )
+        ).strip()
+        target_regions = [
+            row for row in _rows(testbed.get("target_regions"))
+            if str(row.get("region_id") or "").strip() == target_region_id
+        ]
         target = _vector3(subject.get("target_position_site_m"))
+        if target is None and len(target_regions) == 1:
+            target = _vector3(target_regions[0].get("position_site_m"))
         reach = _mapping(embodiment.get("reach_envelope"))
         minimum = _number(reach.get("minimum_m"))
         maximum = _number(reach.get("maximum_m"))
@@ -142,7 +154,12 @@ class CapturedVisibilityAdapter:
         testbed = _mapping(kwargs.get("testbed"))
         if str(claim.get("claim_type") or "") not in {"visibility", "captured_visibility"}:
             return _unavailable("captured_visibility_claim_type_not_supported")
-        target_region_id = str(_mapping(claim.get("subject")).get("target_region_id") or "").strip()
+        subject = claim.get("subject")
+        target_region_id = str(
+            _mapping(subject).get("target_region_id") or (
+                subject if isinstance(subject, str) else ""
+            )
+        ).strip()
         regions = [
             row for row in _rows(testbed.get("target_regions"))
             if str(row.get("region_id") or "").strip() == target_region_id
