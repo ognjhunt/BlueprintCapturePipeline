@@ -154,6 +154,26 @@ def test_export_is_candidate_only_idempotent_and_converts_pose(tmp_path: Path) -
     jsonschema.validate(first, result_schema)
 
 
+def test_export_accepts_proxy_capture_digest_alias_without_weakening_binding(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    request = _request(source)
+    observations = request["camera_observation_manifest"]
+    observations["capture_digest"] = observations.pop("source_capture_digest")
+    observations["camera_observation_digest"] = canonical_digest(
+        observations, digest_field="camera_observation_digest"
+    )
+    request["colmap_training_dataset_export_request_digest"] = canonical_digest(
+        request, digest_field="colmap_training_dataset_export_request_digest"
+    )
+
+    result = export_colmap_training_dataset(
+        source_artifact=request, artifact_root=source, output_root=tmp_path / "output"
+    )
+    assert result["source_capture_digest"] == CAPTURE
+
+
 def test_export_rejects_hidden_paths_digest_spoofing_and_nonrigid_pose(tmp_path: Path) -> None:
     source = tmp_path / "source"
     request = _request(source)

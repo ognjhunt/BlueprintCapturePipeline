@@ -198,11 +198,14 @@ def export_colmap_training_dataset(
         candidate, digest_field="candidate_dataset_digest"
     ):
         raise ColmapTrainingDatasetError(["colmap_export_candidate_manifest_digest_invalid"])
+    observation_capture_digest = observations.get("source_capture_digest") or observations.get(
+        "capture_digest"
+    )
     if (
         any(
             value != request["source_capture_digest"]
             for value in (
-                observations.get("source_capture_digest"),
+                observation_capture_digest,
                 candidate.get("capture_digest"),
             )
         )
