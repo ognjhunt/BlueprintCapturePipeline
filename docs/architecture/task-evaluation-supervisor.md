@@ -205,6 +205,33 @@ Every capability output is marked `authoritative=false`,
 classified against the tool registry and authority envelope. Shadow proposals
 are recorded but never executed.
 
+### Versioned artifact inventory
+
+The original product names map to the following repository contracts. Blueprint
+uses an append-only manager decision sequence instead of one mutable
+`supervisor_plan` document so every replan has an immutable parent event and can
+be replayed independently.
+
+| Product artifact | Repository contract or artifact | Authority |
+| --- | --- | --- |
+| Task Evaluation Supervisor Run | `task_evaluation_supervisor_run.v1` | Durable control-plane identity; no proof effect |
+| Supervisor state | `task_evaluation_supervisor_state.v1` | Deterministically reconstructed lifecycle state |
+| Proposed claim graph | `proposed_claim_graph.v1` inside the claim-interpreter capability result | Agent proposal; accepted claims still require the Decision/Evidence contract |
+| Supervisor plan and replans | `task_evaluation_supervisor_manager_decision.v1` sequence plus `task_evaluation_supervisor_action_proposal.v1` | Agent sequencing within the deterministic eligibility menu |
+| Tool invocation and structured observation | `task_evaluation_supervisor_invocation.v1`, manager invocation manifests, and `task_evaluation_supervisor_tool_observation.v1` | Invocation is audit evidence; only registered observations may report an action result |
+| Supervisor event | `task_evaluation_supervisor_event.v1` in the hash-chained JSONL ledger | Append-only audit record |
+| Clarification request and receipt | `task_evaluation_clarification_request.v1` and `task_evaluation_clarification_receipt.v1` | Non-proof customer input; an agent cannot answer its own request |
+| Targeted recapture request, receipt, and reinspection | `targeted_recapture_request.v1`, `task_evaluation_targeted_recapture_receipt.v1`, and `task_evaluation_recapture_reinspection.v1` | Request and receipt are non-proof; the kernel derives reinspection status |
+| Evidence-method selection | `evidence_method_selection.v1` capability artifact and the existing versioned Evidence Plan | The deterministic router qualifies and selects methods |
+| Leaf-run compilation | Existing `evaluation_run_spec.v1` artifacts materialized under `generated/compiled_leaf_runs/` | Deterministic local compilation; no provider execution |
+| Typed failure diagnosis and recovery | `typed_failure_diagnosis.v1`, `task_evaluation_recovery_action.v1`, and `task_evaluation_recovery_result.v1` | Diagnosis is advisory; a bounded controller owns execution and result validation |
+| Authorization request and receipt | `task_evaluation_authorization_request.v1` and `task_evaluation_authorization_receipt.v1` | Operator-issued context; never an SDK credential by itself |
+| Scenario proposal set and frozen manifest | `task_evaluation_scenario_proposal_set.v1` and `task_evaluation_frozen_scenario_manifest.v1` | Agent proposes before evaluation; only the operator-side freeze becomes protocol input |
+| Post-run diagnosis | `post_run_diagnosis.v1` capability artifact | Explanatory only; cannot change the verdict |
+| Decision proposal and customer report | Terminal `task_evaluation_supervisor_report.v1` plus `task_evaluation_customer_report.v1` | The kernel supplies the decision fields; agent text remains non-authoritative |
+| Agent invocation manifest | Specialist and manager invocation manifests with SDK/model, prompt, registry, input, authority, budget, cost, latency, parent-event, and refusal bindings | Audit and replay input; no proof effect |
+| Terminal supervisor report | `task_evaluation_supervisor_report.v1` | Exact replay-checked index of the terminal run; does not independently establish a claim |
+
 Every executed tool call returns a strict, versioned observation artifact. The
 same deterministic validator runs at tool creation, supervisor ingestion, and
 replay, binding the observation to the exact run, specialist capability,
