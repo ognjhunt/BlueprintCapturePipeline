@@ -1,10 +1,12 @@
-import json
 import io
+import json
+import os
 import time
 import zipfile
-import os
 from pathlib import Path
 from urllib.error import URLError
+
+import numpy as np
 
 from blueprint_pipeline import openpi_policy_ranking_runpod as runpod_module
 from blueprint_pipeline import paid_provider_lane_lease as lease_module
@@ -452,14 +454,57 @@ def test_current_reference_request_uses_hash_bound_source_overlay() -> None:
 
 def test_current_reference_terminal_output_requires_all_three_native_actions() -> None:
     policy_ids = ("pi0_droid", "pi0_fast_droid", "pi05_droid")
+    artifact_bytes: dict[str, bytes] = {}
+    policy_results = []
+    for policy_id in policy_ids:
+        action_name = f"{policy_id}_native_action.npy"
+        receipt_name = f"{policy_id}_policy_receipt.json"
+        rows = 15 if policy_id == "pi05_droid" else 10
+        action_buffer = io.BytesIO()
+        np.save(
+            action_buffer,
+            np.zeros((rows, 8), dtype=np.float64),
+            allow_pickle=False,
+        )
+        action_bytes = action_buffer.getvalue()
+        action_sha256 = runpod_module.hashlib.sha256(action_bytes).hexdigest()
+        receipt = {
+            "schema_version": "openpi_current_reference_policy_query_receipt.v1",
+            "policy_id": policy_id,
+            "policy_identity": {"policy_id": policy_id},
+            "local_checkpoint_verification": {"local_checkpoint_verified": True},
+            "query": {"native_action_shape": [rows, 8]},
+            "artifact_path_mode": "result_root_relative",
+            "native_action_path": action_name,
+            "native_action_file_sha256": action_sha256,
+            "physical_outcome_accessed": False,
+            "wam_called": False,
+        }
+        receipt["manifest_sha256"] = canonical_sha256(receipt)
+        receipt_bytes = json.dumps(receipt).encode("utf-8")
+        artifact_bytes[action_name] = action_bytes
+        artifact_bytes[receipt_name] = receipt_bytes
+        policy_results.append(
+            {
+                "policy_id": policy_id,
+                "status": "completed",
+                "artifact_path_mode": "result_root_relative",
+                "receipt_path": receipt_name,
+                "receipt_file_sha256": runpod_module.hashlib.sha256(
+                    receipt_bytes
+                ).hexdigest(),
+                "receipt_manifest_sha256": receipt["manifest_sha256"],
+                "native_action_shape": [rows, 8],
+                "native_action_file_sha256": action_sha256,
+            }
+        )
     manifest = {
         "schema_version": "openpi_current_reference_policy_canary.v1",
         "status": "completed",
         "frozen_policy_order": list(policy_ids),
         "requests_per_policy": 1,
-        "policy_results": [
-            {"policy_id": policy_id, "status": "completed"} for policy_id in policy_ids
-        ],
+        "artifact_path_mode": "result_root_relative",
+        "policy_results": policy_results,
         "blockers": [],
         "wam_called": False,
         "judge_called": False,
@@ -472,9 +517,8 @@ def test_current_reference_terminal_output_requires_all_three_native_actions() -
             "openpi_current_reference_policy_canary.json",
             json.dumps(manifest),
         )
-        for policy_id in policy_ids:
-            archive.writestr(f"{policy_id}_native_action.npy", b"native-action")
-            archive.writestr(f"{policy_id}_policy_receipt.json", b"{}")
+        for name, payload in artifact_bytes.items():
+            archive.writestr(name, payload)
     valid = _validate_output_archive(buffer.getvalue())
     assert valid["status"] == "completed"
     assert valid["execution_mode"] == "current_reference_policy_identity_canary"
@@ -484,7 +528,9 @@ def test_current_reference_terminal_output_requires_all_three_native_actions() -
         "frozen_policy_order": ["pi05_droid"],
         "query_mode": "same_candidate_policy_requery",
         "same_candidate_policy_id": "pi05_droid",
-        "policy_results": [{"policy_id": "pi05_droid", "status": "completed"}],
+        "policy_results": [
+            row for row in policy_results if row["policy_id"] == "pi05_droid"
+        ],
     }
     requery_manifest["manifest_sha256"] = canonical_sha256(
         {key: value for key, value in requery_manifest.items() if key != "manifest_sha256"}
@@ -495,8 +541,14 @@ def test_current_reference_terminal_output_requires_all_three_native_actions() -
             "openpi_current_reference_policy_canary.json",
             json.dumps(requery_manifest),
         )
-        archive.writestr("pi05_droid_native_action.npy", b"native-action")
-        archive.writestr("pi05_droid_policy_receipt.json", b"{}")
+        archive.writestr(
+            "pi05_droid_native_action.npy",
+            artifact_bytes["pi05_droid_native_action.npy"],
+        )
+        archive.writestr(
+            "pi05_droid_policy_receipt.json",
+            artifact_bytes["pi05_droid_policy_receipt.json"],
+        )
     requery_valid = _validate_output_archive(requery_buffer.getvalue())
     assert requery_valid["status"] == "completed", requery_valid["blockers"]
 
@@ -509,6 +561,21 @@ def test_current_reference_terminal_output_requires_all_three_native_actions() -
     blocked = _validate_output_archive(missing.getvalue())
     assert blocked["status"] == "blocked"
     assert any("policy_artifacts_missing" in item for item in blocked["blockers"])
+
+    drifted = io.BytesIO()
+    with zipfile.ZipFile(drifted, "w") as archive:
+        archive.writestr(
+            "openpi_current_reference_policy_canary.json",
+            json.dumps(manifest),
+        )
+        for name, payload in artifact_bytes.items():
+            archive.writestr(name, b"drifted" if name == "pi0_droid_native_action.npy" else payload)
+    rejected = _validate_output_archive(drifted.getvalue())
+    assert rejected["status"] == "blocked"
+    assert (
+        "openpi_output_current_reference_policy_artifacts_unreadable:pi0_droid"
+        in rejected["blockers"]
+    )
 
 
 def test_vast_launch_request_uses_frozen_floor_and_args_entrypoint(

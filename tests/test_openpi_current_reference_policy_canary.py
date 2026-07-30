@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -82,6 +84,7 @@ def test_policy_canary_runs_exactly_one_query_each_and_preserves_native_output(
         gpu_evidence_collector=lambda: {"gpu_device_present": True},
     )
     assert result["status"] == "completed"
+    assert result["artifact_path_mode"] == "result_root_relative"
     assert calls == ["pi0_droid", "pi0_fast_droid", "pi05_droid"]
     assert [row["native_action_shape"] for row in result["policy_results"]] == [
         [10, 8],
@@ -90,6 +93,24 @@ def test_policy_canary_runs_exactly_one_query_each_and_preserves_native_output(
     ]
     assert result["wam_called"] is False
     assert result["judge_called"] is False
+    output_dir = tmp_path / "output"
+    for policy_result in result["policy_results"]:
+        assert policy_result["artifact_path_mode"] == "result_root_relative"
+        receipt_path = Path(policy_result["receipt_path"])
+        assert not receipt_path.is_absolute()
+        assert receipt_path.parent == Path(".")
+        local_receipt_path = output_dir / receipt_path
+        assert local_receipt_path.is_file()
+        receipt = json.loads(local_receipt_path.read_text(encoding="utf-8"))
+        assert receipt["artifact_path_mode"] == "result_root_relative"
+        action_path = Path(receipt["native_action_path"])
+        assert not action_path.is_absolute()
+        assert action_path.parent == Path(".")
+        local_action_path = output_dir / action_path
+        assert local_action_path.is_file()
+        assert receipt["native_action_file_sha256"] == hashlib.sha256(
+            local_action_path.read_bytes()
+        ).hexdigest()
 
     calls.clear()
     requery = run_current_reference_policy_canary(

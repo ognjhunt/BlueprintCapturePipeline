@@ -31,6 +31,12 @@ second reservation and rounds elapsed seconds upward. Protocol Amendment 5
 therefore freezes a fail-closed terminal reconciliation rule and expands only
 the internal wall-time accounting envelope to 72,000 seconds. Monetary limits,
 per-stage TTLs, and one-GPU concurrency are unchanged.
+Offline terminal-artifact review then found that provider-local absolute paths
+would not resolve after downloading the policy output archive. Protocol
+Amendment 15 requires result-root-relative paths and independently validates the
+receipt hash, native-action hash, exact shape, dtype, finite values, and claim
+boundary for every policy. The earlier signed retry bundle is retired before
+execution and must be rebuilt from the new immutable SHA.
 
 The scientific admission state is:
 
@@ -45,7 +51,8 @@ The scientific admission state is:
 - provider state: current Vast, RunPod, and DigitalOcean inventory is zero, but
   the predecessor no-allocation watchdog conservatively retains its lease and
   reservation until its immutable deadline because that already-running process
-  predates the no-instance-ID early-settlement correction;
+  predates the no-instance-ID early-settlement correction; the successor does
+  not bypass or alter that process.
 
 The historical frozen-stack verdict remains `thesis_not_supported`. The prior
 specialized successor remains `inconclusive`. Neither result is overwritten or
@@ -148,6 +155,9 @@ used as blind confirmation.
 - `protocol_amendment_14_ctrl_world_paid_profile_freeze_v1.md` — requires the
   request-specific Ctrl-World bundle identity, limits, and authorization to be
   byte-identical to a tracked file at the immutable launch commit;
+- `protocol_amendment_15_portable_policy_output_artifacts_v1.md` — portable
+  result-root-relative action and receipt paths plus independent terminal
+  archive validation of their bytes, hashes, shapes, dtype, and claim boundary;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
@@ -155,9 +165,8 @@ used as blind confirmation.
 
 The next finite gate is the predecessor watchdog's deadline settlement, a fresh
 post-terminal global provider-zero snapshot, and conservative no-allocation
-budget reconciliation. Blueprint will then run the already frozen current-
-reference policy canary from its clean pushed SHA: one identity-bound inference
-from each of the three policy checkpoints. Only after that policy gate may the
-separately attributed Ctrl-World WAM bundle be frozen around one real policy
-action and admitted. Judges remain forbidden until a complete episode passes
-causal qualification.
+budget reconciliation. Blueprint will then run the newly frozen `b6be7344`
+policy canary: one identity-bound inference from each of the three policy
+checkpoints. Only after that policy gate may the separately attributed
+Ctrl-World WAM bundle be frozen around one real policy action and admitted.
+Judges remain forbidden until a complete episode passes causal qualification.
