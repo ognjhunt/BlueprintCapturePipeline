@@ -23,11 +23,12 @@ Everything here is stdlib-only and hermetic: no numpy, no pxr, no network.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 from .robot_profile import RobotProfile
 from .types import Probe, SceneObject, Vec3
@@ -49,6 +50,20 @@ def _corners_to_aabb(corners: Sequence[dict]) -> Tuple[Vec3, Vec3]:
     ys = [float(c["y"]) for c in corners]
     zs = [float(c["z"]) for c in corners]
     return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
+
+
+def _normalized_box_corners(corners: Sequence[dict]) -> List[List[float]]:
+    """Return the source OBB corners as finite ``[x, y, z]`` meter rows."""
+
+    if len(corners) != 8:
+        raise ValueError("InteriorGS oriented boxes require exactly eight corners")
+    normalized = [
+        [float(corner["x"]), float(corner["y"]), float(corner["z"])]
+        for corner in corners
+    ]
+    if not all(math.isfinite(value) for corner in normalized for value in corner):
+        raise ValueError("InteriorGS oriented box contains a non-finite coordinate")
+    return normalized
 
 
 def _normalize_label(label: str) -> str:
@@ -73,9 +88,10 @@ def load_interiorgs_labels(path: str | Path) -> List[SceneObject]:
         corners = entry.get("bounding_box")
         ins_id = str(entry.get("ins_id", "")).strip()
         label = str(entry.get("label", "")).strip()
-        if not ins_id or not isinstance(corners, list) or len(corners) < 2:
+        if not ins_id or not isinstance(corners, list) or len(corners) != 8:
             continue
         try:
+            normalized_corners = _normalized_box_corners(corners)
             bbox_min, bbox_max = _corners_to_aabb(corners)
         except (KeyError, TypeError, ValueError):
             continue
@@ -101,10 +117,123 @@ def load_interiorgs_labels(path: str | Path) -> List[SceneObject]:
                     "ins_id": ins_id,
                     "raw_label": label,
                     "instance_name": f"{norm}_{ins_id}" if norm else ins_id,
+                    "oriented_bounding_box": {
+                        "corners_world_m": normalized_corners,
+                        "coordinate_frame": "interiorgs_world_right_back_up",
+                        "units": "meters",
+                        "source": "dataset_author_sidecar",
+                    },
+                    "placement_bounds_kind": "conservative_world_aabb",
                 },
             )
         )
     return objects
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def build_interiorgs_object_index(
+    labels_path: str | Path,
+    *,
+    splat_path: str | Path,
+    structure_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Normalize InteriorGS author sidecars into deterministic ``object_index.v2``.
+
+    The eight source corners are retained exactly for semantic inspection.  The
+    existing world AABB remains alongside them because robot-placement filtering
+    intentionally uses a conservative axis-aligned bound.  Neither representation
+    is promoted to customer-capture, collision, physics, or physical authority.
+    """
+
+    labels = Path(labels_path).expanduser().resolve()
+    splat = Path(splat_path).expanduser().resolve()
+    structure = Path(structure_path).expanduser().resolve() if structure_path else None
+    for source in (labels, splat, structure):
+        if source is not None and (not source.is_file() or source.stat().st_size <= 0):
+            raise ValueError(f"InteriorGS source file missing or empty: {source}")
+
+    objects = sorted(load_interiorgs_labels(labels), key=lambda item: (item.label, item.id))
+    rows: List[dict[str, Any]] = []
+    for item in objects:
+        oriented = dict(item.extra.get("oriented_bounding_box") or {})
+        rows.append(
+            {
+                "id": item.id,
+                "label": item.label,
+                "boundingBox": {
+                    "center": [float(value) for value in item.centroid],
+                    "extents": [float(value) for value in item.size()],
+                    "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    "orientationQuaternion": [1.0, 0.0, 0.0, 0.0],
+                    "kind": "conservative_world_aabb",
+                },
+                "orientedBoundingBox": oriented,
+                "mean_confidence": 1.0,
+                "n_total_detections": 0,
+                "n_frame_detections": 0,
+                "evidence_frames": [],
+                "source_prompts": [],
+                "provenance": {
+                    "source": INTERIORGS_LABELS_SOURCE,
+                    "annotation_authority": "dataset_author_sidecar",
+                    "raw_customer_capture_authority": False,
+                    "model_inferred_from_customer_capture": False,
+                },
+            }
+        )
+
+    source_files: dict[str, Any] = {
+        "labels": {"sha256": _sha256_file(labels), "size_bytes": labels.stat().st_size},
+        "splat": {"sha256": _sha256_file(splat), "size_bytes": splat.stat().st_size},
+    }
+    structure_summary: dict[str, Any] | None = None
+    if structure is not None:
+        parsed_structure = load_interiorgs_structure(structure)
+        source_files["structure"] = {
+            "sha256": _sha256_file(structure),
+            "size_bytes": structure.stat().st_size,
+        }
+        structure_summary = {
+            "room_count": len(parsed_structure.rooms),
+            "wall_count": len(parsed_structure.wall_boxes),
+            "hole_count": len(parsed_structure.holes),
+            "source_digest": source_files["structure"]["sha256"],
+        }
+
+    return {
+        "schema_version": "object_index.v2",
+        "objects": rows,
+        "coordinate_frame": {
+            "name": "interiorgs_world_right_back_up",
+            "axes": {"x": "right", "y": "back", "z": "up"},
+            "handedness": "right_handed",
+            "units": "meters",
+        },
+        "scene_structure": structure_summary,
+        "provenance": {
+            "source_profile": "precomputed_external_reconstruction",
+            "dataset_profile": "interiorgs.v2",
+            "source_files": source_files,
+            "deterministic_order": "normalized_label_then_instance_id",
+        },
+        "claim_boundary": {
+            "dataset_annotations_are_not_customer_capture_observations": True,
+            "raw_capture_authority": False,
+            "metric_authority_requires_separate_source_and_transform_validation": True,
+            "collision_or_physics_authority": False,
+            "physical_task_success": False,
+            "deployment_readiness": False,
+            "safety_certification": False,
+            "comparative_policy_ranking_verdict": "thesis_not_supported",
+        },
+    }
 
 
 # ----------------------------- structure.json -----------------------------

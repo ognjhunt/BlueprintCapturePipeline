@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from .interiorgs_index import (
+    build_interiorgs_object_index,
     InteriorGSSceneSpatialIndex,
     InteriorGSStructure,
     build_interiorgs_probe,
@@ -97,6 +98,7 @@ __all__ = [
     "PerceptionSceneSpatialIndex",
     "InteriorGSSceneSpatialIndex",
     "InteriorGSStructure",
+    "build_interiorgs_object_index",
     "build_interiorgs_probe",
     "load_interiorgs_labels",
     "load_interiorgs_structure",

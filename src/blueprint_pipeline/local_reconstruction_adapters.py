@@ -982,11 +982,55 @@ def _parse_ply_header(asset_path: Path) -> dict[str, Any]:
             ["external_reconstruction:ply_vertex_metadata_missing"]
         )
     vertex_properties = set(element_properties.get("vertex", []))
-    if not {"x", "y", "z"}.issubset(vertex_properties):
+    chunk_properties = set(element_properties.get("chunk", []))
+    position_properties = {"x", "y", "z"}
+    color_properties = {"red", "green", "blue"}
+    standard_3dgs_properties = {
+        "opacity",
+        "scale_0",
+        "scale_1",
+        "scale_2",
+        "rot_0",
+        "rot_1",
+        "rot_2",
+        "rot_3",
+        "f_dc_0",
+        "f_dc_1",
+        "f_dc_2",
+    }
+    compressed_vertex_properties = {
+        "packed_position",
+        "packed_rotation",
+        "packed_scale",
+        "packed_color",
+    }
+    compressed_chunk_properties = {
+        "min_x",
+        "min_y",
+        "min_z",
+        "max_x",
+        "max_y",
+        "max_z",
+    }
+    if position_properties.issubset(vertex_properties) and color_properties.issubset(
+        vertex_properties
+    ):
+        representation_profile = "colored_point_cloud"
+    elif position_properties.issubset(vertex_properties) and standard_3dgs_properties.issubset(
+        vertex_properties
+    ):
+        representation_profile = "standard_3dgs"
+    elif (
+        elements.get("chunk", 0) > 0
+        and compressed_vertex_properties.issubset(vertex_properties)
+        and compressed_chunk_properties.issubset(chunk_properties)
+    ):
+        representation_profile = "supersplat_compressed_3dgs"
+    elif not position_properties.issubset(vertex_properties):
         raise LocalReconstructionAdapterError(
             ["external_reconstruction:ply_vertex_position_missing"]
         )
-    if not {"red", "green", "blue"}.issubset(vertex_properties):
+    else:
         raise LocalReconstructionAdapterError(
             ["external_reconstruction:ply_vertex_color_missing"]
         )
@@ -999,6 +1043,7 @@ def _parse_ply_header(asset_path: Path) -> dict[str, Any]:
         "version": version,
         "header_size_bytes": len(header_bytes),
         "header_digest": _sha256_bytes(header_bytes),
+        "representation_profile": representation_profile,
         "elements": dict(sorted(elements.items())),
         "element_properties": {
             key: sorted(value) for key, value in sorted(element_properties.items())
