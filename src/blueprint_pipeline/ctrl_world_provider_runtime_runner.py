@@ -18,6 +18,10 @@ RESULT_NAME = "wam_runtime_result.json"
 ACTION_ROLLOUT_MARKER = "action_conditioned_video_rollout_generated"
 
 
+def _is_full_commit_sha(value: str) -> bool:
+    return len(value) == 40 and all(character in "0123456789abcdef" for character in value)
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -140,8 +144,6 @@ def _ensure_dependencies(manifest: dict[str, Any]) -> dict[str, Any]:
 def _download_models(
     *, work_dir: Path, manifest: dict[str, Any]
 ) -> tuple[dict[str, Path], dict[str, Any]]:
-    from huggingface_hub import snapshot_download
-
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     model_roots: dict[str, Path] = {}
     blockers: list[str] = []
@@ -155,8 +157,13 @@ def _download_models(
         revision = str(model.get("revision") or "")
         target = work_dir / "models" / name
         allow_patterns = model.get("allow_patterns")
+        if not _is_full_commit_sha(revision):
+            blockers.append(f"ctrl_world_model_revision_not_pinned:{name}")
+            continue
+        from huggingface_hub import snapshot_download
+
         try:
-            snapshot_download(
+            snapshot_download(  # nosec B615 - full immutable commit SHA validated above
                 repo_id=repo_id,
                 revision=revision,
                 local_dir=target,

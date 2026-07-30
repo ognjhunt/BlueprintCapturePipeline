@@ -61,6 +61,7 @@ from .provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
     wam_registered_alternative_inputs_present,
 )
+from .wam_async_runner_common import download_url_to_file
 from .vast_independent_watchdog_control import write_started_vast_instance_id
 from .vast_attempt_preservation import (
     VAST_LIVE_ATTEMPT_ARTIFACT_NAMES,
@@ -5836,27 +5837,27 @@ def run_vast_provider_adapter(
                 "raw_secret_values_recorded": False,
             }
             if provider_upload_ok and _string(provider_output_get_url):
-                try:
-                    with urllib.request.urlopen(
-                        _string(provider_output_get_url),
-                        timeout=60,
-                    ) as response:
-                        output_zip_path.write_bytes(response.read())
+                transfer = download_url_to_file(
+                    url=_string(provider_output_get_url),
+                    output_path=output_zip_path,
+                    user_agent="BlueprintVastProviderAdapter/1.0",
+                    timeout_seconds=60,
+                )
+                if transfer["status"] == "completed":
                     output_download_manifest.update(
                         {
                             "status": "completed",
-                            "http_status_code": int(getattr(response, "status", 200)),
+                            "http_status_code": transfer.get("http_status_code"),
                             "output_zip_present_after_download": output_zip_path.is_file(),
-                            "output_zip_size_bytes": output_zip_path.stat().st_size
-                            if output_zip_path.is_file()
-                            else 0,
+                            "output_zip_size_bytes": transfer.get("downloaded_size_bytes", 0),
                         }
                     )
-                except Exception as exc:
+                else:
                     output_download_manifest.update(
                         {
                             "status": "blocked",
-                            "error_type": type(exc).__name__,
+                            "error_type": transfer.get("error_type"),
+                            "http_status_code": transfer.get("http_status_code"),
                             "blockers": ["provider_output_get_url_download_failed"],
                         }
                     )

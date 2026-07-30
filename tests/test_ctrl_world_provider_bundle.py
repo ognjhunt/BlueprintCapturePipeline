@@ -193,6 +193,25 @@ def test_runtime_input_validation_rejects_invalid_or_mismatched_sizes(tmp_path: 
     ]
 
 
+def test_ctrl_world_model_download_requires_full_commit_revision(tmp_path: Path) -> None:
+    result = runtime._download_models(
+        work_dir=tmp_path,
+        manifest={
+            "models": [
+                {
+                    "name": "ctrl_world",
+                    "repository": "yjguo/Ctrl-World",
+                    "revision": "main",
+                }
+            ]
+        },
+    )
+
+    assert result[0] == {}
+    assert result[1]["status"] == "blocked"
+    assert result[1]["blockers"] == ["ctrl_world_model_revision_not_pinned:ctrl_world"]
+
+
 def test_runtime_result_contract_names_ctrl_world_and_preserves_claim_ceiling() -> None:
     text = Path(runtime.__file__).read_text(encoding="utf-8")
     assert "Ctrl-World" in text
