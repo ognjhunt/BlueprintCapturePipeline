@@ -17,7 +17,8 @@ import hmac
 import json
 import os
 import re
-import subprocess
+# Subprocess use is limited to fixed systemctl argv plus a strict unit allowlist.
+import subprocess  # nosec B404
 import time
 import uuid
 from datetime import datetime, timezone
@@ -90,7 +91,8 @@ from .task_evaluation_run_webapp_sync import (
 DEFAULT_MANIFEST_PATH = (
     "/var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json"
 )
-INTAKE_TOKEN_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN"
+# This constant names an environment variable; it is not a credential value.
+INTAKE_TOKEN_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN"  # nosec B105
 INTAKE_ALLOW_LEGACY_BEARER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER"
 INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV = (
     "BLUEPRINT_LIVE_PIPELINE_ALLOW_LEGACY_WEBAPP_HMAC_WITHOUT_CLIENT_ID"
@@ -853,7 +855,8 @@ def _capture_handoff_to_webapp_request(
             "capture_id": handoff_capture_id or capture_ids["capture_id"],
             "blockers": blockers,
         }
-    assert dataset_selection is not None
+    if dataset_selection is None:
+        raise RuntimeError("capture_handoff_dataset_selection_invariant")
     identity_digest_material = {
         "handoff_payload": dict(payload),
         "dataset_selection": dataset_selection,
@@ -1349,7 +1352,8 @@ def _trigger_control_plane() -> Dict[str, Any]:
             "blockers": ["intake_trigger_systemd_unit_invalid"],
         }
     command_argv = ["systemctl", "start", "--no-block", unit]
-    completed = subprocess.run(
+    # The executable/arguments are fixed and the unit is constrained by the regex above.
+    completed = subprocess.run(  # nosec B603
         command_argv,
         shell=False,
         check=False,
