@@ -17,6 +17,7 @@ from blueprint_pipeline.new_site_diagnostic_canary_gpu import (
     extract_canary_input_bundle,
     materialize_canary_background,
     run_ctrl_world_canary,
+    run_oscar_canary,
     run_skeleton_only_canary,
 )
 from blueprint_pipeline.new_site_diagnostic_smoke import build_protocol
@@ -279,6 +280,73 @@ def test_ctrl_world_input_roundtrip_requires_and_carries_three_native_views(
     }
     assert receipt["manifest"]["wam_seed"] == 23
     assert extracted["manifest"]["wam_seed"] == 23
+
+
+def test_oscar_input_roundtrip_requires_two_native_views_and_frozen_seed(
+    tmp_path: Path,
+) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224), color=(12, 34, 56)).save(background)
+    frame_entries = {}
+    for view_key, color in (
+        ("external", (20, 40, 60)),
+        ("wrist", (60, 40, 20)),
+    ):
+        path = tmp_path / f"native_{view_key}.png"
+        Image.new("RGB", (640, 480), color=color).save(path)
+        frame_entries[view_key] = {
+            "frames": {
+                "initial": {
+                    "path": str(path),
+                    "sha256": file_sha256(path),
+                    "resolution": [640, 480],
+                    "nonblank": True,
+                }
+            }
+        }
+    native_result = {
+        "status": "passed",
+        "label_free": True,
+        "rankings_or_policy_outcomes_accessed": False,
+        "assessment": {"required_views": ["external", "wrist"], "views": frame_entries},
+    }
+    native_result["result_sha256"] = canonical_sha256(native_result)
+    native_result_path = tmp_path / "native_result.json"
+    native_result_path.write_text(json.dumps(native_result), encoding="utf-8")
+
+    receipt = build_canary_input_bundle(
+        protocol_path=protocol_path,
+        background_path=background,
+        output_zip=tmp_path / "oscar_canary.zip",
+        arm_id="oscar",
+        native_camera_canary_result_path=native_result_path,
+    )
+    extracted = extract_canary_input_bundle(
+        bundle_path=tmp_path / "oscar_canary.zip",
+        expected_bundle_sha256=receipt["bundle_sha256"],
+        output_dir=tmp_path / "oscar_extracted",
+    )
+
+    assert set(extracted["initial_camera_paths"]) == {EXTERIOR_VIEW, WRIST_VIEW}
+    assert receipt["manifest"]["wam_seed"] == 42
+    assert extracted["manifest"]["wam_seed"] == 42
+
+
+def test_oscar_input_rejects_missing_native_two_view_result(tmp_path: Path) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224)).save(background)
+
+    with pytest.raises(ValueError, match="native_two_view_result_required"):
+        build_canary_input_bundle(
+            protocol_path=protocol_path,
+            background_path=background,
+            output_zip=tmp_path / "oscar_canary.zip",
+            arm_id="oscar",
+        )
 
 
 def test_ctrl_world_input_rejects_missing_native_three_view_result(tmp_path: Path) -> None:
@@ -797,6 +865,118 @@ def test_ctrl_world_canary_wires_three_view_exact_round_trip_without_ranking(
 
     assert result["status"] == "completed"
     assert result["arm_id"] == "ctrl_world"
+    assert result["policy_wam_policy_round_trip_passed"] is True
+    assert set(result["initial_camera_sha256_by_view"]) == set(initial_camera_paths)
+    assert "rankings" not in result
+    assert result["claim_boundary"]["physical_success"] is False
+
+
+def test_oscar_canary_wires_two_view_learned_wam_exact_round_trip_without_ranking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    protocol = _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224)).save(background)
+    initial_camera_paths = {}
+    for view_index, view_id in enumerate((EXTERIOR_VIEW, WRIST_VIEW)):
+        path = tmp_path / f"native_{view_index}.png"
+        Image.new("RGB", (640, 480), color=(20 + view_index * 20,) * 3).save(path)
+        initial_camera_paths[view_id] = str(path)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    spec = SimpleNamespace(checkpoint_uri="s3://example/checkpoint", action_chunk_rows=15)
+    monkeypatch.setattr(canary_module, "load_policy_spec", lambda *_args, **_kwargs: spec)
+    monkeypatch.setattr(
+        canary_module, "verify_local_checkpoint", lambda **_kwargs: {"status": "verified"}
+    )
+    monkeypatch.setattr(canary_module, "LocalOpenPIDroidPolicyClient", lambda **_kwargs: object())
+    monkeypatch.setattr(canary_module, "prepare_franka_droid_runtime", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        canary_module,
+        "_initial_observation",
+        lambda **_kwargs: {
+            EXTERIOR_VIEW: np.zeros((224, 224, 3), dtype=np.uint8),
+            WRIST_VIEW: np.full((224, 224, 3), 2, dtype=np.uint8),
+            "observation/joint_position": np.zeros(7),
+            "observation/gripper_position": np.zeros(1),
+            "prompt": protocol["scene"]["task_instruction"],
+            "_diagnostic_interaction_pixel_count": 10,
+        },
+    )
+    observed_seeds: list[int] = []
+
+    def fake_generator(**kwargs):
+        observed_seeds.append(kwargs["seed"])
+        return {"generated_video_path": tmp_path / "unused.mp4"}
+
+    def fake_loop(**kwargs):
+        assert kwargs["config"].max_policy_queries == 2
+        assert kwargs["reliability_gate"].required_views == (EXTERIOR_VIEW, WRIST_VIEW)
+        assert kwargs["wam_arm"].arm_id == "oscar_purpose_built_wam_multiview"
+        kwargs["wam_arm"].generator(
+            view_id=EXTERIOR_VIEW,
+            view_request={},
+            task_prompt="task",
+            negative_prompt="negative",
+            output_dir=tmp_path,
+        )
+        initial_sha256 = canary_module.policy_observation_sha256(kwargs["initial_observation"])
+        wam_observation_sha256 = "2" * 64
+        trace = Path(kwargs["output_dir"]) / "closed_loop_trace.jsonl"
+        trace.parent.mkdir(parents=True)
+        rows = [
+            {
+                "schema_version": "policy_wam_closed_loop_trace.v1",
+                "query_index": 0,
+                "status": "completed",
+                "policy_observation_sha256": initial_sha256,
+                "next_observation_sha256": wam_observation_sha256,
+                "next_observation_provenance": {"visual_source": "wam_prediction"},
+                "reliability": {"status": "passed", "reasons": []},
+            },
+            {
+                "schema_version": "policy_wam_closed_loop_trace.v1",
+                "query_index": 1,
+                "status": "completed",
+                "policy_observation_sha256": wam_observation_sha256,
+                "next_observation_sha256": "3" * 64,
+                "next_observation_provenance": {"visual_source": "wam_prediction"},
+                "reliability": {"status": "passed", "reasons": []},
+            },
+        ]
+        trace.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        return {
+            "status": "max_horizon",
+            "trace_path": str(trace),
+            "trace_sha256": file_sha256(trace),
+            "policy_call_count": 2,
+            "wam_call_count": 2,
+            "initial_observation_sha256": initial_sha256,
+            "blockers": [],
+        }
+
+    monkeypatch.setattr(canary_module, "run_policy_wam_closed_loop", fake_loop)
+
+    result = run_oscar_canary(
+        protocol_path=protocol_path,
+        background_path=background,
+        cohort_path=tmp_path / "cohort.json",
+        checkpoint_inventory_path=tmp_path / "inventory.json",
+        menagerie_root=tmp_path / "menagerie",
+        output_dir=tmp_path / "output",
+        initial_camera_paths=initial_camera_paths,
+        oscar_generator=fake_generator,
+        seed=42,
+        checkpoint_downloader=lambda _uri: checkpoint,
+        policy_loader=lambda _spec, _checkpoint: object(),
+    )
+
+    assert observed_seeds == [42]
+    assert result["status"] == "completed"
+    assert result["arm_id"] == "oscar"
+    assert result["wam_arm_id"] == "oscar_purpose_built_wam_multiview"
+    assert result["learned_wam_invoked"] is True
     assert result["policy_wam_policy_round_trip_passed"] is True
     assert set(result["initial_camera_sha256_by_view"]) == set(initial_camera_paths)
     assert "rankings" not in result

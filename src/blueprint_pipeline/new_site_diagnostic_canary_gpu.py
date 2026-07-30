@@ -22,6 +22,7 @@ from .droid_ctrl_world_joint_position_closed_loop_adapter import (
     DroidCtrlWorldJointPositionTransitionAdapter,
 )
 from .droid_oscar_closed_loop_adapter import (
+    CallableMultiViewOscarWamArm,
     EXTERIOR_VIEW,
     WRIST_VIEW,
     DroidOscarSkeletonTransitionAdapter,
@@ -75,9 +76,13 @@ NATIVE_EXTERNAL_NAME = "native_external_initial.png"
 NATIVE_EXTERNAL_2_NAME = "native_external_2_initial.png"
 NATIVE_WRIST_NAME = "native_wrist_initial.png"
 MAX_INPUT_BYTES = 8 * 1024 * 1024
-BUNDLE_SUPPORTED_ARMS = frozenset({"skeleton_only", "ctrl_world"})
+BUNDLE_SUPPORTED_ARMS = frozenset({"skeleton_only", "oscar", "ctrl_world"})
 NATIVE_CAMERA_REQUIREMENTS = {
     "skeleton_only": (
+        (EXTERIOR_VIEW, NATIVE_EXTERNAL_NAME, "external"),
+        (WRIST_VIEW, NATIVE_WRIST_NAME, "wrist"),
+    ),
+    "oscar": (
         (EXTERIOR_VIEW, NATIVE_EXTERNAL_NAME, "external"),
         (WRIST_VIEW, NATIVE_WRIST_NAME, "wrist"),
     ),
@@ -89,6 +94,7 @@ NATIVE_CAMERA_REQUIREMENTS = {
 }
 SKELETON_WRIST_REFERENCE_DISPLACEMENT_MIN_M = 0.001
 CTRL_WORLD_CANARY_SEED = 23
+OSCAR_CANARY_SEED = 42
 _SKELETON_WRIST_PIXEL_MOTION_FLAGS = frozenset(
     {FLAG_STATIC_UNDER_COMMAND, FLAG_MOTION_WITHOUT_COMMAND, FLAG_TIMING_DISAGREEMENT}
 )
@@ -183,8 +189,13 @@ def build_canary_input_bundle(
             raise ValueError("new_site_canary_background_must_be_224_square")
     if arm_id not in BUNDLE_SUPPORTED_ARMS:
         raise ValueError("new_site_canary_arm_not_supported_by_input_bundle")
-    if arm_id == "ctrl_world" and native_camera_canary_result_path is None:
-        raise ValueError("new_site_ctrl_world_native_three_view_result_required")
+    if arm_id in {"oscar", "ctrl_world"} and native_camera_canary_result_path is None:
+        reason = (
+            "new_site_ctrl_world_native_three_view_result_required"
+            if arm_id == "ctrl_world"
+            else "new_site_oscar_native_two_view_result_required"
+        )
+        raise ValueError(reason)
     if protocol.get("schema_version") != "policy_ranking_new_site_diagnostic_smoke_protocol.v1":
         raise ValueError("new_site_canary_protocol_schema_invalid")
     _validate_protocol_identity(protocol)
@@ -218,6 +229,8 @@ def build_canary_input_bundle(
     }
     if arm_id == "ctrl_world":
         manifest["wam_seed"] = CTRL_WORLD_CANARY_SEED
+    elif arm_id == "oscar":
+        manifest["wam_seed"] = OSCAR_CANARY_SEED
     native_camera_material: dict[str, Any] | None = None
     if native_camera_canary_result_path is not None:
         native_result_path = Path(native_camera_canary_result_path).expanduser().resolve()
@@ -248,6 +261,11 @@ def build_canary_input_bundle(
             "wrist",
         ]:
             raise ValueError("new_site_ctrl_world_native_three_view_assessment_required")
+        if arm_id == "oscar" and assessment.get("required_views") != [
+            "external",
+            "wrist",
+        ]:
+            raise ValueError("new_site_oscar_native_two_view_assessment_required")
         for view_id, filename, view_key in camera_requirements:
             view = views.get(view_key)
             view = view if isinstance(view, Mapping) else {}
@@ -370,6 +388,8 @@ def extract_canary_input_bundle(
         raise ValueError("new_site_canary_input_arm_unsupported")
     if arm_id == "ctrl_world" and manifest.get("wam_seed") != CTRL_WORLD_CANARY_SEED:
         raise ValueError("new_site_ctrl_world_wam_seed_invalid")
+    if arm_id == "oscar" and manifest.get("wam_seed") != OSCAR_CANARY_SEED:
+        raise ValueError("new_site_oscar_wam_seed_invalid")
     camera_requirements = NATIVE_CAMERA_REQUIREMENTS[str(arm_id)]
     expected_native_names = (
         base_names
@@ -377,8 +397,13 @@ def extract_canary_input_bundle(
         | {filename for _view_id, filename, _view_key in camera_requirements}
     )
     if native_result_bytes is None:
-        if arm_id == "ctrl_world":
-            raise ValueError("new_site_ctrl_world_native_three_view_result_required")
+        if arm_id in {"oscar", "ctrl_world"}:
+            reason = (
+                "new_site_ctrl_world_native_three_view_result_required"
+                if arm_id == "ctrl_world"
+                else "new_site_oscar_native_two_view_result_required"
+            )
+            raise ValueError(reason)
         expected_names = base_names
     else:
         expected_names = expected_native_names
@@ -764,8 +789,11 @@ def _thresholds(protocol: Mapping[str, Any]) -> ReliabilityThresholds:
     return ReliabilityThresholds(**{key: values[key] for key in expected})
 
 
-def run_skeleton_only_canary(
+def _run_two_view_oscar_family_canary(
     *,
+    arm_id: str,
+    wam_arm: Any,
+    wam_arm_id: str,
     protocol_path: str | Path,
     background_path: str | Path,
     cohort_path: str | Path,
@@ -776,7 +804,10 @@ def run_skeleton_only_canary(
     checkpoint_downloader: Callable[[str], Path] = _default_checkpoint_downloader,
     policy_loader: Callable[[Any, Path], Any] = _default_openpi_loader,
 ) -> dict[str, Any]:
-    """Run one learned-policy query through the skeleton-only WAM plumbing."""
+    """Run the shared exact-frame two-view DROID policy/WAM canary."""
+
+    if arm_id not in {"skeleton_only", "oscar"}:
+        raise ValueError("new_site_two_view_canary_arm_invalid")
 
     protocol = _read_object(protocol_path)
     output = Path(output_dir).expanduser().resolve()
@@ -821,7 +852,7 @@ def run_skeleton_only_canary(
     loop = run_policy_wam_closed_loop(
         initial_observation=observation,
         policy_client=client,
-        wam_arm=SkeletonOnlyIntendedMotionArm(),
+        wam_arm=wam_arm,
         transition_adapter=DroidOscarSkeletonTransitionAdapter(
             conditioning_builder=FrankaDroidSkeletonConditioningBuilder(
                 runtime=runtime,
@@ -891,12 +922,16 @@ def run_skeleton_only_canary(
     if not round_trip_passed:
         reasons.append("policy_wam_policy_round_trip_incomplete")
     evidence = {
-        "arm_id": "skeleton_only",
+        "arm_id": arm_id,
+        "wam_arm_id": wam_arm_id,
         "protocol_sha256": protocol["protocol_sha256"],
         "label_free": True,
         "ranking_outputs_accessed": False,
         "attempt_stage": "rollout",
         "model_invoked": int(loop.get("policy_call_count") or 0) >= 1,
+        "learned_wam_invoked": (
+            arm_id == "oscar" and int(loop.get("wam_call_count") or 0) >= 1
+        ),
         "scene_id": protocol["scene"]["scene_id"],
         "task_instruction": prompt,
         "policy_id": policy_id,
@@ -918,7 +953,8 @@ def run_skeleton_only_canary(
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "completed" if canary["status"] in {"passed", "failed"} else "blocked",
-        "arm_id": "skeleton_only",
+        "arm_id": arm_id,
+        "wam_arm_id": wam_arm_id,
         "protocol_sha256": protocol["protocol_sha256"],
         "policy_id": policy_id,
         "variant": rule.get("frozen_variant"),
@@ -935,6 +971,7 @@ def run_skeleton_only_canary(
         ),
         "loop_manifest": loop,
         "policy_wam_policy_round_trip_passed": round_trip_passed,
+        "learned_wam_invoked": evidence["learned_wam_invoked"],
         "canary": canary,
         "provider_execution_required_for_result": True,
         "physical_robot_operated": False,
@@ -943,6 +980,106 @@ def run_skeleton_only_canary(
     result["manifest_sha256"] = canonical_sha256(result)
     write_json(output / "new_site_diagnostic_canary_gpu.json", result)
     return result
+
+
+def run_skeleton_only_canary(
+    *,
+    protocol_path: str | Path,
+    background_path: str | Path,
+    cohort_path: str | Path,
+    checkpoint_inventory_path: str | Path,
+    menagerie_root: str | Path,
+    output_dir: str | Path,
+    initial_camera_paths: Mapping[str, str | Path] | None = None,
+    checkpoint_downloader: Callable[[str], Path] = _default_checkpoint_downloader,
+    policy_loader: Callable[[Any, Path], Any] = _default_openpi_loader,
+) -> dict[str, Any]:
+    """Run one learned-policy query through the skeleton-only control plumbing."""
+
+    return _run_two_view_oscar_family_canary(
+        arm_id="skeleton_only",
+        wam_arm=SkeletonOnlyIntendedMotionArm(),
+        wam_arm_id="skeleton_only_intended_motion",
+        protocol_path=protocol_path,
+        background_path=background_path,
+        cohort_path=cohort_path,
+        checkpoint_inventory_path=checkpoint_inventory_path,
+        menagerie_root=menagerie_root,
+        output_dir=output_dir,
+        initial_camera_paths=initial_camera_paths,
+        checkpoint_downloader=checkpoint_downloader,
+        policy_loader=policy_loader,
+    )
+
+
+def _extract_exact_generated_video_frame(
+    *, video_path: Path, frame_index: int, output_path: Path
+) -> Path:
+    """Extract only the prospectively selected generated frame, with no fallback."""
+
+    import cv2
+
+    if isinstance(frame_index, bool) or int(frame_index) < 0:
+        raise ValueError("new_site_oscar_generated_frame_index_invalid")
+    resolved_video = Path(video_path).expanduser().resolve()
+    if not resolved_video.is_file() or resolved_video.is_symlink():
+        raise ValueError("new_site_oscar_generated_video_missing_or_unsafe")
+    capture = cv2.VideoCapture(str(resolved_video))
+    try:
+        capture.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
+        ok, frame = capture.read()
+    finally:
+        capture.release()
+    if not ok or frame is None:
+        raise ValueError("new_site_oscar_exact_generated_frame_decode_failed")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(output_path), frame):
+        raise RuntimeError("new_site_oscar_exact_generated_frame_write_failed")
+    return output_path
+
+
+def run_oscar_canary(
+    *,
+    protocol_path: str | Path,
+    background_path: str | Path,
+    cohort_path: str | Path,
+    checkpoint_inventory_path: str | Path,
+    menagerie_root: str | Path,
+    output_dir: str | Path,
+    initial_camera_paths: Mapping[str, str | Path],
+    oscar_generator: Callable[..., Mapping[str, Any]],
+    seed: int,
+    frame_extractor: Callable[..., Path] = _extract_exact_generated_video_frame,
+    checkpoint_downloader: Callable[[str], Path] = _default_checkpoint_downloader,
+    policy_loader: Callable[[Any, Path], Any] = _default_openpi_loader,
+) -> dict[str, Any]:
+    """Run one native two-view policy query through the frozen learned OSCAR WAM."""
+
+    if set(initial_camera_paths) != {EXTERIOR_VIEW, WRIST_VIEW}:
+        raise ValueError("new_site_oscar_initial_two_view_set_invalid")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("new_site_oscar_seed_invalid")
+
+    def seeded_generator(**kwargs: Any) -> Mapping[str, Any]:
+        return oscar_generator(seed=seed, **kwargs)
+
+    return _run_two_view_oscar_family_canary(
+        arm_id="oscar",
+        wam_arm=CallableMultiViewOscarWamArm(
+            generator=seeded_generator,
+            frame_extractor=frame_extractor,
+        ),
+        wam_arm_id="oscar_purpose_built_wam_multiview",
+        protocol_path=protocol_path,
+        background_path=background_path,
+        cohort_path=cohort_path,
+        checkpoint_inventory_path=checkpoint_inventory_path,
+        menagerie_root=menagerie_root,
+        output_dir=output_dir,
+        initial_camera_paths=initial_camera_paths,
+        checkpoint_downloader=checkpoint_downloader,
+        policy_loader=policy_loader,
+    )
 
 
 def run_ctrl_world_canary(
@@ -1138,5 +1275,6 @@ __all__ = [
     "extract_canary_input_bundle",
     "materialize_canary_background",
     "run_ctrl_world_canary",
+    "run_oscar_canary",
     "run_skeleton_only_canary",
 ]
