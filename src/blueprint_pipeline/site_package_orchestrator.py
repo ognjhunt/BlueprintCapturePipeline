@@ -624,12 +624,13 @@ def _build_task_hypothesis_report(
     if contradictions:
         status = "contradicted"
     elif source == "ai_inferred":
-        if confidence >= 0.8 and not generic_task and (has_object_grounding or zone):
-            status = "accepted"
-        elif confidence >= 0.6 and (has_object_grounding or zone):
-            status = "accepted_with_warnings"
-        else:
-            status = "needs_confirmation"
+        # Grounding and confidence affect proposal quality, not customer intent.
+        # AI-inferred hypotheses must pass through the digest-bound task-candidate
+        # approval contract before they can populate effective task metadata.
+        status = "needs_confirmation"
+        warnings.append(
+            "AI-inferred task intent requires explicit customer or operator approval."
+        )
     else:
         status = "accepted_with_warnings" if warnings else "accepted"
 

@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from .common import optional_read_json, utc_now_iso
+from .capture_intake import (
+    CaptureIntakeError,
+    build_capture_admission,
+    verify_capture_intake_bytes,
+)
 from .local_capture import LocalCaptureContext, resolve_local_capture_context
 from .materialization import preview_capture_bundle
 
@@ -26,6 +31,24 @@ def _uses_open_capture_intake_fallback(
     manifest: Mapping[str, Any],
     capture_context: Mapping[str, Any],
 ) -> bool:
+    capture_intake_envelope = optional_read_json(
+        context.raw_root / "capture_intake_envelope.json"
+    ) or {}
+    if capture_intake_envelope:
+        try:
+            verified_envelope, _ = verify_capture_intake_bytes(
+                capture_intake_envelope, upload_root=context.raw_root
+            )
+            expected_admission = build_capture_admission(verified_envelope)
+        except CaptureIntakeError:
+            return False
+        supplied_admission = optional_read_json(
+            context.raw_root / "capture_intake_admission.json"
+        ) or {}
+        if supplied_admission and supplied_admission != expected_admission:
+            return False
+        if expected_admission.get("status") == "accepted":
+            return True
     special_task_type = _string_value(
         capture_context.get("special_task_type"),
         capture_context.get("specialTaskType"),
