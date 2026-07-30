@@ -93,11 +93,16 @@ authoritative testbed compilation at `e3915731` on
 
 ## SDK/provider research
 
-Current primary-source, license, sample-code, export, privacy/retention, and
-commercial-term verification has not yet been completed for this goal. No SDK
-or paid provider is adopted by this branch. The default remains native iPhone
-capture plus replaceable local/provider reconstruction until evidence supports
-a narrower adoption decision.
+The primary-source scoring matrix and adoption decision are recorded in
+`docs/research/capture_reconstruction_sdk_decision_2026-07-30.md`. The decision
+retains BlueprintCapture ARKit/AVFoundation/CoreMotion plus Raw Contract 3.2 as
+the highest-authority lane; adopts the existing hermetic local adapters and
+selects pinned COLMAP plus Nerfstudio/gsplat as the next local implementation;
+uses RoomPlan only as a structural/semantic prior and Object Capture only for
+isolated objects; retains original INSV before any derived stitch; and keeps
+Scaniverse, Marble, Lightwheel, and generative completion disabled or import-only
+until exact rights, data-use, deletion, commercial, credential, and spend gates
+pass. No SDK, subscription, API credit, provider upload, or purchase was made.
 
 ## Exact minimal real-capture input still required
 
