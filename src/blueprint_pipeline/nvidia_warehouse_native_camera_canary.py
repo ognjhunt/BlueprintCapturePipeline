@@ -24,6 +24,21 @@ MAX_WRIST_LOCAL_TRANSFORM_DELTA = 1e-9
 REQUIRED_VIEWS = ("external", "wrist")
 
 
+def _simulation_app_launch_config() -> dict[str, Any]:
+    """Return a fresh launcher config that lets the evidence wrapper resume."""
+
+    return {
+        "headless": True,
+        "renderer": "RayTracedLighting",
+        "width": 640,
+        "height": 480,
+        # Isaac Sim 6 defaults this to true, which terminates the process from
+        # SimulationApp.close() before the outer worker can archive and upload
+        # the camera evidence.
+        "fast_shutdown": False,
+    }
+
+
 def import_simulation_app() -> Any:
     """Resolve the Isaac launcher while rejecting non-callable API shims."""
 
@@ -113,9 +128,7 @@ def isaac_sim_6_backend(
     """Load the selected workcell and render synchronized external/wrist frames."""
 
     SimulationApp = import_simulation_app()
-    simulation_app = SimulationApp(
-        {"headless": True, "renderer": "RayTracedLighting", "width": 640, "height": 480}
-    )
+    simulation_app = SimulationApp(_simulation_app_launch_config())
     try:
         from isaacsim.core.api import World
         from isaacsim.core.prims import SingleArticulation

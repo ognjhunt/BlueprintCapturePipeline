@@ -23,6 +23,16 @@ def _sha(value: bytes) -> str:
 def _fixture_material() -> tuple[dict[str, bytes], dict[str, list[str]]]:
     table = TABLE_USD
     workcell_child = "Props/general/workcell_child/child.usd"
+    table_mdl = "Props/general/SM_HeavyDutyPackingTable_C02_01/materials/Wood.mdl"
+    table_texture = (
+        "Props/general/SM_HeavyDutyPackingTable_C02_01/materials/textures/wood.png"
+    )
+    spraycan_texture_1001 = (
+        "Props/general/HandManipulation/paint_container_spraycan_a/Textures/albedo.1001.png"
+    )
+    spraycan_texture_1002 = (
+        "Props/general/HandManipulation/paint_container_spraycan_a/Textures/albedo.1002.png"
+    )
     material = {
         PROVENANCE_FILES[0]: b"root-usd",
         PROVENANCE_FILES[1]: b"sorting-usd",
@@ -30,6 +40,10 @@ def _fixture_material() -> tuple[dict[str, bytes], dict[str, list[str]]]:
         workcell_child: b"workcell-child-usd",
         table: b"table-usd",
         SPRAYCAN_USD: b"spraycan-usd",
+        table_mdl: b'texture_2d("./textures/wood.png")',
+        table_texture: b"table-texture",
+        spraycan_texture_1001: b"spraycan-texture-1001",
+        spraycan_texture_1002: b"spraycan-texture-1002",
     }
     dependencies = {
         WORKCELL_USD: [
@@ -58,6 +72,18 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
         output_root=tmp_path / "assets",
         fetcher=fetch,
         dependency_reader=lambda path: dependencies[path.relative_to(tmp_path / "assets").as_posix()],
+        asset_dependency_reader=lambda path: {
+            TABLE_USD: ["./materials/Wood.mdl", "OmniPBR.mdl"],
+            SPRAYCAN_USD: ["./Textures/albedo.<UDIM>.png"],
+        }.get(path.relative_to(tmp_path / "assets").as_posix(), []),
+        dependency_expander=lambda relative: (
+            [
+                "Props/general/HandManipulation/paint_container_spraycan_a/Textures/albedo.1001.png",
+                "Props/general/HandManipulation/paint_container_spraycan_a/Textures/albedo.1002.png",
+            ]
+            if "<UDIM>" in relative
+            else [relative]
+        ),
         pinned_sha256=pinned,
         max_materialized_bytes=1024 * 1024,
     )
@@ -66,7 +92,14 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
     assert result["whole_warehouse_materialized"] is False
     assert result["dataset_local_dependency_closure_complete"] is True
     assert result["file_count"] == len(material)
-    assert len(result["external_dependencies"]) == 2
+    assert len(result["external_dependencies"]) == 3
+    assert "OmniPBR.mdl" in result["external_dependencies"]
+    assert result["dependency_contract"] == {
+        "usd_composition_dependencies_included": True,
+        "usd_authored_asset_fields_included": True,
+        "dataset_local_mdl_texture_literals_included": True,
+        "udim_patterns_expanded_against_pinned_revision": True,
+    }
     assert result["claim_boundary"]["policy_wam_loop_proven"] is False
 
     spec_path = tmp_path / "native_camera_canary_spec.json"

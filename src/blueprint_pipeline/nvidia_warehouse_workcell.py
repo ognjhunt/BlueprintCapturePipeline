@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import posixpath
+import re
 import urllib.parse
 import urllib.request
 from collections import deque
@@ -21,12 +22,16 @@ from .common import write_json
 from .policy_ranking_thesis import canonical_sha256, file_sha256
 
 
-SCHEMA_VERSION = "nvidia_warehouse_workcell_materialization.v1"
+SCHEMA_VERSION = "nvidia_warehouse_workcell_materialization.v2"
 CANARY_SPEC_SCHEMA_VERSION = "nvidia_warehouse_native_camera_canary_spec.v1"
 DATASET_ID = "nvidia/PhysicalAI-SimReady-Warehouse-01"
 DATASET_REVISION = "c7fe115cb79c7ddbd0532630d7768b5736b0ecc4"
 DATASET_RESOLVE_BASE = (
     "https://huggingface.co/datasets/nvidia/PhysicalAI-SimReady-Warehouse-01/resolve/"
+    f"{DATASET_REVISION}/"
+)
+DATASET_TREE_BASE = (
+    "https://huggingface.co/api/datasets/nvidia/PhysicalAI-SimReady-Warehouse-01/tree/"
     f"{DATASET_REVISION}/"
 )
 ROOT_USD = "physical_ai_simready_warehouse_01.usd"
@@ -49,7 +54,16 @@ PINNED_SHA256 = {
     TABLE_USD: "7c7348b37d7be04eafabcaf20f1f5a05c7a9c0633bc1ba7048ff4fae2ba005c5",
     SPRAYCAN_USD: "fe34476927334e5cb6cba9b90cfa3b442e46580af8150bda1ae867827b3c40a2",
 }
-MAX_MATERIALIZED_BYTES = 512 * 1024 * 1024
+MAX_MATERIALIZED_BYTES = 3 * 1024 * 1024 * 1024
+_MDL_TEXTURE_REFERENCE = re.compile(
+    r'"([^"\n]+\.(?:bmp|exr|hdr|jpeg|jpg|png|tga|tif|tiff))"', re.IGNORECASE
+)
+DEPENDENCY_CONTRACT = {
+    "usd_composition_dependencies_included": True,
+    "usd_authored_asset_fields_included": True,
+    "dataset_local_mdl_texture_literals_included": True,
+    "udim_patterns_expanded_against_pinned_revision": True,
+}
 
 
 def _safe_relative(value: str) -> str:
@@ -86,9 +100,98 @@ def _usd_dependencies(path: Path) -> Sequence[str]:
     return tuple(str(value) for value in layer.GetCompositionAssetDependencies())
 
 
+def _usd_authored_asset_dependencies(path: Path) -> Sequence[str]:
+    """Return asset-valued USD fields such as local textures and MDL modules."""
+
+    from pxr import Sdf
+
+    layer = Sdf.Layer.FindOrOpen(str(path))
+    if layer is None:
+        raise ValueError(f"nvidia_warehouse_usd_layer_open_failed:{path}")
+    dependencies: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, Sdf.AssetPath):
+            if value.path:
+                dependencies.add(str(value.path))
+        elif isinstance(value, Mapping):
+            for key, item in value.items():
+                collect(key)
+                collect(item)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            for item in value:
+                collect(item)
+
+    def visit(spec_path: Any) -> None:
+        spec = layer.GetObjectAtPath(spec_path)
+        if spec is None:
+            return
+        for key in spec.ListInfoKeys():
+            try:
+                collect(spec.GetInfo(key))
+            except TypeError:
+                # Some pxr builds expose metadata values without a Python
+                # converter. Those values cannot contain inspectable AssetPath
+                # objects in this process, so continue over the remaining fields.
+                continue
+
+    layer.Traverse(Sdf.Path.absoluteRootPath, visit)
+    composition = {str(value) for value in layer.GetCompositionAssetDependencies()}
+    return tuple(sorted(dependencies - composition))
+
+
+def _mdl_dependencies(path: Path) -> Sequence[str]:
+    """Return texture literals authored in a dataset-local MDL module."""
+
+    text = path.read_text(encoding="utf-8")
+    return tuple(sorted(set(_MDL_TEXTURE_REFERENCE.findall(text))))
+
+
+def _default_expand_dependency(relative_path: str) -> Sequence[str]:
+    """Expand a dataset-local UDIM pattern against the pinned repository tree."""
+
+    safe = _safe_relative(relative_path)
+    if "<UDIM>" not in safe:
+        return (safe,)
+    parent = posixpath.dirname(safe)
+    filename = posixpath.basename(safe)
+    pattern = re.compile(
+        "^" + re.escape(filename).replace(re.escape("<UDIM>"), r"\d{4}") + "$"
+    )
+    url = DATASET_TREE_BASE + urllib.parse.quote(parent, safe="/")
+    request = urllib.request.Request(
+        url + "?recursive=false&expand=false&limit=1000",
+        headers={"User-Agent": "BlueprintDiagnostic/1"},
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:  # nosec B310
+        values = json.load(response)
+    if not isinstance(values, list) or len(values) >= 1000:
+        raise ValueError("nvidia_warehouse_dependency_listing_invalid_or_truncated")
+    matches = sorted(
+        _safe_relative(str(value.get("path") or ""))
+        for value in values
+        if isinstance(value, Mapping)
+        and value.get("type") == "file"
+        and pattern.fullmatch(posixpath.basename(str(value.get("path") or "")))
+    )
+    if not matches:
+        raise ValueError(f"nvidia_warehouse_udim_dependency_unresolved:{safe}")
+    return tuple(matches)
+
+
 def _resolve_dependency(owner: str, reference: str) -> tuple[str, str]:
     parsed = urllib.parse.urlparse(reference)
     if parsed.scheme:
+        return "external", reference
+    relative = posixpath.normpath(posixpath.join(posixpath.dirname(owner), reference))
+    return "dataset", _safe_relative(relative)
+
+
+def _resolve_authored_asset(owner: str, reference: str) -> tuple[str, str]:
+    """Distinguish explicit dataset-relative assets from runtime-provided modules."""
+
+    parsed = urllib.parse.urlparse(reference)
+    if parsed.scheme or not reference.startswith(("./", "../")):
         return "external", reference
     relative = posixpath.normpath(posixpath.join(posixpath.dirname(owner), reference))
     return "dataset", _safe_relative(relative)
@@ -99,6 +202,9 @@ def materialize_pinned_workcell(
     output_root: str | Path,
     fetcher: Callable[[str, Path], None] = _default_fetch,
     dependency_reader: Callable[[Path], Sequence[str]] = _usd_dependencies,
+    asset_dependency_reader: Callable[[Path], Sequence[str]] = _usd_authored_asset_dependencies,
+    mdl_dependency_reader: Callable[[Path], Sequence[str]] = _mdl_dependencies,
+    dependency_expander: Callable[[str], Sequence[str]] = _default_expand_dependency,
     pinned_sha256: Mapping[str, str] = PINNED_SHA256,
     max_materialized_bytes: int = MAX_MATERIALIZED_BYTES,
 ) -> dict[str, Any]:
@@ -150,6 +256,29 @@ def materialize_pinned_workcell(
             elif resolved not in traversed:
                 queue.append(resolved)
 
+    asset_queue: deque[tuple[str, str]] = deque()
+    for relative in sorted(traversed):
+        if relative.lower().endswith((".usd", ".usda", ".usdc")):
+            for reference in asset_dependency_reader(root / relative):
+                asset_queue.append((relative, str(reference)))
+    asset_dependency_sources: set[str] = set()
+    while asset_queue:
+        owner, reference = asset_queue.popleft()
+        kind, resolved = _resolve_authored_asset(owner, reference)
+        if kind == "external":
+            external_dependencies.add(resolved)
+            continue
+        expanded = tuple(dependency_expander(resolved))
+        if not expanded:
+            raise ValueError(f"nvidia_warehouse_dependency_expansion_empty:{resolved}")
+        for candidate in expanded:
+            safe = _safe_relative(candidate)
+            path = ensure(safe)
+            if safe.lower().endswith(".mdl") and safe not in asset_dependency_sources:
+                asset_dependency_sources.add(safe)
+                for nested in mdl_dependency_reader(path):
+                    asset_queue.append((safe, str(nested)))
+
     missing_pinned = sorted(path for path in pinned_sha256 if path not in fetched)
     if missing_pinned:
         raise ValueError(f"nvidia_warehouse_required_pinned_asset_missing:{missing_pinned[0]}")
@@ -177,6 +306,7 @@ def materialize_pinned_workcell(
         "files": files,
         "external_dependencies": sorted(external_dependencies),
         "dataset_local_dependency_closure_complete": True,
+        "dependency_contract": dict(DEPENDENCY_CONTRACT),
         "optional_external_material_dependencies_resolved": not external_dependencies,
         "rankings_or_policy_outcomes_accessed": False,
         "claim_boundary": {
@@ -207,6 +337,8 @@ def build_native_camera_canary_spec(
         raise ValueError("nvidia_warehouse_materialization_manifest_sha256_invalid")
     if manifest.get("dataset_revision") != DATASET_REVISION:
         raise ValueError("nvidia_warehouse_materialization_revision_invalid")
+    if manifest.get("dependency_contract") != DEPENDENCY_CONTRACT:
+        raise ValueError("nvidia_warehouse_materialization_dependency_contract_invalid")
     destination = Path(output_path).expanduser().resolve()
     if destination.exists():
         raise FileExistsError("nvidia_warehouse_native_canary_spec_overwrite_forbidden")
@@ -285,6 +417,7 @@ def build_native_camera_canary_spec(
 __all__ = [
     "CANARY_SPEC_SCHEMA_VERSION",
     "DATASET_REVISION",
+    "DEPENDENCY_CONTRACT",
     "PINNED_SHA256",
     "SCHEMA_VERSION",
     "build_native_camera_canary_spec",

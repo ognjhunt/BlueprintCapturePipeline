@@ -23,19 +23,20 @@ from .nvidia_warehouse_native_camera_canary import (
 from .nvidia_warehouse_workcell import (
     CANARY_SPEC_SCHEMA_VERSION,
     DATASET_REVISION,
+    DEPENDENCY_CONTRACT,
     SCHEMA_VERSION as MATERIALIZATION_SCHEMA_VERSION,
 )
 from .policy_ranking_thesis import canonical_sha256, file_sha256
 
 
-BUNDLE_SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_bundle.v1"
-RECEIPT_SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_bundle_receipt.v1"
+BUNDLE_SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_bundle.v2"
+RECEIPT_SCHEMA_VERSION = "nvidia_warehouse_native_camera_gpu_bundle_receipt.v2"
 BUNDLE_MANIFEST_NAME = "bundle_manifest.json"
 SPEC_NAME = "native_camera_canary_spec.json"
 MATERIALIZATION_MANIFEST_NAME = "materialization_manifest.json"
 ASSET_PREFIX = "assets"
-MAX_BUNDLE_BYTES = 512 * 1024 * 1024
-MAX_UNCOMPRESSED_BYTES = 768 * 1024 * 1024
+MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_UNCOMPRESSED_BYTES = 3 * 1024 * 1024 * 1024
 MAX_MEMBERS = 256
 MAX_WORKER_OUTPUT_BYTES = 128 * 1024 * 1024
 # These constants name environment variables; they do not contain credentials.
@@ -138,6 +139,7 @@ def build_native_camera_gpu_bundle(
         or materialization.get("status") != "completed"
         or materialization.get("dataset_revision") != DATASET_REVISION
         or materialization.get("dataset_local_dependency_closure_complete") is not True
+        or materialization.get("dependency_contract") != DEPENDENCY_CONTRACT
     ):
         raise ValueError("nvidia_warehouse_gpu_bundle_materialization_invalid")
 

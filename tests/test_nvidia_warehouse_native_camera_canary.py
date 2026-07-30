@@ -12,6 +12,7 @@ from PIL import Image
 from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _camera_quaternion_wxyz,
     _project_world_points,
+    _simulation_app_launch_config,
     import_simulation_app,
     run_native_camera_canary,
 )
@@ -99,6 +100,15 @@ def test_simulation_app_import_falls_back_when_isaacsim_shim_is_not_callable(
     monkeypatch.setitem(sys.modules, "omni.isaac.kit", omni_kit)
 
     assert import_simulation_app() is LegacySimulationApp
+
+
+def test_simulation_app_launch_config_disables_process_terminating_fast_shutdown() -> None:
+    first = _simulation_app_launch_config()
+    second = _simulation_app_launch_config()
+
+    assert first["fast_shutdown"] is False
+    assert first["headless"] is True
+    assert first is not second
 
 
 def test_native_camera_canary_requires_scene_robot_rigid_object_and_two_synced_views(

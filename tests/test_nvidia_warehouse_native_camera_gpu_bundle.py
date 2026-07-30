@@ -21,6 +21,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_gpu_bundle import (
 )
 from blueprint_pipeline.nvidia_warehouse_workcell import (
     CANARY_SPEC_SCHEMA_VERSION,
+    DEPENDENCY_CONTRACT,
     DATASET_REVISION,
     SCHEMA_VERSION as MATERIALIZATION_SCHEMA_VERSION,
 )
@@ -37,6 +38,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
         "status": "completed",
         "dataset_revision": DATASET_REVISION,
         "dataset_local_dependency_closure_complete": True,
+        "dependency_contract": dict(DEPENDENCY_CONTRACT),
         "files": [
             {
                 "relative_path": "Props/workcell.usd",
@@ -133,6 +135,24 @@ def test_gpu_bundle_rejects_asset_mutation_before_packaging(tmp_path: Path) -> N
     (assets / "Props" / "workcell.usd").write_bytes(b"mutated")
 
     with pytest.raises(ValueError, match="asset_invalid"):
+        build_native_camera_gpu_bundle(
+            assets_root=assets,
+            spec_path=spec,
+            source_commit="a" * 40,
+            output_zip=tmp_path / "camera.zip",
+        )
+
+
+def test_gpu_bundle_rejects_legacy_usd_only_dependency_claim(tmp_path: Path) -> None:
+    assets, spec = _inputs(tmp_path)
+    manifest_path = assets / "materialization_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("manifest_sha256")
+    manifest.pop("dependency_contract")
+    manifest["manifest_sha256"] = canonical_sha256(manifest)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="materialization_invalid"):
         build_native_camera_gpu_bundle(
             assets_root=assets,
             spec_path=spec,
