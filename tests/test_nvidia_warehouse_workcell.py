@@ -137,6 +137,7 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
         "target_entity_ids": ["spraycan", "tray"],
         "world_up": [0.0, 0.0, 1.0],
         "calibrated_before_initial_observation": True,
+        "calibrated_after_initial_joint_hold": True,
         "per_frame_task_reaim": False,
     }
     assert "mount_forward_parent" not in spec["cameras"]["wrist"]

@@ -22,6 +22,7 @@ RESULT_SCHEMA_VERSION = "nvidia_warehouse_native_camera_canary_result.v1"
 MIN_NONBLANK_SPATIAL_STD = 4.0
 MIN_WRIST_WORLD_DISPLACEMENT_M = 0.001
 MAX_WRIST_LOCAL_TRANSFORM_DELTA = 1e-9
+MAX_HELD_JOINT_POSITION_ERROR_RAD = 0.02
 REQUIRED_VIEWS = ("external", "wrist")
 
 
@@ -126,6 +127,44 @@ def _project_world_points(
 
 def _matrix_array(matrix: Any) -> np.ndarray:
     return np.asarray([[float(matrix[row][column]) for column in range(4)] for row in range(4)])
+
+
+def _apply_and_measure_held_joint_pose(
+    *, robot: Any, joint_positions: Any, phase: str, step: Callable[[], None], step_count: int
+) -> dict[str, Any]:
+    """Apply one joint pose through state and drive targets, then measure it."""
+
+    requested = np.asarray(joint_positions, dtype=float).reshape(-1)
+    zeros = np.zeros_like(requested)
+    required = {
+        "set_joint_positions": getattr(robot, "set_joint_positions", None),
+        "set_joint_velocities": getattr(robot, "set_joint_velocities", None),
+        "set_joint_position_targets": getattr(robot, "set_joint_position_targets", None),
+        "set_joint_velocity_targets": getattr(robot, "set_joint_velocity_targets", None),
+        "get_joint_positions": getattr(robot, "get_joint_positions", None),
+    }
+    missing = sorted(name for name, method in required.items() if not callable(method))
+    if missing:
+        raise ValueError("native_franka_joint_hold_api_missing:" + ",".join(missing))
+    required["set_joint_positions"](requested)
+    required["set_joint_velocities"](zeros)
+    required["set_joint_position_targets"](requested)
+    required["set_joint_velocity_targets"](zeros)
+    for _ in range(int(step_count)):
+        step()
+    measured = np.asarray(required["get_joint_positions"](), dtype=float).reshape(-1)
+    if measured.shape != requested.shape or not np.isfinite(measured).all():
+        raise ValueError("native_franka_joint_hold_measurement_invalid")
+    return {
+        "phase": str(phase),
+        "mode": "state_plus_position_velocity_targets",
+        "requested_joint_positions_rad": requested.tolist(),
+        "measured_joint_positions_rad": measured.tolist(),
+        "max_abs_position_error_rad": float(np.max(np.abs(measured - requested))),
+        "zero_velocity_state_and_target_applied": True,
+        "position_target_applied": True,
+        "settle_step_count": int(step_count),
+    }
 
 
 def _rigid_wrist_mount_from_initial_task_framing(
@@ -383,9 +422,13 @@ def isaac_sim_6_backend(
         )
         commanded_joints = initial_joints.copy()
         commanded_joints[0] += 0.12
-        robot.set_joint_positions(initial_joints)
-        for _ in range(20):
-            world.step(render=True)
+        precalibration_joint_hold = _apply_and_measure_held_joint_pose(
+            robot=robot,
+            joint_positions=initial_joints,
+            phase="initial_precalibration",
+            step=lambda: world.step(render=True),
+            step_count=20,
+        )
 
         def camera_matrix(path: str) -> np.ndarray:
             cache = UsdGeom.XformCache()
@@ -415,13 +458,36 @@ def isaac_sim_6_backend(
         camera_objects["wrist"] = Camera(prim_path=wrist_path, resolution=(640, 480))
         for camera in camera_objects.values():
             camera.initialize()
-        for _ in range(4):
-            world.step(render=True)
+        initial_joint_hold = _apply_and_measure_held_joint_pose(
+            robot=robot,
+            joint_positions=initial_joints,
+            phase="initial_observation",
+            step=lambda: world.step(render=True),
+            step_count=4,
+        )
 
         wrist_local_initial = _matrix_array(
             UsdGeom.Xformable(stage.GetPrimAtPath(wrist_path)).GetLocalTransformation()
         )
         wrist_world_initial = camera_matrix(wrist_path)
+        actual_wrist_eye = wrist_world_initial[3, :3]
+        actual_wrist_forward = (np.asarray([0.0, 0.0, -1.0, 0.0]) @ wrist_world_initial)[:3]
+        actual_wrist_forward /= np.linalg.norm(actual_wrist_forward)
+        target_centroid = np.asarray(
+            wrist_mount_calibration["target_centroid_world_m"], dtype=float
+        )
+        actual_target_direction = target_centroid - actual_wrist_eye
+        actual_target_direction /= np.linalg.norm(actual_target_direction)
+        wrist_mount_calibration.update(
+            {
+                "calibrated_after_initial_joint_hold": True,
+                "actual_initial_camera_eye_world_m": actual_wrist_eye.tolist(),
+                "actual_initial_optical_axis_world": actual_wrist_forward.tolist(),
+                "actual_initial_target_alignment_cosine": float(
+                    np.dot(actual_wrist_forward, actual_target_direction)
+                ),
+            }
+        )
         hand_initial = hand_initial_matrix[3, :3]
         entity_points = {
             "franka": hand_initial,
@@ -458,9 +524,13 @@ def isaac_sim_6_backend(
                 vfov_deg=float(spec["cameras"][view_id]["vertical_fov_deg"]),
             )
 
-        robot.set_joint_positions(commanded_joints)
-        for _ in range(20):
-            world.step(render=True)
+        commanded_joint_hold = _apply_and_measure_held_joint_pose(
+            robot=robot,
+            joint_positions=commanded_joints,
+            phase="commanded_observation",
+            step=lambda: world.step(render=True),
+            step_count=20,
+        )
         commanded_step = save_frames("commanded")
         wrist_world_commanded = camera_matrix(wrist_path)
         wrist_local_commanded = _matrix_array(
@@ -487,6 +557,13 @@ def isaac_sim_6_backend(
             "spraycan_kinematic_for_camera_canary": True,
             "views": frames,
             "wrist_mount_calibration": wrist_mount_calibration,
+            "franka_joint_position_hold": {
+                "mode": "state_plus_position_velocity_targets",
+                "required_target_apis_applied": True,
+                "precalibration": precalibration_joint_hold,
+                "initial": initial_joint_hold,
+                "commanded": commanded_joint_hold,
+            },
             "wrist_camera_world_displacement_m": float(
                 np.linalg.norm(wrist_world_commanded[3, :3] - wrist_world_initial[3, :3])
             ),
@@ -618,8 +695,27 @@ def assess_native_camera_backend_result(
     mount = mount_value if isinstance(mount_value, Mapping) else {}
     if mount.get("mode") != "one_time_initial_task_framing_rigid_parent_local_mount":
         blockers.append("native_wrist_mount_calibration_missing_or_invalid")
+    if mount.get("calibrated_after_initial_joint_hold") is not True:
+        blockers.append("native_wrist_mount_not_calibrated_after_joint_hold")
     if mount.get("per_frame_task_reaim_performed") is not False:
         blockers.append("native_wrist_camera_per_frame_reaim_not_forbidden")
+    hold_value = backend_result.get("franka_joint_position_hold")
+    hold = hold_value if isinstance(hold_value, Mapping) else {}
+    if (
+        hold.get("mode") != "state_plus_position_velocity_targets"
+        or hold.get("required_target_apis_applied") is not True
+    ):
+        blockers.append("native_franka_joint_position_hold_missing_or_invalid")
+    hold_evidence: dict[str, Any] = {}
+    for phase in ("initial", "commanded"):
+        phase_value = hold.get(phase)
+        phase_hold = phase_value if isinstance(phase_value, Mapping) else {}
+        error = _finite_float(phase_hold.get("max_abs_position_error_rad"))
+        hold_evidence[phase] = {**dict(phase_hold), "max_abs_position_error_rad": error}
+        if error is None:
+            blockers.append(f"native_franka_joint_hold_error_missing_or_invalid:{phase}")
+        elif error > MAX_HELD_JOINT_POSITION_ERROR_RAD:
+            blockers.append(f"native_franka_joint_hold_error_exceeded:{phase}")
     if backend_result.get("external_wrist_timestamp_pairs_exact") is not True:
         blockers.append("native_camera_timestamps_not_synchronized")
 
@@ -632,8 +728,16 @@ def assess_native_camera_backend_result(
         "wrist_camera_local_transform_delta": wrist_local_delta,
         "wrist_camera_local_transform_delta_max": MAX_WRIST_LOCAL_TRANSFORM_DELTA,
         "wrist_mount_calibration": dict(mount),
+        "franka_joint_position_hold": {
+            "mode": hold.get("mode"),
+            "required_target_apis_applied": hold.get("required_target_apis_applied"),
+            "max_abs_position_error_rad": MAX_HELD_JOINT_POSITION_ERROR_RAD,
+            **hold_evidence,
+        },
         "camera_motion_and_mount_checks_passed": not any(
-            blocker.startswith("native_wrist_camera") or blocker.startswith("native_wrist_mount")
+            blocker.startswith("native_wrist_camera")
+            or blocker.startswith("native_wrist_mount")
+            or blocker.startswith("native_franka_joint")
             for blocker in blockers
         ),
     }
