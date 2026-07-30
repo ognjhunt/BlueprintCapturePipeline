@@ -1,0 +1,95 @@
+{
+  "schema_version": "policy_ranking_complete_graph_gemini_transport_amendment.v1",
+  "status": "prospectively_frozen_before_any_evaluator_output",
+  "claim_class": "post_unseal_diagnostic_only",
+  "supersedes_transport_only": true,
+  "scientific_prompt_model_schema_inventory_and_cost_boundary_changed": false,
+  "triggering_incident": {
+    "attempted_request_count": 882,
+    "provider_batch_created": false,
+    "provider_generation_rows_created": 0,
+    "new_evaluator_spend_usd": 0.0,
+    "all_441_temporary_provider_video_files_deleted": true,
+    "failure_receipt_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/gemini_complete_graph_batch_receipt_v1.json",
+    "failure_receipt_file_sha256": "ada22dd90aa12441711708b8c769e89396fe6e049cc7e6ed170ddf58e4e6d29e",
+    "failure_receipt_sha256": "252268e6aca5ca70c28eebbc2728e7c36448c6384fa0e7fd9ed60414c3f20afb",
+    "preserved_provider_error": {
+      "error_type": "ClientError",
+      "provider_code": "not_preserved_by_frozen_v1_receipt",
+      "provider_status": "not_preserved_by_frozen_v1_receipt",
+      "provider_message": "not_preserved_by_frozen_v1_receipt"
+    },
+    "exact_provider_cause_recoverable_from_v1_receipt": false
+  },
+  "official_transport_sources": {
+    "batch_api": "https://ai.google.dev/gemini-api/docs/batch-api",
+    "rate_limits": "https://ai.google.dev/gemini-api/docs/rate-limits",
+    "files_api": "https://ai.google.dev/gemini-api/docs/files",
+    "verified_contract": {
+      "inline_requests_are_for_batches_under_20_mb": true,
+      "large_batches_should_use_file_input_or_be_broken_up": true,
+      "batch_jobs_are_not_idempotent": true,
+      "files_expire_after_48_hours": true,
+      "files_api_is_no_cost": true,
+      "concurrent_batch_limit_is_not_the_same_as_enqueued_token_limit": true
+    }
+  },
+  "failure_inference_not_claimed_as_observation": {
+    "serialized_request_body_estimate_bytes": 2330244,
+    "missing_graph_video_seconds_with_pair_reuse": 51494.4,
+    "possible_active_limit_classes": [
+      "provider_inline_request_validation",
+      "model_tier_enqueued_token_limit",
+      "another_provider_client_contract"
+    ],
+    "exact_limit_unknown_until_sanitized_provider_code_status_and_message_are_preserved": true
+  },
+  "prospective_transport": {
+    "inventory_sha256": "08bb90a8a13b435ea5b46e3f69cc68ec6855d8841f6b6fa2866062a1a243e132",
+    "pair_count": 882,
+    "shard_count": 14,
+    "pairs_per_shard": 63,
+    "assignment": "contiguous_frozen_inventory_order",
+    "shard_slice": "pairs[63*shard_index:63*(shard_index+1)]",
+    "maximum_concurrent_gemini_batches": 1,
+    "submit_next_shard_only_after_prior_shard_terminal_collection": true,
+    "reuse_one_verified_441_file_media_ledger_between_successful_shards": true,
+    "defer_media_cleanup_for_shards_0_through_12": true,
+    "delete_all_media_on_terminal_shard_13": true,
+    "on_any_failed_submission_or_terminal_collection": "preserve_failure_then_delete_all_media_and_stop_pending_shards",
+    "provider_error_preservation": [
+      "error_type",
+      "provider_code",
+      "provider_status",
+      "provider_message"
+    ]
+  },
+  "unchanged_scientific_contract": {
+    "model": "gemini-3.6-flash",
+    "arm_id": "gemini36_flash_complete_graph",
+    "thinking_level": "medium",
+    "max_output_tokens_including_thinking": 3000,
+    "prompt_sha256": "ebe714130b8ade9305f8b5c6df77fa414fa7b9ac33d843d5a25c2905da41943c",
+    "physical_ground_truth_pixels_uploaded": false,
+    "policy_identity_sent_to_provider": false,
+    "physical_outcome_sent_to_provider": false,
+    "partial_matrix_ranking_credit": false,
+    "aggregate_only_after_all_1323_predictions_are_complete_and_frozen": true,
+    "outcome_labels_already_unsealed": true,
+    "confirmation_or_phase_b_credit": false
+  },
+  "unchanged_cost_boundary_usd": {
+    "realized_api_spend_before_missing_graph": 8.418512,
+    "projected_missing_graph": 8.3633445,
+    "missing_graph_hard_cap": 9.0,
+    "campaign_api_hard_cap": 25.0,
+    "contingency_does_not_expand_category_cap": true
+  },
+  "execution_binding": {
+    "parent_source_commit": "e4c1aa2d1a6837cb823f030ea90d404d541554e3",
+    "exact_execution_source_commit": "bound_by_the_new_v2_paid_admission_after_this_amendment_is_committed_and_pushed",
+    "new_v2_paid_admission_required": true,
+    "old_v1_paid_admission_reuse_for_sharded_execution_forbidden": true
+  },
+  "amendment_sha256": "ec0d27dc36168162d32bfe0780c1d2842a7376c0d785f14364a7a29a43697c47"
+}

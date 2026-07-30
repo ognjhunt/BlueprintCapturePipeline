@@ -44,9 +44,7 @@ def test_gemini_batch_request_uses_two_videos_without_policy_identity() -> None:
         GenerateContentConfig=lambda **kwargs: kwargs,
         ThinkingConfig=lambda **kwargs: kwargs,
     )
-    request = _build_inline_request(
-        pair, "video-a", "video-b", types_module=fake_types
-    )
+    request = _build_inline_request(pair, "video-a", "video-b", types_module=fake_types)
 
     assert request["contents"][2] == "video-a"
     assert request["contents"][4] == "video-b"
@@ -102,6 +100,7 @@ def test_terminal_malformed_outputs_are_retained_and_uploads_deleted(
         "pair_ids": ["pair-1"],
         "unique_video_count": 1,
         "uploads": [{"provider_file_name": "files/test"}],
+        "cleanup_uploads_on_terminal": False,
     }
     receipt["receipt_sha256"] = canonical_sha256(receipt)
     report = collect_pilot(
@@ -161,6 +160,9 @@ def test_complete_graph_arm_is_propagated_to_collection_and_results(
         "pair_ids": ["pair-1"],
         "unique_video_count": 1,
         "uploads": [{"provider_file_name": "files/test"}],
+        "cleanup_uploads_on_terminal": False,
+        "shard_index": 0,
+        "shard_count": 14,
     }
     receipt["receipt_sha256"] = canonical_sha256(receipt)
 
@@ -173,6 +175,58 @@ def test_complete_graph_arm_is_propagated_to_collection_and_results(
     assert report["status"] == "completed"
     assert report["arm_id"] == "gemini36_flash_complete_graph"
     assert report["results"][0]["arm_id"] == "gemini36_flash_complete_graph"
+    assert report["status"] == "completed"
+    assert report["cleanup_deferred"] is True
+    assert report["temporary_video_files_deleted"] is False
+    assert report["shard_index"] == 0
+    assert deleted == []
+
+
+def test_terminal_response_count_mismatch_is_preserved_and_forces_cleanup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    deleted: list[str] = []
+    job = types.SimpleNamespace(
+        state=types.SimpleNamespace(name="JOB_STATE_SUCCEEDED"),
+        dest=types.SimpleNamespace(inlined_responses=[]),
+    )
+
+    class FakeClient:
+        def __init__(self, *, api_key: str) -> None:
+            assert api_key == "test-key"
+            self.batches = types.SimpleNamespace(get=lambda name: job)
+            self.files = types.SimpleNamespace(delete=lambda name: deleted.append(name))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "google",
+        types.SimpleNamespace(genai=types.SimpleNamespace(Client=FakeClient)),
+    )
+    key = tmp_path / "key"
+    key.write_text("test-key")
+    key.chmod(0o600)
+    receipt = {
+        "batch_name": "batches/test",
+        "arm_id": "gemini36_flash_complete_graph",
+        "pair_ids": ["pair-1"],
+        "unique_video_count": 1,
+        "uploads": [{"provider_file_name": "files/test"}],
+        "cleanup_uploads_on_terminal": False,
+        "shard_index": 0,
+        "shard_count": 14,
+    }
+    receipt["receipt_sha256"] = canonical_sha256(receipt)
+
+    report = collect_pilot(
+        receipt,
+        api_key_file=key,
+        output_path=tmp_path / "collection.json",
+    )
+
+    assert report["status"] == "failed"
+    assert report["error_code"] == "batch_inline_response_count_invalid"
+    assert report["observed_response_count"] == 0
+    assert report["temporary_video_files_deleted"] is True
     assert deleted == ["files/test"]
 
 

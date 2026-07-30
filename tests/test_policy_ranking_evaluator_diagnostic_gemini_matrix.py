@@ -8,7 +8,9 @@ import pytest
 from blueprint_pipeline.policy_ranking_evaluator_diagnostic_gemini_matrix import (
     GeminiMatrixError,
     _ledger_core,
+    _provider_error_payload,
     _require_complete_graph_paid_admission,
+    _shard_pairs,
     _validate_inventory,
     build_complete_graph_paid_admission,
     submit_matrix_batch,
@@ -176,10 +178,10 @@ def test_matrix_submission_is_idempotent_from_existing_valid_receipt(
 ) -> None:
     monkeypatch.setenv("BLUEPRINT_ALLOW_ROBOARENA_DIAGNOSTIC_GEMINI", "1")
     protocol = complete_graph_diagnostic_protocol()
-    pairs = [{"pair_id": f"pair-{index}"} for index in range(1323)]
+    pairs = [{"pair_id": f"pair-{index}"} for index in range(882)]
     inventory = {
         "status": "ready",
-        "pair_count": 1323,
+        "pair_count": 882,
         "protocol_sha256": protocol["protocol_sha256"],
         "pairs": pairs,
     }
@@ -188,8 +190,12 @@ def test_matrix_submission_is_idempotent_from_existing_valid_receipt(
         "status": "JOB_STATE_PENDING",
         "batch_name": "batches/existing",
         "arm_id": "gemini36_flash_complete_graph",
-        "request_count": 1323,
+        "request_count": 63,
+        "full_inventory_request_count": 882,
         "inventory_sha256": inventory["inventory_sha256"],
+        "shard_index": 0,
+        "shard_count": 14,
+        "cleanup_uploads_on_terminal": False,
     }
     previous["receipt_sha256"] = canonical_sha256(previous)
     receipt = tmp_path / "receipt.json"
@@ -204,6 +210,50 @@ def test_matrix_submission_is_idempotent_from_existing_valid_receipt(
     )
 
     assert result == previous
+
+
+def test_complete_graph_shards_are_exact_disjoint_inventory_partition() -> None:
+    pairs = [{"pair_id": f"pair-{index}"} for index in range(882)]
+    shards = [_shard_pairs(pairs, shard_index=index, shard_count=14) for index in range(14)]
+
+    assert all(len(shard) == 63 for shard in shards)
+    assert [row for shard in shards for row in shard] == pairs
+    assert len({row["pair_id"] for shard in shards for row in shard}) == 882
+
+
+def test_nonfinal_shard_cannot_request_early_cleanup(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_ROBOARENA_DIAGNOSTIC_GEMINI", "1")
+    inventory = _inventory(882)
+
+    with pytest.raises(
+        GeminiMatrixError, match="complete_graph_batch_shard_cleanup_contract_invalid"
+    ):
+        submit_matrix_batch(
+            inventory,
+            {},
+            api_key_file=tmp_path / "unused",
+            receipt_path=tmp_path / "new-receipt.json",
+            source_commit="2" * 40,
+            shard_index=0,
+            shard_count=14,
+            cleanup_uploads_on_terminal=True,
+        )
+
+
+def test_provider_error_payload_preserves_sanitized_code_status_and_message() -> None:
+    class ExampleClientError(Exception):
+        code = 400
+        status = "INVALID_ARGUMENT"
+        message = "request exceeds an active provider limit"
+
+    payload = _provider_error_payload(ExampleClientError("raw response object omitted"))
+
+    assert payload == {
+        "error_type": "ExampleClientError",
+        "provider_code": 400,
+        "provider_status": "INVALID_ARGUMENT",
+        "provider_message": "request exceeds an active provider limit",
+    }
 
 
 def test_matrix_validator_accepts_registered_882_pair_subset() -> None:

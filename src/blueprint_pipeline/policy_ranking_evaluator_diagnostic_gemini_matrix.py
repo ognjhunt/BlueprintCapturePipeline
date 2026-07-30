@@ -34,13 +34,15 @@ from .policy_ranking_roboarena_calibration import canonical_sha256, file_sha256
 
 
 LEDGER_SCHEMA = "policy_ranking_gemini_matrix_media_ledger.v1"
-PAID_ADMISSION_SCHEMA = "policy_ranking_gemini_complete_graph_paid_admission.v1"
+PAID_ADMISSION_SCHEMA = "policy_ranking_gemini_complete_graph_paid_admission.v2"
 PAID_RESOURCE_CLASS = "evaluator_api"
 COMPLETE_GRAPH_ARM_ID = "gemini36_flash_complete_graph"
 COMPLETE_GRAPH_MODEL = "gemini-3.6-flash"
 MISSING_PAIR_COUNT = 882
 COMPLETE_PAIR_COUNT = 1323
 NATIVE_VIDEO_COUNT = 441
+MISSING_GRAPH_SHARD_COUNT = 14
+PAIRS_PER_SHARD = 63
 
 
 class GeminiMatrixError(ValueError):
@@ -191,6 +193,9 @@ def build_complete_graph_paid_admission(
         "execution_contract": {
             "frozen_prior_results_reused": NATIVE_VIDEO_COUNT,
             "prospective_requests": MISSING_PAIR_COUNT,
+            "batch_shard_count": MISSING_GRAPH_SHARD_COUNT,
+            "pairs_per_batch_shard": PAIRS_PER_SHARD,
+            "shard_assignment": "contiguous_frozen_inventory_order",
             "temporary_uploads_expected": NATIVE_VIDEO_COUNT,
             "upload_idempotency_required": True,
             "cleanup_on_submission_or_collection_terminal": True,
@@ -254,6 +259,9 @@ def _require_complete_graph_paid_admission(
         contract.get("partial_matrix_ranking_credit") is not False
         or contract.get("aggregate_only_after_complete_1323_predictions_frozen") is not True
         or contract.get("physical_ground_truth_pixels_uploaded") is not False
+        or contract.get("batch_shard_count") != MISSING_GRAPH_SHARD_COUNT
+        or contract.get("pairs_per_batch_shard") != PAIRS_PER_SHARD
+        or contract.get("shard_assignment") != "contiguous_frozen_inventory_order"
     ):
         blockers.append("complete_graph_paid_admission_claim_boundary_invalid")
     if blockers:
@@ -323,6 +331,35 @@ def _validate_inventory(inventory: Mapping[str, Any]) -> list[Mapping[str, Any]]
     ):
         raise GeminiMatrixError("pair_inventory_not_ready_bound_and_valid_supported_matrix")
     return pairs
+
+
+def _shard_pairs(
+    pairs: Sequence[Mapping[str, Any]], *, shard_index: int, shard_count: int
+) -> list[Mapping[str, Any]]:
+    if (
+        len(pairs) != MISSING_PAIR_COUNT
+        or shard_count != MISSING_GRAPH_SHARD_COUNT
+        or shard_index < 0
+        or shard_index >= shard_count
+        or len(pairs) % shard_count != 0
+    ):
+        raise GeminiMatrixError("complete_graph_batch_shard_contract_invalid")
+    size = len(pairs) // shard_count
+    if size != PAIRS_PER_SHARD:
+        raise GeminiMatrixError("complete_graph_batch_shard_size_invalid")
+    start = shard_index * size
+    return list(pairs[start : start + size])
+
+
+def _provider_error_payload(exc: Exception) -> dict[str, Any]:
+    """Preserve provider diagnostics without serializing response/request objects."""
+
+    return {
+        "error_type": type(exc).__name__,
+        "provider_code": getattr(exc, "code", None),
+        "provider_status": getattr(exc, "status", None),
+        "provider_message": getattr(exc, "message", None),
+    }
 
 
 def _delete_receipts(client: Any, receipts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -484,11 +521,21 @@ def submit_matrix_batch(
     receipt_path: str | Path,
     source_commit: str,
     paid_admission: Mapping[str, Any] | None = None,
+    shard_index: int = 0,
+    shard_count: int = MISSING_GRAPH_SHARD_COUNT,
+    cleanup_uploads_on_terminal: bool = False,
 ) -> dict[str, Any]:
     if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
         raise GeminiMatrixError(f"missing_env_{GATE_ENV}")
     pairs = _validate_inventory(inventory)
     pair_count = len(pairs)
+    shard_pairs = _shard_pairs(
+        pairs,
+        shard_index=shard_index,
+        shard_count=shard_count,
+    )
+    if cleanup_uploads_on_terminal is not (shard_index == shard_count - 1):
+        raise GeminiMatrixError("complete_graph_batch_shard_cleanup_contract_invalid")
     target = Path(receipt_path)
     if target.is_file():
         previous = json.loads(target.read_text(encoding="utf-8"))
@@ -500,11 +547,12 @@ def submit_matrix_batch(
         if (
             previous.get("batch_name")
             and previous.get("arm_id") == _arm_id(inventory)
-            and previous.get("request_count") == pair_count
-            and (
-                pair_count == 441
-                or previous.get("inventory_sha256") == inventory["inventory_sha256"]
-            )
+            and previous.get("request_count") == len(shard_pairs)
+            and previous.get("full_inventory_request_count") == pair_count
+            and previous.get("inventory_sha256") == inventory["inventory_sha256"]
+            and previous.get("shard_index") == shard_index
+            and previous.get("shard_count") == shard_count
+            and previous.get("cleanup_uploads_on_terminal") is cleanup_uploads_on_terminal
         ):
             return previous
         raise GeminiMatrixError("existing_matrix_batch_failure_receipt_requires_review")
@@ -545,7 +593,7 @@ def submit_matrix_batch(
             files_by_id[str(pair["episode_b"]["source_request_id"])],
             types_module=types,
         )
-        for pair in pairs
+        for pair in shard_pairs
     ]
     try:
         require_paid_resource_admission_grant(
@@ -557,6 +605,7 @@ def submit_matrix_batch(
             src=requests,
             config=types.CreateBatchJobConfig(
                 display_name="blueprint-roboarena-gemini36-complete-graph-v1"
+                + f"-shard-{shard_index:02d}-of-{shard_count:02d}"
             ),
         )
     except Exception as exc:
@@ -565,10 +614,13 @@ def submit_matrix_batch(
             "schema_version": "policy_ranking_gemini_matrix_batch_submission.v1",
             "status": "failed_before_batch_creation",
             "batch_name": None,
-            "request_count": pair_count,
+            "request_count": len(shard_pairs),
+            "full_inventory_request_count": pair_count,
+            "shard_index": shard_index,
+            "shard_count": shard_count,
             "inventory_sha256": inventory["inventory_sha256"],
             "media_ledger_sha256": ledger["ledger_sha256"],
-            "error_type": type(exc).__name__,
+            "provider_error": _provider_error_payload(exc),
             "deletions": deletions,
             "all_task_media_deleted": all(row["deleted"] for row in deletions),
             "provider_generation_rows_created": 0,
@@ -583,8 +635,11 @@ def submit_matrix_batch(
         "batch_name": str(job.name),
         "model": "gemini-3.6-flash",
         "arm_id": _arm_id(inventory),
-        "pair_ids": [str(pair["pair_id"]) for pair in pairs],
-        "request_count": pair_count,
+        "pair_ids": [str(pair["pair_id"]) for pair in shard_pairs],
+        "request_count": len(shard_pairs),
+        "full_inventory_request_count": pair_count,
+        "shard_index": shard_index,
+        "shard_count": shard_count,
         "unique_video_count": 441,
         "inventory_sha256": inventory["inventory_sha256"],
         "uploads": ledger["uploads"],
@@ -599,6 +654,7 @@ def submit_matrix_batch(
         "physical_ground_truth_pixels_uploaded": False,
         "credential_path_or_value_persisted": False,
         "duplicate_submission_refused_when_receipt_exists": True,
+        "cleanup_uploads_on_terminal": cleanup_uploads_on_terminal,
     }
     receipt["receipt_sha256"] = canonical_sha256(receipt)
     write_json(target, receipt)
@@ -640,6 +696,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     submit.add_argument("--receipt", required=True)
     submit.add_argument("--source-commit", required=True)
     submit.add_argument("--paid-admission", required=True)
+    submit.add_argument("--shard-index", type=int, required=True)
+    submit.add_argument("--shard-count", type=int, required=True)
+    submit.add_argument("--cleanup-uploads-on-terminal", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "admit":
         paths = {
@@ -697,6 +756,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             receipt_path=args.receipt,
             source_commit=args.source_commit,
             paid_admission=json.loads(Path(args.paid_admission).read_text(encoding="utf-8")),
+            shard_index=args.shard_index,
+            shard_count=args.shard_count,
+            cleanup_uploads_on_terminal=args.cleanup_uploads_on_terminal,
         )
     print(
         json.dumps(
