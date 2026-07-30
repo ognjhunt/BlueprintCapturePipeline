@@ -14,8 +14,12 @@ from blueprint_pipeline.decision_evidence_contracts import (
     EvidenceMethodProfile,
     MaintainedSiteTaskTestbed,
     QualificationRecord,
+    canonical_digest,
 )
 from blueprint_pipeline.local_evidence_adapters import ANALYTIC_REACHABILITY_ADAPTER
+from blueprint_pipeline.local_evidence_adapters import (
+    SWEPT_AABB_COLLISION_SIMULATION_ADAPTER,
+)
 from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
 from blueprint_pipeline.task_evaluation_run_control_plane import (
     TaskEvaluationRunControlPlaneError,
@@ -195,6 +199,153 @@ def _qualification(profile: dict) -> dict:
     }).to_mapping()
 
 
+def _collision_run_inputs() -> tuple[dict, dict, dict, dict]:
+    scene = {
+        "schema_version": "collision_scene_aabb.v1",
+        "source_capture_digest": SHA_A,
+        "coordinate_frame": "site",
+        "scale_status": "metric_verified",
+        "generated_geometry": False,
+        "primitives": [{
+            "primitive_id": "table-obstacle",
+            "object_id": "table-obstacle",
+            "minimum_site_m": [0.4, -0.2, 0.0],
+            "maximum_site_m": [0.6, 0.2, 0.8],
+        }],
+        "validation": {
+            "status": "qualified",
+            "independent_validation": True,
+            "coverage": 0.95,
+            "maximum_spatial_uncertainty_m": 0.01,
+        },
+    }
+    scene["collision_scene_digest"] = canonical_digest(
+        scene, digest_field="collision_scene_digest"
+    )
+    testbed_value = _testbed()
+    testbed_value.pop("testbed_digest")
+    testbed_value["evidence_inventory"].append({"evidence_id": "collision_scene"})
+    testbed_value["validation_envelope"]["reconstruction_layers"] = {
+        "physics_layer": [{
+            "output": "collision_geometry",
+            "result_id": "collision-result-1",
+            "result_digest": SHA_D,
+            "asset_references": {"collision_scene": scene},
+            "generated_regions": [],
+            "claim_ceiling": {"collision_geometry": True},
+        }],
+    }
+    testbed = MaintainedSiteTaskTestbed.from_mapping(testbed_value).to_mapping()
+    request_value = _request(testbed)
+    request_value.pop("request_digest")
+    request_value.update({
+        "request_id": "request-collision-1",
+        "decision_id": "decision-collision-1",
+        "decision_question": "Is the modeled trajectory collision-free?",
+        "claims": [{
+            "claim_id": "collision-clearance",
+            "claim_type": "collision_contact",
+            "subject": {
+                "trajectory_points_site_m": [[0.0, 0.8, 1.0], [1.0, 0.8, 1.0]],
+                "swept_radius_m": 0.05,
+                "excluded_collision_object_ids": ["item-1"],
+            },
+            "measurable_threshold": {"operator": "equals", "value": 0, "units": "modeled_contacts"},
+            "false_safe_consequence": "moderate",
+            "acceptable_false_safe_risk": 0.05,
+            "desired_confidence_or_coverage": {
+                "minimum_coverage": 0.8,
+                "minimum_independent_methods": 1,
+            },
+            "permitted_abstention_behavior": {"allowed": True},
+            "task_family": "rigid_object_pick_place",
+            "site_domain_conditions": {"lighting_lux": [300, 600]},
+            "embodiment": {"robot_id": "fixture-arm"},
+            "sensors": {"camera": "rgb-v1"},
+            "controller_action_representation": {"type": "joint_position"},
+        }],
+        "permitted_evidence_methods": ["traditional_simulation"],
+        "idempotency_key": "request-collision-1",
+    })
+    request = DecisionEvidenceRequest.from_mapping(request_value).to_mapping()
+    profile_value = _profile()
+    profile_value.pop("method_profile_digest")
+    profile_value.update({
+        "method_id": "local-swept-aabb-collision",
+        "adapter_reference": SWEPT_AABB_COLLISION_SIMULATION_ADAPTER,
+        "method_family": "traditional_simulation",
+        "supported_claim_types": ["collision_contact"],
+        "required_inputs": ["collision_scene"],
+        "authority_tier": 2,
+        "proof_tier": "sim_only",
+        "correlation_group": "qualified-collision-scene",
+        "failure_modes": ["collision_scene_invalid"],
+        "abstention_modes": ["generated_or_unqualified_geometry"],
+        "evaluation_run_template": {
+            "schema_version": "evaluation_run.v1",
+            "run_id": "template",
+            "mode": "evaluate",
+            "scene_bundle": {
+                "adapter_id": "capture_site_scene_bundle",
+                "adapter_version": "1",
+                "bundle_id": "capture-1",
+                "uri": "fixture://capture-1",
+                "entrypoint": "collision-scene.json",
+                "content_digest": scene["collision_scene_digest"],
+            },
+            "robot_adapter": {
+                "adapter_id": "robot_profile_adapter",
+                "adapter_version": "1",
+                "robot_profile_id": "fixture-arm",
+                "asset_ref": "fixture://robot",
+            },
+            "task_scenario_pack": {
+                "adapter_id": "robot_eval_matrix_task_scenario_pack",
+                "adapter_version": "1",
+                "pack_id": "collision-pack",
+                "tasks": [{"task_id": "modeled-transfer"}],
+                "scenarios": [{"scenario_id": "base", "task_id": "modeled-transfer"}],
+            },
+            "policy_adapter": {
+                "adapter_id": "robot_eval_policy_package",
+                "adapter_version": "1",
+                "policy_id": "deterministic-trajectory",
+                "observation_schema_ref": "fixture_observation.v1",
+                "action_schema_ref": "fixture_action.v1",
+            },
+            "runtime_provider_profile": {
+                "adapter_id": "robot_eval_runtime_provider",
+                "adapter_version": "1",
+                "profile_id": "local-swept-aabb",
+                "providers": ["fixture_local"],
+                "simulator": "swept_aabb",
+                "max_spend_usd": 0,
+            },
+            "proof_contract": {
+                "adapter_id": "robot_eval_proof_contract",
+                "adapter_version": "1",
+                "contract_id": "modeled-collision-only",
+                "required_evidence": ["qualified_collision_scene"],
+                "claim_ceiling": {"level": "sim_only"},
+                "prohibited_claims": ["physical_success", "deployment_readiness"],
+            },
+            "metadata": {},
+        },
+    })
+    profile = EvidenceMethodProfile.from_mapping(profile_value).to_mapping()
+    qualification_value = _qualification(profile)
+    qualification_value.pop("qualification_digest")
+    qualification_value.update({
+        "qualification_id": "qualification-local-collision-1",
+        "claim_type": "collision_contact",
+        "evaluator": {"evaluator_id": "independent-collision-check", "version": "1"},
+        "subject_provider_id": "blueprint-local-simulation",
+        "evaluator_provider_id": "independent-collision-check",
+    })
+    qualification = QualificationRecord.from_mapping(qualification_value).to_mapping()
+    return testbed, request, profile, qualification
+
+
 def test_run_control_plane_requires_authorization_and_returns_bound_decision(tmp_path) -> None:
     testbed = _testbed()
     request = _request(testbed)
@@ -243,6 +394,41 @@ def test_run_control_plane_requires_authorization_and_returns_bound_decision(tmp
     )
     assert replay["already_exists"] is True
     assert replay["decision_envelope"] == result["decision_envelope"]
+
+
+def test_run_executes_explicitly_authorized_sim_only_collision_method(tmp_path) -> None:
+    testbed, request, profile, qualification = _collision_run_inputs()
+    prepared = prepare_task_evaluation_run(
+        state_root=tmp_path,
+        run_id="run-local-collision",
+        capture_session_id="capture-session-collision",
+        intake_id="capture-1",
+        request_value=request,
+        testbed_value=testbed,
+        method_values=[profile],
+        qualification_values=[qualification],
+        idempotency_key="prepare-local-collision",
+    )
+    assert len(prepared["evidence_plan"]["compiled_evaluation_run_specs"]) == 1
+    authorize_task_evaluation_run(
+        state_root=tmp_path,
+        run_id="run-local-collision",
+        plan_digest=prepared["evidence_plan"]["plan_digest"],
+        authorized_adapter_references=[SWEPT_AABB_COLLISION_SIMULATION_ADAPTER],
+        actor={"role": "customer", "identity": "firebase:buyer-1"},
+        idempotency_key="authorize-local-collision",
+    )
+    result = execute_and_aggregate_task_evaluation_run(
+        state_root=tmp_path,
+        run_id="run-local-collision",
+    )
+    evidence = result["evidence_results"][0]
+    assert evidence["status"] == "valid"
+    assert evidence["supports_claim"] is True
+    assert evidence["claim_ceiling"]["sim_only_modeled_collision_clearance"] is True
+    assert evidence["claim_ceiling"]["physical_success"] is False
+    assert result["decision_envelope"]["overall_outcome"] == "decision"
+    assert result["decision_envelope"]["deployment_approval"] is False
 
 
 def test_run_authorization_rejects_stale_plan_and_unknown_adapter(tmp_path) -> None:

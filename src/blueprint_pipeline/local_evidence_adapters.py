@@ -6,11 +6,15 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from .decision_evidence_contracts import canonical_digest
 from .decision_evidence_execution import EvidenceMethodAdapterRegistry
 
 
 ANALYTIC_REACHABILITY_ADAPTER = "local://analytic-reachability-v1"
 CAPTURED_VISIBILITY_ADAPTER = "local://captured-visibility-v1"
+SWEPT_AABB_COLLISION_SIMULATION_ADAPTER = (
+    "local://swept-aabb-collision-simulation-v1"
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -200,12 +204,182 @@ class CapturedVisibilityAdapter:
         }
 
 
+def _segment_intersects_aabb(
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+    minimum: tuple[float, float, float],
+    maximum: tuple[float, float, float],
+) -> bool:
+    lower = 0.0
+    upper = 1.0
+    for axis in range(3):
+        delta = end[axis] - start[axis]
+        if abs(delta) < 1e-12:
+            if start[axis] < minimum[axis] or start[axis] > maximum[axis]:
+                return False
+            continue
+        first = (minimum[axis] - start[axis]) / delta
+        second = (maximum[axis] - start[axis]) / delta
+        entry, exit_ = sorted((first, second))
+        lower = max(lower, entry)
+        upper = min(upper, exit_)
+        if lower > upper:
+            return False
+    return True
+
+
+@dataclass(frozen=True)
+class SweptAabbCollisionSimulationAdapter:
+    """Deterministic sim-only swept-volume collision check over qualified AABBs."""
+
+    adapter_reference: str = SWEPT_AABB_COLLISION_SIMULATION_ADAPTER
+
+    def execute(self, **kwargs: Any) -> Mapping[str, Any]:
+        claim = _mapping(kwargs.get("claim"))
+        testbed = _mapping(kwargs.get("testbed"))
+        if str(claim.get("claim_type") or "") not in {
+            "collision_contact",
+            "modeled_collision_clearance",
+        }:
+            return _unavailable("collision_simulation_claim_type_not_supported")
+        validation = _mapping(testbed.get("validation_envelope"))
+        layers = _mapping(validation.get("reconstruction_layers"))
+        physics_rows = [
+            row
+            for row in _rows(layers.get("physics_layer"))
+            if row.get("output") == "collision_geometry"
+        ]
+        if len(physics_rows) != 1:
+            return _unavailable("qualified_collision_geometry_not_unique")
+        physics = physics_rows[0]
+        if _rows(physics.get("generated_regions")):
+            return _unavailable("generated_region_cannot_supply_collision_geometry")
+        ceiling = _mapping(physics.get("claim_ceiling"))
+        if ceiling.get("collision_geometry") is not True:
+            return _unavailable("collision_geometry_claim_ceiling_missing")
+        scene = _mapping(_mapping(physics.get("asset_references")).get("collision_scene"))
+        supplied_digest = str(scene.get("collision_scene_digest") or "")
+        if (
+            scene.get("schema_version") != "collision_scene_aabb.v1"
+            or supplied_digest
+            != canonical_digest(scene, digest_field="collision_scene_digest")
+        ):
+            return _unavailable("collision_scene_digest_invalid")
+        scene_validation = _mapping(scene.get("validation"))
+        blockers: list[str] = []
+        if scene.get("scale_status") != "metric_verified":
+            blockers.append("collision_scene_metric_scale_unverified")
+        if scene.get("coordinate_frame") != "site":
+            blockers.append("collision_scene_not_in_site_frame")
+        if scene.get("generated_geometry") is not False:
+            blockers.append("generated_collision_geometry_forbidden")
+        if (
+            scene_validation.get("status") != "qualified"
+            or scene_validation.get("independent_validation") is not True
+        ):
+            blockers.append("collision_scene_independent_validation_missing")
+        source_digests = {
+            str(row.get("digest") or "")
+            for row in _rows(testbed.get("source_capture_bundles"))
+        }
+        if scene.get("source_capture_digest") not in source_digests:
+            blockers.append("collision_scene_source_capture_mismatch")
+        subject = _mapping(claim.get("subject"))
+        raw_points = subject.get("trajectory_points_site_m")
+        points = [_vector3(point) for point in raw_points] if isinstance(raw_points, list) else []
+        if len(points) < 2 or any(point is None for point in points):
+            blockers.append("collision_trajectory_missing_or_invalid")
+        radius = _number(subject.get("swept_radius_m"))
+        if radius is None or radius < 0:
+            blockers.append("collision_swept_radius_missing_or_invalid")
+        excluded = {
+            str(item).strip()
+            for item in subject.get("excluded_collision_object_ids", [])
+            if str(item).strip()
+        } if isinstance(subject.get("excluded_collision_object_ids"), list) else set()
+        primitives: list[tuple[str, tuple[float, float, float], tuple[float, float, float]]] = []
+        for row in _rows(scene.get("primitives")):
+            object_id = str(row.get("object_id") or row.get("primitive_id") or "").strip()
+            minimum = _vector3(row.get("minimum_site_m"))
+            maximum = _vector3(row.get("maximum_site_m"))
+            if (
+                not object_id
+                or minimum is None
+                or maximum is None
+                or any(minimum[axis] >= maximum[axis] for axis in range(3))
+            ):
+                blockers.append("collision_scene_primitive_invalid")
+                continue
+            if object_id not in excluded:
+                primitives.append((object_id, minimum, maximum))
+        if not primitives:
+            blockers.append("collision_scene_primitives_missing")
+        coverage = _number(scene_validation.get("coverage"))
+        spatial_uncertainty = _number(scene_validation.get("maximum_spatial_uncertainty_m"))
+        if coverage is None or not 0 <= coverage <= 1:
+            blockers.append("collision_scene_coverage_missing_or_invalid")
+        if spatial_uncertainty is None or spatial_uncertainty < 0:
+            blockers.append("collision_scene_spatial_uncertainty_missing")
+        if blockers:
+            return _unavailable(*blockers)
+        assert radius is not None and coverage is not None and spatial_uncertainty is not None
+        trajectory = [point for point in points if point is not None]
+        expanded_by = radius + spatial_uncertainty
+        contacts: set[str] = set()
+        for start, end in zip(trajectory, trajectory[1:]):
+            for object_id, minimum, maximum in primitives:
+                expanded_minimum = tuple(value - expanded_by for value in minimum)
+                expanded_maximum = tuple(value + expanded_by for value in maximum)
+                if _segment_intersects_aabb(start, end, expanded_minimum, expanded_maximum):
+                    contacts.add(object_id)
+        collision_free = not contacts
+        return {
+            "status": "valid",
+            "supports_claim": collision_free,
+            "observed_value": len(contacts),
+            "categorical_finding": (
+                "modeled_trajectory_collision_free"
+                if collision_free
+                else "modeled_trajectory_collision_detected"
+            ),
+            "uncertainty": min(1.0, spatial_uncertainty / max(radius, 0.01)),
+            "coverage": coverage,
+            "blockers": [],
+            "invalid_rollout_reasons": [],
+            "raw_artifact_references": [
+                {
+                    "uri": f"collision-scene://{supplied_digest[7:]}",
+                    "digest": supplied_digest,
+                },
+                {
+                    "uri": f"reconstruction-result://{physics['result_digest'][7:]}",
+                    "digest": physics["result_digest"],
+                },
+            ],
+            "provenance": {
+                "execution_mode": "hermetic_local_deterministic_simulation",
+                "simulation_model": "piecewise_linear_swept_sphere_against_expanded_aabb",
+                "collision_scene_digest": supplied_digest,
+                "contact_object_ids": sorted(contacts),
+                "physical_robot_run_initiated": False,
+            },
+            "claim_ceiling": {
+                "sim_only_modeled_collision_clearance": True,
+                "contact_dynamics": False,
+                "physical_success": False,
+                "deployment_readiness": False,
+                "safety_certification": False,
+            },
+        }
+
+
 def authorized_local_evidence_adapter_registry(
     authorized_references: Sequence[str],
 ) -> EvidenceMethodAdapterRegistry:
     available = {
         ANALYTIC_REACHABILITY_ADAPTER: AnalyticReachabilityAdapter(),
         CAPTURED_VISIBILITY_ADAPTER: CapturedVisibilityAdapter(),
+        SWEPT_AABB_COLLISION_SIMULATION_ADAPTER: SweptAabbCollisionSimulationAdapter(),
     }
     requested = sorted({str(item or "").strip() for item in authorized_references if str(item or "").strip()})
     unknown = sorted(set(requested) - set(available))
@@ -217,7 +391,9 @@ def authorized_local_evidence_adapter_registry(
 __all__ = [
     "ANALYTIC_REACHABILITY_ADAPTER",
     "CAPTURED_VISIBILITY_ADAPTER",
+    "SWEPT_AABB_COLLISION_SIMULATION_ADAPTER",
     "AnalyticReachabilityAdapter",
     "CapturedVisibilityAdapter",
+    "SweptAabbCollisionSimulationAdapter",
     "authorized_local_evidence_adapter_registry",
 ]
