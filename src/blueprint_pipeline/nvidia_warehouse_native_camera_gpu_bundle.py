@@ -66,13 +66,17 @@ def require_clean_bundle_source_checkout(
         else Path(__file__).resolve().parents[2]
     )
     try:
-        head = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--verify", "HEAD^{commit}"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout.strip().lower()
+        head = (
+            subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--verify", "HEAD^{commit}"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            .stdout.strip()
+            .lower()
+        )
         status = subprocess.run(
             ["git", "-C", str(root), "status", "--porcelain=v1"],
             check=True,
@@ -142,8 +146,7 @@ def build_native_camera_gpu_bundle(
     if (
         spec.get("schema_version") != CANARY_SPEC_SCHEMA_VERSION
         or spec.get("dataset_revision") != DATASET_REVISION
-        or spec.get("materialization_manifest_sha256")
-        != materialization.get("manifest_sha256")
+        or spec.get("materialization_manifest_sha256") != materialization.get("manifest_sha256")
         or spec.get("label_free") is not True
         or spec.get("rankings_or_policy_outcomes_accessed") is not False
         or spec.get("paid_gpu_execution_admitted") is not False
@@ -316,10 +319,9 @@ def extract_native_camera_gpu_bundle(
                         ),
                         {},
                     )
-                    if (
-                        hashlib.sha256(data).hexdigest() != row.get("sha256")
-                        or len(data) != row.get("size_bytes")
-                    ):
+                    if hashlib.sha256(data).hexdigest() != row.get("sha256") or len(
+                        data
+                    ) != row.get("size_bytes"):
                         raise ValueError(f"nvidia_warehouse_gpu_bundle_asset_sha_invalid:{name}")
                 target = (output / name).resolve()
                 if not target.is_relative_to(output):
@@ -386,9 +388,12 @@ def _download_https(url: str, destination: Path) -> None:
     request = urllib.request.Request(url, method="GET")
     size = 0
     # _validated_https_url rejects non-HTTPS and credential-bearing URLs.
-    with urllib.request.urlopen(  # nosec B310
-        request, timeout=300
-    ) as response, destination.open("wb") as handle:
+    with (
+        urllib.request.urlopen(  # nosec B310
+            request, timeout=300
+        ) as response,
+        destination.open("wb") as handle,
+    ):
         while chunk := response.read(1024 * 1024):
             size += len(chunk)
             if size > MAX_BUNDLE_BYTES:
@@ -426,8 +431,15 @@ def _archive_worker_output(source: Path, destination: Path) -> None:
         raise ValueError("nvidia_warehouse_gpu_worker_output_too_large")
 
 
+def _safe_missing_module(exc: BaseException) -> str | None:
+    if not isinstance(exc, ModuleNotFoundError):
+        return None
+    value = str(getattr(exc, "name", "") or "").strip()
+    return value if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", value) else None
+
+
 def _write_worker_failure_output(
-    *, output_dir: Path, phase: str, error_type: str
+    *, output_dir: Path, phase: str, error_type: str, missing_module: str | None = None
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     failure_dir = output_dir / "failure"
@@ -438,6 +450,7 @@ def _write_worker_failure_output(
         "status": "failed",
         "phase": str(phase),
         "error_type": str(error_type),
+        "missing_module": missing_module,
         "failure_before_frames": True,
         "label_free": True,
         "rankings_or_policy_outcomes_accessed": False,
@@ -457,6 +470,7 @@ def _write_worker_failure_output(
         "failure_evidence": {
             "phase": str(phase),
             "error_type": str(error_type),
+            "missing_module": missing_module,
             "failure_before_frames": True,
             "media": [
                 {
@@ -495,9 +509,7 @@ def run_native_camera_gpu_worker(
     root = Path(workspace).expanduser().resolve()
     if root.exists():
         raise FileExistsError("nvidia_warehouse_gpu_worker_workspace_exists")
-    input_url = _validated_https_url(
-        environment.get(INPUT_SECRET_URL_ENV, ""), field="input_url"
-    )
+    input_url = _validated_https_url(environment.get(INPUT_SECRET_URL_ENV, ""), field="input_url")
     output_url = _validated_https_url(
         environment.get(OUTPUT_SECRET_PUT_URL_ENV, ""), field="output_url"
     )
@@ -524,6 +536,7 @@ def run_native_camera_gpu_worker(
             output_dir=root / "execution" / "output",
             phase=phase,
             error_type=type(exc).__name__,
+            missing_module=_safe_missing_module(exc),
         )
     output_zip = root / "output.zip"
     _archive_worker_output(root / "execution" / "output", output_zip)

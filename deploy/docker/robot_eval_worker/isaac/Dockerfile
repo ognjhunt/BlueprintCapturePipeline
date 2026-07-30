@@ -47,19 +47,26 @@ RUN mkdir -p /opt/blueprint \
       --build-time --output /opt/blueprint/image_build_healthcheck.json
 RUN PYTHONPATH=/app/src /isaac-sim/python.sh -c \
     "import blueprint_pipeline; print(blueprint_pipeline.__name__)"
-RUN PYTHONPATH=/app/src /isaac-sim/python.sh -c \
-    "from blueprint_pipeline.nvidia_warehouse_native_camera_canary import import_simulation_app; assert callable(import_simulation_app())"
 
 RUN groupadd --gid "${APP_GID}" blueprint \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin blueprint \
-    && chmod o+x /isaac-sim \
+    && usermod -aG isaac-sim blueprint \
     && mkdir -p /workspace/outputs /tmp/blueprint_pipeline \
+    && mkdir -p /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs \
+    && chown blueprint:isaac-sim /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs \
+    && chmod 0775 /isaac-sim/kit/cache /isaac-sim/kit/data /isaac-sim/kit/logs \
     && chown -R blueprint:blueprint /workspace /tmp/blueprint_pipeline
+RUN runuser -u blueprint -- test -r /isaac-sim \
+    && runuser -u blueprint -- test -w /isaac-sim/kit/cache \
+    && runuser -u blueprint -- test -w /isaac-sim/kit/data \
+    && runuser -u blueprint -- test -w /isaac-sim/kit/logs \
+    && runuser -u blueprint -- env PYTHONPATH=/app/src /isaac-sim/python.sh -c \
+    "from blueprint_pipeline.nvidia_warehouse_native_camera_canary import import_simulation_app; assert callable(import_simulation_app())"
 
 ENV PYTHONPATH="/app/src" \
     HOME=/home/blueprint
 
-USER blueprint:blueprint
+USER blueprint
 WORKDIR /workspace
 
 ENTRYPOINT ["blueprint-run-robot-eval-worker"]
