@@ -157,7 +157,13 @@ def _approved_task() -> dict:
             ],
             "reset_contract": {"instructions": "Return the item to the table marker."},
             "task_objects": [{"object_id": "item-1", "label": "rigid item"}],
-            "target_regions": [{"region_id": "tote-1", "label": "tote"}],
+            "target_regions": [{
+                "region_id": "tote-1",
+                "label": "tote",
+                "position_site_m": [0.6, 0.1, 0.7],
+                "supporting_frames": ["frame-1", "frame-2"],
+                "captured_coverage": 0.9,
+            }],
             "required_robot_capabilities": ["rigid-object grasp"],
         },
         "proposer_identity": "local-rule:fixture",
@@ -246,6 +252,7 @@ def _robot_binding() -> dict:
         "sensors": {"camera": "rgb-v1"},
         "controller_id": "joint-position-v1",
         "end_effector_id": "parallel-gripper-v1",
+        "reach_envelope": {"minimum_m": 0.1, "maximum_m": 1.0},
     }
 
 
@@ -260,6 +267,7 @@ def _placement() -> dict:
             {
                 "candidate_id": "base-1",
                 "site_from_robot_base": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+                "base_position_site_m": [0.0, 0.0, 0.0],
                 "floor_support_valid": True,
                 "footprint_clear": True,
                 "access_path_clear": True,
@@ -338,6 +346,9 @@ def test_compiler_emits_deterministic_layered_router_compatible_testbed() -> Non
     assert first["compiled_cards"]["eval_cards"][0][
         "comparative_policy_ranking_verdict"
     ] == "thesis_not_supported"
+    assert first["robot_sensor_controller_bindings"]["selected_robot_placement"] == (
+        _placement()["accepted_candidates"][0]
+    )
     assert first["proof_boundary"] == {
         "appearance_is_collision_truth": False,
         "generated_completion_is_observed_truth": False,

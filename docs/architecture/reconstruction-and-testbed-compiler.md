@@ -92,6 +92,14 @@ that requires customer-visible state before reporting service success.
 
 ## Proof boundary
 
+Two local evidence adapters are available behind an explicit allowlist:
+`local://analytic-reachability-v1` computes only from an explicit metric robot
+base position, target position, reach envelope, and calibration uncertainty;
+`local://captured-visibility-v1` reads only explicit target-region coverage and
+retained supporting-frame IDs. Either adapter abstains when those inputs are
+missing. Neither is registered by default, launches a provider or robot, or
+upgrades its result to physical success, deployment readiness, or safety.
+
 Hermetic compilation proves deterministic composition and contract integrity.
 It does not prove reconstruction fidelity, collision correctness, task success,
 deployment readiness, safety certification, or physical performance. The

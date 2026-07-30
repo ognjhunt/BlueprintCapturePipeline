@@ -443,6 +443,13 @@ def compile_site_task_testbed(
     task_body = approved["task"]
     reset_contract = task_body.get("reset_contract", {})
     robot_binding = placement["robot_binding"]
+    selected_placements = [
+        row
+        for row in placement.get("accepted_candidates", [])
+        if isinstance(row, Mapping)
+        and row.get("candidate_id") == placement.get("selected_candidate_id")
+    ]
+    selected_placement = _clone(selected_placements[0]) if len(selected_placements) == 1 else None
     testbed = MaintainedSiteTaskTestbed.from_mapping(
         {
             "schema_version": "maintained_site_task_testbed.v1",
@@ -480,12 +487,14 @@ def compile_site_task_testbed(
                     "version": robot_binding["embodiment_version"],
                     "base_footprint": robot_binding["base_footprint"],
                     "end_effector_id": robot_binding["end_effector_id"],
+                    "reach_envelope": robot_binding.get("reach_envelope"),
                 },
                 "sensors": robot_binding["sensors"],
                 "controller_action_representation": {
                     "controller_id": robot_binding["controller_id"]
                 },
                 "selected_robot_placement_id": placement.get("selected_candidate_id"),
+                "selected_robot_placement": selected_placement,
                 "robot_binding_digest": placement["robot_binding_digest"],
             },
             "governance": {
