@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .openpi_policy_ranking_remote_build_packet import RESULT_NAME as OPENPI_RESULT_NAME
+from .isaac_worker_image_manifest import SCHEMA_VERSION as ISAAC_IMAGE_MANIFEST_SCHEMA
+from .isaac_worker_remote_build_packet import RESULT_NAME as ISAAC_WORKER_RESULT_NAME
 
 
 CARRIER_RESULT_NAME = "groot_oscar_carrier_remote_build_result.json"
@@ -108,6 +110,59 @@ def validate_remote_openpi_result(
         blockers.append("openpi_remote_build_secret_boundary_invalid")
     return {
         "schema_version": "openpi_policy_ranking_remote_build_verification.v1",
+        "status": "verified" if not blockers else "blocked",
+        "blockers": sorted(set(blockers)),
+        "resolved_digest_ref": resolved or None,
+        "release_evidence_path": str(path),
+        "raw_secret_values_recorded": False,
+    }
+
+
+def validate_remote_isaac_worker_result(
+    results_dir: Path, *, packet: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Bind the Isaac registry manifest to the exact clean-source packet."""
+
+    blockers: list[str] = []
+    path = results_dir / ISAAC_WORKER_RESULT_NAME
+    payload = _load_object(path) if path.is_file() else {}
+    resolved = str(payload.get("resolved_digest_ref") or "")
+    expected_tag = str(packet.get("image_ref") or "")
+    if payload.get("schema_version") != ISAAC_IMAGE_MANIFEST_SCHEMA:
+        blockers.append("isaac_remote_build_result_schema_invalid")
+    if payload.get("status") != "completed" or payload.get("blockers") not in ([], ()):
+        blockers.append("isaac_remote_build_not_completed")
+    if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", resolved):
+        blockers.append("isaac_remote_build_digest_ref_invalid")
+    else:
+        expected_repository = (
+            expected_tag.rsplit("/", 1)[0]
+            + "/"
+            + expected_tag.rsplit("/", 1)[-1].rsplit(":", 1)[0]
+        )
+        if resolved.split("@", 1)[0] != expected_repository:
+            blockers.append("isaac_remote_build_digest_repository_mismatch")
+    if payload.get("runnable_platform") != "linux/amd64":
+        blockers.append("isaac_remote_build_platform_invalid")
+    identity_value = payload.get("worker_build_identity")
+    identity = identity_value if isinstance(identity_value, Mapping) else {}
+    if identity.get("status") != "verified" or identity.get("blockers") not in ([], ()):
+        blockers.append("isaac_remote_build_identity_unverified")
+    bindings = {
+        "source_commit": "isaac_remote_build_source_commit_mismatch",
+        "source_dirty_patch_sha256": "isaac_remote_build_source_patch_mismatch",
+    }
+    for field, blocker in bindings.items():
+        if identity.get(field) != packet.get(field):
+            blockers.append(blocker)
+    if identity.get("worker_image_family") != "isaac-eval-worker":
+        blockers.append("isaac_remote_build_image_family_invalid")
+    if identity.get("isaac_sim_major_version") != 6:
+        blockers.append("isaac_remote_build_isaac_major_invalid")
+    if payload.get("raw_secret_values_recorded") is not False:
+        blockers.append("isaac_remote_build_secret_boundary_invalid")
+    return {
+        "schema_version": "isaac_worker_remote_build_verification.v1",
         "status": "verified" if not blockers else "blocked",
         "blockers": sorted(set(blockers)),
         "resolved_digest_ref": resolved or None,

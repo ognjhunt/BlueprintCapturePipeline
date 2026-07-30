@@ -47,6 +47,7 @@ from .groot_oscar_infrastructure_admission import (
 )
 from .image_build_result_verification import (
     validate_remote_carrier_result,
+    validate_remote_isaac_worker_result,
     validate_remote_openpi_result,
 )
 from .groot_oscar_model_cache_wheelhouse import (
@@ -63,6 +64,12 @@ from .openpi_policy_ranking_remote_build_packet import (
     PACKET_DIRNAME as OPENPI_PACKET_DIRECTORY,
     PACKET_KIND as OPENPI_PACKET_KIND,
     validate_openpi_policy_ranking_archive,
+)
+from .isaac_worker_remote_build_packet import (
+    BUILD_SCRIPT_NAME as ISAAC_WORKER_BUILD_SCRIPT,
+    PACKET_DIRNAME as ISAAC_WORKER_PACKET_DIRECTORY,
+    PACKET_KIND as ISAAC_WORKER_PACKET_KIND,
+    validate_isaac_worker_archive,
 )
 
 SCHEMA_VERSION = "groot_oscar_digitalocean_builder_run.v1"
@@ -81,7 +88,9 @@ MODEL_CACHE_RESULT_FILES = (
 CARRIER_PACKET_DIRECTORY = "groot_oscar_carrier_remote_build"
 CARRIER_BUILD_SCRIPT = "remote_build_groot_oscar_carrier.sh"
 DETACHED_CPU_BUILD_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_CPU_BUILD_SUPERVISOR"
-IMAGE_PACKET_KINDS = frozenset({"thin_release", "carrier_image", OPENPI_PACKET_KIND})
+IMAGE_PACKET_KINDS = frozenset(
+    {"thin_release", "carrier_image", OPENPI_PACKET_KIND, ISAAC_WORKER_PACKET_KIND}
+)
 
 
 def _image_packet_layout(packet_kind: str) -> tuple[str, str]:
@@ -89,6 +98,8 @@ def _image_packet_layout(packet_kind: str) -> tuple[str, str]:
         return CARRIER_PACKET_DIRECTORY, CARRIER_BUILD_SCRIPT
     if packet_kind == OPENPI_PACKET_KIND:
         return OPENPI_PACKET_DIRECTORY, OPENPI_BUILD_SCRIPT
+    if packet_kind == ISAAC_WORKER_PACKET_KIND:
+        return ISAAC_WORKER_PACKET_DIRECTORY, ISAAC_WORKER_BUILD_SCRIPT
     return "groot_oscar_thin_remote_build", "remote_build_groot_oscar_thin_images.sh"
 
 
@@ -493,6 +504,8 @@ def verify_packet_tarball(packet: Mapping[str, Any]) -> dict[str, Any]:
             blockers.extend(validate_carrier_image_archive(packet))
         elif packet.get("packet_kind") == OPENPI_PACKET_KIND:
             blockers.extend(validate_openpi_policy_ranking_archive(packet))
+        elif packet.get("packet_kind") == ISAAC_WORKER_PACKET_KIND:
+            blockers.extend(validate_isaac_worker_archive(packet))
     return {
         "schema_version": "groot_oscar_builder_packet_tarball_verification.v1",
         "status": "verified" if not blockers else "blocked",
@@ -1311,6 +1324,8 @@ def run_builder(
         name = f"blueprint-groot-oscar-carrier-{str(packet['source_commit'])[:8]}"
     elif packet_kind == OPENPI_PACKET_KIND:
         name = f"blueprint-openpi-ranking-{str(packet['source_commit'])[:8]}"
+    elif packet_kind == ISAAC_WORKER_PACKET_KIND:
+        name = f"blueprint-isaac-worker-{str(packet['source_commit'])[:8]}"
     else:
         name = f"blueprint-groot-oscar-thin-{str(packet['source_commit'])[:8]}"
     user_data = build_cloud_init(
@@ -1712,6 +1727,11 @@ def run_builder(
             elif packet_kind == OPENPI_PACKET_KIND:
                 result_verification = validate_remote_openpi_result(results_dir, packet=packet)
                 verification_name = "remote_openpi_build_result_verification.json"
+            elif packet_kind == ISAAC_WORKER_PACKET_KIND:
+                result_verification = validate_remote_isaac_worker_result(
+                    results_dir, packet=packet
+                )
+                verification_name = "remote_isaac_worker_build_result_verification.json"
             else:
                 result_verification = validate_remote_build_results(results_dir)
                 verification_name = "remote_build_results_verification.json"
@@ -1851,7 +1871,11 @@ def run_builder(
                             else (
                                 "remote_openpi_policy_ranking_image_build_failed"
                                 if packet_kind == OPENPI_PACKET_KIND
-                                else "remote_thin_image_build_failed"
+                                else (
+                                    "remote_isaac_worker_image_build_failed"
+                                    if packet_kind == ISAAC_WORKER_PACKET_KIND
+                                    else "remote_thin_image_build_failed"
+                                )
                             )
                         )
                     )
