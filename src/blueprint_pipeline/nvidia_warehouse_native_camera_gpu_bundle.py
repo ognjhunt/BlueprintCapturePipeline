@@ -39,6 +39,7 @@ MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 3 * 1024 * 1024 * 1024
 MAX_MEMBERS = 256
 MAX_WORKER_OUTPUT_BYTES = 128 * 1024 * 1024
+MAX_INPUT_DOWNLOAD_ATTEMPTS = 2
 # These constants name environment variables; they do not contain credentials.
 INPUT_SECRET_URL_ENV = "BLUEPRINT_NVIDIA_WAREHOUSE_CAMERA_INPUT_URL"  # nosec B105
 INPUT_SHA256_ENV = "BLUEPRINT_NVIDIA_WAREHOUSE_CAMERA_INPUT_SHA256"
@@ -456,6 +457,7 @@ def _write_worker_failure_output(
     error_type: str,
     missing_module: str | None = None,
     failure_code: str | None = None,
+    transport_diagnostics: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     failure_dir = output_dir / "failure"
@@ -468,6 +470,7 @@ def _write_worker_failure_output(
         "error_type": str(error_type),
         "missing_module": missing_module,
         "failure_code": failure_code,
+        "transport_diagnostics": dict(transport_diagnostics or {}),
         "failure_before_frames": True,
         "label_free": True,
         "rankings_or_policy_outcomes_accessed": False,
@@ -489,6 +492,7 @@ def _write_worker_failure_output(
             "error_type": str(error_type),
             "missing_module": missing_module,
             "failure_code": failure_code,
+            "transport_diagnostics": dict(transport_diagnostics or {}),
             "failure_before_frames": True,
             "media": [
                 {
@@ -536,10 +540,42 @@ def run_native_camera_gpu_worker(
         raise ValueError("nvidia_warehouse_gpu_worker_input_sha256_invalid")
     root.mkdir(parents=True)
     phase = "download"
+    download_attempts: list[dict[str, Any]] = []
     try:
         bundle = root / "input.zip"
-        downloader(input_url, bundle)
-        if not bundle.is_file() or file_sha256(bundle) != expected_sha256:
+        input_integrity_verified = False
+        for attempt in range(1, MAX_INPUT_DOWNLOAD_ATTEMPTS + 1):
+            bundle.unlink(missing_ok=True)
+            try:
+                downloader(input_url, bundle)
+            except Exception as exc:
+                download_attempts.append(
+                    {
+                        "attempt": attempt,
+                        "status": "transport_error",
+                        "error_type": type(exc).__name__,
+                        "raw_secret_values_recorded": False,
+                    }
+                )
+                if attempt == MAX_INPUT_DOWNLOAD_ATTEMPTS:
+                    raise
+                continue
+            observed_size = bundle.stat().st_size if bundle.is_file() else 0
+            observed_sha256 = file_sha256(bundle) if bundle.is_file() else None
+            input_integrity_verified = observed_sha256 == expected_sha256
+            download_attempts.append(
+                {
+                    "attempt": attempt,
+                    "status": "verified" if input_integrity_verified else "hash_mismatch",
+                    "observed_size_bytes": observed_size,
+                    "observed_sha256": observed_sha256,
+                    "expected_sha256_match": input_integrity_verified,
+                    "raw_secret_values_recorded": False,
+                }
+            )
+            if input_integrity_verified:
+                break
+        if not input_integrity_verified:
             raise ValueError("nvidia_warehouse_gpu_worker_download_sha256_mismatch")
         phase = "native_camera_execution"
         result = dict(
@@ -556,6 +592,12 @@ def run_native_camera_gpu_worker(
             error_type=type(exc).__name__,
             missing_module=_safe_missing_module(exc),
             failure_code=_safe_failure_code(exc),
+            transport_diagnostics={
+                "policy": "bounded_checksum_verified_retry",
+                "maximum_attempts": MAX_INPUT_DOWNLOAD_ATTEMPTS,
+                "attempts": download_attempts,
+                "raw_secret_values_recorded": False,
+            },
         )
     output_zip = root / "output.zip"
     _archive_worker_output(root / "execution" / "output", output_zip)
@@ -568,6 +610,15 @@ def run_native_camera_gpu_worker(
         "output_zip_size_bytes": output_zip.stat().st_size,
         "input_url_recorded": False,
         "output_url_recorded": False,
+        "input_download": {
+            "policy": "bounded_checksum_verified_retry",
+            "maximum_attempts": MAX_INPUT_DOWNLOAD_ATTEMPTS,
+            "attempts": download_attempts,
+            "integrity_verified": any(
+                attempt.get("expected_sha256_match") is True for attempt in download_attempts
+            ),
+            "raw_secret_values_recorded": False,
+        },
         "rankings_or_policy_outcomes_accessed": False,
         "physical_robot_operated": False,
     }
