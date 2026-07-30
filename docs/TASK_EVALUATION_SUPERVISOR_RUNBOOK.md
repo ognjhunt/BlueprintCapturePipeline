@@ -321,6 +321,13 @@ no-proof-effect semantics. A live recovery controller is refused before
 execution unless the matching operator request and receipt are also recorded as
 kernel inputs.
 
+The same rule covers generated evidence plans, compiled leaf-run specs,
+clarification requests, authorization requests, and targeted recapture
+requests. Replay binds them back to the recorded run, source request, testbed,
+authority inputs, and canonical plan inventory. Tool observations may reference
+only artifact types declared by that exact registered tool version; unknown
+agent-defined artifact types fail closed.
+
 The customer report has its own exact-schema validator at creation and replay.
 It rejects unknown fields, non-finite or negative spend, inconsistent
 decision/partial/abstention flags, agent-authoritative output, proof mutation,

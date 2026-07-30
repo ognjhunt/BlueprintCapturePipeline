@@ -191,7 +191,7 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         _descriptor(
             "propose_adversarial_scenarios",
             "scenario_generation",
-            expected_artifacts=["scenario_proposal_set.v1"],
+            expected_artifacts=["task_evaluation_scenario_proposal_set.v1"],
             input_properties={
                 "request_digest": {"type": "string"},
                 "scenarios": {"type": "array"},
@@ -430,6 +430,11 @@ def validate_tool_observation_binding(
         raise ValueError("tool_observation_runtime_identity_mismatch")
     if observation["output_digest"] != canonical_digest(observation["typed_result"]):
         raise ValueError("tool_observation_output_digest_mismatch")
+    produced_artifact_types = {
+        str(row.get("artifact_type") or "") for row in observation["produced_artifact_references"]
+    }
+    if not produced_artifact_types.issubset(set(descriptor_value["expected_artifacts"])):
+        raise ValueError("tool_observation_artifact_type_not_registered")
     cost = float(observation["cost_usd"])
     duration = float(observation["duration_seconds"])
     retries = int(observation["retries"])

@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from ..common import read_json, write_json
 from ..decision_evidence_contracts import (
     DecisionEnvelope,
+    DecisionEvidenceContractError,
     DecisionEvidenceRequest,
     EvidenceMethodProfile,
     EvidencePlan,
@@ -16,6 +17,7 @@ from ..decision_evidence_contracts import (
     QualificationRecord,
     canonical_digest,
 )
+from ..evaluation_run_contract import validate_evaluation_run_spec
 from .contracts import (
     AgentInvocationManifest,
     AuthorityEnvelope,
@@ -483,6 +485,12 @@ def replay_supervisor_run(
     referenced_tool_observation_paths: set[Path] = set()
     generated_artifact_digests: list[str] = []
     generated_artifact_references: list[dict[str, Any]] = []
+    generated_evidence_plans: list[dict[str, Any]] = []
+    generated_leaf_runs: list[dict[str, Any]] = []
+    generated_clarification_requests: list[dict[str, Any]] = []
+    generated_authorization_requests: list[dict[str, Any]] = []
+    generated_recapture_requests: list[dict[str, Any]] = []
+    generated_scenario_sets: list[dict[str, Any]] = []
     generated_recovery_results: list[dict[str, Any]] = []
     replayed_tool_cost_usd = 0.0
     for row in report_value.get("invocation_manifests") or []:
@@ -578,10 +586,28 @@ def replay_supervisor_run(
                     digest_field=digest_fields.get(artifact_type),
                 )
                 try:
-                    if artifact_type == "task_evaluation_scenario_proposal_set.v1":
+                    if artifact_type == "evidence_plan.v1":
+                        generated_value = EvidencePlan.from_mapping(generated_value).to_mapping()
+                        generated_evidence_plans.append(dict(generated_value))
+                    elif artifact_type == "evaluation_run_spec.v1":
+                        validation = validate_evaluation_run_spec(generated_value)
+                        if validation.get("status") != "passed":
+                            raise SupervisorReplayError("generated_leaf_run_contract_mismatch")
+                        generated_leaf_runs.append(dict(generated_value))
+                    elif artifact_type == "targeted_recapture_request.v1":
+                        generated_value = validate_targeted_recapture_request(generated_value)
+                        generated_recapture_requests.append(dict(generated_value))
+                    elif artifact_type == "task_evaluation_clarification_request.v1":
+                        generated_value = validate_clarification_request(generated_value)
+                        generated_clarification_requests.append(dict(generated_value))
+                    elif artifact_type == "task_evaluation_authorization_request.v1":
+                        generated_value = validate_authorization_request(generated_value)
+                        generated_authorization_requests.append(dict(generated_value))
+                    elif artifact_type == "task_evaluation_scenario_proposal_set.v1":
                         generated_value = validate_scenario_proposal_set(generated_value)
                         if generated_value["run_id"] != run_value["run_id"]:
                             raise SupervisorReplayError("generated_scenario_run_mismatch")
+                        generated_scenario_sets.append(dict(generated_value))
                     elif artifact_type == "task_evaluation_recovery_result.v1":
                         generated_value = validate_recovery_result(
                             generated_value,
@@ -589,10 +615,32 @@ def replay_supervisor_run(
                             authority=authority_value,
                         )
                         generated_recovery_results.append(dict(generated_value))
+                    else:
+                        raise SupervisorReplayError("generated_artifact_type_unsupported")
                 except Phase2ArtifactError as exc:
-                    raise SupervisorReplayError("generated_scenario_contract_mismatch") from exc
+                    raise SupervisorReplayError(
+                        "generated_phase2_artifact_contract_mismatch"
+                    ) from exc
+                except DecisionEvidenceContractError as exc:
+                    raise SupervisorReplayError(
+                        "generated_evidence_plan_contract_mismatch"
+                    ) from exc
                 except RecoveryControlError as exc:
                     raise SupervisorReplayError("generated_recovery_contract_mismatch") from exc
+                identity_fields = {
+                    "evidence_plan.v1": ("plan_id",),
+                    "evaluation_run_spec.v1": ("run_id",),
+                    "targeted_recapture_request.v1": ("request_id",),
+                    "task_evaluation_clarification_request.v1": ("request_id",),
+                    "task_evaluation_authorization_request.v1": ("request_id",),
+                    "task_evaluation_scenario_proposal_set.v1": ("proposal_set_id",),
+                    "task_evaluation_recovery_result.v1": ("attempt_id",),
+                }[artifact_type]
+                if any(
+                    generated_ref.get(field) != generated_value.get(field)
+                    for field in identity_fields
+                ):
+                    raise SupervisorReplayError("generated_artifact_identity_mismatch")
                 if generated_ref.get("artifact_digest") != generated_digest:
                     raise SupervisorReplayError("generated_artifact_digest_mismatch")
                 generated_artifact_digests.append(generated_digest)
@@ -828,6 +876,55 @@ def replay_supervisor_run(
                 or recovery_result["action_id"] not in authorization_receipt["granted_action_ids"]
             ):
                 raise SupervisorReplayError("generated_recovery_authorization_mismatch")
+
+    source_digests = {
+        str(value.get(digest_field))
+        for value, digest_field in (
+            (kernel_inputs.get("capture_build") or {}, "capture_build_digest"),
+            (kernel_inputs.get("decision_request") or {}, "request_digest"),
+            (kernel_inputs.get("site_task_testbed") or {}, "testbed_digest"),
+        )
+        if value.get(digest_field)
+    }
+    expected_request_digest = (kernel_inputs.get("decision_request") or {}).get("request_digest")
+    expected_testbed_digest = (kernel_inputs.get("site_task_testbed") or {}).get("testbed_digest")
+    for generated_plan in generated_evidence_plans:
+        if (
+            generated_plan.get("request_digest") != expected_request_digest
+            or generated_plan.get("testbed_digest") != expected_testbed_digest
+        ):
+            raise SupervisorReplayError("generated_evidence_plan_input_mismatch")
+    expected_leaf_digests = {
+        canonical_digest(row)
+        for generated_plan in generated_evidence_plans
+        for row in generated_plan.get("compiled_evaluation_run_specs") or []
+        if isinstance(row, Mapping)
+    }
+    replayed_leaf_digests = [canonical_digest(row) for row in generated_leaf_runs]
+    if generated_leaf_runs and (
+        len(replayed_leaf_digests) != len(set(replayed_leaf_digests))
+        or set(replayed_leaf_digests) != expected_leaf_digests
+    ):
+        raise SupervisorReplayError("generated_leaf_run_inventory_mismatch")
+    for generated_request in (
+        *generated_clarification_requests,
+        *generated_recapture_requests,
+    ):
+        if (
+            generated_request.get("run_id") != run_value["run_id"]
+            or generated_request.get("source_digest") not in source_digests
+        ):
+            raise SupervisorReplayError("generated_request_input_mismatch")
+    for generated_request in generated_authorization_requests:
+        if (
+            generated_request.get("run_id") != run_value["run_id"]
+            or generated_request.get("immutable_input_digests")
+            != authority_value["immutable_input_digests"]
+        ):
+            raise SupervisorReplayError("generated_authorization_request_input_mismatch")
+    for generated_scenario_set in generated_scenario_sets:
+        if generated_scenario_set.get("request_digest") != expected_request_digest:
+            raise SupervisorReplayError("generated_scenario_request_mismatch")
 
     deterministic_decision = kernel_inputs.get("decision_envelope")
     replayed_decision: dict[str, Any] | None = None

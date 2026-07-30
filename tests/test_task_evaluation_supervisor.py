@@ -3434,6 +3434,23 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
         for path in observations
         if json.loads(path.read_text(encoding="utf-8"))["produced_artifact_references"]
     )
+    unregistered_artifact = json.loads(json.dumps(generated_observation))
+    unregistered_artifact["produced_artifact_references"][0]["artifact_type"] = (
+        "unregistered_agent_artifact.v1"
+    )
+    unregistered_artifact["observation_digest"] = canonical_digest(
+        unregistered_artifact,
+        digest_field="observation_digest",
+    )
+    with pytest.raises(ValueError, match="tool_observation_artifact_type_not_registered"):
+        validate_tool_observation_binding(
+            unregistered_artifact,
+            run_id=_context().run_id,
+            capability=unregistered_artifact["capability"],
+            registry=ToolRegistry.default(),
+            authority=authority,
+        )
+
     generated_observation["produced_artifact_references"][0]["artifact_path"] = (
         "../hidden_labels.json"
     )
@@ -3466,7 +3483,7 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     tampered_leaf = dict(generated_leaf)
     tampered_leaf["run_id"] = "tampered-leaf-run"
     leaf_paths[0].write_text(json.dumps(tampered_leaf), encoding="utf-8")
-    with pytest.raises(ValueError, match="generated_artifact_digest_mismatch"):
+    with pytest.raises(ValueError, match="generated_artifact_identity_mismatch"):
         replay_supervisor_run(execution.output_dir)
     leaf_paths[0].write_text(json.dumps(generated_leaf), encoding="utf-8")
 
@@ -3479,7 +3496,7 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
         digest_field="scenario_proposal_set_digest",
     )
     scenario_path.write_text(json.dumps(rewritten_scenario), encoding="utf-8")
-    with pytest.raises(SupervisorReplayError, match="generated_scenario_contract_mismatch"):
+    with pytest.raises(SupervisorReplayError, match="generated_phase2_artifact_contract_mismatch"):
         replay_supervisor_run(execution.output_dir)
     scenario_path.write_text(json.dumps(scenario_artifact), encoding="utf-8")
 
