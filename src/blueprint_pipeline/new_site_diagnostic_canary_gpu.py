@@ -36,7 +36,11 @@ from .openpi_policy_ranking_gpu_job import (
     _default_openpi_loader,
 )
 from .policy_ranking_thesis import canonical_sha256, file_sha256
-from .policy_wam_closed_loop import ClosedLoopConfig, run_policy_wam_closed_loop
+from .policy_wam_closed_loop import (
+    ClosedLoopConfig,
+    policy_observation_sha256,
+    run_policy_wam_closed_loop,
+)
 from .policy_wam_reliability_gate import FrozenMaximumHorizonTerminalCriterion
 from .scene_placement.stance_cameras import link_mounted_camera_spec
 from .wam_rollout_reliability import (
@@ -66,6 +70,14 @@ SKELETON_WRIST_REFERENCE_DISPLACEMENT_MIN_M = 0.001
 _SKELETON_WRIST_PIXEL_MOTION_FLAGS = frozenset(
     {FLAG_STATIC_UNDER_COMMAND, FLAG_MOTION_WITHOUT_COMMAND, FLAG_TIMING_DISAGREEMENT}
 )
+
+
+def _is_sha256(value: Any) -> bool:
+    return bool(
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -705,6 +717,15 @@ def run_skeleton_only_canary(
         initial_camera_paths=initial_camera_paths,
     )
     interaction_pixels = int(observation.pop("_diagnostic_interaction_pixel_count"))
+    exact_initial_observation_sha256 = policy_observation_sha256(observation)
+    initial_camera_sha256_by_view = (
+        {
+            view_id: file_sha256(Path(path).expanduser().resolve())
+            for view_id, path in initial_camera_paths.items()
+        }
+        if initial_camera_paths
+        else {}
+    )
     loop = run_policy_wam_closed_loop(
         initial_observation=observation,
         policy_client=client,
@@ -744,14 +765,35 @@ def run_skeleton_only_canary(
     first_provenance = (
         first_provenance_value if isinstance(first_provenance_value, Mapping) else {}
     )
+    first_policy_observation_sha256 = (
+        row_mappings[0].get("policy_observation_sha256") if row_mappings else None
+    )
+    first_wam_observation_sha256 = (
+        row_mappings[0].get("next_observation_sha256") if row_mappings else None
+    )
+    second_policy_observation_sha256 = (
+        row_mappings[1].get("policy_observation_sha256")
+        if len(row_mappings) >= 2
+        else None
+    )
     round_trip_passed = (
         len(rows) == 2
         and len(row_mappings) == 2
         and all(isinstance(row, Mapping) for row in rows)
+        and row_mappings[0].get("query_index") == 0
+        and row_mappings[1].get("query_index") == 1
+        and all(
+            row.get("schema_version") == "policy_wam_closed_loop_trace.v1"
+            for row in row_mappings
+        )
+        and loop.get("trace_sha256") == file_sha256(trace_path)
         and loop.get("policy_call_count") == 2
         and loop.get("wam_call_count") == 2
+        and loop.get("initial_observation_sha256") == exact_initial_observation_sha256
+        and first_policy_observation_sha256 == exact_initial_observation_sha256
         and first_provenance.get("visual_source") == "wam_prediction"
-        and isinstance(row_mappings[1].get("policy_observation_sha256"), str)
+        and _is_sha256(first_wam_observation_sha256)
+        and first_wam_observation_sha256 == second_policy_observation_sha256
     )
     all_transitions_completed = bool(row_mappings) and all(
         row.get("status") == "completed" for row in row_mappings
@@ -777,6 +819,10 @@ def run_skeleton_only_canary(
         "collapse_checks_passed": all_reliability_passed,
         "policy_wam_policy_round_trip_passed": round_trip_passed,
         "transition_count": len(rows),
+        "exact_initial_observation_sha256": exact_initial_observation_sha256,
+        "initial_camera_sha256_by_view": initial_camera_sha256_by_view,
+        "first_wam_observation_sha256": first_wam_observation_sha256,
+        "second_policy_observation_sha256": second_policy_observation_sha256,
         "blockers": [*loop.get("blockers", []), *reasons],
     }
     canary = assess_canary(protocol, evidence)
@@ -791,6 +837,10 @@ def run_skeleton_only_canary(
         "variant": rule.get("frozen_variant"),
         "policy_checkpoint_verification": local_verification,
         "initial_observation_interaction_pixel_count": interaction_pixels,
+        "exact_initial_observation_sha256": exact_initial_observation_sha256,
+        "initial_camera_sha256_by_view": initial_camera_sha256_by_view,
+        "first_wam_observation_sha256": first_wam_observation_sha256,
+        "second_policy_observation_sha256": second_policy_observation_sha256,
         "initial_observation_source": (
             "native_isaac_simready_warehouse_camera_canary"
             if initial_camera_paths

@@ -452,6 +452,10 @@ def test_skeleton_canary_runs_two_policy_wam_transitions_without_ranking(
     protocol = _write_protocol(protocol_path)
     background = tmp_path / "background.png"
     Image.new("RGB", (224, 224)).save(background)
+    native_external = tmp_path / "native_external.png"
+    native_wrist = tmp_path / "native_wrist.png"
+    Image.new("RGB", (640, 480), color=(20, 30, 40)).save(native_external)
+    Image.new("RGB", (640, 480), color=(50, 60, 70)).save(native_wrist)
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
     spec = SimpleNamespace(
@@ -477,14 +481,23 @@ def test_skeleton_canary_runs_two_policy_wam_transitions_without_ranking(
 
     def fake_loop(**kwargs):
         assert kwargs["config"].max_policy_queries == 2
+        initial_sha256 = canary_module.policy_observation_sha256(kwargs["initial_observation"])
+        wam_observation_sha256 = "2" * 64
         trace = Path(kwargs["output_dir"]) / "closed_loop_trace.jsonl"
         trace.parent.mkdir(parents=True)
         trace.write_text(
             "".join(
                 json.dumps(
                     {
+                        "schema_version": "policy_wam_closed_loop_trace.v1",
+                        "query_index": index - 1,
                         "status": "completed",
-                        "policy_observation_sha256": str(index) * 64,
+                        "policy_observation_sha256": (
+                            initial_sha256 if index == 1 else wam_observation_sha256
+                        ),
+                        "next_observation_sha256": (
+                            wam_observation_sha256 if index == 1 else "3" * 64
+                        ),
                         "next_observation_provenance": {"visual_source": "wam_prediction"},
                         "reliability": {"status": "passed", "reasons": []},
                     }
@@ -499,6 +512,8 @@ def test_skeleton_canary_runs_two_policy_wam_transitions_without_ranking(
             "trace_path": str(trace),
             "policy_call_count": 2,
             "wam_call_count": 2,
+            "initial_observation_sha256": initial_sha256,
+            "trace_sha256": file_sha256(trace),
             "blockers": [],
         }
 
@@ -511,6 +526,10 @@ def test_skeleton_canary_runs_two_policy_wam_transitions_without_ranking(
         checkpoint_inventory_path=tmp_path / "inventory.json",
         menagerie_root=tmp_path / "menagerie",
         output_dir=tmp_path / "output",
+        initial_camera_paths={
+            EXTERIOR_VIEW: native_external,
+            WRIST_VIEW: native_wrist,
+        },
         checkpoint_downloader=lambda _uri: checkpoint,
         policy_loader=lambda _spec, _checkpoint: object(),
     )
@@ -520,12 +539,20 @@ def test_skeleton_canary_runs_two_policy_wam_transitions_without_ranking(
     assert result["loop_manifest"]["policy_call_count"] == 2
     assert result["loop_manifest"]["wam_call_count"] == 2
     assert result["policy_wam_policy_round_trip_passed"] is True
+    assert result["first_wam_observation_sha256"] == "2" * 64
+    assert result["second_policy_observation_sha256"] == "2" * 64
+    assert result["initial_camera_sha256_by_view"] == {
+        EXTERIOR_VIEW: file_sha256(native_external),
+        WRIST_VIEW: file_sha256(native_wrist),
+    }
+    assert result["initial_observation_source"] == ("native_isaac_simready_warehouse_camera_canary")
     assert "rankings" not in result
     assert result["claim_boundary"]["physical_success"] is False
 
 
-def test_skeleton_canary_abstains_on_malformed_round_trip_provenance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("fault", ["provenance", "hash_link"])
+def test_skeleton_canary_abstains_on_unattributable_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
 ) -> None:
     protocol_path = tmp_path / "protocol.json"
     protocol = _write_protocol(protocol_path)
@@ -554,15 +581,30 @@ def test_skeleton_canary_abstains_on_malformed_round_trip_provenance(
     )
 
     def malformed_loop(**kwargs):
+        initial_sha256 = canary_module.policy_observation_sha256(kwargs["initial_observation"])
+        wam_observation_sha256 = "2" * 64
         trace = Path(kwargs["output_dir"]) / "closed_loop_trace.jsonl"
         trace.parent.mkdir(parents=True)
         trace.write_text(
             "".join(
                 json.dumps(
                     {
+                        "schema_version": "policy_wam_closed_loop_trace.v1",
+                        "query_index": index - 1,
                         "status": "completed",
-                        "policy_observation_sha256": str(index) * 64,
-                        "next_observation_provenance": "not-an-object" if index == 1 else {},
+                        "policy_observation_sha256": (
+                            initial_sha256
+                            if index == 1
+                            else ("4" * 64 if fault == "hash_link" else wam_observation_sha256)
+                        ),
+                        "next_observation_sha256": (
+                            wam_observation_sha256 if index == 1 else "3" * 64
+                        ),
+                        "next_observation_provenance": (
+                            "not-an-object"
+                            if index == 1 and fault == "provenance"
+                            else {"visual_source": "wam_prediction"}
+                        ),
                         "reliability": {"status": "passed", "reasons": []},
                     }
                 )
@@ -576,6 +618,8 @@ def test_skeleton_canary_abstains_on_malformed_round_trip_provenance(
             "trace_path": str(trace),
             "policy_call_count": 2,
             "wam_call_count": 2,
+            "initial_observation_sha256": initial_sha256,
+            "trace_sha256": file_sha256(trace),
             "blockers": [],
         }
 

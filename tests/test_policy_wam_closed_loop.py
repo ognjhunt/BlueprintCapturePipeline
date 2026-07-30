@@ -9,6 +9,7 @@ import pytest
 
 from blueprint_pipeline.policy_wam_closed_loop import (
     ClosedLoopConfig,
+    policy_observation_sha256,
     run_policy_wam_closed_loop,
 )
 from blueprint_pipeline.wam_conditioning_fidelity import (
@@ -131,10 +132,17 @@ def _run(tmp_path: Path, **overrides: Any) -> tuple[dict[str, Any], _Policy, _Wa
 
 def test_same_policy_is_requeried_from_wam_predictions_until_terminal(tmp_path: Path) -> None:
     result, policy, wam = _run(tmp_path)
+    initial_observation = {
+        "step": 0,
+        "external": np.zeros((4, 4, 3), dtype=np.uint8),
+    }
 
     assert result["status"] == "completed"
     assert result["terminal_reason"] == "fixture_task_terminal"
     assert result["policy_call_count"] == 3
+    assert result["initial_observation_sha256"] == policy_observation_sha256(
+        initial_observation
+    )
     assert result["wam_call_count"] == 3
     assert policy.seen_steps == [0, 1, 2]
     assert [row["query_index"] for row in wam.requests] == [0, 1, 2]
@@ -143,6 +151,8 @@ def test_same_policy_is_requeried_from_wam_predictions_until_terminal(tmp_path: 
     assert result["claim_boundary"]["engineering_smoke_only"] is True
     assert result["conditioning_fidelity_certificate_passed"] is False
     rows = [json.loads(line) for line in Path(result["trace_path"]).read_text().splitlines()]
+    assert rows[0]["policy_observation_sha256"] == result["initial_observation_sha256"]
+    assert rows[0]["next_observation_sha256"] == rows[1]["policy_observation_sha256"]
     assert all(row["wam_arm_id"] == "oscar_purpose_built_wam" for row in rows)
     assert all(row["next_observation_provenance"]["visual_source"] == "wam_prediction" for row in rows)
 

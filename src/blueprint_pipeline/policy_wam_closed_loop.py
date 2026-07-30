@@ -197,6 +197,12 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def policy_observation_sha256(observation: Mapping[str, Any]) -> str:
+    """Return the canonical identity used for a policy observation in the trace."""
+
+    return canonical_sha256(_jsonable(observation))
+
+
 def _extract_policy_action(response: Any) -> Any:
     if isinstance(response, Mapping):
         for key in ("actions", "action", "action_chunk"):
@@ -260,6 +266,7 @@ def run_policy_wam_closed_loop(
     ensure_dir(output)
     trace_path = output / "policy_wam_closed_loop_trace.jsonl"
     current_observation = dict(initial_observation)
+    initial_observation_sha256 = policy_observation_sha256(current_observation)
     rows: list[dict[str, Any]] = []
     blockers: list[str] = []
     terminal_reason = "maximum_horizon_reached"
@@ -272,7 +279,7 @@ def run_policy_wam_closed_loop(
         row: dict[str, Any] = {
             "schema_version": TRACE_SCHEMA_VERSION,
             "query_index": query_index,
-            "policy_observation_sha256": canonical_sha256(_jsonable(current_observation)),
+            "policy_observation_sha256": policy_observation_sha256(current_observation),
             "policy_id_internal_only": str(policy_client.policy_id),
             "wam_arm_id": str(wam_arm.arm_id),
             "transition_adapter_id": str(transition_adapter.adapter_id),
@@ -385,6 +392,7 @@ def run_policy_wam_closed_loop(
         "terminal_criterion_id": str(terminal_criterion.criterion_id),
         "task_prompt_sha256": hashlib.sha256(config.task_prompt.encode("utf-8")).hexdigest(),
         "task_prompt_provider_visible": True,
+        "initial_observation_sha256": initial_observation_sha256,
         "executed_prefix_steps": config.executed_prefix_steps,
         "executed_prefix_seconds_derived": config.executed_prefix_seconds_derived,
         "control_hz": config.control_hz,
@@ -438,6 +446,7 @@ __all__ = [
     "PolicyClient",
     "ReliabilityGate",
     "SCHEMA_VERSION",
+    "policy_observation_sha256",
     "TerminalCriterion",
     "TransitionAdapter",
     "WamArm",
