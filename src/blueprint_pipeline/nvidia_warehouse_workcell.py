@@ -440,7 +440,7 @@ def build_native_camera_canary_spec(
             "wrist_rgb_nonblank_and_task_object_visible_at_initial_pose",
             "wrist_camera_world_pose_changes_under_command",
             "wrist_camera_to_panda_hand_transform_remains_constant",
-            "franka_joint_positions_are_held_by_public_articulation_action_targets",
+            "franka_joint_states_are_rendered_kinematically_without_physics_advance",
             "external_and_wrist_timestamps_match_physics_steps",
             "at_least_two_policy_calls_separated_by_one_wam_generated_observation",
         ],

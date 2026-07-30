@@ -22,7 +22,7 @@ RESULT_SCHEMA_VERSION = "nvidia_warehouse_native_camera_canary_result.v1"
 MIN_NONBLANK_SPATIAL_STD = 4.0
 MIN_WRIST_WORLD_DISPLACEMENT_M = 0.001
 MAX_WRIST_LOCAL_TRANSFORM_DELTA = 1e-9
-MAX_HELD_JOINT_POSITION_ERROR_RAD = 0.02
+MAX_KINEMATIC_JOINT_POSITION_ERROR_RAD = 0.02
 REQUIRED_VIEWS = ("external", "wrist")
 
 
@@ -129,51 +129,50 @@ def _matrix_array(matrix: Any) -> np.ndarray:
     return np.asarray([[float(matrix[row][column]) for column in range(4)] for row in range(4)])
 
 
-def _apply_and_measure_held_joint_pose(
+def _apply_and_measure_render_only_joint_pose(
     *,
     robot: Any,
     joint_positions: Any,
     phase: str,
-    step: Callable[[], None],
-    step_count: int,
-    action_factory: Callable[..., Any],
+    render: Callable[[], None],
+    render_count: int,
 ) -> dict[str, Any]:
-    """Apply one joint pose through state and the public articulation action API."""
+    """Teleport one joint state, render without physics, and measure it."""
 
     requested = np.asarray(joint_positions, dtype=float).reshape(-1)
     zeros = np.zeros_like(requested)
     required = {
         "set_joint_positions": getattr(robot, "set_joint_positions", None),
         "set_joint_velocities": getattr(robot, "set_joint_velocities", None),
-        "apply_action": getattr(robot, "apply_action", None),
         "get_joint_positions": getattr(robot, "get_joint_positions", None),
     }
     missing = sorted(name for name, method in required.items() if not callable(method))
     if missing:
-        raise ValueError("native_franka_joint_hold_api_missing:" + ",".join(missing))
+        raise ValueError(
+            "native_franka_render_only_joint_state_api_missing:" + ",".join(missing)
+        )
     try:
         required["set_joint_positions"](requested)
         required["set_joint_velocities"](zeros)
-        action = action_factory(joint_positions=requested, joint_velocities=zeros)
-        required["apply_action"](action)
+        for _ in range(int(render_count)):
+            render()
     except Exception as exc:
         raise ValueError(
-            "native_franka_joint_hold_apply_action_failed:" + type(exc).__name__
+            "native_franka_render_only_joint_state_failed:" + type(exc).__name__
         ) from exc
-    for _ in range(int(step_count)):
-        step()
     measured = np.asarray(required["get_joint_positions"](), dtype=float).reshape(-1)
     if measured.shape != requested.shape or not np.isfinite(measured).all():
-        raise ValueError("native_franka_joint_hold_measurement_invalid")
+        raise ValueError("native_franka_render_only_joint_measurement_invalid")
     return {
         "phase": str(phase),
-        "mode": "state_plus_articulation_action_position_velocity_targets",
+        "mode": "render_only_kinematic_joint_state_transition",
         "requested_joint_positions_rad": requested.tolist(),
         "measured_joint_positions_rad": measured.tolist(),
         "max_abs_position_error_rad": float(np.max(np.abs(measured - requested))),
-        "zero_velocity_state_and_target_applied": True,
-        "position_target_applied_through_articulation_action": True,
-        "settle_step_count": int(step_count),
+        "zero_velocity_state_applied": True,
+        "joint_position_state_applied": True,
+        "render_count": int(render_count),
+        "physics_steps_requested": 0,
     }
 
 
@@ -344,7 +343,6 @@ def isaac_sim_6_backend(
     try:
         from isaacsim.core.api import World
         from isaacsim.core.prims import SingleArticulation
-        from isaacsim.core.utils.types import ArticulationAction
         from isaacsim.core.utils.stage import add_reference_to_stage
         from isaacsim.sensors.camera import Camera
         from isaacsim.storage.native import get_assets_root_path
@@ -433,13 +431,13 @@ def isaac_sim_6_backend(
         )
         commanded_joints = initial_joints.copy()
         commanded_joints[0] += 0.12
-        precalibration_joint_hold = _apply_and_measure_held_joint_pose(
+        physics_step_after_reset = int(world.current_time_step_index)
+        precalibration_joint_state = _apply_and_measure_render_only_joint_pose(
             robot=robot,
             joint_positions=initial_joints,
             phase="initial_precalibration",
-            step=lambda: world.step(render=True),
-            step_count=20,
-            action_factory=ArticulationAction,
+            render=world.render,
+            render_count=2,
         )
 
         def camera_matrix(path: str) -> np.ndarray:
@@ -470,13 +468,12 @@ def isaac_sim_6_backend(
         camera_objects["wrist"] = Camera(prim_path=wrist_path, resolution=(640, 480))
         for camera in camera_objects.values():
             camera.initialize()
-        initial_joint_hold = _apply_and_measure_held_joint_pose(
+        initial_joint_state = _apply_and_measure_render_only_joint_pose(
             robot=robot,
             joint_positions=initial_joints,
             phase="initial_observation",
-            step=lambda: world.step(render=True),
-            step_count=4,
-            action_factory=ArticulationAction,
+            render=world.render,
+            render_count=4,
         )
 
         wrist_local_initial = _matrix_array(
@@ -537,13 +534,12 @@ def isaac_sim_6_backend(
                 vfov_deg=float(spec["cameras"][view_id]["vertical_fov_deg"]),
             )
 
-        commanded_joint_hold = _apply_and_measure_held_joint_pose(
+        commanded_joint_state = _apply_and_measure_render_only_joint_pose(
             robot=robot,
             joint_positions=commanded_joints,
             phase="commanded_observation",
-            step=lambda: world.step(render=True),
-            step_count=20,
-            action_factory=ArticulationAction,
+            render=world.render,
+            render_count=4,
         )
         commanded_step = save_frames("commanded")
         wrist_world_commanded = camera_matrix(wrist_path)
@@ -571,13 +567,17 @@ def isaac_sim_6_backend(
             "spraycan_kinematic_for_camera_canary": True,
             "views": frames,
             "wrist_mount_calibration": wrist_mount_calibration,
-            "franka_joint_position_hold": {
-                "mode": "state_plus_articulation_action_position_velocity_targets",
-                "required_articulation_action_api_applied": True,
-                "precalibration": precalibration_joint_hold,
-                "initial": initial_joint_hold,
-                "commanded": commanded_joint_hold,
+            "franka_render_only_joint_state": {
+                "mode": "render_only_kinematic_joint_state_transition",
+                "physics_dynamics_claimed": False,
+                "precalibration": precalibration_joint_state,
+                "initial": initial_joint_state,
+                "commanded": commanded_joint_state,
             },
+            "camera_transition_physics_steps_advanced": int(
+                world.current_time_step_index
+            )
+            - physics_step_after_reset,
             "wrist_camera_world_displacement_m": float(
                 np.linalg.norm(wrist_world_commanded[3, :3] - wrist_world_initial[3, :3])
             ),
@@ -713,23 +713,28 @@ def assess_native_camera_backend_result(
         blockers.append("native_wrist_mount_not_calibrated_after_joint_hold")
     if mount.get("per_frame_task_reaim_performed") is not False:
         blockers.append("native_wrist_camera_per_frame_reaim_not_forbidden")
-    hold_value = backend_result.get("franka_joint_position_hold")
-    hold = hold_value if isinstance(hold_value, Mapping) else {}
+    joint_state_value = backend_result.get("franka_render_only_joint_state")
+    joint_state = joint_state_value if isinstance(joint_state_value, Mapping) else {}
     if (
-        hold.get("mode") != "state_plus_articulation_action_position_velocity_targets"
-        or hold.get("required_articulation_action_api_applied") is not True
+        joint_state.get("mode") != "render_only_kinematic_joint_state_transition"
+        or joint_state.get("physics_dynamics_claimed") is not False
     ):
-        blockers.append("native_franka_joint_position_hold_missing_or_invalid")
-    hold_evidence: dict[str, Any] = {}
+        blockers.append("native_franka_render_only_joint_state_missing_or_invalid")
+    if backend_result.get("camera_transition_physics_steps_advanced") != 0:
+        blockers.append("native_camera_transition_advanced_physics")
+    joint_state_evidence: dict[str, Any] = {}
     for phase in ("initial", "commanded"):
-        phase_value = hold.get(phase)
-        phase_hold = phase_value if isinstance(phase_value, Mapping) else {}
-        error = _finite_float(phase_hold.get("max_abs_position_error_rad"))
-        hold_evidence[phase] = {**dict(phase_hold), "max_abs_position_error_rad": error}
+        phase_value = joint_state.get(phase)
+        phase_state = phase_value if isinstance(phase_value, Mapping) else {}
+        error = _finite_float(phase_state.get("max_abs_position_error_rad"))
+        joint_state_evidence[phase] = {
+            **dict(phase_state),
+            "max_abs_position_error_rad": error,
+        }
         if error is None:
-            blockers.append(f"native_franka_joint_hold_error_missing_or_invalid:{phase}")
-        elif error > MAX_HELD_JOINT_POSITION_ERROR_RAD:
-            blockers.append(f"native_franka_joint_hold_error_exceeded:{phase}")
+            blockers.append(f"native_franka_joint_state_error_missing_or_invalid:{phase}")
+        elif error > MAX_KINEMATIC_JOINT_POSITION_ERROR_RAD:
+            blockers.append(f"native_franka_joint_state_error_exceeded:{phase}")
     if backend_result.get("external_wrist_timestamp_pairs_exact") is not True:
         blockers.append("native_camera_timestamps_not_synchronized")
 
@@ -742,18 +747,21 @@ def assess_native_camera_backend_result(
         "wrist_camera_local_transform_delta": wrist_local_delta,
         "wrist_camera_local_transform_delta_max": MAX_WRIST_LOCAL_TRANSFORM_DELTA,
         "wrist_mount_calibration": dict(mount),
-        "franka_joint_position_hold": {
-            "mode": hold.get("mode"),
-            "required_articulation_action_api_applied": hold.get(
-                "required_articulation_action_api_applied"
-            ),
-            "max_abs_position_error_rad": MAX_HELD_JOINT_POSITION_ERROR_RAD,
-            **hold_evidence,
+        "franka_render_only_joint_state": {
+            "mode": joint_state.get("mode"),
+            "physics_dynamics_claimed": joint_state.get("physics_dynamics_claimed"),
+            "max_abs_position_error_rad": MAX_KINEMATIC_JOINT_POSITION_ERROR_RAD,
+            **joint_state_evidence,
         },
+        "camera_transition_physics_steps_advanced": backend_result.get(
+            "camera_transition_physics_steps_advanced"
+        ),
         "camera_motion_and_mount_checks_passed": not any(
             blocker.startswith("native_wrist_camera")
             or blocker.startswith("native_wrist_mount")
             or blocker.startswith("native_franka_joint")
+            or blocker.startswith("native_franka_render")
+            or blocker.startswith("native_camera_transition")
             for blocker in blockers
         ),
     }

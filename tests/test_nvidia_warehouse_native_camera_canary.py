@@ -11,7 +11,7 @@ import pytest
 from PIL import Image
 
 from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
-    _apply_and_measure_held_joint_pose,
+    _apply_and_measure_render_only_joint_pose,
     _apply_runtime_asset_relocations,
     _camera_quaternion_wxyz,
     _load_materialization_manifest,
@@ -71,12 +71,13 @@ def _backend(*, output_dir: Path, **_kwargs):
             "calibrated_after_initial_joint_hold": True,
             "per_frame_task_reaim_performed": False,
         },
-        "franka_joint_position_hold": {
-            "mode": "state_plus_articulation_action_position_velocity_targets",
-            "required_articulation_action_api_applied": True,
+        "franka_render_only_joint_state": {
+            "mode": "render_only_kinematic_joint_state_transition",
+            "physics_dynamics_claimed": False,
             "initial": {"max_abs_position_error_rad": 0.001},
             "commanded": {"max_abs_position_error_rad": 0.001},
         },
+        "camera_transition_physics_steps_advanced": 0,
         "wrist_camera_world_displacement_m": 0.02,
         "wrist_camera_local_transform_delta": 0.0,
         "external_wrist_timestamp_pairs_exact": True,
@@ -141,7 +142,7 @@ def test_wrist_mount_calibration_handles_world_up_parallel_to_gaze() -> None:
     assert abs(np.dot(evidence["mount_forward_parent"], evidence["mount_up_parent"])) < 1e-9
 
 
-def test_joint_pose_uses_public_articulation_action_before_measurement() -> None:
+def test_joint_pose_is_rendered_without_requesting_physics_steps() -> None:
     calls: list[tuple[str, np.ndarray]] = []
 
     class Robot:
@@ -153,81 +154,70 @@ def test_joint_pose_uses_public_articulation_action_before_measurement() -> None
         def set_joint_velocities(self, value):
             calls.append(("set_joint_velocities", np.asarray(value)))
 
-        def apply_action(self, value):
-            calls.append(("apply_action", value))
-
         def get_joint_positions(self):
             return self.measured
 
-    steps: list[int] = []
-    result = _apply_and_measure_held_joint_pose(
+    renders: list[int] = []
+    result = _apply_and_measure_render_only_joint_pose(
         robot=Robot(),
         joint_positions=[0.1, -0.2, 0.3],
         phase="initial",
-        step=lambda: steps.append(1),
-        step_count=4,
-        action_factory=lambda **values: values,
+        render=lambda: renders.append(1),
+        render_count=4,
     )
 
     assert [name for name, _value in calls] == [
         "set_joint_positions",
         "set_joint_velocities",
-        "apply_action",
     ]
     assert np.array_equal(calls[1][1], np.zeros(3))
-    assert np.array_equal(calls[2][1]["joint_positions"], np.asarray([0.1, -0.2, 0.3]))
-    assert np.array_equal(calls[2][1]["joint_velocities"], np.zeros(3))
-    assert len(steps) == 4
+    assert len(renders) == 4
+    assert result["physics_steps_requested"] == 0
     assert result["max_abs_position_error_rad"] == pytest.approx(0.0)
 
 
-def test_joint_pose_hold_fails_closed_without_articulation_action_api() -> None:
+def test_render_only_joint_state_fails_closed_without_state_api() -> None:
     class Robot:
         def set_joint_positions(self, _value):
             pass
-
-        def set_joint_velocities(self, _value):
-            pass
-
-        def get_joint_positions(self):
-            return np.zeros(2)
-
-    with pytest.raises(ValueError, match="native_franka_joint_hold_api_missing"):
-        _apply_and_measure_held_joint_pose(
-            robot=Robot(),
-            joint_positions=[0.0, 0.0],
-            phase="initial",
-            step=lambda: None,
-            step_count=1,
-            action_factory=lambda **values: values,
-        )
-
-
-def test_joint_pose_hold_wraps_articulation_action_failure_in_safe_code() -> None:
-    class Robot:
-        def set_joint_positions(self, _value):
-            pass
-
-        def set_joint_velocities(self, _value):
-            pass
-
-        def apply_action(self, _value):
-            raise RuntimeError("opaque provider detail")
 
         def get_joint_positions(self):
             return np.zeros(2)
 
     with pytest.raises(
         ValueError,
-        match="native_franka_joint_hold_apply_action_failed:RuntimeError",
+        match="native_franka_render_only_joint_state_api_missing:set_joint_velocities",
     ):
-        _apply_and_measure_held_joint_pose(
+        _apply_and_measure_render_only_joint_pose(
             robot=Robot(),
             joint_positions=[0.0, 0.0],
             phase="initial",
-            step=lambda: None,
-            step_count=1,
-            action_factory=lambda **values: values,
+            render=lambda: None,
+            render_count=1,
+        )
+
+
+def test_render_only_joint_state_wraps_render_failure_in_safe_code() -> None:
+    class Robot:
+        def set_joint_positions(self, _value):
+            pass
+
+        def set_joint_velocities(self, _value):
+            pass
+
+        def get_joint_positions(self):
+            return np.zeros(2)
+
+    with pytest.raises(
+        ValueError,
+        match="native_franka_render_only_joint_state_failed:RuntimeError",
+    ):
+        _apply_and_measure_render_only_joint_pose(
+            robot=Robot(),
+            joint_positions=[0.0, 0.0],
+            phase="initial",
+            render=lambda: (_ for _ in ()).throw(RuntimeError("opaque provider detail")),
+            render_count=1,
         )
 
 
@@ -419,13 +409,15 @@ def test_native_camera_canary_fails_closed_on_missing_or_reaimed_mount_calibrati
     assert "native_wrist_mount_calibration_missing_or_invalid" in missing_result["blockers"]
 
 
-def test_native_camera_canary_fails_closed_when_joint_pose_is_not_held(tmp_path: Path) -> None:
+def test_native_camera_canary_fails_closed_when_joint_state_does_not_match(tmp_path: Path) -> None:
     spec_path = tmp_path / "spec.json"
     _spec(spec_path)
 
     def drifting_backend(**kwargs):
         value = _backend(**kwargs)
-        value["franka_joint_position_hold"]["commanded"]["max_abs_position_error_rad"] = 0.25
+        value["franka_render_only_joint_state"]["commanded"][
+            "max_abs_position_error_rad"
+        ] = 0.25
         return value
 
     result = run_native_camera_canary(
@@ -436,7 +428,28 @@ def test_native_camera_canary_fails_closed_when_joint_pose_is_not_held(tmp_path:
     )
 
     assert result["status"] == "failed"
-    assert "native_franka_joint_hold_error_exceeded:commanded" in result["blockers"]
+    assert "native_franka_joint_state_error_exceeded:commanded" in result["blockers"]
+
+
+def test_native_camera_canary_fails_closed_when_camera_transition_steps_physics(
+    tmp_path: Path,
+) -> None:
+    spec_path = tmp_path / "spec.json"
+    _spec(spec_path)
+
+    def stepping_backend(**kwargs):
+        value = _backend(**kwargs)
+        value["camera_transition_physics_steps_advanced"] = 1
+        return value
+
+    result = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "result",
+        backend=stepping_backend,
+    )
+
+    assert "native_camera_transition_advanced_physics" in result["blockers"]
 
 
 def test_native_camera_canary_fails_closed_on_missing_wrist_measurements(

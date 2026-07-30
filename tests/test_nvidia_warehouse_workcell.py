@@ -142,7 +142,7 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
     }
     assert "mount_forward_parent" not in spec["cameras"]["wrist"]
     assert (
-        "franka_joint_positions_are_held_by_public_articulation_action_targets"
+        "franka_joint_states_are_rendered_kinematically_without_physics_advance"
         in spec["required_checks"]
     )
     assert (
