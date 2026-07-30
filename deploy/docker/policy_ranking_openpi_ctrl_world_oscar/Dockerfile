@@ -96,7 +96,7 @@ RUN export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 \
     && /.ctrl-world-venv/bin/python -m compileall -q /opt/blueprint-current/src/blueprint_pipeline \
     && /.ctrl-world-venv/bin/python -c "import torch; assert torch.__version__ == '2.7.1+cu128'; import accelerate, decord, diffusers, einops, mediapy, swanlab, transformers, wandb" \
     && /.ctrl-world-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.ctrl_world_joint_position_reference_runtime import _validate_source_manifest; result=_validate_source_manifest(Path('/opt/ctrl-world'), Path('/opt/ctrl-world-runtime/ctrl_world_source_manifest.json')); assert result['file_count'] == 8" \
-    && /opt/oscar-venv/bin/python -m pip check \
+    && uv pip check --python /opt/oscar-venv/bin/python \
     && /opt/oscar-venv/bin/python -c "import torch, cv2, loguru; from inference.inference_oscar import build_pipeline; assert callable(build_pipeline)"
 
 RUN env -u HF_TOKEN -u HUGGING_FACE_HUB_TOKEN \
