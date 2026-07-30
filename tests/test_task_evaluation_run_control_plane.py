@@ -32,6 +32,10 @@ from blueprint_pipeline.task_evaluation_run_webapp_sync import (
     build_task_evaluation_run_webapp_publication,
     sync_task_evaluation_run_to_webapp,
 )
+from blueprint_pipeline.task_evaluation_method_catalog import (
+    TASK_EVALUATION_METHOD_CATALOG_PATH_ENV,
+    validate_task_evaluation_method_catalog,
+)
 
 
 SHA_A = "sha256:" + "a" * 64
@@ -638,15 +642,23 @@ def test_signed_service_plans_authorizes_executes_and_inspects(tmp_path, monkeyp
 
     testbed = _testbed()
     profile = _profile()
+    catalog = validate_task_evaluation_method_catalog({
+        "schema_version": "task_evaluation_method_catalog.v1",
+        "catalog_id": "service-local-methods",
+        "version": "1",
+        "method_profiles": [profile],
+        "qualifications": [_qualification(profile)],
+    })
+    catalog_path = tmp_path / "method-catalog.json"
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    monkeypatch.setenv(TASK_EVALUATION_METHOD_CATALOG_PATH_ENV, str(catalog_path))
     plan_submission = {
-        "schema_version": "task_evaluation_run_plan_submission.v1",
+        "schema_version": "task_evaluation_run_plan_submission.v2",
         "run_id": "run-service-1",
         "capture_session_id": "capture-session-service-1",
         "intake_id": "capture-1",
         "decision_evidence_request": _request(testbed),
         "testbed": testbed,
-        "method_profiles": [profile],
-        "qualifications": [_qualification(profile)],
         "idempotency_key": "prepare-run-service-1",
     }
     plan_body = json.dumps(plan_submission, separators=(",", ":"))
@@ -659,6 +671,22 @@ def test_signed_service_plans_authorizes_executes_and_inspects(tmp_path, monkeyp
     assert planned.status_code == 200
     plan_result = planned.json()
     assert plan_result["state"] == "authorization_required"
+    assert plan_result["method_catalog"] == {
+        "catalog_id": "service-local-methods",
+        "version": "1",
+        "catalog_digest": catalog["catalog_digest"],
+        "pipeline_owned": True,
+    }
+    assert plan_result["authorization_candidates"] == [{
+        "adapter_reference": ANALYTIC_REACHABILITY_ADAPTER,
+        "method_id": "local-analytic-reachability",
+        "method_version": "1",
+        "method_profile_digest": profile["method_profile_digest"],
+        "method_family": "analytic_geometry_kinematics",
+        "expected_cost_usd": 0.0,
+        "proof_tier": "analytic_only",
+        "execution_authorized": False,
+    }]
 
     authorization_submission = {
         "schema_version": "task_evaluation_run_authorization_submission.v1",

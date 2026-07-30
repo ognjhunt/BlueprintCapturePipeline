@@ -59,6 +59,10 @@ from .task_evaluation_run_state import (
     TaskEvaluationRunStateError,
     TaskEvaluationRunStateStore,
 )
+from .task_evaluation_method_catalog import (
+    TaskEvaluationMethodCatalogError,
+    load_task_evaluation_method_catalog,
+)
 from .task_evaluation_run_webapp_sync import (
     TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV,
 )
@@ -1844,15 +1848,36 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid JSON body") from exc
         if not isinstance(payload, Mapping):
             raise HTTPException(status_code=400, detail="expected JSON object")
-        if payload.get("schema_version") != "task_evaluation_run_plan_submission.v1":
+        plan_schema = payload.get("schema_version")
+        if plan_schema not in {
+            "task_evaluation_run_plan_submission.v1",
+            "task_evaluation_run_plan_submission.v2",
+        }:
             raise HTTPException(status_code=422, detail="run plan schema version mismatch")
         manifest_path = _manifest_path().resolve()
         if not manifest_path.is_file():
             raise HTTPException(status_code=503, detail="control-plane manifest missing")
-        methods = payload.get("method_profiles")
-        qualifications = payload.get("qualifications")
-        if not isinstance(methods, list) or not isinstance(qualifications, list):
-            raise HTTPException(status_code=422, detail="method profiles and qualifications must be lists")
+        catalog = None
+        if plan_schema == "task_evaluation_run_plan_submission.v2":
+            if "method_profiles" in payload or "qualifications" in payload:
+                raise HTTPException(
+                    status_code=422,
+                    detail="v2 plan submission cannot select methods or qualifications",
+                )
+            try:
+                catalog = load_task_evaluation_method_catalog()
+            except TaskEvaluationMethodCatalogError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            methods = catalog["method_profiles"]
+            qualifications = catalog["qualifications"]
+        else:
+            methods = payload.get("method_profiles")
+            qualifications = payload.get("qualifications")
+            if not isinstance(methods, list) or not isinstance(qualifications, list):
+                raise HTTPException(
+                    status_code=422,
+                    detail="method profiles and qualifications must be lists",
+                )
         try:
             return prepare_task_evaluation_run(
                 state_root=_task_evaluation_run_root(manifest_path),
@@ -1866,6 +1891,7 @@ def create_app() -> FastAPI:
                     dict(row) for row in qualifications if isinstance(row, Mapping)
                 ],
                 idempotency_key=str(payload.get("idempotency_key") or ""),
+                method_catalog_value=catalog,
             )
         except (TaskEvaluationRunControlPlaneError, TaskEvaluationRunStateError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

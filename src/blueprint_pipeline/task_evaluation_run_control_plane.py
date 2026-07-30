@@ -20,6 +20,7 @@ from .decision_evidence_execution import build_decision_envelope, execute_eviden
 from .decision_evidence_router import route_decision_evidence
 from .local_evidence_adapters import authorized_local_evidence_adapter_registry
 from .task_evaluation_run_state import TaskEvaluationRunStateStore
+from .task_evaluation_method_catalog import validate_task_evaluation_method_catalog
 from .task_evaluation_run_webapp_sync import sync_task_evaluation_run_to_webapp
 
 
@@ -76,6 +77,7 @@ def prepare_task_evaluation_run(
     method_values: Sequence[Mapping[str, Any]],
     qualification_values: Sequence[Mapping[str, Any]],
     idempotency_key: str,
+    method_catalog_value: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         run_id = strict_identifier(run_id, field="run_id", max_length=192)
@@ -94,14 +96,22 @@ def prepare_task_evaluation_run(
     ]
     if len(matching_sources) != 1:
         raise TaskEvaluationRunControlPlaneError("run_intake_testbed_binding_mismatch")
-    methods = [EvidenceMethodProfile.from_mapping(row).to_mapping() for row in method_values]
+    catalog = (
+        validate_task_evaluation_method_catalog(method_catalog_value)
+        if method_catalog_value is not None
+        else None
+    )
+    effective_methods = catalog["method_profiles"] if catalog else method_values
+    effective_qualifications = catalog["qualifications"] if catalog else qualification_values
+    methods = [EvidenceMethodProfile.from_mapping(row).to_mapping() for row in effective_methods]
     qualifications = [
-        QualificationRecord.from_mapping(row).to_mapping() for row in qualification_values
+        QualificationRecord.from_mapping(row).to_mapping()
+        for row in effective_qualifications
     ]
     plan = route_decision_evidence(request, testbed, methods, qualifications).to_mapping()
     root = _run_root(state_root, run_id)
     artifacts = root / "artifacts"
-    for name, value in (
+    artifact_values: list[tuple[str, Mapping[str, Any]]] = [
         ("run_context.json", {
             "schema_version": "task_evaluation_run_context.v1",
             "run_id": run_id,
@@ -113,7 +123,10 @@ def prepare_task_evaluation_run(
         ("evidence_plan.json", plan),
         ("method_profiles.json", {"method_profiles": methods}),
         ("qualifications.json", {"qualifications": qualifications}),
-    ):
+    ]
+    if catalog is not None:
+        artifact_values.append(("method_catalog.json", catalog))
+    for name, value in artifact_values:
         _write_immutable(artifacts / name, value)
     store = TaskEvaluationRunStateStore(state_root)
     binding = _binding(request, testbed)
@@ -145,6 +158,17 @@ def prepare_task_evaluation_run(
         binding=binding,
         artifacts={"plan_digest": plan["plan_digest"]},
     )
+    method_by_digest = {row["method_profile_digest"]: row for row in methods}
+    planned_digests = sorted({
+        str(step.get("method_profile_digest") or "")
+        for claim_plan in plan.get("claim_plans", [])
+        if isinstance(claim_plan, Mapping)
+        for step in [
+            *claim_plan.get("selected_methods", []),
+            *claim_plan.get("escalation_methods", []),
+        ]
+        if isinstance(step, Mapping) and step.get("method_profile_digest")
+    })
     return {
         "schema_version": "task_evaluation_run_preparation.v1",
         "run_id": run_id,
@@ -153,6 +177,29 @@ def prepare_task_evaluation_run(
         "state": state["to_state"],
         "request": request,
         "evidence_plan": plan,
+        "method_catalog": (
+            {
+                "catalog_id": catalog["catalog_id"],
+                "version": catalog["version"],
+                "catalog_digest": catalog["catalog_digest"],
+                "pipeline_owned": True,
+            }
+            if catalog is not None
+            else {"pipeline_owned": False, "source": "caller_supplied_v1_compatibility"}
+        ),
+        "authorization_candidates": [
+            {
+                "adapter_reference": method_by_digest[digest]["adapter_reference"],
+                "method_id": method_by_digest[digest]["method_id"],
+                "method_version": method_by_digest[digest]["version"],
+                "method_profile_digest": digest,
+                "method_family": method_by_digest[digest]["method_family"],
+                "expected_cost_usd": method_by_digest[digest]["expected_cost_usd"],
+                "proof_tier": method_by_digest[digest]["proof_tier"],
+                "execution_authorized": False,
+            }
+            for digest in planned_digests
+        ],
         "execution_started": False,
         "proof_boundary": state["proof_boundary"],
     }
