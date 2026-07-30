@@ -86,6 +86,49 @@ def test_iphone_lidar_and_360_capture_receive_different_reconstruction_routes(
     jsonschema.validate(panorama, schema)
 
 
+def test_registered_capture_build_inspection_uses_deterministic_profile(
+    tmp_path: Path,
+) -> None:
+    capture_build = _capture_build(
+        tmp_path, profile="iphone_arkit_lidar", has_lidar=True
+    )
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="capture-inspection-tool",
+        customer_question="Inspect this capture before reconstruction.",
+        capture_build=capture_build,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[capture_build["capture_build_digest"]],
+    ).to_mapping()
+    binding = next(
+        binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+        if binding.tool_id == "inspect_capture_build"
+    )
+
+    observation = binding.invoke(
+        {"capture_build_digest": capture_build["capture_build_digest"]}
+    )
+
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["capture_authority_profile"] == (
+        "iphone_arkit_lidar"
+    )
+    assert observation["typed_result"]["route_status"] == "route_proposed"
+    assert observation["typed_result"]["raw_capture_remains_authoritative"] is True
+    assert observation["typed_result"]["agent_selected_capture_profile"] is False
+    assert observation["proof_effect"] == "none"
+
+
 @pytest.mark.parametrize(
     ("profile", "required_stage"),
     [
@@ -230,6 +273,7 @@ def test_agents_sdk_receives_only_digest_bound_deterministic_route_tool(
     }
 
     assert set(bindings) == {
+        "inspect_capture_build",
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
         "propose_targeted_recapture",

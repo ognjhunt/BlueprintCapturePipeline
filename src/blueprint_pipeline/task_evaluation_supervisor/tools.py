@@ -88,6 +88,19 @@ def _output_schema(
 
 
 _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "inspect_capture_build": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "capture_authority_profile": {},
+            "route_status": {"type": "string"},
+            "artifact_count": {"type": "integer"},
+            "blockers": {"type": "array"},
+            "raw_capture_remains_authoritative": {"const": True},
+            "agent_selected_capture_profile": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
     "inspect_site_task_testbed": _output_schema(
         {
             "contract_present": {"const": True},
@@ -475,6 +488,13 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     """
 
     return (
+        _descriptor(
+            "inspect_capture_build",
+            "capture_build_inspection",
+            expected_artifacts=["task_evaluation_capture_reconstruction_route.v1"],
+            input_properties={"capture_build_digest": {"type": "string"}},
+            required_inputs=["capture_build_digest"],
+        ),
         _descriptor(
             "inspect_site_task_testbed",
             "capture_testbed_inspection",
@@ -1089,6 +1109,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "materialize_clarification_request",
     ),
     "capture_testbed_supervisor": (
+        "inspect_capture_build",
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
         "compile_frozen_frame_dataset",
@@ -2364,6 +2385,39 @@ def _bound_artifact(
             "governance": dict((value or {}).get("governance") or {})
             if isinstance(value, Mapping)
             else {},
+        }
+    elif tool_id == "inspect_capture_build":
+        value = context.capture_build
+        expected = arguments.get("capture_build_digest")
+        actual = value.get("capture_build_digest") if isinstance(value, Mapping) else None
+        claim_types = sorted(
+            {
+                str(row.get("claim_type") or "").strip()
+                for row in (
+                    context.decision_request.get("claims", [])
+                    if isinstance(context.decision_request, Mapping)
+                    else []
+                )
+                if isinstance(row, Mapping) and str(row.get("claim_type") or "").strip()
+            }
+        )
+        route = (
+            build_capture_reconstruction_route(value, requested_claim_types=claim_types)
+            if isinstance(value, Mapping) and actual and expected == actual
+            else None
+        )
+        typed_result = {
+            "contract_present": value is not None,
+            "digest_matches": bool(actual and expected == actual),
+            "capture_authority_profile": (route or {}).get("capture_authority_profile"),
+            "route_status": str((route or {}).get("status") or "unavailable"),
+            "artifact_count": len((value or {}).get("artifacts", []))
+            if isinstance(value, Mapping)
+            else 0,
+            "blockers": list((route or {}).get("blockers") or []),
+            "raw_capture_remains_authoritative": True,
+            "agent_selected_capture_profile": False,
+            "proof_state_changed": False,
         }
     elif tool_id == "plan_capture_reconstruction_route":
         value = context.capture_build
