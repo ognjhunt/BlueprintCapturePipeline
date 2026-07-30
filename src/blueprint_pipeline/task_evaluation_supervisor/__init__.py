@@ -92,11 +92,21 @@ from .recovery import (
     RecoveryControlError,
 )
 from .evaluation import (
+    SEALED_SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION,
     SupervisorEvaluationCase,
     SupervisorEvaluationError,
     compare_supervisor_to_baseline,
     evaluate_supervisor_execution,
     load_supervisor_evaluation_corpus,
+)
+from .recorded_evaluation import (
+    RECORDED_SUPERVISOR_EVAL_BUNDLE_SCHEMA_VERSION,
+    SUPERVISOR_EVAL_CONFIGURATION_SCHEMA_VERSION,
+    evaluate_recorded_supervisor_corpus,
+    freeze_supervisor_evaluation_configuration,
+    load_recorded_supervisor_execution,
+    load_sealed_supervisor_evaluation_corpus,
+    validate_supervisor_evaluation_configuration,
 )
 from .supervisor import SupervisorExecution, TaskEvaluationSupervisor
 from .tools import RegisteredToolBinding, ToolRegistry
@@ -147,12 +157,15 @@ __all__ = [
     "PreauthorizedRecoveryPolicy",
     "RegisteredToolBinding",
     "RecoveryControlError",
+    "RECORDED_SUPERVISOR_EVAL_BUNDLE_SCHEMA_VERSION",
+    "SEALED_SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION",
     "SupervisorContext",
     "SupervisorContractError",
     "SupervisorEvent",
     "SupervisorExecution",
     "SupervisorEvaluationCase",
     "SupervisorEvaluationError",
+    "SUPERVISOR_EVAL_CONFIGURATION_SCHEMA_VERSION",
     "SupervisorLedgerError",
     "SupervisorManagerDecision",
     "SupervisorManagerError",
@@ -173,10 +186,15 @@ __all__ = [
     "execute_neutral_candidate_policy_suite",
     "reconcile_neutral_candidate_policy_costs",
     "evaluate_supervisor_execution",
+    "evaluate_recorded_supervisor_corpus",
+    "freeze_supervisor_evaluation_configuration",
     "load_capture_build_ingress",
     "load_supervisor_evaluation_corpus",
+    "load_recorded_supervisor_execution",
+    "load_sealed_supervisor_evaluation_corpus",
     "openai_cost_authority_binding_digest",
     "validate_openai_cost_scope_attestation",
+    "validate_supervisor_evaluation_configuration",
     "proof_boundary",
     "replay_supervisor_run",
     "run_capture_build_supervisor",

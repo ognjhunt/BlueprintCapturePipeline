@@ -201,3 +201,54 @@ uncertainty, evidence ceiling, next useful experiment, and prohibited claims.
 
 No supervisor artifact proves physical success, deployment readiness, safety
 certification, or policy-ranking support by itself.
+
+## Independent supervisor evaluation
+
+The committed 12-case corpus is a public synthetic protocol fixture. Do not call
+it secret held-out evidence or use its `+0.009187` fixture delta to promote an
+autonomy mode. A production comparison requires a separately held
+`task_evaluation_supervisor_eval_corpus.v2` with a canonical digest and an
+operator-controlled freeze timestamp.
+
+Validate the corpus without printing its hidden case properties:
+
+```bash
+blueprint-route-task-evaluation validate-supervisor-corpus \
+  --corpus /sealed/evaluation_corpus.v2.json \
+  --output /evaluation/corpus_validation.json
+```
+
+Before any held-out run, freeze the exact manager identity, all six specialist
+identities, SDK version, instructions, tool registry, model, provider, and
+inference ceiling. The spec must not contain hidden labels or extra fields:
+
+```bash
+blueprint-route-task-evaluation freeze-supervisor-evaluation \
+  --corpus /sealed/evaluation_corpus.v2.json \
+  --spec /evaluation/agent_configuration_spec.json \
+  --output /evaluation/frozen_agent_configuration.json
+```
+
+After every case has a terminal recorded run, score the complete matrix. Supply
+one `--run case_id=/path/to/run` argument for every sealed held-out case:
+
+```bash
+blueprint-route-task-evaluation evaluate-recorded-supervisor \
+  --corpus /sealed/evaluation_corpus.v2.json \
+  --configuration /evaluation/frozen_agent_configuration.json \
+  --run case-a=/runs/case-a \
+  --run case-b=/runs/case-b \
+  --output-dir /evaluation/result
+```
+
+The evaluator first replays every ledger and artifact, verifies that the corpus
+predates the configuration and the configuration predates every run, and checks
+the recorded manager/specialist identities against the freeze. Every case must
+reference a distinct run directory and replay-verified run identity. The
+evaluator records matching before/after tree digests for each source run, invokes
+no model, and writes outside the source run directories. Before creating its
+output directory, it stream-scans every recorded run for that case's hidden
+canaries and every other hidden canary in the sealed corpus. Missing cases,
+reused runs, post-hoc configuration changes,
+hidden-label leakage, replay failure, self-grading, critical proof violations,
+or insufficient baseline improvement fail closed.

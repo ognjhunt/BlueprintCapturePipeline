@@ -59,7 +59,11 @@ def _validate_kernel_input(name: str, value: Mapping[str, Any]) -> Mapping[str, 
     raise SupervisorReplayError(f"kernel_input_name_unsupported:{name}")
 
 
-def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
+def replay_supervisor_run(
+    output_dir: str | Path,
+    *,
+    persist_report: bool = True,
+) -> dict[str, Any]:
     """Revalidate the ledger, manifests, and kernel decision without a model call."""
 
     root = Path(output_dir).expanduser().resolve()
@@ -105,9 +109,7 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
     ):
         raise SupervisorReplayError("inference_reservation_report_mismatch")
 
-    customer_report_path = (
-        root / str(report_value.get("customer_report_path") or "")
-    ).resolve()
+    customer_report_path = (root / str(report_value.get("customer_report_path") or "")).resolve()
     if root not in customer_report_path.parents:
         raise SupervisorReplayError("customer_report_path_escape")
     customer_report = read_json(customer_report_path)
@@ -158,9 +160,7 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
         key=lambda row: int(row.get("step_index", -1)),
     )
     refusal_rows = [
-        dict(row)
-        for row in report_value.get("manager_refusals") or []
-        if isinstance(row, Mapping)
+        dict(row) for row in report_value.get("manager_refusals") or [] if isinstance(row, Mapping)
     ]
     for row in refusal_rows:
         path = (root / str(row.get("artifact_path") or "")).resolve()
@@ -172,8 +172,7 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
             digest_field="supervisor_manager_refusal_digest",
         )
         if (
-            refusal.get("schema_version")
-            != "task_evaluation_supervisor_manager_refusal.v1"
+            refusal.get("schema_version") != "task_evaluation_supervisor_manager_refusal.v1"
             or refusal.get("supervisor_manager_refusal_digest") != digest
             or row.get("digest") != digest
             or refusal.get("proof_effect") != "none"
@@ -182,8 +181,7 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
             raise SupervisorReplayError("manager_refusal_contract_mismatch")
         manager_refusal_digests.append(digest)
     if len(manager_refusal_digests) > 1 or (
-        refusal_rows
-        and int(refusal_rows[0].get("step_index", -1)) != len(manager_rows)
+        refusal_rows and int(refusal_rows[0].get("step_index", -1)) != len(manager_rows)
     ):
         raise SupervisorReplayError("manager_refusal_sequence_invalid")
     if (
@@ -275,9 +273,7 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
     manager_refusal_event_digests = [
         str(event.to_mapping().get("payload_digest") or "")
         for event in events
-        if str(event.to_mapping().get("event_type") or "").startswith(
-            "supervisor_manager_refused:"
-        )
+        if str(event.to_mapping().get("event_type") or "").startswith("supervisor_manager_refused:")
     ]
     if manager_refusal_event_digests != manager_refusal_digests:
         raise SupervisorReplayError("manager_refusal_event_sequence_mismatch")
@@ -314,8 +310,7 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
             ):
                 raise SupervisorReplayError("tool_observation_contract_mismatch")
             if (
-                observation.get("runtime_identity")
-                == "blueprint_local_deterministic_non_spend"
+                observation.get("runtime_identity") == "blueprint_local_deterministic_non_spend"
                 and observation_cost != 0
             ):
                 raise SupervisorReplayError("non_spend_tool_reported_cost")
@@ -332,24 +327,18 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
                     "status": observation.get("status"),
                     "typed_result": observation.get("typed_result"),
                     "typed_failure": observation.get("typed_failure"),
-                    "produced_artifact_references": observation.get(
-                        "produced_artifact_references"
-                    )
+                    "produced_artifact_references": observation.get("produced_artifact_references")
                     or [],
                     "observation_digest": observation.get("observation_digest"),
                     "proof_effect": observation.get("proof_effect"),
-                    "suggested_next_legal_actions": observation.get(
-                        "suggested_next_legal_actions"
-                    )
+                    "suggested_next_legal_actions": observation.get("suggested_next_legal_actions")
                     or [],
                 }
             )
             for generated_ref in observation.get("produced_artifact_references") or []:
                 if not isinstance(generated_ref, Mapping):
                     raise SupervisorReplayError("generated_artifact_reference_invalid")
-                generated_path = (
-                    root / str(generated_ref.get("artifact_path") or "")
-                ).resolve()
+                generated_path = (root / str(generated_ref.get("artifact_path") or "")).resolve()
                 if root not in generated_path.parents:
                     raise SupervisorReplayError("generated_artifact_path_escape")
                 generated_value = read_json(generated_path)
@@ -357,15 +346,9 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
                 digest_fields = {
                     "evidence_plan.v1": "plan_digest",
                     "targeted_recapture_request.v1": "targeted_recapture_request_digest",
-                    "task_evaluation_clarification_request.v1": (
-                        "clarification_request_digest"
-                    ),
-                    "task_evaluation_authorization_request.v1": (
-                        "authorization_request_digest"
-                    ),
-                    "task_evaluation_scenario_proposal_set.v1": (
-                        "scenario_proposal_set_digest"
-                    ),
+                    "task_evaluation_clarification_request.v1": ("clarification_request_digest"),
+                    "task_evaluation_authorization_request.v1": ("authorization_request_digest"),
+                    "task_evaluation_scenario_proposal_set.v1": ("scenario_proposal_set_digest"),
                     "task_evaluation_recovery_result.v1": "recovery_result_digest",
                 }
                 generated_digest = canonical_digest(
@@ -375,9 +358,7 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
                 if generated_ref.get("artifact_digest") != generated_digest:
                     raise SupervisorReplayError("generated_artifact_digest_mismatch")
                 generated_artifact_digests.append(generated_digest)
-        invocation_capability = str(
-            specialist_invocation.to_mapping().get("capability") or ""
-        )
+        invocation_capability = str(specialist_invocation.to_mapping().get("capability") or "")
         if invocation_observation_summaries != structured_observations_by_capability.get(
             invocation_capability,
             [],
@@ -441,7 +422,8 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
     replay_value["replay_report_digest"] = canonical_digest(
         replay_value, digest_field="replay_report_digest"
     )
-    write_json(root / "supervisor_replay_report.json", replay_value)
+    if persist_report:
+        write_json(root / "supervisor_replay_report.json", replay_value)
     return replay_value
 
 

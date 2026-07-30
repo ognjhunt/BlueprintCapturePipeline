@@ -29,7 +29,10 @@ from .task_evaluation_supervisor import (
     OpenAIProjectCandidateCostAuthority,
     SupervisorContext,
     TaskEvaluationSupervisor,
+    evaluate_recorded_supervisor_corpus,
+    freeze_supervisor_evaluation_configuration,
     load_capture_build_ingress,
+    load_sealed_supervisor_evaluation_corpus,
     reconcile_neutral_candidate_policy_costs,
 )
 
@@ -288,6 +291,52 @@ def _reconcile_candidate_costs(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _recorded_run_mapping(rows: Sequence[str]) -> dict[str, Path]:
+    mapped: dict[str, Path] = {}
+    for row in rows:
+        case_id, separator, raw_path = row.partition("=")
+        if not separator or not case_id or not raw_path or case_id in mapped:
+            raise ValueError("recorded_run_mapping_invalid")
+        mapped[case_id] = Path(raw_path).expanduser().resolve()
+    return mapped
+
+
+def _validate_supervisor_corpus(args: argparse.Namespace) -> dict[str, Any]:
+    corpus, cases = load_sealed_supervisor_evaluation_corpus(args.corpus)
+    result = {
+        "schema_version": "task_evaluation_supervisor_corpus_validation.v1",
+        "operation": "validate-supervisor-corpus",
+        "status": "passed",
+        "corpus_id": corpus["corpus_id"],
+        "corpus_digest": corpus["corpus_digest"],
+        "heldout_case_count": sum(case.split == "heldout" for case in cases),
+        "development_case_count": sum(case.split == "development" for case in cases),
+        "hidden_case_properties_emitted": False,
+        "proof_effect": "none",
+    }
+    write_json(args.output.expanduser().resolve(), result)
+    return result
+
+
+def _freeze_supervisor_evaluation(args: argparse.Namespace) -> dict[str, Any]:
+    corpus, _cases = load_sealed_supervisor_evaluation_corpus(args.corpus)
+    result = freeze_supervisor_evaluation_configuration(
+        read_json(args.spec),
+        corpus_digest=str(corpus["corpus_digest"]),
+    )
+    write_json(args.output.expanduser().resolve(), result)
+    return result
+
+
+def _evaluate_recorded_supervisor(args: argparse.Namespace) -> dict[str, Any]:
+    return evaluate_recorded_supervisor_corpus(
+        corpus_path=args.corpus,
+        configuration=read_json(args.configuration),
+        recorded_runs=_recorded_run_mapping(args.run),
+        output_dir=args.output_dir,
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="operation", required=True)
@@ -367,6 +416,39 @@ def _parser() -> argparse.ArgumentParser:
     ingest.add_argument("--output-dir", required=True, type=Path)
     ingest.set_defaults(handler=_ingest_outcome)
 
+    validate_corpus = subparsers.add_parser(
+        "validate-supervisor-corpus",
+        help="Validate a sealed supervisor corpus without exposing hidden properties.",
+    )
+    validate_corpus.add_argument("--corpus", required=True, type=Path)
+    validate_corpus.add_argument("--output", required=True, type=Path)
+    validate_corpus.set_defaults(handler=_validate_supervisor_corpus)
+
+    freeze_evaluation = subparsers.add_parser(
+        "freeze-supervisor-evaluation",
+        help="Freeze the manager and six specialist identities before held-out execution.",
+    )
+    freeze_evaluation.add_argument("--corpus", required=True, type=Path)
+    freeze_evaluation.add_argument("--spec", required=True, type=Path)
+    freeze_evaluation.add_argument("--output", required=True, type=Path)
+    freeze_evaluation.set_defaults(handler=_freeze_supervisor_evaluation)
+
+    recorded_evaluation = subparsers.add_parser(
+        "evaluate-recorded-supervisor",
+        help="Replay and independently score a complete recorded held-out matrix.",
+    )
+    recorded_evaluation.add_argument("--corpus", required=True, type=Path)
+    recorded_evaluation.add_argument("--configuration", required=True, type=Path)
+    recorded_evaluation.add_argument(
+        "--run",
+        action="append",
+        default=[],
+        required=True,
+        metavar="CASE_ID=RUN_DIR",
+    )
+    recorded_evaluation.add_argument("--output-dir", required=True, type=Path)
+    recorded_evaluation.set_defaults(handler=_evaluate_recorded_supervisor)
+
     reconcile_costs = subparsers.add_parser(
         "reconcile-candidate-costs",
         help=(
@@ -408,6 +490,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             "live_provider_execution": False,
             "physical_robot_run_initiated": False,
         }
+        if args.operation in {
+            "validate-supervisor-corpus",
+            "freeze-supervisor-evaluation",
+            "evaluate-recorded-supervisor",
+        }:
+            result.update(
+                {
+                    "model_invoked": False,
+                    "recorded_runs_mutated": False,
+                    "proof_effect": "none",
+                }
+            )
         print(json.dumps(result, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))

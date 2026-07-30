@@ -34,6 +34,7 @@ from blueprint_pipeline.paid_resource_admission import (
 )
 from blueprint_pipeline.task_evaluation_supervisor import (
     ActionProposal,
+    AGENTS_SDK_HARNESS_ID,
     AgentsSDKCapabilityOutput,
     AgentsSDKInvocationResult,
     AgentsSDKInvocationBlocked,
@@ -68,10 +69,13 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     clarification_receipt,
     deterministic_baseline_capabilities,
     evaluate_supervisor_execution,
+    evaluate_recorded_supervisor_corpus,
+    freeze_supervisor_evaluation_configuration,
     freeze_scenario_manifest,
     freeze_candidate_policy_manifest,
     load_capture_build_ingress,
     load_supervisor_evaluation_corpus,
+    load_recorded_supervisor_execution,
     replay_supervisor_run,
     run_capture_build_supervisor,
     scenario_proposal_set,
@@ -2255,6 +2259,372 @@ def test_heldout_corpus_runs_case_specific_inputs_against_recorded_baseline(
     )
     with pytest.raises(SupervisorEvaluationError, match="agent_evaluation_boundary_invalid"):
         compare_supervisor_to_baseline(self_graded, baseline_reports)
+
+
+def _sealed_corpus(tmp_path: Path) -> Path:
+    source = (
+        Path(__file__).parent
+        / "fixtures"
+        / "task_evaluation_supervisor"
+        / "evaluation_corpus.v1.json"
+    )
+    value = json.loads(source.read_text(encoding="utf-8"))
+    value.update(
+        {
+            "schema_version": "task_evaluation_supervisor_eval_corpus.v2",
+            "corpus_id": "sealed-supervisor-corpus-fixture",
+            "status": "frozen",
+            "operator_id": "independent-evaluation-owner",
+            "issued_by_agent": False,
+            "frozen_at": "2026-07-29T14:00:00+00:00",
+            "frozen_before_agent_execution": True,
+            "development_cases_excluded_from_promotion": True,
+            "hidden_expected_properties_sent_to_agent": False,
+            "minimum_required_improvement": 0.05,
+            "proof_effect": "none",
+        }
+    )
+    value["corpus_digest"] = canonical_digest(value, digest_field="corpus_digest")
+    path = tmp_path / "sealed-corpus.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
+
+
+def _frozen_evaluation_configuration(
+    supervisor: TaskEvaluationSupervisor,
+    *,
+    corpus_digest: str,
+) -> dict[str, Any]:
+    common = {
+        "provider": "openai_agents_sdk_fixture",
+        "model": supervisor.manager.config.model,
+        "agent_harness": AGENTS_SDK_HARNESS_ID,
+        "agents_sdk_version": "0.18.1",
+    }
+    return freeze_supervisor_evaluation_configuration(
+        {
+            "configuration_id": "fixture-supervisor-configuration",
+            "operator_id": "independent-evaluation-owner",
+            "issued_by_agent": False,
+            "frozen_at": "2026-07-29T14:30:00+00:00",
+            "tool_registry_digest": supervisor.tool_registry.digest,
+            "max_inference_cost_usd": 0.0,
+            "manager_identity": {
+                **common,
+                "adapter_id": supervisor.manager.adapter_id,
+                "adapter_version": supervisor.manager.adapter_version,
+                "instruction_digest": canonical_digest(
+                    {"instruction": supervisor.manager.instruction}
+                ),
+            },
+            "specialist_identities": [
+                {
+                    **common,
+                    "capability": capability.kind.value,
+                    "adapter_id": capability.adapter_id,
+                    "adapter_version": capability.adapter_version,
+                    "instruction_digest": canonical_digest(
+                        {
+                            "adapter_id": capability.adapter_id,
+                            "adapter_version": capability.adapter_version,
+                            "instruction": capability.instruction,
+                        }
+                    ),
+                }
+                for capability in supervisor.capabilities
+            ],
+        },
+        corpus_digest=corpus_digest,
+    )
+
+
+def test_recorded_heldout_evaluator_replays_runs_without_mutating_them(
+    tmp_path: Path,
+) -> None:
+    corpus_path = _sealed_corpus(tmp_path)
+    corpus_value = json.loads(corpus_path.read_text(encoding="utf-8"))
+    cases = load_supervisor_evaluation_corpus(corpus_path)
+    heldout = [case for case in cases if case.split == "heldout"]
+    supervisor = _sdk_supervisor()
+    configuration = _frozen_evaluation_configuration(
+        supervisor,
+        corpus_digest=corpus_value["corpus_digest"],
+    )
+    recorded_runs: dict[str, Path] = {}
+    for case in heldout:
+        execution = supervisor.run(
+            _heldout_context(case),
+            output_dir=tmp_path / "recorded-runs" / case.case_id,
+            mode=AutonomyMode.SHADOW,
+            generated_at="2026-07-29T15:00:00+00:00",
+        )
+        recorded_runs[case.case_id] = execution.output_dir
+        assert not (execution.output_dir / "supervisor_evaluation_report.json").exists()
+
+    reconstructed = load_recorded_supervisor_execution(recorded_runs[heldout[0].case_id])
+    assert reconstructed.report.digest
+    bundle = evaluate_recorded_supervisor_corpus(
+        corpus_path=corpus_path,
+        configuration=configuration,
+        recorded_runs=recorded_runs,
+        output_dir=tmp_path / "independent-evaluation",
+    )
+
+    assert bundle["heldout_case_count"] == 8
+    assert bundle["model_invoked_during_evaluation"] is False
+    assert bundle["recorded_runs_mutated"] is False
+    assert bundle["agent_self_graded"] is False
+    assert bundle["eligible_for_autonomy_promotion"] is False
+    assert bundle["zero_critical_boundary_violations"] is True
+    assert bundle["all_six_specialists_exercised"] is True
+    assert bundle["specialist_capability_count"] == 6
+    assert all(
+        reference["recorded_run_tree_digest_before"] == reference["recorded_run_tree_digest_after"]
+        for reference in bundle["run_references"]
+    )
+    assert all(
+        not (run_root / "supervisor_evaluation_report.json").exists()
+        and not (run_root / "supervisor_replay_report.json").exists()
+        for run_root in recorded_runs.values()
+    )
+
+    with pytest.raises(SupervisorEvaluationError, match="recorded_evaluation_run_reused"):
+        evaluate_recorded_supervisor_corpus(
+            corpus_path=corpus_path,
+            configuration=configuration,
+            recorded_runs={case.case_id: recorded_runs[heldout[0].case_id] for case in heldout},
+            output_dir=tmp_path / "reused-recording",
+        )
+
+    leaked_case = heldout[0]
+    (recorded_runs[leaked_case.case_id] / "injected-input.txt").write_text(
+        heldout[1].hidden_canaries[0],
+        encoding="utf-8",
+    )
+    with pytest.raises(SupervisorEvaluationError, match="recorded_run_hidden_canary_present"):
+        evaluate_recorded_supervisor_corpus(
+            corpus_path=corpus_path,
+            configuration=configuration,
+            recorded_runs=recorded_runs,
+            output_dir=tmp_path / "leaked-recording",
+        )
+    assert not (tmp_path / "leaked-recording").exists()
+
+
+def test_recorded_heldout_evaluator_refuses_incomplete_or_posthoc_configuration(
+    tmp_path: Path,
+) -> None:
+    corpus_path = _sealed_corpus(tmp_path)
+    corpus_value = json.loads(corpus_path.read_text(encoding="utf-8"))
+    supervisor = _sdk_supervisor()
+    configuration = _frozen_evaluation_configuration(
+        supervisor,
+        corpus_digest=corpus_value["corpus_digest"],
+    )
+    heldout = [
+        case for case in load_supervisor_evaluation_corpus(corpus_path) if case.split == "heldout"
+    ]
+    execution = supervisor.run(
+        _heldout_context(heldout[0]),
+        output_dir=tmp_path / "one-run",
+        mode=AutonomyMode.SHADOW,
+        generated_at="2026-07-29T15:00:00+00:00",
+    )
+    with pytest.raises(
+        SupervisorEvaluationError,
+        match="recorded_evaluation_case_matrix_incomplete",
+    ):
+        evaluate_recorded_supervisor_corpus(
+            corpus_path=corpus_path,
+            configuration=configuration,
+            recorded_runs={heldout[0].case_id: execution.output_dir},
+            output_dir=tmp_path / "incomplete",
+        )
+
+    posthoc = dict(configuration)
+    posthoc["frozen_at"] = "2026-07-29T15:30:00+00:00"
+    posthoc["configuration_digest"] = canonical_digest(
+        posthoc,
+        digest_field="configuration_digest",
+    )
+    complete_mapping = {heldout[0].case_id: execution.output_dir}
+    for case in heldout[1:]:
+        complete_mapping[case.case_id] = supervisor.run(
+            _heldout_context(case),
+            output_dir=tmp_path / "posthoc-runs" / case.case_id,
+            mode=AutonomyMode.SHADOW,
+            generated_at="2026-07-29T15:00:00+00:00",
+        ).output_dir
+    with pytest.raises(
+        SupervisorEvaluationError,
+        match="recorded_run_predates_configuration_freeze",
+    ):
+        evaluate_recorded_supervisor_corpus(
+            corpus_path=corpus_path,
+            configuration=posthoc,
+            recorded_runs=complete_mapping,
+            output_dir=tmp_path / "posthoc",
+        )
+
+
+def test_supervisor_evaluation_cli_validates_corpus_without_hidden_output(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    corpus_path = _sealed_corpus(tmp_path)
+    output = tmp_path / "corpus-validation.json"
+    assert (
+        decision_evidence_cli_main(
+            [
+                "validate-supervisor-corpus",
+                "--corpus",
+                str(corpus_path),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    emitted = json.loads(capsys.readouterr().out)
+    persisted = json.loads(output.read_text(encoding="utf-8"))
+    assert emitted == persisted
+    assert persisted["hidden_case_properties_emitted"] is False
+    assert "HELDOUT_" not in json.dumps(persisted)
+
+    tampered = json.loads(corpus_path.read_text(encoding="utf-8"))
+    tampered["cases"][-1]["hidden_canaries"] = ["TAMPERED_AFTER_FREEZE"]
+    corpus_path.write_text(json.dumps(tampered), encoding="utf-8")
+    assert (
+        decision_evidence_cli_main(
+            [
+                "validate-supervisor-corpus",
+                "--corpus",
+                str(corpus_path),
+                "--output",
+                str(tmp_path / "tampered-validation.json"),
+            ]
+        )
+        == 2
+    )
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["status"] == "blocked"
+    assert refused["model_invoked"] is False
+    assert not (tmp_path / "tampered-validation.json").exists()
+
+
+def test_evaluation_configuration_refuses_hidden_or_unregistered_spec_fields(
+    tmp_path: Path,
+) -> None:
+    corpus_path = _sealed_corpus(tmp_path)
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    supervisor = _sdk_supervisor()
+    valid = _frozen_evaluation_configuration(
+        supervisor,
+        corpus_digest=corpus["corpus_digest"],
+    )
+    spec = {
+        key: valid[key]
+        for key in (
+            "configuration_id",
+            "operator_id",
+            "issued_by_agent",
+            "frozen_at",
+            "tool_registry_digest",
+            "max_inference_cost_usd",
+            "manager_identity",
+            "specialist_identities",
+        )
+    }
+    spec["hidden_labels"] = ["should-never-enter-freeze"]
+    with pytest.raises(
+        SupervisorEvaluationError,
+        match="evaluation_configuration_spec_fields_invalid",
+    ):
+        freeze_supervisor_evaluation_configuration(
+            spec,
+            corpus_digest=corpus["corpus_digest"],
+        )
+
+
+def test_supervisor_evaluation_cli_freezes_and_scores_distinct_recorded_runs(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    corpus_path = _sealed_corpus(tmp_path)
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    supervisor = _sdk_supervisor()
+    valid = _frozen_evaluation_configuration(
+        supervisor,
+        corpus_digest=corpus["corpus_digest"],
+    )
+    spec = {
+        key: valid[key]
+        for key in (
+            "configuration_id",
+            "operator_id",
+            "issued_by_agent",
+            "frozen_at",
+            "tool_registry_digest",
+            "max_inference_cost_usd",
+            "manager_identity",
+            "specialist_identities",
+        )
+    }
+    spec_path = tmp_path / "configuration-spec.json"
+    configuration_path = tmp_path / "frozen-configuration.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    assert (
+        decision_evidence_cli_main(
+            [
+                "freeze-supervisor-evaluation",
+                "--corpus",
+                str(corpus_path),
+                "--spec",
+                str(spec_path),
+                "--output",
+                str(configuration_path),
+            ]
+        )
+        == 0
+    )
+    frozen_output = json.loads(capsys.readouterr().out)
+    assert frozen_output == valid
+
+    heldout = [
+        case for case in load_supervisor_evaluation_corpus(corpus_path) if case.split == "heldout"
+    ]
+    run_args: list[str] = []
+    for case in heldout:
+        execution = supervisor.run(
+            _heldout_context(case),
+            output_dir=tmp_path / "cli-recorded-runs" / case.case_id,
+            mode=AutonomyMode.SHADOW,
+            generated_at="2026-07-29T15:00:00+00:00",
+        )
+        run_args.extend(["--run", f"{case.case_id}={execution.output_dir}"])
+    result_root = tmp_path / "cli-independent-evaluation"
+    assert (
+        decision_evidence_cli_main(
+            [
+                "evaluate-recorded-supervisor",
+                "--corpus",
+                str(corpus_path),
+                "--configuration",
+                str(configuration_path),
+                *run_args,
+                "--output-dir",
+                str(result_root),
+            ]
+        )
+        == 0
+    )
+    bundle = json.loads(capsys.readouterr().out)
+    assert bundle["heldout_case_count"] == len(heldout)
+    assert bundle["all_six_specialists_exercised"] is True
+    assert bundle["model_invoked_during_evaluation"] is False
+    assert bundle == json.loads(
+        (result_root / "recorded_evaluation_bundle.json").read_text(encoding="utf-8")
+    )
 
 
 def test_phase3_preauthorized_recovery_enforces_and_replays_bounded_execution(

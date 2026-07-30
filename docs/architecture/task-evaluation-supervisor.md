@@ -105,14 +105,23 @@ The package `blueprint_pipeline.task_evaluation_supervisor` provides:
 - pre-evaluation scenario proposal artifacts plus a separate operator-only
   freeze contract that records evaluator, success-predicate, and hidden-label
   manifest digests without exposing hidden labels;
-- a 12-case synthetic evaluation corpus with four development and eight
-  held-out cases, case-specific inputs, hidden leakage canaries, 20 recorded
+- a 12-case public synthetic protocol fixture with four development and eight
+  held-out-shaped cases, case-specific inputs, leakage canaries, 20 recorded
   human-guided baseline metrics spanning reasoning quality, spend, recovery,
   authority, leakage, scenarios, audit, and replay, plus aggregate comparison
-  before autonomy promotion. The trigger-aware hermetic fixture scores
-  `0.987500` versus the recorded `0.978313` baseline on eight held-out cases
-  (`+0.009187`), with zero critical boundary violations; this remains below
-  the frozen `+0.05` promotion threshold;
+  before autonomy promotion. Because this fixture is committed with the tests,
+  it proves the scoring and non-self-grading boundary but is not secret held-out
+  product evidence. The trigger-aware hermetic fixture scores `0.987500` versus
+  the recorded `0.978313` baseline (`+0.009187`), with zero critical boundary
+  violations; this remains below the frozen `+0.05` promotion threshold;
+- a standalone recorded-run evaluation lane for a separately held, digest-bound
+  `task_evaluation_supervisor_eval_corpus.v2`. It requires the corpus to be
+  frozen before the agent configuration, the manager and all six specialist
+  identities to be frozen before every run, an exact complete held-out case
+  matrix, and deterministic replay of every run. It writes grading artifacts
+  outside source run directories, invokes no model, emits no hidden case
+  properties, and refuses autonomy promotion unless the sealed comparison beats
+  the recorded baseline by the corpus threshold with zero critical violations;
 - a pre-authorized recovery controller with provider/action allowlists,
   immutable commit and input bindings, cumulative spend, expiry/TTL, retry
   ceilings, non-retryable scientific failures, watchdogs, mandatory teardown,
@@ -254,10 +263,13 @@ rights, mutate raw capture, or create proof. Phase 2 also includes deterministic
 customer report generation, clarification and authorization receipts,
 scenario-proposal materialization with an operator-only freezing boundary, and
 tests proving that identical accepted evidence yields the same kernel decision
-even when agent prose changes. The recorded corpus comparison now runs each
-held-out input separately and correctly refuses autonomy promotion for the
-fixture runner. It proves the evaluation and promotion boundary, not that a live
-production model has beaten the human-guided baseline.
+even when agent prose changes. The public synthetic corpus comparison now runs
+each held-out-shaped input separately and correctly refuses autonomy promotion
+for the fixture runner. Separate `blueprint-route-task-evaluation` operations
+validate an external sealed corpus, freeze the exact manager/specialist/tool
+configuration, and score replay-verified recorded runs without mutating them.
+The committed fixture proves the evaluation and promotion boundary, not that a
+live production model has beaten the human-guided baseline.
 
 Phase 3 routes recovery only through an injected pre-authorized controller. The
 controller is provider-neutral and no live provider was called while building
