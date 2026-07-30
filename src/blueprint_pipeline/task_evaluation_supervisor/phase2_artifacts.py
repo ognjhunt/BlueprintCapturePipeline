@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import math
 from pathlib import Path
 import re
@@ -94,7 +95,141 @@ def clarification_request(
         "agent_may_answer": False,
         "proof_effect": "none",
     }
-    return _finalize(value, digest_field="clarification_request_digest")
+    return validate_clarification_request(
+        _finalize(value, digest_field="clarification_request_digest")
+    )
+
+
+def validate_clarification_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the exact non-authoritative customer clarification request."""
+
+    required_fields = {
+        "schema_version",
+        "request_id",
+        "run_id",
+        "source_digest",
+        "questions",
+        "blocking_fields",
+        "status",
+        "agent_may_answer",
+        "proof_effect",
+        "clarification_request_digest",
+    }
+    if set(value) != required_fields:
+        raise Phase2ArtifactError("clarification_request_fields_invalid")
+    run_id = str(value.get("run_id") or "").strip()
+    questions = _strings(value.get("questions"), field="questions", maximum=20)
+    blocking_fields = _strings(
+        value.get("blocking_fields"),
+        field="blocking_fields",
+        maximum=30,
+        item_maximum=100,
+    )
+    expected = canonical_digest(value, digest_field="clarification_request_digest")
+    if (
+        value.get("schema_version") != CLARIFICATION_REQUEST_SCHEMA_VERSION
+        or not run_id
+        or value.get("request_id") != f"{run_id}-clarification"
+        or value.get("clarification_request_digest") != expected
+        or list(value.get("questions") or []) != questions
+        or list(value.get("blocking_fields") or []) != blocking_fields
+        or value.get("status") != "awaiting_customer_response"
+        or value.get("agent_may_answer") is not False
+        or value.get("proof_effect") != "none"
+    ):
+        raise Phase2ArtifactError("clarification_request_contract_invalid")
+    _require_digest(value.get("source_digest"), field="source_digest")
+    return dict(value)
+
+
+def _validate_untrusted_response_json(value: Any, *, depth: int = 0) -> None:
+    if depth > 8:
+        raise Phase2ArtifactError("clarification_response_depth_exceeded")
+    if isinstance(value, Mapping):
+        if len(value) > 100 or any(
+            not isinstance(key, str) or not key.strip() or len(key) > 200 for key in value
+        ):
+            raise Phase2ArtifactError("clarification_response_mapping_invalid")
+        for item in value.values():
+            _validate_untrusted_response_json(item, depth=depth + 1)
+        return
+    if isinstance(value, list):
+        if len(value) > 200:
+            raise Phase2ArtifactError("clarification_response_list_too_large")
+        for item in value:
+            _validate_untrusted_response_json(item, depth=depth + 1)
+        return
+    if value is None or isinstance(value, (str, bool, int)):
+        if isinstance(value, str) and len(value) > 10_000:
+            raise Phase2ArtifactError("clarification_response_string_too_large")
+        return
+    if isinstance(value, float) and math.isfinite(value):
+        return
+    raise Phase2ArtifactError("clarification_response_value_invalid")
+
+
+def validate_clarification_receipt(
+    value: Mapping[str, Any],
+    *,
+    request: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate a bounded response while preserving its untrusted status."""
+
+    required_fields = {
+        "schema_version",
+        "receipt_id",
+        "run_id",
+        "clarification_request_digest",
+        "responder_id",
+        "responses",
+        "received_at",
+        "accepted_as_customer_input",
+        "requires_deterministic_contract_validation",
+        "response_is_untrusted",
+        "responder_identity_verified_by_supervisor",
+        "proof_effect",
+        "clarification_receipt_digest",
+    }
+    if set(value) != required_fields:
+        raise Phase2ArtifactError("clarification_receipt_fields_invalid")
+    responses = value.get("responses")
+    if not isinstance(responses, Mapping) or not responses:
+        raise Phase2ArtifactError("clarification_receipt_responses_invalid")
+    _validate_untrusted_response_json(responses)
+    try:
+        serialized = json.dumps(responses, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise Phase2ArtifactError("clarification_receipt_responses_invalid") from exc
+    if len(serialized.encode("utf-8")) > 100_000:
+        raise Phase2ArtifactError("clarification_receipt_responses_too_large")
+    expected = canonical_digest(value, digest_field="clarification_receipt_digest")
+    _parse_time(value.get("received_at"), field="clarification_received_at")
+    request_digest = _require_digest(
+        value.get("clarification_request_digest"),
+        field="clarification_request_digest",
+    )
+    if (
+        value.get("schema_version") != CLARIFICATION_RECEIPT_SCHEMA_VERSION
+        or value.get("clarification_receipt_digest") != expected
+        or not str(value.get("run_id") or "").strip()
+        or not str(value.get("responder_id") or "").strip()
+        or value.get("receipt_id") != f"{value.get('run_id')}-clarification-receipt"
+        or value.get("accepted_as_customer_input") is not False
+        or value.get("requires_deterministic_contract_validation") is not True
+        or value.get("response_is_untrusted") is not True
+        or value.get("responder_identity_verified_by_supervisor") is not False
+        or value.get("proof_effect") != "none"
+    ):
+        raise Phase2ArtifactError("clarification_receipt_contract_invalid")
+    if request is not None:
+        validated_request = validate_clarification_request(request)
+        if (
+            value.get("run_id") != validated_request["run_id"]
+            or request_digest != validated_request["clarification_request_digest"]
+            or value.get("receipt_id") != f"{validated_request['request_id']}-receipt"
+        ):
+            raise Phase2ArtifactError("clarification_receipt_request_mismatch")
+    return dict(value)
 
 
 def clarification_receipt(
@@ -104,24 +239,28 @@ def clarification_receipt(
     responses: Mapping[str, Any],
     received_at: str,
 ) -> dict[str, Any]:
-    expected = canonical_digest(request, digest_field="clarification_request_digest")
-    if request.get("clarification_request_digest") != expected:
-        raise Phase2ArtifactError("clarification_request_digest_mismatch")
+    validated_request = validate_clarification_request(request)
+    expected = validated_request["clarification_request_digest"]
     if not responder_id.strip() or not received_at.strip() or not isinstance(responses, Mapping):
         raise Phase2ArtifactError("clarification_receipt_missing_fields")
     value = {
         "schema_version": CLARIFICATION_RECEIPT_SCHEMA_VERSION,
-        "receipt_id": f"{request['request_id']}-receipt",
-        "run_id": request["run_id"],
+        "receipt_id": f"{validated_request['request_id']}-receipt",
+        "run_id": validated_request["run_id"],
         "clarification_request_digest": expected,
         "responder_id": responder_id.strip(),
         "responses": dict(responses),
         "received_at": received_at,
         "accepted_as_customer_input": False,
         "requires_deterministic_contract_validation": True,
+        "response_is_untrusted": True,
+        "responder_identity_verified_by_supervisor": False,
         "proof_effect": "none",
     }
-    return _finalize(value, digest_field="clarification_receipt_digest")
+    return validate_clarification_receipt(
+        _finalize(value, digest_field="clarification_receipt_digest"),
+        request=validated_request,
+    )
 
 
 def authorization_request(
@@ -1003,5 +1142,7 @@ __all__ = [
     "validate_targeted_recapture_receipt",
     "validate_targeted_recapture_request",
     "validate_recapture_reinspection",
+    "validate_clarification_receipt",
+    "validate_clarification_request",
     "write_phase2_artifact",
 ]

@@ -38,6 +38,8 @@ class SupervisorContext:
     evidence_plan: Mapping[str, Any] | None = None
     evidence_results: Sequence[Mapping[str, Any]] = ()
     decision_envelope: Mapping[str, Any] | None = None
+    clarification_request: Mapping[str, Any] | None = None
+    clarification_receipt: Mapping[str, Any] | None = None
     targeted_recapture_request: Mapping[str, Any] | None = None
     targeted_recapture_receipt: Mapping[str, Any] | None = None
     recapture_reinspection: Mapping[str, Any] | None = None
@@ -137,12 +139,19 @@ class DeterministicClaimTaskInterpreter:
 
     def propose(self, context: SupervisorContext) -> CapabilityResult:
         if context.decision_request is None:
+            clarification_response = dict(context.clarification_receipt or {})
             clarification = _proposal(
                 context=context,
                 capability=self.kind,
                 ordinal=0,
                 action_type="request_claim_contract_clarification",
-                reasons=["validated_decision_evidence_request_missing"],
+                reasons=[
+                    (
+                        "validated_decision_evidence_request_missing_after_clarification"
+                        if clarification_response
+                        else "validated_decision_evidence_request_missing"
+                    )
+                ],
                 parameters={
                     "customer_question": context.customer_question,
                     "required_fields": [
@@ -164,9 +173,33 @@ class DeterministicClaimTaskInterpreter:
                     "claims": [],
                     "clarification_required": True,
                     "validated_by_deterministic_contract": False,
+                    "clarification_response_received": bool(clarification_response),
+                    "clarification_response_keys": sorted(
+                        str(key) for key in (clarification_response.get("responses") or {})
+                    ),
+                    "clarification_response_requires_validated_decision_request": bool(
+                        clarification_response
+                    ),
+                    "clarification_response_is_proof": False,
                 },
                 proposals=[clarification],
-                blockers=["validated_decision_evidence_request_missing"],
+                blockers=[
+                    (
+                        "validated_decision_evidence_request_missing_after_clarification"
+                        if clarification_response
+                        else "validated_decision_evidence_request_missing"
+                    )
+                ],
+                evidence_refs=(
+                    [
+                        {
+                            "artifact": "clarification_receipt",
+                            "digest": clarification_response.get("clarification_receipt_digest"),
+                        }
+                    ]
+                    if clarification_response
+                    else []
+                ),
             )
 
         request = DecisionEvidenceRequest.from_mapping(context.decision_request).to_mapping()

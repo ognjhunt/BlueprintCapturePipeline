@@ -440,6 +440,8 @@ class OpenAIAgentsSDKCapability:
             "evidence_plan": context.evidence_plan,
             "evidence_results": list(context.evidence_results),
             "decision_envelope": context.decision_envelope,
+            "clarification_request": context.clarification_request,
+            "clarification_receipt": context.clarification_receipt,
             "targeted_recapture_request": context.targeted_recapture_request,
             "targeted_recapture_receipt": context.targeted_recapture_receipt,
             "recapture_reinspection": context.recapture_reinspection,

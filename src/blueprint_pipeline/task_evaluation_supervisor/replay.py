@@ -31,6 +31,8 @@ from .inference_reservations import InferenceReservationAudit
 from .phase2_artifacts import (
     Phase2ArtifactError,
     recapture_reinspection as build_recapture_reinspection,
+    validate_clarification_receipt,
+    validate_clarification_request,
     validate_recapture_reinspection,
     validate_targeted_recapture_receipt,
     validate_targeted_recapture_request,
@@ -70,6 +72,16 @@ def _validate_kernel_input(name: str, value: Mapping[str, Any]) -> Mapping[str, 
             return validate_capture_build_ingress(value)
         except CaptureBuildIngressError as exc:
             raise SupervisorReplayError("capture_build_ingress_invalid") from exc
+    if name == "clarification_request":
+        try:
+            return validate_clarification_request(value)
+        except Phase2ArtifactError as exc:
+            raise SupervisorReplayError("clarification_request_invalid") from exc
+    if name == "clarification_receipt":
+        try:
+            return validate_clarification_receipt(value)
+        except Phase2ArtifactError as exc:
+            raise SupervisorReplayError("clarification_receipt_invalid") from exc
     if name == "targeted_recapture_request":
         try:
             return validate_targeted_recapture_request(value)
@@ -495,6 +507,19 @@ def replay_supervisor_run(
                 raise SupervisorReplayError("recapture_reinspection_kernel_result_mismatch")
         elif recorded_reinspection is not None:
             raise SupervisorReplayError("recapture_reinspection_without_testbed")
+
+    clarification_receipt = kernel_inputs.get("clarification_receipt")
+    if clarification_receipt is not None:
+        clarification_request = kernel_inputs.get("clarification_request")
+        if clarification_request is None:
+            raise SupervisorReplayError("clarification_request_kernel_input_missing")
+        try:
+            validate_clarification_receipt(
+                clarification_receipt,
+                request=clarification_request,
+            )
+        except Phase2ArtifactError as exc:
+            raise SupervisorReplayError("clarification_kernel_inputs_mismatch") from exc
 
     deterministic_decision = kernel_inputs.get("decision_envelope")
     replayed_decision: dict[str, Any] | None = None

@@ -99,7 +99,11 @@ def _available_capabilities(
         return (CapabilityKind.CLAIM_TASK_INTERPRETER,)
 
     available: set[CapabilityKind] = set()
-    if CapabilityKind.CAPTURE_TESTBED_SUPERVISOR not in completed:
+    if CapabilityKind.CAPTURE_TESTBED_SUPERVISOR not in completed and (
+        context.capture_build is not None
+        or context.testbed is not None
+        or context.targeted_recapture_receipt is not None
+    ):
         available.add(CapabilityKind.CAPTURE_TESTBED_SUPERVISOR)
     if (
         context.decision_request is not None

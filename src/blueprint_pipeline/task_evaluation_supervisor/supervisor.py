@@ -58,6 +58,8 @@ from .manager import (
 from .phase2_artifacts import (
     deterministic_customer_report,
     recapture_reinspection as build_recapture_reinspection,
+    validate_clarification_receipt,
+    validate_clarification_request,
     validate_targeted_recapture_receipt,
     validate_targeted_recapture_request,
     write_phase2_artifact,
@@ -85,6 +87,26 @@ def _validated_context(context: SupervisorContext) -> SupervisorContext:
         if context.testbed is not None
         else None
     )
+    decision_request = (
+        DecisionEvidenceRequest.from_mapping(context.decision_request).to_mapping()
+        if context.decision_request is not None
+        else None
+    )
+    clarification_request = (
+        validate_clarification_request(context.clarification_request)
+        if context.clarification_request is not None
+        else None
+    )
+    clarification_receipt = (
+        validate_clarification_receipt(
+            context.clarification_receipt,
+            request=clarification_request,
+        )
+        if context.clarification_receipt is not None
+        else None
+    )
+    if clarification_receipt is not None and clarification_request is None:
+        raise ValueError("clarification_receipt_requires_request")
     recapture_request = (
         validate_targeted_recapture_request(context.targeted_recapture_request)
         if context.targeted_recapture_request is not None
@@ -120,11 +142,7 @@ def _validated_context(context: SupervisorContext) -> SupervisorContext:
     return replace(
         context,
         capture_build=capture_build,
-        decision_request=(
-            DecisionEvidenceRequest.from_mapping(context.decision_request).to_mapping()
-            if context.decision_request is not None
-            else None
-        ),
+        decision_request=decision_request,
         testbed=testbed,
         method_profiles=tuple(
             EvidenceMethodProfile.from_mapping(value).to_mapping()
@@ -147,6 +165,8 @@ def _validated_context(context: SupervisorContext) -> SupervisorContext:
             if context.decision_envelope is not None
             else None
         ),
+        clarification_request=clarification_request,
+        clarification_receipt=clarification_receipt,
         targeted_recapture_request=recapture_request,
         targeted_recapture_receipt=recapture_receipt,
         recapture_reinspection=derived_recapture_reinspection,
@@ -175,6 +195,8 @@ def _write_kernel_inputs(root: Path, context: SupervisorContext) -> dict[str, An
         ("site_task_testbed", context.testbed),
         ("evidence_plan", context.evidence_plan),
         ("decision_envelope", context.decision_envelope),
+        ("clarification_request", context.clarification_request),
+        ("clarification_receipt", context.clarification_receipt),
         ("targeted_recapture_request", context.targeted_recapture_request),
         ("targeted_recapture_receipt", context.targeted_recapture_receipt),
         ("recapture_reinspection", context.recapture_reinspection),
@@ -210,6 +232,8 @@ def _input_digests(context: SupervisorContext) -> list[str]:
         (context.testbed, "testbed_digest"),
         (context.evidence_plan, "plan_digest"),
         (context.decision_envelope, "decision_envelope_digest"),
+        (context.clarification_request, "clarification_request_digest"),
+        (context.clarification_receipt, "clarification_receipt_digest"),
         (context.targeted_recapture_request, "targeted_recapture_request_digest"),
         (context.targeted_recapture_receipt, "targeted_recapture_receipt_digest"),
         (context.recapture_reinspection, "recapture_reinspection_digest"),

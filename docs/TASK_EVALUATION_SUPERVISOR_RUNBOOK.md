@@ -98,6 +98,24 @@ Clarification responses and authorization grants are separate receipts created
 at trusted customer/operator boundaries. Agent output never satisfies its own
 request. Every accepted response is revalidated by deterministic contracts.
 
+### Clarification return
+
+Return a customer response through the same supervisor control plane:
+
+```bash
+blueprint-route-task-evaluation supervise \
+  --clarification-request /path/to/clarification-request.json \
+  --clarification-receipt /path/to/customer-response-receipt.json \
+  --mode shadow \
+  --output-dir /path/to/clarification-return
+```
+
+The receipt must bind the exact Blueprint request and carries only bounded JSON.
+It is marked untrusted, has `proof_effect=none`, and does not establish the
+claimed responder's identity. The interpreter may use it to propose a clearer
+task contract, but Blueprint must still receive and validate a complete Decision
+Evidence Request before compiling or running claims.
+
 ### Targeted recapture return
 
 When the customer returns a targeted recapture, preserve the original request

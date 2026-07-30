@@ -243,6 +243,23 @@ or proof-mutating action becomes available. The authority change is represented
 as capture-supervisor lifecycle v2 with a new run-id namespace; v1 shadow-run
 ledgers remain immutable and are never resumed as non-spend runs.
 
+A returned customer clarification also re-enters the durable run instead of
+remaining an out-of-band conversation:
+
+```bash
+blueprint-route-task-evaluation supervise \
+  --clarification-request /path/to/clarification-request.json \
+  --clarification-receipt /path/to/customer-response-receipt.json \
+  --mode shadow \
+  --output-dir out/clarification-return
+```
+
+The request and receipt are exact-schema and digest-bound kernel inputs. Response
+JSON is size-, depth-, and type-bounded, marked untrusted, and shown to the claim
+interpreter. The claimed responder identity is not verified by the supervisor.
+The receipt therefore cannot answer its own request, create claims, or become
+proof: evaluation still requires a separately valid Decision Evidence Request.
+
 A targeted follow-up capture re-enters the same control plane with both the
 original Blueprint request and a customer-bound receipt:
 
@@ -258,8 +275,8 @@ blueprint-route-task-evaluation supervise \
 The deterministic ingress accepts only known capture manifests and a bounded
 approved projection, normalizes a standalone source filename so filenames never
 become agent instructions, marks the entire capture projection as untrusted SDK
-input, and binds its digest to the exact prior request. The
-receipt records submission, not success: it cannot infer rights, make the new
+input, and binds its digest to the exact prior request. The receipt records
+submission, not success: it cannot infer rights, make the new
 capture authoritative, or resolve the original blocker. The capture specialist
 must reinspect it and a maintained testbed must be deterministically rebuilt or
 validated before the blocker can change.
@@ -325,8 +342,7 @@ predecessor lineage before closing that specific gap. Capture projections are
 schema-validated during live
 ingress and replay; a malformed but self-consistently hashed envelope is
 refused when it violates the bounded projection contract. Phase 2 also includes
-deterministic
-customer report generation, clarification and authorization receipts,
+deterministic customer report generation, clarification and authorization receipts,
 scenario-proposal materialization with an operator-only freezing boundary, and
 tests proving that identical accepted evidence yields the same kernel decision
 even when agent prose changes. The public synthetic corpus comparison now runs

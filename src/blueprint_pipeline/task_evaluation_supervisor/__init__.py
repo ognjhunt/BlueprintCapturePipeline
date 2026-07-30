@@ -80,6 +80,8 @@ from .phase2_artifacts import (
     validate_targeted_recapture_receipt,
     validate_targeted_recapture_request,
     validate_recapture_reinspection,
+    validate_clarification_receipt,
+    validate_clarification_request,
 )
 from .pigey_candidate_runtime import (
     PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION,
@@ -231,6 +233,8 @@ __all__ = [
     "validate_targeted_recapture_receipt",
     "validate_targeted_recapture_request",
     "validate_recapture_reinspection",
+    "validate_clarification_receipt",
+    "validate_clarification_request",
     "validate_tool_observation_binding",
     "validate_pigey_license_attestation",
 ]
