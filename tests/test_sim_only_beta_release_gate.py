@@ -163,10 +163,15 @@ def _deployment_proof(path: Path) -> None:
     _write_json(
         path,
         {
+            "schema_version": "blueprint.sim_only_beta_deployment_parity_proof.v2",
             "status": "passed",
+            "deployment_environment": "production",
+            "deployment_proven": True,
             "production_deployment_proven": True,
             "webapp_health_ready": True,
             "pipeline_intake_health_ready": True,
+            "webapp_deployment_identity_ready": True,
+            "pipeline_deployment_identity_ready": True,
             "git_parity_proven": True,
             "webapp_url": "https://www.tryblueprint.io",
             "pipeline_intake_url": "https://pipeline.tryblueprint.io/api/live-pipeline",
@@ -192,15 +197,18 @@ def test_release_gate_blocks_without_production_forwarding_and_deploy_proof(tmp_
     assert report["schema_version"] == SCHEMA_VERSION
     assert report["status"] == "blocked"
     assert report["ready_for_beta_release"] is False
-    assert "production_webapp_to_pipeline_forwarding:forwarding_preflight_not_ready_with_probe" in report[
-        "blockers"
-    ]
-    assert "production_route_forwarding_proof:production_route_forwarding_proof_path_missing" in report[
-        "blockers"
-    ]
-    assert "production_deployment_parity:production_deployment_proof_path_missing" in report[
-        "blockers"
-    ]
+    assert (
+        "production_webapp_to_pipeline_forwarding:forwarding_preflight_not_ready_with_probe"
+        in report["blockers"]
+    )
+    assert (
+        "production_route_forwarding_proof:production_route_forwarding_proof_path_missing"
+        in report["blockers"]
+    )
+    assert (
+        "production_deployment_parity:production_deployment_proof_path_missing"
+        in report["blockers"]
+    )
 
 
 def test_release_gate_passes_with_local_sim_core_and_production_proofs(tmp_path: Path) -> None:
@@ -233,7 +241,7 @@ def test_release_gate_passes_with_local_sim_core_and_production_proofs(tmp_path:
     assert report["simulator_execution_proven"] is True
     assert report["public_claim_upgrade_allowed"] is False
     assert report["proof_boundary"]["simulator_execution_proven"] is True
-    readiness_key = "physical_robot_" "readiness_proven"
+    readiness_key = "physical_robot_readiness_proven"
     assert readiness_key not in report
     assert readiness_key not in report["proof_boundary"]
     assert [gate["status"] for gate in report["gates"]] == [
@@ -243,16 +251,95 @@ def test_release_gate_passes_with_local_sim_core_and_production_proofs(tmp_path:
         "passed",
         "passed",
     ]
-    assert report["buyer_claim_ceiling"]["highest_truthful_claim"] == (
-        "review_task_success"
+    assert report["buyer_claim_ceiling"]["highest_truthful_claim"] == ("review_task_success")
+    assert (
+        report["buyer_claim_ceiling"]["buyer_facing_claim_ceiling_pinned_to_highest_truthful_claim"]
+        is True
     )
-    assert report["buyer_claim_ceiling"][
-        "buyer_facing_claim_ceiling_pinned_to_highest_truthful_claim"
-    ] is True
     assert report["gates"][0]["evidence"]["visual_review_accepted_count"] == 11
     assert report["gates"][3]["evidence"]["webapp_health_ready"] is True
     assert report["gates"][3]["evidence"]["pipeline_intake_health_ready"] is True
+    assert report["gates"][3]["evidence"]["deployment_environment"] == "production"
+    assert report["gates"][3]["evidence"]["pipeline_deployment_identity_ready"] is True
     assert report["gates"][3]["evidence"]["git_parity_proven"] is True
+
+
+def test_release_gate_rejects_legacy_self_attested_deployment_proof(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    local_gate = capture_root / "local_gate.json"
+    forwarding = tmp_path / "forwarding.json"
+    route = tmp_path / "route.json"
+    deployment = tmp_path / "deployment.json"
+    _local_gate_report(local_gate)
+    _forwarding_report(forwarding)
+    _route_proof(route, capture_root)
+    _write_json(
+        deployment,
+        {
+            "schema_version": "blueprint.sim_only_beta_deployment_parity_proof.v1",
+            "status": "verified",
+            "production_deployment_proven": True,
+            "webapp_health_ready": True,
+            "pipeline_intake_health_ready": True,
+            "git_parity_proven": True,
+        },
+    )
+
+    report = build_release_gate_report(
+        capture_root=capture_root,
+        local_gate_report_path=local_gate,
+        forwarding_preflight_report_path=forwarding,
+        production_route_forwarding_proof_path=route,
+        production_deployment_proof_path=deployment,
+    )
+
+    assert report["status"] == "blocked"
+    assert (
+        "production_deployment_parity:production_deployment_proof_schema_not_supported"
+        in report["blockers"]
+    )
+    assert (
+        "production_deployment_parity:pipeline_deployment_identity_ready_not_true"
+        in report["blockers"]
+    )
+
+
+def test_release_gate_rejects_staging_as_production_proof(tmp_path: Path) -> None:
+    capture_root = tmp_path / "capture"
+    local_gate = capture_root / "local_gate.json"
+    forwarding = tmp_path / "forwarding.json"
+    route = tmp_path / "route.json"
+    deployment = tmp_path / "deployment.json"
+    _local_gate_report(local_gate)
+    _forwarding_report(forwarding)
+    _route_proof(route, capture_root)
+    _deployment_proof(deployment)
+    payload = json.loads(deployment.read_text(encoding="utf-8"))
+    payload.update(
+        {
+            "deployment_environment": "staging",
+            "staging_deployment_proven": True,
+            "production_deployment_proven": False,
+        }
+    )
+    _write_json(deployment, payload)
+
+    report = build_release_gate_report(
+        capture_root=capture_root,
+        local_gate_report_path=local_gate,
+        forwarding_preflight_report_path=forwarding,
+        production_route_forwarding_proof_path=route,
+        production_deployment_proof_path=deployment,
+    )
+
+    assert report["status"] == "blocked"
+    assert (
+        "production_deployment_parity:production_deployment_environment_not_production"
+        in report["blockers"]
+    )
+    assert (
+        "production_deployment_parity:production_deployment_proven_not_true" in report["blockers"]
+    )
 
 
 def test_release_gate_blocks_live_policy_marketing_copy_without_live_gate(
@@ -280,12 +367,14 @@ def test_release_gate_blocks_live_policy_marketing_copy_without_live_gate(
     )
 
     assert report["status"] == "blocked"
-    assert "buyer_claim_ceiling_and_copy:buyer_copy_claims_live_simulator_execution_without_live_gate" in report[
-        "blockers"
-    ]
-    assert "buyer_claim_ceiling_and_copy:buyer_copy_claims_live_policy_execution_without_live_gate" in report[
-        "blockers"
-    ]
+    assert (
+        "buyer_claim_ceiling_and_copy:buyer_copy_claims_live_simulator_execution_without_live_gate"
+        in report["blockers"]
+    )
+    assert (
+        "buyer_claim_ceiling_and_copy:buyer_copy_claims_live_policy_execution_without_live_gate"
+        in report["blockers"]
+    )
     claim_gate = report["gates"][4]
     assert claim_gate["id"] == "buyer_claim_ceiling_and_copy"
     assert claim_gate["status"] == "blocked"
@@ -401,9 +490,7 @@ def test_release_gate_allows_known_nonblocking_forwarding_warning(tmp_path: Path
 
     assert report["status"] == "passed"
     forwarding_gate = next(
-        gate
-        for gate in report["gates"]
-        if gate["id"] == "production_webapp_to_pipeline_forwarding"
+        gate for gate in report["gates"] if gate["id"] == "production_webapp_to_pipeline_forwarding"
     )
     assert forwarding_gate["evidence"]["blocking_warnings"] == []
     assert forwarding_gate["evidence"]["non_blocking_warnings"] == [
@@ -431,22 +518,16 @@ def test_release_gate_blocks_unknown_forwarding_warning(tmp_path: Path) -> None:
     )
 
     assert report["status"] == "blocked"
-    assert "production_webapp_to_pipeline_forwarding:forwarding_preflight_has_warnings" in report[
-        "blockers"
-    ]
+    assert (
+        "production_webapp_to_pipeline_forwarding:forwarding_preflight_has_warnings"
+        in report["blockers"]
+    )
 
 
 def test_release_gate_accepts_route_proof_with_same_scene_capture_identity(
     tmp_path: Path,
 ) -> None:
-    capture_root = (
-        tmp_path
-        / "local-blueprint"
-        / "scenes"
-        / "scene-1"
-        / "captures"
-        / "capture-1"
-    )
+    capture_root = tmp_path / "local-blueprint" / "scenes" / "scene-1" / "captures" / "capture-1"
     production_capture_root = Path(
         "/var/lib/blueprint/pipeline-control-plane/captures/local-blueprint/scenes/scene-1/captures/capture-1"
     )

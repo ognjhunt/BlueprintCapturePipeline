@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build production deployment/parity proof for the sim-only beta release gate."""
+"""Build environment-bound deployment/parity proof for the sim-only beta release gate."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import argparse
 import hmac
 import json
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -26,7 +27,11 @@ from blueprint_pipeline.live_pipeline_forwarding_secret_setup import (  # noqa: 
     parse_env_file_values,
 )
 
-SCHEMA_VERSION = "blueprint.sim_only_beta_deployment_parity_proof.v1"
+SCHEMA_VERSION = "blueprint.sim_only_beta_deployment_parity_proof.v2"
+PIPELINE_DEPLOYMENT_IDENTITY_SCHEMA_VERSION = "blueprint_pipeline_deployment_identity.v1"
+PIPELINE_DEPLOYMENT_IDENTITY_CLAIM_CEILING = "deployed_service_identity_only"
+DEPLOYMENT_ENVIRONMENTS = frozenset({"staging", "production"})
+GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 JsonFetcher = Callable[[str, Mapping[str, str] | None, int], dict[str, Any]]
@@ -35,6 +40,11 @@ GitProbe = Callable[[Path], dict[str, Any]]
 
 def _string(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _git_sha(value: Any) -> str:
+    candidate = _string(value).lower()
+    return candidate if GIT_SHA_PATTERN.fullmatch(candidate) else ""
 
 
 def _normalize_base_url(value: str) -> str:
@@ -189,6 +199,8 @@ def _commit_blockers(
         return []
     if not deployed:
         return [f"{label}_deployed_commit_missing"]
+    if not _git_sha(deployed):
+        return [f"{label}_deployed_commit_invalid"]
     if head and deployed != head:
         return [f"{label}_deployed_commit_mismatch"]
     return []
@@ -233,6 +245,7 @@ def build_deployment_parity_proof(
     webapp_deployed_commit: str = "",
     pipeline_deployed_commit: str = "",
     route_forwarding_proof_path: Path | None = None,
+    deployment_environment: str = "production",
     require_deployed_commit: bool = True,
     timeout_seconds: int = 10,
     now_iso: str | None = None,
@@ -240,6 +253,9 @@ def build_deployment_parity_proof(
     git_probe: GitProbe = probe_git_repo,
 ) -> dict[str, Any]:
     blockers: list[str] = []
+    environment = _string(deployment_environment).lower()
+    if environment not in DEPLOYMENT_ENVIRONMENTS:
+        blockers.append("deployment_environment_invalid")
     route_proof_hints = _route_proof_url_hints(route_forwarding_proof_path)
     resolved_webapp_url = _string(webapp_url) or _string(route_proof_hints.get("webapp_url"))
     resolved_pipeline_intake_url = _string(pipeline_intake_url) or _string(
@@ -269,7 +285,30 @@ def build_deployment_parity_proof(
                 "http_status": result.get("http_status"),
                 "status": _json_status(payload),
                 "error": result.get("error"),
-                "blockers": list(payload.get("blockers") or []) if isinstance(payload, Mapping) else [],
+                "blockers": list(payload.get("blockers") or [])
+                if isinstance(payload, Mapping)
+                else [],
+            }
+        )
+
+    webapp_identity: dict[str, Any] = {
+        "url": urljoin(f"{webapp_base_url}/", "version.json") if webapp_base_url else None,
+        "ok": False,
+        "http_status": None,
+        "service": None,
+        "source_commit": None,
+        "error": "not_attempted",
+    }
+    if webapp_base_url:
+        result = fetcher(str(webapp_identity["url"]), None, timeout_seconds)
+        payload = result.get("json") if isinstance(result.get("json"), Mapping) else {}
+        webapp_identity.update(
+            {
+                "ok": result.get("ok") is True,
+                "http_status": result.get("http_status"),
+                "service": _string(payload.get("service")) or None,
+                "source_commit": _git_sha(payload.get("git_sha")) or None,
+                "error": result.get("error"),
             }
         )
 
@@ -292,6 +331,33 @@ def build_deployment_parity_proof(
                 "token_configured": payload.get("token_configured") is True
                 if isinstance(payload, Mapping)
                 else False,
+                "error": result.get("error"),
+            }
+        )
+
+    pipeline_identity: dict[str, Any] = {
+        "url": urljoin(f"{pipeline_base_url}/", "api/live-pipeline/version")
+        if pipeline_base_url
+        else None,
+        "ok": False,
+        "http_status": None,
+        "schema_version": None,
+        "commit_proven": False,
+        "source_commit": None,
+        "claim_ceiling": None,
+        "error": "not_attempted",
+    }
+    if pipeline_base_url:
+        result = fetcher(str(pipeline_identity["url"]), None, timeout_seconds)
+        payload = result.get("json") if isinstance(result.get("json"), Mapping) else {}
+        pipeline_identity.update(
+            {
+                "ok": result.get("ok") is True,
+                "http_status": result.get("http_status"),
+                "schema_version": _string(payload.get("schema_version")) or None,
+                "commit_proven": payload.get("commit_proven") is True,
+                "source_commit": _git_sha(payload.get("source_commit")) or None,
+                "claim_ceiling": _string(payload.get("claim_ceiling")) or None,
                 "error": result.get("error"),
             }
         )
@@ -347,11 +413,29 @@ def build_deployment_parity_proof(
         and intake_audit.get("input_blockers_count") in (0, None)
     )
     pipeline_intake_health_ready = pipeline_health_ready or intake_audit_health_ready
+    webapp_deployment_identity_ready = (
+        webapp_identity.get("ok") is True
+        and webapp_identity.get("http_status") == 200
+        and webapp_identity.get("service") == "blueprint-webapp"
+        and bool(webapp_identity.get("source_commit"))
+    )
+    pipeline_deployment_identity_ready = (
+        pipeline_identity.get("ok") is True
+        and pipeline_identity.get("http_status") == 200
+        and pipeline_identity.get("schema_version") == PIPELINE_DEPLOYMENT_IDENTITY_SCHEMA_VERSION
+        and pipeline_identity.get("commit_proven") is True
+        and bool(pipeline_identity.get("source_commit"))
+        and pipeline_identity.get("claim_ceiling") == PIPELINE_DEPLOYMENT_IDENTITY_CLAIM_CEILING
+    )
 
     if not webapp_health_ready:
         blockers.append("webapp_health_not_ready")
     if not pipeline_intake_health_ready:
         blockers.append("pipeline_intake_health_not_ready")
+    if not webapp_deployment_identity_ready:
+        blockers.append("webapp_deployment_identity_not_ready")
+    if not pipeline_deployment_identity_ready:
+        blockers.append("pipeline_deployment_identity_not_ready")
     if intake_audit.get("attempted") and intake_audit.get("ok") is not True:
         blockers.append("pipeline_intake_audit_not_reachable")
 
@@ -365,6 +449,14 @@ def build_deployment_parity_proof(
     git_blockers: list[str] = []
     for label, status in repos.items():
         git_blockers.extend(_repo_blockers(label, status))
+    if webapp_deployment_identity_ready and webapp_identity.get("source_commit") != repos[
+        "webapp"
+    ].get("head"):
+        git_blockers.append("webapp_deployment_identity_commit_mismatch")
+    if pipeline_deployment_identity_ready and pipeline_identity.get("source_commit") != repos[
+        "pipeline"
+    ].get("head"):
+        git_blockers.append("pipeline_deployment_identity_commit_mismatch")
     git_blockers.extend(
         _commit_blockers(
             label="webapp",
@@ -384,18 +476,31 @@ def build_deployment_parity_proof(
     blockers.extend(git_blockers)
     git_parity_proven = not git_blockers
 
-    production_deployment_proven = (
-        webapp_health_ready and pipeline_intake_health_ready and git_parity_proven
+    deployment_proven = (
+        environment in DEPLOYMENT_ENVIRONMENTS
+        and webapp_health_ready
+        and pipeline_intake_health_ready
+        and webapp_deployment_identity_ready
+        and pipeline_deployment_identity_ready
+        and git_parity_proven
+        and not blockers
     )
-    status = "verified" if production_deployment_proven and not blockers else "blocked"
+    staging_deployment_proven = environment == "staging" and deployment_proven
+    production_deployment_proven = environment == "production" and deployment_proven
+    status = "verified" if deployment_proven else "blocked"
 
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": now_iso or utc_now_iso(),
         "status": status,
+        "deployment_environment": environment or None,
+        "deployment_proven": deployment_proven,
+        "staging_deployment_proven": staging_deployment_proven,
         "production_deployment_proven": production_deployment_proven,
         "webapp_health_ready": webapp_health_ready,
         "pipeline_intake_health_ready": pipeline_intake_health_ready,
+        "webapp_deployment_identity_ready": webapp_deployment_identity_ready,
+        "pipeline_deployment_identity_ready": pipeline_deployment_identity_ready,
         "git_parity_proven": git_parity_proven,
         "webapp_url": webapp_base_url or None,
         "pipeline_intake_url": pipeline_base_url or None,
@@ -405,7 +510,9 @@ def build_deployment_parity_proof(
         "checks": {
             "route_forwarding_proof": route_proof_hints,
             "webapp_health": webapp_health,
+            "webapp_deployment_identity": webapp_identity,
             "pipeline_intake_health": pipeline_health,
+            "pipeline_deployment_identity": pipeline_identity,
             "pipeline_intake_audit": intake_audit,
             "git": {
                 "repos": repos,
@@ -415,6 +522,9 @@ def build_deployment_parity_proof(
             },
         },
         "proof_boundary": {
+            "deployment_environment": environment or None,
+            "deployment_proven": deployment_proven,
+            "staging_deployment_proven": staging_deployment_proven,
             "production_deployment_proven": production_deployment_proven,
             "webapp_health_ready": webapp_health_ready,
             "pipeline_intake_health_ready": pipeline_intake_health_ready,
@@ -426,43 +536,63 @@ def build_deployment_parity_proof(
     }
 
 
-def _default_output_path(capture_root: Path) -> Path:
-    return (
-        capture_root
-        / "pipeline"
-        / "live_pipeline_control_plane"
-        / "sim_only_beta_production_deployment_proof.json"
-    )
+def _default_output_path(capture_root: Path, deployment_environment: str = "production") -> Path:
+    environment = _string(deployment_environment).lower()
+    filename = f"sim_only_beta_{environment}_deployment_proof.json"
+    return capture_root / "pipeline" / "live_pipeline_control_plane" / filename
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Write sim-only beta production deployment/parity proof JSON."
+        description="Write environment-bound sim-only beta deployment/parity proof JSON."
     )
     parser.add_argument("--capture-root", required=True, type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--webapp-url", default=os.getenv("BLUEPRINT_WEBAPP_PRODUCTION_URL") or os.getenv("ALPHA_BASE_URL") or os.getenv("BASE_URL") or "")
-    parser.add_argument("--pipeline-intake-url", default=os.getenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_URL") or os.getenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_URL") or "")
+    parser.add_argument(
+        "--webapp-url",
+        default=os.getenv("BLUEPRINT_WEBAPP_PRODUCTION_URL")
+        or os.getenv("ALPHA_BASE_URL")
+        or os.getenv("BASE_URL")
+        or "",
+    )
+    parser.add_argument(
+        "--pipeline-intake-url",
+        default=os.getenv("ROBOT_EVAL_JOB_REQUEST_FORWARD_URL")
+        or os.getenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_URL")
+        or "",
+    )
     parser.add_argument("--route-forwarding-proof", type=Path)
-    parser.add_argument("--pipeline-intake-token-env", default="ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN")
+    parser.add_argument(
+        "--deployment-environment",
+        choices=sorted(DEPLOYMENT_ENVIRONMENTS),
+        default=os.getenv("BLUEPRINT_DEPLOYMENT_ENVIRONMENT", "production"),
+    )
+    parser.add_argument(
+        "--pipeline-intake-token-env", default="ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN"
+    )
     parser.add_argument(
         "--forwarding-env-file",
         type=Path,
         action="append",
         default=[],
-        help=(
-            "Read forwarding/intake env values from a local env file. Process env still wins."
-        ),
+        help=("Read forwarding/intake env values from a local env file. Process env still wins."),
     )
     parser.add_argument("--webapp-repo", type=Path, default=ROOT.parent / "Blueprint-WebApp")
     parser.add_argument("--pipeline-repo", type=Path, default=ROOT)
     parser.add_argument("--capture-repo", type=Path, default=ROOT.parent / "BlueprintCapture")
-    parser.add_argument("--webapp-deployed-commit", default=os.getenv("BLUEPRINT_WEBAPP_DEPLOYED_COMMIT", ""))
-    parser.add_argument("--pipeline-deployed-commit", default=os.getenv("BLUEPRINT_PIPELINE_DEPLOYED_COMMIT", ""))
+    parser.add_argument(
+        "--webapp-deployed-commit", default=os.getenv("BLUEPRINT_WEBAPP_DEPLOYED_COMMIT", "")
+    )
+    parser.add_argument(
+        "--pipeline-deployed-commit", default=os.getenv("BLUEPRINT_PIPELINE_DEPLOYED_COMMIT", "")
+    )
     parser.add_argument(
         "--allow-local-git-parity-only",
         action="store_true",
-        help="Do not require explicit deployed commit values. Health checks still must pass.",
+        help=(
+            "Do not require operator-supplied commit cross-checks. Live version endpoints, "
+            "health checks, and clean exact git parity still must pass."
+        ),
     )
     parser.add_argument("--timeout-seconds", type=int, default=10)
     return parser.parse_args(argv)
@@ -471,7 +601,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(list(argv or sys.argv[1:]))
     capture_root = args.capture_root.resolve()
-    output_path = (args.output or _default_output_path(capture_root)).resolve()
+    output_path = (
+        args.output or _default_output_path(capture_root, args.deployment_environment)
+    ).resolve()
     env_file_values = _load_env_file_values(args.forwarding_env_file)
     token = _pipeline_intake_token(args.pipeline_intake_token_env, env_file_values)
     webapp_url = _string(args.webapp_url) or _first_env_value(
@@ -506,6 +638,7 @@ def main(argv: list[str] | None = None) -> int:
         route_forwarding_proof_path=args.route_forwarding_proof.resolve()
         if args.route_forwarding_proof
         else None,
+        deployment_environment=args.deployment_environment,
         require_deployed_commit=not args.allow_local_git_parity_only,
         timeout_seconds=max(1, args.timeout_seconds),
     )

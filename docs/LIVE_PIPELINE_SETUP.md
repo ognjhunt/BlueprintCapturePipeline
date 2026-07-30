@@ -339,6 +339,7 @@ does not send the shared value as a bearer credential.
 The service exposes:
 
 - `GET /health`
+- `GET /api/live-pipeline/version`
 - `POST /api/live-pipeline/capture-upload-intakes`
 - `POST /api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/lifecycle`
 - `GET /api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/lifecycle`
@@ -367,6 +368,37 @@ not granted by the inference profile.
 - `POST /api/live-pipeline/deployment-outcomes`
 - `POST /api/live-pipeline/live-closure-evidence`
 - `GET /api/live-pipeline/intake-audit`
+
+`GET /api/live-pipeline/version` is the deployment-identity authority. It
+returns HTTP 503 unless `BLUEPRINT_SOURCE_COMMIT` is an exact 40-hex commit
+bound by the deployment process. A successful response uses schema
+`blueprint_pipeline_deployment_identity.v1`, sets `commit_proven=true`, and
+keeps the claim ceiling at `deployed_service_identity_only`. An operator-typed
+commit, a mutable image tag, or a healthy process is not a substitute for this
+response.
+
+Generate an environment-bound deployment proof only from clean checkouts that
+match `origin/main`:
+
+```bash
+python scripts/run_sim_only_beta_deployment_parity_proof.py \
+  --capture-root <rights-cleared-capture-root> \
+  --deployment-environment staging \
+  --webapp-url https://<staging-webapp-host> \
+  --pipeline-intake-url https://<staging-pipeline-host>/api/live-pipeline/job-requests \
+  --webapp-repo <clean-webapp-main-checkout> \
+  --pipeline-repo <clean-pipeline-main-checkout> \
+  --capture-repo <clean-capture-main-checkout> \
+  --allow-local-git-parity-only
+```
+
+The proof verifies WebApp `/version.json`, Pipeline
+`/api/live-pipeline/version`, health/intake readiness, and exact clean git
+parity. `--allow-local-git-parity-only` disables only the redundant
+operator-supplied commit cross-check; it never disables either live identity
+probe. A verified `staging` proof sets `staging_deployment_proven=true` and
+cannot satisfy the production release gate. Generate a separate `production`
+proof only after the production deployment and rollback gates pass.
 
 `site_task_testbed_compilation_submission.v2` must name the exact accepted
 session/intake, approved-task digest, completed reconstruction plan/result, new
