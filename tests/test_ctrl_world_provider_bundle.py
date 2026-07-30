@@ -78,25 +78,27 @@ def test_ctrl_world_bundle_is_deterministic_and_passes_frozen_inspection(
         manifest = json.loads(archive.read("provider_runtime/wam_provider_runtime_manifest.json"))
         rollout = json.loads(archive.read("provider_runtime/wam_rollout_input_manifest.json"))
     assert manifest["model_name"] == "Ctrl-World"
+    assert manifest["torch_version"] == "2.7.1+cu128"
     assert manifest["canary_settings"]["interaction_count"] == 1
     assert rollout["closed_loop"] is False
     assert rollout["physical_outcome_labels_accessed"] is False
 
 
-def test_ctrl_world_profile_binds_exact_v4_bundle() -> None:
+def test_ctrl_world_profile_binds_exact_v5_bundle() -> None:
     profile = admission.CTRL_WORLD_REPLAY_PROFILE
     assert profile.authorization_ids_by_allocation_index == {
         8: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-8",
         9: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-9",
         10: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-10",
         11: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-11",
+        12: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-12",
     }
     assert profile.expected_bundle_sha256 == (
-        "b616118c7ad5b54f98401fb60d3b4ec8d60acd036fc11d3a9568cc8821d4e6de"
+        "9d1133f481c5ba75386d8dfa35b1a70d4eca8f382242422cf263c9ed5df36070"
     )
-    assert profile.expected_bundle_size_bytes == 2_579_223
+    assert profile.expected_bundle_size_bytes == 2_579_230
     assert profile.expected_embedded_input_hashes["runtime_manifest_file_sha256"] == (
-        "95fc73992ac7f92329963917b3ada6881838a4ccd155691ed3999722247195bf"
+        "9efb0badcc347b76b445a352623d125dbbd5bc74d8dbb1e644a097840adbbe50"
     )
     assert profile.expected_embedded_input_hashes["runner_sha256"] == (
         "f79b63c23dd5e0ae78e8962ffa764b5aaa5d55fe02e37e564d7397a20c532655"

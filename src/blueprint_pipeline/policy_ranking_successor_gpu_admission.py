@@ -447,15 +447,16 @@ CTRL_WORLD_REPLAY_PROFILE = SuccessorGPUProfile(
         9: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-9",
         10: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-10",
         11: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-11",
+        12: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-12",
     },
     cost_authorization_binding_sha256=(
         "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
     ),
-    expected_bundle_sha256="b616118c7ad5b54f98401fb60d3b4ec8d60acd036fc11d3a9568cc8821d4e6de",
-    expected_bundle_size_bytes=2_579_223,
+    expected_bundle_sha256="9d1133f481c5ba75386d8dfa35b1a70d4eca8f382242422cf263c9ed5df36070",
+    expected_bundle_size_bytes=2_579_230,
     expected_embedded_input_hashes={
         "runtime_manifest_file_sha256": (
-            "95fc73992ac7f92329963917b3ada6881838a4ccd155691ed3999722247195bf"
+            "9efb0badcc347b76b445a352623d125dbbd5bc74d8dbb1e644a097840adbbe50"
         ),
         "rollout_manifest_file_sha256": (
             "ed5084a914688b047a4ab798b12cd4f8b9fd49833759f9f504c564daa3c36f22"

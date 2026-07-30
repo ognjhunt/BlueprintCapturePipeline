@@ -1004,6 +1004,7 @@ def test_poll_downloads_direct_provider_output_get_url_without_leaking_query(
             "mp4_count": 4,
         },
     )
+    (job / "vast_provider_runtime_output.zip").write_bytes(b"stale-output")
 
     class FakeResponse:
         status = 200

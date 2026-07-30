@@ -1512,8 +1512,18 @@ def _preserve_existing_live_attempt_artifacts(
     generated_at: str,
     reason: str,
     artifact_names: Sequence[str] = VAST_LIVE_ATTEMPT_ARTIFACT_NAMES,
+    additional_artifact_paths: Sequence[Path] = (),
 ) -> dict[str, Any] | None:
-    present_paths = [job_dir / name for name in artifact_names if (job_dir / name).is_file()]
+    candidates = [job_dir / name for name in artifact_names]
+    candidates.extend(Path(path).expanduser().resolve() for path in additional_artifact_paths)
+    present_paths: list[Path] = []
+    seen_paths: set[Path] = set()
+    for candidate in candidates:
+        resolved_candidate = candidate.expanduser().resolve()
+        if resolved_candidate in seen_paths or not resolved_candidate.is_file():
+            continue
+        seen_paths.add(resolved_candidate)
+        present_paths.append(resolved_candidate)
     if not present_paths:
         return None
     preserve_dir = job_dir / f"attempt_preserved_{_attempt_preservation_slug(generated_at)}"
@@ -1528,9 +1538,13 @@ def _preserve_existing_live_attempt_artifacts(
     copy_errors: list[dict[str, Any]] = []
     for source in present_paths:
         target = preserve_dir / source.name
+        suffix = 1
+        while target.exists():
+            suffix += 1
+            target = preserve_dir / f"{source.stem}_{suffix}{source.suffix}"
         try:
             shutil.copy2(source, target)
-            copied.append(source.name)
+            copied.append(target.name)
         except Exception as exc:
             copy_errors.append(
                 {
@@ -4185,12 +4199,28 @@ def run_vast_provider_adapter(
     create_request_image = None if use_vast_template_image else selected_container_image
     result_path = resolved_job_dir / "vast_provider_adapter_result.json"
     phase_path = resolved_job_dir / "vast_runtime_phase_log.jsonl"
+    output_zip_path = (
+        Path(provider_runtime_output_zip).expanduser().resolve()
+        if provider_runtime_output_zip
+        else resolved_job_dir / "vast_provider_runtime_output.zip"
+    )
+    attempt_preservation_blockers: list[str] = []
     if mode == "live-startup-probe":
-        _preserve_existing_live_attempt_artifacts(
+        output_refresh_expected = bool(_string(provider_output_get_url))
+        output_zip_was_present = output_refresh_expected and output_zip_path.is_file()
+        attempt_preservation = _preserve_existing_live_attempt_artifacts(
             job_dir=resolved_job_dir,
             generated_at=generated_at,
             reason="preserve_existing_live_attempt_before_new_vast_run",
+            additional_artifact_paths=(output_zip_path,) if output_refresh_expected else (),
         )
+        if attempt_preservation and attempt_preservation.get("status") != "completed":
+            attempt_preservation_blockers.append("vast_live_attempt_preservation_failed")
+        elif output_zip_was_present:
+            output_zip_path.unlink()
+        stale_video_extract_dir = resolved_job_dir / "vast_provider_runtime_output_videos"
+        if not attempt_preservation_blockers and stale_video_extract_dir.is_dir():
+            shutil.rmtree(stale_video_extract_dir)
     if phase_path.exists():
         phase_path.unlink()
     if mode == "live-startup-probe":
@@ -4226,11 +4256,6 @@ def run_vast_provider_adapter(
     hf_token, hf_token_status = _read_hf_token_file()
     previous_path = Path(previous_job_dir).expanduser().resolve() if previous_job_dir else None
     bundle_path = Path(provider_bundle).expanduser().resolve() if provider_bundle else None
-    output_zip_path = (
-        Path(provider_runtime_output_zip).expanduser().resolve()
-        if provider_runtime_output_zip
-        else resolved_job_dir / "vast_provider_runtime_output.zip"
-    )
     inline_bundle_transport = _inline_provider_bundle_payload(
         bundle_path,
         provider_bundle_kind=provider_bundle_kind,
@@ -4620,11 +4645,14 @@ def run_vast_provider_adapter(
         write_json(result_path, base_result)
         return base_result
 
-    gate_blockers = _api_gate_blockers(
-        allow_vast_api_call=allow_vast_api_call,
-        allow_instance_launch=allow_instance_launch,
-        api_key=api_key,
-    )
+    gate_blockers = [
+        *attempt_preservation_blockers,
+        *_api_gate_blockers(
+            allow_vast_api_call=allow_vast_api_call,
+            allow_instance_launch=allow_instance_launch,
+            api_key=api_key,
+        ),
+    ]
     if gate_blockers:
         offer_manifest = {
             "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -5870,11 +5898,7 @@ def run_vast_provider_adapter(
                 "output_zip_path": str(output_zip_path),
                 "raw_secret_values_recorded": False,
             }
-            if (
-                provider_upload_ok
-                and _string(provider_output_get_url)
-                and not output_zip_path.is_file()
-            ):
+            if provider_upload_ok and _string(provider_output_get_url):
                 try:
                     with urllib.request.urlopen(
                         _string(provider_output_get_url),
@@ -5899,15 +5923,6 @@ def run_vast_provider_adapter(
                             "blockers": ["provider_output_get_url_download_failed"],
                         }
                     )
-            elif provider_upload_ok and output_zip_path.is_file():
-                output_download_manifest.update(
-                    {
-                        "status": "skipped",
-                        "reason": "provider_runtime_output_zip_already_present",
-                        "output_zip_present_after_download": True,
-                        "output_zip_size_bytes": output_zip_path.stat().st_size,
-                    }
-                )
             elif provider_upload_ok and not _string(provider_output_get_url):
                 output_download_manifest.update(
                     {

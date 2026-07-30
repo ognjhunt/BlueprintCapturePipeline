@@ -5800,6 +5800,8 @@ def test_vast_adapter_run_clears_stale_artifacts_and_blocks_session_budget(
     for stale_name in stale_names:
         (job_dir / stale_name).write_text('{"stale": true}', encoding="utf-8")
     (job_dir / "vast_runtime_phase_log.jsonl").write_text('{"phase":"old"}\n', encoding="utf-8")
+    stale_output = job_dir / "provider_runtime_output.zip"
+    stale_output.write_bytes(b"old-provider-output")
     budget = tmp_path / "budget.json"
     budget.write_text(
         json.dumps(
@@ -5824,6 +5826,8 @@ def test_vast_adapter_run_clears_stale_artifacts_and_blocks_session_budget(
         session_budget_ledger_path=budget,
         session_max_live_minutes=10,
         hard_cap_usd=1.0,
+        provider_runtime_output_zip=stale_output,
+        provider_output_get_url="https://object.example/current-attempt.zip",
     )
 
     assert result["status"] == "blocked"
@@ -5836,6 +5840,7 @@ def test_vast_adapter_run_clears_stale_artifacts_and_blocks_session_budget(
     assert preservation["raw_secret_values_recorded"] is False
     assert "vast_runtime_phase_log.jsonl" in preservation["copied_artifacts"]
     assert "vast_startup_probe_manifest.json" in preservation["copied_artifacts"]
+    assert "provider_runtime_output.zip" in preservation["copied_artifacts"]
     preserved_dir = Path(preservation["preserve_dir"])
     assert (preserved_dir / "vast_runtime_phase_log.jsonl").read_text(
         encoding="utf-8"
@@ -5843,6 +5848,8 @@ def test_vast_adapter_run_clears_stale_artifacts_and_blocks_session_budget(
     assert json.loads(
         (preserved_dir / "vast_startup_probe_manifest.json").read_text(encoding="utf-8")
     ) == {"stale": True}
+    assert (preserved_dir / "provider_runtime_output.zip").read_bytes() == b"old-provider-output"
+    assert not stale_output.exists()
     assert (job_dir / "vast_runtime_phase_log.jsonl").read_text(encoding="utf-8") != (
         '{"phase":"old"}\n'
     )

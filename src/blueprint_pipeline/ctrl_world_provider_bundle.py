@@ -29,6 +29,7 @@ CTRL_WORLD_PUBLIC_IMAGE = (
     "docker.io/pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime@sha256:"
     "c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2"
 )
+CTRL_WORLD_TORCH_VERSION = "2.7.1+cu128"
 CTRL_WORLD_PROVIDER_BUNDLE_SCHEMA_VERSION = "ctrl_world_provider_bundle_manifest.v1"
 CTRL_WORLD_RECEIPT_SCHEMA_VERSION = "ctrl_world_replay_bundle_receipt.v1"
 DEFAULT_BUNDLE_FILENAME = "ctrl_world_replay_provider_runtime_bundle.zip"
@@ -409,7 +410,7 @@ def build_ctrl_world_provider_bundle(
         "ctrl_world_source_revision": CTRL_WORLD_SOURCE_REVISION,
         "checkpoint_repository": CTRL_WORLD_CHECKPOINT_REPOSITORY,
         "checkpoint_revision": CTRL_WORLD_CHECKPOINT_REVISION,
-        "torch_version": "2.7.1",
+        "torch_version": CTRL_WORLD_TORCH_VERSION,
         "python_dependencies": list(PYTHON_DEPENDENCIES),
         "models": list(MODEL_FREEZE),
         "source_files": source_manifest,
