@@ -1,0 +1,77 @@
+{
+  "schema_version": "policy_ranking_complete_graph_gemini_transport_diagnosis.v1",
+  "status": "terminal_transport_blocker_confirmed",
+  "claim_class": "post_unseal_diagnostic_only",
+  "arm_id": "gemini36_flash_complete_graph",
+  "model": "gemini-3.6-flash",
+  "source_commit": "af546d919c0ac94cf19a06edd63e05c2745de3b7",
+  "protocol_amendment_sha256": "4579aea138012689cb0908279eaa9dd1d4a85583ae2544d8b16e997d22f6a8d3",
+  "frozen_canary": {
+    "pair_index": 0,
+    "pair_id": "0026b4d5dce89cd965b9e703b0540c1c08859b2149f1053e2ac83552a4d7ed29",
+    "request_count": 1,
+    "video_count": 2,
+    "inventory_sha256": "08bb90a8a13b435ea5b46e3f69cc68ec6855d8841f6b6fa2866062a1a243e132",
+    "manifest_sha256": "8a2b32e60d1ab89b2c48150bd7d6cbd0ce0c035afe30cee8191b49def0dc58df",
+    "policy_identity_sent_to_provider": false,
+    "physical_outcome_sent_to_provider": false,
+    "physical_ground_truth_pixels_uploaded": false,
+    "minimum_media_ready_age_seconds": 90,
+    "observed_media_ready_age_seconds_before_submission": 105.568
+  },
+  "evidence": {
+    "paid_admission_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/gemini_transport_canary_paid_admission_v1.json",
+    "paid_admission_file_sha256": "b5836d14223354239b89f7fb3f9d8156fb2bfe09d9f75a17cb3b9b81db0460de",
+    "paid_admission_sha256": "0d2e11a9fbf74469af0a0cd5d29b83e5c4024f23446a4959c3f04c5806373026",
+    "media_ledger_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/gemini_transport_canary_media_ledger_v1.json",
+    "media_ledger_file_sha256": "aa2ef0f2be96ca6a1cc6707da7a150917f2e9acba6fbc7da827dd4307208c449",
+    "media_ledger_sha256": "97deecd593e541c935232b44313a6093f71556bcab654b95d8b51bfa7a2f6de9",
+    "submission_receipt_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/gemini_transport_canary_submission_v1.json",
+    "submission_receipt_file_sha256": "53619398f3ac28cd1574f2f74b58a435acc8d1033848c1191fdc72895f7af00e",
+    "submission_receipt_sha256": "8fec13698b47587f0f1203ae93a889a2ca2f8ad4859603e9d792f9acf3369e76"
+  },
+  "observed_provider_result": {
+    "provider_batch_created": false,
+    "provider_generation_rows_created": 0,
+    "provider_code": 400,
+    "provider_status": "FAILED_PRECONDITION",
+    "provider_message": "Precondition check failed.",
+    "provider_details": {
+      "error": {
+        "code": 400,
+        "message": "Precondition check failed.",
+        "status": "FAILED_PRECONDITION"
+      }
+    },
+    "all_temporary_provider_video_files_deleted": true,
+    "new_evaluator_spend_usd": 0.0
+  },
+  "eliminated_hypotheses": {
+    "inline_request_count_or_payload_size_caused_the_frozen_failure": false,
+    "media_ready_age_below_90_seconds_caused_the_frozen_failure": false
+  },
+  "remaining_uncertainty": {
+    "exact_provider_precondition": "not_returned_by_provider",
+    "provider_billing_or_service_state_fault": "not_established",
+    "Files_API_to_Batch_API_current_interoperability_fault": "not_established",
+    "model_or_evaluator_scientific_invalidity": "not_inferred_from_transport_failure"
+  },
+  "terminal_treatment": {
+    "current_inline_files_batch_transport": "technically_blocked",
+    "missing_882_edges_measured": false,
+    "seven_pair_pilot_admitted": false,
+    "bulk_shards_admitted": false,
+    "partial_complete_graph_ranking_credit": false,
+    "frozen_prior_441_result_subset_preserved": true,
+    "frozen_prior_subset_claim_ceiling": "post_unseal_incomplete_graph_diagnostic_only",
+    "retry_same_transport_without_demonstrable_correction": false
+  },
+  "cost_accounting_usd": {
+    "realized_api_spend_before_canary": 8.418512,
+    "canary_spend": 0.0,
+    "realized_api_spend_after_canary": 8.418512,
+    "missing_graph_spend": 0.0,
+    "campaign_api_hard_cap": 25.0
+  },
+  "diagnosis_sha256": "acce3acd2d2dcd8d9e0a02adbe61dbbd4531164574bce47320a1bf31b93393a1"
+}
