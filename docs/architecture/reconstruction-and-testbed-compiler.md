@@ -288,6 +288,18 @@ tree, recipe and dependency-lock digests, license-review receipt, budget, TTL,
 retry cap, and authority. Allocation and image-build success are explicitly not
 scientific success.
 
+`reconstruction_worker_remote_build_packet.v1` materializes the corresponding
+exact-source build context for that seam. It includes only tracked package
+sources and the required Docker recipe/lock files, records every member digest,
+rejects symlinks and unsafe archive members, emits a byte-deterministic archive,
+and binds the executable build script to the source commit, recipe, dependency
+lock, and context manifest. The script builds only `linux/amd64`, requests
+BuildKit provenance and SBOM attestations, resolves the pushed registry digest,
+and emits `reconstruction_worker_build_receipt.v1`. The shared CPU builder
+independently validates both the archive and returned receipt and still requires
+its separate numeric spend/TTL envelope, watchdog, teardown, and provider-zero
+proof. A build receipt remains below the GPU runtime-smoke and scientific gates.
+
 ## Metric geometry, collision, and Isaac qualification
 
 Phase 5 extends the existing `geometry_stage`, ParticleField/NuRec exporters,

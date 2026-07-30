@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_worker_remote_build.v1.schema.json",
+  "title": "Reconstruction Worker Remote Build Packet and Receipt v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["schema_version", "packet_kind", "generated_at", "status", "blockers", "tarball_path", "tarball_sha256", "archive_members", "archive_member_sha256", "archive_member_manifest_sha256", "context_manifest_sha256", "dockerfile_sha256", "requirements_lock_sha256", "image_ref", "source_commit", "source_worktree_dirty", "provider_launch_performed_by_packet", "raw_secret_values_recorded", "canonical_allocator_entrypoint", "claim_boundary", "remote_build_packet_digest"],
+      "properties": {
+        "schema_version": {"const": "reconstruction_worker_remote_build_packet.v1"},
+        "packet_kind": {"const": "reconstruction_worker_image"},
+        "status": {"enum": ["ready", "blocked"]},
+        "tarball_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "archive_member_manifest_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "context_manifest_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "dockerfile_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "requirements_lock_sha256": {"pattern": "^[0-9a-f]{64}$"},
+        "source_commit": {"pattern": "^[0-9a-f]{40}$"},
+        "source_worktree_dirty": {"type": "boolean"},
+        "provider_launch_performed_by_packet": {"const": false},
+        "raw_secret_values_recorded": {"const": false},
+        "remote_build_packet_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["schema_version", "generated_at", "status", "blockers", "image_ref", "resolved_digest_ref", "source_commit", "runnable_platform", "dockerfile_sha256", "requirements_lock_sha256", "context_manifest_sha256", "build_healthcheck_embedded", "runtime_gpu_healthcheck_completed", "raw_secret_values_recorded", "proof_effect", "claim_ceiling", "build_receipt_digest"],
+      "properties": {
+        "schema_version": {"const": "reconstruction_worker_build_receipt.v1"},
+        "status": {"const": "completed"},
+        "resolved_digest_ref": {"pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"},
+        "source_commit": {"pattern": "^[0-9a-f]{40}$"},
+        "runnable_platform": {"const": "linux/amd64"},
+        "build_healthcheck_embedded": {"const": true},
+        "runtime_gpu_healthcheck_completed": {"const": false},
+        "raw_secret_values_recorded": {"const": false},
+        "proof_effect": {"const": "none"},
+        "claim_ceiling": {"const": "resolved_worker_image_build_only"},
+        "build_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": true
+    }
+  ]
+}

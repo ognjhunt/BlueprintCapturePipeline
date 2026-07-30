@@ -9,3 +9,8 @@ The Dockerfile is a build recipe, not a build receipt. Until a native Linux GPU
 build resolves the image digest and passes the runtime healthcheck, its status is
 `candidate_unbuilt`. Paid builds and GPU canaries must enter through
 `python -m blueprint_pipeline.paid_resource_allocator`.
+
+Prepare the deterministic, exact-source build archive with
+`python -m blueprint_pipeline.reconstruction_worker_build_packet`; the archive
+does not build or push anything. Its manifest is accepted only by the canonical
+`cpu-build` allocator, which applies the independent paid-resource controls.
