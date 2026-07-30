@@ -441,6 +441,7 @@ class OpenAIAgentsSDKCapability:
             "decision_envelope": context.decision_envelope,
             "targeted_recapture_request": context.targeted_recapture_request,
             "targeted_recapture_receipt": context.targeted_recapture_receipt,
+            "recapture_reinspection": context.recapture_reinspection,
             "tool_registry": self.tool_registry_manifest,
             "proof_boundary": {
                 "agent_output_authoritative": False,

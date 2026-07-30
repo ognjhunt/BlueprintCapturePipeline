@@ -9,7 +9,7 @@ import re
 from typing import Any, Mapping, Sequence
 
 from ..common import write_json
-from ..decision_evidence_contracts import canonical_digest
+from ..decision_evidence_contracts import MaintainedSiteTaskTestbed, canonical_digest
 from .capture_ingress import CaptureBuildIngressError, validate_capture_build_ingress
 
 
@@ -20,6 +20,7 @@ AUTHORIZATION_REQUEST_SCHEMA_VERSION = "task_evaluation_authorization_request.v1
 AUTHORIZATION_RECEIPT_SCHEMA_VERSION = "task_evaluation_authorization_receipt.v1"
 TARGETED_RECAPTURE_REQUEST_SCHEMA_VERSION = "targeted_recapture_request.v1"
 TARGETED_RECAPTURE_RECEIPT_SCHEMA_VERSION = "task_evaluation_targeted_recapture_receipt.v1"
+RECAPTURE_REINSPECTION_SCHEMA_VERSION = "task_evaluation_recapture_reinspection.v1"
 SCENARIO_PROPOSAL_SET_SCHEMA_VERSION = "task_evaluation_scenario_proposal_set.v1"
 FROZEN_SCENARIO_MANIFEST_SCHEMA_VERSION = "task_evaluation_frozen_scenario_manifest.v1"
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -511,6 +512,244 @@ def targeted_recapture_receipt(
     )
 
 
+def validate_recapture_reinspection(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a deterministic recapture-to-testbed gap-resolution artifact."""
+
+    required_fields = {
+        "schema_version",
+        "run_id",
+        "source_run_id",
+        "targeted_recapture_request_digest",
+        "targeted_recapture_receipt_digest",
+        "recapture_build_digest",
+        "testbed_digest",
+        "testbed_capture_build_digest",
+        "testbed_bound_to_recapture",
+        "predecessor_binding_required",
+        "predecessor_testbed_bound",
+        "requested_missing_evidence",
+        "resolved_missing_evidence",
+        "unresolved_missing_evidence",
+        "coverage_evidence_ids",
+        "coverage_source_artifact_digests",
+        "status",
+        "accepted_as_authoritative_evidence",
+        "rights_clearance_inferred",
+        "proof_effect",
+        "recapture_reinspection_digest",
+    }
+    if set(value) != required_fields:
+        raise Phase2ArtifactError("recapture_reinspection_fields_invalid")
+    expected = canonical_digest(value, digest_field="recapture_reinspection_digest")
+    requested = _strings(
+        value.get("requested_missing_evidence"),
+        field="requested_missing_evidence",
+        maximum=50,
+        item_maximum=200,
+    )
+    resolved = _strings(
+        value.get("resolved_missing_evidence"),
+        field="resolved_missing_evidence",
+        minimum=0,
+        maximum=50,
+        item_maximum=200,
+    )
+    unresolved = _strings(
+        value.get("unresolved_missing_evidence"),
+        field="unresolved_missing_evidence",
+        minimum=0,
+        maximum=50,
+        item_maximum=200,
+    )
+    coverage_ids = _strings(
+        value.get("coverage_evidence_ids"),
+        field="coverage_evidence_ids",
+        minimum=0,
+        maximum=200,
+        item_maximum=200,
+    )
+    coverage_source_digests = _strings(
+        value.get("coverage_source_artifact_digests"),
+        field="coverage_source_artifact_digests",
+        minimum=0,
+        maximum=200,
+        item_maximum=80,
+    )
+    for digest in coverage_source_digests:
+        _require_digest(digest, field="coverage_source_artifact_digest")
+    testbed_capture_digest = value.get("testbed_capture_build_digest")
+    if testbed_capture_digest is not None:
+        _require_digest(testbed_capture_digest, field="testbed_capture_build_digest")
+    capture_bound = value.get("testbed_bound_to_recapture") is True
+    predecessor_required = value.get("predecessor_binding_required") is True
+    predecessor_bound = value.get("predecessor_testbed_bound")
+    if (
+        not isinstance(value.get("testbed_bound_to_recapture"), bool)
+        or not isinstance(value.get("predecessor_binding_required"), bool)
+        or (predecessor_bound is not None and not isinstance(predecessor_bound, bool))
+    ):
+        raise Phase2ArtifactError("recapture_reinspection_predecessor_binding_invalid")
+    expected_status = (
+        "blocked_testbed_not_bound_to_recapture"
+        if not capture_bound
+        else (
+            "blocked_testbed_lineage_mismatch"
+            if predecessor_required and predecessor_bound is not True
+            else (
+                "unresolved_missing_evidence"
+                if unresolved
+                else "resolved_by_deterministic_testbed_reinspection"
+            )
+        )
+    )
+    if (
+        value.get("schema_version") != RECAPTURE_REINSPECTION_SCHEMA_VERSION
+        or value.get("recapture_reinspection_digest") != expected
+        or not str(value.get("run_id") or "").strip()
+        or not str(value.get("source_run_id") or "").strip()
+        or sorted(resolved + unresolved) != requested
+        or set(resolved) & set(unresolved)
+        or list(value.get("requested_missing_evidence") or []) != requested
+        or list(value.get("resolved_missing_evidence") or []) != resolved
+        or list(value.get("unresolved_missing_evidence") or []) != unresolved
+        or list(value.get("coverage_evidence_ids") or []) != coverage_ids
+        or list(value.get("coverage_source_artifact_digests") or []) != coverage_source_digests
+        or capture_bound != (testbed_capture_digest == value.get("recapture_build_digest"))
+        or (not predecessor_required and predecessor_bound is not None)
+        or value.get("status") != expected_status
+        or value.get("accepted_as_authoritative_evidence") is not False
+        or value.get("rights_clearance_inferred") is not False
+        or value.get("proof_effect") != "none"
+    ):
+        raise Phase2ArtifactError("recapture_reinspection_contract_invalid")
+    for field in (
+        "targeted_recapture_request_digest",
+        "targeted_recapture_receipt_digest",
+        "recapture_build_digest",
+        "testbed_digest",
+    ):
+        _require_digest(value.get(field), field=field)
+    return dict(value)
+
+
+def recapture_reinspection(
+    *,
+    run_id: str,
+    request: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    capture_build: Mapping[str, Any],
+    testbed: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Deterministically decide whether a rebuilt testbed covers requested gaps."""
+
+    if not run_id.strip():
+        raise Phase2ArtifactError("recapture_reinspection_run_id_missing")
+    validated_request = validate_targeted_recapture_request(request)
+    validated_receipt = validate_targeted_recapture_receipt(
+        receipt,
+        request=validated_request,
+        capture_build=capture_build,
+    )
+    validated_testbed = MaintainedSiteTaskTestbed.from_mapping(testbed).to_mapping()
+    recapture_digest = str(validated_receipt["recapture_build_digest"])
+    raw_testbed_capture_digest = (validated_testbed.get("validation_envelope") or {}).get(
+        "capture_build_digest"
+    )
+    testbed_capture_digest = (
+        str(raw_testbed_capture_digest)
+        if _SHA256_DIGEST.fullmatch(str(raw_testbed_capture_digest or ""))
+        else None
+    )
+    testbed_bound_to_recapture = testbed_capture_digest == recapture_digest
+    predecessor_binding_required = validated_request["source_type"] == "site_task_testbed"
+    predecessor_testbed_bound: bool | None = None
+    if predecessor_binding_required:
+        predecessor_testbed_bound = validated_testbed.get(
+            "predecessor_testbed_digest"
+        ) == validated_request["source_digest"] or validated_request["source_digest"] in set(
+            validated_testbed.get("supersedes") or []
+        )
+
+    capture_artifact_digests = {
+        str(row.get("sha256"))
+        for row in capture_build.get("artifacts") or []
+        if isinstance(row, Mapping)
+    }
+    coverage: dict[str, set[tuple[str, str]]] = {}
+    for row in validated_testbed.get("evidence_inventory") or []:
+        if not isinstance(row, Mapping):
+            continue
+        evidence_id = str(row.get("evidence_id") or "").strip()
+        source_artifact_digest = str(row.get("source_capture_artifact_digest") or "")
+        if not evidence_id or source_artifact_digest not in capture_artifact_digests:
+            continue
+        requirements = {evidence_id}
+        addresses = row.get("addresses_recapture_requirements")
+        if isinstance(addresses, list):
+            requirements.update(
+                str(item).strip()
+                for item in addresses
+                if isinstance(item, str) and str(item).strip()
+            )
+        for requirement in requirements:
+            coverage.setdefault(requirement, set()).add((evidence_id, source_artifact_digest))
+    requested = list(validated_request["missing_evidence"])
+    resolved = sorted(requirement for requirement in requested if coverage.get(requirement))
+    unresolved = sorted(set(requested) - set(resolved))
+    coverage_ids = sorted(
+        {
+            evidence_id
+            for requirement in resolved
+            for evidence_id, _source_digest in coverage[requirement]
+        }
+    )
+    coverage_source_digests = sorted(
+        {
+            source_digest
+            for requirement in resolved
+            for _evidence_id, source_digest in coverage[requirement]
+        }
+    )
+    status = (
+        "blocked_testbed_not_bound_to_recapture"
+        if not testbed_bound_to_recapture
+        else (
+            "blocked_testbed_lineage_mismatch"
+            if predecessor_binding_required and predecessor_testbed_bound is not True
+            else (
+                "unresolved_missing_evidence"
+                if unresolved
+                else "resolved_by_deterministic_testbed_reinspection"
+            )
+        )
+    )
+    value = {
+        "schema_version": RECAPTURE_REINSPECTION_SCHEMA_VERSION,
+        "run_id": run_id.strip(),
+        "source_run_id": validated_receipt["run_id"],
+        "targeted_recapture_request_digest": validated_request["targeted_recapture_request_digest"],
+        "targeted_recapture_receipt_digest": validated_receipt["targeted_recapture_receipt_digest"],
+        "recapture_build_digest": recapture_digest,
+        "testbed_digest": validated_testbed["testbed_digest"],
+        "testbed_capture_build_digest": testbed_capture_digest,
+        "testbed_bound_to_recapture": testbed_bound_to_recapture,
+        "predecessor_binding_required": predecessor_binding_required,
+        "predecessor_testbed_bound": predecessor_testbed_bound,
+        "requested_missing_evidence": requested,
+        "resolved_missing_evidence": resolved,
+        "unresolved_missing_evidence": unresolved,
+        "coverage_evidence_ids": coverage_ids,
+        "coverage_source_artifact_digests": coverage_source_digests,
+        "status": status,
+        "accepted_as_authoritative_evidence": False,
+        "rights_clearance_inferred": False,
+        "proof_effect": "none",
+    }
+    return validate_recapture_reinspection(
+        _finalize(value, digest_field="recapture_reinspection_digest")
+    )
+
+
 def scenario_proposal_set(
     *,
     run_id: str,
@@ -747,6 +986,7 @@ __all__ = [
     "CUSTOMER_REPORT_SCHEMA_VERSION",
     "FROZEN_SCENARIO_MANIFEST_SCHEMA_VERSION",
     "Phase2ArtifactError",
+    "RECAPTURE_REINSPECTION_SCHEMA_VERSION",
     "SCENARIO_PROPOSAL_SET_SCHEMA_VERSION",
     "TARGETED_RECAPTURE_RECEIPT_SCHEMA_VERSION",
     "TARGETED_RECAPTURE_REQUEST_SCHEMA_VERSION",
@@ -756,10 +996,12 @@ __all__ = [
     "clarification_request",
     "deterministic_customer_report",
     "freeze_scenario_manifest",
+    "recapture_reinspection",
     "scenario_proposal_set",
     "targeted_recapture_receipt",
     "targeted_recapture_request",
     "validate_targeted_recapture_receipt",
     "validate_targeted_recapture_request",
+    "validate_recapture_reinspection",
     "write_phase2_artifact",
 ]

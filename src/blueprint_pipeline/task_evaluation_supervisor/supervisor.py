@@ -57,6 +57,7 @@ from .manager import (
 )
 from .phase2_artifacts import (
     deterministic_customer_report,
+    recapture_reinspection as build_recapture_reinspection,
     validate_targeted_recapture_receipt,
     validate_targeted_recapture_request,
     write_phase2_artifact,
@@ -79,6 +80,11 @@ def _validated_context(context: SupervisorContext) -> SupervisorContext:
     capture_build = dict(context.capture_build) if context.capture_build is not None else None
     if capture_build is not None:
         capture_build = validate_capture_build_ingress(capture_build)
+    testbed = (
+        MaintainedSiteTaskTestbed.from_mapping(context.testbed).to_mapping()
+        if context.testbed is not None
+        else None
+    )
     recapture_request = (
         validate_targeted_recapture_request(context.targeted_recapture_request)
         if context.targeted_recapture_request is not None
@@ -95,6 +101,22 @@ def _validated_context(context: SupervisorContext) -> SupervisorContext:
     )
     if recapture_receipt is not None and (recapture_request is None or capture_build is None):
         raise ValueError("targeted_recapture_receipt_requires_request_and_capture")
+    if context.recapture_reinspection is not None:
+        raise ValueError("recapture_reinspection_is_kernel_derived")
+    derived_recapture_reinspection = (
+        build_recapture_reinspection(
+            run_id=context.run_id,
+            request=recapture_request,
+            receipt=recapture_receipt,
+            capture_build=capture_build,
+            testbed=testbed,
+        )
+        if recapture_request is not None
+        and recapture_receipt is not None
+        and capture_build is not None
+        and testbed is not None
+        else None
+    )
     return replace(
         context,
         capture_build=capture_build,
@@ -103,11 +125,7 @@ def _validated_context(context: SupervisorContext) -> SupervisorContext:
             if context.decision_request is not None
             else None
         ),
-        testbed=(
-            MaintainedSiteTaskTestbed.from_mapping(context.testbed).to_mapping()
-            if context.testbed is not None
-            else None
-        ),
+        testbed=testbed,
         method_profiles=tuple(
             EvidenceMethodProfile.from_mapping(value).to_mapping()
             for value in context.method_profiles
@@ -131,6 +149,7 @@ def _validated_context(context: SupervisorContext) -> SupervisorContext:
         ),
         targeted_recapture_request=recapture_request,
         targeted_recapture_receipt=recapture_receipt,
+        recapture_reinspection=derived_recapture_reinspection,
     )
 
 
@@ -158,6 +177,7 @@ def _write_kernel_inputs(root: Path, context: SupervisorContext) -> dict[str, An
         ("decision_envelope", context.decision_envelope),
         ("targeted_recapture_request", context.targeted_recapture_request),
         ("targeted_recapture_receipt", context.targeted_recapture_receipt),
+        ("recapture_reinspection", context.recapture_reinspection),
     ):
         if isinstance(value, Mapping):
             record(name, value)
@@ -192,6 +212,7 @@ def _input_digests(context: SupervisorContext) -> list[str]:
         (context.decision_envelope, "decision_envelope_digest"),
         (context.targeted_recapture_request, "targeted_recapture_request_digest"),
         (context.targeted_recapture_receipt, "targeted_recapture_receipt_digest"),
+        (context.recapture_reinspection, "recapture_reinspection_digest"),
     ):
         if isinstance(value, Mapping):
             candidates.append(value.get(key))

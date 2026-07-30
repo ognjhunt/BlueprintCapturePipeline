@@ -40,6 +40,7 @@ class SupervisorContext:
     decision_envelope: Mapping[str, Any] | None = None
     targeted_recapture_request: Mapping[str, Any] | None = None
     targeted_recapture_receipt: Mapping[str, Any] | None = None
+    recapture_reinspection: Mapping[str, Any] | None = None
     autonomy_mode: str | None = None
     authority_envelope: Mapping[str, Any] | None = None
     # Internal execution scope for deterministic registered tools. This path is
@@ -257,6 +258,7 @@ class DeterministicCaptureTestbedSupervisor:
                 ),
             )
         testbed = MaintainedSiteTaskTestbed.from_mapping(context.testbed).to_mapping()
+        recapture_reinspection = dict(context.recapture_reinspection or {})
         inventory = {
             _string(row.get("evidence_id")) for row in _rows(testbed.get("evidence_inventory"))
         }
@@ -266,6 +268,16 @@ class DeterministicCaptureTestbedSupervisor:
             for key in ("rights", "consent", "privacy")
             if _string(governance.get(key)).lower() not in {"accepted", "cleared", "approved"}
         ]
+        recapture_blockers = (
+            [
+                "targeted_recapture_not_deterministically_resolved:"
+                f"{recapture_reinspection.get('status')}"
+            ]
+            if recapture_reinspection
+            and recapture_reinspection.get("status")
+            != "resolved_by_deterministic_testbed_reinspection"
+            else []
+        )
         claim_types: set[str] = set()
         if context.decision_request is not None:
             request = DecisionEvidenceRequest.from_mapping(context.decision_request).to_mapping()
@@ -288,6 +300,25 @@ class DeterministicCaptureTestbedSupervisor:
                     action_type="request_governance_resolution",
                     reasons=governance_blockers,
                     parameters={"testbed_digest": testbed["testbed_digest"]},
+                )
+            )
+        elif recapture_blockers:
+            proposals.append(
+                _proposal(
+                    context=context,
+                    capability=self.kind,
+                    ordinal=0,
+                    action_type="request_testbed_rebuild_or_recapture_gap_resolution",
+                    reasons=recapture_blockers,
+                    parameters={
+                        "recapture_reinspection_digest": recapture_reinspection.get(
+                            "recapture_reinspection_digest"
+                        ),
+                        "unresolved_missing_evidence": recapture_reinspection.get(
+                            "unresolved_missing_evidence"
+                        )
+                        or [],
+                    },
                 )
             )
         elif missing:
@@ -334,11 +365,27 @@ class DeterministicCaptureTestbedSupervisor:
                 "full_site_recapture_required": False,
                 "raw_capture_truth_rewritten": False,
                 "rights_clearance_inferred": False,
+                "targeted_recapture_received": bool(context.targeted_recapture_receipt),
+                "recapture_reinspection_status": recapture_reinspection.get("status"),
+                "recapture_reinspection_digest": recapture_reinspection.get(
+                    "recapture_reinspection_digest"
+                ),
+                "recapture_gap_resolution_claimed_by_agent": False,
             },
             proposals=proposals,
-            blockers=governance_blockers,
+            blockers=[*governance_blockers, *recapture_blockers],
             evidence_refs=[
-                {"artifact": "maintained_site_task_testbed", "digest": testbed["testbed_digest"]}
+                {"artifact": "maintained_site_task_testbed", "digest": testbed["testbed_digest"]},
+                *(
+                    [
+                        {
+                            "artifact": "recapture_reinspection",
+                            "digest": recapture_reinspection.get("recapture_reinspection_digest"),
+                        }
+                    ]
+                    if recapture_reinspection
+                    else []
+                ),
             ],
         )
 

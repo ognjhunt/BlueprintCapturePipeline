@@ -73,11 +73,13 @@ from .phase2_artifacts import (
     clarification_request,
     deterministic_customer_report,
     freeze_scenario_manifest,
+    recapture_reinspection,
     scenario_proposal_set,
     targeted_recapture_receipt,
     targeted_recapture_request,
     validate_targeted_recapture_receipt,
     validate_targeted_recapture_request,
+    validate_recapture_reinspection,
 )
 from .pigey_candidate_runtime import (
     PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION,
@@ -221,12 +223,14 @@ __all__ = [
     "clarification_request",
     "deterministic_customer_report",
     "freeze_scenario_manifest",
+    "recapture_reinspection",
     "freeze_candidate_policy_manifest",
     "scenario_proposal_set",
     "targeted_recapture_receipt",
     "targeted_recapture_request",
     "validate_targeted_recapture_receipt",
     "validate_targeted_recapture_request",
+    "validate_recapture_reinspection",
     "validate_tool_observation_binding",
     "validate_pigey_license_attestation",
 ]

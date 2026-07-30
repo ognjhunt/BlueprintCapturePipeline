@@ -262,6 +262,17 @@ capture authoritative, or resolve the original blocker. The capture specialist
 must reinspect it and a maintained testbed must be deterministically rebuilt or
 validated before the blocker can change.
 
+When that rebuilt testbed is supplied, the proof kernel derives a separate
+`task_evaluation_recapture_reinspection.v1` artifact; callers and agents cannot
+supply it. Resolution requires the testbed validation envelope to bind the exact
+returned `capture_build_digest`, every requested gap to be covered by a named
+evidence inventory entry whose source digest exists in that returned capture
+projection, and a testbed-origin request to preserve predecessor lineage. A
+wrong capture binding, unlinked or missing evidence, or lineage mismatch remains
+a typed blocker. Even the resolved result has `proof_effect=none`: it closes the
+specific capture sufficiency request, not rights, task success, physical
+validation, safety, or deployment readiness.
+
 Live inference is fail closed and requires `--allow-live-agent-sdk`, a positive
 `--agent-inference-budget-usd`, and
 `BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true`. Before every SDK call the
@@ -306,7 +317,10 @@ not initiate capture, request a full-site recapture through this action, infer
 rights, mutate raw capture, or create proof. Phase 2 also includes deterministic
 targeted-recapture receipts that reject an unchanged capture, bind the exact
 request and new capture projection, and preserve an undetermined blocker until
-testbed reinspection. Capture projections are schema-validated during live
+testbed reinspection. The kernel-derived reinspection artifact then checks exact
+capture binding, named evidence coverage, source-artifact lineage, and
+predecessor lineage before closing that specific gap. Capture projections are
+schema-validated during live
 ingress and replay; a malformed but self-consistently hashed envelope is
 refused when it violates the bounded projection contract. Phase 2 also includes
 deterministic

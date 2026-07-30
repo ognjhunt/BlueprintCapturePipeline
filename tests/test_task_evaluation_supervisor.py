@@ -79,11 +79,13 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     load_supervisor_evaluation_corpus,
     load_recorded_supervisor_execution,
     replay_supervisor_run,
+    recapture_reinspection,
     run_capture_build_supervisor,
     scenario_proposal_set,
     targeted_recapture_receipt,
     targeted_recapture_request,
     validate_capture_build_ingress,
+    validate_recapture_reinspection,
     validate_targeted_recapture_receipt,
     validate_tool_observation_binding,
 )
@@ -181,6 +183,7 @@ class _FixtureAgentsSDKInvoker:
             decision_envelope=payload.get("decision_envelope"),
             targeted_recapture_request=payload.get("targeted_recapture_request"),
             targeted_recapture_receipt=payload.get("targeted_recapture_receipt"),
+            recapture_reinspection=payload.get("recapture_reinspection"),
         )
         baseline = self._baselines[spec.capability].propose(context).to_mapping()
         proposals = [
@@ -1676,6 +1679,237 @@ def test_recapture_receipt_retriggers_capture_specialist_without_claiming_resolu
     assert (execution.output_dir / "kernel_inputs" / "targeted_recapture_receipt.json").is_file()
     replay = replay_supervisor_run(execution.output_dir)
     assert replay["status"] == "replay_verified"
+
+
+def test_recapture_reinspection_requires_capture_evidence_and_testbed_lineage(
+    tmp_path: Path,
+) -> None:
+    def capture(capture_id: str) -> dict[str, Any]:
+        root = tmp_path / capture_id
+        (root / "raw").mkdir(parents=True)
+        (root / "raw" / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "blueprint_raw_capture_manifest.v1",
+                    "capture_id": capture_id,
+                    "scene_id": "warehouse-recapture-scene",
+                    "task_intent": "restock the marked shelf",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return load_capture_build_ingress(root)
+
+    original_capture = capture("reinspection-original")
+    returned_capture = capture("reinspection-returned")
+    capture_request = targeted_recapture_request(
+        run_id="capture-origin-reinspection-run",
+        source_digest=original_capture["capture_build_digest"],
+        source_type="capture_build",
+        missing_evidence=["view behind rack"],
+    )
+    capture_receipt = targeted_recapture_receipt(
+        request=capture_request,
+        capture_build=returned_capture,
+        submitted_by="customer:site-owner-1",
+        received_at="2026-07-30T15:00:00Z",
+    )
+
+    unbound_testbed = _testbed()
+    unbound = recapture_reinspection(
+        run_id="capture-reinspection-run",
+        request=capture_request,
+        receipt=capture_receipt,
+        capture_build=returned_capture,
+        testbed=unbound_testbed,
+    )
+    assert unbound["status"] == "blocked_testbed_not_bound_to_recapture"
+    assert unbound["testbed_bound_to_recapture"] is False
+
+    bound_testbed = json.loads(json.dumps(unbound_testbed))
+    bound_testbed.pop("testbed_digest")
+    bound_testbed["version"] = "2"
+    bound_testbed["validation_envelope"]["capture_build_digest"] = returned_capture[
+        "capture_build_digest"
+    ]
+    bound_testbed = MaintainedSiteTaskTestbed.from_mapping(bound_testbed).to_mapping()
+    unresolved = recapture_reinspection(
+        run_id="capture-reinspection-run",
+        request=capture_request,
+        receipt=capture_receipt,
+        capture_build=returned_capture,
+        testbed=bound_testbed,
+    )
+    assert unresolved["status"] == "unresolved_missing_evidence"
+    assert unresolved["unresolved_missing_evidence"] == ["view behind rack"]
+
+    resolved_testbed = json.loads(json.dumps(bound_testbed))
+    resolved_testbed.pop("testbed_digest")
+    resolved_testbed["evidence_inventory"].append(
+        {
+            "evidence_id": "rgb-view-behind-rack",
+            "addresses_recapture_requirements": ["view behind rack"],
+            "source_capture_artifact_digest": returned_capture["artifacts"][0]["sha256"],
+        }
+    )
+    resolved_testbed = MaintainedSiteTaskTestbed.from_mapping(resolved_testbed).to_mapping()
+    resolved = recapture_reinspection(
+        run_id="capture-reinspection-run",
+        request=capture_request,
+        receipt=capture_receipt,
+        capture_build=returned_capture,
+        testbed=resolved_testbed,
+    )
+    assert resolved["status"] == "resolved_by_deterministic_testbed_reinspection"
+    assert resolved["resolved_missing_evidence"] == ["view behind rack"]
+    assert resolved["coverage_evidence_ids"] == ["rgb-view-behind-rack"]
+    assert resolved["coverage_source_artifact_digests"] == [
+        returned_capture["artifacts"][0]["sha256"]
+    ]
+    assert resolved["accepted_as_authoritative_evidence"] is False
+    assert resolved["rights_clearance_inferred"] is False
+    assert resolved["proof_effect"] == "none"
+
+    tampered = dict(resolved)
+    tampered["status"] = "unresolved_missing_evidence"
+    tampered["recapture_reinspection_digest"] = canonical_digest(
+        tampered,
+        digest_field="recapture_reinspection_digest",
+    )
+    with pytest.raises(Phase2ArtifactError, match="recapture_reinspection_contract_invalid"):
+        validate_recapture_reinspection(tampered)
+
+    testbed_request = targeted_recapture_request(
+        run_id="testbed-origin-reinspection-run",
+        source_digest=unbound_testbed["testbed_digest"],
+        source_type="site_task_testbed",
+        missing_evidence=["view behind rack"],
+    )
+    testbed_receipt = targeted_recapture_receipt(
+        request=testbed_request,
+        capture_build=returned_capture,
+        submitted_by="customer:site-owner-1",
+        received_at="2026-07-30T15:00:00Z",
+    )
+    lineage_mismatch = recapture_reinspection(
+        run_id="testbed-reinspection-run",
+        request=testbed_request,
+        receipt=testbed_receipt,
+        capture_build=returned_capture,
+        testbed=resolved_testbed,
+    )
+    assert lineage_mismatch["status"] == "blocked_testbed_lineage_mismatch"
+
+    successor_testbed = json.loads(json.dumps(resolved_testbed))
+    successor_testbed.pop("testbed_digest")
+    successor_testbed["version"] = "3"
+    successor_testbed["predecessor_testbed_digest"] = unbound_testbed["testbed_digest"]
+    successor_testbed = MaintainedSiteTaskTestbed.from_mapping(successor_testbed).to_mapping()
+    lineage_resolved = recapture_reinspection(
+        run_id="testbed-reinspection-run",
+        request=testbed_request,
+        receipt=testbed_receipt,
+        capture_build=returned_capture,
+        testbed=successor_testbed,
+    )
+    assert lineage_resolved["status"] == "resolved_by_deterministic_testbed_reinspection"
+    assert lineage_resolved["predecessor_testbed_bound"] is True
+
+
+def test_supervisor_persists_and_replays_kernel_recapture_reinspection(
+    tmp_path: Path,
+) -> None:
+    original_root = tmp_path / "kernel-reinspection-original"
+    returned_root = tmp_path / "kernel-reinspection-returned"
+    for root, capture_id in (
+        (original_root, "kernel-original"),
+        (returned_root, "kernel-returned"),
+    ):
+        (root / "raw").mkdir(parents=True)
+        (root / "raw" / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "blueprint_raw_capture_manifest.v1",
+                    "capture_id": capture_id,
+                    "scene_id": "warehouse-recapture-scene",
+                    "task_intent": "restock the marked shelf",
+                }
+            ),
+            encoding="utf-8",
+        )
+    original = load_capture_build_ingress(original_root)
+    returned = load_capture_build_ingress(returned_root)
+    request = targeted_recapture_request(
+        run_id="kernel-reinspection-origin",
+        source_digest=original["capture_build_digest"],
+        source_type="capture_build",
+        missing_evidence=["metric_geometry"],
+    )
+    receipt = targeted_recapture_receipt(
+        request=request,
+        capture_build=returned,
+        submitted_by="customer:site-owner-1",
+        received_at="2026-07-30T15:00:00Z",
+    )
+    testbed = _testbed()
+    testbed.pop("testbed_digest")
+    testbed["version"] = "2"
+    testbed["validation_envelope"]["capture_build_digest"] = returned["capture_build_digest"]
+    testbed["evidence_inventory"][0]["source_capture_artifact_digest"] = returned["artifacts"][0][
+        "sha256"
+    ]
+    testbed = MaintainedSiteTaskTestbed.from_mapping(testbed).to_mapping()
+    invoker = _FixtureAgentsSDKInvoker()
+    execution = TaskEvaluationSupervisor(agents_sdk_invoker=invoker).run(
+        SupervisorContext(
+            run_id="kernel-reinspection-run",
+            customer_question="Did the recapture provide the required metric geometry?",
+            capture_build=returned,
+            testbed=testbed,
+            targeted_recapture_request=request,
+            targeted_recapture_receipt=receipt,
+        ),
+        output_dir=tmp_path / "kernel-reinspection-supervisor",
+        mode="shadow",
+        generated_at="2026-07-30T15:01:00Z",
+    )
+
+    reinspection_path = execution.output_dir / "kernel_inputs" / "recapture_reinspection.json"
+    reinspection = json.loads(reinspection_path.read_text(encoding="utf-8"))
+    assert reinspection["status"] == "resolved_by_deterministic_testbed_reinspection"
+    capture_result = next(
+        row.to_mapping()
+        for row in execution.capability_results
+        if row.to_mapping()["capability"] == CapabilityKind.CAPTURE_TESTBED_SUPERVISOR.value
+    )
+    assert (
+        capture_result["artifact"]["recapture_reinspection_status"]
+        == "resolved_by_deterministic_testbed_reinspection"
+    )
+    assert capture_result["artifact"]["recapture_gap_resolution_claimed_by_agent"] is False
+    specialist_call = next(
+        row
+        for row in invoker.calls
+        if row["spec"].capability is CapabilityKind.CAPTURE_TESTBED_SUPERVISOR
+    )
+    assert specialist_call["payload"]["recapture_reinspection"] == reinspection
+    assert replay_supervisor_run(execution.output_dir)["status"] == "replay_verified"
+
+    with pytest.raises(ValueError, match="recapture_reinspection_is_kernel_derived"):
+        TaskEvaluationSupervisor(agents_sdk_invoker=_FixtureAgentsSDKInvoker()).run(
+            SupervisorContext(
+                run_id="kernel-reinspection-injection",
+                customer_question="Accept my supplied resolution artifact.",
+                capture_build=returned,
+                testbed=testbed,
+                targeted_recapture_request=request,
+                targeted_recapture_receipt=receipt,
+                recapture_reinspection=reinspection,
+            ),
+            output_dir=tmp_path / "kernel-reinspection-injection",
+            mode="shadow",
+            generated_at="2026-07-30T15:02:00Z",
+        )
 
 
 def test_default_sdk_harness_fails_closed_without_live_authorization(tmp_path: Path) -> None:

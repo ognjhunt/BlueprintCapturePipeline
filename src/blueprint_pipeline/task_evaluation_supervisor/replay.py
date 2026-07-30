@@ -30,6 +30,8 @@ from .ledger import AppendOnlyEventLedger
 from .inference_reservations import InferenceReservationAudit
 from .phase2_artifacts import (
     Phase2ArtifactError,
+    recapture_reinspection as build_recapture_reinspection,
+    validate_recapture_reinspection,
     validate_targeted_recapture_receipt,
     validate_targeted_recapture_request,
 )
@@ -78,6 +80,11 @@ def _validate_kernel_input(name: str, value: Mapping[str, Any]) -> Mapping[str, 
             return validate_targeted_recapture_receipt(value)
         except Phase2ArtifactError as exc:
             raise SupervisorReplayError("targeted_recapture_receipt_invalid") from exc
+    if name == "recapture_reinspection":
+        try:
+            return validate_recapture_reinspection(value)
+        except Phase2ArtifactError as exc:
+            raise SupervisorReplayError("recapture_reinspection_invalid") from exc
     raise SupervisorReplayError(f"kernel_input_name_unsupported:{name}")
 
 
@@ -469,6 +476,25 @@ def replay_supervisor_run(
             )
         except Phase2ArtifactError as exc:
             raise SupervisorReplayError("targeted_recapture_kernel_inputs_mismatch") from exc
+        testbed = kernel_inputs.get("site_task_testbed")
+        recorded_reinspection = kernel_inputs.get("recapture_reinspection")
+        if testbed is not None:
+            if recorded_reinspection is None:
+                raise SupervisorReplayError("recapture_reinspection_kernel_input_missing")
+            try:
+                expected_reinspection = build_recapture_reinspection(
+                    run_id=str(run_value["run_id"]),
+                    request=recapture_request,
+                    receipt=recapture_receipt,
+                    capture_build=capture_build,
+                    testbed=testbed,
+                )
+            except Phase2ArtifactError as exc:
+                raise SupervisorReplayError("recapture_reinspection_rebuild_failed") from exc
+            if recorded_reinspection != expected_reinspection:
+                raise SupervisorReplayError("recapture_reinspection_kernel_result_mismatch")
+        elif recorded_reinspection is not None:
+            raise SupervisorReplayError("recapture_reinspection_without_testbed")
 
     deterministic_decision = kernel_inputs.get("decision_envelope")
     replayed_decision: dict[str, Any] | None = None

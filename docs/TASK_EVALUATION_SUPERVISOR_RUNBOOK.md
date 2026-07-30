@@ -114,6 +114,16 @@ not infer rights, and leaves `original_blocker_resolution` as
 `undetermined_pending_reinspection`. Recompile or validate the maintained
 Site-Task Testbed before treating the requested gap as resolved.
 
+The rebuilt testbed must put the returned `capture_build_digest` in
+`validation_envelope.capture_build_digest`. Each requested gap must either match
+an `evidence_inventory[].evidence_id` or appear in that entry's
+`addresses_recapture_requirements`; the same entry's
+`source_capture_artifact_digest` must match a SHA-256 artifact in the returned
+capture projection. If the request was made against a prior testbed, the rebuilt
+testbed must also bind that digest through
+`predecessor_testbed_digest` or `supersedes`. Blueprint derives and replay-checks
+the reinspection result; do not accept a caller- or agent-supplied result.
+
 ## Pre-authorized recovery and provider choice
 
 The recovery controller requires all of the following before invoking an
