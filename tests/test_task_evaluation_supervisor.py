@@ -3299,6 +3299,45 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     ):
         replay_supervisor_run(rewritten_state_run)
 
+    rewritten_manager_invocation_run = tmp_path / "rewritten-manager-invocation"
+    shutil.copytree(execution.output_dir, rewritten_manager_invocation_run)
+    manager_invocation_path = (
+        rewritten_manager_invocation_run / "manager" / "invocations" / "step-000.json"
+    )
+    rewritten_manager_invocation = json.loads(manager_invocation_path.read_text(encoding="utf-8"))
+    rewritten_manager_invocation["adapter_id"] = "compromised-manager-adapter"
+    rewritten_manager_invocation["manager_invocation_digest"] = canonical_digest(
+        rewritten_manager_invocation,
+        digest_field="manager_invocation_digest",
+    )
+    manager_invocation_path.write_text(
+        json.dumps(rewritten_manager_invocation),
+        encoding="utf-8",
+    )
+    rewritten_manager_invocation_report_path = (
+        rewritten_manager_invocation_run / "terminal_supervisor_report.json"
+    )
+    rewritten_manager_invocation_report = json.loads(
+        rewritten_manager_invocation_report_path.read_text(encoding="utf-8")
+    )
+    rewritten_manager_invocation_report["manager_invocations"][0]["digest"] = (
+        rewritten_manager_invocation["manager_invocation_digest"]
+    )
+    rewritten_manager_invocation_report["terminal_report_digest"] = canonical_digest(
+        rewritten_manager_invocation_report,
+        digest_field="terminal_report_digest",
+    )
+    rewritten_manager_invocation_report_path.write_text(
+        json.dumps(rewritten_manager_invocation_report),
+        encoding="utf-8",
+    )
+    rebind_terminal_state(
+        rewritten_manager_invocation_run,
+        rewritten_manager_invocation_report["terminal_report_digest"],
+    )
+    with pytest.raises(SupervisorReplayError, match="manager_invocation_contract_mismatch"):
+        replay_supervisor_run(rewritten_manager_invocation_run)
+
     rewritten_capability_run = tmp_path / "rewritten-capability-summary"
     shutil.copytree(execution.output_dir, rewritten_capability_run)
     rewritten_capability_path = rewritten_capability_run / "terminal_supervisor_report.json"

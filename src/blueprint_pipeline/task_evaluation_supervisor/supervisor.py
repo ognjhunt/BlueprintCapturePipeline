@@ -55,6 +55,8 @@ from .inference_reservations import InferenceReservationAudit
 from .manager import (
     OpenAIAgentsSDKSupervisorManager,
     validate_manager_decision,
+    validate_manager_invocation,
+    validate_manager_refusal,
 )
 from .phase2_artifacts import (
     deterministic_customer_report,
@@ -620,6 +622,12 @@ class TaskEvaluationSupervisor:
                 if not refusal_path.is_file():
                     raise ValueError("supervisor_resume_manager_refusal_missing")
                 refusal = dict(read_json(refusal_path))
+                refusal = validate_manager_refusal(
+                    refusal,
+                    run_id=context.run_id,
+                    completed_results=results,
+                    step_index=manager_step,
+                )
                 refusal_digest = canonical_digest(
                     refusal,
                     digest_field="supervisor_manager_refusal_digest",
@@ -672,6 +680,22 @@ class TaskEvaluationSupervisor:
                 ):
                     raise ValueError("supervisor_resume_manager_decision_mismatch")
                 manager_invocation = dict(read_json(manager_invocation_path))
+                manager_invocation = validate_manager_invocation(
+                    manager_invocation,
+                    run_id=context.run_id,
+                    step_index=manager_step,
+                    structured_output_digest=decision_digest,
+                    tool_registry_digest=self.tool_registry.digest,
+                    authority_digest=authority.digest,
+                    input_artifact_digests=[
+                        *input_digests,
+                        *decision["observed_capability_result_digests"],
+                    ],
+                    manager_adapter_id=self.manager.adapter_id,
+                    manager_adapter_version=self.manager.adapter_version,
+                    max_cost_usd=self.agent_inference_budget_usd,
+                    parent_event_digest=event_value.get("previous_event_digest"),
+                )
                 invocation_digest = canonical_digest(
                     manager_invocation,
                     digest_field="manager_invocation_digest",
@@ -833,6 +857,12 @@ class TaskEvaluationSupervisor:
                                 refusal_value,
                                 digest_field="supervisor_manager_refusal_digest",
                             )
+                            refusal_value = validate_manager_refusal(
+                                refusal_value,
+                                run_id=context.run_id,
+                                completed_results=results,
+                                step_index=manager_step,
+                            )
                             write_json(
                                 manager_refusals_dir / f"step-{manager_step:03d}.json",
                                 refusal_value,
@@ -923,6 +953,22 @@ class TaskEvaluationSupervisor:
                         manager_invocation_value["manager_invocation_digest"] = canonical_digest(
                             manager_invocation_value,
                             digest_field="manager_invocation_digest",
+                        )
+                        manager_invocation_value = validate_manager_invocation(
+                            manager_invocation_value,
+                            run_id=context.run_id,
+                            step_index=manager_step,
+                            structured_output_digest=manager_decision.digest,
+                            tool_registry_digest=self.tool_registry.digest,
+                            authority_digest=authority.digest,
+                            input_artifact_digests=[
+                                *input_digests,
+                                *decision_value["observed_capability_result_digests"],
+                            ],
+                            manager_adapter_id=self.manager.adapter_id,
+                            manager_adapter_version=self.manager.adapter_version,
+                            max_cost_usd=self.agent_inference_budget_usd,
+                            parent_event_digest=last_event.digest,
                         )
                         write_json(
                             manager_decisions_dir / f"step-{manager_step:03d}.json",

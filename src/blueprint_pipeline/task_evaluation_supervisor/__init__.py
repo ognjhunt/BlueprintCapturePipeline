@@ -66,6 +66,8 @@ from .manager import (
     SupervisorManagerDecision,
     SupervisorManagerError,
     validate_manager_decision,
+    validate_manager_invocation,
+    validate_manager_refusal,
 )
 from .phase2_artifacts import (
     Phase2ArtifactError,
@@ -196,6 +198,8 @@ __all__ = [
     "SupervisorManagerDecision",
     "SupervisorManagerError",
     "validate_manager_decision",
+    "validate_manager_invocation",
+    "validate_manager_refusal",
     "AgentsSDKSupervisorManagerOutput",
     "SupervisorReplayError",
     "SupervisorRun",

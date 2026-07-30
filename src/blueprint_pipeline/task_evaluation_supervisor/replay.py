@@ -33,7 +33,12 @@ from .capture_ingress import CaptureBuildIngressError, validate_capture_build_in
 from .capabilities import SupervisorContext
 from .ledger import AppendOnlyEventLedger
 from .inference_reservations import InferenceReservationAudit
-from .manager import SupervisorManagerError, validate_manager_decision
+from .manager import (
+    SupervisorManagerError,
+    validate_manager_decision,
+    validate_manager_invocation,
+    validate_manager_refusal,
+)
 from .phase2_artifacts import (
     Phase2ArtifactError,
     deterministic_customer_report,
@@ -281,6 +286,8 @@ def replay_supervisor_run(
         ]
     if len(capability_digest_by_kind) != len(capability_values):
         raise SupervisorReplayError("terminal_capability_inventory_duplicate")
+    capability_objects = [CapabilityResult.from_mapping(row) for row in capability_values]
+    capability_object_by_digest = {result.digest: result for result in capability_objects}
     if state_value["completed_capabilities"] != [row["capability"] for row in capability_values]:
         raise SupervisorReplayError("terminal_state_capabilities_mismatch")
 
@@ -409,6 +416,20 @@ def replay_supervisor_run(
         "observed_capability_result_digests"
     ) != sorted(observed_capability_digests):
         raise SupervisorReplayError("manager_refusal_observed_results_mismatch")
+    if manager_refusal_values:
+        try:
+            refusal_completed_results = [
+                capability_object_by_digest[digest]
+                for digest in manager_refusal_values[0]["observed_capability_result_digests"]
+            ]
+            validate_manager_refusal(
+                manager_refusal_values[0],
+                run_id=str(run_value["run_id"]),
+                completed_results=refusal_completed_results,
+                step_index=len(manager_rows),
+            )
+        except (KeyError, SupervisorManagerError) as exc:
+            raise SupervisorReplayError("manager_refusal_contract_mismatch") from exc
     replayed_manager_terminal_reason = (
         "blocked"
         if manager_refusal_values
@@ -443,6 +464,24 @@ def replay_supervisor_run(
             manager_invocation_value,
             digest_field="manager_invocation_digest",
         )
+        try:
+            manager_invocation_value = validate_manager_invocation(
+                manager_invocation_value,
+                run_id=str(run_value["run_id"]),
+                step_index=expected_step,
+                structured_output_digest=manager_decision_digests[expected_step],
+                tool_registry_digest=tool_registry.digest,
+                authority_digest=authority.digest,
+                input_artifact_digests=[
+                    *run_value["input_artifact_digests"],
+                    *manager_decision_values[expected_step]["observed_capability_result_digests"],
+                ],
+                manager_adapter_id=str(run_value["manager_adapter_id"]),
+                manager_adapter_version=str(run_value["manager_adapter_version"]),
+                max_cost_usd=float(authority_value["agent_inference_budget_usd"]),
+            )
+        except SupervisorManagerError as exc:
+            raise SupervisorReplayError("manager_invocation_contract_mismatch") from exc
         if (
             int(manager_invocation_value.get("step_index", -1)) != expected_step
             or manager_invocation_value.get("run_id") != run_value["run_id"]
@@ -464,15 +503,26 @@ def replay_supervisor_run(
         manager_invocation_digests.append(digest)
         manager_invocation_values.append(manager_invocation_value)
 
-    manager_event_digests = [
-        str(event.to_mapping().get("payload_digest") or "")
+    manager_event_values = [
+        event.to_mapping()
         for event in events
         if str(event.to_mapping().get("event_type") or "").startswith(
             "supervisor_manager_decision_recorded:"
         )
     ]
+    manager_event_digests = [
+        str(event.get("payload_digest") or "") for event in manager_event_values
+    ]
     if manager_event_digests != manager_decision_digests:
         raise SupervisorReplayError("manager_event_sequence_mismatch")
+    for step_index, invocation_value in enumerate(manager_invocation_values):
+        if (
+            manager_event_values[step_index]["event_type"]
+            != f"supervisor_manager_decision_recorded:{step_index}"
+            or invocation_value["parent_event_digest"]
+            != manager_event_values[step_index]["previous_event_digest"]
+        ):
+            raise SupervisorReplayError("manager_invocation_parent_event_mismatch")
     manager_refusal_event_digests = [
         str(event.to_mapping().get("payload_digest") or "")
         for event in events
@@ -654,6 +704,29 @@ def replay_supervisor_run(
             [],
         ):
             raise SupervisorReplayError("capability_structured_observations_mismatch")
+    specialist_cost_by_capability = {
+        str(row["capability"]): float(row["cost_usd"]) for row in invocation_values
+    }
+    cumulative_manager_cost = 0.0
+    prior_manager_reserved_cost = 0.0
+    for step_index, manager_invocation_value in enumerate(manager_invocation_values):
+        cumulative_manager_cost += float(manager_invocation_value["cost_usd"])
+        observed_capabilities = [
+            capability_object_by_digest[digest].to_mapping()["capability"]
+            for digest in manager_decision_values[step_index]["observed_capability_result_digests"]
+        ]
+        expected_reported_cost = cumulative_manager_cost + sum(
+            specialist_cost_by_capability[capability] for capability in observed_capabilities
+        )
+        budget_state = manager_invocation_value["budget_state"]
+        reserved_cost = float(budget_state["cumulative_reserved_cost_usd"])
+        if (
+            float(budget_state["reported_cost_usd"]) != expected_reported_cost
+            or reserved_cost < prior_manager_reserved_cost
+            or reserved_cost < expected_reported_cost
+        ):
+            raise SupervisorReplayError("manager_invocation_accounting_mismatch")
+        prior_manager_reserved_cost = reserved_cost
     observations_dir = root / "observations"
     persisted_tool_observation_paths = (
         {path.resolve() for path in observations_dir.glob("*.json")}

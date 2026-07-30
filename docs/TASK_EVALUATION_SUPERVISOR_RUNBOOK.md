@@ -335,6 +335,13 @@ terminal reasons from the recorded context and completed capability artifacts.
 The manager may select from that menu, but cannot expand or rewrite it by
 returning a self-consistently hashed decision.
 
+Manager invocation and refusal manifests are also exact contracts. Blueprint
+binds manager identity and version, canonical instruction digest, authority,
+tool registry, observed inputs, cumulative inference accounting, parent ledger
+event, bounded error type, and no-proof-effect fields during execution, resume,
+and replay. Provider-returned metadata cannot substitute a different manager or
+erase a refused manager turn.
+
 The customer report has its own exact-schema validator at creation and replay.
 It rejects unknown fields, non-finite or negative spend, inconsistent
 decision/partial/abstention flags, agent-authoritative output, proof mutation,

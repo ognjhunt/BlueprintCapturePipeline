@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
+import re
 from typing import Any, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -30,6 +32,7 @@ _TERMINAL_REASONS = {
     "abstention",
     "blocked",
 }
+_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class SupervisorManagerError(ValueError):
@@ -249,6 +252,158 @@ def validate_manager_decision(
     return dict(value)
 
 
+def validate_manager_refusal(
+    value: Mapping[str, Any],
+    *,
+    run_id: str,
+    completed_results: Sequence[CapabilityResult],
+    step_index: int,
+) -> dict[str, Any]:
+    """Validate the bounded record emitted when manager output is refused."""
+
+    required_fields = {
+        "schema_version",
+        "run_id",
+        "step_index",
+        "status",
+        "error_type",
+        "raw_error_message_recorded",
+        "observed_capability_result_digests",
+        "agent_harness",
+        "proof_effect",
+        "supervisor_manager_refusal_digest",
+    }
+    expected_digest = canonical_digest(
+        value,
+        digest_field="supervisor_manager_refusal_digest",
+    )
+    if (
+        set(value) != required_fields
+        or value.get("schema_version") != "task_evaluation_supervisor_manager_refusal.v1"
+        or value.get("supervisor_manager_refusal_digest") != expected_digest
+        or value.get("run_id") != run_id
+        or value.get("step_index") != step_index
+        or value.get("status") != "refused"
+        or not str(value.get("error_type") or "").strip()
+        or value.get("raw_error_message_recorded") is not False
+        or value.get("observed_capability_result_digests")
+        != sorted(result.digest for result in completed_results)
+        or value.get("agent_harness") != AGENTS_SDK_HARNESS_ID
+        or value.get("proof_effect") != "none"
+    ):
+        raise SupervisorManagerError("manager_refusal_contract_invalid")
+    return dict(value)
+
+
+def validate_manager_invocation(
+    value: Mapping[str, Any],
+    *,
+    run_id: str,
+    step_index: int,
+    structured_output_digest: str,
+    tool_registry_digest: str,
+    authority_digest: str,
+    input_artifact_digests: Sequence[str],
+    manager_adapter_id: str,
+    manager_adapter_version: str,
+    max_cost_usd: float,
+    parent_event_digest: str | None = None,
+) -> dict[str, Any]:
+    """Validate manager invocation custody independently of provider output."""
+
+    required_fields = {
+        "schema_version",
+        "invocation_id",
+        "run_id",
+        "step_index",
+        "provider",
+        "model",
+        "agent_harness",
+        "agents_sdk_version",
+        "adapter_id",
+        "adapter_version",
+        "instruction_digest",
+        "tool_registry_digest",
+        "authority_digest",
+        "input_artifact_digests",
+        "budget_state",
+        "structured_output_digest",
+        "validation_status",
+        "action_taken",
+        "refusal",
+        "usage",
+        "trace_id",
+        "cost_usd",
+        "cost_status",
+        "latency_seconds",
+        "proof_effect",
+        "uncertainty",
+        "parent_event_digest",
+        "generated_at",
+        "manager_invocation_digest",
+    }
+    expected_digest = canonical_digest(value, digest_field="manager_invocation_digest")
+    budget_state = value.get("budget_state")
+    if not isinstance(budget_state, Mapping) or set(budget_state) != {
+        "max_cost_usd",
+        "reported_cost_usd",
+        "cumulative_reserved_cost_usd",
+        "remaining_unreserved_usd",
+    }:
+        raise SupervisorManagerError("manager_invocation_budget_state_invalid")
+    numeric_values = {
+        "cost_usd": value.get("cost_usd"),
+        "latency_seconds": value.get("latency_seconds"),
+        **{str(key): nested for key, nested in budget_state.items()},
+    }
+    if any(
+        isinstance(nested, bool)
+        or not isinstance(nested, (int, float))
+        or not math.isfinite(float(nested))
+        or float(nested) < 0
+        for nested in numeric_values.values()
+    ):
+        raise SupervisorManagerError("manager_invocation_numeric_state_invalid")
+    expected_instruction_digest = canonical_digest({"instruction": _MANAGER_INSTRUCTIONS})
+    if (
+        set(value) != required_fields
+        or value.get("schema_version") != "task_evaluation_supervisor_manager_invocation.v1"
+        or value.get("manager_invocation_digest") != expected_digest
+        or value.get("invocation_id") != f"{run_id}-manager-{step_index}-invocation"
+        or value.get("run_id") != run_id
+        or value.get("step_index") != step_index
+        or not str(value.get("provider") or "").strip()
+        or not str(value.get("model") or "").strip()
+        or value.get("agent_harness") != AGENTS_SDK_HARNESS_ID
+        or not str(value.get("agents_sdk_version") or "").strip()
+        or value.get("adapter_id") != manager_adapter_id
+        or value.get("adapter_version") != manager_adapter_version
+        or value.get("instruction_digest") != expected_instruction_digest
+        or value.get("tool_registry_digest") != tool_registry_digest
+        or value.get("authority_digest") != authority_digest
+        or value.get("input_artifact_digests") != list(input_artifact_digests)
+        or value.get("structured_output_digest") != structured_output_digest
+        or value.get("validation_status") != "accepted_as_control_decision"
+        or value.get("action_taken") != "specialist_sequence_selected"
+        or value.get("refusal") is not False
+        or not isinstance(value.get("usage"), Mapping)
+        or not str(value.get("cost_status") or "").strip()
+        or value.get("proof_effect") != "none"
+        or value.get("uncertainty") != "not_a_proof_signal"
+        or not str(value.get("generated_at") or "").strip()
+        or not _SHA256_DIGEST.fullmatch(str(value.get("parent_event_digest") or ""))
+        or (
+            parent_event_digest is not None
+            and value.get("parent_event_digest") != parent_event_digest
+        )
+        or float(budget_state["max_cost_usd"]) != float(max_cost_usd)
+        or float(budget_state["remaining_unreserved_usd"])
+        != max(0.0, float(max_cost_usd) - float(budget_state["cumulative_reserved_cost_usd"]))
+    ):
+        raise SupervisorManagerError("manager_invocation_contract_invalid")
+    return dict(value)
+
+
 class OpenAIAgentsSDKSupervisorManager:
     """Use one SDK manager turn before each validated specialist invocation."""
 
@@ -393,4 +548,6 @@ __all__ = [
     "SupervisorManagerDecision",
     "SupervisorManagerError",
     "validate_manager_decision",
+    "validate_manager_invocation",
+    "validate_manager_refusal",
 ]
