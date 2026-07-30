@@ -405,6 +405,7 @@ def _failure_type(result: Mapping[str, Any]) -> str:
     ).lower()
     rules = (
         ("budget", "budget_exhaustion"),
+        ("conflict", "conflicting_evidence"),
         ("capacity", "provider_capacity"),
         ("admission", "infrastructure_admission"),
         ("container", "container_startup"),
@@ -446,6 +447,7 @@ class DeterministicRuntimeFailureRecovery:
                 "permanent_incompatibility": "stop_as_incompatible",
                 "budget_exhaustion": "request_authorization_or_abstain",
                 "invalid_scientific_output": "preserve_and_abstain",
+                "conflicting_evidence": "preserve_disagreement_and_request_adjudication",
                 "unclassified_failure": "request_operator_diagnosis",
             }[failure]
             diagnoses.append(

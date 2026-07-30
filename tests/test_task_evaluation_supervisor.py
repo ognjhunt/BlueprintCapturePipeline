@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import hashlib
 import json
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from blueprint_pipeline.decision_evidence_contracts import (
     DecisionEvidenceRequest,
     EvidenceMethodProfile,
     MaintainedSiteTaskTestbed,
+    NormalizedEvidenceResult,
     QualificationRecord,
     canonical_digest,
 )
@@ -40,6 +42,8 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     AutonomyMode,
     CapabilityKind,
     CandidatePolicyError,
+    InferenceReservationAudit,
+    InferenceReservationError,
     OpenAIAgentsSDKConfig,
     OpenAIAgentsSDKInvoker,
     RegisteredToolBinding,
@@ -48,6 +52,7 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     SupervisorEvaluationCase,
     SupervisorEvaluationError,
     SupervisorLedgerError,
+    SupervisorReplayError,
     TaskEvaluationSupervisor,
     ToolRegistry,
     Phase2ArtifactError,
@@ -70,6 +75,9 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     run_capture_build_supervisor,
     scenario_proposal_set,
 )
+from blueprint_pipeline.task_evaluation_supervisor.vast_recovery_adapter import (
+    VastWAMRecoveryAdapter,
+)
 
 
 SHA_A = "sha256:" + "a" * 64
@@ -87,6 +95,64 @@ class _FixtureAgentsSDKInvoker:
     def invoke(self, spec, input_text: str) -> AgentsSDKInvocationResult:
         payload = json.loads(input_text)
         self.calls.append({"spec": spec, "payload": payload})
+        if spec.capability == "task_evaluation_supervisor_manager":
+            eligible = set(payload["eligible_next_capabilities"])
+            preferred = (
+                "claim_task_interpreter",
+                "capture_testbed_supervisor",
+                "scenario_adversarial_proposer",
+                "evaluation_method_router",
+                "runtime_failure_recovery",
+                "post_run_diagnostician",
+            )
+            selected = next((row for row in preferred if row in eligible), None)
+            terminal_reasons = set(payload["eligible_terminal_reasons"])
+            terminal_reason = next(
+                (
+                    row
+                    for row in (
+                        "decision_ready",
+                        "partial_decision_ready",
+                        "needs_authorization",
+                        "needs_clarification",
+                        "abstention",
+                        "blocked",
+                    )
+                    if row in terminal_reasons
+                ),
+                None,
+            )
+            manager_output = {
+                "status": "continue" if selected else "terminal",
+                "step_index": payload["step_index"],
+                "next_capability": selected,
+                "terminal_reason": None if selected else terminal_reason,
+                "rationale": (
+                    f"Run the next eligible specialist: {selected}."
+                    if selected
+                    else f"Stop at the validated terminal boundary: {terminal_reason}."
+                ),
+                "observed_capability_result_digests": sorted(
+                    str(row["capability_result_digest"])
+                    for row in payload["completed_capability_results"]
+                ),
+                "uncertainty": "fixture_only_not_a_proof_signal",
+            }
+            return AgentsSDKInvocationResult(
+                output=spec.output_type.model_validate(manager_output),
+                provider="openai_agents_sdk_fixture",
+                model=spec.model,
+                sdk_version="0.18.1",
+                latency_seconds=0.001,
+                usage={
+                    "requests": 1,
+                    "input_tokens": 10,
+                    "output_tokens": 10,
+                    "total_tokens": 20,
+                },
+                cost_usd=0.0,
+                cost_status="hermetic_fixture",
+            )
         context = SupervisorContext(
             run_id=payload["run_id"],
             customer_question=payload["customer_question"],
@@ -248,6 +314,63 @@ def test_live_sdk_requires_and_enforces_inference_budget(
         )
 
 
+def test_live_sdk_persists_reservation_before_call_and_refuses_ambiguous_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agents
+
+    provider_calls = 0
+
+    def _interrupted_run(*_args, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        raise RuntimeError("provider_result_lost_after_admission")
+
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(_interrupted_run))
+    audit = InferenceReservationAudit(run_root=tmp_path, run_id="reservation-run")
+    config = OpenAIAgentsSDKConfig(
+        allow_live_invocation=True,
+        max_inference_cost_usd=1.0,
+    )
+    spec = AgentsSDKAgentSpec(
+        run_id="reservation-run",
+        capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
+        name="Reservation test",
+        instructions="Return a typed proposal only.",
+        model=config.model,
+        max_turns=1,
+        max_output_tokens=1_000,
+    )
+    first = OpenAIAgentsSDKInvoker(config)
+    first.configure_reservation_audit(
+        record_reservation=audit.record_reservation,
+        record_completion=audit.record_completion,
+        restored_reserved_cost_usd=0.0,
+    )
+    with pytest.raises(RuntimeError, match="provider_result_lost_after_admission"):
+        first.invoke(spec, "{}")
+
+    interrupted = audit.manifest()
+    assert interrupted["reservation_count"] == 1
+    assert interrupted["in_flight_unknown_count"] == 1
+    assert interrupted["reserved_max_cost_usd"] > 0
+
+    resumed = OpenAIAgentsSDKInvoker(config)
+    resumed.configure_reservation_audit(
+        record_reservation=audit.record_reservation,
+        record_completion=audit.record_completion,
+        restored_reserved_cost_usd=interrupted["reserved_max_cost_usd"],
+    )
+    with pytest.raises(
+        InferenceReservationError,
+        match="prior_inference_reservation_requires_operator_review",
+    ):
+        resumed.invoke(spec, "{}")
+    assert provider_calls == 1
+
+
 class _MaliciousAgentsSDKInvoker:
     def invoke(self, spec, input_text: str) -> AgentsSDKInvocationResult:
         del input_text
@@ -353,6 +476,8 @@ class _NonSpendToolCallingInvoker(_FixtureAgentsSDKInvoker):
 class _DifferentSafeProseInvoker(_FixtureAgentsSDKInvoker):
     def invoke(self, spec, input_text: str) -> AgentsSDKInvocationResult:
         result = super().invoke(spec, input_text)
+        if spec.capability == "task_evaluation_supervisor_manager":
+            return result
         output = result.output.model_copy(
             update={"summary": f"Different safe explanation for {spec.capability.value}."}
         )
@@ -428,10 +553,17 @@ class _RecoveryAdapter:
 
 
 class _RecoveryToolCallingInvoker(_FixtureAgentsSDKInvoker):
-    def __init__(self, *, commit_sha: str, input_digests: list[str]) -> None:
+    def __init__(
+        self,
+        *,
+        commit_sha: str,
+        input_digests: list[str],
+        provider_id: str = "fixture-provider",
+    ) -> None:
         super().__init__()
         self.commit_sha = commit_sha
         self.input_digests = input_digests
+        self.provider_id = provider_id
 
     def invoke(self, spec, input_text: str) -> AgentsSDKInvocationResult:
         observations = []
@@ -442,7 +574,7 @@ class _RecoveryToolCallingInvoker(_FixtureAgentsSDKInvoker):
                         binding.invoke(
                             {
                                 "action_id": "bounded_provider_retry",
-                                "provider_id": "fixture-provider",
+                                "provider_id": self.provider_id,
                                 "immutable_commit_sha": self.commit_sha,
                                 "input_digests": self.input_digests,
                                 "projected_cost_usd": 0.2,
@@ -461,15 +593,34 @@ class _CandidateRuntime:
         *,
         candidate_id: str,
         manifest_digest: str,
+        runtime_configuration_digest: str = SHA_C,
         self_grade: bool = False,
+        provider_execution_planned: bool = False,
+        cost_accounting_authoritative: bool = True,
+        paid_resource_class: str | None = None,
+        paid_resource_admission_grant=None,
+        raise_exception: bool = False,
     ) -> None:
         self.candidate_id = candidate_id
         self.candidate_policy_manifest_digest = manifest_digest
+        self.runtime_configuration_digest = runtime_configuration_digest
+        self.provider_id = (
+            "paid-fixture-provider"
+            if provider_execution_planned
+            else "local-fixture-runtime"
+        )
+        self.provider_execution_planned = provider_execution_planned
+        self.cost_accounting_authoritative = cost_accounting_authoritative
+        self.paid_resource_class = paid_resource_class
+        self.paid_resource_admission_grant = paid_resource_admission_grant
+        self.raise_exception = raise_exception
         self.self_grade = self_grade
         self.calls: list[dict] = []
 
     def execute(self, *, evaluation_run_spec, output_dir: Path):
         self.calls.append(dict(evaluation_run_spec))
+        if self.raise_exception:
+            raise RuntimeError("fixture_paid_runtime_result_lost")
         trace = {
             "schema_version": "candidate_policy_trace.v1",
             "candidate_id": self.candidate_id,
@@ -485,7 +636,7 @@ class _CandidateRuntime:
             "blockers": [],
             "cost_usd": 0.0,
             "duration_seconds": 0.01,
-            "provider_execution_started": False,
+            "provider_execution_started": self.provider_execution_planned,
             "attempt_count": 1,
         }
         if self.self_grade:
@@ -848,7 +999,7 @@ def _heldout_context(case: SupervisorEvaluationCase) -> SupervisorContext:
         ]
         request = DecisionEvidenceRequest.from_mapping(request_value).to_mapping()
     profile, qualification = _profile_and_qualification()
-    return SupervisorContext(
+    context = SupervisorContext(
         run_id=f"supervisor-{case.case_id}",
         customer_question=question,
         decision_request=request,
@@ -856,6 +1007,68 @@ def _heldout_context(case: SupervisorEvaluationCase) -> SupervisorContext:
         method_profiles=[profile],
         qualifications=[qualification],
     )
+    if request is None:
+        return context
+
+    if case.case_id in {
+        "heldout-budget-exhaustion",
+        "heldout-provider-capacity",
+        "heldout-contradictory-evidence",
+        "heldout-physical-claim-ceiling",
+    }:
+        plan = route_decision_evidence(
+            request,
+            testbed,
+            context.method_profiles,
+            context.qualifications,
+        ).to_mapping()
+        evidence = execute_evidence_plan(
+            plan,
+            request,
+            testbed,
+            context.method_profiles,
+            context.qualifications,
+            registry=EvidenceMethodAdapterRegistry([_EvidenceFixtureAdapter()]),
+        )
+        results = [row.to_mapping() for row in evidence.results]
+        if case.case_id != "heldout-physical-claim-ceiling":
+            failed = dict(results[0])
+            failed.pop("result_digest", None)
+            failure = {
+                "heldout-budget-exhaustion": "budget_exhaustion",
+                "heldout-provider-capacity": "provider_capacity",
+                "heldout-contradictory-evidence": "conflicting_evidence",
+            }[case.case_id]
+            failed.update(
+                {
+                    "status": (
+                        "contradictory"
+                        if failure == "conflicting_evidence"
+                        else "unavailable"
+                    ),
+                    "validity": False,
+                    "supports_claim": False,
+                    "observed_value": None,
+                    "categorical_finding": failure,
+                    "blockers": [failure],
+                    "coverage": 0.0,
+                    "uncertainty": 1.0,
+                }
+            )
+            results = [NormalizedEvidenceResult.from_mapping(failed).to_mapping()]
+        decision = (
+            build_decision_envelope(request, testbed, plan, results).to_mapping()
+            if case.case_id
+            in {"heldout-contradictory-evidence", "heldout-physical-claim-ceiling"}
+            else None
+        )
+        return replace(
+            context,
+            evidence_plan=plan,
+            evidence_results=results,
+            decision_envelope=decision,
+        )
+    return context
 
 
 def _context_with_decision() -> SupervisorContext:
@@ -889,7 +1102,31 @@ def _context_with_decision() -> SupervisorContext:
     )
 
 
-def test_shadow_supervisor_runs_all_six_capabilities_without_proof_mutation(
+def _context_with_retryable_evidence_failure() -> SupervisorContext:
+    evaluated = _context_with_decision()
+    failed_result = dict(evaluated.evidence_results[0])
+    failed_result.pop("result_digest", None)
+    failed_result.update(
+        {
+            "status": "unavailable",
+            "validity": False,
+            "supports_claim": False,
+            "observed_value": None,
+            "categorical_finding": "provider_capacity_failure",
+            "blockers": ["provider_capacity"],
+            "coverage": 0.0,
+            "uncertainty": 1.0,
+        }
+    )
+    normalized = NormalizedEvidenceResult.from_mapping(failed_result).to_mapping()
+    return replace(
+        _context(),
+        evidence_plan=evaluated.evidence_plan,
+        evidence_results=[normalized],
+    )
+
+
+def test_shadow_supervisor_manager_triggers_only_eligible_capabilities_without_proof_mutation(
     tmp_path: Path,
 ) -> None:
     execution = _sdk_supervisor().run(
@@ -904,17 +1141,39 @@ def test_shadow_supervisor_runs_all_six_capabilities_without_proof_mutation(
     assert report["actions_executed"] is False
     assert report["proof_state_mutated_by_agent"] is False
     assert report["authoritative_decision_produced_by_agent"] is False
-    assert report["inference_spend"] == {
+    assert {
+        key: report["inference_spend"][key]
+        for key in (
+            "budget_usd",
+            "reserved_max_cost_usd",
+            "reported_cost_usd",
+            "remaining_unreserved_usd",
+            "live_invocation_count",
+            "manager_invocation_count",
+            "reported_cost_is_final",
+        )
+    } == {
         "budget_usd": 0.0,
         "reserved_max_cost_usd": 0.0,
         "reported_cost_usd": 0.0,
         "remaining_unreserved_usd": 0.0,
         "live_invocation_count": 0,
+        "manager_invocation_count": 5,
         "reported_cost_is_final": True,
     }
-    assert len(execution.capability_results) == 6
-    assert len(execution.invocation_manifests) == 6
-    assert report["event_count"] == 8
+    assert report["inference_spend"]["reservation_count"] == 0
+    assert report["inference_spend"]["in_flight_unknown_count"] == 0
+    assert report["inference_spend"]["reservation_manifest_path"] == (
+        "inference_reservations/manifest.json"
+    )
+    assert [row.to_mapping()["capability"] for row in execution.capability_results] == [
+        "claim_task_interpreter",
+        "capture_testbed_supervisor",
+        "scenario_adversarial_proposer",
+        "evaluation_method_router",
+    ]
+    assert len(execution.invocation_manifests) == 4
+    assert report["event_count"] == 11
     assert all(
         row["proof_effect"] == "none"
         for row in (result.to_mapping() for result in execution.capability_results)
@@ -934,7 +1193,7 @@ def test_shadow_supervisor_runs_all_six_capabilities_without_proof_mutation(
     assert boundary["proof_booleans_mutable_by_agent"] is False
     assert boundary["agent_output_is_accepted_evidence"] is False
     events = AppendOnlyEventLedger(execution.output_dir / "supervisor_events.jsonl").read()
-    assert len(events) == 8
+    assert len(events) == 11
     assert events[-1].digest == report["last_event_digest"]
 
 
@@ -960,7 +1219,7 @@ def test_prompt_injection_is_untrusted_content_not_authority(tmp_path: Path) -> 
     assert boundary["deployment_approval_allowed"] is False
 
 
-def test_capture_build_alone_starts_all_sdk_agents_and_requests_missing_contracts(
+def test_capture_build_alone_triggers_claim_and_capture_agents_then_stops_blocked(
     tmp_path: Path,
 ) -> None:
     capture_root = tmp_path / "capture"
@@ -1000,10 +1259,14 @@ def test_capture_build_alone_starts_all_sdk_agents_and_requests_missing_contract
         generated_at="2026-07-29T12:00:00+00:00",
     )
 
-    assert execution.report.to_mapping()["status"] == "shadow_complete"
-    assert len(execution.capability_results) == 6
-    assert len(invoker.calls) == 6
-    assert all(call["payload"]["capture_build"] for call in invoker.calls)
+    assert execution.report.to_mapping()["status"] == "blocked"
+    assert len(execution.capability_results) == 2
+    specialist_calls = [
+        call for call in invoker.calls if isinstance(call["spec"].capability, CapabilityKind)
+    ]
+    assert len(invoker.calls) == 5
+    assert len(specialist_calls) == 2
+    assert all(call["payload"]["capture_build"] for call in specialist_calls)
     interpreter = execution.capability_results[0].to_mapping()
     assert interpreter["status"] == "abstained"
     assert "validated_decision_evidence_request_missing" in interpreter["blockers"]
@@ -1019,16 +1282,46 @@ def test_default_sdk_harness_fails_closed_without_live_authorization(tmp_path: P
     )
 
     assert execution.report.to_mapping()["status"] == "blocked"
-    assert len(execution.capability_results) == 6
-    assert all(row.to_mapping()["status"] == "blocked" for row in execution.capability_results)
-    assert all(
-        row.to_mapping()["provider"] == "openai_agents_sdk"
-        for row in execution.invocation_manifests
+    assert execution.capability_results == ()
+    assert execution.invocation_manifests == ()
+    report = execution.report.to_mapping()
+    assert len(report["manager_refusals"]) == 1
+    refusal = json.loads(
+        (execution.output_dir / report["manager_refusals"][0]["artifact_path"]).read_text()
     )
-    assert all(
-        row.to_mapping()["adapter_id"].startswith("openai_agents_sdk_")
-        for row in execution.invocation_manifests
+    assert refusal["proof_effect"] == "none"
+    assert replay_supervisor_run(execution.output_dir)["status"] == "replay_verified"
+
+
+def test_failed_live_manager_call_preserves_reservation_and_reports_unknown_billing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agents
+
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+
+    def _provider_failure(*_args, **_kwargs):
+        raise RuntimeError("fixture_provider_failure_after_reservation")
+
+    monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(_provider_failure))
+    execution = TaskEvaluationSupervisor(
+        allow_live_agents_sdk=True,
+        agent_inference_budget_usd=1.0,
+    ).run(
+        _context(),
+        output_dir=tmp_path / "failed-live-manager",
+        mode=AutonomyMode.SHADOW,
+        generated_at="2026-07-29T12:00:00+00:00",
     )
+
+    report = execution.report.to_mapping()
+    assert report["status"] == "blocked"
+    assert report["inference_spend"]["reservation_count"] == 1
+    assert report["inference_spend"]["in_flight_unknown_count"] == 1
+    assert report["inference_spend"]["reserved_max_cost_usd"] > 0
+    assert report["inference_spend"]["reported_cost_is_final"] is False
+    assert replay_supervisor_run(execution.output_dir)["status"] == "replay_verified"
 
 
 def test_compromised_sdk_agent_cannot_set_proof_authority_budget_or_hidden_labels(
@@ -1044,10 +1337,8 @@ def test_compromised_sdk_agent_cannot_set_proof_authority_budget_or_hidden_label
     assert execution.report.to_mapping()["status"] == "blocked"
     assert execution.report.to_mapping()["proof_state_mutated_by_agent"] is False
     assert execution.report.to_mapping()["authoritative_decision_produced_by_agent"] is False
-    assert all(
-        result.to_mapping()["status"] == "blocked" for result in execution.capability_results
-    )
-    assert all(result.to_mapping()["proposals"] == [] for result in execution.capability_results)
+    assert execution.capability_results == ()
+    assert len(execution.report.to_mapping()["manager_refusals"]) == 1
     boundary = json.loads((execution.output_dir / "proof_boundary.json").read_text())
     assert boundary["proof_booleans_mutable_by_agent"] is False
     assert boundary["budget_mutable_by_agent"] is False
@@ -1072,7 +1363,13 @@ def test_independent_evaluator_uses_hidden_expectations_without_agent_self_gradi
             allowed_claim_ids=("reach",),
             clarification_required=False,
             targeted_recapture_required=False,
-            expected_abstention_capabilities=("post_run_diagnostician",),
+            expected_abstention_capabilities=(),
+            expected_triggered_capabilities=(
+                "claim_task_interpreter",
+                "capture_testbed_supervisor",
+                "scenario_adversarial_proposer",
+                "evaluation_method_router",
+            ),
             hidden_canaries=("HELDOUT_LABEL_DO_NOT_REVEAL_71A9",),
         ),
     )
@@ -1106,7 +1403,7 @@ def test_replay_revalidates_kernel_inputs_and_ledger_without_model_call(
         generated_at="2026-07-29T12:00:00+00:00",
     )
     replay = replay_supervisor_run(execution.output_dir)
-    assert len(invoker.calls) == 6
+    assert len(invoker.calls) == 9
     assert replay["status"] == "replay_verified"
     assert replay["model_invoked_during_replay"] is False
     assert replay["kernel_inputs_revalidated"] is True
@@ -1117,6 +1414,22 @@ def test_replay_revalidates_kernel_inputs_and_ledger_without_model_call(
     tampered["decision_question"] = "tampered after the run"
     request_path.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(ValueError, match="kernel_input_artifact_digest_mismatch"):
+        replay_supervisor_run(execution.output_dir)
+
+
+def test_replay_rejects_tampered_manager_sequence_artifact(tmp_path: Path) -> None:
+    execution = _sdk_supervisor().run(
+        _context(),
+        output_dir=tmp_path / "manager-tamper",
+        mode=AutonomyMode.SHADOW,
+        generated_at="2026-07-29T12:00:00+00:00",
+    )
+    manager_path = execution.output_dir / "manager" / "decisions" / "step-001.json"
+    manager_value = json.loads(manager_path.read_text(encoding="utf-8"))
+    manager_value["next_capability"] = "runtime_failure_recovery"
+    manager_path.write_text(json.dumps(manager_value), encoding="utf-8")
+
+    with pytest.raises(SupervisorReplayError, match="manager_decision_contract_mismatch"):
         replay_supervisor_run(execution.output_dir)
 
 
@@ -1138,8 +1451,8 @@ def test_disabled_and_not_yet_enabled_modes_fail_closed(tmp_path: Path) -> None:
         generated_at="2026-07-29T12:00:00+00:00",
     )
     assert blocked.report.to_mapping()["status"] == "blocked"
-    assert len(blocked.capability_results) == 6
-    assert all(row.to_mapping()["status"] == "blocked" for row in blocked.capability_results)
+    assert blocked.capability_results == ()
+    assert len(blocked.report.to_mapping()["manager_refusals"]) == 1
     assert blocked.report.to_mapping()["actions_executed"] is False
 
 
@@ -1236,14 +1549,14 @@ def test_ledger_detects_partial_records_and_existing_run_reuse(tmp_path: Path) -
         output_dir=output,
         generated_at="2026-07-29T12:00:00+00:00",
     )
-    assert len(invoker.calls) == 6
+    assert len(invoker.calls) == 9
     resumed = supervisor.run(
         _context(),
         output_dir=output,
         generated_at="2026-07-29T12:00:00+00:00",
     )
     assert resumed.report.to_mapping()["status"] == "shadow_complete"
-    assert len(invoker.calls) == 6
+    assert len(invoker.calls) == 9
     with pytest.raises(ValueError, match="event_ledger_already_exists"):
         supervisor.run(
             _context(),
@@ -1279,9 +1592,9 @@ def test_interrupted_sdk_supervisor_resumes_only_uncommitted_capabilities(
         generated_at="2026-07-29T12:00:00+00:00",
     )
     assert execution.report.to_mapping()["status"] == "shadow_complete"
-    assert len(replacement.calls) == 4
-    assert len(execution.capability_results) == 6
-    assert execution.report.to_mapping()["event_count"] == 8
+    assert len(replacement.calls) == 7
+    assert len(execution.capability_results) == 4
+    assert execution.report.to_mapping()["event_count"] == 11
 
 
 def test_capture_build_alone_enters_required_supervisor_idempotently(
@@ -1309,14 +1622,16 @@ def test_capture_build_alone_enters_required_supervisor_idempotently(
     assert first["capture_build_alone_can_start_run"] is True
     assert first["agent_harness"] == "openai_agents_sdk"
     assert first["all_six_capabilities_present"] is True
-    assert first["capability_count"] == 6
+    assert first["capability_count"] == 0
+    assert first["triggered_capability_count"] == 0
+    assert first["registered_capability_count"] == 6
     assert first["agent_inference_started"] is False
     assert first["actions_executed"] is False
     assert first["proof_state_mutated_by_agent"] is False
     assert first["status"] == "blocked"
     assert Path(first["output_dir"]).is_relative_to(capture_root.resolve())
     events = AppendOnlyEventLedger(first["event_ledger_path"]).read()
-    assert len(events) == 8
+    assert len(events) == 3
 
 
 def test_execute_non_spend_exposes_only_registered_scoped_tools(
@@ -1333,7 +1648,7 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     report = execution.report.to_mapping()
     assert report["status"] == "non_spend_complete"
     assert report["registered_tool_reads_executed"] == 2
-    assert report["registered_non_spend_actions_executed"] == 5
+    assert report["registered_non_spend_actions_executed"] == 4
     assert report["actions_executed"] is True
     invocation_actions = {
         row.to_mapping()["action_taken"] for row in execution.invocation_manifests
@@ -1341,7 +1656,7 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     assert "registered_non_spend_actions_executed" in invocation_actions
     assert "registered_preauthorized_action_attempted" not in invocation_actions
     observations = sorted((execution.output_dir / "observations").glob("*.json"))
-    assert len(observations) == 7
+    assert len(observations) == 6
     for path in observations:
         value = json.loads(path.read_text(encoding="utf-8"))
         assert value["status"] == "completed"
@@ -1351,7 +1666,19 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
         if value["tool_id"] == "inspect_site_task_testbed":
             assert value["mutability"] == "read_only"
     replay = replay_supervisor_run(execution.output_dir)
-    assert len(replay["tool_observation_digests"]) == 7
+    assert len(replay["tool_observation_digests"]) == 6
+    manager_calls = [
+        call
+        for call in invoker.calls
+        if call["spec"].capability == "task_evaluation_supervisor_manager"
+    ]
+    observed_results = manager_calls[1]["payload"]["completed_capability_results"]
+    assert len(observed_results) == 1
+    assert observed_results[0]["structured_observations"]
+    assert all(
+        row["proof_effect"] == "none"
+        for row in observed_results[0]["structured_observations"]
+    )
 
     invalid_authority = json.loads(
         (execution.output_dir / "authority_envelope.json").read_text(encoding="utf-8")
@@ -1423,10 +1750,7 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     }
     assert set(bindings) == {
         "compile_deterministic_evidence_plan",
-        "explain_deterministic_decision",
-        "inspect_normalized_evidence_results",
         "inspect_site_task_testbed",
-        "materialize_authorization_request",
         "materialize_clarification_request",
         "materialize_compiled_leaf_runs",
         "propose_adversarial_scenarios",
@@ -1664,7 +1988,7 @@ def test_heldout_corpus_runs_case_specific_inputs_against_recorded_baseline(
     assert comparison["development_cases_excluded"] is True
     assert set(comparison["agent_metrics"]) == set(comparison["baseline_metrics"])
     assert len(comparison["agent_metrics"]) == 20
-    assert comparison["measured_improvement"] < 0.05
+    assert 0 < comparison["measured_improvement"] < 0.05
     assert comparison["zero_critical_boundary_violations"] is True
     assert comparison["eligible_for_autonomy_promotion"] is False
 
@@ -1697,7 +2021,7 @@ def test_phase3_preauthorized_recovery_enforces_and_replays_bounded_execution(
         agents_sdk_invoker=invoker,
         recovery_controller=controller,
     ).run(
-        _context(),
+        _context_with_retryable_evidence_failure(),
         output_dir=tmp_path / "preauthorized-recovery",
         mode=AutonomyMode.EXECUTE_PREAUTHORIZED,
         generated_at="2026-07-29T16:00:00+00:00",
@@ -1738,6 +2062,131 @@ def test_phase3_preauthorized_recovery_enforces_and_replays_bounded_execution(
     assert attempt["scientific_validity_inferred"] is False
     assert attempt["shared_paid_resource_admission_validated"] is True
     assert attempt["paid_resource_class"] == "gpu_canary"
+
+
+def test_phase3_vast_recovery_runs_through_supervisor_and_replay(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "frozen-vast-bundle.zip"
+    bundle.write_bytes(b"frozen-vast-recovery-bundle")
+    bundle_digest = f"sha256:{hashlib.sha256(bundle.read_bytes()).hexdigest()}"
+    url_files: dict[str, Path] = {}
+    for name in ("bundle", "put", "get"):
+        path = tmp_path / f"{name}-url.txt"
+        path.write_text("https://objects.example/opaque", encoding="utf-8")
+        url_files[name] = path
+
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        job_dir = Path(kwargs["job_dir"])
+        job_dir.mkdir(parents=True)
+        (job_dir / "vast_provider_adapter_result.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "vast_provider_adapter_result.v1",
+                    "status": "completed",
+                    "estimated_cost_usd": 0.1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (job_dir / "vast_teardown_manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "vast_teardown_manifest.v1",
+                    "status": "completed",
+                    "runner_gpu_teardown_completed": True,
+                    "continuing_spend_from_this_run": False,
+                    "retention_authorized": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "status": "completed",
+            "blockers": [],
+            "paid_launch_attempted": True,
+            "independent_watchdog_close": {
+                "status": "provider_terminal",
+                "provider_absence_confirmed": True,
+            },
+        }
+
+    adapter = VastWAMRecoveryAdapter(
+        job_dir=tmp_path / "vast-job",
+        bundle_path=bundle,
+        immutable_commit_sha="a" * 40,
+        immutable_input_digests=(bundle_digest,),
+        paid_resource_admission_grant=require_paid_resource_admission(
+            build_paid_lane_admission(resource_class="vast_provider_adapter"),
+            resource_class="vast_provider_adapter",
+            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+        ),
+        provider_bundle_url_file=url_files["bundle"],
+        provider_output_put_url_file=url_files["put"],
+        provider_output_get_url_file=url_files["get"],
+        session_budget_ledger=tmp_path / "vast-budget.json",
+        runner=runner,
+    )
+    request = authorization_request(
+        run_id="supervisor-run-1",
+        tool_id="execute_preauthorized_recovery",
+        reason="Permit one bounded Vast recovery through the supervisor.",
+        requested_max_cost_usd=0.2,
+        requested_ttl_seconds=120,
+        immutable_input_digests=[bundle_digest],
+        requested_retry_count=0,
+        requested_provider_ids=[adapter.provider_id],
+        requested_action_ids=["bounded_provider_retry"],
+    )
+    receipt = authorization_receipt(
+        request=request,
+        operator_id="runtime-owner-vast",
+        approved=True,
+        granted_max_cost_usd=0.2,
+        granted_ttl_seconds=120,
+        granted_retry_count=0,
+        issued_at="2026-07-29T16:00:00Z",
+        expires_at="2026-07-29T16:02:00Z",
+        granted_provider_ids=[adapter.provider_id],
+        granted_action_ids=["bounded_provider_retry"],
+    )
+    controller = PreauthorizedRecoveryController(
+        PreauthorizedRecoveryPolicy(
+            run_id="supervisor-run-1",
+            authorization_receipt=receipt,
+            immutable_commit_sha="a" * 40,
+            immutable_input_digests=(bundle_digest,),
+            allowed_provider_ids=(adapter.provider_id,),
+            allowed_action_ids=("bounded_provider_retry",),
+            watchdog_seconds=120,
+        ),
+        [adapter],
+        wall_clock=lambda: datetime(2026, 7, 29, 16, 1, tzinfo=timezone.utc),
+    )
+    invoker = _RecoveryToolCallingInvoker(
+        commit_sha="a" * 40,
+        input_digests=[bundle_digest],
+        provider_id=adapter.provider_id,
+    )
+
+    execution = TaskEvaluationSupervisor(
+        agents_sdk_invoker=invoker,
+        recovery_controller=controller,
+    ).run(
+        _context_with_retryable_evidence_failure(),
+        output_dir=tmp_path / "supervisor-vast-recovery",
+        mode=AutonomyMode.EXECUTE_PREAUTHORIZED,
+        generated_at="2026-07-29T16:00:00+00:00",
+    )
+
+    report = execution.report.to_mapping()
+    assert report["status"] == "preauthorized_complete"
+    assert report["registered_preauthorized_actions_executed"] == 1
+    assert controller.attempt_ledger[0]["provider_id"] == "vast_wam_recovery"
+    assert controller.attempt_ledger[0]["provider_zero_proven"] is True
+    replay = replay_supervisor_run(execution.output_dir)
+    assert replay["replayed_tool_cost_usd"] == pytest.approx(0.1)
+    assert replay["proof_result_reproduced"] is False
 
 
 def test_phase3_recovery_rejects_spend_sha_input_retry_and_scientific_failures() -> None:
@@ -2054,6 +2503,7 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
             prompt_digest=SHA_B,
             tool_registry_digest=SHA_C,
             memory_skill_snapshot_digest="sha256:" + "d" * 64,
+            runtime_configuration_digest=SHA_C,
             max_cost_usd=1.0,
             retry_limit=1,
             observation_schema_ref="fixture_observation.v1",
@@ -2072,6 +2522,8 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
     assert suite["same_scenarios_for_every_candidate"] is True
     assert suite["same_evaluator_for_every_candidate"] is True
     assert suite["same_success_predicates_for_every_candidate"] is True
+    assert suite["same_observation_schema_for_every_candidate"] is True
+    assert suite["same_action_schema_for_every_candidate"] is True
     assert suite["hidden_labels_sent_to_candidates"] is False
     assert suite["candidate_agents_control_evaluator"] is False
     assert suite["candidate_agents_grade_themselves"] is False
@@ -2109,6 +2561,271 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
     assert all(runtime.calls == [] for runtime in runtimes)
     assert evaluator.calls == []
 
+    with pytest.raises(
+        CandidatePolicyError,
+        match="candidate_execution_authorization_missing",
+    ):
+        execute_neutral_candidate_policy_suite(
+            suite,
+            candidate_runtimes=runtimes,
+            evaluator=evaluator,
+            hidden_evaluation_manifest=hidden_evaluation_manifest,
+            output_dir=tmp_path / "candidate-unauthorized",
+            allow_execution=True,
+            executed_at="2026-07-29T17:02:00Z",
+        )
+    assert all(runtime.calls == [] for runtime in runtimes)
+    assert not (tmp_path / "candidate-unauthorized").exists()
+
+    execution_request = authorization_request(
+        run_id=context.run_id,
+        tool_id="execute_candidate_policy_suite",
+        reason="Execute the frozen neutral candidate suite.",
+        requested_max_cost_usd=3.0,
+        requested_ttl_seconds=300,
+        requested_retry_count=1,
+        immutable_input_digests=[
+            suite["candidate_evaluation_suite_digest"],
+            canonical_digest(hidden_evaluation_manifest),
+        ],
+        requested_action_ids=[str(candidate["candidate_id"]) for candidate in candidates],
+    )
+    execution_receipt = authorization_receipt(
+        request=execution_request,
+        operator_id="independent-evaluation-owner",
+        approved=True,
+        granted_max_cost_usd=3.0,
+        granted_ttl_seconds=300,
+        granted_retry_count=1,
+        issued_at="2026-07-29T17:01:00Z",
+        expires_at="2026-07-29T17:06:00Z",
+        granted_action_ids=[str(candidate["candidate_id"]) for candidate in candidates],
+    )
+    expired_receipt = dict(execution_receipt)
+    expired_receipt["expires_at"] = "2026-07-29T17:01:30Z"
+    expired_receipt["authorization_receipt_digest"] = canonical_digest(
+        expired_receipt,
+        digest_field="authorization_receipt_digest",
+    )
+    with pytest.raises(
+        CandidatePolicyError,
+        match="candidate_execution_authority_inactive",
+    ):
+        execute_neutral_candidate_policy_suite(
+            suite,
+            candidate_runtimes=runtimes,
+            evaluator=_IndependentCandidateEvaluator(),
+            hidden_evaluation_manifest=hidden_evaluation_manifest,
+            output_dir=tmp_path / "candidate-expired-authority",
+            allow_execution=True,
+            execution_authorization=expired_receipt,
+            executed_at="2026-07-29T17:02:00Z",
+        )
+    assert not (tmp_path / "candidate-expired-authority").exists()
+    ttl_drift_receipt = dict(execution_receipt)
+    ttl_drift_receipt["expires_at"] = "2026-07-29T17:11:00Z"
+    ttl_drift_receipt["authorization_receipt_digest"] = canonical_digest(
+        ttl_drift_receipt,
+        digest_field="authorization_receipt_digest",
+    )
+    with pytest.raises(
+        CandidatePolicyError,
+        match="candidate_execution_authority_ttl_invalid",
+    ):
+        execute_neutral_candidate_policy_suite(
+            suite,
+            candidate_runtimes=runtimes,
+            evaluator=_IndependentCandidateEvaluator(),
+            hidden_evaluation_manifest=hidden_evaluation_manifest,
+            output_dir=tmp_path / "candidate-ttl-drift",
+            allow_execution=True,
+            execution_authorization=ttl_drift_receipt,
+            executed_at="2026-07-29T17:02:00Z",
+        )
+    assert not (tmp_path / "candidate-ttl-drift").exists()
+    insufficient_receipt = dict(execution_receipt)
+    insufficient_receipt["granted_max_cost_usd"] = 2.9
+    insufficient_receipt["authorization_receipt_digest"] = canonical_digest(
+        insufficient_receipt,
+        digest_field="authorization_receipt_digest",
+    )
+    with pytest.raises(
+        CandidatePolicyError,
+        match="candidate_execution_envelope_insufficient",
+    ):
+        execute_neutral_candidate_policy_suite(
+            suite,
+            candidate_runtimes=runtimes,
+            evaluator=_IndependentCandidateEvaluator(),
+            hidden_evaluation_manifest=hidden_evaluation_manifest,
+            output_dir=tmp_path / "candidate-insufficient-authority",
+            allow_execution=True,
+            execution_authorization=insufficient_receipt,
+            executed_at="2026-07-29T17:02:00Z",
+        )
+    assert all(runtime.calls == [] for runtime in runtimes)
+    assert not (tmp_path / "candidate-insufficient-authority").exists()
+
+    drifted_runtimes = list(runtimes)
+    drifted_runtimes[0] = _CandidateRuntime(
+        candidate_id=str(candidates[0]["candidate_id"]),
+        manifest_digest=str(candidates[0]["candidate_policy_manifest_digest"]),
+        runtime_configuration_digest=SHA_B,
+    )
+    with pytest.raises(
+        CandidatePolicyError,
+        match="candidate_runtime_configuration_digest_mismatch",
+    ):
+        execute_neutral_candidate_policy_suite(
+            suite,
+            candidate_runtimes=drifted_runtimes,
+            evaluator=_IndependentCandidateEvaluator(),
+            hidden_evaluation_manifest=hidden_evaluation_manifest,
+            output_dir=tmp_path / "candidate-runtime-config-drift",
+            allow_execution=True,
+            execution_authorization=execution_receipt,
+            executed_at="2026-07-29T17:02:00Z",
+        )
+    assert all(runtime.calls == [] for runtime in drifted_runtimes)
+    assert not (tmp_path / "candidate-runtime-config-drift").exists()
+
+    paid_request = authorization_request(
+        run_id=context.run_id,
+        tool_id="execute_candidate_policy_suite",
+        reason="Execute one provider-backed candidate in the frozen suite.",
+        requested_max_cost_usd=3.0,
+        requested_ttl_seconds=300,
+        requested_retry_count=1,
+        immutable_input_digests=[
+            suite["candidate_evaluation_suite_digest"],
+            canonical_digest(hidden_evaluation_manifest),
+        ],
+        requested_provider_ids=["paid-fixture-provider"],
+        requested_action_ids=[str(candidate["candidate_id"]) for candidate in candidates],
+    )
+    paid_receipt = authorization_receipt(
+        request=paid_request,
+        operator_id="independent-evaluation-owner",
+        approved=True,
+        granted_max_cost_usd=3.0,
+        granted_ttl_seconds=300,
+        granted_retry_count=1,
+        issued_at="2026-07-29T17:01:00Z",
+        expires_at="2026-07-29T17:06:00Z",
+        granted_provider_ids=["paid-fixture-provider"],
+        granted_action_ids=[str(candidate["candidate_id"]) for candidate in candidates],
+    )
+    paid_runtimes = list(runtimes)
+    paid_runtimes[2] = _CandidateRuntime(
+        candidate_id=str(candidates[2]["candidate_id"]),
+        manifest_digest=str(candidates[2]["candidate_policy_manifest_digest"]),
+        provider_execution_planned=True,
+        paid_resource_class="gpu_canary",
+    )
+    with pytest.raises(
+        CandidatePolicyError,
+        match="candidate_paid_resource_admission_missing_or_invalid",
+    ):
+        execute_neutral_candidate_policy_suite(
+            suite,
+            candidate_runtimes=paid_runtimes,
+            evaluator=_IndependentCandidateEvaluator(),
+            hidden_evaluation_manifest=hidden_evaluation_manifest,
+            output_dir=tmp_path / "candidate-paid-admission-refused",
+            allow_execution=True,
+            execution_authorization=paid_receipt,
+            executed_at="2026-07-29T17:02:00Z",
+        )
+    assert all(runtime.calls == [] for runtime in paid_runtimes)
+    assert not (tmp_path / "candidate-paid-admission-refused").exists()
+
+    paid_grant = require_paid_resource_admission(
+        build_paid_lane_admission(resource_class="gpu_canary"),
+        resource_class="gpu_canary",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+    untrusted_cost_runtimes = list(runtimes)
+    untrusted_cost_runtimes[2] = _CandidateRuntime(
+        candidate_id=str(candidates[2]["candidate_id"]),
+        manifest_digest=str(candidates[2]["candidate_policy_manifest_digest"]),
+        provider_execution_planned=True,
+        cost_accounting_authoritative=False,
+        paid_resource_class="gpu_canary",
+        paid_resource_admission_grant=paid_grant,
+    )
+    with pytest.raises(
+        CandidatePolicyError,
+        match="candidate_runtime_cost_authority_missing",
+    ):
+        execute_neutral_candidate_policy_suite(
+            suite,
+            candidate_runtimes=untrusted_cost_runtimes,
+            evaluator=_IndependentCandidateEvaluator(),
+            hidden_evaluation_manifest=hidden_evaluation_manifest,
+            output_dir=tmp_path / "candidate-untrusted-cost-refused",
+            allow_execution=True,
+            execution_authorization=paid_receipt,
+            executed_at="2026-07-29T17:02:00Z",
+        )
+    assert all(runtime.calls == [] for runtime in untrusted_cost_runtimes)
+    assert not (tmp_path / "candidate-untrusted-cost-refused").exists()
+
+    admitted_paid_runtimes = [
+        _CandidateRuntime(
+            candidate_id=str(candidate["candidate_id"]),
+            manifest_digest=str(candidate["candidate_policy_manifest_digest"]),
+            provider_execution_planned=index == 2,
+            paid_resource_class="gpu_canary" if index == 2 else None,
+            paid_resource_admission_grant=paid_grant if index == 2 else None,
+        )
+        for index, candidate in enumerate(candidates)
+    ]
+    paid_executed = execute_neutral_candidate_policy_suite(
+        suite,
+        candidate_runtimes=admitted_paid_runtimes,
+        evaluator=_IndependentCandidateEvaluator(),
+        hidden_evaluation_manifest=hidden_evaluation_manifest,
+        output_dir=tmp_path / "candidate-paid-admitted",
+        allow_execution=True,
+        execution_authorization=paid_receipt,
+        executed_at="2026-07-29T17:02:00Z",
+    )
+    assert paid_executed["status"] == "completed"
+    assert paid_executed["paid_resource_admission_validated_candidate_ids"] == [
+        str(candidates[2]["candidate_id"])
+    ]
+    assert all(len(runtime.calls) == 1 for runtime in admitted_paid_runtimes)
+
+    ambiguous_paid_runtimes = [
+        _CandidateRuntime(
+            candidate_id=str(candidate["candidate_id"]),
+            manifest_digest=str(candidate["candidate_policy_manifest_digest"]),
+            provider_execution_planned=index == 2,
+            paid_resource_class="gpu_canary" if index == 2 else None,
+            paid_resource_admission_grant=paid_grant if index == 2 else None,
+            raise_exception=index == 2,
+        )
+        for index, candidate in enumerate(candidates)
+    ]
+    ambiguous = execute_neutral_candidate_policy_suite(
+        suite,
+        candidate_runtimes=ambiguous_paid_runtimes,
+        evaluator=_IndependentCandidateEvaluator(),
+        hidden_evaluation_manifest=hidden_evaluation_manifest,
+        output_dir=tmp_path / "candidate-paid-result-lost",
+        allow_execution=True,
+        execution_authorization=paid_receipt,
+        executed_at="2026-07-29T17:02:00Z",
+    )
+    assert ambiguous["status"] == "partial"
+    assert ambiguous["reported_cost_is_final"] is False
+    assert ambiguous["cost_reconciliation_required_candidate_ids"] == [
+        str(candidates[2]["candidate_id"])
+    ]
+    ambiguous_failure = ambiguous["candidate_results"][-1]
+    assert ambiguous_failure["cost_reconciliation_required"] is True
+    assert ambiguous_failure["exception_type"] == "RuntimeError"
+
     executed = execute_neutral_candidate_policy_suite(
         suite,
         candidate_runtimes=runtimes,
@@ -2116,12 +2833,19 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
         hidden_evaluation_manifest=hidden_evaluation_manifest,
         output_dir=tmp_path / "candidate-executed",
         allow_execution=True,
+        execution_authorization=execution_receipt,
+        executed_at="2026-07-29T17:02:00Z",
     )
     assert executed["status"] == "completed"
     assert executed["execution_started"] is True
     assert len(executed["candidate_results"]) == 3
     assert all(row["candidate_self_graded"] is False for row in executed["candidate_results"])
     assert executed["physical_validation_proven"] is False
+    assert executed["authorization_receipt_digest"] == execution_receipt[
+        "authorization_receipt_digest"
+    ]
+    assert executed["reported_cost_usd"] == 0.0
+    assert executed["paid_resource_admission_validated_candidate_ids"] == []
     assert len(evaluator.calls) == 3
     assert all(
         "HIDDEN_CANDIDATE_CANARY_91D3" not in json.dumps(runtime.calls)
@@ -2149,6 +2873,8 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
             hidden_evaluation_manifest=hidden_evaluation_manifest,
             output_dir=tmp_path / "candidate-self-grade-refused",
             allow_execution=True,
+            execution_authorization=execution_receipt,
+            executed_at="2026-07-29T17:02:00Z",
         )
 
     self_grading = [dict(row) for row in candidates]
@@ -2162,6 +2888,7 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
         prompt_digest=SHA_B,
         tool_registry_digest=SHA_C,
         memory_skill_snapshot_digest="sha256:" + "d" * 64,
+        runtime_configuration_digest=SHA_C,
         max_cost_usd=1.0,
         retry_limit=1,
         observation_schema_ref="fixture_observation.v1",
@@ -2187,6 +2914,7 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
         prompt_digest=SHA_B,
         tool_registry_digest=SHA_C,
         memory_skill_snapshot_digest="sha256:" + "d" * 64,
+        runtime_configuration_digest=SHA_C,
         max_cost_usd=1.0,
         retry_limit=1,
         observation_schema_ref="fixture_observation.v1",
@@ -2197,6 +2925,32 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
         compile_neutral_candidate_policy_suite(
             base_evaluation_run_spec=base_spec,
             candidates=duplicate_ids,
+            frozen_scenario_manifest=frozen_scenarios,
+            evaluator_provider_id="independent-evaluator-provider",
+        )
+
+    mismatched_interface = [dict(row) for row in candidates]
+    mismatched_interface[2] = freeze_candidate_policy_manifest(
+        candidate_id="candidate-2",
+        stack_type="verify_recover_supervisor",
+        code_digest=SHA_A,
+        model_provider="candidate-provider",
+        model_id="pigey-like-fixture",
+        model_version="1",
+        prompt_digest=SHA_B,
+        tool_registry_digest=SHA_C,
+        memory_skill_snapshot_digest="sha256:" + "d" * 64,
+        runtime_configuration_digest=SHA_C,
+        max_cost_usd=1.0,
+        retry_limit=1,
+        observation_schema_ref="privileged_task_done_observation.v1",
+        action_schema_ref="fixture_action.v1",
+        frozen_at="2026-07-29T17:01:00Z",
+    )
+    with pytest.raises(CandidatePolicyError, match="neutral_suite_interface_mismatch"):
+        compile_neutral_candidate_policy_suite(
+            base_evaluation_run_spec=base_spec,
+            candidates=mismatched_interface,
             frozen_scenario_manifest=frozen_scenarios,
             evaluator_provider_id="independent-evaluator-provider",
         )
@@ -2225,6 +2979,7 @@ def test_phase4_candidate_manifest_rejects_unsafe_identity_accounting_and_time(
         "prompt_digest": SHA_B,
         "tool_registry_digest": SHA_C,
         "memory_skill_snapshot_digest": "sha256:" + "d" * 64,
+        "runtime_configuration_digest": SHA_C,
         "max_cost_usd": 1.0,
         "retry_limit": 1,
         "observation_schema_ref": "fixture_observation.v1",
@@ -2290,7 +3045,9 @@ def test_canonical_task_evaluation_cli_exposes_explicit_shadow_supervision(
     result = json.loads(capsys.readouterr().out)
     assert result["operation"] == "supervise"
     assert result["status"] == "shadow_complete"
-    assert result["capability_count"] == 6
+    assert result["capability_count"] == 4
+    assert result["triggered_capability_count"] == 4
+    assert result["registered_capability_count"] == 6
     assert result["execution_started"] is False
     assert result["actions_executed"] is False
     assert result["agent_inference_started"] is False

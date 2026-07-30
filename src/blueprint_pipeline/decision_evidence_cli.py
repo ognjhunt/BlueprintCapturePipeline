@@ -131,6 +131,10 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
         and row.to_mapping().get("validation_status") == "accepted_as_proposal"
     ]
     actions_executed = report.get("actions_executed") is True
+    inference_spend = dict(report.get("inference_spend") or {})
+    agent_inference_started = bool(live_invocations) or int(
+        inference_spend.get("reservation_count") or 0
+    ) > 0
     tool_execution_started = actions_executed or any(
         int(report.get(key) or 0) > 0
         for key in (
@@ -149,14 +153,18 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
         "terminal_report": str(args.output_dir / "terminal_supervisor_report.json"),
         "event_ledger": str(args.output_dir / "supervisor_events.jsonl"),
         "capability_count": len(execution.capability_results),
+        "triggered_capability_count": len(execution.capability_results),
+        "registered_capability_count": len(
+            execution.run.to_mapping().get("capabilities") or []
+        ),
         "agent_harness": "openai_agents_sdk",
         "agent_model": args.agent_model,
         "agent_inference_budget_usd": args.agent_inference_budget_usd,
         "capture_build_ingested": capture_build is not None,
         "execution_started": tool_execution_started,
         "actions_executed": actions_executed,
-        "agent_inference_started": bool(live_invocations),
-        "live_agent_inference": bool(live_invocations),
+        "agent_inference_started": agent_inference_started,
+        "live_agent_inference": agent_inference_started,
         # Model inference is not an evidence-provider or robot-policy execution.
         "live_provider_execution": False,
         "physical_robot_run_initiated": False,

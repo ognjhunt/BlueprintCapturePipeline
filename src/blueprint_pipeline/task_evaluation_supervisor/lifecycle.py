@@ -53,12 +53,7 @@ def run_capture_build_supervisor(
         resume=True,
     )
     report = execution.report.to_mapping()
-    live_invocations = [
-        invocation.to_mapping()
-        for invocation in execution.invocation_manifests
-        if invocation.to_mapping().get("provider") == "openai"
-        and invocation.to_mapping().get("validation_status") == "accepted_as_proposal"
-    ]
+    registered_capabilities = list(execution.run.to_mapping().get("capabilities") or [])
     return {
         "schema_version": CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION,
         "status": report["status"],
@@ -73,8 +68,24 @@ def run_capture_build_supervisor(
         "agent_harness": "openai_agents_sdk",
         "agent_model": agent_model,
         "capability_count": len(execution.capability_results),
-        "all_six_capabilities_present": len(execution.capability_results) == 6,
-        "agent_inference_started": bool(live_invocations),
+        "triggered_capability_count": len(execution.capability_results),
+        "registered_capability_count": len(registered_capabilities),
+        "all_six_capabilities_present": len(registered_capabilities) == 6,
+        "all_six_capabilities_registered": len(registered_capabilities) == 6,
+        "manager_invocation_count": int(
+            (report.get("inference_spend") or {}).get("manager_invocation_count") or 0
+        ),
+        "agent_inference_started": (
+            int(
+                (report.get("inference_spend") or {}).get("live_invocation_count")
+                or 0
+            )
+            > 0
+            or int(
+                (report.get("inference_spend") or {}).get("reservation_count") or 0
+            )
+            > 0
+        ),
         "actions_executed": False,
         "proof_state_mutated_by_agent": False,
         "capture_build_alone_can_start_run": True,

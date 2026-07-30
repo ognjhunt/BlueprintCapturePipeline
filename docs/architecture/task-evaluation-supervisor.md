@@ -59,6 +59,11 @@ normal capture-build path.
 The package `blueprint_pipeline.task_evaluation_supervisor` provides:
 
 - OpenAI Agents SDK as the required harness and core project dependency;
+- one typed OpenAI Agents SDK manager that chooses the next eligible
+  specialist, observes the exact digest-bound result, and replans after every
+  completed specialist turn. Each result carries replay-checked structured
+  tool observations, so the manager observes actual registered-tool outcomes
+  rather than relying on specialist prose;
 - one SDK `Agent` definition and strict structured-output contract for each of
   the six specialist capabilities;
 - a typed injectable SDK Runner seam so hermetic tests never make live calls;
@@ -77,6 +82,10 @@ The package `blueprint_pipeline.task_evaluation_supervisor` provides:
   sequence changes, run changes, and chain changes;
 - idempotent completed-run reuse and interruption-safe continuation that invokes
   only capabilities not already committed to the ledger;
+- a persistent inference reservation audit that records worst-case cost before
+  each live SDK provider call, records completion separately, restores the
+  cumulative ceiling after restart, and refuses to repeat a call whose prior
+  billing/result state is ambiguous;
 - normalized deterministic kernel-input snapshots plus a replay verifier that
   revalidates input, result, invocation, and event digests without a model call;
 - one durable supervisor state machine per run;
@@ -100,7 +109,10 @@ The package `blueprint_pipeline.task_evaluation_supervisor` provides:
   held-out cases, case-specific inputs, hidden leakage canaries, 20 recorded
   human-guided baseline metrics spanning reasoning quality, spend, recovery,
   authority, leakage, scenarios, audit, and replay, plus aggregate comparison
-  before autonomy promotion;
+  before autonomy promotion. The trigger-aware hermetic fixture scores
+  `0.987500` versus the recorded `0.978313` baseline on eight held-out cases
+  (`+0.009187`), with zero critical boundary violations; this remains below
+  the frozen `+0.05` promotion threshold;
 - a pre-authorized recovery controller with provider/action allowlists,
   immutable commit and input bindings, cumulative spend, expiry/TTL, retry
   ceilings, non-retryable scientific failures, watchdogs, mandatory teardown,
@@ -120,12 +132,14 @@ sufficient to fabricate a customer decision. The deterministic ingress reads
 only registered manifest paths, records their hashes and schema names, and
 builds an allowlisted metadata projection. It does not read raw media.
 
-When no Decision/Evidence Request or maintained Site-Task Testbed exists, all
-six SDK agents may still inspect the capture-build projection. They must produce
-some combination of provisional interpretation, targeted questions, capture
-inspection, scenario ideas, blockers, and abstentions. The proof kernel accepts
-no claim until the missing task, robot, operating condition, success, rights,
-and evidence contracts are deterministically valid.
+When no Decision/Evidence Request or maintained Site-Task Testbed exists, the
+manager first triggers claim interpretation, then capture/testbed inspection,
+and stops with a typed clarification or blocker. Scenario, routing, recovery,
+and post-run diagnosis are not invoked merely to satisfy a fixed call count.
+They become eligible only when their required validated inputs exist. All six
+specialists remain registered for every run. The proof kernel accepts no claim
+until the missing task, robot, operating condition, success, rights, and
+evidence contracts are deterministically valid.
 
 The canonical lifecycle is:
 
@@ -157,6 +171,9 @@ supervisor_state.json
 terminal_supervisor_report.json
 kernel_inputs_manifest.json
 kernel_inputs/*.json
+manager/decisions/step-*.json
+manager/invocations/step-*.json
+manager/refusals/step-*.json
 capabilities/<capability>.json
 invocations/<capability>.json
 ```
@@ -190,9 +207,13 @@ Live inference is fail closed and requires `--allow-live-agent-sdk`, a positive
 `--agent-inference-budget-usd`, and
 `BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true`. Before every SDK call the
 harness reserves a conservative worst-case input/output cost against the one
-run budget; failed calls keep their reservation. Tests inject the SDK Runner
-boundary and make no API call. No live call, paid compute, or provider action
-was authorized or run while implementing this slice.
+run budget and writes that reservation before entering the provider. A separate
+completion artifact closes it. Failed or interrupted calls keep their
+reservation; after restart, Blueprint restores the cumulative ceiling and
+refuses an identical call when the earlier billing/result state is unknown.
+Tests inject the SDK Runner boundary and make no API call. No live call, paid
+compute, or provider action was authorized or run while implementing this
+slice.
 
 Optional `--plan`, `--result`, and `--decision` inputs let the failure-recovery
 and post-run capabilities inspect already validated artifacts. They do not
@@ -203,7 +224,7 @@ change those artifacts.
 | Mode | Current behavior |
 | --- | --- |
 | `disabled` | Explicit fail-closed administrative/test mode; writes lifecycle/proof-boundary evidence and invokes no capability. It is not an alternate product harness or a normal capture-build path. |
-| `shadow` | Runs all six SDK agents when live SDK inference is explicitly admitted, records proposals, executes no proposed action |
+| `shadow` | Runs the SDK manager and only specialists whose deterministic prerequisites are present; records proposals and executes no proposed action |
 | `advise` | Recognized but blocked until operator-approval receipts exist |
 | `execute_non_spend` | Runs SDK agents with capability-scoped, registered read-only inspection tools. Tool observations are digest-bound, zero-cost, replay-validated, and have `proof_effect=none`; broader non-spend actions remain gated. |
 | `execute_preauthorized` | Operational only when an operator-issued, digest-bound receipt and a scoped recovery controller are injected; otherwise blocked. The current receipt is not a cryptographic signature. The controller enforces provider/action allowlists, SHA/input bindings, spend, TTL, retries, watchdog, and teardown. |
@@ -234,7 +255,13 @@ production model has beaten the human-guided baseline.
 
 Phase 3 routes recovery only through an injected pre-authorized controller. The
 controller is provider-neutral and no live provider was called while building
-it. The controller uses its own clock, binds the provider and action allowlists
+it. A concrete `VastWAMRecoveryAdapter` now wraps the existing authorized Vast
+WAM runner; it is not a second launcher. It binds the exact bundle, commit, and
+input digests, forwards the receipt-bounded spend and runtime ceilings, requires
+the independent watchdog, disables retention, and accepts provider-zero only
+from versioned teardown evidence plus terminal watchdog confirmation. It refuses
+to launch when less than Vast's one-minute minimum authority window remains.
+The controller uses its own clock, binds the provider and action allowlists
 inside the operator-issued receipt, rejects ambiguous adapter exceptions from
 automatic retry, and accepts teardown only when `provider_zero=true` is
 explicitly proven. Before calling an adapter it also requires the opaque
@@ -255,13 +282,30 @@ only a provider named in its trusted operator receipt and installed adapter.
 Phase 4 admits Pigey-like or other agentic robot stacks only as frozen candidate
 `PolicyAdapter` implementations. Candidate code, model/provider, prompt, tools,
 memory/skills, budgets, retries, scenario pack, evaluator, and success predicates
-are digest-bound before hidden evaluation. Candidate agents cannot see hidden
-labels or grade themselves. The implementation compiles neutral Evaluation Run
+are digest-bound before hidden evaluation. The runtime's execution-relevant
+configuration has its own digest, so changing a model, external checkout,
+scenario binding, tool interface, step/timeout envelope, endpoint, or cost rate
+without refreezing the candidate is rejected before any output directory or
+provider action is created. Candidate agents cannot see hidden labels or grade
+themselves. The implementation compiles neutral Evaluation Run
 specs and provides an explicitly gated neutral execution harness: candidate
 runtimes receive only public frozen specs, while an independent evaluator alone
 receives the digest-bound hidden manifest. Candidate traces and evaluator
 outputs are independently digest-checked, and candidate-supplied scores or
-unregistered result fields are refused. Hermetic fixture execution proves this
+unregistered result fields are refused. A paid candidate runtime must also use
+authoritative cost accounting from its trusted Blueprint wrapper;
+candidate-reported token usage cannot satisfy that gate. If a paid runtime
+loses its result after execution begins, the suite stops, preserves a typed
+failure, marks reported cost non-final, and requires reconciliation before
+later candidates can run. A concrete
+external-checkout Pigey adapter binds an exact clean upstream commit and
+entrypoint digest, invokes the
+public CLI without a shell, passes only allowlisted environment variables,
+normalizes `trial.json` into Blueprint's candidate trace, and explicitly drops
+Pigey's own success value. Pigey source is not vendored, and its current adapter
+marks trial-reported usage as non-authoritative. A trusted spend-metering
+gateway, separate third-party license review, and paid-execution authorization
+are all required before a live run. Hermetic fixture execution proves this
 boundary; no live Pigey/provider run or physical validation is claimed.
 
 No phase may infer physical validation, deployment approval, safety

@@ -6,13 +6,18 @@ import json
 import time
 from dataclasses import dataclass
 from importlib import metadata
-from typing import Any, Mapping, Protocol
+import math
+from typing import Any, Callable, Mapping, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
 from ..decision_evidence_contracts import canonical_digest
 from .contracts import ActionProposal, CapabilityKind, CapabilityResult, ProposalDisposition
+from .inference_reservations import (
+    INFERENCE_COMPLETION_SCHEMA_VERSION,
+    INFERENCE_RESERVATION_SCHEMA_VERSION,
+)
 from .tools import RegisteredToolBinding, ToolRegistry, non_spend_tool_bindings
 
 
@@ -65,18 +70,19 @@ class AgentsSDKCapabilityOutput(BaseModel):
 @dataclass(frozen=True)
 class AgentsSDKAgentSpec:
     run_id: str
-    capability: CapabilityKind
+    capability: CapabilityKind | str
     name: str
     instructions: str
     model: str
     max_turns: int
     max_output_tokens: int
     tool_bindings: tuple[RegisteredToolBinding, ...] = ()
+    output_type: type[BaseModel] = AgentsSDKCapabilityOutput
 
 
 @dataclass(frozen=True)
 class AgentsSDKInvocationResult:
-    output: AgentsSDKCapabilityOutput
+    output: BaseModel
     provider: str
     model: str
     sdk_version: str
@@ -122,6 +128,26 @@ class OpenAIAgentsSDKInvoker:
     def __init__(self, config: OpenAIAgentsSDKConfig | None = None) -> None:
         self.config = config or OpenAIAgentsSDKConfig()
         self._reserved_cost_usd = 0.0
+        self._record_reservation: Callable[[Mapping[str, Any]], None] | None = None
+        self._record_completion: Callable[[Mapping[str, Any]], None] | None = None
+
+    def configure_reservation_audit(
+        self,
+        *,
+        record_reservation: Callable[[Mapping[str, Any]], None],
+        record_completion: Callable[[Mapping[str, Any]], None],
+        restored_reserved_cost_usd: float,
+    ) -> None:
+        restored = float(restored_reserved_cost_usd)
+        if not math.isfinite(restored) or restored < 0:
+            raise ValueError("agents_sdk_restored_reservation_invalid")
+        if restored > self.config.max_inference_cost_usd:
+            raise ValueError("agents_sdk_restored_reservation_exceeds_budget")
+        if restored < self._reserved_cost_usd:
+            raise ValueError("agents_sdk_restored_reservation_cannot_decrease")
+        self._reserved_cost_usd = restored
+        self._record_reservation = record_reservation
+        self._record_completion = record_completion
 
     def invoke(self, spec: AgentsSDKAgentSpec, input_text: str) -> AgentsSDKInvocationResult:
         if not self.config.allow_live_invocation:
@@ -138,6 +164,40 @@ class OpenAIAgentsSDKInvoker:
         ) / 1_000_000
         if self._reserved_cost_usd + projected_max_cost > self.config.max_inference_cost_usd:
             raise AgentsSDKInvocationBlocked("agents_sdk_inference_budget_ceiling_exceeded")
+        capability_id = (
+            spec.capability.value
+            if isinstance(spec.capability, CapabilityKind)
+            else str(spec.capability)
+        )
+        reservation_id = canonical_digest(
+            {
+                "run_id": spec.run_id,
+                "capability": capability_id,
+                "model": spec.model,
+                "input_digest": canonical_digest({"input_text": input_text}),
+                "max_turns": spec.max_turns,
+                "max_output_tokens": spec.max_output_tokens,
+            }
+        )
+        reservation: dict[str, Any] = {
+            "schema_version": INFERENCE_RESERVATION_SCHEMA_VERSION,
+            "reservation_id": reservation_id,
+            "run_id": spec.run_id,
+            "capability": capability_id,
+            "model": spec.model,
+            "input_digest": canonical_digest({"input_text": input_text}),
+            "max_turns": spec.max_turns,
+            "max_output_tokens": spec.max_output_tokens,
+            "projected_max_cost_usd": projected_max_cost,
+            "billing_status": "worst_case_reserved_before_provider_call",
+            "proof_effect": "none",
+        }
+        reservation["inference_reservation_digest"] = canonical_digest(
+            reservation,
+            digest_field="inference_reservation_digest",
+        )
+        if self._record_reservation is not None:
+            self._record_reservation(reservation)
         self._reserved_cost_usd += projected_max_cost
         try:
             from agents import Agent, FunctionTool, ModelSettings, RunConfig, Runner
@@ -187,11 +247,11 @@ class OpenAIAgentsSDKInvoker:
                 include_usage=True,
                 verbosity="low",
             ),
-            output_type=AgentsSDKCapabilityOutput,
+            output_type=spec.output_type,
             tools=sdk_tools,
         )
         trace_id = canonical_digest(
-            {"run_id": spec.run_id, "capability": spec.capability.value, "model": spec.model}
+            {"run_id": spec.run_id, "capability": capability_id, "model": spec.model}
         ).removeprefix("sha256:")
         started = time.monotonic()
         result = Runner.run_sync(
@@ -206,12 +266,32 @@ class OpenAIAgentsSDKInvoker:
                 tracing_disabled=self.config.tracing_disabled,
                 trace_metadata={
                     "harness_id": AGENTS_SDK_HARNESS_ID,
-                    "capability": spec.capability.value,
+                    "capability": capability_id,
                 },
             ),
         )
         latency = max(0.0, time.monotonic() - started)
-        output = AgentsSDKCapabilityOutput.model_validate(result.final_output)
+        output = spec.output_type.model_validate(result.final_output)
+        sdk_version = metadata.version("openai-agents")
+        if self._record_completion is not None:
+            completion: dict[str, Any] = {
+                "schema_version": INFERENCE_COMPLETION_SCHEMA_VERSION,
+                "reservation_id": reservation_id,
+                "run_id": spec.run_id,
+                "capability": capability_id,
+                "provider": "openai",
+                "model": spec.model,
+                "agents_sdk_version": sdk_version,
+                "structured_output_digest": canonical_digest(
+                    output.model_dump(mode="json")
+                ),
+                "proof_effect": "none",
+            }
+            completion["inference_completion_digest"] = canonical_digest(
+                completion,
+                digest_field="inference_completion_digest",
+            )
+            self._record_completion(completion)
         usage_value = getattr(getattr(result, "context_wrapper", None), "usage", None)
         usage = (
             usage_value.model_dump(mode="json")
@@ -222,7 +302,7 @@ class OpenAIAgentsSDKInvoker:
             output=output,
             provider="openai",
             model=spec.model,
-            sdk_version=metadata.version("openai-agents"),
+            sdk_version=sdk_version,
             latency_seconds=latency,
             usage={
                 **usage,
@@ -381,7 +461,7 @@ class OpenAIAgentsSDKCapability:
         )
         invocation = self.invoker.invoke(spec, json.dumps(payload, sort_keys=True))
         self._last_invocation = invocation
-        output = invocation.output
+        output = AgentsSDKCapabilityOutput.model_validate(invocation.output)
         artifact = json.loads(output.artifact_json)
         if not isinstance(artifact, Mapping):
             raise ValueError("agents_sdk_artifact_json_must_be_object")

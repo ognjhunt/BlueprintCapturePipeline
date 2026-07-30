@@ -40,9 +40,19 @@ from .contracts import (
     proof_boundary,
 )
 from .ledger import AppendOnlyEventLedger, SupervisorLedgerError
+from .inference_reservations import (
+    InferenceReservationAudit,
+    InferenceReservationError,
+)
 from .lifecycle import (
     CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION,
     run_capture_build_supervisor,
+)
+from .manager import (
+    AgentsSDKSupervisorManagerOutput,
+    OpenAIAgentsSDKSupervisorManager,
+    SupervisorManagerDecision,
+    SupervisorManagerError,
 )
 from .phase2_artifacts import (
     Phase2ArtifactError,
@@ -54,6 +64,7 @@ from .phase2_artifacts import (
     freeze_scenario_manifest,
     scenario_proposal_set,
 )
+from .pigey_candidate_runtime import PigeyScenarioBinding, PigeySimCandidateRuntime
 from .replay import SupervisorReplayError, replay_supervisor_run
 from .recovery import (
     PreauthorizedRecoveryController,
@@ -69,6 +80,7 @@ from .evaluation import (
 )
 from .supervisor import SupervisorExecution, TaskEvaluationSupervisor
 from .tools import RegisteredToolBinding, ToolRegistry
+from .vast_recovery_adapter import VastRecoveryAdapterError, VastWAMRecoveryAdapter
 
 __all__ = [
     "AGENTS_SDK_HARNESS_ID",
@@ -92,9 +104,14 @@ __all__ = [
     "CaptureBuildIngressError",
     "FrozenAgenticPolicyAdapter",
     "IndependentCandidateEvaluator",
+    "InferenceReservationAudit",
+    "InferenceReservationError",
     "OpenAIAgentsSDKConfig",
     "OpenAIAgentsSDKInvoker",
+    "OpenAIAgentsSDKSupervisorManager",
     "Phase2ArtifactError",
+    "PigeyScenarioBinding",
+    "PigeySimCandidateRuntime",
     "PreauthorizedRecoveryController",
     "PreauthorizedRecoveryPolicy",
     "RegisteredToolBinding",
@@ -106,6 +123,9 @@ __all__ = [
     "SupervisorEvaluationCase",
     "SupervisorEvaluationError",
     "SupervisorLedgerError",
+    "SupervisorManagerDecision",
+    "SupervisorManagerError",
+    "AgentsSDKSupervisorManagerOutput",
     "SupervisorReplayError",
     "SupervisorRun",
     "SupervisorState",
@@ -113,6 +133,8 @@ __all__ = [
     "TerminalSupervisorReport",
     "ToolDescriptor",
     "ToolRegistry",
+    "VastRecoveryAdapterError",
+    "VastWAMRecoveryAdapter",
     "agents_sdk_capabilities",
     "deterministic_baseline_capabilities",
     "compare_supervisor_to_baseline",

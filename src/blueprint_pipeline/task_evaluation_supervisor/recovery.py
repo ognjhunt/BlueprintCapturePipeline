@@ -305,10 +305,24 @@ class PreauthorizedRecoveryController:
                         "retryable": False,
                     }
                 elif typed_failure is None and status != "completed":
-                    typed_failure = {
-                        "failure_type": str(raw.get("failure_type") or "provider_failure"),
-                        "retryable": len(self._attempts) + 1 < max_attempts,
-                    }
+                    adapter_retryable = raw.get("retryable")
+                    if adapter_retryable not in {None, True, False}:
+                        status = "failed"
+                        typed_failure = {
+                            "failure_type": "provider_retryability_invalid",
+                            "retryable": False,
+                        }
+                    else:
+                        retryable = (
+                            len(self._attempts) + 1 < max_attempts
+                            and adapter_retryable is not False
+                        )
+                        typed_failure = {
+                            "failure_type": str(
+                                raw.get("failure_type") or "provider_failure"
+                            ),
+                            "retryable": retryable,
+                        }
         except Exception as exc:  # noqa: BLE001 - normalized and preserved below
             elapsed = max(0.0, self._monotonic() - started)
             actual_cost = None

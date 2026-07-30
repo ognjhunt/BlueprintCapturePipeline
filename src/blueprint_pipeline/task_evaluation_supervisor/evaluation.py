@@ -65,6 +65,7 @@ class SupervisorEvaluationCase:
     targeted_recapture_required: bool | None = None
     expected_failure_types: tuple[str, ...] = ()
     expected_abstention_capabilities: tuple[str, ...] = ()
+    expected_triggered_capabilities: tuple[str, ...] = ()
     hidden_canaries: tuple[str, ...] = ()
     baseline_metrics: Mapping[str, float] | None = None
 
@@ -78,8 +79,15 @@ class SupervisorEvaluationCase:
         unsupported_capabilities = set(self.expected_abstention_capabilities) - {
             kind.value for kind in CapabilityKind
         }
+        unsupported_triggers = set(self.expected_triggered_capabilities) - {
+            kind.value for kind in CapabilityKind
+        }
         if unsupported_capabilities:
             raise SupervisorEvaluationError("expected_abstention_capability_invalid")
+        if unsupported_triggers:
+            raise SupervisorEvaluationError("expected_triggered_capability_invalid")
+        if self.split == "heldout" and not self.expected_triggered_capabilities:
+            raise SupervisorEvaluationError("expected_triggered_capabilities_missing")
 
     def to_mapping(self, *, include_hidden: bool = False) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -94,6 +102,9 @@ class SupervisorEvaluationCase:
             "expected_abstention_capabilities": list(self.expected_abstention_capabilities),
         }
         if include_hidden:
+            value["expected_triggered_capabilities"] = list(
+                self.expected_triggered_capabilities
+            )
             value["hidden_canaries"] = list(self.hidden_canaries)
             value["baseline_metrics"] = dict(self.baseline_metrics or {})
         value["case_digest"] = canonical_digest(value, digest_field="case_digest")
@@ -130,6 +141,9 @@ def load_supervisor_evaluation_corpus(
             ),
             expected_abstention_capabilities=tuple(
                 str(item) for item in row.get("expected_abstention_capabilities") or []
+            ),
+            expected_triggered_capabilities=tuple(
+                str(item) for item in row.get("expected_triggered_capabilities") or []
             ),
             hidden_canaries=tuple(str(item) for item in row.get("hidden_canaries") or []),
             baseline_metrics=(
@@ -337,11 +351,33 @@ def evaluate_supervisor_execution(
 
     report = execution.report.to_mapping()
     ledger = AppendOnlyEventLedger(execution.output_dir / "supervisor_events.jsonl").read()
-    expected_capabilities = {kind.value for kind in CapabilityKind}
     invocation_values = [row.to_mapping() for row in execution.invocation_manifests]
     invocation_capabilities = {str(row.get("capability")) for row in invocation_values}
+    manager_decisions = [
+        dict(row)
+        for row in report.get("manager_decisions") or []
+        if isinstance(row, Mapping)
+    ]
+    manager_selected_capabilities = {
+        str(row.get("next_capability"))
+        for row in manager_decisions
+        if row.get("status") == "continue" and row.get("next_capability")
+    }
+    manager_terminal = [
+        row for row in manager_decisions if row.get("status") == "terminal"
+    ]
+    expected_triggered_capabilities = set(case.expected_triggered_capabilities)
     audit_complete = (
-        invocation_capabilities == expected_capabilities
+        invocation_capabilities == manager_selected_capabilities
+        and (
+            not expected_triggered_capabilities
+            or invocation_capabilities == expected_triggered_capabilities
+        )
+        and len(invocation_values) == len(manager_selected_capabilities)
+        and len(report.get("manager_invocations") or []) == len(manager_decisions)
+        and len(manager_terminal) == 1
+        and manager_decisions[0].get("next_capability")
+        == CapabilityKind.CLAIM_TASK_INTERPRETER.value
         and len(ledger) == report.get("event_count")
         and bool(ledger)
         and ledger[-1].digest == report.get("last_event_digest")
@@ -381,7 +417,8 @@ def evaluate_supervisor_execution(
         for blocker in row.get("blockers") or []
     )
     diagnostic_faithful = (
-        diagnosis.get("status") == "abstained"
+        CapabilityKind.POST_RUN_DIAGNOSTICIAN.value not in manager_selected_capabilities
+        or diagnosis.get("status") == "abstained"
         or (diagnosis.get("artifact") or {}).get("deterministic_verdict_changed") is False
     )
     routing_correct = (
@@ -467,7 +504,7 @@ def evaluate_supervisor_execution(
         ),
         "abstention_false_positive_rate": _ratio(
             abstention_false_positives,
-            len(expected_capabilities - expected_abstentions),
+            len(invocation_capabilities - expected_abstentions),
             empty=0.0,
         ),
         "post_run_diagnostic_faithfulness": 1.0 if diagnostic_faithful else 0.0,

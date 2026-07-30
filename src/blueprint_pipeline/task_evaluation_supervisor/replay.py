@@ -24,6 +24,7 @@ from .contracts import (
     TerminalSupervisorReport,
 )
 from .ledger import AppendOnlyEventLedger
+from .inference_reservations import InferenceReservationAudit
 
 
 REPLAY_REPORT_SCHEMA_VERSION = "task_evaluation_supervisor_replay_report.v1"
@@ -79,6 +80,31 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
     if len(events) != report_value["event_count"]:
         raise SupervisorReplayError("event_ledger_count_mismatch")
 
+    inference_spend = dict(report_value.get("inference_spend") or {})
+    reservation_path = (
+        root / str(inference_spend.get("reservation_manifest_path") or "")
+    ).resolve()
+    if root not in reservation_path.parents or not reservation_path.is_file():
+        raise SupervisorReplayError("inference_reservation_manifest_missing")
+    persisted_reservation_manifest = dict(read_json(reservation_path))
+    replayed_reservation_manifest = InferenceReservationAudit(
+        run_root=root,
+        run_id=str(run_value["run_id"]),
+    ).manifest()
+    if persisted_reservation_manifest != replayed_reservation_manifest:
+        raise SupervisorReplayError("inference_reservation_manifest_mismatch")
+    if (
+        inference_spend.get("reservation_manifest_digest")
+        != replayed_reservation_manifest["inference_reservation_manifest_digest"]
+        or int(inference_spend.get("reservation_count") or 0)
+        != replayed_reservation_manifest["reservation_count"]
+        or int(inference_spend.get("in_flight_unknown_count") or 0)
+        != replayed_reservation_manifest["in_flight_unknown_count"]
+        or float(inference_spend.get("reserved_max_cost_usd") or 0.0)
+        != float(replayed_reservation_manifest["reserved_max_cost_usd"])
+    ):
+        raise SupervisorReplayError("inference_reservation_report_mismatch")
+
     customer_report_path = (
         root / str(report_value.get("customer_report_path") or "")
     ).resolve()
@@ -97,6 +123,8 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
         raise SupervisorReplayError("customer_report_contract_mismatch")
 
     capability_digests: list[str] = []
+    capability_digest_by_kind: dict[str, str] = {}
+    structured_observations_by_capability: dict[str, list[dict[str, Any]]] = {}
     for row in report_value.get("capability_results") or []:
         path = (root / str(row["artifact_path"])).resolve()
         if root not in path.parents:
@@ -105,6 +133,154 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
         if capability.digest != row["digest"]:
             raise SupervisorReplayError("capability_artifact_digest_mismatch")
         capability_digests.append(capability.digest)
+        capability_value = capability.to_mapping()
+        capability_id = str(capability_value["capability"])
+        capability_digest_by_kind[capability_id] = capability.digest
+        embedded_observations = capability_value.get("structured_observations") or []
+        if not isinstance(embedded_observations, list) or any(
+            not isinstance(item, Mapping) for item in embedded_observations
+        ):
+            raise SupervisorReplayError("capability_structured_observations_invalid")
+        structured_observations_by_capability[capability_id] = [
+            dict(item) for item in embedded_observations
+        ]
+
+    manager_decision_digests: list[str] = []
+    manager_invocation_digests: list[str] = []
+    manager_refusal_digests: list[str] = []
+    observed_capability_digests: list[str] = []
+    manager_rows = sorted(
+        [
+            dict(row)
+            for row in report_value.get("manager_decisions") or []
+            if isinstance(row, Mapping)
+        ],
+        key=lambda row: int(row.get("step_index", -1)),
+    )
+    refusal_rows = [
+        dict(row)
+        for row in report_value.get("manager_refusals") or []
+        if isinstance(row, Mapping)
+    ]
+    for row in refusal_rows:
+        path = (root / str(row.get("artifact_path") or "")).resolve()
+        if root not in path.parents:
+            raise SupervisorReplayError("manager_refusal_path_escape")
+        refusal = dict(read_json(path))
+        digest = canonical_digest(
+            refusal,
+            digest_field="supervisor_manager_refusal_digest",
+        )
+        if (
+            refusal.get("schema_version")
+            != "task_evaluation_supervisor_manager_refusal.v1"
+            or refusal.get("supervisor_manager_refusal_digest") != digest
+            or row.get("digest") != digest
+            or refusal.get("proof_effect") != "none"
+            or refusal.get("raw_error_message_recorded") is not False
+        ):
+            raise SupervisorReplayError("manager_refusal_contract_mismatch")
+        manager_refusal_digests.append(digest)
+    if len(manager_refusal_digests) > 1 or (
+        refusal_rows
+        and int(refusal_rows[0].get("step_index", -1)) != len(manager_rows)
+    ):
+        raise SupervisorReplayError("manager_refusal_sequence_invalid")
+    if (
+        not manager_rows
+        and not manager_refusal_digests
+        and run_value.get("manager_agent_required") is True
+    ):
+        raise SupervisorReplayError("manager_decision_artifacts_missing")
+    terminal_manager_rows = 0
+    for expected_step, row in enumerate(manager_rows):
+        if int(row.get("step_index", -1)) != expected_step:
+            raise SupervisorReplayError("manager_decision_step_invalid")
+        path = (root / str(row.get("artifact_path") or "")).resolve()
+        if root not in path.parents:
+            raise SupervisorReplayError("manager_decision_path_escape")
+        manager_decision_value = dict(read_json(path))
+        digest = canonical_digest(
+            manager_decision_value,
+            digest_field="supervisor_manager_decision_digest",
+        )
+        if (
+            manager_decision_value.get("supervisor_manager_decision_digest") != digest
+            or row.get("digest") != digest
+            or manager_decision_value.get("observed_capability_result_digests")
+            != sorted(observed_capability_digests)
+            or manager_decision_value.get("proof_effect") != "none"
+            or manager_decision_value.get("manager_controls_sequencing_only") is not True
+        ):
+            raise SupervisorReplayError("manager_decision_contract_mismatch")
+        if manager_decision_value.get("status") == "continue":
+            capability_id = str(manager_decision_value.get("next_capability") or "")
+            capability_digest = capability_digest_by_kind.get(capability_id)
+            if capability_digest is None or capability_digest in observed_capability_digests:
+                raise SupervisorReplayError("manager_capability_sequence_invalid")
+            observed_capability_digests.append(capability_digest)
+        elif manager_decision_value.get("status") == "terminal":
+            terminal_manager_rows += 1
+            if manager_decision_value.get("next_capability") is not None:
+                raise SupervisorReplayError("manager_terminal_decision_invalid")
+        else:
+            raise SupervisorReplayError("manager_decision_status_invalid")
+        manager_decision_digests.append(digest)
+    if manager_rows and (
+        terminal_manager_rows + len(manager_refusal_digests) != 1
+        or sorted(observed_capability_digests) != sorted(capability_digests)
+    ):
+        raise SupervisorReplayError("manager_terminal_sequence_incomplete")
+
+    invocation_rows = sorted(
+        [
+            dict(row)
+            for row in report_value.get("manager_invocations") or []
+            if isinstance(row, Mapping)
+        ],
+        key=lambda row: int(row.get("step_index", -1)),
+    )
+    if len(invocation_rows) != len(manager_rows):
+        raise SupervisorReplayError("manager_invocation_count_mismatch")
+    for expected_step, row in enumerate(invocation_rows):
+        path = (root / str(row.get("artifact_path") or "")).resolve()
+        if root not in path.parents:
+            raise SupervisorReplayError("manager_invocation_path_escape")
+        manager_invocation_value = dict(read_json(path))
+        digest = canonical_digest(
+            manager_invocation_value,
+            digest_field="manager_invocation_digest",
+        )
+        if (
+            int(manager_invocation_value.get("step_index", -1)) != expected_step
+            or manager_invocation_value.get("manager_invocation_digest") != digest
+            or row.get("digest") != digest
+            or manager_invocation_value.get("structured_output_digest")
+            != manager_decision_digests[expected_step]
+            or manager_invocation_value.get("proof_effect") != "none"
+            or manager_invocation_value.get("action_taken") != "specialist_sequence_selected"
+        ):
+            raise SupervisorReplayError("manager_invocation_contract_mismatch")
+        manager_invocation_digests.append(digest)
+
+    manager_event_digests = [
+        str(event.to_mapping().get("payload_digest") or "")
+        for event in events
+        if str(event.to_mapping().get("event_type") or "").startswith(
+            "supervisor_manager_decision_recorded:"
+        )
+    ]
+    if manager_event_digests != manager_decision_digests:
+        raise SupervisorReplayError("manager_event_sequence_mismatch")
+    manager_refusal_event_digests = [
+        str(event.to_mapping().get("payload_digest") or "")
+        for event in events
+        if str(event.to_mapping().get("event_type") or "").startswith(
+            "supervisor_manager_refused:"
+        )
+    ]
+    if manager_refusal_event_digests != manager_refusal_digests:
+        raise SupervisorReplayError("manager_refusal_event_sequence_mismatch")
 
     invocation_digests: list[str] = []
     tool_observation_digests: list[str] = []
@@ -114,11 +290,14 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
         path = (root / str(row["artifact_path"])).resolve()
         if root not in path.parents:
             raise SupervisorReplayError("invocation_artifact_path_escape")
-        invocation = AgentInvocationManifest.from_mapping(read_json(path))
-        if invocation.digest != row["digest"]:
+        specialist_invocation = AgentInvocationManifest.from_mapping(read_json(path))
+        if specialist_invocation.digest != row["digest"]:
             raise SupervisorReplayError("invocation_artifact_digest_mismatch")
-        invocation_digests.append(invocation.digest)
-        for observation_ref in invocation.to_mapping().get("tool_observation_references") or []:
+        invocation_digests.append(specialist_invocation.digest)
+        invocation_observation_summaries: list[dict[str, Any]] = []
+        for observation_ref in (
+            specialist_invocation.to_mapping().get("tool_observation_references") or []
+        ):
             if not isinstance(observation_ref, Mapping):
                 raise SupervisorReplayError("tool_observation_reference_invalid")
             observation_path = (root / str(observation_ref.get("artifact_path") or "")).resolve()
@@ -147,6 +326,24 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
                 raise SupervisorReplayError("preauthorized_tool_wrong_mode")
             replayed_tool_cost_usd += observation_cost
             tool_observation_digests.append(digest)
+            invocation_observation_summaries.append(
+                {
+                    "tool_id": observation.get("tool_id"),
+                    "status": observation.get("status"),
+                    "typed_result": observation.get("typed_result"),
+                    "typed_failure": observation.get("typed_failure"),
+                    "produced_artifact_references": observation.get(
+                        "produced_artifact_references"
+                    )
+                    or [],
+                    "observation_digest": observation.get("observation_digest"),
+                    "proof_effect": observation.get("proof_effect"),
+                    "suggested_next_legal_actions": observation.get(
+                        "suggested_next_legal_actions"
+                    )
+                    or [],
+                }
+            )
             for generated_ref in observation.get("produced_artifact_references") or []:
                 if not isinstance(generated_ref, Mapping):
                     raise SupervisorReplayError("generated_artifact_reference_invalid")
@@ -178,6 +375,14 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
                 if generated_ref.get("artifact_digest") != generated_digest:
                     raise SupervisorReplayError("generated_artifact_digest_mismatch")
                 generated_artifact_digests.append(generated_digest)
+        invocation_capability = str(
+            specialist_invocation.to_mapping().get("capability") or ""
+        )
+        if invocation_observation_summaries != structured_observations_by_capability.get(
+            invocation_capability,
+            [],
+        ):
+            raise SupervisorReplayError("capability_structured_observations_mismatch")
     if replayed_tool_cost_usd > float(authority_value.get("max_cost_usd") or 0.0):
         raise SupervisorReplayError("replayed_tool_cost_exceeds_authority")
 
@@ -201,10 +406,10 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
             raise SupervisorReplayError(f"kernel_input_artifact_digest_mismatch:{name}")
         kernel_inputs[name] = _validate_kernel_input(name, value)
 
-    decision = kernel_inputs.get("decision_envelope")
+    deterministic_decision = kernel_inputs.get("decision_envelope")
     replayed_decision: dict[str, Any] | None = None
-    if decision is not None:
-        validated = DecisionEnvelope.from_mapping(decision).to_mapping()
+    if deterministic_decision is not None:
+        validated = DecisionEnvelope.from_mapping(deterministic_decision).to_mapping()
         replayed_decision = {
             "decision_envelope_digest": validated["decision_envelope_digest"],
             "overall_outcome": validated["overall_outcome"],
@@ -221,6 +426,9 @@ def replay_supervisor_run(output_dir: str | Path) -> dict[str, Any]:
         "kernel_inputs_revalidated": True,
         "capability_result_digests": capability_digests,
         "invocation_manifest_digests": invocation_digests,
+        "manager_decision_digests": manager_decision_digests,
+        "manager_invocation_digests": manager_invocation_digests,
+        "manager_refusal_digests": manager_refusal_digests,
         "tool_observation_digests": tool_observation_digests,
         "generated_artifact_digests": generated_artifact_digests,
         "customer_report_digest": customer_report_digest,
