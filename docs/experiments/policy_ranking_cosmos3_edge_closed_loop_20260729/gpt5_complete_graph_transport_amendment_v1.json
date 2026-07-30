@@ -1,0 +1,92 @@
+{
+  "schema_version": "policy_ranking_gpt5_complete_graph_transport_amendment.v1",
+  "status": "frozen_before_additional_primary_submissions",
+  "claim_class": "post_unseal_complete_graph_diagnostic_only",
+  "base_execution_freeze": {
+    "path": "docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/gpt5_complete_graph_execution_freeze_v1.json",
+    "freeze_sha256": "cbb7a37b7298f57d65f697537d60b99283867d43116464212259e7c762bce959"
+  },
+  "authoring_source_commit": "7f0aa6e638741d0bd5affa4d1035eae0f36f0c8f",
+  "trigger": {
+    "kind": "label_blind_transport_and_cost_projection_defect",
+    "outcome_labels_accessed": false,
+    "policy_identities_accessed": false,
+    "trigger_shard_index": 5,
+    "trigger_collection_report_sha256": "7975b329dd94fd6512897e4efef76ec270a307be72df11932cebe2ac6ae6f112",
+    "trigger_result_count": 22,
+    "trigger_error_count": 2,
+    "trigger_error_code": "structured_output_invalid_or_incomplete",
+    "trigger_incomplete_reason": "max_output_tokens",
+    "frozen_primary_max_output_tokens": 4000,
+    "observed_failed_row_cost_usd": 0.021671375,
+    "prior_pilot_maximum_used_as_projection_upper_usd": 0.015906875,
+    "defect": "The pilot maximum was not a valid campaign-wide per-row upper bound, and a provider-completed row can be scientifically incomplete when the frozen structured response reaches its output-token ceiling."
+  },
+  "unchanged_scientific_contract": {
+    "inventory_sha256": "b60eb58c8a53d95d49f6fb1c221d276f13ea60d5289006d66bd3c08ef1f3f531",
+    "pair_count": 1323,
+    "model": "gpt-5-2025-08-07",
+    "reasoning_effort": "medium",
+    "primary_max_output_tokens": 4000,
+    "prompt_unchanged": true,
+    "response_schema_unchanged": true,
+    "frame_sampling_unchanged": true,
+    "images_per_pair": 64,
+    "policy_identity_sent": false,
+    "physical_outcome_sent": false,
+    "physical_ground_truth_pixels_sent": false,
+    "partial_matrix_ranking_credit": false
+  },
+  "transport_repair_rule": {
+    "eligible_rows": "Only primary rows retained as structured_output_invalid_or_incomplete with incomplete_details.reason equal to max_output_tokens.",
+    "repair_timing": "Build and freeze the repair subset only after every primary row has been collected or terminally failed.",
+    "maximum_repair_attempts_per_pair": 1,
+    "repair_max_output_tokens": 6000,
+    "model_unchanged": true,
+    "reasoning_effort_unchanged": true,
+    "prompt_unchanged": true,
+    "response_schema_unchanged": true,
+    "images_unchanged": true,
+    "store": false,
+    "repair_result_is_extra_vote": false,
+    "original_incomplete_response_retained": true,
+    "if_repair_is_incomplete": "Retain the failure; the complete graph remains incomplete and receives no ranking credit.",
+    "maximum_budgeted_repair_rows": 42
+  },
+  "budget_snapshot": {
+    "batch_rows_collected": 128,
+    "valid_results": 126,
+    "incomplete_results": 2,
+    "batch_cost_usd": 1.80289625,
+    "synchronous_canary_cost_usd": 0.0235175,
+    "realized_evaluator_cost_usd": 1.82641375,
+    "mean_batch_row_cost_usd": 0.014085126953125,
+    "batch_row_cost_standard_deviation_usd": 0.0030822516714869262,
+    "observed_maximum_batch_row_cost_usd": 0.021671375,
+    "one_sided_normal_99pct_mean_ucb_usd": 0.014718905843905155,
+    "projection_multiplier_over_observed_mean": 1.2,
+    "projection_row_cost_usd": 0.01690215234375,
+    "projected_1323_row_cost_plus_canary_usd": 22.38506505078125,
+    "reserved_transport_repair_cost_usd": 1.5,
+    "projected_total_with_repair_reserve_usd": 23.88506505078125,
+    "category_cap_usd": 25.0,
+    "projected_headroom_usd": 1.11493494921875
+  },
+  "prospective_wave_admission": {
+    "active_batch_limit": 8,
+    "primary_active_request_hard_reserve_usd": 0.025,
+    "repair_active_request_hard_reserve_usd": 0.035,
+    "repair_reserve_usd": 1.5,
+    "recompute_actual_costs_after_every_collected_wave": true,
+    "recompute_projection_from_all_collected_batch_rows": true,
+    "projection_row_cost_rule": "max(observed_mean_times_1.2, one_sided_normal_99pct_mean_ucb)",
+    "required_before_each_submit": [
+      "realized_evaluator_cost plus active and planned hard reserves plus remaining repair reserve is at most USD 25",
+      "projected total evaluator cost including the repair reserve is at most USD 25",
+      "all prior completed inputs are deleted from the provider",
+      "all newly submitted JSONL and manifests retain their frozen hashes and redaction flags"
+    ],
+    "stop_behavior": "If either spend condition fails, submit no additional rows, retain the partial diagnostic without ranking credit, and do not borrow from GPU, storage, or campaign contingency to exceed the evaluator category cap."
+  },
+  "amendment_sha256": "1e2fad7edf2840c6a0a6800ffce3bd407494b4d25dbe0230710640a55a2abf73"
+}
