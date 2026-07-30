@@ -256,7 +256,9 @@ blueprint-route-task-evaluation supervise \
 ```
 
 The deterministic ingress accepts only known capture manifests and a bounded
-approved projection, then binds its digest to the exact prior request. The
+approved projection, normalizes a standalone source filename so filenames never
+become agent instructions, marks the entire capture projection as untrusted SDK
+input, and binds its digest to the exact prior request. The
 receipt records submission, not success: it cannot infer rights, make the new
 capture authoritative, or resolve the original blocker. The capture specialist
 must reinspect it and a maintained testbed must be deterministically rebuilt or

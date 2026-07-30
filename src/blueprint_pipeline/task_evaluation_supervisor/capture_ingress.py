@@ -13,6 +13,7 @@ from ..decision_evidence_contracts import canonical_digest
 
 CAPTURE_BUILD_INGRESS_SCHEMA_VERSION = "task_evaluation_capture_build_ingress.v1"
 _MAX_JSON_BYTES = 2_000_000
+_STANDALONE_MANIFEST_LABEL = "submitted_manifest.json"
 _KNOWN_ARTIFACTS = (
     "pipeline_handoff.json",
     "capture_descriptor.json",
@@ -125,7 +126,7 @@ def validate_capture_build_ingress(value: Mapping[str, Any]) -> dict[str, Any]:
             raise CaptureBuildIngressError("capture_build_ingress_artifact_path_invalid")
         if source_kind == "capture_root" and relative_path not in _KNOWN_ARTIFACTS:
             raise CaptureBuildIngressError("capture_build_ingress_artifact_unregistered")
-        if source_kind == "manifest" and "/" in normalized_path:
+        if source_kind == "manifest" and relative_path != _STANDALONE_MANIFEST_LABEL:
             raise CaptureBuildIngressError("capture_build_ingress_manifest_name_invalid")
         seen_paths.add(relative_path)
         sha256 = str(artifact.get("sha256") or "")
@@ -205,7 +206,7 @@ def load_capture_build_ingress(path: str | Path) -> dict[str, Any]:
     source_kind: str
     if source.is_file():
         source_kind = "manifest"
-        artifacts.append(_load_artifact(source, relative_path=source.name))
+        artifacts.append(_load_artifact(source, relative_path=_STANDALONE_MANIFEST_LABEL))
     elif source.is_dir():
         source_kind = "capture_root"
         resolved_root = source.resolve()

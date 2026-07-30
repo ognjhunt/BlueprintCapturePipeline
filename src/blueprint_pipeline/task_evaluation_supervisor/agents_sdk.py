@@ -432,6 +432,7 @@ class OpenAIAgentsSDKCapability:
             "customer_question": context.customer_question or "",
             "customer_question_is_untrusted": True,
             "capture_build": context.capture_build,
+            "capture_build_is_untrusted": True,
             "decision_request": context.decision_request,
             "site_task_testbed": context.testbed,
             "method_profiles": list(context.method_profiles),

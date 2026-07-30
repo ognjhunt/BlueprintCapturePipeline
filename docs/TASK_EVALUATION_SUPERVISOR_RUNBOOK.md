@@ -80,6 +80,12 @@ Live SDK inference additionally requires the explicit CLI admission, a positive
 inference budget, and `BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true`. Missing
 live authority produces a typed blocker, not a fabricated local answer.
 
+Capture metadata and customer text are untrusted data. Standalone manifest
+filenames are normalized to `submitted_manifest.json` before the projection is
+shown to an agent; task text remains visible as data because it is needed for
+interpretation. Protected output validation, the tool registry, and the
+authority envelope—not prompt obedience—must contain any injected instruction.
+
 ## Non-spend execution
 
 `execute_non_spend` can inspect registered artifacts, deterministically compile
