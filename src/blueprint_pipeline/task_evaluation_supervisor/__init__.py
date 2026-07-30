@@ -48,6 +48,7 @@ from .contracts import (
     ToolDescriptor,
     ToolObservation,
     proof_boundary,
+    validate_proof_boundary,
 )
 from .ledger import AppendOnlyEventLedger, SupervisorLedgerError
 from .inference_reservations import (
@@ -222,6 +223,7 @@ __all__ = [
     "validate_openai_cost_scope_attestation",
     "validate_supervisor_evaluation_configuration",
     "proof_boundary",
+    "validate_proof_boundary",
     "replay_supervisor_run",
     "run_capture_build_supervisor",
     "authorization_receipt",

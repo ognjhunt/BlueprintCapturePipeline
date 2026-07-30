@@ -2548,6 +2548,19 @@ def test_replay_revalidates_kernel_inputs_and_ledger_without_model_call(
     assert replay["kernel_inputs_revalidated"] is True
     assert replay["proof_result_reproduced"] is False
 
+    weakened_run = tmp_path / "weakened-proof-boundary"
+    shutil.copytree(execution.output_dir, weakened_run)
+    boundary_path = weakened_run / "proof_boundary.json"
+    weakened_boundary = json.loads(boundary_path.read_text(encoding="utf-8"))
+    weakened_boundary["deployment_approval_allowed"] = True
+    weakened_boundary["proof_boundary_digest"] = canonical_digest(
+        weakened_boundary,
+        digest_field="proof_boundary_digest",
+    )
+    boundary_path.write_text(json.dumps(weakened_boundary), encoding="utf-8")
+    with pytest.raises(SupervisorReplayError, match="proof_boundary_mismatch"):
+        replay_supervisor_run(weakened_run)
+
     request_path = execution.output_dir / "kernel_inputs" / "decision_request.json"
     tampered = json.loads(request_path.read_text())
     tampered["decision_question"] = "tampered after the run"

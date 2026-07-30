@@ -24,6 +24,7 @@ from .contracts import (
     SupervisorRun,
     TerminalSupervisorReport,
     ToolDescriptor,
+    validate_proof_boundary,
 )
 from .capture_ingress import CaptureBuildIngressError, validate_capture_build_ingress
 from .capabilities import SupervisorContext
@@ -131,10 +132,19 @@ def replay_supervisor_run(
     report_value = report.to_mapping()
     authority = AuthorityEnvelope.from_mapping(read_json(root / "authority_envelope.json"))
     authority_value = authority.to_mapping()
+    try:
+        boundary = validate_proof_boundary(read_json(root / "proof_boundary.json"))
+    except SupervisorContractError as exc:
+        raise SupervisorReplayError("proof_boundary_mismatch") from exc
     if report_value["run_id"] != run_value["run_id"]:
         raise SupervisorReplayError("run_report_identity_mismatch")
     if run_value["authority_digest"] != authority.digest:
         raise SupervisorReplayError("run_authority_digest_mismatch")
+    if (
+        run_value["proof_boundary_digest"] != boundary["proof_boundary_digest"]
+        or report_value["proof_boundary_digest"] != boundary["proof_boundary_digest"]
+    ):
+        raise SupervisorReplayError("proof_boundary_mismatch")
 
     tool_manifest = dict(read_json(root / "tool_registry_manifest.json"))
     tool_manifest_digest = canonical_digest(

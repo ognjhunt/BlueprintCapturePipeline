@@ -1142,6 +1142,15 @@ def proof_boundary() -> dict[str, Any]:
     return value
 
 
+def validate_proof_boundary(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Require the exact invariant boundary compiled into this release."""
+
+    expected = proof_boundary()
+    if dict(value) != expected:
+        raise SupervisorContractError(["proof_boundary:not_canonical"])
+    return expected
+
+
 __all__ = [
     "ACTION_PROPOSAL_SCHEMA_VERSION",
     "AUTHORITY_ENVELOPE_SCHEMA_VERSION",
@@ -1171,4 +1180,5 @@ __all__ = [
     "ToolObservation",
     "ValidatedSupervisorArtifact",
     "proof_boundary",
+    "validate_proof_boundary",
 ]

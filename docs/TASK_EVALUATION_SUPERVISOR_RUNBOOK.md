@@ -282,6 +282,12 @@ tool version, mutability, runtime identity, output digest, cost, and retry
 limits. Unknown or injected fields are refused before ledger persistence.
 Replay does not ask a current model to regenerate prose.
 
+Replay also requires `proof_boundary.json` to equal the canonical boundary
+compiled into the current Blueprint release and requires the durable run and
+terminal report to bind that same digest. Editing a boundary Boolean and
+recomputing its digest cannot enable proof mutation, hidden-label access,
+deployment approval, or physical-success claims.
+
 The customer report has its own exact-schema validator at creation and replay.
 It rejects unknown fields, non-finite or negative spend, inconsistent
 decision/partial/abstention flags, agent-authoritative output, proof mutation,
