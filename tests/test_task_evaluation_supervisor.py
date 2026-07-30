@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import json
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -211,7 +212,7 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
     assert captured["kwargs"]["max_turns"] == 2
     assert captured["kwargs"]["run_config"].trace_include_sensitive_data is False
     assert result.provider == "openai"
-    assert result.sdk_version == "0.18.1"
+    assert result.sdk_version == importlib.metadata.version("openai-agents")
     assert result.usage["total_tokens"] == 12
     assert result.usage["projected_max_cost_usd"] > 0
 
