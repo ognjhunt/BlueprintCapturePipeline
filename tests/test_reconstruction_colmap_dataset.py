@@ -110,6 +110,11 @@ def _request(root: Path) -> dict:
             "digest": _digest(surface_path),
         },
         "maximum_initialization_points": 10,
+        "coordinate_frame_declaration": {"frame": "fixture_world", "up_axis": "unknown"},
+        "units": "meters",
+        "metric_scale_status": "sensor_metric_unvalidated",
+        "authority_used": {"local_processing_authorized": True},
+        "timestamp": "2026-07-30T18:00:00Z",
         "blockers": ["pose_refinement_not_executed"],
     }
     request["colmap_training_dataset_export_request_digest"] = canonical_digest(

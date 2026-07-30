@@ -179,6 +179,10 @@ def export_colmap_training_dataset(
     candidate = request.get("candidate_dataset_manifest")
     if not isinstance(observations, Mapping) or not isinstance(candidate, Mapping):
         errors.append("colmap_export_manifests_missing")
+    if not isinstance(request.get("authority_used"), Mapping):
+        errors.append("colmap_export_authority_missing")
+    if not str(request.get("timestamp") or "").strip():
+        errors.append("colmap_export_timestamp_missing")
     supplied_digest = request.pop("colmap_training_dataset_export_request_digest", None)
     request_digest = canonical_digest(
         request, digest_field="colmap_training_dataset_export_request_digest"
@@ -304,6 +308,28 @@ def export_colmap_training_dataset(
         "camera_observation_digest": observations.get("camera_observation_digest"),
         "initialization_surface_digest": initialization_digest,
         "colmap_training_dataset_digest": dataset_digest,
+        "producing_method": "blueprint.candidate_observations_to_colmap_text",
+        "implementation_version": "1.0.0",
+        "container_image_digest": None,
+        "deterministic_configuration_digest": configuration_digest,
+        "input_digests": [
+            request["reconstruction_dataset_digest"],
+            request["frozen_split_digest"],
+            observations.get("camera_observation_digest"),
+            candidate.get("candidate_dataset_digest"),
+            initialization_digest,
+        ],
+        "output_digests": [dataset_digest, *artifacts.values()],
+        "camera_calibration_binding": {
+            "camera_observation_digest": observations.get("camera_observation_digest")
+        },
+        "coordinate_frame_declaration": dict(request.get("coordinate_frame_declaration") or {}),
+        "units": request.get("units"),
+        "metric_scale_status": request.get("metric_scale_status"),
+        "provider_runtime_identity": {"provider": "local", "runtime": "python_numpy"},
+        "cost_usd": 0.0,
+        "duration_seconds": 0.0,
+        "authority_used": dict(request["authority_used"]),
         "relative_path": root.relative_to(Path(output_root).resolve()).as_posix(),
         "image_count": len(image_digests),
         "initialization_point_count": len(point_lines) - 1,
@@ -315,6 +341,11 @@ def export_colmap_training_dataset(
         "claim_ceiling": "reconstruction_training_request",
         "warnings": ["colmap_text_export_does_not_qualify_poses_scale_or_geometry"],
         "blockers": list(request.get("blockers") or []),
+        "parent_artifact_or_event": {
+            "request_digest": request_digest,
+            "reconstruction_dataset_digest": request["reconstruction_dataset_digest"],
+        },
+        "timestamp": request["timestamp"],
     }
     result["colmap_training_dataset_export_result_digest"] = canonical_digest(
         result, digest_field="colmap_training_dataset_export_result_digest"
