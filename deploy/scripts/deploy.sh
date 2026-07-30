@@ -551,6 +551,7 @@ build_docker_image() {
 
     docker build \
         --target production \
+        --build-arg "BLUEPRINT_SOURCE_COMMIT=${GIT_SHA}" \
         -t "$IMAGE_URI" \
         -f Dockerfile \
         .

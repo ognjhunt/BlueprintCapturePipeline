@@ -49,6 +49,8 @@ FROM base AS production
 
 ARG APP_UID=10001
 ARG APP_GID=10001
+ARG BLUEPRINT_SOURCE_COMMIT
+LABEL org.opencontainers.image.revision="${BLUEPRINT_SOURCE_COMMIT}"
 RUN groupadd --gid "${APP_GID}" blueprint \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home blueprint \
     && mkdir -p /workspace/outputs /tmp/blueprint_pipeline /opt/huggingface \
@@ -57,6 +59,7 @@ RUN groupadd --gid "${APP_GID}" blueprint \
 COPY --from=builder --chown=blueprint:blueprint /opt/venv /opt/venv
 
 ENV PATH="/opt/venv/bin:${PATH}" \
+    BLUEPRINT_SOURCE_COMMIT="${BLUEPRINT_SOURCE_COMMIT}" \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
     PYTHONDONTWRITEBYTECODE=1

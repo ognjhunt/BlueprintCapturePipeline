@@ -435,6 +435,33 @@ def test_trigger_control_plane_edges(monkeypatch: pytest.MonkeyPatch) -> None:
     assert invalid["blockers"] == ["intake_trigger_systemd_unit_invalid"]
 
 
+def test_deployment_identity_fails_closed_without_exact_source_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = TestClient(create_app())
+
+    monkeypatch.delenv(service.PIPELINE_SOURCE_COMMIT_ENV, raising=False)
+    missing = client.get("/api/live-pipeline/version")
+    assert missing.status_code == 503
+    assert missing.json() == {
+        "schema_version": service.DEPLOYMENT_IDENTITY_SCHEMA_VERSION,
+        "service_schema_version": service.INTAKE_SCHEMA_VERSION,
+        "commit_proven": False,
+        "source_commit": None,
+        "claim_ceiling": "deployed_service_identity_only",
+    }
+
+    monkeypatch.setenv(service.PIPELINE_SOURCE_COMMIT_ENV, "not-a-commit")
+    assert client.get("/api/live-pipeline/version").status_code == 503
+
+    source_commit = "a" * 40
+    monkeypatch.setenv(service.PIPELINE_SOURCE_COMMIT_ENV, source_commit)
+    proven = client.get("/api/live-pipeline/version")
+    assert proven.status_code == 200
+    assert proven.json()["commit_proven"] is True
+    assert proven.json()["source_commit"] == source_commit
+
+
 def test_live_pipeline_intake_service_error_edges(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
