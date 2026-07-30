@@ -16,6 +16,12 @@ from ..common import write_json
 from ..decision_evidence_contracts import canonical_digest
 from ..decision_evidence_router import route_decision_evidence
 from ..evaluation_run_contract import validate_evaluation_run_spec
+from ..reconstruction_worker_contracts import (
+    build_pose_estimation_request,
+    build_pose_estimation_result,
+    build_training_request,
+    build_training_result,
+)
 from .contracts import (
     TOOL_OBSERVATION_SCHEMA_VERSION,
     ActionProposal,
@@ -108,6 +114,35 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "virtual_observation_count": {"type": "integer"},
             "shared_optical_center_required": {"const": True},
             "virtual_views_are_captured_evidence": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "run_pose_estimation": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "status": {"enum": ["succeeded", "failed", "timed_out", "interrupted"]},
+            "failure_code": {},
+            "pose_estimation_result_digest": {"type": "string"},
+            "registered_observation_count": {"type": "integer"},
+            "rejected_observation_count": {"type": "integer"},
+            "heldout_labels_included": {"const": False},
+            "candidate_self_graded": {"const": False},
+            "claim_ceiling": {"const": "calibrated_camera_trajectory"},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "train_gaussian_reconstruction": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "status": {"enum": ["succeeded", "failed", "timed_out", "interrupted"]},
+            "failure_code": {},
+            "reconstruction_training_result_digest": {"type": "string"},
+            "checkpoint_count": {"type": "integer"},
+            "heldout_labels_included": {"const": False},
+            "candidate_self_graded": {"const": False},
+            "claim_ceiling": {"const": "appearance_reconstruction"},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -351,6 +386,30 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
             minimum_mode="execute_non_spend",
             timeout_seconds=600.0,
+        ),
+        _descriptor(
+            "run_pose_estimation",
+            "capture_reconstruction_pose_estimation",
+            expected_artifacts=["pose_estimation_result.v1"],
+            input_properties={"pose_estimation_request_digest": {"type": "string"}},
+            required_inputs=["pose_estimation_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=3_600.0,
+        ),
+        _descriptor(
+            "train_gaussian_reconstruction",
+            "capture_reconstruction_training",
+            expected_artifacts=["reconstruction_training_result.v1"],
+            input_properties={
+                "reconstruction_training_request_digest": {"type": "string"}
+            },
+            required_inputs=["reconstruction_training_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=14_400.0,
         ),
         _descriptor(
             "validate_proposed_claim_graph",
@@ -738,6 +797,8 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "compile_frozen_frame_dataset",
         "normalize_native_360_capture",
         "compile_equirectangular_virtual_rig",
+        "run_pose_estimation",
+        "train_gaussian_reconstruction",
         "propose_targeted_recapture",
     ),
     "evaluation_method_router": (
@@ -1389,6 +1450,137 @@ def _compile_equirectangular_virtual_rig(
     ]
 
 
+def _run_pose_estimation(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    runtime = getattr(context, "pose_estimator", None)
+    request_value = getattr(context, "pose_estimation_request", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError("registered_tool_execution_scope_missing:run_pose_estimation")
+    if not callable(runtime):
+        raise ValueError("pose_estimator_not_injected")
+    if not isinstance(request_value, Mapping):
+        raise ValueError("pose_estimation_request_not_injected")
+    try:
+        request = build_pose_estimation_request(request_value)
+    except ValueError as exc:
+        raise ValueError("pose_estimation_request_contract_invalid") from exc
+    expected_digest = arguments.get("pose_estimation_request_digest")
+    if expected_digest != request["pose_estimation_request_digest"]:
+        raise ValueError("registered_tool_pose_request_binding_mismatch")
+    output_root = Path(root_value) / "generated" / "pose_estimation"
+    emitted = runtime(request=request, output_root=output_root)
+    if not isinstance(emitted, Mapping):
+        raise ValueError("pose_estimator_result_not_object")
+    try:
+        result = build_pose_estimation_result(emitted)
+    except ValueError as exc:
+        raise ValueError("pose_estimator_result_contract_invalid") from exc
+    if (
+        result.get("pose_estimation_request_digest") != expected_digest
+        or result.get("source_capture_digest") != request.get("source_capture_digest")
+        or result.get("train_heldout_split_digest")
+        != request.get("train_heldout_split_digest")
+        or result.get("container_image_digest") != request.get("container_image_digest")
+        or result.get("source_commit_sha") != request.get("source_commit_sha")
+        or result.get("camera_calibration_binding")
+        != request.get("camera_calibration_binding")
+    ):
+        raise ValueError("pose_estimator_result_lineage_mismatch")
+    result_digest = result["pose_estimation_result_digest"]
+    path = write_phase2_artifact(
+        root_value,
+        "generated/pose_estimation/pose_estimation_result.json",
+        result,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "status": result["status"],
+        "failure_code": result.get("failure_code"),
+        "pose_estimation_result_digest": result_digest,
+        "registered_observation_count": len(result["registered_observation_ids"]),
+        "rejected_observation_count": len(result["rejected_observation_ids"]),
+        "heldout_labels_included": False,
+        "candidate_self_graded": False,
+        "claim_ceiling": "calibrated_camera_trajectory",
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": result_digest,
+            "artifact_type": "pose_estimation_result.v1",
+        }
+    ]
+
+
+def _train_gaussian_reconstruction(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    runtime = getattr(context, "gaussian_reconstruction_trainer", None)
+    request_value = getattr(context, "reconstruction_training_request", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError(
+            "registered_tool_execution_scope_missing:train_gaussian_reconstruction"
+        )
+    if not callable(runtime):
+        raise ValueError("gaussian_reconstruction_trainer_not_injected")
+    if not isinstance(request_value, Mapping):
+        raise ValueError("reconstruction_training_request_not_injected")
+    try:
+        request = build_training_request(request_value)
+    except ValueError as exc:
+        raise ValueError("reconstruction_training_request_contract_invalid") from exc
+    expected_digest = arguments.get("reconstruction_training_request_digest")
+    if expected_digest != request["reconstruction_training_request_digest"]:
+        raise ValueError("registered_tool_training_request_binding_mismatch")
+    output_root = Path(root_value) / "generated" / "gaussian_reconstruction"
+    emitted = runtime(request=request, output_root=output_root)
+    if not isinstance(emitted, Mapping):
+        raise ValueError("gaussian_reconstruction_trainer_result_not_object")
+    try:
+        result = build_training_result(emitted)
+    except ValueError as exc:
+        raise ValueError("gaussian_reconstruction_trainer_result_contract_invalid") from exc
+    if (
+        result.get("reconstruction_training_request_digest") != expected_digest
+        or result.get("source_capture_digest") != request.get("source_capture_digest")
+        or result.get("train_heldout_split_digest")
+        != request.get("train_heldout_split_digest")
+        or result.get("container_image_digest") != request.get("container_image_digest")
+        or result.get("source_commit_sha") != request.get("source_commit_sha")
+        or result.get("camera_calibration_binding")
+        != request.get("camera_calibration_binding")
+    ):
+        raise ValueError("gaussian_reconstruction_trainer_result_lineage_mismatch")
+    result_digest = result["reconstruction_training_result_digest"]
+    path = write_phase2_artifact(
+        root_value,
+        "generated/gaussian_reconstruction/reconstruction_training_result.json",
+        result,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "status": result["status"],
+        "failure_code": result.get("failure_code"),
+        "reconstruction_training_result_digest": result_digest,
+        "checkpoint_count": len(result["checkpoint_references"]),
+        "heldout_labels_included": False,
+        "candidate_self_graded": False,
+        "claim_ceiling": "appearance_reconstruction",
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": result_digest,
+            "artifact_type": "reconstruction_training_result.v1",
+        }
+    ]
+
+
 def _bound_artifact(
     context: Any,
     *,
@@ -1477,6 +1669,10 @@ def _bound_artifact(
         return _compile_equirectangular_virtual_rig(
             context=context, arguments=arguments
         )
+    elif tool_id == "run_pose_estimation":
+        return _run_pose_estimation(context=context, arguments=arguments)
+    elif tool_id == "train_gaussian_reconstruction":
+        return _train_gaussian_reconstruction(context=context, arguments=arguments)
     elif tool_id == "compile_deterministic_evidence_plan":
         value = context.evidence_plan
         expected = arguments.get("plan_digest")
@@ -1563,6 +1759,18 @@ def non_spend_tool_bindings(
             continue
         if tool_id == "compile_equirectangular_virtual_rig" and not callable(
             getattr(context, "equirectangular_virtual_rig_compiler", None)
+        ):
+            continue
+        if tool_id == "run_pose_estimation" and (
+            not callable(getattr(context, "pose_estimator", None))
+            or not isinstance(getattr(context, "pose_estimation_request", None), Mapping)
+        ):
+            continue
+        if tool_id == "train_gaussian_reconstruction" and (
+            not callable(getattr(context, "gaussian_reconstruction_trainer", None))
+            or not isinstance(
+                getattr(context, "reconstruction_training_request", None), Mapping
+            )
         ):
             continue
         descriptor = registry.resolve(tool_id)

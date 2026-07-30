@@ -138,6 +138,15 @@ change a split or calibration, raise a claim ceiling, or access a generic
 filesystem or shell. The supervisor cannot start capture, run a provider,
 spend money, expose hidden labels, or mutate proof state.
 
+Phase 4 adds `run_pose_estimation` and `train_gaussian_reconstruction` under the
+same boundary. Each tool accepts one registered request digest and calls only an
+injected typed runtime. A local result may record a typed scientific/runtime
+failure or produce a trajectory/appearance candidate, but it cannot see hidden
+held-out pixels, grade itself, change calibration or splits, or establish
+reconstruction qualification. Paid image build or GPU execution must separately
+pass the canonical shared allocator with exact budget, TTL, retries, clean SHA,
+worker-image, watchdog, teardown, and provider-zero receipts.
+
 Clarification responses and authorization grants are separate receipts created
 at trusted customer/operator boundaries. Agent output never satisfies its own
 request. Every accepted response is revalidated by deterministic contracts.

@@ -58,6 +58,13 @@ class SupervisorContext:
     reconstruction_dataset_compiler: Any | None = None
     native_360_normalizer: Any | None = None
     equirectangular_virtual_rig_compiler: Any | None = None
+    # Phase 4 reconstruction workers receive already-validated typed requests.
+    # Only request digests enter the model-facing tool call; these request
+    # objects and callables remain trusted runtime state.
+    pose_estimation_request: Mapping[str, Any] | None = None
+    pose_estimator: Any | None = None
+    reconstruction_training_request: Mapping[str, Any] | None = None
+    gaussian_reconstruction_trainer: Any | None = None
 
 
 class SupervisorCapability(Protocol):

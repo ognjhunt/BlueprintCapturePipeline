@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_training_result.v1.schema.json",
+  "title": "Reconstruction Training Result v1",
+  "type": "object",
+  "required": ["schema_version", "reconstruction_training_request_digest", "status", "failure_code", "checkpoint_references", "training_metrics", "heldout_labels_included", "candidate_self_graded", "registered_observation_ids", "rejected_observation_ids", "peak_resource_use", "legal_next_actions", "proof_effect", "claim_ceiling", "reconstruction_training_result_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_training_result.v1"},
+    "status": {"enum": ["succeeded", "failed", "timed_out", "interrupted"]},
+    "heldout_labels_included": {"const": false},
+    "candidate_self_graded": {"const": false},
+    "proof_effect": {"const": "appearance_asset_candidate_only"},
+    "claim_ceiling": {"const": "appearance_reconstruction"},
+    "reconstruction_training_result_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "not": {"required": ["heldout_metrics"]},
+  "additionalProperties": true
+}

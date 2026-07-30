@@ -166,6 +166,14 @@ an adapter, establish reconstruction evidence, or promote a 3DGS appearance
 layer into metric, semantic, collision, physics, physical-success, or deployment
 truth.
 
+When validated Phase 4 request artifacts and trusted runtimes are injected, the
+same specialist can call `run_pose_estimation` and
+`train_gaussian_reconstruction`. The model-facing arguments contain only the
+exact request digest. Deterministic bindings reject mismatched lineage,
+incompatible feature/matcher pairs, hidden-held-out access, split mutation,
+self-grading, malformed results, and untyped failures. Pose and appearance
+results remain candidates and cannot modify proof state.
+
 When no Decision/Evidence Request or maintained Site-Task Testbed exists, the
 manager first triggers claim interpretation, then capture/testbed inspection,
 and stops with a typed clarification or blocker. Scenario, routing, recovery,

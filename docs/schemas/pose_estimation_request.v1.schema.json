@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/pose_estimation_request.v1.schema.json",
+  "title": "Pose Estimation Request v1",
+  "type": "object",
+  "required": ["schema_version", "stable_run_identity", "source_capture_digest", "container_image_digest", "source_commit_sha", "reconstruction_dataset_digest", "train_heldout_split_digest", "camera_rig_digest", "calibration_digest", "method_profile_id", "feature_extractor", "feature_matcher", "camera_model", "random_seed", "resource_request", "timeout_seconds", "spend_cap_usd", "candidate_dataset_contains_hidden_heldout_pixels", "candidate_can_change_split", "candidate_may_read_hidden_heldout", "pose_estimation_request_digest"],
+  "properties": {
+    "schema_version": {"const": "pose_estimation_request.v1"},
+    "candidate_dataset_contains_hidden_heldout_pixels": {"const": false},
+    "candidate_can_change_split": {"const": false},
+    "candidate_may_read_hidden_heldout": {"const": false},
+    "deterministic_matching": {"const": true},
+    "pose_estimation_request_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

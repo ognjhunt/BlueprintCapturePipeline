@@ -221,14 +221,47 @@ Isaac compatibility.
 
 The executable local kernel should be extended, not replaced. Remaining work
 includes bounded ARKit pose refinement; real native `.insv` and stitched-360
-execution; frozen rig-constrained pose-method comparison; a pinned
-headless CUDA/ONNX COLMAP plus
-gsplat/3DGUT worker; independent appearance and geometry evaluation;
+execution; frozen rig-constrained pose-method comparison; a built and
+smoke-tested reconstruction worker; independent appearance and geometry evaluation;
 metric-anchor and collider qualification; reproducible NuRec/OpenUSD packaging;
 headless Isaac load/render/contact checks; provider-governed external imports;
 and recorded qualification or rejection of enhancement methods. No
 representative real iPhone or 360 capture has completed that full path in this
 implementation.
+
+## Headless pose and appearance worker contracts
+
+The Phase 4 contract kernel pins a candidate `linux/amd64` stack to a digest-bound
+CUDA 12.4.1 Ubuntu base, COLMAP 4.1.1 with CUDA and ONNX enabled, ONNX Runtime
+1.24.4, gsplat 1.5.3, and NVIDIA 3DGRUT 1.1.0. It also records candidate compiler,
+FFmpeg, Python/PyTorch, OpenCV, Trimesh, OpenUSD, QA, driver, model-asset, license,
+and redistribution constraints. The ALIKED and LightGlue ONNX assets use the
+digests published with COLMAP 3.13.0. This is a pinned candidate manifest, not a
+built or qualified image; build and headless smoke receipts remain mandatory.
+
+`pose_estimation_request.v1` freezes SIFT or ALIKED extraction with compatible
+brute-force or LightGlue matching, camera and rig/calibration bindings, split,
+seed, resources, timeout, and spend ceiling. `reconstruction_training_request.v1`
+does the same for gsplat/3DGUT MCMC training, initialization geometry, iteration
+budget, output, and evaluation contracts. Results preserve registered and
+rejected frames and typed failures. They contain no hidden held-out labels and
+cannot self-grade. Checkpoints can resume only against the exact request and
+random-state digest.
+
+The Agents SDK exposes `run_pose_estimation` and
+`train_gaussian_reconstruction` using request digests only. Trusted injected
+runtimes receive the validated request and a supervisor-owned output root; the
+agent receives no shell, filesystem, network, database, or provider handle.
+Even successful tool output is only a calibrated-trajectory or appearance-asset
+candidate. The independent evaluators and later geometry/Isaac gates own any
+qualification.
+
+`reconstruction_worker_build_packet.v1` is provider-neutral and names only the
+canonical `paid_resource_allocator cpu-build` seam. It cannot select a provider
+or launch a build. It fails closed without a clean immutable commit, exact source
+tree, recipe and dependency-lock digests, license-review receipt, budget, TTL,
+retry cap, and authority. Allocation and image-build success are explicitly not
+scientific success.
 
 ## Normalized results and layers
 

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_checkpoint_manifest.v1.schema.json",
+  "title": "Reconstruction Checkpoint Manifest v1",
+  "type": "object",
+  "required": ["schema_version", "reconstruction_training_request_digest", "iteration", "checkpoint_digest", "random_state", "resume_requires_exact_request_binding", "hidden_heldout_state_included", "proof_effect", "claim_ceiling", "checkpoint_manifest_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_checkpoint_manifest.v1"},
+    "iteration": {"type": "integer", "minimum": 0},
+    "resume_requires_exact_request_binding": {"const": true},
+    "hidden_heldout_state_included": {"const": false},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "checkpoint_only"},
+    "checkpoint_manifest_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}
