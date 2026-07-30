@@ -23,7 +23,7 @@
     "joint_targets_clamped": false
   },
   "output": {
-    "local_evidence_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/offline_projection_fixture_v1",
+    "local_evidence_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/offline_projection_fixture_v1",
     "skeleton_video": "skeleton.mp4",
     "skeleton_video_sha256": "7a49d643a2740ec508bd1d0cd1fc6594b022c7dae1f20afd310219c9eda89bd7",
     "contact_sheet": "contact_sheet.png",
@@ -50,5 +50,5 @@
     "world_prediction_proven": false,
     "closed_loop_policy_ranking_proven": false
   },
-  "record_sha256": "671f68cf6027514212f97b7e938a9829462ec13507c84325d9068c378abfc74c"
+  "record_sha256": "2055dc7e8ae500683b8397c4ae49e171dafeb420908b8c78e847b97400bb1af9"
 }

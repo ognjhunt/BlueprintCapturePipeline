@@ -10,13 +10,13 @@
     "method_attribution": "OSCAR_method_inspired_not_exact_code_reproduction"
   },
   "inventory": {
-    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/complete_pair_inventory_v1.json",
+    "path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/complete_pair_inventory_v1.json",
     "file_sha256": "5e75b250a170d13b08a1901b2bce236e820854e52cdfe4d1aeb6b58c3d5c0b57",
     "inventory_sha256": "b60eb58c8a53d95d49f6fb1c221d276f13ea60d5289006d66bd3c08ef1f3f531",
     "pair_count": 1323
   },
   "completed_schema_canary": {
-    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/gpt5_medium_canary_v1/canary_result_v1.json",
+    "path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/gpt5_medium_canary_v1/canary_result_v1.json",
     "file_sha256": "aa6f2aeb0d7c0dedd456fd7791076e49e299ed926ff49927b825369d48a83c8a",
     "report_sha256": "c3f11f11d428e48900e105d9daf2afad9c7cb1b78a7d719c1557c3cbfcd0478a",
     "status": "passed",
@@ -37,7 +37,7 @@
     "reuse_if_complete": "The seven Batch results may be retained as the first seven exact-config complete-graph results; synchronous canary pair 0 is not reused because its transport differs."
   },
   "batch_manifest": {
-    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/gpt5_medium_batch_pilot_v1/manifest_v1.json",
+    "path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/gpt5_medium_batch_pilot_v1/manifest_v1.json",
     "file_sha256": "4a4ffaef99d3db12c0fc724b2955641d16aaa03e61c4c20428b5be9079fd828f",
     "manifest_sha256": "597877f2daaa3553b1aa7daa941546cc1a5fc7371dd2912ee6b714557636a96d",
     "shard_id": "8af66af1d6eba36ee2709952ffa16f8bfc000d6e351122ff07cf4b5f9d8de3cd",
@@ -47,7 +47,7 @@
     "arm_id": "gpt5_complete_graph"
   },
   "batch_jsonl": {
-    "path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1/gpt5_medium_batch_pilot_v1/input_v1.jsonl",
+    "path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/gpt5_medium_batch_pilot_v1/input_v1.jsonl",
     "file_sha256": "b3592cc7f531069032b7ddaba4c77965989a86075e1619a738f8f6ce07076a0e",
     "size_bytes": 38843561,
     "row_count": 7,

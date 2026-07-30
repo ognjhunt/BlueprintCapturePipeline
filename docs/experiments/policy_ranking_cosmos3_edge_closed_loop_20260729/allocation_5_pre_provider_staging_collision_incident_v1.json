@@ -20,17 +20,17 @@
     "bundle_version": "v9",
     "bundle_sha256": "0fcbcae301629d3a1efe9ae07d2fcd628d4bb7eeb6873e1f87b0749297230ff7",
     "bundle_size_bytes": 767197,
-    "admission_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/admission_execute_v5.json",
+    "admission_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/admission_execute_v5.json",
     "admission_sha256": "d6e664d97e23bdc345201167c728cedcf46c773e25e97bd4f4acee4d42575f42",
     "provider_mutations_performed": 0
   },
   "observed_staging_collision": {
-    "staging_directory": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/object_store_v5",
-    "staging_manifest_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/object_store_v5/wam_provider_object_store_staging_manifest.json",
+    "staging_directory": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/object_store_v5",
+    "staging_manifest_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/object_store_v5/wam_provider_object_store_staging_manifest.json",
     "staging_manifest_sha256": "90e0966b737aeab3348326f8ced4110434a362c8572648d096abed800c6a7f65",
     "staging_manifest_generated_at": "2026-07-29T14:52:10.288118+00:00",
     "staged_bundle_version": "v8",
-    "staged_bundle_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/policy_canary_bundle_v8/cosmos_edge_policy_canary_provider_bundle.zip",
+    "staged_bundle_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/policy_canary_bundle_v8/cosmos_edge_policy_canary_provider_bundle.zip",
     "staged_bundle_size_bytes": 766637,
     "staged_bundle_sha256": "09a7dd357de9bc544c8533a23e6698a3ebd7a87b7e8f3ebaa3ac0a633b7946aa",
     "signed_bundle_get_http_status": 200,
@@ -40,7 +40,7 @@
     "collision": "The admitted v9 local bundle and the bundle reachable through the shared object_store_v5 pointer differed before provider creation."
   },
   "provider_close": {
-    "preflight_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/provider_preflight_v7.json",
+    "preflight_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/provider_preflight_v7.json",
     "preflight_sha256": "e34af33f60684a5f95996330516ec6006300f7edc9022cc3116d241e88f9a344",
     "provider_api_verified": true,
     "provider_inventory_verified_zero": true,

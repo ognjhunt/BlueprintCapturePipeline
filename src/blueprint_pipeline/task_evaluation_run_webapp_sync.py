@@ -11,7 +11,7 @@ from urllib import request as urllib_request
 
 from .core.security_controls import strict_identifier
 from .decision_evidence_contracts import DecisionEnvelope, EvidencePlan
-from .webapp_sync import _pipeline_sync_headers
+from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 
 
 TASK_EVALUATION_RUN_WEBAPP_URL_ENV = "PIPELINE_TASK_EVALUATION_RUN_WEBAPP_URL"
@@ -123,6 +123,7 @@ def sync_task_evaluation_run_to_webapp(
             "reason": "sync_not_configured",
             "attempts": 0,
         }
+    resolved_url = validated_https_sync_url(resolved_url)
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     attempts = max(1, min(int(max_attempts), 10))
     last_reason = "sync_unknown_failure"
@@ -134,7 +135,8 @@ def sync_task_evaluation_run_to_webapp(
             method="POST",
         )
         try:
-            with urllib_request.urlopen(
+            # URL structure is validated immediately above; Bandit cannot infer that guard.
+            with urllib_request.urlopen(  # nosec B310
                 outbound, timeout=max(0.1, timeout_seconds)
             ) as response:
                 raw = response.read().decode("utf-8")

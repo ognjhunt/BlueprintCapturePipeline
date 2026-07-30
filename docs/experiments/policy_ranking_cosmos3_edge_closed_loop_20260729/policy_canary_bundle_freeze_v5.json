@@ -5,7 +5,7 @@
   "supersedes_freeze": "policy_canary_bundle_freeze_v4.json",
   "supersedes_freeze_sha256": "b996a57d535e330492532f9f044691efb9abf50b44566b3dc4c8f2e7f0f8c480",
   "bundle_version": 9,
-  "bundle_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/policy_canary_bundle_v9/cosmos_edge_policy_canary_provider_bundle.zip",
+  "bundle_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/policy_canary_bundle_v9/cosmos_edge_policy_canary_provider_bundle.zip",
   "bundle_sha256": "0fcbcae301629d3a1efe9ae07d2fcd628d4bb7eeb6873e1f87b0749297230ff7",
   "bundle_size_bytes": 767197,
   "receipt_sha256": "597110e742f366737faa630481b1787e42cd2c2e677bf602725f60b22a257792",
@@ -25,5 +25,5 @@
   "provider_called_for_v9": false,
   "physical_outcome_labels_accessed": false,
   "claim_boundary": "Code-only diagnostic recovery bundle; no policy, WAM, ranking, transfer, economics, or physical-success credit.",
-  "freeze_sha256": "b799bc1d374c5ee1d842baf97fcfe3b8359e67557d444afcbd9ec8e36e7ae5aa"
+  "freeze_sha256": "50e2cc549a49501aa1fe5dc3dcb22a512d904c5a3f580e9379054e4c86382600"
 }

@@ -16,7 +16,7 @@
       "revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
       "tree_sha1": "11375dd0003ec9052023a1f09c8f2885a56606d3",
       "git_archive_sha256": "b3efc8846f0c43d4334db48afb106468b76d77b1a77b9ca9aaba15d5591b2b9b",
-      "local_freeze_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/sources/ctrl-world-99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+      "local_freeze_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/sources/ctrl-world-99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
       "license": "MIT",
       "public_root_inspected": true,
       "raw_archive_downloaded_and_hashed_this_phase": true,

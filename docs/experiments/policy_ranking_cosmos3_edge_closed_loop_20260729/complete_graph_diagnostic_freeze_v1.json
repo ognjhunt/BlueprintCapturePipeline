@@ -9,14 +9,14 @@
     "protocol_sha256": "4636d2e4a6b834f24f86f5073ef831e47c843925a11c1ad761d27663f8194954"
   },
   "source_inventory": {
-    "path": "/Users/nijelhunt_1/workspace/policy-ranking-roboarena-full-stack-calibration-evidence-20260728/phase_a_evaluator_inventory_v4.json",
+    "path": "${BLUEPRINT_ROBOARENA_CALIBRATION_EVIDENCE_ROOT}/phase_a_evaluator_inventory_v4.json",
     "file_sha256": "6b32f0e8b7798b1782e3c42c8e14e1501ae36fcd288d8b09aae5cee4d8a6b6ba",
     "inventory_sha256": "3e110b66b986c5f241329598987d1a885a2ca9f61e54eaa00db71a3eb31387d2",
     "episode_count": 441,
     "session_count": 63,
     "policy_count": 7
   },
-  "external_evidence_root": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/complete_graph_diagnostic_v1",
+  "external_evidence_root": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1",
   "complete_pair_inventory": {
     "relative_path": "complete_pair_inventory_v1.json",
     "file_sha256": "5e75b250a170d13b08a1901b2bce236e820854e52cdfe4d1aeb6b58c3d5c0b57",

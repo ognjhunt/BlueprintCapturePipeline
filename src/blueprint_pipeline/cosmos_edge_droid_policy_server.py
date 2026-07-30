@@ -163,7 +163,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint-path", required=True)
     parser.add_argument("--snapshot-manifest", required=True)
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args(argv)
