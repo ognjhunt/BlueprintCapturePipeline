@@ -189,7 +189,6 @@ blueprint-task-candidate-control = "blueprint_pipeline.task_candidate_control_pl
 blueprint-compile-site-task-testbed = "blueprint_pipeline.site_task_testbed_compiler_cli:main"
 blueprint-pubsub-handoff-listener = "blueprint_pipeline.pubsub_handoff_listener:main"
 blueprint-build-object-index = "blueprint_pipeline.object_index_stage:main"
-blueprint-benchmark-semantic-geometry = "blueprint_pipeline.semantic_geometry_benchmark_stage:main"
 blueprint-sync-skills = "blueprint_pipeline.agent_runtime.skill_sync:main"
 blueprint-build-object-geometry = "blueprint_pipeline.object_geometry_stage:main"
 blueprint-build-evaluation-prep = "blueprint_pipeline.evaluation_prep_stage:main"
