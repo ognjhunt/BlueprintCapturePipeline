@@ -177,17 +177,20 @@ used as blind confirmation.
   `ctrl_world_current_reference_first_wam_gpu_profile_freeze_v2.json` — bind the
   identical-input media-decode retry to its new immutable bundle and single-use
   allocation while retaining all prior ceilings and teardown controls;
+- `compute_authorization_ctrl_world_allocation_3.json` and
+  `ctrl_world_current_reference_wam_1_gpu_profile_freeze_v1.json` — bind the
+  second generated-only WAM transition to the exact action from the first
+  same-policy re-query, its preserved 25-frame feedback history, and one
+  single-use allocation under the unchanged ceilings;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-The first live generation completed diffusion and retained all 15 expected PNGs,
-then failed during OpenCV/libpng media reopening before a registered MP4 or
-successful WAM result existed. Provider teardown and provider-zero passed. The
-next finite gate is one identical-input retry at a new immutable SHA using the
-generic Pillow decode correction and separated budget ledgers. If its
-generated-only three-view artifact passes the registered immediate reliability
-checks, the next gate is one three-interaction re-query episode with the same
-policy. Judges remain forbidden until a complete episode passes causal
-qualification.
+The first generated-only WAM transition and immediate reliability gate passed.
+The same frozen `pi05_droid` checkpoint was then re-queried using only the three
+WAM-generated views and registered commanded state; it returned a distinct,
+complete native 15x8 action. The next finite gate is one request-bound Ctrl-World
+generation from that action with the complete feedback history preserved. This
+is interaction two of the registered three-interaction episode. Judges remain
+forbidden until a complete episode passes causal qualification.
