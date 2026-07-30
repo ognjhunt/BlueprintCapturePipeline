@@ -1,0 +1,54 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_successor_terminal_verdict.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "overall_verdict": "inconclusive",
+  "decision_basis": "The specialized successor proved exact public Policy-DROID, OSCAR, and Ctrl-World runtime compatibility, but it did not complete a causally qualified closed-loop multi-policy ranking on disjoint physical outcomes. Native Cosmos remained failed for its frozen configuration, OSCAR and Ctrl-World public canaries were open-loop replay, the hybrid was technically blocked, both new complete-graph judge arms were incomplete, Phase B was not measured, and captured-site/economics gates were not admitted.",
+  "components": {
+    "cosmos_wam_qualification": {
+      "verdict": "inconclusive",
+      "qualified": false,
+      "frozen_native_cosmos_configuration": "thesis_not_supported",
+      "basis": "No successor WAM passed a frozen causal control matrix."
+    },
+    "frozen_benchmark_calibration": {
+      "verdict": "inconclusive",
+      "complete_successor_ranking": false,
+      "historical_frozen_stack": "thesis_not_supported",
+      "basis": "Neither GPT-5 nor Gemini completed its registered 1,323-pair graph, and partial graphs cannot be aggregated."
+    },
+    "captured_site_transfer": {
+      "verdict": "inconclusive",
+      "measured": false,
+      "basis": "Prerequisite WAM, ranking, and abstention gates did not pass; no matched physical site outcomes were available."
+    },
+    "economics_and_speed": {
+      "verdict": "inconclusive",
+      "qualified_comparison_completed": false,
+      "basis": "Digital execution cost was measured without a useful complete ranking or attributable physical baseline."
+    }
+  },
+  "historical_frozen_tested_stack": {
+    "verdict": "thesis_not_supported",
+    "immutable": true,
+    "does_not_falsify": [
+      "OSCAR",
+      "Ctrl-World",
+      "every Cosmos configuration",
+      "Blueprint general architecture"
+    ]
+  },
+  "closed_loop_truth": {
+    "public_oscar_policy_evaluation_closed_loop": false,
+    "oscar_video_autoregression_is_policy_requery": false,
+    "blueprint_oscar_canary_closed_loop": false,
+    "blueprint_ctrl_world_canary_closed_loop": false,
+    "candidate_policy_requeried_on_generated_observation": false
+  },
+  "independent_confirmation": {
+    "phase_b_measured": false,
+    "disjoint_labeled_closed_loop_ranking_completed": false,
+    "confirmation_credit": false
+  },
+  "claim_ceiling": "inconclusive_specialized_successor_with_technical_compatibility_only",
+  "manifest_sha256": "ac743f26ee70fdb74cf4d143119ab264124d514d9994edb986d4e771fd8067d4"
+}

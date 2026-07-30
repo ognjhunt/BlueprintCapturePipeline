@@ -1,5 +1,15 @@
 # Cosmos3 Edge policy-to-WAM closed-loop continuation
 
+Status: `terminal_inconclusive_pending_publication`
+
+The specialized successor has reached its scientific claim ceiling. Exact
+public Policy-DROID, OSCAR, and Ctrl-World compatibility canaries ran, but no
+WAM plus judge completed a causally qualified, disjoint closed-loop policy
+ranking. The successor verdict is `inconclusive`; the earlier frozen tested
+stack remains immutably `thesis_not_supported`. See `final_report_v1.md`,
+`terminal_verdict_v1.json`, `final_evidence_matrix_v1.json`, and
+`review_gallery_manifest_v1.json`.
+
 This namespace starts the first live product-facing Blueprint loop after the
 native Cosmos3-Nano DROID causal arm failed and correctly abstained. It does not
 rewrite that terminal result.
