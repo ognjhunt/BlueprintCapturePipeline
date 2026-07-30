@@ -18,6 +18,7 @@ from .common import write_json
 from .ctrl_world_joint_position_reference_runtime import (
     CtrlWorldJointPositionSubprocessRuntime,
 )
+from .ctrl_world_joint_position_runtime_assets import stage_ctrl_world_runtime_assets
 from .new_site_diagnostic_canary_gpu import (
     INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
     MAX_INPUT_BYTES as CANARY_MAX_INPUT_BYTES,
@@ -316,7 +317,21 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
             if arm_id == "skeleton_only":
                 campaign = run_skeleton_only_canary(**shared)
             elif arm_id == "ctrl_world":
+                model_root = os.getenv("BLUEPRINT_CTRL_WORLD_MODEL_ROOT", "").strip()
+                if not model_root:
+                    raise ValueError("signed_gpu_bootstrap_ctrl_world_model_root_missing")
+                staged_assets = stage_ctrl_world_runtime_assets(
+                    model_root=model_root,
+                    output_dir=campaign_output / "asset_stage",
+                )
                 runner = CtrlWorldJointPositionSubprocessRuntime.from_environment()
+                staged_paths = staged_assets["paths"]
+                if {
+                    "world_model_checkpoint": runner.world_model_checkpoint.expanduser().resolve(),
+                    "svd_model_root": runner.svd_model_root.expanduser().resolve(),
+                    "clip_model_root": runner.clip_model_root.expanduser().resolve(),
+                } != {key: Path(value).resolve() for key, value in staged_paths.items()}:
+                    raise ValueError("signed_gpu_bootstrap_ctrl_world_asset_binding_mismatch")
                 campaign = run_ctrl_world_canary(
                     **shared,
                     ctrl_world_runner=runner,

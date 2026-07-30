@@ -18,6 +18,7 @@ def test_combined_worker_preserves_separate_pinned_runtimes() -> None:
         "badde151b360cd5227ede3e4e037b5e12f36ed59ac09ca89470a22511e72c6c4"
     ) in dockerfile
     assert "BLUEPRINT_CTRL_WORLD_PYTHON=/.ctrl-world-venv/bin/python" in dockerfile
+    assert "BLUEPRINT_CTRL_WORLD_MODEL_ROOT=/workspace/ctrl-world-models" in dockerfile
     assert "torch==2.7.1 torchvision==0.22.1" in dockerfile
     assert "https://download.pytorch.org/whl/cu128" in dockerfile
     assert "XLA_PYTHON_CLIENT_PREALLOCATE=false" in dockerfile

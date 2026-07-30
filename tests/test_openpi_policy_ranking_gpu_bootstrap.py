@@ -1,6 +1,7 @@
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -286,7 +287,23 @@ def test_bootstrap_routes_ctrl_world_to_isolated_runtime(
             "initial_camera_paths": cameras,
         },
     )
-    runner = object()
+    model_root = tmp_path / "models"
+    monkeypatch.setenv("BLUEPRINT_CTRL_WORLD_MODEL_ROOT", str(model_root))
+    staged_paths = {
+        "world_model_checkpoint": str(model_root / "checkpoint.pt"),
+        "svd_model_root": str(model_root / "svd"),
+        "clip_model_root": str(model_root / "clip"),
+    }
+    runner = SimpleNamespace(
+        world_model_checkpoint=Path(staged_paths["world_model_checkpoint"]),
+        svd_model_root=Path(staged_paths["svd_model_root"]),
+        clip_model_root=Path(staged_paths["clip_model_root"]),
+    )
+    monkeypatch.setattr(
+        bootstrap_module,
+        "stage_ctrl_world_runtime_assets",
+        lambda **_kwargs: {"status": "completed", "paths": staged_paths},
+    )
 
     class FakeRuntimeFactory:
         @classmethod

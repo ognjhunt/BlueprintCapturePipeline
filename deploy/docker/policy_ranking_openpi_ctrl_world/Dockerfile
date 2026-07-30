@@ -10,6 +10,7 @@ ARG BLUEPRINT_SOURCE_COMMIT
 
 ENV BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
     BLUEPRINT_CTRL_WORLD_PYTHON=/.ctrl-world-venv/bin/python \
+    BLUEPRINT_CTRL_WORLD_MODEL_ROOT=/workspace/ctrl-world-models \
     BLUEPRINT_CTRL_WORLD_SOURCE_ROOT=/opt/ctrl-world \
     BLUEPRINT_CTRL_WORLD_SOURCE_MANIFEST=/opt/ctrl-world-runtime/ctrl_world_source_manifest.json \
     BLUEPRINT_CTRL_WORLD_CHECKPOINT=/workspace/ctrl-world-models/ctrl_world/8cf814693f411962dc866a2ddb5b785afd17a93a/checkpoint-10000.pt \

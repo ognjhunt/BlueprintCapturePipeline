@@ -161,7 +161,7 @@ def test_configured_runtime_emits_result_accepted_by_wam_contract(
         blob.write_bytes(f"{freeze_key} fixture".encode())
         monkeypatch.setitem(
             MODEL_FREEZE[freeze_key],
-            "required_blobs",
+            "required_files",
             [
                 {
                     "relative_path": "weights.bin",

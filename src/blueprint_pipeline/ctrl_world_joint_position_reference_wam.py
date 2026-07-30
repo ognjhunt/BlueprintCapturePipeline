@@ -93,16 +93,46 @@ MODEL_FREEZE = {
     "stable_video_diffusion": {
         "repository": "stabilityai/stable-video-diffusion-img2vid",
         "revision": "9cf024d5bfa8f56622af86c884f26a52f6676f2e",
-        "required_blobs": [
+        "required_files": [
+            {
+                "relative_path": "model_index.json",
+                "size_bytes": 498,
+                "sha256": "a6130bbf546242f454c184649a012809c34ab0f398cf8e80f887627b7f7dfc02",
+            },
+            {
+                "relative_path": "feature_extractor/preprocessor_config.json",
+                "size_bytes": 518,
+                "sha256": "4db495644e3e5bd8fcac52f70e7fc0b413c911086021acf73ac30e5911166e95",
+            },
+            {
+                "relative_path": "image_encoder/config.json",
+                "size_bytes": 687,
+                "sha256": "9f3e1b6d9c091720471c14efd208d4a2666642833cdc28e44ecc78b35e0dce13",
+            },
             {
                 "relative_path": "image_encoder/model.safetensors",
                 "size_bytes": 2528371296,
                 "sha256": "ed1e5af7b4042ca30ec29999a4a5cfcac90b7fb610fd05ace834f2dcbb763eab",
             },
             {
+                "relative_path": "scheduler/scheduler_config.json",
+                "size_bytes": 533,
+                "sha256": "59aa43afc33395efd40fe94c7369c0477b81698f4b65b63e3ae06f26269876d5",
+            },
+            {
+                "relative_path": "unet/config.json",
+                "size_bytes": 986,
+                "sha256": "b69bc73c489ebe9b7ecbcbd786b8d04a1be872599669084b0588112ba50bb46c",
+            },
+            {
                 "relative_path": "unet/diffusion_pytorch_model.safetensors",
                 "size_bytes": 6098682464,
                 "sha256": "98c5e6b99df6bef015b2681c0f8ab9d4c807b733be46c067d6c9966101698f58",
+            },
+            {
+                "relative_path": "vae/config.json",
+                "size_bytes": 609,
+                "sha256": "aab2b8766d6db1bf742fa0e3bf217fae64e67a20e7e0fe78de84f79007100ffb",
             },
             {
                 "relative_path": "vae/diffusion_pytorch_model.safetensors",
@@ -114,12 +144,42 @@ MODEL_FREEZE = {
     "clip": {
         "repository": "openai/clip-vit-base-patch32",
         "revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
-        "required_blobs": [
+        "required_files": [
+            {
+                "relative_path": "config.json",
+                "size_bytes": 4186,
+                "sha256": "b575ef3c36f2a057fa19e221650105052d61cc9c1a972ec15019c6261ec98770",
+            },
+            {
+                "relative_path": "merges.txt",
+                "size_bytes": 524657,
+                "sha256": "f526393189112391ce6f9795d4695f704121ce452c3aad1f5335cc41337eba85",
+            },
+            {
+                "relative_path": "preprocessor_config.json",
+                "size_bytes": 316,
+                "sha256": "910e70b3956ac9879ebc90b22fb3bc8a75b6a0677814500101a4c072bd7857bd",
+            },
             {
                 "relative_path": "pytorch_model.bin",
                 "size_bytes": 605247071,
                 "sha256": "a63082132ba4f97a80bea76823f544493bffa8082296d62d71581a4feff1576f",
-            }
+            },
+            {
+                "relative_path": "special_tokens_map.json",
+                "size_bytes": 389,
+                "sha256": "f8c0d6c39aee3f8431078ef6646567b0aba7f2246e9c54b8b99d55c22b707cbf",
+            },
+            {
+                "relative_path": "tokenizer_config.json",
+                "size_bytes": 592,
+                "sha256": "34b7336e4bee12e0a9730eaf5189f582ef3c3eea5027f65730e5717256755aad",
+            },
+            {
+                "relative_path": "vocab.json",
+                "size_bytes": 862328,
+                "sha256": "5047b556ce86ccaf6aa22b3ffccfc52d391ea4accdab9c2f2407da5b742d4363",
+            },
         ],
     },
     "ctrl_world_state_stats": {
