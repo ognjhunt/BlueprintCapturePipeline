@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -107,12 +106,16 @@ def test_callable_arm_returns_hash_bound_frames_and_individual_videos(tmp_path: 
         for view_index, view_id in enumerate(CTRL_WORLD_RELEASED_VIEW_ORDER):
             sequences[view_id] = []
             hashes[view_id] = []
+            background = np.random.default_rng(100 + view_index).integers(
+                40, 216, size=(192, 320, 3), dtype=np.uint8
+            )
             for frame_index in range(5):
                 path = output_dir / f"view_{view_index}" / f"frame_{frame_index}.png"
                 path.parent.mkdir(parents=True, exist_ok=True)
-                Image.new(
-                    "RGB", (320, 192), color=(seed, view_index, frame_index)
-                ).save(path)
+                frame = background.copy()
+                left = 20 + 12 * frame_index
+                frame[70:110, left : left + 36] = (255, 255, 255)
+                Image.fromarray(frame).save(path)
                 sequences[view_id].append(str(path))
                 hashes[view_id].append(file_sha256(path))
         return {
@@ -140,7 +143,9 @@ def test_callable_arm_returns_hash_bound_frames_and_individual_videos(tmp_path: 
     assert set(result["generated_view_frame_sequences"]) == set(CTRL_WORLD_RELEASED_VIEW_ORDER)
     assert all(len(paths) == 5 for paths in result["generated_view_frame_sequences"].values())
     assert set(result["generated_videos_by_view"]) == set(CTRL_WORLD_RELEASED_VIEW_ORDER)
-    assert all(Path(path).stat().st_size > 0 for path in result["generated_videos_by_view"].values())
+    assert all(
+        Path(path).stat().st_size > 0 for path in result["generated_videos_by_view"].values()
+    )
     assert all(
         evidence["frame_count"] == 5
         for evidence in result["generated_video_evidence_by_view"].values()
@@ -148,22 +153,28 @@ def test_callable_arm_returns_hash_bound_frames_and_individual_videos(tmp_path: 
     assert result["blueprint_joint_position_reference_not_exact_paper_reproduction"] is True
     assert len(result["result_sha256"]) == 64
 
-    report = SimpleNamespace(flags=(), as_dict=lambda: {"flags": [], "reliable": True})
     gate = MultiViewCanaryReliabilityGate(
         ReliabilityThresholds(),
         required_views=CTRL_WORLD_RELEASED_VIEW_ORDER,
-        assessor=lambda *_args, **_kwargs: report,
         gate_id="new_site_ctrl_world_three_view_reliability_v1",
     )
+    actions = np.zeros((5, 10), dtype=np.float64)
+    actions[:, 0] = 0.1
+    actions[:, 3] = 1.0
+    actions[:, 7] = 1.0
     assessment = gate.assess(
         previous_observation={},
-        prepared_transition={"reliability_actions_10d": np.zeros((5, 10))},
+        prepared_transition={"reliability_actions_10d": actions},
         wam_prediction=result,
         query_index=0,
         output_dir=tmp_path / "reliability",
     )
     assert assessment["status"] == "passed"
     assert assessment["required_views"] == list(CTRL_WORLD_RELEASED_VIEW_ORDER)
+    assert all(
+        report["motion_evidence_basis"] == "exact_generated_frame_sequence"
+        for report in assessment["reports_by_view"].values()
+    )
 
 
 def test_callable_arm_rejects_unverified_or_future_observation_result(tmp_path: Path) -> None:

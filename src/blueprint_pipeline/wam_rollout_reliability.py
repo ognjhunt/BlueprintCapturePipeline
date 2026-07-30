@@ -168,7 +168,9 @@ def _read_frames_gray(video_path: Path, downscale_width: int) -> list[np.ndarray
     return frames
 
 
-def video_motion_series(video_path: Path, downscale_width: int = 160) -> tuple[np.ndarray, float, int]:
+def video_motion_series(
+    video_path: Path, downscale_width: int = 160
+) -> tuple[np.ndarray, float, int]:
     """Camera-compensated per-frame-pair motion energy.
 
     Dense Farneback flow with the spatial-median flow vector subtracted
@@ -184,8 +186,16 @@ def video_motion_series(video_path: Path, downscale_width: int = 160) -> tuple[n
     series = []
     for a, b in zip(frames[:-1], frames[1:], strict=True):
         flow = cv2.calcOpticalFlowFarneback(
-            a, b, None, pyr_scale=0.5, levels=3, winsize=15,
-            iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
+            a,
+            b,
+            None,
+            pyr_scale=0.5,
+            levels=3,
+            winsize=15,
+            iterations=3,
+            poly_n=5,
+            poly_sigma=1.2,
+            flags=0,
         )
         med = np.median(flow.reshape(-1, 2), axis=0)
         residual = flow - med[None, None, :]
@@ -193,34 +203,73 @@ def video_motion_series(video_path: Path, downscale_width: int = 160) -> tuple[n
     return np.asarray(series), spatial_std, len(frames)
 
 
-def assess_rollout_reliability(
-    video_path: str | Path,
-    actions: np.ndarray,
-    thresholds: ReliabilityThresholds | None = None,
-    *,
-    timing_flag_scope: Literal["window", "session"] = TIMING_SCOPE_WINDOW,
-) -> RolloutReliabilityReport:
-    """Screen one generated rollout against its commanded action chunk.
+def frame_sequence_motion_series(
+    frame_paths: Sequence[str | Path], downscale_width: int = 160
+) -> tuple[np.ndarray, float, int]:
+    """Measure the exact ordered RGB evidence without a lossy video round trip."""
 
-    The generic API defaults to the fail-closed ``window`` scope so existing
-    callers cannot silently bypass a timing failure. Phase-B callers must
-    explicitly request ``session`` scope and then call
-    :func:`assess_session_reliability` before treating the evidence as usable.
-    """
-    if timing_flag_scope not in {TIMING_SCOPE_WINDOW, TIMING_SCOPE_SESSION}:
-        raise ValueError(f"unsupported_timing_flag_scope:{timing_flag_scope}")
-    th = thresholds or ReliabilityThresholds()
+    import cv2
+
+    frames: list[np.ndarray] = []
+    for path_value in frame_paths:
+        path = Path(path_value).expanduser().resolve()
+        if not path.is_file() or path.is_symlink():
+            return np.array([]), 0.0, 0
+        frame = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if frame is None:
+            return np.array([]), 0.0, 0
+        height, width = frame.shape
+        if width > downscale_width:
+            resized_height = max(1, int(round(height * downscale_width / width)))
+            frame = cv2.resize(
+                frame,
+                (downscale_width, resized_height),
+                interpolation=cv2.INTER_AREA,
+            )
+        frames.append(frame)
+    if len(frames) < 2:
+        return np.array([]), 0.0, len(frames)
+    spatial_std = float(np.mean([float(np.std(frame)) for frame in frames]))
+    series: list[float] = []
+    for before, after in zip(frames[:-1], frames[1:], strict=True):
+        flow = cv2.calcOpticalFlowFarneback(
+            before,
+            after,
+            None,
+            pyr_scale=0.5,
+            levels=3,
+            winsize=15,
+            iterations=3,
+            poly_n=5,
+            poly_sigma=1.2,
+            flags=0,
+        )
+        median = np.median(flow.reshape(-1, 2), axis=0)
+        residual = flow - median[None, None, :]
+        series.append(float(np.mean(np.linalg.norm(residual, axis=2))))
+    return np.asarray(series), spatial_std, len(frames)
+
+
+def _assess_motion_reliability(
+    *,
+    evidence_path: str,
+    actions: np.ndarray,
+    thresholds: ReliabilityThresholds,
+    timing_flag_scope: Literal["window", "session"],
+    motion: np.ndarray,
+    spatial_std: float,
+    n_frames: int,
+) -> RolloutReliabilityReport:
     arr = np.asarray(actions, dtype=np.float64)
     energy = action_energy_series(arr)
     semantic_flags: list[str] = []
     r1, r2 = arr[:, 3:6], arr[:, 6:9]
     if (
-        np.any(np.abs(np.linalg.norm(r1, axis=1) - 1.0) > th.rot6d_orthonormal_tol)
-        or np.any(np.abs(np.linalg.norm(r2, axis=1) - 1.0) > th.rot6d_orthonormal_tol)
-        or np.any(np.abs(np.sum(r1 * r2, axis=1)) > th.rot6d_orthonormal_tol)
+        np.any(np.abs(np.linalg.norm(r1, axis=1) - 1.0) > thresholds.rot6d_orthonormal_tol)
+        or np.any(np.abs(np.linalg.norm(r2, axis=1) - 1.0) > thresholds.rot6d_orthonormal_tol)
+        or np.any(np.abs(np.sum(r1 * r2, axis=1)) > thresholds.rot6d_orthonormal_tol)
     ):
         semantic_flags.append(FLAG_INVALID_ACTION_ROT6D)
-    motion, spatial_std, n_frames = video_motion_series(Path(video_path), th.downscale_width)
 
     flags: list[str] = list(semantic_flags)
     if n_frames == 0:
@@ -235,31 +284,31 @@ def assess_rollout_reliability(
     energy_std = float(np.std(energy))
 
     if not flags:
-        if spatial_std < th.blank_spatial_std_min:
+        if spatial_std < thresholds.blank_spatial_std_min:
             flags.append(FLAG_BLANK_FRAMES)
-        commanded_active = energy_mean >= th.command_active_energy_min
-        commanded_null = float(np.max(energy)) <= th.command_null_energy_max
-        if commanded_active and motion_max < th.static_motion_max:
+        commanded_active = energy_mean >= thresholds.command_active_energy_min
+        commanded_null = float(np.max(energy)) <= thresholds.command_null_energy_max
+        if commanded_active and motion_max < thresholds.static_motion_max:
             flags.append(FLAG_STATIC_UNDER_COMMAND)
-        if commanded_null and motion_mean > th.null_motion_max:
+        if commanded_null and motion_mean > thresholds.null_motion_max:
             flags.append(FLAG_MOTION_WITHOUT_COMMAND)
         n = min(len(energy), len(motion))
         if (
             n >= 4
-            and energy_std >= th.timing_check_min_energy_std
+            and energy_std >= thresholds.timing_check_min_energy_std
             and float(np.std(motion[:n])) > 0
         ):
             corr = float(np.corrcoef(energy[:n], motion[:n])[0, 1])
             if (
                 timing_flag_scope == TIMING_SCOPE_WINDOW
                 and commanded_active
-                and corr < th.timing_correlation_min
+                and corr < thresholds.timing_correlation_min
                 and FLAG_STATIC_UNDER_COMMAND not in flags
             ):
                 flags.append(FLAG_TIMING_DISAGREEMENT)
 
     return RolloutReliabilityReport(
-        video_path=str(video_path),
+        video_path=evidence_path,
         n_frames=n_frames,
         n_action_steps=int(np.asarray(actions).shape[0]),
         flags=tuple(flags),
@@ -271,6 +320,56 @@ def assess_rollout_reliability(
         timing_correlation=corr,
         timing_flag_scope=timing_flag_scope,
         spatial_std_mean=spatial_std,
+    )
+
+
+def assess_rollout_reliability(
+    video_path: str | Path,
+    actions: np.ndarray,
+    thresholds: ReliabilityThresholds | None = None,
+    *,
+    timing_flag_scope: Literal["window", "session"] = TIMING_SCOPE_WINDOW,
+) -> RolloutReliabilityReport:
+    """Screen one encoded generated rollout against its commanded action chunk."""
+
+    if timing_flag_scope not in {TIMING_SCOPE_WINDOW, TIMING_SCOPE_SESSION}:
+        raise ValueError(f"unsupported_timing_flag_scope:{timing_flag_scope}")
+    resolved = Path(video_path).expanduser().resolve()
+    frozen = thresholds or ReliabilityThresholds()
+    motion, spatial_std, n_frames = video_motion_series(resolved, frozen.downscale_width)
+    return _assess_motion_reliability(
+        evidence_path=str(resolved),
+        actions=actions,
+        thresholds=frozen,
+        timing_flag_scope=timing_flag_scope,
+        motion=motion,
+        spatial_std=spatial_std,
+        n_frames=n_frames,
+    )
+
+
+def assess_frame_sequence_reliability(
+    frame_paths: Sequence[str | Path],
+    actions: np.ndarray,
+    thresholds: ReliabilityThresholds | None = None,
+    *,
+    timing_flag_scope: Literal["window", "session"] = TIMING_SCOPE_WINDOW,
+) -> RolloutReliabilityReport:
+    """Screen exact generated frames while retaining the frozen thresholds."""
+
+    if timing_flag_scope not in {TIMING_SCOPE_WINDOW, TIMING_SCOPE_SESSION}:
+        raise ValueError(f"unsupported_timing_flag_scope:{timing_flag_scope}")
+    resolved = [Path(path).expanduser().resolve() for path in frame_paths]
+    frozen = thresholds or ReliabilityThresholds()
+    motion, spatial_std, n_frames = frame_sequence_motion_series(resolved, frozen.downscale_width)
+    return _assess_motion_reliability(
+        evidence_path="frame_sequence:" + "|".join(str(path) for path in resolved),
+        actions=actions,
+        thresholds=frozen,
+        timing_flag_scope=timing_flag_scope,
+        motion=motion,
+        spatial_std=spatial_std,
+        n_frames=n_frames,
     )
 
 

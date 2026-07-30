@@ -419,6 +419,64 @@ def test_multiview_gate_checks_both_individual_camera_videos(tmp_path: Path) -> 
     assert {call[0] for call in calls} == {Path(path) for path in videos.values()}
 
 
+def test_multiview_gate_prefers_exact_generated_frames_over_lossy_video(
+    tmp_path: Path,
+) -> None:
+    videos = {}
+    sequences = {}
+    for view_index, view_id in enumerate((EXTERIOR_VIEW, WRIST_VIEW)):
+        video = tmp_path / f"view_{view_index}.mp4"
+        video.write_bytes(b"retained-media")
+        videos[view_id] = str(video)
+        sequences[view_id] = []
+        for frame_index in range(5):
+            path = tmp_path / f"view_{view_index}_frame_{frame_index}.png"
+            Image.new("RGB", (320, 192), color=(view_index, frame_index, 20)).save(path)
+            sequences[view_id].append(str(path))
+    calls = []
+
+    def frame_assessor(frame_paths, actions, thresholds, **kwargs):
+        calls.append((list(frame_paths), np.asarray(actions).shape, thresholds, kwargs))
+        return RolloutReliabilityReport(
+            video_path="frame_sequence",
+            n_frames=len(frame_paths),
+            n_action_steps=8,
+            flags=(),
+            reliable=True,
+            command_energy_mean=0.2,
+            command_energy_std=0.1,
+            motion_mean=0.2,
+            motion_max=0.3,
+            timing_correlation=0.5,
+            timing_flag_scope="session",
+            spatial_std_mean=20.0,
+        )
+
+    result = MultiViewCanaryReliabilityGate(
+        ReliabilityThresholds(),
+        assessor=lambda *_args, **_kwargs: pytest.fail("video assessor must not run"),
+        frame_assessor=frame_assessor,
+    ).assess(
+        previous_observation={},
+        prepared_transition={"reliability_actions_10d": np.zeros((8, 10))},
+        wam_prediction={
+            "generated_videos_by_view": videos,
+            "generated_view_frame_sequences": sequences,
+        },
+        query_index=0,
+        output_dir=tmp_path,
+    )
+
+    assert result["status"] == "passed"
+    assert len(calls) == 2
+    assert all(len(call[0]) == 5 for call in calls)
+    assert all(
+        report["motion_evidence_basis"] == "exact_generated_frame_sequence"
+        and report["lossy_video_used_for_motion_measurement"] is False
+        for report in result["reports_by_view"].values()
+    )
+
+
 def test_skeleton_wrist_uses_hash_verified_world_motion_not_rigid_camera_pixels(
     tmp_path: Path,
 ) -> None:
