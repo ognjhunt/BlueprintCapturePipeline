@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
+import re
+import subprocess
 from typing import Any, Mapping
 
 from ..agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
@@ -12,19 +14,55 @@ from ..decision_evidence_contracts import canonical_digest
 from .agents_sdk import DEFAULT_SUPERVISOR_AGENT_MODEL
 from .capabilities import SupervisorContext
 from .capture_ingress import load_capture_build_ingress
+from .capture_reconstruction_routing import build_capture_reconstruction_route
 from .contracts import AutonomyMode
 from .supervisor import TaskEvaluationSupervisor
+from .reconstruction_execution_readiness import build_reconstruction_execution_readiness
+from .tools import ToolRegistry
+from .phase2_artifacts import write_phase2_artifact
 
 
-CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION = "task_evaluation_capture_supervisor_lifecycle.v3"
-CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK_ENV = (
-    "BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK"
-)
-CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD_ENV = (
-    "BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD"
-)
+CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION = "task_evaluation_capture_supervisor_lifecycle.v4"
+CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK_ENV = "BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK"
+CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD_ENV = "BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD"
 CAPTURE_SUPERVISOR_AGENT_MODEL_ENV = "BLUEPRINT_CAPTURE_SUPERVISOR_AGENT_MODEL"
 MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD = 100.0
+
+
+def _capture_supervisor_source_commit_sha(
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    source = os.environ if environ is None else environ
+    configured = str(source.get("BLUEPRINT_SOURCE_COMMIT") or "").strip().lower()
+    if configured:
+        if re.fullmatch(r"[0-9a-f]{40}", configured) is None:
+            raise ValueError("capture_supervisor_source_commit_invalid")
+        return configured
+    repository_root = Path(__file__).resolve().parents[3]
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("capture_supervisor_source_commit_unavailable") from exc
+    commit = completed.stdout.strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise ValueError("capture_supervisor_source_commit_invalid")
+    return commit
+
+
+def _readiness_timestamp(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.endswith("Z"):
+        return text
+    if text.endswith("+00:00"):
+        return text[:-6] + "Z"
+    raise ValueError("capture_supervisor_generated_at_not_utc")
 
 
 def capture_supervisor_execution_options_from_env(
@@ -72,11 +110,15 @@ def capture_supervisor_execution_profile(
     agent_model: str = DEFAULT_SUPERVISOR_AGENT_MODEL,
     allow_live_agents_sdk: bool = False,
     agent_inference_budget_usd: float = 0.0,
+    source_commit_sha: str | None = None,
 ) -> dict[str, Any]:
     """Bind the exact execution authority that determines lifecycle idempotency."""
 
+    commit = source_commit_sha or _capture_supervisor_source_commit_sha()
+    if re.fullmatch(r"[0-9a-f]{40}", str(commit or "")) is None:
+        raise ValueError("capture_supervisor_source_commit_invalid")
     value = {
-        "schema_version": "task_evaluation_capture_supervisor_execution_profile.v1",
+        "schema_version": "task_evaluation_capture_supervisor_execution_profile.v2",
         "agent_harness": "openai_agents_sdk",
         "agent_model": agent_model,
         "allow_live_agents_sdk": allow_live_agents_sdk,
@@ -84,6 +126,7 @@ def capture_supervisor_execution_profile(
             env_truthy(LIVE_AGENTS_SDK_ENV) if allow_live_agents_sdk else False
         ),
         "agent_inference_budget_usd": float(agent_inference_budget_usd),
+        "source_commit_sha": commit,
         "autonomy_mode": AutonomyMode.EXECUTE_NON_SPEND.value,
     }
     value["execution_profile_digest"] = canonical_digest(
@@ -110,7 +153,10 @@ def capture_supervisor_health_status(
     }
     try:
         options = capture_supervisor_execution_options_from_env(environ)
-        profile = capture_supervisor_execution_profile(**options)
+        profile = capture_supervisor_execution_profile(
+            **options,
+            source_commit_sha=_capture_supervisor_source_commit_sha(environ),
+        )
     except ValueError:
         return status
     live_configured = options["allow_live_agents_sdk"] is True
@@ -131,6 +177,7 @@ def run_capture_build_supervisor(
     agent_model: str = DEFAULT_SUPERVISOR_AGENT_MODEL,
     allow_live_agents_sdk: bool = False,
     agent_inference_budget_usd: float = 0.0,
+    source_commit_sha: str | None = None,
 ) -> dict[str, Any]:
     """Enter every completed capture build into the required supervisor.
 
@@ -147,9 +194,10 @@ def run_capture_build_supervisor(
         agent_model=agent_model,
         allow_live_agents_sdk=allow_live_agents_sdk,
         agent_inference_budget_usd=agent_inference_budget_usd,
+        source_commit_sha=source_commit_sha,
     )
     profile_suffix = str(execution_profile["execution_profile_digest"]).removeprefix("sha256:")[:16]
-    run_id = f"capture-supervisor-v3-{digest_suffix}-{profile_suffix}"
+    run_id = f"capture-supervisor-v4-{digest_suffix}-{profile_suffix}"
     output_dir = root / "pipeline" / "task_evaluation_supervisor" / "runs" / run_id
     execution = TaskEvaluationSupervisor(
         agent_model=agent_model,
@@ -170,6 +218,20 @@ def run_capture_build_supervisor(
         resume=True,
     )
     report = execution.report.to_mapping()
+    route = build_capture_reconstruction_route(capture_build)
+    readiness = build_reconstruction_execution_readiness(
+        capture_build_value=capture_build,
+        route_value=route,
+        tool_registry_manifest=ToolRegistry.default().manifest(),
+        bound_tool_ids=[],
+        source_commit_sha=str(execution_profile["source_commit_sha"]),
+        recorded_at=_readiness_timestamp(report["generated_at"]),
+    )
+    readiness_path = write_phase2_artifact(
+        output_dir,
+        "reconstruction_execution_readiness.json",
+        readiness,
+    )
     registered_capabilities = list(execution.run.to_mapping().get("capabilities") or [])
     return {
         "schema_version": CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION,
@@ -186,6 +248,12 @@ def run_capture_build_supervisor(
         "agent_model": agent_model,
         "execution_profile": execution_profile,
         "execution_profile_digest": execution_profile["execution_profile_digest"],
+        "source_commit_sha": execution_profile["source_commit_sha"],
+        "reconstruction_execution_readiness_status": readiness["status"],
+        "reconstruction_execution_readiness_digest": readiness[
+            "reconstruction_execution_readiness_digest"
+        ],
+        "reconstruction_execution_readiness_path": str(readiness_path),
         "autonomy_mode": AutonomyMode.EXECUTE_NON_SPEND.value,
         "capability_count": len(execution.capability_results),
         "triggered_capability_count": len(execution.capability_results),

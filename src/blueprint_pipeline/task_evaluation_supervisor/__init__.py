@@ -16,6 +16,7 @@ from .agents_sdk import (
 from .capabilities import SupervisorContext, deterministic_baseline_capabilities
 from .capture_ingress import (
     CaptureBuildIngressError,
+    capture_build_source_binding,
     load_capture_build_ingress,
     validate_capture_build_ingress,
 )
@@ -24,6 +25,12 @@ from .capture_reconstruction_routing import (
     CaptureReconstructionRouteError,
     build_capture_reconstruction_route,
     validate_capture_reconstruction_route,
+)
+from .reconstruction_execution_readiness import (
+    RECONSTRUCTION_EXECUTION_READINESS_SCHEMA_VERSION,
+    ReconstructionExecutionReadinessError,
+    build_reconstruction_execution_readiness,
+    validate_reconstruction_execution_readiness,
 )
 from .candidate_policy import (
     CANDIDATE_COST_RESERVATION_SCHEMA_VERSION,
@@ -205,6 +212,7 @@ __all__ = [
     "PreauthorizedRecoveryPolicy",
     "RegisteredToolBinding",
     "RecoveryControlError",
+    "RECONSTRUCTION_EXECUTION_READINESS_SCHEMA_VERSION",
     "RECORDED_SUPERVISOR_EVAL_BUNDLE_SCHEMA_VERSION",
     "SEALED_SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION",
     "SupervisorContext",
@@ -222,6 +230,7 @@ __all__ = [
     "validate_manager_refusal",
     "AgentsSDKSupervisorManagerOutput",
     "SupervisorReplayError",
+    "ReconstructionExecutionReadinessError",
     "SupervisorRun",
     "SupervisorState",
     "TaskEvaluationSupervisor",
@@ -234,8 +243,10 @@ __all__ = [
     "agents_sdk_capabilities",
     "deterministic_baseline_capabilities",
     "compare_supervisor_to_baseline",
+    "capture_build_source_binding",
     "capture_supervisor_execution_profile",
     "build_capture_reconstruction_route",
+    "build_reconstruction_execution_readiness",
     "compile_neutral_candidate_policy_suite",
     "execute_neutral_candidate_policy_suite",
     "reconcile_neutral_candidate_policy_costs",
@@ -245,6 +256,7 @@ __all__ = [
     "load_capture_build_ingress",
     "validate_capture_build_ingress",
     "validate_capture_reconstruction_route",
+    "validate_reconstruction_execution_readiness",
     "load_supervisor_evaluation_corpus",
     "load_recorded_supervisor_execution",
     "load_sealed_supervisor_evaluation_corpus",

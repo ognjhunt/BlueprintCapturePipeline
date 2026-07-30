@@ -120,6 +120,16 @@ and external reconstruction imports. Missing or conflicting profiles return a
 typed route blocker; `has_lidar=true` alone is not sufficient to select the
 metric ARKit adapter.
 
+Lifecycle v4 binds the run identity to the exact source commit and retains only
+non-secret capture/intake identifiers and provenance digests from known
+manifests. It writes `reconstruction_execution_readiness.json` next to the
+supervisor ledger. That replayable support artifact joins the capture-build
+digest, source-capture digest, route, typed tool registry, currently bound
+runtimes, and any separately recorded reconstruction control-plane plan,
+authority, or execution receipt. `not_ready`, `route_unresolved`, and
+`source_binding_mismatch` are valid fail-closed outcomes. Readiness is neither
+execution authority nor reconstruction evidence.
+
 ## Non-spend execution
 
 `execute_non_spend` can inspect registered artifacts, deterministically compile
@@ -127,8 +137,8 @@ an Evidence Plan and leaf Evaluation Run specs, materialize clarification and
 authorization requests, write targeted recapture proposals, and materialize
 pre-evaluation scenario proposals. It can also call the read-only
 `plan_capture_reconstruction_route` tool against the exact capture-build digest.
-That tool identifies registered versus missing reconstruction stages but does
-not execute them. When the trusted runtime injects the corresponding bounded
+That tool identifies registered and conditionally executable reconstruction
+stages but does not execute them. When the trusted runtime injects the corresponding bounded
 service, the same capability may invoke `compile_frozen_frame_dataset` or
 `normalize_native_360_capture`, or `compile_equirectangular_virtual_rig`.
 Those tools receive only capture-build and route digests, write under the
