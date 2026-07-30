@@ -1,0 +1,202 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_successor_evidence_matrix.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-30T06:05:36-0500",
+  "overall_verdict": "inconclusive",
+  "historical_frozen_stack_verdict": "thesis_not_supported",
+  "historical_verdict_rewritten": false,
+  "components": {
+    "cosmos_wam_qualification": {
+      "verdict": "inconclusive",
+      "successor_wam_qualified": false,
+      "frozen_native_cosmos_configuration": "thesis_not_supported",
+      "basis": "The frozen native Cosmos configuration failed all 51 causal windows and correctly abstained. Exact public OSCAR and Ctrl-World generated valid open-loop replay media, but neither re-queried a candidate policy or passed a causal control matrix. The registered Cosmos3 plus OSCAR-skeleton hybrid has no published skeleton-conditioning channel and is technically blocked."
+    },
+    "frozen_benchmark_calibration": {
+      "verdict": "inconclusive",
+      "successor_complete_graph_measured": false,
+      "historical_frozen_stack": "thesis_not_supported",
+      "basis": "The GPT-5 complete graph has 355 valid results out of 1,323 and no Bradley-Terry fit; provider quota stopped the remaining 968. Gemini retained 441 already-unsealed diagnostic comparisons, but its 882 missing comparisons are transport-blocked. Partial graphs receive no ranking credit."
+    },
+    "captured_site_transfer": {
+      "verdict": "inconclusive",
+      "measured": false,
+      "basis": "No WAM and judge combination passed the prerequisite causal, ranking, and abstention gates. No independently attributable physical outcomes exist for a matching captured site, task, embodiment, and policy set."
+    },
+    "economics_and_speed": {
+      "verdict": "inconclusive",
+      "qualified_comparison_completed": false,
+      "basis": "Execution cost and latency were measured, but no useful complete ranking was produced and no attributable physical monetary or wall-clock baseline was available."
+    }
+  },
+  "arms": {
+    "policy_endpoint_canary": {
+      "identity": "nvidia/Cosmos3-Edge-Policy-DROID@3ea407af3e156c0af3b4bb6edd85842cc9a58777",
+      "framework_revision": "2f603cb114ff8b335e116060444d0b6caee3a85e",
+      "status": "passed_endpoint_contract_only",
+      "native_action_shape": [32, 8],
+      "wam_prefix_shape": [16, 8],
+      "executed_prefix_shape": [8, 8],
+      "policy_requery_executed": false,
+      "wam_credit": false,
+      "thesis_credit": false
+    },
+    "skeleton_only": {
+      "status": "technical_intended_motion_visualization_only",
+      "new_successor_ranking_measured": false,
+      "historical_visible_skeleton_response": 0.296703,
+      "historical_skeleton_masked_scene_response": 0.039976,
+      "historical_validity_lower_bound": 0.387755,
+      "historical_validity_gate": 0.8,
+      "world_consequence_credit": false,
+      "ranking_credit": false
+    },
+    "oscar_purpose_built_wam": {
+      "identity": "zywu2115/OSCAR-2B@c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+      "source_revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+      "status": "exact_public_open_loop_replay_canary_passed",
+      "generated_frames": 81,
+      "generated_width": 640,
+      "generated_height": 480,
+      "generated_fps": 14.0,
+      "policy_requery_executed": false,
+      "closed_loop_policy_evaluation": false,
+      "causal_control_matrix_run": false,
+      "ranking_credit": false,
+      "claim_ceiling": "label_free_exact_public_compatibility_canary_only"
+    },
+    "native_cosmos3": {
+      "status": "frozen_configuration_failed_and_preserved",
+      "sessions": 17,
+      "causal_windows_passed": 0,
+      "causal_windows_total": 51,
+      "reliable_sessions": 0,
+      "static_under_command_windows": 46,
+      "product_abstention_correct": true,
+      "rerun_same_configuration": false,
+      "scope": "This result applies only to the frozen tested native Cosmos configuration."
+    },
+    "registered_cosmos3_oscar_skeleton_hybrid": {
+      "status": "technically_blocked",
+      "native_skeleton_conditioning_channel_published": false,
+      "overlay_substitute_created": false,
+      "oscar_generated_world_video_consumed": false,
+      "provider_called": false,
+      "hybrid_credit": false
+    },
+    "ctrl_world": {
+      "identity": "yjguo/Ctrl-World@8cf814693f411962dc866a2ddb5b785afd17a93a",
+      "source_revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+      "status": "exact_public_open_loop_replay_canary_passed",
+      "interaction_count": 1,
+      "generated_views": 3,
+      "generated_frames_per_view": 5,
+      "candidate_policy_requeried": false,
+      "closed_loop_policy_evaluation": false,
+      "public_exact_closed_loop_reproduction_blocker": "The public release does not publish the exact openpi revision or pi-policy checkpoint revisions used for reported rollouts.",
+      "hard_coded_success_used_as_ground_truth": false,
+      "causal_control_matrix_run": false,
+      "ranking_credit": false,
+      "claim_ceiling": "label_free_exact_public_ctrl_world_open_loop_replay_canary_only"
+    }
+  },
+  "judges": {
+    "gpt5_complete_graph": {
+      "identity": "gpt-5-2025-08-07",
+      "method": "OSCAR-method-inspired direct within-session comparisons",
+      "registered_pair_count": 1323,
+      "submitted_unique_pair_count": 368,
+      "valid_unique_pair_count": 355,
+      "missing_valid_pair_count": 968,
+      "valid_graph_coverage": 0.26832955404383976,
+      "terminal_provider_error": "insufficient_quota",
+      "active_batch_count": 0,
+      "bradley_terry_run": false,
+      "ranking_metrics_reported": false,
+      "partial_graph_ranking_credit": false,
+      "exact_cost_usd": 5.27075975
+    },
+    "gemini_complete_graph": {
+      "identity": "gemini-3.6-flash",
+      "method": "separate cross-family direct-pair judge",
+      "frozen_prior_diagnostic_pair_count": 441,
+      "prospective_missing_pair_count": 882,
+      "missing_pair_transport_status": "technically_blocked",
+      "provider_error": "FAILED_PRECONDITION",
+      "complete_graph_bradley_terry_run": false,
+      "partial_graph_ranking_credit": false,
+      "frozen_prior_diagnostic_metrics": {
+        "spearman_rho": 0.75,
+        "kendall_tau_b": 0.6190476190476191,
+        "policy_pairwise_accuracy": 0.8095238095238095,
+        "direct_within_session_accuracy": 0.7219251336898396,
+        "session_clustered_ci95": [0.6763031400709597, 0.7624104011647849],
+        "abstention_count": 0
+      },
+      "prior_diagnostic_cost_usd": 3.14775225,
+      "claim_ceiling": "post_unseal_incomplete_graph_diagnostic_only"
+    },
+    "historical_gpt5_mini_phase_a": {
+      "identity": "gpt-5-mini-2025-08-07",
+      "episodes": 441,
+      "sessions": 63,
+      "policies": 7,
+      "spearman_rho": 0.35714285714285715,
+      "kendall_tau_b": 0.23809523809523808,
+      "policy_pairwise_accuracy": 0.6190476190476191,
+      "session_clustered_ci95": [0.42857142857142855, 0.8571428571428571],
+      "selective_coverage": 0.05018248175182482,
+      "selective_pairwise_accuracy": 0.6,
+      "expected_calibration_error": 0.22879818594104312,
+      "registered_gates_passed": false,
+      "historical_stack_verdict": "thesis_not_supported"
+    }
+  },
+  "phase_b": {
+    "design_achieved": "no_genuinely_disjoint_labeled_closed_loop_confirmation",
+    "affected_17_session_cohort_unsealed_by_incident": true,
+    "independent_confirmation_credit": false,
+    "fallback_ceiling": "diagnostic_or_sensitivity_only",
+    "ranking_executed": false,
+    "full_episode_policy_requery_executed": false
+  },
+  "cost_and_time": {
+    "evaluator_api_usd": 8.418512,
+    "gpu_usd": 3.986999,
+    "campaign_api_plus_gpu_usd": 12.405511,
+    "storage_and_transfer_invoiced_usd": 0.0,
+    "storage_and_transfer_invoice_available": false,
+    "openai_cap_usd": 25.0,
+    "gpu_cap_usd": 50.0,
+    "storage_transfer_cap_usd": 10.0,
+    "campaign_cap_usd": 100.0,
+    "policy_load_seconds": 55.00560736656189,
+    "policy_inference_seconds": 19.633824825286865,
+    "oscar_inference_seconds": 168.247001,
+    "oscar_provider_live_seconds": 527.4702717084438,
+    "ctrl_world_public_replay_seconds": 46.280297,
+    "ctrl_world_provider_live_seconds": 455.65505325,
+    "useful_complete_ranking_completed": false,
+    "speed_ratio": null,
+    "cost_ratio": null,
+    "break_even_policy_count": null
+  },
+  "protocols": {
+    "base_v1_sha256": "76a2e0d32804c8c928c435828a18a5fbbc3eb95f3746b59c117e08beb41b60e6",
+    "governing_amendment_v15_sha256": "cd0952f97a5bc7139ce88a849fa99b7a442f5164a85b48e3f0bac752fc4304ae",
+    "source_freeze_v10_sha256": "e43a961e0cafe6fd8129ab552a64e9da4fff00ca57797b7087b2f502b3063f81",
+    "complete_graph_protocol_sha256": "4636d2e4a6b834f24f86f5073ef831e47c843925a11c1ad761d27663f8194954"
+  },
+  "provider_state": {
+    "experiment_live_gpu_count": 0,
+    "allocation_12_provider_zero_sha256": "bc903e9456dda1ef9256223e94f22452ae3eedcde1dda0c08707b3aabe8078e6",
+    "continuing_experiment_spend": false,
+    "shared_account_live_gpu_count_at_terminal_draft": 1,
+    "shared_account_live_gpu_is_unrelated": true,
+    "unrelated_instance_id": 46278054,
+    "unrelated_instance_label": "blueprint-native-warehouse-camera-v13-faf0664f-a1",
+    "unrelated_instance_not_modified": true
+  },
+  "claim_ceiling": "specialized_architecture_technical_compatibility_and_incomplete_post_unseal_diagnostics_only",
+  "manifest_sha256": "1e2a717face21a86a65581d580624dab18ec7563301c6e311cc9305955b89be9"
+}

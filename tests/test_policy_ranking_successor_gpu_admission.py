@@ -22,6 +22,15 @@ BUNDLE_NAME = "cosmos3_followup_provider_bundle.zip"
 BUNDLE_RECEIPT_NAME = "cosmos3_followup_provider_bundle_receipt.json"
 
 
+def test_ctrl_world_profile_reservation_stays_within_target_spend() -> None:
+    profile = admission.CTRL_WORLD_REPLAY_PROFILE
+    projected_max_spend = profile.max_hourly_rate_usd * profile.hard_ttl_seconds / 3600.0
+
+    assert profile.hard_ttl_seconds == 4_800
+    assert projected_max_spend <= profile.target_spend_usd
+    assert profile.target_spend_usd <= profile.max_compute_cap_usd
+
+
 def _load(name: str) -> dict[str, Any]:
     path = EXPERIMENT / name
     if not path.is_file():
@@ -62,8 +71,7 @@ def _oscar_replay_fixture(
         else "if official_case_smoke:"
     )
     runner = (
-        "OSCAR-2B wam_runtime_result.json action_conditioned_video_rollout_generated\n"
-        + guard
+        "OSCAR-2B wam_runtime_result.json action_conditioned_video_rollout_generated\n" + guard
     ).encode()
     runtime_manifest = {
         "schema_version": "wam_provider_runtime_manifest.v1",
@@ -117,9 +125,7 @@ def _oscar_replay_fixture(
             payloads["provider_runtime/oscar_input/first_frame.png"]
         ).hexdigest(),
         "skeleton_video_sha256": hashlib.sha256(
-            payloads[
-                "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4"
-            ]
+            payloads["provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4"]
         ).hexdigest(),
         "runner_sha256": hashlib.sha256(runner).hexdigest(),
         "entrypoint_sha256": hashlib.sha256(entrypoint).hexdigest(),

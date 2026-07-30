@@ -214,11 +214,17 @@ def test_primary_container_and_compose_contracts_are_hardened() -> None:
     assert "USER blueprint:blueprint" in dockerfile
     assert "HF_HUB_OFFLINE=1" in dockerfile
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
+    assert "ARG BLUEPRINT_SOURCE_COMMIT" in dockerfile
+    assert 'BLUEPRINT_SOURCE_COMMIT="${BLUEPRINT_SOURCE_COMMIT}"' in dockerfile
+    assert 'org.opencontainers.image.revision="${BLUEPRINT_SOURCE_COMMIT}"' in dockerfile
     assert "DINOV3_MODEL_REVISION" not in dockerfile
     assert "facebook/dinov3-vitl16-pretrain-lvd1689m" not in dockerfile
     assert "HF_HUB_OFFLINE=1" in dockerfile
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
     assert "revision=revision" in dockerfile
+
+    deploy_script = (ROOT / "deploy" / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert '--build-arg "BLUEPRINT_SOURCE_COMMIT=${GIT_SHA}"' in deploy_script
 
     assert "target: base" not in compose
     assert "target: development" in compose

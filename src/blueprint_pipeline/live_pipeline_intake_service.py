@@ -116,6 +116,8 @@ INTAKE_MAX_CONCURRENT_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_CONCURRENT"
 INTAKE_MAX_QUEUE_FILES_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_QUEUE_FILES"
 INTAKE_MAX_STORAGE_BYTES_ENV = "BLUEPRINT_LIVE_PIPELINE_MAX_STORAGE_BYTES"
 INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_intake_service.v1"
+PIPELINE_SOURCE_COMMIT_ENV = "BLUEPRINT_SOURCE_COMMIT"
+DEPLOYMENT_IDENTITY_SCHEMA_VERSION = "blueprint_pipeline_deployment_identity.v1"
 CAPTURE_HANDOFF_SOURCE_KIND = "capture_pipeline_handoff"
 DEFAULT_INTAKE_MAX_CLOCK_SKEW_SECONDS = 5 * 60
 DEFAULT_INTAKE_MAX_BODY_BYTES = 2 * 1024 * 1024
@@ -1642,6 +1644,19 @@ async def _require_admission(
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Blueprint Live Pipeline Intake", version=INTAKE_SCHEMA_VERSION)
+
+    @app.get("/api/live-pipeline/version")
+    def deployment_identity() -> JSONResponse:
+        source_commit = _string(os.getenv(PIPELINE_SOURCE_COMMIT_ENV)).lower()
+        commit_proven = re.fullmatch(r"[0-9a-f]{40}", source_commit) is not None
+        payload = {
+            "schema_version": DEPLOYMENT_IDENTITY_SCHEMA_VERSION,
+            "service_schema_version": INTAKE_SCHEMA_VERSION,
+            "commit_proven": commit_proven,
+            "source_commit": source_commit if commit_proven else None,
+            "claim_ceiling": "deployed_service_identity_only",
+        }
+        return JSONResponse(status_code=200 if commit_proven else 503, content=payload)
 
     @app.get("/health")
     def health() -> Dict[str, Any]:

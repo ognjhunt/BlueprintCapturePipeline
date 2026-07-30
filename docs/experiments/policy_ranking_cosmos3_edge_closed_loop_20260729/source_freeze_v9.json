@@ -1,0 +1,70 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze.v9",
+  "frozen_at": "2026-07-30T03:44:22-0500",
+  "supersedes_manifest_sha256": "dcf03d35d1c454eeeb5615164a4dd6ae67150baa67689f99121c400e3090dff5",
+  "inherits_all_sources_from": "source_freeze_v8.json",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "ctrl_world": {
+    "attribution": "Ctrl-World_not_Cosmos_not_OSCAR",
+    "source": {
+      "repository": "https://github.com/Robert-gyj/Ctrl-World",
+      "revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+      "license": "MIT",
+      "exact_public_replay_script_sha256": "885540b0d7c03be82667c9eb73d7a34429155688dd48bfc06c61ece0ecdb9612"
+    },
+    "checkpoint": {
+      "repository": "yjguo/Ctrl-World",
+      "revision": "8cf814693f411962dc866a2ddb5b785afd17a93a",
+      "file": "checkpoint-10000.pt",
+      "size_bytes": 9281040326,
+      "sha256": "ed17de48180d4e6f89fd33c53e9fb7a0196189c1a67d44c2c486a279a80ea8a8",
+      "license": "MIT"
+    },
+    "stable_video_diffusion": {
+      "repository": "stabilityai/stable-video-diffusion-img2vid",
+      "revision": "9cf024d5bfa8f56622af86c884f26a52f6676f2e",
+      "required_blob_sha256": {
+        "image_encoder/model.safetensors": "ed1e5af7b4042ca30ec29999a4a5cfcac90b7fb610fd05ace834f2dcbb763eab",
+        "unet/diffusion_pytorch_model.safetensors": "98c5e6b99df6bef015b2681c0f8ab9d4c807b733be46c067d6c9966101698f58",
+        "vae/diffusion_pytorch_model.safetensors": "9975042d7bee021bd53a72b1af14c8627d624f6547ec9abe661b68b962b88c49"
+      },
+      "license": "stable-video-diffusion-community",
+      "research_evaluation_disposition": "allowed_as_non_commercial_evaluation_and_testing",
+      "commercial_use_disposition": "not_asserted_by_this_experiment"
+    },
+    "clip": {
+      "repository": "openai/clip-vit-base-patch32",
+      "revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
+      "required_blob": "pytorch_model.bin",
+      "required_blob_size_bytes": 605247071,
+      "required_blob_sha256": "a63082132ba4f97a80bea76823f544493bffa8082296d62d71581a4feff1576f",
+      "hugging_face_model_weight_license_explicitly_published": false,
+      "upstream_openai_clip_code_license": "MIT",
+      "research_only_disposition": "download_and_execute_only_for_this_noncommercial_research_canary",
+      "redistribution_allowed_by_blueprint": false,
+      "commercial_license_claimed": false
+    },
+    "runtime_image": "docker.io/pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "torch_version": "2.7.1",
+    "python_dependency_resolution": {
+      "platform": "x86_64-manylinux_2_28",
+      "python_version": "3.11",
+      "exact_package_count_excluding_base_image_torch_and_cuda_packages": 91,
+      "canonical_sha256": "c982d21932fdb015e09b9cc56234875130f19b0f6a69cb968a610a43f7714cd7",
+      "torch_and_cuda_runtime_source": "immutable_pytorch_base_image"
+    },
+    "released_fixture": {
+      "trajectory_id": "899",
+      "annotation_sha256": "cc7bf532144fa40492eae9e44e919290ea45fc57283304f0c5d58689785e700c",
+      "view_sha256": [
+        "bac822bf28f6dd909dc2cc4db907ac6cdbe9077e9d032f56eedd4b57ab908fda",
+        "717635f0d0879fa16d2b737cbcec14afc3cee542ccfb44aad576373e9a3a1308",
+        "59ee190f46bced51c615908212c08c50f2603360b2f6aff592812465a2dbac14"
+      ],
+      "state_statistics_sha256": "1e6fa202c87d6295f8b988dfd2764dec88796c910846cecdf684670fb818f208"
+    }
+  },
+  "manifest_sha256": "7d80266c90d950752a51795b385b8c43ecd35f6f387d15189ae43c3617fda99c"
+}

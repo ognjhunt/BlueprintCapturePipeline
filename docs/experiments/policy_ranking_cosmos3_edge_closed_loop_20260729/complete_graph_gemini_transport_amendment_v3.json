@@ -1,0 +1,89 @@
+{
+  "schema_version": "policy_ranking_complete_graph_gemini_transport_amendment.v3",
+  "status": "prospectively_frozen_before_any_evaluator_output",
+  "claim_class": "post_unseal_transport_diagnostic_only",
+  "parent_amendment_sha256": "aaafb9ff26d1ea84efb29af9afcc63d79a07e941dd0cf7318cb7b8dc823c6a38",
+  "triggering_grace_gated_shard_zero_incident": {
+    "request_count": 63,
+    "provider_batch_created": false,
+    "provider_generation_rows_created": 0,
+    "new_evaluator_spend_usd": 0.0,
+    "all_441_temporary_provider_video_files_deleted": true,
+    "receipt_path": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/complete_graph_diagnostic_v1/gemini_complete_graph_shards_v2/shard_00_receipt.json",
+    "receipt_file_sha256": "b829ea332f8c3b25e1ec143ca1f59bfc048de0e20af4133623e22aafc37b93f4",
+    "receipt_sha256": "4a62e619d245c43796628bdeab60f1e55e0333de43570e6d090d970a16864b23",
+    "media_ledger_sha256": "72da5d68d82f9f172a2970077fb0253174d6c549d17b3069a7de22f1129608fa",
+    "observed_ready_age_seconds_before_submission": 122.452,
+    "provider_code": 400,
+    "provider_status": "FAILED_PRECONDITION",
+    "provider_message": "Precondition check failed.",
+    "provider_details": {
+      "error": {
+        "code": 400,
+        "message": "Precondition check failed.",
+        "status": "FAILED_PRECONDITION"
+      }
+    }
+  },
+  "causal_conclusions": {
+    "cross_service_file_propagation_under_90_seconds_explains_failure": false,
+    "exact_provider_cause_known": false,
+    "provider_batch_inventory_nonterminal_jobs_observed": 0,
+    "same_model_same_media_historical_batch_success_exists": true,
+    "historical_success_substitutes_for_current_inventory_transport_canary": false,
+    "bulk_retry_without_new_diagnostic_evidence_allowed": false
+  },
+  "demonstrable_procedural_defect": {
+    "frozen_protocol_requires_one_schema_transport_canary_per_arm": true,
+    "frozen_protocol_requires_seven_pair_label_blind_pilot_per_new_configuration": true,
+    "current_missing_graph_attempted_request_counts_before_current_inventory_canary": [
+      882,
+      63,
+      63
+    ],
+    "correction": "run one exact current-inventory pair before any pilot or shard",
+    "historical_failed_attempts_preserved": true
+  },
+  "prospective_transport_canary": {
+    "inventory_sha256": "08bb90a8a13b435ea5b46e3f69cc68ec6855d8841f6b6fa2866062a1a243e132",
+    "pair_selection": "pairs[0] from frozen missing inventory",
+    "request_count": 1,
+    "video_count": 2,
+    "model": "gemini-3.6-flash",
+    "arm_id": "gemini36_flash_complete_graph",
+    "thinking_level": "medium",
+    "max_output_tokens_including_thinking": 3000,
+    "prompt_sha256": "ebe714130b8ade9305f8b5c6df77fa414fa7b9ac33d843d5a25c2905da41943c",
+    "minimum_media_ready_age_seconds": 90,
+    "maximum_concurrent_gemini_batches": 1,
+    "cleanup_on_submission_failure": true,
+    "cleanup_on_terminal_collection": true,
+    "physical_ground_truth_pixels_uploaded": false,
+    "policy_identity_sent_to_provider": false,
+    "physical_outcome_sent_to_provider": false,
+    "ranking_or_confirmation_credit": false
+  },
+  "prospective_stopping_and_escalation": {
+    "if_canary_batch_creation_fails": "preserve_and_classify current inline Files API Batch transport as technically blocked; do not retry the missing graph",
+    "if_canary_batch_creation_succeeds": "collect terminal result and require exact schema validity before a separately admitted seven-pair pilot",
+    "if_seven_pair_pilot_succeeds": "freeze a new bulk admission before any missing-graph shards",
+    "if_seven_pair_pilot_fails": "preserve failure, clean all media, and stop missing-graph execution",
+    "partial_matrix_ranking_credit": false
+  },
+  "cost_boundary_usd": {
+    "realized_api_spend_before_canary": 8.418512,
+    "realized_missing_graph_spend_before_canary": 0.0,
+    "projected_canary_cost": 0.01,
+    "canary_hard_cap": 0.05,
+    "missing_graph_hard_cap_including_canary_and_pilot": 9.0,
+    "campaign_api_hard_cap": 25.0,
+    "contingency_does_not_expand_category_cap": true
+  },
+  "execution_binding": {
+    "parent_source_commit": "e897f54646e76a7a4f220c35ea54867a062207ff",
+    "exact_execution_source_commit": "bound_by_new_transport_canary_paid_admission_after_commit_and_push",
+    "new_canary_paid_admission_required": true,
+    "bulk_v3_admission_reuse_for_canary_forbidden": true
+  },
+  "amendment_sha256": "4579aea138012689cb0908279eaa9dd1d4a85583ae2544d8b16e997d22f6a8d3"
+}

@@ -23,6 +23,22 @@ from blueprint_pipeline.policy_ranking_evaluator_diagnostic_openai_batch import 
 from blueprint_pipeline.policy_ranking_roboarena_calibration import canonical_sha256
 
 
+def _valid_payload() -> dict:
+    return {
+        "preferred_episode": "A",
+        "episode_a_progress_0_to_5": 4,
+        "episode_b_progress_0_to_5": 2,
+        "stable_success_a": True,
+        "stable_success_b": False,
+        "comparison_confidence": 0.8,
+        "uncertainty": 0.2,
+        "decisive_evidence": ["A completes more of the task"],
+        "artifact_flags_a": [],
+        "artifact_flags_b": [],
+        "abstention_factors": [],
+    }
+
+
 def test_prepare_batch_shard_contains_no_policy_identity(tmp_path: Path) -> None:
     frames = []
     for index in range(32):
@@ -170,6 +186,12 @@ def test_collect_failed_batch_records_error_and_deletes_input(
     tmp_path: Path, monkeypatch
 ) -> None:
     deleted: list[str] = []
+    output_path = tmp_path / "collection.json"
+
+    def delete_after_preservation(file_id: str) -> None:
+        preserved = json.loads(output_path.read_text(encoding="utf-8"))
+        assert preserved["input_file_deleted"] is False
+        deleted.append(file_id)
 
     class FakeClient:
         def __init__(self, *, api_key: str) -> None:
@@ -183,7 +205,7 @@ def test_collect_failed_batch_records_error_and_deletes_input(
                     usage={"input_tokens": 0, "output_tokens": 0},
                 )
             )
-            self.files = SimpleNamespace(delete=lambda file_id: deleted.append(file_id))
+            self.files = SimpleNamespace(delete=delete_after_preservation)
 
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
     key = tmp_path / "key"
@@ -198,7 +220,7 @@ def test_collect_failed_batch_records_error_and_deletes_input(
         {},
         {},
         api_key_file=key,
-        output_path=tmp_path / "collection.json",
+        output_path=output_path,
     )
 
     assert report["status"] == "failed"
@@ -212,6 +234,7 @@ def test_collect_completed_batch_retains_incomplete_row_and_deletes_input(
     tmp_path: Path, monkeypatch
 ) -> None:
     deleted: list[str] = []
+    output_path = tmp_path / "collection.json"
     raw_line = json.dumps(
         {
             "custom_id": "pair-id",
@@ -243,9 +266,15 @@ def test_collect_completed_batch_retains_incomplete_row_and_deletes_input(
                     output_file_id="output-file-id",
                 )
             )
+
+            def delete_after_preservation(file_id: str) -> None:
+                preserved = json.loads(output_path.read_text(encoding="utf-8"))
+                assert preserved["input_file_deleted"] is False
+                deleted.append(file_id)
+
             self.files = SimpleNamespace(
                 content=lambda file_id: SimpleNamespace(text=raw_line),
-                delete=lambda file_id: deleted.append(file_id),
+                delete=delete_after_preservation,
             )
 
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
@@ -269,7 +298,7 @@ def test_collect_completed_batch_retains_incomplete_row_and_deletes_input(
         },
         inventory,
         api_key_file=key,
-        output_path=tmp_path / "collection.json",
+        output_path=output_path,
     )
 
     assert report["status"] == "failed"
@@ -279,3 +308,204 @@ def test_collect_completed_batch_retains_incomplete_row_and_deletes_input(
     assert report["estimated_batch_cost_usd"] > 0
     assert report["input_file_deleted"] is True
     assert deleted == ["input-file-id"]
+
+
+def test_collect_completed_batch_unions_output_and_error_files_before_deletion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output_path = tmp_path / "collection.json"
+    deleted: list[str] = []
+    success_line = json.dumps(
+        {
+            "id": "batch-row-success",
+            "custom_id": "pair-success",
+            "response": {
+                "status_code": 200,
+                "request_id": "request-success",
+                "body": {
+                    "id": "response-success",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": json.dumps(_valid_payload()),
+                                }
+                            ],
+                        }
+                    ],
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 50,
+                        "input_tokens_details": {"cached_tokens": 0},
+                    },
+                },
+            },
+            "error": None,
+        }
+    )
+    quota_error = {
+        "code": "insufficient_quota",
+        "message": "Account quota is exhausted for this request.",
+        "param": None,
+        "type": "insufficient_quota",
+    }
+    error_line = json.dumps(
+        {
+            "id": "batch-row-error",
+            "custom_id": "pair-error",
+            "response": {
+                "status_code": 429,
+                "request_id": "request-error",
+                "body": {"error": quota_error},
+            },
+            "error": None,
+        }
+    )
+
+    def delete_after_preservation(file_id: str) -> None:
+        preserved = json.loads(output_path.read_text(encoding="utf-8"))
+        assert preserved["result_count"] == 1
+        assert preserved["error_count"] == 1
+        assert preserved["input_file_deleted"] is False
+        deleted.append(file_id)
+
+    class FakeClient:
+        def __init__(self, *, api_key: str) -> None:
+            assert api_key == "test-key"
+            self.batches = SimpleNamespace(
+                retrieve=lambda batch_id: SimpleNamespace(
+                    id=batch_id,
+                    status="completed",
+                    output_file_id="output-file-id",
+                    error_file_id="error-file-id",
+                )
+            )
+            self.files = SimpleNamespace(
+                content=lambda file_id: SimpleNamespace(
+                    text=success_line if file_id == "output-file-id" else error_line
+                ),
+                delete=delete_after_preservation,
+            )
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
+    key = tmp_path / "key"
+    key.write_text("test-key")
+    key.chmod(0o600)
+    pairs = [{"pair_id": f"pair-{index}"} for index in range(441)]
+    pairs[:2] = [{"pair_id": "pair-success"}, {"pair_id": "pair-error"}]
+    inventory = {"status": "ready", "pair_count": 441, "pairs": pairs}
+    inventory["inventory_sha256"] = canonical_sha256(inventory)
+
+    report = collect_shard(
+        {
+            "batch_id": "batch-id",
+            "input_file_id": "input-file-id",
+            "shard_id": "shard-id",
+        },
+        {
+            "pair_ids": ["pair-success", "pair-error"],
+            "arm_id": "gpt54_mini_challenger",
+            "model": GPT54_MINI_MODEL,
+        },
+        inventory,
+        api_key_file=key,
+        output_path=output_path,
+    )
+
+    assert report["status"] == "failed"
+    assert report["result_count"] == 1
+    assert report["error_count"] == 1
+    assert report["exact_pair_coverage_across_provider_files"] is True
+    assert report["results"][0]["batch_row_id"] == "batch-row-success"
+    error = report["errors"][0]
+    assert error["status_code"] == 429
+    assert error["request_id"] == "request-error"
+    assert error["batch_row_id"] == "batch-row-error"
+    assert error["response_body_error"] == quota_error
+    assert error["top_level_error"] is None
+    assert report["input_file_deleted"] is True
+    assert deleted == ["input-file-id"]
+
+
+@pytest.mark.parametrize(
+    ("error_file_text", "expected_error"),
+    [
+        (None, "batch_output_pair_coverage_incomplete"),
+        (
+            json.dumps(
+                {
+                    "custom_id": "pair-a",
+                    "response": {
+                        "status_code": 429,
+                        "body": {"error": {"code": "insufficient_quota"}},
+                    },
+                    "error": None,
+                }
+            ),
+            "batch_output_pair_id_duplicate",
+        ),
+    ],
+)
+def test_collect_completed_batch_rejects_missing_or_duplicate_pair_coverage(
+    tmp_path: Path, monkeypatch, error_file_text: str | None, expected_error: str
+) -> None:
+    deleted: list[str] = []
+    output_line = json.dumps(
+        {
+            "custom_id": "pair-a",
+            "response": {
+                "status_code": 429,
+                "body": {"error": {"code": "insufficient_quota"}},
+            },
+            "error": None,
+        }
+    )
+
+    class FakeClient:
+        def __init__(self, *, api_key: str) -> None:
+            assert api_key == "test-key"
+            self.batches = SimpleNamespace(
+                retrieve=lambda batch_id: SimpleNamespace(
+                    id=batch_id,
+                    status="completed",
+                    output_file_id="output-file-id",
+                    error_file_id="error-file-id" if error_file_text else None,
+                )
+            )
+            self.files = SimpleNamespace(
+                content=lambda file_id: SimpleNamespace(
+                    text=output_line if file_id == "output-file-id" else error_file_text
+                ),
+                delete=lambda file_id: deleted.append(file_id),
+            )
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeClient))
+    key = tmp_path / "key"
+    key.write_text("test-key")
+    key.chmod(0o600)
+    pairs = [{"pair_id": f"pair-{index}"} for index in range(441)]
+    pairs[:2] = [{"pair_id": "pair-a"}, {"pair_id": "pair-b"}]
+    inventory = {"status": "ready", "pair_count": 441, "pairs": pairs}
+    inventory["inventory_sha256"] = canonical_sha256(inventory)
+
+    with pytest.raises(OpenAIBatchDiagnosticError, match=expected_error):
+        collect_shard(
+            {
+                "batch_id": "batch-id",
+                "input_file_id": "input-file-id",
+                "shard_id": "shard-id",
+            },
+            {
+                "pair_ids": ["pair-a", "pair-b"],
+                "arm_id": "gpt54_mini_challenger",
+                "model": GPT54_MINI_MODEL,
+            },
+            inventory,
+            api_key_file=key,
+            output_path=tmp_path / "collection.json",
+        )
+
+    assert deleted == []

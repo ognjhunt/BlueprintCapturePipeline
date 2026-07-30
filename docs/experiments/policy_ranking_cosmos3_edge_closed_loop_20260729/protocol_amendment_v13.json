@@ -1,0 +1,66 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v13",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-30T04:38:55-0500",
+  "supersedes_amendment_sha256": "9026f612590755e2a05467df0bac7f6afd727afac15c5e9429ad9aef60705c53",
+  "phase": "phase_4_ctrl_world_lifecycle_failure_investigation",
+  "trigger": "Allocation 9 created one instance after consuming its authorization, then the shared retained-session journal rejected the new attempt because the prior attempt had correctly ended at provider_absent. The adapter's terminal lifecycle write raised inside finally before automatic teardown.",
+  "allocation_9_result": {
+    "provider_instance_id": 46272962,
+    "gpu_model": "RTX PRO 6000 S",
+    "provider_started_at_epoch": 1785403664.4805217,
+    "provider_zero_observed_at_epoch": 1785403719.6564639,
+    "failure": "invalid_retained_gpu_transition:provider_absent->terminal_failure",
+    "bundle_download_started": false,
+    "model_load_started": false,
+    "scientific_outputs_produced": 0,
+    "authorization_consumed": true,
+    "automatic_teardown_preempted_by_lifecycle_exception": true,
+    "emergency_exact_instance_destroy_requested": true,
+    "provider_zero_proven": true,
+    "conservative_runtime_upper_bound_seconds": 55.175943,
+    "observed_all_in_hourly_rate_usd": 1.8259259259,
+    "conservative_gpu_cost_upper_bound_usd": 0.027986,
+    "authorization_consumption_record_sha256": "8c44e6bd7c34d7d2596070c1ce0e0a233aa602e001bc318d197b80d2480804d6",
+    "emergency_provider_zero_sha256": "a3157cb0028f97f3fc313869e394ac61e51225d65338abcf8c75882ed4ec5630",
+    "cost_recovery_sha256": "27c1225852ca96332024c83c4f8cde4e4f7d9325c55d5874caba303d88065103",
+    "pre_recovery_budget_ledger_sha256": "19b0e0d38bb65976a91155c2d50a09254efc3ad1bca374202f253f37a1cee195",
+    "recovered_budget_ledger_sha256": "a9f5b24fc08d0e17a0ea11bc1bdcc9f17d00a1c625d726fa5d5432db7fbd9f9a"
+  },
+  "demonstrable_implementation_defects": {
+    "attempt_boundary": {
+      "before": "provider_absent had no valid successor, so a prospectively authorized attempt could not extend the same evidence directory's append-only journal",
+      "after": "provider_absent may transition only to allocated, preserving the prior terminal proof and extending the same hash chain for the new attempt"
+    },
+    "teardown_safety": {
+      "before": "a lifecycle evidence exception inside the adapter finally block could preempt provider destruction",
+      "after": "terminal and provider-absent lifecycle writes fail the result closed without exposing exception details, disable retention, and cannot preempt provider teardown"
+    },
+    "generic_future_applicability": true
+  },
+  "focused_regressions": {
+    "append_only_second_attempt_after_provider_absent": true,
+    "lifecycle_exception_is_secret_safe": true,
+    "lifecycle_exception_still_destroys_provider_instance": true,
+    "first_focused_result": "4 lifecycle tests and 2 selected slow Vast adapter tests passed; Ruff check and format passed",
+    "final_focused_result": "36 lifecycle, Ctrl-World bundle, and paid-admission tests plus 2 selected slow Vast adapter tests passed; Ruff check and format passed"
+  },
+  "budget_after_allocation_9": {
+    "ctrl_world_stage_cost_usd_upper_bound": 0.054395,
+    "campaign_gpu_cost_usd_upper_bound": 3.595065,
+    "campaign_api_plus_gpu_cost_usd_upper_bound": 12.013577,
+    "live_provider_count": 0,
+    "next_request_still_within_ctrl_world_target_and_campaign_caps": true
+  },
+  "unchanged_scientific_inputs": {
+    "bundle_sha256": "6f3b4acd71addec24251c19bba4a304268ba086ed1017007e8d06a884accc558",
+    "base_image_digest": "sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "ctrl_world_source_checkpoint_data_views_actions_and_sampling": "unchanged",
+    "labels_accessed": false,
+    "bundle_rebuild_required": false
+  },
+  "rerun_rule": "One new allocation may rerun the exact canary only after both generic lifecycle corrections, the allocation-9 incident, and focused regression tests are committed and pushed under a new single-use authorization. Any subsequent failure must be retained and classified before another paid mutation.",
+  "claim_boundary": "The lifecycle correction and any transport/runtime canary pass earn no WAM causal, ranking, transfer, economics, physical-success, or thesis credit.",
+  "provider_called_for_this_amendment": false,
+  "manifest_sha256": "5052b7000a861d1e644106b6673c12fbabdc424f8f4b293951ac904903ee07f9"
+}

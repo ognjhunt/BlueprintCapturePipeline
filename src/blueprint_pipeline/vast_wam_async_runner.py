@@ -177,7 +177,7 @@ def _download_provider_output_zip(
         "output_zip_path": str(output_zip_path),
         "raw_secret_values_recorded": False,
     }
-    if provider_upload_marker_seen and _string(provider_output_get_url) and not output_zip_path.is_file():
+    if provider_upload_marker_seen and _string(provider_output_get_url):
         transfer = download_url_to_file(
             url=_string(provider_output_get_url),
             output_path=output_zip_path,
@@ -202,15 +202,6 @@ def _download_provider_output_zip(
                     "blockers": ["provider_output_get_url_download_failed"],
                 }
             )
-    elif provider_upload_marker_seen and output_zip_path.is_file():
-        manifest.update(
-            {
-                "status": "skipped",
-                "reason": "provider_runtime_output_zip_already_present",
-                "output_zip_present_after_download": True,
-                "output_zip_size_bytes": output_zip_path.stat().st_size,
-            }
-        )
     elif provider_upload_marker_seen and not _string(provider_output_get_url):
         manifest.update(
             {

@@ -1,0 +1,20 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze_amendment.v10",
+  "frozen_at": "2026-07-30T05:20:14-0500",
+  "former_manifest": "source_freeze_v9.json",
+  "former_manifest_sha256": "7d80266c90d950752a51795b385b8c43ecd35f6f387d15189ae43c3617fda99c",
+  "successor_manifest": "source_freeze_v10.json",
+  "successor_manifest_sha256": "e43a961e0cafe6fd8129ab552a64e9da4fff00ca57797b7087b2f502b3063f81",
+  "changed_fields": [
+    "corrected the immutable base image Torch distribution version from shortened 2.7.1 to exact 2.7.1+cu128",
+    "bound the correction to allocation 11 runtime evidence",
+    "preserved all public source, checkpoint, data, views, actions, sampling, dependencies, and image bytes unchanged"
+  ],
+  "scientific_inputs_changed": false,
+  "scientific_input_change": "none; exact runtime metadata correction only",
+  "public_source_or_checkpoint_changed": false,
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "amendment_sha256": "7c9f44e04ed59f1f4b94429244eac1524381a688f90dfe3747d4342e69ff975c"
+}

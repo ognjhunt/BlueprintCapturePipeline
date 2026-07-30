@@ -246,6 +246,35 @@ def _usage(body: Mapping[str, Any], *, model: str) -> dict[str, Any]:
     }
 
 
+def _write_collection_report(
+    output_path: str | Path,
+    report: dict[str, Any],
+    *,
+    client: Any,
+    input_file_id: str,
+    delete_input: bool,
+) -> dict[str, Any]:
+    """Persist provider evidence before attempting input-file cleanup."""
+
+    target = Path(output_path)
+    report["input_file_deleted"] = False
+    report.pop("report_sha256", None)
+    report["report_sha256"] = canonical_sha256(report)
+    write_json(target, report)
+    if not delete_input:
+        return report
+    try:
+        client.files.delete(input_file_id)
+        report["input_file_deleted"] = True
+        report.pop("input_file_deletion_error_type", None)
+    except Exception as exc:  # noqa: BLE001 - cleanup failure is retained as evidence
+        report["input_file_deletion_error_type"] = type(exc).__name__
+    report.pop("report_sha256", None)
+    report["report_sha256"] = canonical_sha256(report)
+    write_json(target, report)
+    return report
+
+
 def collect_shard(
     receipt: Mapping[str, Any],
     manifest: Mapping[str, Any],
@@ -270,13 +299,6 @@ def collect_shard(
         if hasattr(usage, "model_dump"):
             usage = usage.model_dump(mode="json")
         terminal = str(batch.status) in {"failed", "expired", "cancelled"}
-        input_deleted = False
-        if terminal:
-            try:
-                client.files.delete(str(receipt["input_file_id"]))
-                input_deleted = True
-            except Exception:
-                input_deleted = False
         report = {
             "schema_version": "policy_ranking_openai_pair_batch_collection.v1",
             "status": str(batch.status),
@@ -287,75 +309,121 @@ def collect_shard(
             "request_counts": counts,
             "usage": usage,
             "terminal": terminal,
-            "input_file_deleted": input_deleted,
+            "provider_output_file_id": getattr(batch, "output_file_id", None),
+            "provider_error_file_id": getattr(batch, "error_file_id", None),
         }
-        write_json(Path(output_path), report)
-        return report
-    if not batch.output_file_id:
-        raise OpenAIBatchDiagnosticError("completed_batch_output_file_missing")
-    raw = client.files.content(batch.output_file_id).text
+        return _write_collection_report(
+            output_path,
+            report,
+            client=client,
+            input_file_id=str(receipt["input_file_id"]),
+            delete_input=terminal,
+        )
+    provider_files = {
+        "output": getattr(batch, "output_file_id", None),
+        "error": getattr(batch, "error_file_id", None),
+    }
+    if not any(provider_files.values()):
+        raise OpenAIBatchDiagnosticError("completed_batch_result_files_missing")
     pair_by_id = {pair["pair_id"]: pair for pair in _validate_inventory(inventory)}
     expected = set(manifest["pair_ids"])
     results: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     all_usage: list[dict[str, Any]] = []
-    for raw_line in raw.splitlines():
-        line = json.loads(raw_line)
-        pair_id = str(line.get("custom_id") or "")
-        response = line.get("response") if isinstance(line.get("response"), Mapping) else {}
-        body = response.get("body") if isinstance(response.get("body"), Mapping) else {}
-        if pair_id not in expected or pair_id not in pair_by_id:
-            raise OpenAIBatchDiagnosticError("batch_output_pair_id_unexpected")
-        if response.get("status_code") != 200 or line.get("error"):
-            errors.append({"pair_id": pair_id, "error": line.get("error")})
+    observed: set[str] = set()
+    for provider_file_role, provider_file_id in provider_files.items():
+        if not provider_file_id:
             continue
-        usage = _usage(body, model=manifest["model"])
-        all_usage.append(usage)
-        raw_text = _output_text(body)
-        try:
-            if body.get("status") != "completed":
-                raise OpenAIBatchDiagnosticError("batch_row_response_incomplete")
-            structured = json.loads(raw_text)
-            _validate_payload(structured)
-        except Exception as exc:
-            errors.append(
-                {
-                    "pair_id": pair_id,
-                    "error_type": type(exc).__name__,
-                    "error_code": "structured_output_invalid_or_incomplete",
-                    "response_id": body.get("id"),
-                    "response_status": body.get("status"),
-                    "incomplete_details": body.get("incomplete_details"),
-                    "raw_response_text": raw_text,
-                    "usage": usage,
-                }
+        raw = client.files.content(provider_file_id).text
+        for raw_line in raw.splitlines():
+            if not raw_line.strip():
+                continue
+            line = json.loads(raw_line)
+            pair_id = str(line.get("custom_id") or "")
+            response = (
+                line.get("response") if isinstance(line.get("response"), Mapping) else {}
             )
-            continue
-        result: dict[str, Any] = {
-            "schema_version": PAIR_RESULT_SCHEMA_VERSION,
-            "pair_id": pair_id,
-            "arm_id": manifest["arm_id"],
-            "provider": "openai",
-            "model": manifest["model"],
-            "response_id": body.get("id"),
-            "response_status": body.get("status"),
-            "structured_response": structured,
-            "usage": usage,
-            "transport": "openai_batch_api",
-            "policy_identity_sent_to_provider": False,
-            "physical_outcome_sent_to_provider": False,
-            "physical_ground_truth_pixels_sent_to_provider": False,
-            "claim_class": "post_unseal_diagnostic_only",
-        }
-        result["result_sha256"] = canonical_sha256(result)
-        results.append(result)
+            body = response.get("body") if isinstance(response.get("body"), Mapping) else {}
+            if pair_id not in expected or pair_id not in pair_by_id:
+                raise OpenAIBatchDiagnosticError("batch_output_pair_id_unexpected")
+            if pair_id in observed:
+                raise OpenAIBatchDiagnosticError("batch_output_pair_id_duplicate")
+            observed.add(pair_id)
+            provenance = {
+                "provider_file_role": provider_file_role,
+                "provider_file_id": str(provider_file_id),
+                "batch_row_id": line.get("id"),
+                "request_id": response.get("request_id"),
+            }
+            top_level_error = line.get("error")
+            response_body_error = body.get("error")
+            if (
+                response.get("status_code") != 200
+                or top_level_error
+                or response_body_error
+            ):
+                error_code = None
+                if isinstance(response_body_error, Mapping):
+                    error_code = response_body_error.get("code")
+                elif isinstance(top_level_error, Mapping):
+                    error_code = top_level_error.get("code")
+                errors.append(
+                    {
+                        "pair_id": pair_id,
+                        "error_type": "provider_batch_row_error",
+                        "error_code": error_code,
+                        "status_code": response.get("status_code"),
+                        "top_level_error": top_level_error,
+                        "response_body_error": response_body_error,
+                        **provenance,
+                    }
+                )
+                continue
+            usage = _usage(body, model=manifest["model"])
+            all_usage.append(usage)
+            raw_text = _output_text(body)
+            try:
+                if body.get("status") != "completed":
+                    raise OpenAIBatchDiagnosticError("batch_row_response_incomplete")
+                structured = json.loads(raw_text)
+                _validate_payload(structured)
+            except Exception as exc:
+                errors.append(
+                    {
+                        "pair_id": pair_id,
+                        "error_type": type(exc).__name__,
+                        "error_code": "structured_output_invalid_or_incomplete",
+                        "response_id": body.get("id"),
+                        "response_status": body.get("status"),
+                        "incomplete_details": body.get("incomplete_details"),
+                        "raw_response_text": raw_text,
+                        "usage": usage,
+                        **provenance,
+                    }
+                )
+                continue
+            result: dict[str, Any] = {
+                "schema_version": PAIR_RESULT_SCHEMA_VERSION,
+                "pair_id": pair_id,
+                "arm_id": manifest["arm_id"],
+                "provider": "openai",
+                "model": manifest["model"],
+                "response_id": body.get("id"),
+                "response_status": body.get("status"),
+                "structured_response": structured,
+                "usage": usage,
+                "transport": "openai_batch_api",
+                "policy_identity_sent_to_provider": False,
+                "physical_outcome_sent_to_provider": False,
+                "physical_ground_truth_pixels_sent_to_provider": False,
+                "claim_class": "post_unseal_diagnostic_only",
+                **provenance,
+            }
+            result["result_sha256"] = canonical_sha256(result)
+            results.append(result)
+    if observed != expected:
+        raise OpenAIBatchDiagnosticError("batch_output_pair_coverage_incomplete")
     results.sort(key=lambda value: value["pair_id"])
-    input_deleted = False
-    try:
-        client.files.delete(str(receipt["input_file_id"]))
-        input_deleted = True
-    except Exception:
-        input_deleted = False
     report = {
         "schema_version": "policy_ranking_openai_pair_batch_collection.v1",
         "status": "completed" if len(results) == len(expected) and not errors else "failed",
@@ -367,12 +435,18 @@ def collect_shard(
         "estimated_batch_cost_usd": sum(row["batch_cost_usd"] for row in all_usage),
         "results": results,
         "errors": errors,
-        "input_file_deleted": input_deleted,
+        "provider_output_file_id": provider_files["output"],
+        "provider_error_file_id": provider_files["error"],
+        "exact_pair_coverage_across_provider_files": True,
         "output_file_expires_automatically": True,
     }
-    report["report_sha256"] = canonical_sha256(report)
-    write_json(Path(output_path), report)
-    return report
+    return _write_collection_report(
+        output_path,
+        report,
+        client=client,
+        input_file_id=str(receipt["input_file_id"]),
+        delete_input=True,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

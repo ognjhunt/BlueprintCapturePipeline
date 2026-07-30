@@ -1,0 +1,67 @@
+{
+  "schema_version": "policy_ranking_cosmos3_oscar_skeleton_hybrid_technical_blocker.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "audited_at": "2026-07-30T04:10:03-0500",
+  "arm_id": "registered_cosmos3_plus_oscar_skeleton_hybrid",
+  "attribution": "Blueprint_Cosmos3_OSCAR_skeleton_hybrid_not_native_Cosmos_not_OSCAR",
+  "status": "technically_blocked",
+  "frozen_sources": {
+    "cosmos3_edge": {
+      "identity": "nvidia/Cosmos3-Edge",
+      "revision": "ff48d22144de52de296a7b4d3a78914831007212",
+      "readme_sha256": "9b0b3e887389e04501658b9ecbcc50e972d47e688a7a7a3c9a8918f9285c9e00"
+    },
+    "cosmos_framework": {
+      "identity": "NVIDIA/cosmos-framework",
+      "revision": "2f603cb114ff8b335e116060444d0b6caee3a85e",
+      "inference_documentation_sha256": "4b666eab3b7a2860ba43d380d1c7792480eca09188e3b06f5a4e953fe616fc1e",
+      "action_inference_source_sha256": "39d7a84cb8c83f8451baf415300257fe2e2f9385e930d58ee4f1b822196d7123",
+      "robot_forward_dynamics_fixture_sha256": "2961dbc5a5ba27a5c4f20b7b5b31d8fde30a137d2fe20acc3444d05be26ed8c2"
+    },
+    "oscar_skeleton_source": {
+      "identity": "OSCAR deterministic camera-aligned skeleton renderer",
+      "world_generated_pixels_admitted": false
+    }
+  },
+  "audit_findings": {
+    "native_forward_dynamics_conditioning": "observation image or video plus prompt plus numeric action_path selected through a registered embodiment domain",
+    "published_action_representation": "two-dimensional numeric action trajectory with embodiment-specific dimensionality",
+    "published_robot_fixture": {
+      "domain_name": "bridge_orig_lerobot",
+      "action_chunk_size": 16,
+      "view_point": "ego_view",
+      "image_size": 480,
+      "fps": 5
+    },
+    "relevant_inference_tree_skeleton_channel_matches": 0,
+    "native_camera_aligned_2d_skeleton_channel_published": false,
+    "checkpoint_trained_for_oscar_skeleton_conditioning_established": false,
+    "generic_vision_input_is_not_a_skeleton_conditioning_contract": true,
+    "painting_or_compositing_a_visible_skeleton_into_rgb_would_be_an_unvalidated_overlay_substitute": true
+  },
+  "technical_disposition": {
+    "run_admitted": false,
+    "reason": "The pinned public Cosmos3 checkpoint and framework expose native numeric action conditioning, not a separately identified camera-aligned OSCAR-skeleton conditioning channel. Treating a painted skeleton as ordinary RGB would not prove that Cosmos consumes the intended action semantics and is forbidden by the registered protocol.",
+    "may_be_reopened_only_by": [
+      "a public checkpoint or frozen adapter with an explicit skeleton-conditioning contract",
+      "or a separately named trained hybrid using untouched held-out confirmation data after all frozen baselines finish"
+    ],
+    "oscar_generated_world_video_fed_to_cosmos": false,
+    "overlay_substitute_created": false,
+    "provider_called": false,
+    "gpu_spend_usd": 0.0,
+    "api_spend_usd": 0.0
+  },
+  "claim_boundary": {
+    "hybrid_wam_credit": false,
+    "native_cosmos_credit": false,
+    "oscar_credit": false,
+    "ranking_fidelity": false,
+    "captured_site_transfer": false,
+    "economics_and_speed": false,
+    "physical_success": false,
+    "thesis_support": false
+  },
+  "physical_outcome_labels_accessed": false,
+  "manifest_sha256": "8d7f879416858dc52d3b4f769fbe173452ee446fe8c5abcebea59dd2a421720d"
+}

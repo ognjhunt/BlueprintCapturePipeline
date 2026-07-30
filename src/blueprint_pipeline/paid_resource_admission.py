@@ -10,6 +10,7 @@ PAID_LANE_ADMISSION_SCHEMA_VERSION = "paid_lane_admission.v1"
 PAID_RESOURCE_CLASSES = frozenset(
     {
         "cpu_build",
+        "evaluator_api",
         "gpu_canary",
         "model_volume",
         "openai_api_candidate",

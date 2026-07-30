@@ -1,0 +1,22 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze_amendment.v9",
+  "frozen_at": "2026-07-30T03:44:22-0500",
+  "former_manifest": "source_freeze_v8.json",
+  "former_manifest_sha256": "dcf03d35d1c454eeeb5615164a4dd6ae67150baa67689f99121c400e3090dff5",
+  "successor_manifest": "source_freeze_v9.json",
+  "successor_manifest_sha256": "7d80266c90d950752a51795b385b8c43ecd35f6f387d15189ae43c3617fda99c",
+  "changed_fields": [
+    "added separately attributed Ctrl-World source, checkpoint, base-model, dependency, image, and fixture freeze",
+    "froze the complete 91-package Python dependency resolution outside the immutable base-image Torch and CUDA stack",
+    "recorded research-only no-redistribution disposition for the CLIP weights because the pinned Hugging Face revision publishes no explicit weight license",
+    "frozen exact three-view trajectory 899 replay bytes and exact public replay script",
+    "preserved OSCAR and Cosmos source identities unchanged"
+  ],
+  "scientific_inputs_changed": true,
+  "scientific_input_change": "prospective addition of a distinct Ctrl-World open-loop replay reference arm",
+  "public_source_or_checkpoint_changed": true,
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "amendment_sha256": "0ed15e3432b2a03ef92966bd89aeb22561296cbcccf23a6dc6c81eb2a316a1b5"
+}

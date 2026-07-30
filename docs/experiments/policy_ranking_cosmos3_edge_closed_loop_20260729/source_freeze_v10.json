@@ -1,0 +1,18 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_source_freeze.v10",
+  "frozen_at": "2026-07-30T05:20:14-0500",
+  "supersedes_manifest_sha256": "7d80266c90d950752a51795b385b8c43ecd35f6f387d15189ae43c3617fda99c",
+  "inherits_all_sources_from": "source_freeze_v9.json",
+  "paid_execution_admitted": false,
+  "provider_called": false,
+  "physical_outcome_labels_accessed": false,
+  "ctrl_world_runtime_correction": {
+    "runtime_image": "docker.io/pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "former_short_torch_version": "2.7.1",
+    "exact_torch_distribution_version": "2.7.1+cu128",
+    "observation_source": "importlib.metadata.version('torch') inside the immutable runtime image during allocation 11",
+    "allocation_11_runtime_result_sha256": "236a88b0427d0b0a90f707c78af0e4958613fdd2f67b7a5c53fd63d484221f56",
+    "source_checkpoint_data_views_actions_sampling_and_python_dependencies_changed": false
+  },
+  "manifest_sha256": "e43a961e0cafe6fd8129ab552a64e9da4fff00ca57797b7087b2f502b3063f81"
+}

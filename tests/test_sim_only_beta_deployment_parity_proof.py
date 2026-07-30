@@ -5,10 +5,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from scripts.run_sim_only_beta_deployment_parity_proof import (
+    SCHEMA_VERSION,
+    _default_output_path,
     _load_env_file_values,
     _pipeline_intake_token,
     build_deployment_parity_proof,
 )
+
+HEAD_SHA = "a" * 40
 
 
 def _fetcher(url: str, headers: Mapping[str, str] | None, timeout: int) -> dict[str, Any]:
@@ -27,6 +31,25 @@ def _fetcher(url: str, headers: Mapping[str, str] | None, timeout: int) -> dict[
             "json": {"ok": True, "token_configured": True},
             "error": None,
         }
+    if url.endswith("/version.json"):
+        return {
+            "ok": True,
+            "http_status": 200,
+            "json": {"service": "blueprint-webapp", "git_sha": HEAD_SHA},
+            "error": None,
+        }
+    if url.endswith("/api/live-pipeline/version"):
+        return {
+            "ok": True,
+            "http_status": 200,
+            "json": {
+                "schema_version": "blueprint_pipeline_deployment_identity.v1",
+                "commit_proven": True,
+                "source_commit": HEAD_SHA,
+                "claim_ceiling": "deployed_service_identity_only",
+            },
+            "error": None,
+        }
     if url.endswith("/api/live-pipeline/intake-audit"):
         return {
             "ok": True,
@@ -38,7 +61,7 @@ def _fetcher(url: str, headers: Mapping[str, str] | None, timeout: int) -> dict[
 
 
 def _git_probe(repo: Path) -> dict[str, Any]:
-    head = "abc123"
+    head = HEAD_SHA
     return {
         "path": str(repo),
         "head": head,
@@ -57,6 +80,17 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def test_deployment_parity_default_outputs_are_environment_bound() -> None:
+    capture_root = Path("/captures/example")
+
+    assert _default_output_path(capture_root, "staging").name == (
+        "sim_only_beta_staging_deployment_proof.json"
+    )
+    assert _default_output_path(capture_root, "production").name == (
+        "sim_only_beta_production_deployment_proof.json"
+    )
+
+
 def test_deployment_parity_token_can_load_from_forwarding_env_file(
     tmp_path: Path,
     monkeypatch,
@@ -71,10 +105,7 @@ def test_deployment_parity_token_can_load_from_forwarding_env_file(
 
     values = _load_env_file_values([env_file])
 
-    assert (
-        _pipeline_intake_token("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", values)
-        == "file-token"
-    )
+    assert _pipeline_intake_token("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", values) == "file-token"
 
 
 def test_deployment_parity_process_env_wins_over_forwarding_env_file(
@@ -90,10 +121,7 @@ def test_deployment_parity_process_env_wins_over_forwarding_env_file(
 
     values = _load_env_file_values([env_file])
 
-    assert (
-        _pipeline_intake_token("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", values)
-        == "process-token"
-    )
+    assert _pipeline_intake_token("ROBOT_EVAL_JOB_REQUEST_FORWARD_TOKEN", values) == "process-token"
 
 
 def test_deployment_parity_proof_passes_with_health_and_commit_parity() -> None:
@@ -114,23 +142,29 @@ def test_deployment_parity_proof_passes_with_health_and_commit_parity() -> None:
         webapp_repo=Path("/repos/webapp"),
         pipeline_repo=Path("/repos/pipeline"),
         capture_repo=Path("/repos/capture"),
-        webapp_deployed_commit="abc123",
-        pipeline_deployed_commit="abc123",
+        webapp_deployed_commit=HEAD_SHA,
+        pipeline_deployed_commit=HEAD_SHA,
         now_iso="2026-06-17T00:00:00+00:00",
         fetcher=capturing_fetcher,
         git_probe=_git_probe,
     )
 
     assert report["status"] == "verified"
+    assert report["schema_version"] == SCHEMA_VERSION
+    assert report["deployment_environment"] == "production"
+    assert report["deployment_proven"] is True
+    assert report["staging_deployment_proven"] is False
     assert report["production_deployment_proven"] is True
     assert report["webapp_health_ready"] is True
     assert report["pipeline_intake_health_ready"] is True
+    assert report["webapp_deployment_identity_ready"] is True
+    assert report["pipeline_deployment_identity_ready"] is True
     assert report["git_parity_proven"] is True
     assert report["simulator_execution_proven"] is False
     assert report["public_claim_upgrade_allowed"] is False
     assert report["proof_boundary"]["simulator_execution_proven"] is False
     assert report["proof_boundary"]["public_claim_upgrade_allowed"] is False
-    readiness_key = "physical_robot_" "readiness_proven"
+    readiness_key = "physical_robot_readiness_proven"
     assert readiness_key not in report
     assert readiness_key not in report["proof_boundary"]
     assert report["blockers"] == []
@@ -168,8 +202,8 @@ def test_deployment_parity_proof_infers_urls_from_route_forwarding_proof(
         pipeline_intake_token="secret-token",
         webapp_repo=Path("/repos/webapp"),
         pipeline_repo=Path("/repos/pipeline"),
-        webapp_deployed_commit="abc123",
-        pipeline_deployed_commit="abc123",
+        webapp_deployed_commit=HEAD_SHA,
+        pipeline_deployed_commit=HEAD_SHA,
         route_forwarding_proof_path=route_proof,
         fetcher=_fetcher,
         git_probe=_git_probe,
@@ -193,7 +227,6 @@ def test_deployment_parity_proof_accepts_authenticated_intake_audit_health() -> 
         headers: Mapping[str, str] | None,
         timeout: int,
     ) -> dict[str, Any]:
-        del timeout
         if url.endswith("/health/ready"):
             return {
                 "ok": True,
@@ -208,6 +241,8 @@ def test_deployment_parity_proof_accepts_authenticated_intake_audit_health() -> 
                 "json": {"status": "healthy"},
                 "error": None,
             }
+        if url.endswith("/version.json") or url.endswith("/api/live-pipeline/version"):
+            return _fetcher(url, headers, timeout)
         if url.endswith("/api/live-pipeline/intake-audit"):
             assert headers
             assert headers.get("Authorization") is None
@@ -228,8 +263,8 @@ def test_deployment_parity_proof_accepts_authenticated_intake_audit_health() -> 
         pipeline_intake_token="secret-token",
         webapp_repo=Path("/repos/webapp"),
         pipeline_repo=Path("/repos/pipeline"),
-        webapp_deployed_commit="abc123",
-        pipeline_deployed_commit="abc123",
+        webapp_deployed_commit=HEAD_SHA,
+        pipeline_deployed_commit=HEAD_SHA,
         fetcher=same_host_fetcher,
         git_probe=_git_probe,
     )
@@ -307,8 +342,8 @@ def test_deployment_parity_proof_blocks_unready_health() -> None:
         pipeline_intake_token="secret-token",
         webapp_repo=Path("/repos/webapp"),
         pipeline_repo=Path("/repos/pipeline"),
-        webapp_deployed_commit="abc123",
-        pipeline_deployed_commit="abc123",
+        webapp_deployed_commit=HEAD_SHA,
+        pipeline_deployed_commit=HEAD_SHA,
         fetcher=blocked_fetcher,
         git_probe=_git_probe,
     )
@@ -319,3 +354,86 @@ def test_deployment_parity_proof_blocks_unready_health() -> None:
     assert "webapp_health_not_ready" in report["blockers"]
     assert "pipeline_intake_health_not_ready" in report["blockers"]
     assert "pipeline_intake_audit_not_reachable" in report["blockers"]
+
+
+def test_deployment_parity_proof_requires_running_pipeline_identity() -> None:
+    def stale_pipeline_fetcher(
+        url: str,
+        headers: Mapping[str, str] | None,
+        timeout: int,
+    ) -> dict[str, Any]:
+        if url.endswith("/api/live-pipeline/version"):
+            return {
+                "ok": False,
+                "http_status": 404,
+                "json": None,
+                "error": "http_404",
+            }
+        return _fetcher(url, headers, timeout)
+
+    report = build_deployment_parity_proof(
+        webapp_url="https://paperclip.tryblueprint.io",
+        pipeline_intake_url="https://pipeline.tryblueprint.io",
+        pipeline_intake_token="secret-token",
+        webapp_repo=Path("/repos/webapp"),
+        pipeline_repo=Path("/repos/pipeline"),
+        webapp_deployed_commit=HEAD_SHA,
+        pipeline_deployed_commit=HEAD_SHA,
+        fetcher=stale_pipeline_fetcher,
+        git_probe=_git_probe,
+    )
+
+    assert report["status"] == "blocked"
+    assert report["git_parity_proven"] is True
+    assert report["pipeline_deployment_identity_ready"] is False
+    assert "pipeline_deployment_identity_not_ready" in report["blockers"]
+
+
+def test_deployment_parity_proof_rejects_identity_commit_mismatch() -> None:
+    mismatched_sha = "b" * 40
+
+    def mismatched_fetcher(
+        url: str,
+        headers: Mapping[str, str] | None,
+        timeout: int,
+    ) -> dict[str, Any]:
+        result = _fetcher(url, headers, timeout)
+        if url.endswith("/api/live-pipeline/version"):
+            result["json"] = {**result["json"], "source_commit": mismatched_sha}
+        return result
+
+    report = build_deployment_parity_proof(
+        webapp_url="https://paperclip.tryblueprint.io",
+        pipeline_intake_url="https://pipeline.tryblueprint.io",
+        pipeline_intake_token="secret-token",
+        webapp_repo=Path("/repos/webapp"),
+        pipeline_repo=Path("/repos/pipeline"),
+        webapp_deployed_commit=HEAD_SHA,
+        pipeline_deployed_commit=HEAD_SHA,
+        fetcher=mismatched_fetcher,
+        git_probe=_git_probe,
+    )
+
+    assert report["pipeline_deployment_identity_ready"] is True
+    assert report["git_parity_proven"] is False
+    assert "pipeline_deployment_identity_commit_mismatch" in report["blockers"]
+
+
+def test_staging_identity_cannot_satisfy_production_deployment_gate() -> None:
+    report = build_deployment_parity_proof(
+        webapp_url="https://staging.tryblueprint.io",
+        pipeline_intake_url="https://pipeline-staging.tryblueprint.io",
+        pipeline_intake_token="secret-token",
+        webapp_repo=Path("/repos/webapp"),
+        pipeline_repo=Path("/repos/pipeline"),
+        webapp_deployed_commit=HEAD_SHA,
+        pipeline_deployed_commit=HEAD_SHA,
+        deployment_environment="staging",
+        fetcher=_fetcher,
+        git_probe=_git_probe,
+    )
+
+    assert report["status"] == "verified"
+    assert report["deployment_proven"] is True
+    assert report["staging_deployment_proven"] is True
+    assert report["production_deployment_proven"] is False

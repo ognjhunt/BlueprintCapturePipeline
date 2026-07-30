@@ -1,0 +1,43 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v12",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-30T04:24:09-0500",
+  "supersedes_amendment_sha256": "ca033079a290780291ff2fda89159d0f8e50afde0c888ba4d4df14bd4a2bdc20",
+  "phase": "phase_4_ctrl_world_runtime_failure_investigation",
+  "trigger": "Allocation 8 reached a healthy container and visible RTX PRO 6000 but failed before bundle download because the generic CUDA-runtime probe reported cudart_missing in the pinned PyTorch runtime image.",
+  "allocation_8_result": {
+    "provider_instance_id": 46272610,
+    "gpu_model": "RTX PRO 6000 WS",
+    "container_heartbeat_passed": true,
+    "nvidia_smi_passed": true,
+    "cuda_runtime_probe": "cudart_missing",
+    "bundle_download_started": false,
+    "model_load_started": false,
+    "scientific_outputs_produced": 0,
+    "authorization_consumed": true,
+    "provider_zero_proven": true,
+    "attributable_gpu_cost_usd": 0.026409,
+    "adapter_result_sha256": "575e7f9937d32b813344709a9e4cab946d9c5d5f2d364a836894b768e9a686a6",
+    "provider_result_sha256": "2bb6d81115d3a8a237799caf6282e13ba387dce721cad1d908d2ea06235de85e",
+    "gpu_sanity_sha256": "57f2598310ed7c1d7b8d1c94387fb2e1e42a5b46e6453f5b5ca833f12be3d4e7",
+    "teardown_sha256": "d0d69f89c4d3c0b5bfa390ef0329b6b45d307b548d43b5ffcab317288048e1d5",
+    "watchdog_sha256": "ab3c47f987082230b5ec0227078844e0cb711737b40bdbfe58a73a777e363b80"
+  },
+  "demonstrable_implementation_defect": {
+    "probe_before": "ctypes lookup plus a narrow set of libcudart paths that omitted standard CUDA lib64, conda, and Python site-packages runtime locations",
+    "probe_after": "retain direct cudaGetDeviceCount validation, add standard runtime-image paths, and use installed PyTorch CUDA device enumeration only when direct libcudart discovery fails",
+    "safety_preserved": "A positive result still requires at least one CUDA device inside the container; nvidia-smi alone remains insufficient.",
+    "generic_future_applicability": true
+  },
+  "unchanged_scientific_inputs": {
+    "bundle_sha256": "6f3b4acd71addec24251c19bba4a304268ba086ed1017007e8d06a884accc558",
+    "base_image_digest": "sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "ctrl_world_source_checkpoint_data_views_actions_and_sampling": "unchanged",
+    "labels_accessed": false,
+    "bundle_rebuild_required": false
+  },
+  "rerun_rule": "One new allocation may rerun the exact canary only after the generic probe correction and focused regression tests are committed and pushed. Any subsequent failure must be retained and classified before another paid mutation.",
+  "claim_boundary": "The probe correction and any transport/runtime canary pass earn no WAM causal, ranking, transfer, economics, physical-success, or thesis credit.",
+  "provider_called_for_this_amendment": false,
+  "manifest_sha256": "9026f612590755e2a05467df0bac7f6afd727afac15c5e9429ad9aef60705c53"
+}

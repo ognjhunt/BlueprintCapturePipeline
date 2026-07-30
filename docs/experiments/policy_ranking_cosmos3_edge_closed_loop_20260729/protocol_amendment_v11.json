@@ -1,0 +1,38 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v11",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-30T04:13:10-0500",
+  "supersedes_amendment_sha256": "7010c5f67c8f1d87bc583ac46425ca6fcf4e45af36d0cfeb55fda4064f178ce3",
+  "phase": "phase_4_ctrl_world",
+  "trigger": "The first paid execution attempt failed closed before authorization consumption or provider mutation because the 120-minute profile reservation could exceed the stage target spend at the profile maximum hourly rate.",
+  "changed_fields": {
+    "ctrl_world_replay_profile.hard_ttl_seconds": {
+      "from": 7200,
+      "to": 4800
+    },
+    "worst_case_reserved_spend_usd_at_profile_max_hourly_rate": {
+      "from": 4.1,
+      "to": 2.7333333333333334
+    }
+  },
+  "unchanged_fields": {
+    "authorized_compute_cap_usd": 5.0,
+    "target_spend_usd": 3.0,
+    "maximum_provider_allocations": 1,
+    "bundle_sha256": "6f3b4acd71addec24251c19bba4a304268ba086ed1017007e8d06a884accc558",
+    "model_source_data_and_sampling_contract": "unchanged",
+    "request_count": 1,
+    "physical_outcome_labels_accessed": false
+  },
+  "prior_attempt": {
+    "provider_mutations_performed": 0,
+    "authorization_consumed": false,
+    "gpu_spend_usd": 0.0,
+    "scientific_outputs_produced": 0
+  },
+  "rationale": "Eighty minutes covers the prospectively estimated 20-to-60-minute checkpoint download and one-interaction canary window while keeping the reservation below the stage target even at the profile's maximum admitted hourly rate.",
+  "failure_rule": "If the canary cannot finish inside 4800 seconds, teardown and retain the timeout as a runtime failure; do not extend the TTL or rerun without a new prospective amendment.",
+  "claim_boundary": "The shorter TTL changes no scientific input and earns no WAM, ranking, transfer, economics, physical-success, or thesis credit.",
+  "provider_called_for_this_amendment": false,
+  "manifest_sha256": "ca033079a290780291ff2fda89159d0f8e50afde0c888ba4d4df14bd4a2bdc20"
+}

@@ -40,6 +40,10 @@ TERMINAL_STATES = {
     "JOB_STATE_CANCELLED",
     "JOB_STATE_EXPIRED",
 }
+ALLOWED_ARM_IDS = {
+    "gemini36_flash_native_video",
+    "gemini36_flash_complete_graph",
+}
 
 
 class GeminiBatchDiagnosticError(ValueError):
@@ -140,9 +144,7 @@ def submit_pilot(
         job = client.batches.create(
             model=GEMINI_MODEL,
             src=requests,
-            config=types.CreateBatchJobConfig(
-                display_name="blueprint-roboarena-gemini36-pilot-v1"
-            ),
+            config=types.CreateBatchJobConfig(display_name="blueprint-roboarena-gemini36-pilot-v1"),
         )
     except Exception:
         for uploaded in uploaded_by_id.values():
@@ -195,6 +197,9 @@ def collect_pilot(
     payload = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
     if canonical_sha256(payload) != receipt.get("receipt_sha256"):
         raise GeminiBatchDiagnosticError("batch_receipt_digest_invalid")
+    arm_id = str(receipt.get("arm_id") or "")
+    if arm_id not in ALLOWED_ARM_IDS:
+        raise GeminiBatchDiagnosticError("batch_receipt_arm_id_invalid")
     key = _secure_file(api_key_file)
     from google import genai
 
@@ -202,12 +207,17 @@ def collect_pilot(
     job = client.batches.get(name=str(receipt["batch_name"]))
     state = _job_state(job)
     terminal = state in TERMINAL_STATES
+    cleanup_uploads_on_terminal = bool(receipt.get("cleanup_uploads_on_terminal", True))
+    cleanup_deferred = (
+        terminal and state == "JOB_STATE_SUCCEEDED" and not cleanup_uploads_on_terminal
+    )
     if state != "JOB_STATE_SUCCEEDED":
         deletions = _delete_uploads(client, receipt) if terminal else []
         report = {
             "schema_version": "policy_ranking_gemini_pair_batch_collection.v1",
             "status": state,
             "batch_name": receipt["batch_name"],
+            "arm_id": arm_id,
             "completed": False,
             "terminal": terminal,
             "provider_error": (
@@ -219,13 +229,38 @@ def collect_pilot(
                 else None
             ),
             "deletions": deletions,
+            "cleanup_deferred": False,
+            "shard_index": receipt.get("shard_index"),
+            "shard_count": receipt.get("shard_count"),
         }
         report["report_sha256"] = canonical_sha256(report)
         write_json(Path(output_path), report)
         return report
     responses = list(getattr(getattr(job, "dest", None), "inlined_responses", None) or [])
     if len(responses) != len(receipt["pair_ids"]):
-        raise GeminiBatchDiagnosticError("batch_inline_response_count_invalid")
+        deletions = _delete_uploads(client, receipt)
+        report = {
+            "schema_version": "policy_ranking_gemini_pair_batch_collection.v1",
+            "status": "failed",
+            "provider_job_state": state,
+            "batch_name": receipt["batch_name"],
+            "arm_id": arm_id,
+            "completed": True,
+            "error_code": "batch_inline_response_count_invalid",
+            "expected_response_count": len(receipt["pair_ids"]),
+            "observed_response_count": len(responses),
+            "results": [],
+            "errors": [],
+            "deletions": deletions,
+            "temporary_video_files_deleted": len(deletions) == receipt["unique_video_count"]
+            and all(row["deleted"] for row in deletions),
+            "cleanup_deferred": False,
+            "shard_index": receipt.get("shard_index"),
+            "shard_count": receipt.get("shard_count"),
+        }
+        report["report_sha256"] = canonical_sha256(report)
+        write_json(Path(output_path), report)
+        return report
     results: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     all_usage: list[dict[str, Any]] = []
@@ -261,7 +296,7 @@ def collect_pilot(
         result: dict[str, Any] = {
             "schema_version": PAIR_RESULT_SCHEMA_VERSION,
             "pair_id": pair_id,
-            "arm_id": "gemini36_flash_native_video",
+            "arm_id": arm_id,
             "provider": "google_gemini_api",
             "model": GEMINI_MODEL,
             "response_id": str(getattr(response, "response_id", "") or ""),
@@ -275,19 +310,25 @@ def collect_pilot(
         }
         result["result_sha256"] = canonical_sha256(result)
         results.append(result)
-    deletions = _delete_uploads(client, receipt)
-    deleted_all = len(deletions) == receipt["unique_video_count"] and all(
-        row["deleted"] for row in deletions
+    complete_valid_result_set = len(results) == len(receipt["pair_ids"]) and not errors
+    must_cleanup = cleanup_uploads_on_terminal or not complete_valid_result_set
+    deletions = _delete_uploads(client, receipt) if must_cleanup else []
+    cleanup_deferred = not must_cleanup
+    deleted_all = (
+        must_cleanup
+        and len(deletions) == receipt["unique_video_count"]
+        and all(row["deleted"] for row in deletions)
     )
     report = {
         "schema_version": "policy_ranking_gemini_pair_batch_collection.v1",
         "status": (
             "completed"
-            if len(results) == len(receipt["pair_ids"]) and not errors and deleted_all
+            if complete_valid_result_set and (deleted_all or cleanup_deferred)
             else "failed"
         ),
         "provider_job_state": state,
         "batch_name": receipt["batch_name"],
+        "arm_id": arm_id,
         "completed": True,
         "result_count": len(results),
         "error_count": len(errors),
@@ -298,6 +339,9 @@ def collect_pilot(
         "errors": errors,
         "deletions": deletions,
         "temporary_video_files_deleted": deleted_all,
+        "cleanup_deferred": cleanup_deferred,
+        "shard_index": receipt.get("shard_index"),
+        "shard_count": receipt.get("shard_count"),
         "batch_result_retention": "provider_default_up_to_six_weeks",
     }
     report["report_sha256"] = canonical_sha256(report)

@@ -1,0 +1,28 @@
+{
+  "schema_version": "policy_ranking_ctrl_world_replay_vast_preflight.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "observed_at": "2026-07-30T03:57:36-0500",
+  "observed_at_epoch": 1785401925,
+  "status": "blocked",
+  "provider": "vast",
+  "provider_api_verified": true,
+  "provider_inventory_verified_zero": false,
+  "global_live_resource_count": 1,
+  "task_live_resource_count": 0,
+  "live_resource_owned_by_this_arm": false,
+  "live_resource_interfered_with": false,
+  "selected_offer": {
+    "gpu_name": "RTX PRO 6000 WS",
+    "gpu_ram_mb": 97887,
+    "hourly_rate_usd": 0.8762962962962964,
+    "reliability": 0.996214
+  },
+  "blockers": [
+    "successor_vast_inventory_not_zero",
+    "maximum_concurrent_gpus_is_one"
+  ],
+  "provider_mutations_performed": 0,
+  "allocation_authority_consumed": false,
+  "next_finite_gate": "repeat read-only provider preflight after unrelated authorized GPU terminates",
+  "raw_secret_values_recorded": false
+}

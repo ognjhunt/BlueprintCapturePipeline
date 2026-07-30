@@ -69,7 +69,22 @@ def wam_registered_alternative_inputs_present(
             )
         except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
             powered_inputs_present = False
-    return standard_inputs_present or reference_inputs_present or powered_inputs_present
+    ctrl_world_inputs_present = all(
+        f"provider_runtime/ctrl_world_replay/{name}" in entries
+        for name in (
+            "canary_manifest.json",
+            "annotation.json",
+            "view_0.mp4",
+            "view_1.mp4",
+            "view_2.mp4",
+        )
+    )
+    return (
+        standard_inputs_present
+        or reference_inputs_present
+        or powered_inputs_present
+        or ctrl_world_inputs_present
+    )
 
 
 def provider_runtime_contract_blockers(
@@ -136,7 +151,11 @@ def provider_runtime_contract_blockers(
         )
         runner_valid = (
             "wam_runtime_result.json" in runner_text
-            and ("OSCAR-2B" in runner_text or "Cosmos3-Nano" in runner_text)
+            and (
+                "OSCAR-2B" in runner_text
+                or "Cosmos3-Nano" in runner_text
+                or "Ctrl-World" in runner_text
+            )
             and "action_conditioned_video_rollout_generated" in runner_text
         )
         runner_blocker = "provider_runner_missing_wam_runtime_contract"

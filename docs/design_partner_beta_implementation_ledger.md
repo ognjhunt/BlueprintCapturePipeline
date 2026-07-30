@@ -10,29 +10,37 @@ evidence are tracked separately.
 
 | Repository | HEAD / local main / origin main | State and handling |
 | --- | --- | --- |
-| BlueprintCapturePipeline | `21e49c3df1d4be7bacffda87bc9d78ce08e20bb4` | Primary checkout had the preserved user-owned `docs/CHANGELOG.md` edit. Work continues in `codex/design-partner-beta-20260729` from `origin/main`; the primary checkout was not changed. Durable task discovery/approval is committed at `d2993aea`; the reconstruction capability graph/compiler at `5b4f8109`; immutable testbed publication at `9e7acb79`; local adapters at `bf1a18b2`; append-only run state at `74bef6c7`; plan/authorize/execute/aggregate at `bfc2b2a2`; Pipeline-owned method selection at `208aae21`; exact testbed-to-request plus authorization hardening at `c6db79c8`; signed authoritative Capture QA publication at `3d31230e`; completed-Web-upload intake at `c0093390` plus hardening at `52c0844f`; and automatic upload-lane Capture QA at `f762a9a5` plus contract/docs closure at `85dd3436`. |
-| BlueprintCapture | `a5f84c8c7875396c6e787bc00bed48fb717d1091` | Primary checkout was clean and remains untouched. Capture work continues in `codex/design-partner-beta-20260729`; retained-frame/decoded-PTS changes are committed at `5e4cb5bb`. |
-| Blueprint-WebApp | `92e4eacdcecb4b733b45998df8a8864bddebe2d4` | Primary checkout was clean and remains untouched. WebApp work continues in `codex/design-partner-beta-20260729`; secure resumable upload changes are committed at `5ff03f55`, customer task review at `b115089b`, the signed authoritative Pipeline approval handoff at `ce2abe2f`, immutable testbed inspection at `e77f6d87`, terminal run inspection at `60347616`, customer plan/authorize/execute control at `95b1ccea`, authoritative Capture QA inspection at `a11af19d`, completed-upload transfer/retry at `0f4c4225`, and automatic QA receipt storage at `5b34907b`. |
+| BlueprintCapturePipeline | `21e49c3df1d4be7bacffda87bc9d78ce08e20bb4` | Startup primary checkout had a preserved user-owned `docs/CHANGELOG.md` edit and later supervisor work in a separate writer lane. The integrated controlled-beta, supervisor, experiment-boundary, and deployment-identity work is published through PRs #248–#252. Protected `main`, local `main`, `origin/main`, and remote `main` are `0923fc820388900df53ac246c671f8dea1810ba3`, tree `1d871a9ba8adda178cee047959f490dd561b0127`, with divergence `0 0` and clean status in the release checkout. This deployment-proof hardening remains isolated in a dedicated linked worktree. |
+| BlueprintCapture | `a5f84c8c7875396c6e787bc00bed48fb717d1091` | Startup primary checkout was clean. PR #60 published Raw Contract 3.2 retained-frame/decoded-PTS work to protected `main` at `88c76130813ab0e860e6b91e6b98c2c1e5bb12cb`; primary HEAD, local `main`, `origin/main`, and remote `main` match with divergence `0 0`, tree `67b5bd0d52b12a2f012e7ab06d7698235ab64c2c`, and clean status. |
+| Blueprint-WebApp | `92e4eacdcecb4b733b45998df8a8864bddebe2d4` | Startup primary checkout was clean. The authoritative Task Evaluation Run lifecycle and testbed UI are published through PR #429; protected `main`, local `main`, `origin/main`, and deployed production are `c0d8de74e5548b541d8e575de35d7d85cd8cb1ae`. |
 
 Open Pipeline PRs were inspected at startup. PR #226 is a separate World Labs
 analysis; older integration/audit and Dependabot PRs are not absorbed into this
 branch.
 
-After this branch was isolated, another writer added uncommitted primary-checkout
-changes to `decision_evidence_cli.py`, a Task Evaluation Supervisor architecture
-document/module/test set, and retained the existing changelog edit. Those files
-remain user-owned and are not inspected, absorbed, or modified by this branch.
+After this branch was isolated, another writer added primary-checkout changes to
+`decision_evidence_cli.py`, the Task Evaluation Supervisor architecture and
+module/test set, and the existing changelog. This branch did not absorb or alter
+that work while it was in progress. The owner lane later published it through
+PR #250; this follow-up is rebased on the resulting protected-main commit.
 
-The integrated Pipeline release through PR #248 is now on protected `main` at
-`4aa4e0562fa4f409c6dc8ee19b745c81f4764a5d` with tree
-`2cfc51557a2f43daa321b658358f4053483fc81a`; all hosted checks passed and the
-exact-final local full suite reported `7469 passed`. Follow-on local
-reconstruction and completed-capture lifecycle work is checkpointed through
-`149d437b` on `codex/design-partner-beta-reconstruction-20260730`; it is not yet
-published. WebApp lifecycle adoption is checkpointed at `2f161542`,
-reconstruction plan/authorize/execute/inspect adoption at `b5e56603`, and
-authoritative testbed compilation at `e3915731` on
-`codex/design-partner-beta-lifecycle-20260730`; neither is published yet.
+The first integrated Pipeline release through PR #248 landed at `4aa4e056` with
+tree `2cfc5155`; its exact-final local full suite reported `7469 passed`. The
+follow-on reconstruction, completed-capture lifecycle, local evidence adapters,
+immutable testbed compilation, and WebApp contracts were then published through
+PR #249. Its tree-identical local final candidate
+`677f4ada508d72ec0fd607d9d2525c49c1ff0f11` passed the exact-final full suite
+with `7483 passed`; all 16 PR checks and all post-merge main workflows passed.
+PR #250 subsequently published the agentic Task Evaluation Supervisor. PR #251
+preserved the frozen tested-stack verdict `thesis_not_supported` and kept the
+separately scoped successor result `inconclusive`. PR #252 then published the
+fail-closed Pipeline deployment-identity endpoint. The exact protected-main
+candidate `0923fc82` passed CI, CodeQL, Python compatibility, sim-only, Docker,
+and the hosted full lane; the hosted full evidence records `7594 passed`, zero
+failures/errors/skips, and exact repository SHA binding.
+WebApp PR #429 published the corresponding customer workflow at `c0d8de74` with
+tree `12f1164b7cf87b4821e4833c680166f23f7e7f89`; hosted CI and the gated Render
+deployment passed and production reports that exact commit.
 
 ## Baseline and deployment evidence
 
@@ -57,12 +65,14 @@ authoritative testbed compilation at `e3915731` on
 | Pipeline-owned testbed support artifacts | `13 passed` across the immutable compiler and reconstruction control plane; Ruff passes. The signed v2 compile seam now rejects caller-supplied SimReady, placement, evaluator/reset, supported-condition, and predecessor artifacts in addition to capture/reconstruction truth. Pipeline derives conservative per-claim SimReady decisions, an explicit placement abstention when no qualified candidates exist, accepted-capture-only condition scope, and immutable downloadable evaluator/reset support artifacts. The caller may submit only owner-attested robot configuration plus provider-neutral decision constraints. |
 | WebApp authoritative testbed compilation | `31 passed` across the capture workspace, compilation form, signed reconstruction/testbed forwarding, owner routes, and upload client; full TypeScript and graphify pass. After approved task intent and terminal local reconstruction, the owner supplies robot identity plus false-safe risk, evidence coverage, budget, latency, deadline, and audience constraints. WebApp derives provider-neutral claims from the approved task, sends none of Pipeline's scientific artifacts, and refuses to report readiness unless Pipeline publishes the exact compiled testbed back through the signed receipt-verified seam. |
 | Closed cross-repository testbed-compilation contract | Pipeline has `14 passed` across the immutable compiler and reconstruction control plane; Ruff and compile checks pass. WebApp has `31 passed` across forwarding, routes, and UI; full TypeScript and graphify pass. Pipeline validates the entire v2 submission with `extra=forbid`, rejects inconsistent robot bindings and caller-selected scientific scope, and checks the generated Draft 2020-12 schema into source. WebApp validates before network forwarding; its byte-identical mirror has SHA-256 `16abac9f72158900f176d1f37ec81299e8f4ae39bf945e184bb7168a1562a7e7`. |
-| Pipeline fast/full release lanes | Not run yet; this is not a coherent release candidate. |
-| Capture retained-frame/decoded-PTS focused lane | `53 passed`, 0 failed, 0 skipped on an iPhone 17 Pro iOS 26.0 simulator. The explicit result bundle is `build/CaptureSyncFocused.xcresult` in the Capture beta worktree and covers synchronization, strict Raw Contract 3.2 validation, finalizer/raw-bundle regressions, Pipeline contract constants, and adjacent capture-bundle/inference behavior. Earlier overlapping invocations failed on a locked build database or insufficient local disk; neither is counted as test evidence. |
-| Capture release lanes | Not run yet; the focused simulator lane is not the final device or release gate. |
-| WebApp focused/build lanes | The task-approval handoff has `21 passed`; testbed publication/inspection has `17 passed`. The terminal-run lane has `22 passed` across native plan/envelope validation, signed immutable publication, exact replay, current-testbed binding, owner-only inspection, outsider denial, tamper rejection, task approval, and testbed regression. The QA/control slice has `22 passed`; the completed-upload transfer slice has `21 passed`; `npm run check` passes and `npm run build` embeds exact commit `0f4c4225`. The UI displays immutable-byte intake versus QA truth separately, precise recapture instructions and missing evidence, then requests a Pipeline-owned plan, displays only Router-selected method candidates, requires explicit customer authorization, executes only the authorized local set, and refuses to report completion until the authoritative terminal publication is bound back to the same run. Exact Pipeline schema parity (`cf4dcfc...` on both repos), Firestore/storage rule parity, and graphify passed earlier. A Playwright journey was authored, but local browser execution is not counted: the host rejected loopback connections with `Can't assign requested address` even while the test server reported listening, and a retry encountered `EADDRINUSE`. The canonical WebApp final release suite has not run. |
-| WebApp live readiness | `GET https://tryblueprint.io/health/ready` returned HTTP 200 and `status=ready`, `blocker_count=0` at `2026-07-29T19:35:02.092Z`. This does not expose or prove the deployed commit. |
-| Pipeline live intake | The attempted unauthenticated `GET https://paperclip.tryblueprint.io/api/live-pipeline/health` returned HTTP 404. The public route/commit and authenticated intake reachability remain unverified; this is not yet evidence of an outage. |
+| Pipeline fast/full release lanes | PR #249's tree-identical final candidate `677f4ada508d72ec0fd607d9d2525c49c1ff0f11` passed the exact-final local full suite with `7483 passed`. The later exact protected-main candidate `0923fc820388900df53ac246c671f8dea1810ba3` passed hosted CI (`5919 passed`, `8 skipped`, `1667 deselected`) and hosted full (`7594 passed`, zero failures/errors/skips). The hosted full artifact binds the exact repository SHA and complete node-ID digest; uploaded artifact ZIP SHA-256 is `336aaa0f89020251b597382de2b174fb153cb2064f442dc4923549db7322a9c5`. CodeQL, Python compatibility, sim-only, and Docker dynamic checks also passed. The current deployment-proof release candidate passed its one bare fast lane with `5933 passed`, `1667 deselected`, and zero failures in 551.92 seconds. |
+| Capture retained-frame/decoded-PTS focused lane | An earlier focused simulator run reported `53 passed`, 0 failed, 0 skipped on an iPhone 17 Pro iOS 26.0 simulator. The final pre-PR targeted run covered four synchronization/contract suites and passed all `26` tests with `** TEST SUCCEEDED **`; the credential-validator tests also passed `6` tests and the embedded-credential scan passed. Simulator proof does not establish physical-device capture correctness. |
+| Capture release lanes | All six PR #60 jobs passed: Swift tests in 16m42s, Android build/test/lint/unsigned release assembly in 8m23s, release-gate validators, Firestore rules, and both Cloud function suites. PR #60 merged to protected main at `88c76130`; exact local/remote parity is proven. All six post-merge jobs in main run `30537851812` also passed. Physical-device proof remains pending. |
+| WebApp focused/build lanes | On PR #429's tree, `npm run check`, graphify, schema verification, asset audit, rules parity, claims guard (`0/756`), production dependency audit (`0` vulnerabilities), and production build passed. Coverage passed `1772` tests across `352` files; public E2E passed `28` tests, scoped fake-auth E2E passed `3`, rules passed `32`, operator QA passed `1`, and alpha verification reported `2132` assertions. The exact Pipeline/WebApp testbed schema digest is `16abac9f72158900f176d1f37ec81299e8f4ae39bf945e184bb7168a1562a7e7`. Main CI run `30535917203` passed all five jobs. |
+| WebApp live readiness | Gated Render deployment run `30536113608` succeeded with deploy ID `dep-d9lio4jm8hqs738qk840`. Production `/version.json` reports exact commit `c0d8de74e5548b541d8e575de35d7d85cd8cb1ae`; `/health` and `/health/ready` return HTTP 200 with `blocker_count=0`. This proves WebApp deployment parity, not Pipeline deployment or the real-capture beta gate. |
+| Pipeline live intake | `https://paperclip.tryblueprint.io/api/live-pipeline/intake-audit` returns authenticated-route HTTP 401 without a token, proving the proxy route exists; `/api/live-pipeline/version` currently returns HTTP 404, so the exact running Pipeline commit remains unverified. The public HTTP service is a persistent-host systemd/Caddy/uvicorn deployment, not the GCP batch job. Read-only GCP inspection found the separate `blueprint-pipeline` Cloud Run job at generation 5 still references mutable `gcr.io/blueprint-8c1ca/blueprint-pipeline:latest`; its stale Ready condition is false with `ContainerPermissionDenied` from `2026-07-02`. All 32 Cloud Run jobs received the same condition within about 77 ms, so that event is project-wide historical evidence rather than 32 independent current IAM diagnoses. The project owner enabled billing on `2026-07-30`; billing is no longer a blocker. No token, IAM, production configuration, or infrastructure was changed by this implementation. |
+| Pipeline agentic supervisor integration | PR #250 merged to protected main at `c54e5816` after CI, the hosted full CPU lane, CodeQL, Python 3.10/3.11/3.12 compatibility, and the sim-only local gate all passed. It adds the Task Evaluation Supervisor lifecycle and manager while preserving explicit live-inference, spend, proof, and recovery authority gates. Presence of the supervisor does not authorize paid inference, live robot action, or proof-state mutation. |
+| Pipeline deployment-identity seam | PR #252 published proxy-visible `/api/live-pipeline/version` on protected main. It returns HTTP 503 unless `BLUEPRINT_SOURCE_COMMIT` is an exact 40-hex commit; production Docker builds bind the checked-out `GIT_SHA`, and the response has the explicit claim ceiling `deployed_service_identity_only`. The current follow-up upgrades deployment-parity proof to schema v2: it probes both WebApp and Pipeline live identities, matches them to clean `origin/main` checkouts, treats operator-supplied SHAs only as cross-checks, prevents a staging proof from satisfying production, and writes environment-distinct artifacts. Focused deployment/release tests pass `22` tests; the focused lane with ledger guards passes `34`. A same-day read-only refresh confirms WebApp identity/health is exact and ready, Pipeline version remains HTTP 404, and GCP billing remains enabled. This enables exact future staging and production proof but does not upgrade the currently stale live Pipeline service. |
 
 ## Existing authoritative contracts
 
@@ -84,13 +94,13 @@ authoritative testbed compilation at `e3915731` on
 | Monocular reduced-authority lane | Partially completed | Intake/materialization preserves reduced ceiling; reconstruction/task/testbed flow remains. |
 | Media/capture QA | Core completed for hermetic Web-upload and operator lanes; privacy/live proof pending | Versioned QA/report schemas and CLI re-verify source bytes, independently probe media/decoded PTS, invoke a deterministic digest-bound local frame analyzer, preserve unmeasured evidence, and return exact recapture instructions. The Web-upload path automatically runs QA against the quarantined verified bytes and returns a separately digest-validated publication in the authenticated response; other capture lanes retain signed publication through the Pipeline-to-WebApp seam. WebApp validates digest/profile/session/intake/state, rejects terminal replacement, and renders the recapture plan and next experiment. Privacy-review execution and real-capture proof remain. |
 | Task candidate discovery and approval | Completed through authoritative approval; request compilation waits for the testbed by design | `task_candidate_discovery.v1` separates observed facts, inferred affordances, unsupported regions, hazards, and privacy areas; all inferred candidates require digest-bound customer/operator approval. Pipeline durably publishes the discovery, WebApp verifies and displays it, customer/operator commands return over a second signed seam, and Pipeline alone records the immutable authoritative decision and optional approved-task definition. Every requester, actor, capture, intake, discovery, candidate, action, rationale, edit, and idempotency binding is checked. The proposer cannot self-grade. `decision_evidence_request` remains exactly `null` until the immutable testbed is compiled. |
-| Reconstruction capability graph/result | Local control plane and WebApp adoption completed; real-method proof pending | Versioned, provider-neutral method profiles/results and deterministic cheapest-sufficient set-cover planning are implemented. Explicitly authorized hermetic decoded-observation and strict ARKit V3.2 metric-scaffold adapters bind exact executors and immutable source bytes. Signed plan/authorize/execute/inspect endpoints are idempotent; WebApp displays the exact Pipeline-selected method and adapter, requires a distinct customer authorization, and cannot supply executors or provider choices. Arbitrary video cannot become calibration or metric authority. Appearance, metric/reference, semantic, and physics outputs remain separate. Real-capture result normalization remains. |
+| Reconstruction capability graph/result | Local control plane and WebApp adoption completed; external-import adapter remains | Versioned, provider-neutral method profiles/results and deterministic cheapest-sufficient set-cover planning are implemented. Explicitly authorized hermetic decoded-observation and strict ARKit V3.2 metric-scaffold adapters bind exact executors and immutable source bytes. Signed plan/authorize/execute/inspect endpoints are idempotent; WebApp displays the exact Pipeline-selected method and adapter, requires a distinct customer authorization, and cannot supply executors or provider choices. Arbitrary video cannot become calibration or metric authority. Appearance, metric/reference, semantic, and physics outputs remain separate. A real MuSHRoom point cloud was admitted through `precomputed_external_reconstruction`, but planning currently registers no external-import normalizer, so it correctly stops at analysis rather than emitting a Reconstruction Result. That adapter is the next repo-local gap. |
 | Robot placement and SimReady decision | Pipeline-owned conservative compile path completed; real-method proof pending | Deterministic coverage-aware robot-base scoring and per-object/per-claim SimReady decisions are compiled inside Pipeline authority. The service accepts owner-attested robot configuration but not precomputed scores or asset verdicts. Missing placement candidates and unqualified assets abstain; qualified real geometry/simulation evidence remains pending. |
 | Immutable testbed compiler | Pipeline authority and WebApp v2 control completed hermetically; deployed proof pending | The compiler generates immutable Site, Task, Scenario, and Eval Cards and binds exact evidence. Service submission v2 rejects caller-supplied intake, QA, reconstruction plan/results, SimReady/placement conclusions, evaluator/reset artifacts, supported-condition claims, predecessor manifests, unknown fields, inconsistent robot bindings, caller-selected scientific scope, paid execution, live robot execution, and WebApp provider selection. The generated schema is mirrored exactly across repositories. Pipeline loads the exact reconstruction execution, derives conservative support artifacts, and writes them immutably. WebApp now submits only owner robot/decision inputs and requires exact signed publication before showing readiness. Successor-version owner control remains intentionally deferred until Pipeline can load the authoritative predecessor itself. |
 | Authorized evidence execution | Partially completed | Router v1 remains hermetic and fail-closed. The v2 plan facade sources profiles and qualifications only from an immutable Pipeline-owned catalog, so WebApp cannot choose a provider or recompute qualification. Explicitly allowlisted local analytic-reachability, captured-visibility, and swept-AABB collision-simulation adapters execute through a separate exact-plan authorization. Both WebApp and Pipeline reject registered-but-unplanned adapters; exact retries cannot alter the immutable authorization. The collision method requires qualified metric physics input and remains sim-only. Terminal artifacts publish to WebApp with exact receipt verification. Rich rigid-body/contact simulation and deployed catalog/service configuration remain. |
 | WebApp state, task approval, artifacts | Core controlled-beta workflow completed hermetically; deployed proof pending | In addition to resumable upload, automated immutable-byte handoff, authoritative Capture QA/recapture inspection, task approval, immutable testbed inspection, run control, and Decision Envelope rendering, WebApp now exposes Pipeline-owned reconstruction planning, authoritative v2 testbed compilation, and completed-capture lifecycle truth. The owner sees exact local reconstruction adapter references and planned cost, explicitly authorizes before execution, declares robot and decision constraints, can permanently delete a completed capture through the retry-safe cross-system lifecycle, and never supplies a provider, command, path, qualification, scientific verdict, or physical-success upgrade. Deployed URLs/tokens, live network policy, and actual large-file transfer/deletion remain. |
-| Real rights-cleared vertical slice | Externally blocked after local inventory; preparation still in progress | No rights-cleared physical capture is present in the three repositories, their current output roots, or the inspected user media folders. The repository walkthrough video is explicitly `repo_synthetic_fixture` with `fallback_allowed_for_beta_release=false`; the one non-fixture Pipeline MP4 is a generated `robot_pov.mp4`, not raw site evidence. Neither can satisfy the gate. The exact minimal external input is documented below; synthetic/hermetic tests remain tool-path evidence only. |
-| Publication/deployment/parity | Prior integrated slice published; follow-on work not published | PR #248 merged to protected Pipeline main at `4aa4e056`; 15 hosted checks and the exact-final `7469 passed` suite were green with clean zero-divergence parity. The reconstruction/lifecycle follow-on branch, sibling contracts, staging, rollback, production, and deployed SHA parity remain. |
+| Real rights-cleared vertical slice | Public observed-site proxy tested; raw capture gate pending | MuSHRoom's CC BY 4.0 `koivu` iPhone room sequence is a rights-usable indoor site-walkthrough proxy. The official 146,575,749-byte archive matched publisher MD5 `a359dba714e7829be11747ce5dee141c` and local SHA-256 `68735cfa0758e1288a006c30dc8b95ffb4caa3392bc9c68c0c3ea6c111966518`; its 874 members had no traversal or links. A real Polycam point cloud was source-bound and admitted idempotently as `precomputed_external_reconstruction` while every metric/physics/physical/deployment/safety/ranking ceiling stayed false and `thesis_not_supported` stayed frozen. The sequence contains processed RGB/depth/poses and independent trajectories, but no original retained video, decoded PTS, IMU, tracking-reset log, or Raw Contract 3.2 encoder-retention evidence. It therefore proves a real observed-site proxy path, not the required raw iPhone/360 launch gate. The previously audited DataSnack household/human capture remains rejected. |
+| Publication/deployment/parity | Integrated Pipeline, Capture, and WebApp slices published; live Pipeline proof pending | Pipeline PRs #248–#252, Capture PR #60, and WebApp PR #429 are merged through protected main. Pipeline main is `0923fc82`; Capture main is `88c76130`; WebApp main and deployed production are `c0d8de74`. Local/remote tree and zero-divergence parity are proven in clean release checkouts. Pipeline production deployment is not complete: billing is enabled, but the public persistent-host service still lacks the published version endpoint and no isolated staging service currently exists. Staging/rollback proof for the full cross-repository service, physical-device Capture proof, and the real-capture vertical slice remain. |
 
 ## SDK/provider research
 
@@ -104,6 +114,64 @@ isolated objects; retains original INSV before any derived stitch; and keeps
 Scaniverse, Marble, Lightwheel, and generative completion disabled or import-only
 until exact rights, data-use, deletion, commercial, credential, and spend gates
 pass. No SDK, subscription, API credit, provider upload, or purchase was made.
+
+A same-day public-dataset audit is recorded in
+`docs/research/public_indoor_capture_dataset_audit_2026-07-30.md`. ScanNet++,
+SceneSplat-49K, Stera-10M, and the public OverMaps subset cannot supply
+commercial-beta launch proof under their current governing terms. The earlier
+blanket rejection of ARKitScenes as non-commercial was incorrect: Apple's
+current license contains a bounded commercial grant for qualifying licensees,
+but the dataset is iPad Pro rather than iPhone, organizational eligibility still
+needs confirmation, and it lacks Blueprint Raw Contract 3.2 retention semantics.
+DataSnack `brian_does_cleaning` is CC BY 4.0 and contains real
+iPhone 15 Pro video, metric depth, intrinsics, timestamps, tracking QA, and an
+ARKit mesh, but the actual distributed archive lacks a camera-pose payload and
+IMU payload and includes identifiable in-home human imagery without an explicit
+bundle-level consent record. Its local temporary copy remains external audit
+evidence only and must not be admitted as a launch capture.
+
+MuSHRoom is the strongest public indoor walkthrough proxy found. The audited
+`koivu` archive contains processed iPhone RGB/depth, camera transforms, held-out
+frames, an independent short trajectory, mesh, and point cloud under CC BY 4.0.
+It was materialized through the real intake path and replayed through the new
+Task Evaluation Supervisor. Twelve focused adversarial agent/contract tests
+passed. With no explicitly supported live inference credential configured, the
+supervisor made zero model/tool calls, returned an abstention, and verified exact
+replay. This is a successful fail-closed test, not evidence of live agent
+reasoning or a raw-capture vertical slice.
+
+## Current external and launch blockers
+
+1. **Raw real capture:** a rights-usable MuSHRoom indoor iPhone proxy is now
+   locally tested, but it is processed RGB-D/pose/reconstruction data rather
+   than retained raw video or a BlueprintCapture bundle. No rights-cleared
+   physical Raw Contract 3.2 iPhone Pro/LiDAR or qualifying native/stitched 360
+   capture is locally available. The proxy and fixture matrix cannot satisfy
+   that launch gate.
+2. **Pipeline staging and production identity/readiness:** billing was enabled
+   by the project owner on `2026-07-30` and is no longer a blocker. The public
+   persistent-host Pipeline service still returns 404 for the published exact
+   version endpoint, and no isolated staging service is currently deployed.
+   The old GCP Cloud Run batch job is stale, mutable-tagged, and not a substitute
+   for the HTTP service. An authorized staging deploy, exact-version smoke, and
+   rollback proof must pass before any production mutation.
+3. **Physical-device proof:** Raw Contract 3.2 passed local simulator and hosted
+   Swift/Android/release gates, but no real device has yet emitted and validated
+   a rights-cleared V3.2 bundle.
+4. **Live configured service proof:** signed upload, malware scanning, provider
+   allowlists, lifecycle deletion, and Pipeline-to-WebApp receipts are proven
+   hermetically. Exact deployed tokens, scanner configuration, live large-file
+   transfer, external deletion receipts, and full staging/rollback smokes remain
+   unproven and must fail closed.
+5. **External reconstruction normalization:** the intake contract safely admits
+   a source-bound external reconstruction, but the reconstruction planner has no
+   authorized local import/normalization method. The MuSHRoom proxy therefore
+   stops before Reconstruction Result and testbed compilation. This is safe
+   repo-local work, not an external blocker.
+6. **Live supervisor reasoning:** the new supervisor's fail-closed and replay
+   paths are tested on real MuSHRoom input. A live reasoning smoke needs a
+   separately configured supported inference credential and a strict budget.
+   Codex application authentication must not be repurposed as an API credential.
 
 ## Exact minimal real-capture input still required
 
@@ -135,5 +203,6 @@ unless the bundle or calibration evidence actually supplies metric authority.
 - Provider availability is not qualification or execution authorization.
 - Generated/reconstructed outputs cannot upgrade raw, metric, physics, physical,
   deployment, or safety claims.
-- No paid compute, provider upload, live robot action, credential change, billing
-  change, or production mutation has occurred. Cost incurred: USD 0.
+- No paid compute, provider upload, live robot action, credential change, or
+  production mutation was performed by this implementation. The project owner
+  enabled billing; no paid workload was started. Cost incurred by this work: USD 0.

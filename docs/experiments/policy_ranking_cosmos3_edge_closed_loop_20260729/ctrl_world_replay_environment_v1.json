@@ -1,0 +1,22 @@
+{
+  "schema_version": "policy_ranking_ctrl_world_replay_environment.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "bundle_source_commit": "66cb0c49cb219be0f790e60c84f21e63f472c5ea",
+  "checkpoint": {
+    "repository": "yjguo/Ctrl-World",
+    "revision": "8cf814693f411962dc866a2ddb5b785afd17a93a",
+    "remote_code_policy": "no_unpinned_remote_code_and_trust_remote_code_false"
+  },
+  "upstream_source": {
+    "ctrl_world": {
+      "repository": "https://github.com/Robert-gyj/Ctrl-World",
+      "revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d"
+    },
+    "vllm_omni": {
+      "runtime_image": "docker.io/pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2"
+    }
+  },
+  "python_dependency_resolution_sha256": "c982d21932fdb015e09b9cc56234875130f19b0f6a69cb968a610a43f7714cd7",
+  "physical_outcome_labels_accessed": false,
+  "raw_secret_values_recorded": false
+}
