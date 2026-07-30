@@ -99,7 +99,10 @@ def test_vast_first_reconstruction_canary_dry_run_binds_all_proof_inputs():
     assert bound["frozen_split_digest"] == D3
     assert bound["provider_mutation_authorized"] is False
     schema = json.loads(
-        (Path(__file__).resolve().parents[1] / "docs/schemas/reconstruction_gpu_canary.v1.schema.json").read_text(encoding="utf-8")
+        (
+            Path(__file__).resolve().parents[1]
+            / "docs/schemas/reconstruction_gpu_canary.v1.schema.json"
+        ).read_text(encoding="utf-8")
     )
     jsonschema.validate(admission, schema)
 
@@ -221,21 +224,36 @@ def test_allocator_routes_reconstruction_probe_without_provider_mutation(
     exit_code = allocator.main(
         [
             "gpu-canary",
-            "--provider", "vast",
-            "--probe-kind", PROBE_KIND,
-            "--provider-launch-request", str(request_path),
-            "--release-evidence", str(tmp_path / "unused-release.json"),
-            "--model-cache-evidence", str(tmp_path / "unused-models.json"),
-            "--preflight-bundle", str(preflight_path),
-            "--admission-out", str(tmp_path / "admission.json"),
-            "--bound-request-out", str(tmp_path / "bound.json"),
-            "--adapter-output", str(tmp_path / "adapter.json"),
-            "--pod-name", "blueprint-reconstruction-smoke",
-            "--expected-source-commit", SHA,
-            "--reconstruction-max-spend-usd", "1.0",
-            "--reconstruction-hard-ttl-seconds", "1800",
-            "--reconstruction-retry-cap", "1",
-            "--reconstruction-authority-id", "user-authorization-20260730",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            PROBE_KIND,
+            "--provider-launch-request",
+            str(request_path),
+            "--release-evidence",
+            str(tmp_path / "unused-release.json"),
+            "--model-cache-evidence",
+            str(tmp_path / "unused-models.json"),
+            "--preflight-bundle",
+            str(preflight_path),
+            "--admission-out",
+            str(tmp_path / "admission.json"),
+            "--bound-request-out",
+            str(tmp_path / "bound.json"),
+            "--adapter-output",
+            str(tmp_path / "adapter.json"),
+            "--pod-name",
+            "blueprint-reconstruction-smoke",
+            "--expected-source-commit",
+            SHA,
+            "--reconstruction-max-spend-usd",
+            "1.0",
+            "--reconstruction-hard-ttl-seconds",
+            "1800",
+            "--reconstruction-retry-cap",
+            "1",
+            "--reconstruction-authority-id",
+            "user-authorization-20260730",
         ]
     )
     assert exit_code == 0

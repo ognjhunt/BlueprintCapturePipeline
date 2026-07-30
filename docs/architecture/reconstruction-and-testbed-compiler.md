@@ -560,8 +560,22 @@ is provider-neutral and binds the exact source commit, resolved image,
 reconstruction dataset, frozen split, calibration, configuration, budget, TTL,
 retry cap, and authority. The first qualification provider is Vast. Admission
 requires a fresh supported offer, provider-zero inventory, no conflicting
-owner, and an independent watchdog. The execute path remains deterministically
-blocked by `reconstruction_vast_execution_adapter_not_qualified` until the
-provider adapter, output retrieval, teardown, provider-zero proof, and spend
-reconciliation are implemented and focused-tested. Admission or allocation can
-never establish reconstruction quality.
+owner, and an independent watchdog. The focused-tested execute adapter now
+requires a fresh opaque `gpu_render` grant from the canonical allocator, private
+0600 HTTPS PUT/GET URL files, and the exact digest-pinned worker image. It runs
+only the image healthcheck, validates the GPU/image/source-SHA result, retrieves
+the result before teardown, independently verifies scoped and global
+provider-zero state, reconciles its paid-lane lease, and emits digest-bound
+execution, teardown, and provider-zero receipts. Accepted receipts can be
+replayed offline; tampering fails closed. This is an implemented execution
+contract, not a built-image or live-provider result: no resolved reconstruction
+worker image has yet been built or run, and admission, allocation, or a passing
+worker smoke can never establish reconstruction quality.
+
+The current live gate therefore remains external and explicit: provide a clean
+immutable source commit, a resolved `linux/amd64` image digest built from the
+pinned recipe, immutable dataset/split/calibration digests, numeric dollar
+budget, numeric TTL and retry cap, an authority identifier, and the two private
+signed URL files. Invoke it only through `python -m
+blueprint_pipeline.paid_resource_allocator gpu-canary --probe-kind
+reconstruction-worker-smoke`; direct adapter launch has no admission capability.

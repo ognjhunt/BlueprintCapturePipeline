@@ -19,12 +19,17 @@ def _env() -> dict[str, str]:
     return {
         "BLUEPRINT_WORKER_IMAGE_FAMILY": "blueprint-reconstruction-worker",
         "BLUEPRINT_SOURCE_COMMIT": "a" * 40,
+        "BLUEPRINT_CONTAINER_IMAGE_DIGEST": (
+            "registry.example/blueprint/reconstruction@sha256:" + "b" * 64
+        ),
         "BLUEPRINT_RECONSTRUCTION_MODEL_ROOT": "/opt/models/colmap",
     }
 
 
 def _exists(path: Path) -> bool:
-    return str(path).startswith(("/opt/colmap/", "/opt/gsplat/", "/opt/3dgrut/", "/opt/models/colmap/"))
+    return str(path).startswith(
+        ("/opt/colmap/", "/opt/gsplat/", "/opt/3dgrut/", "/opt/models/colmap/")
+    )
 
 
 def _digest(path: Path) -> str:
@@ -85,6 +90,8 @@ def test_build_healthcheck_passes_without_display_or_gpu_claim():
     assert result["display_attached"] is False
     assert result["scientific_qualification_inferred"] is False
     assert result["hidden_heldout_observations_accessed"] is False
+    assert result["runtime_identity"]["source_commit_sha"] == "a" * 40
+    assert result["runtime_identity"]["container_image_digest"].endswith("b" * 64)
     assert result["claim_ceiling"] == "worker_image_compatibility_only"
     assert all(row["check_id"] != "nvidia_runtime" for row in result["checks"])
 

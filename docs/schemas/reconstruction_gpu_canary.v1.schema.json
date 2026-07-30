@@ -20,7 +20,7 @@
       "required": ["schema_version", "status", "probe_kind", "provider", "blockers", "provider_mutations_performed", "paid_execution_started", "allocation_success_is_scientific_success", "proof_effect", "claim_ceiling", "admission_digest"],
       "properties": {
         "schema_version": {"const": "reconstruction_gpu_canary_admission.v1"},
-        "status": {"enum": ["dry_run_ready", "blocked"]},
+        "status": {"enum": ["dry_run_ready", "execute_ready", "blocked"]},
         "provider": {"const": "vast"},
         "provider_mutations_performed": {"const": 0},
         "paid_execution_started": {"const": false},

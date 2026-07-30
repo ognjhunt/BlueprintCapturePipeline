@@ -63,6 +63,7 @@ APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
     "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
     "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py",
+    "src/blueprint_pipeline/paid_resource_allocator.py",
     "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
     "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
     "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",

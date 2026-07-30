@@ -71,9 +71,7 @@ def collect_reconstruction_vast_preflight(
     selected = dict(selected_value) if isinstance(selected_value, Mapping) else {}
     gpu_memory = int(selected.get("gpu_ram_mb") or 0) * 1_000_000
     price = float(
-        selected.get("on_demand_price_usd_per_hour")
-        or selected.get("hourly_rate_usd")
-        or 0
+        selected.get("on_demand_price_usd_per_hour") or selected.get("hourly_rate_usd") or 0
     )
     provider_api_verified = bool(
         capacity.get("status") == "available"
@@ -85,9 +83,7 @@ def collect_reconstruction_vast_preflight(
         and global_inventory.get("live_resource_count") == 0
     )
     single_gpu_available = bool(
-        selected
-        and gpu_memory >= MIN_GPU_MEMORY_BYTES
-        and 0 < price <= float(max_hourly_rate_usd)
+        selected and gpu_memory >= MIN_GPU_MEMORY_BYTES and 0 < price <= float(max_hourly_rate_usd)
     )
     watchdog_value = dict(watchdog)
     blockers: list[str] = []
@@ -97,9 +93,10 @@ def collect_reconstruction_vast_preflight(
         blockers.append("reconstruction_gpu_provider_inventory_not_zero")
     if conflicting_owner_present:
         blockers.append("reconstruction_gpu_conflicting_owner_present")
-    if watchdog_value.get("status") != "armed" or watchdog_value.get(
-        "independent_process"
-    ) is not True:
+    if (
+        watchdog_value.get("status") != "armed"
+        or watchdog_value.get("independent_process") is not True
+    ):
         blockers.append("reconstruction_gpu_independent_watchdog_not_armed")
     if not single_gpu_available:
         blockers.append("reconstruction_gpu_single_gpu_unavailable")
@@ -131,9 +128,7 @@ def collect_reconstruction_vast_preflight(
         "proof_effect": "none",
         "claim_ceiling": "provider_capacity_and_zero_inventory_snapshot_only",
     }
-    result["preflight_digest"] = canonical_digest(
-        result, digest_field="preflight_digest"
-    )
+    result["preflight_digest"] = canonical_digest(result, digest_field="preflight_digest")
     return result
 
 
@@ -166,6 +161,7 @@ def build_reconstruction_gpu_canary_admission(
     retry_cap: int | None,
     authority_id: str | None,
     execute: bool,
+    execution_adapter_qualified: bool = False,
     observed_now_epoch: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Bind a canary request to immutable inputs without allocating a machine."""
@@ -230,7 +226,11 @@ def build_reconstruction_gpu_canary_admission(
     if provider_snapshot.get("single_gpu_available") is not True:
         blockers.append("reconstruction_gpu_single_gpu_unavailable")
     gpu_memory = provider_snapshot.get("gpu_memory_bytes")
-    if not isinstance(gpu_memory, int) or isinstance(gpu_memory, bool) or gpu_memory < MIN_GPU_MEMORY_BYTES:
+    if (
+        not isinstance(gpu_memory, int)
+        or isinstance(gpu_memory, bool)
+        or gpu_memory < MIN_GPU_MEMORY_BYTES
+    ):
         blockers.append("reconstruction_gpu_memory_below_floor")
     disk = provider_snapshot.get("container_disk_bytes")
     if not isinstance(disk, int) or isinstance(disk, bool) or disk < MIN_CONTAINER_DISK_BYTES:
@@ -279,7 +279,7 @@ def build_reconstruction_gpu_canary_admission(
     if _finite(max_spend_usd, minimum=0.000001) and worst_case_cost > float(max_spend_usd):
         blockers.append("reconstruction_gpu_budget_below_worst_case_cost")
 
-    if execute and not blockers:
+    if execute and not execution_adapter_qualified and not blockers:
         blockers.append("reconstruction_vast_execution_adapter_not_qualified")
     bound_request = {
         **source,
@@ -288,12 +288,18 @@ def build_reconstruction_gpu_canary_admission(
         "bound_preflight_digest": canonical_digest(provider_snapshot),
         "bound_checkout_source_commit": checkout_source_commit,
         "bound_checkout_clean": checkout_clean,
-        "provider_mutation_authorized": bool(execute and not blockers),
+        "provider_mutation_authorized": bool(
+            execute and execution_adapter_qualified and not blockers
+        ),
     }
     bound_request["bound_request_digest"] = canonical_digest(
         bound_request, digest_field="bound_request_digest"
     )
-    status = "dry_run_ready" if not blockers else "blocked"
+    status = (
+        "execute_ready"
+        if execute and execution_adapter_qualified and not blockers
+        else ("dry_run_ready" if not blockers else "blocked")
+    )
     admission = {
         "schema_version": ADMISSION_SCHEMA_VERSION,
         "status": status,
@@ -314,18 +320,21 @@ def build_reconstruction_gpu_canary_admission(
         "provider_zero_verified": provider_snapshot.get("provider_inventory_verified_zero") is True,
         "provider_mutations_performed": 0,
         "paid_execution_started": False,
+        "execution_adapter_qualified": bool(execution_adapter_qualified),
         "allocation_success_is_scientific_success": False,
         "proof_effect": "none",
         "claim_ceiling": "paid_gpu_admission_only",
         "legal_next_actions": (
             ["qualify_vast_execution_adapter"]
             if blockers == ["reconstruction_vast_execution_adapter_not_qualified"]
-            else (["invoke_canonical_gpu_canary_with_explicit_execute_authority"] if not blockers else ["resolve_admission_blockers"])
+            else (
+                ["invoke_canonical_gpu_canary_with_explicit_execute_authority"]
+                if not blockers
+                else ["resolve_admission_blockers"]
+            )
         ),
     }
-    admission["admission_digest"] = canonical_digest(
-        admission, digest_field="admission_digest"
-    )
+    admission["admission_digest"] = canonical_digest(admission, digest_field="admission_digest")
     return admission, bound_request
 
 
@@ -345,6 +354,7 @@ def prepare_reconstruction_gpu_canary(
     retry_cap: int | None,
     authority_id: str | None,
     execute: bool,
+    execution_adapter_qualified: bool = False,
 ) -> dict[str, Any]:
     admission, bound = build_reconstruction_gpu_canary_admission(
         request=_read(request_path),
@@ -358,6 +368,7 @@ def prepare_reconstruction_gpu_canary(
         retry_cap=retry_cap,
         authority_id=authority_id,
         execute=execute,
+        execution_adapter_qualified=execution_adapter_qualified,
     )
     write_json(Path(admission_out), admission)
     write_json(Path(bound_request_out), bound)

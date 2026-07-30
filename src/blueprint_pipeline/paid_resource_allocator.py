@@ -66,8 +66,10 @@ from .openai_candidate_paid_admission import (
     prepare_pigey_candidate_runtime_admission,
 )
 from .paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
+    build_paid_lane_admission,
     require_paid_resource_admission,
 )
 from .openpi_policy_ranking_gpu_admission import (
@@ -92,6 +94,8 @@ from .reconstruction_gpu_admission import (
     PROBE_KIND as RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
     prepare_reconstruction_gpu_canary,
 )
+from .reconstruction_vast_worker_smoke import run_reconstruction_vast_worker_smoke
+from .gpu_render_providers import get_render_provider
 from .single_g1_kitchen_episode_runpod import (
     PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
     run_single_episode,
@@ -102,6 +106,7 @@ from .single_g1_kitchen_qualification_session import (
     SESSION_ACTIONS as QUALIFICATION_SESSION_ACTIONS,
     run_qualification_session,
 )
+from .wam_async_runner_common import read_sensitive_url_file
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -569,6 +574,86 @@ def _run_local_cpu_build(args: argparse.Namespace) -> dict:
     return result
 
 
+def _run_reconstruction_gpu_canary(
+    args: argparse.Namespace, *, checkout_commit: str
+) -> dict[str, Any]:
+    """Admit and optionally execute the Vast-first worker smoke."""
+
+    admission = prepare_reconstruction_gpu_canary(
+        request_path=args.provider_launch_request,
+        preflight_path=args.preflight_bundle,
+        admission_out=args.admission_out,
+        bound_request_out=args.bound_request_out,
+        adapter_output=args.adapter_output,
+        provider=args.provider,
+        expected_source_commit=args.expected_source_commit or "",
+        checkout_source_commit=checkout_commit,
+        checkout_clean=True,
+        max_spend_usd=args.reconstruction_max_spend_usd,
+        hard_ttl_seconds=args.reconstruction_hard_ttl_seconds,
+        retry_cap=args.reconstruction_retry_cap,
+        authority_id=args.reconstruction_authority_id,
+        execute=args.execute,
+        execution_adapter_qualified=args.execute,
+    )
+    if not args.execute or admission.get("status") != "execute_ready":
+        return admission
+
+    transport_blockers: list[str] = []
+    resolved_urls: dict[str, str] = {}
+    for label, path_value in (
+        ("provider_output_put_url", args.provider_output_put_url_file),
+        ("provider_output_get_url", args.provider_output_get_url_file),
+    ):
+        value, metadata = read_sensitive_url_file(str(path_value or ""), label=label)
+        if not value:
+            transport_blockers.append(f"reconstruction_{label}_missing")
+        elif not value.startswith("https://"):
+            transport_blockers.append(f"reconstruction_{label}_not_https")
+        elif metadata.get("mode_is_0600") is not True:
+            transport_blockers.append(f"reconstruction_{label}_file_permissions_not_0600")
+        resolved_urls[label] = value
+
+    paid_admission = build_paid_lane_admission(
+        resource_class="gpu_render",
+        blockers=[*list(admission.get("blockers") or []), *transport_blockers],
+    )
+    adapter_path = Path(args.adapter_output).expanduser().resolve()
+    ensure_dir(adapter_path.parent)
+    write_json(adapter_path.parent / "reconstruction_paid_lane_admission.json", paid_admission)
+    try:
+        grant = require_paid_resource_admission(
+            paid_admission,
+            resource_class="gpu_render",
+            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+        )
+    except PaidResourceAdmissionBlocked as exc:
+        result = {
+            "schema_version": "reconstruction_gpu_canary_adapter_result.v1",
+            "status": "blocked",
+            "blockers": sorted(set(exc.blockers + transport_blockers)),
+            "provider_mutations_performed": 0,
+            "cost_usd": 0.0,
+            "scientific_qualification_inferred": False,
+            "proof_effect": "none",
+            "claim_ceiling": "no_execution_evidence",
+        }
+        write_json(adapter_path, result)
+        return result
+
+    result = run_reconstruction_vast_worker_smoke(
+        bound_request=_load(args.bound_request_out),
+        preflight=_load(args.preflight_bundle),
+        job_dir=adapter_path.parent / "reconstruction_vast_worker_smoke",
+        output_put_url=resolved_urls["provider_output_put_url"],
+        output_get_url=resolved_urls["provider_output_get_url"],
+        provider=get_render_provider(args.provider),
+        paid_resource_admission_grant=grant,
+    )
+    write_json(adapter_path, result)
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -925,23 +1010,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
                 write_json(Path(args.admission_out), result)
             else:
-                result = prepare_reconstruction_gpu_canary(
-                    request_path=args.provider_launch_request,
-                    preflight_path=args.preflight_bundle,
-                    admission_out=args.admission_out,
-                    bound_request_out=args.bound_request_out,
-                    adapter_output=args.adapter_output,
-                    provider=args.provider,
-                    expected_source_commit=args.expected_source_commit or "",
-                    checkout_source_commit=checkout_commit,
-                    checkout_clean=True,
-                    max_spend_usd=args.reconstruction_max_spend_usd,
-                    hard_ttl_seconds=args.reconstruction_hard_ttl_seconds,
-                    retry_cap=args.reconstruction_retry_cap,
-                    authority_id=args.reconstruction_authority_id,
-                    execute=args.execute,
-                )
-            success = result.get("status") == "dry_run_ready"
+                result = _run_reconstruction_gpu_canary(args, checkout_commit=checkout_commit)
+            success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND:
