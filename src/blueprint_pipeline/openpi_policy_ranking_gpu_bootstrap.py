@@ -414,13 +414,25 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
                 }
             )
         elif is_current_reference:
+            declared_policy_ids = list(
+                (extracted_input.get("manifest") or {}).get("policy_ids") or []
+            )
+            frozen_policy_order = [
+                policy_id
+                for policy_id in ("pi0_droid", "pi0_fast_droid", "pi05_droid")
+                if policy_id in declared_policy_ids
+            ]
             failure_manifest.update(
                 {
-                    "frozen_policy_order": [
-                        "pi0_droid",
-                        "pi0_fast_droid",
-                        "pi05_droid",
-                    ],
+                    "frozen_policy_order": frozen_policy_order,
+                    "query_mode": (
+                        "same_candidate_policy_requery"
+                        if len(frozen_policy_order) == 1
+                        else "initial_identity_canary"
+                    ),
+                    "same_candidate_policy_id": (
+                        frozen_policy_order[0] if len(frozen_policy_order) == 1 else None
+                    ),
                     "requests_per_policy": 1,
                     "policy_results": [],
                     "wam_called": False,

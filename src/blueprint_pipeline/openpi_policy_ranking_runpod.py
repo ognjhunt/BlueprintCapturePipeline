@@ -214,15 +214,32 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
 
             if declared_sha != canonical_sha256(digest_payload):
                 blockers.append("openpi_output_current_reference_manifest_sha256_mismatch")
-            expected_policies = ("pi0_droid", "pi0_fast_droid", "pi05_droid")
+            declared_policies = tuple(manifest.get("frozen_policy_order") or [])
+            initial_policies = ("pi0_droid", "pi0_fast_droid", "pi05_droid")
+            query_mode = manifest.get("query_mode")
+            expected_policies: tuple[str, ...]
+            if query_mode in {None, "initial_identity_canary"} and (
+                declared_policies == initial_policies
+            ):
+                expected_policies = initial_policies
+            elif (
+                query_mode == "same_candidate_policy_requery"
+                and len(declared_policies) == 1
+                and declared_policies[0] in initial_policies
+                and manifest.get("same_candidate_policy_id") == declared_policies[0]
+            ):
+                expected_policies = declared_policies
+            else:
+                expected_policies = ()
+                blockers.append("openpi_output_current_reference_policy_scope_invalid")
             policy_results = manifest.get("policy_results")
             policy_results = policy_results if isinstance(policy_results, list) else []
             status = str(manifest.get("status") or "")
             if status == "completed":
                 if (
-                    tuple(manifest.get("frozen_policy_order") or []) != expected_policies
+                    declared_policies != expected_policies
                     or manifest.get("requests_per_policy") != 1
-                    or len(policy_results) != 3
+                    or len(policy_results) != len(expected_policies)
                     or any(
                         not isinstance(row, Mapping) or row.get("status") != "completed"
                         for row in policy_results

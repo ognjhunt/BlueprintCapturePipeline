@@ -29,6 +29,7 @@ from .openpi_current_reference_droid_policy_runtime import (
     verify_local_current_reference_checkpoint,
 )
 from .openpi_current_reference_observation import (
+    GENERATED_OBSERVATION_SCHEMA,
     validate_current_reference_policy_observation_manifest,
 )
 from .policy_ranking_thesis import canonical_sha256, file_sha256
@@ -110,6 +111,11 @@ def load_current_reference_initial_observation(
         axis=0,
     )
     observation["blueprint/initial_observation_manifest_sha256"] = recorded_digest
+    if payload.get("schema_version") == GENERATED_OBSERVATION_SCHEMA:
+        source = payload.get("source")
+        if not isinstance(source, Mapping):
+            raise ValueError("current_reference_generated_observation_source_invalid")
+        observation["blueprint/same_candidate_policy_id"] = str(source.get("policy_id") or "")
     return observation
 
 
@@ -184,13 +190,24 @@ def run_current_reference_policy_canary(
         checkpoint_inventory_dir=inventory_dir,
     )
     observation = dict(initial_observation_loader(initial_observation_manifest_path))
+    same_candidate_policy_id = str(
+        observation.get("blueprint/same_candidate_policy_id") or ""
+    ).strip()
+    if same_candidate_policy_id:
+        if same_candidate_policy_id not in FROZEN_POLICY_ORDER:
+            raise ValueError("openpi_current_reference_same_candidate_policy_invalid")
+        policy_order = (same_candidate_policy_id,)
+        query_mode = "same_candidate_policy_requery"
+    else:
+        policy_order = FROZEN_POLICY_ORDER
+        query_mode = "initial_identity_canary"
     gpu = dict(gpu_evidence_collector())
     blockers: list[str] = []
     if gpu.get("gpu_device_present") is not True:
         blockers.append("openpi_current_reference_jax_gpu_not_present")
     policy_results: list[dict[str, Any]] = []
     if not blockers:
-        for policy_id in FROZEN_POLICY_ORDER:
+        for policy_id in policy_order:
             spec = specs[policy_id]
             policy = None
             stage_started = time.monotonic()
@@ -274,13 +291,19 @@ def run_current_reference_policy_canary(
                     pass
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "status": "completed" if not blockers and len(policy_results) == 3 else "blocked",
+        "status": (
+            "completed"
+            if not blockers and len(policy_results) == len(policy_order)
+            else "blocked"
+        ),
         "gpu_runtime": gpu,
         "source_freeze_file_sha256": file_sha256(Path(source_freeze_path).expanduser().resolve()),
         "initial_observation_manifest_file_sha256": file_sha256(
             Path(initial_observation_manifest_path).expanduser().resolve()
         ),
-        "frozen_policy_order": list(FROZEN_POLICY_ORDER),
+        "frozen_policy_order": list(policy_order),
+        "query_mode": query_mode,
+        "same_candidate_policy_id": same_candidate_policy_id or None,
         "requests_per_policy": 1,
         "policy_results": policy_results,
         "blockers": blockers,

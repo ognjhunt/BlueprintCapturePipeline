@@ -15,6 +15,7 @@ from .openpi_current_reference_droid_policy_runtime import (
     CURRENT_REFERENCE_INVENTORY_FILES,
 )
 from .openpi_current_reference_observation import (
+    GENERATED_OBSERVATION_SCHEMA,
     validate_current_reference_policy_observation_manifest,
 )
 from .policy_ranking_thesis import canonical_sha256, file_sha256
@@ -134,6 +135,17 @@ def build_current_reference_gpu_input_bundle(
             staging_root=staging,
         )
         write_json(staging / "initial_observation_manifest.json", portable)
+        if portable.get("schema_version") == GENERATED_OBSERVATION_SCHEMA:
+            observation_source = portable.get("source")
+            if not isinstance(observation_source, Mapping):
+                raise ValueError("current_reference_bundle_generated_observation_source_invalid")
+            policy_ids = [str(observation_source.get("policy_id") or "")]
+            purpose = "label_free_current_reference_same_policy_requery"
+            same_candidate_policy_id: str | None = policy_ids[0]
+        else:
+            policy_ids = sorted(CURRENT_REFERENCE_INVENTORY_FILES)
+            purpose = "label_free_current_reference_real_policy_identity_canary"
+            same_candidate_policy_id = None
         file_rows = [
             {
                 "path": path.relative_to(staging).as_posix(),
@@ -145,7 +157,7 @@ def build_current_reference_gpu_input_bundle(
         ]
         manifest: dict[str, Any] = {
             "schema_version": INPUT_SCHEMA_VERSION,
-            "purpose": "label_free_current_reference_real_policy_identity_canary",
+            "purpose": purpose,
             "runtime_source": {
                 "repository": "https://github.com/ognjhunt/BlueprintCapturePipeline",
                 "commit": runtime_commit,
@@ -154,7 +166,9 @@ def build_current_reference_gpu_input_bundle(
                 "overlay_required": True,
             },
             "image_source_commit": image_commit,
-            "policy_ids": sorted(CURRENT_REFERENCE_INVENTORY_FILES),
+            "policy_ids": policy_ids,
+            "observation_schema": portable["schema_version"],
+            "same_candidate_policy_id": same_candidate_policy_id,
             "requests_per_policy": 1,
             "raw_3dgs_included": False,
             "redistribution_authorized": False,

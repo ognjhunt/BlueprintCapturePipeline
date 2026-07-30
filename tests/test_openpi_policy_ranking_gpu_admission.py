@@ -183,6 +183,26 @@ def test_openpi_gpu_admission_accepts_exact_current_reference_source_overlay() -
     assert result["source_commit"] == "a" * 40
     assert result["runtime_source_commit"] == runtime_commit
 
+    requery_manifest = {
+        **manifest,
+        "purpose": "label_free_current_reference_same_policy_requery",
+        "policy_ids": ["pi05_droid"],
+        "observation_schema": "openpi_current_reference_generated_observation.v1",
+        "same_candidate_policy_id": "pi05_droid",
+    }
+    requery_manifest["manifest_sha256"] = canonical_sha256(
+        {key: value for key, value in requery_manifest.items() if key != "manifest_sha256"}
+    )
+    requery = build_openpi_policy_ranking_gpu_admission(
+        release=release,
+        input_bundle={**bundle, "manifest": requery_manifest},
+        preflight=preflight,
+        spend=spend,
+        expected_source_commit=runtime_commit,
+        observed_now_epoch=1001.0,
+    )
+    assert requery["status"] == "admitted", requery["blockers"]
+
     manifest["runtime_source"]["archive_url"] = (
         "https://codeload.github.com/ognjhunt/BlueprintCapturePipeline/tar.gz/" + "9" * 40
     )

@@ -178,6 +178,11 @@ def test_generated_wam_observation_round_trips_through_existing_policy_bundle(
         image_source_commit="1" * 40,
         output_zip=bundle_path,
     )
+    assert receipt["manifest"]["policy_ids"] == ["pi05_droid"]
+    assert receipt["manifest"]["purpose"] == (
+        "label_free_current_reference_same_policy_requery"
+    )
+    assert receipt["manifest"]["same_candidate_policy_id"] == "pi05_droid"
     extracted = extract_current_reference_gpu_input_bundle(
         bundle_path=bundle_path,
         expected_bundle_sha256=receipt["bundle_sha256"],

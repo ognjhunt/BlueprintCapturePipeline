@@ -91,6 +91,26 @@ def test_policy_canary_runs_exactly_one_query_each_and_preserves_native_output(
     assert result["wam_called"] is False
     assert result["judge_called"] is False
 
+    calls.clear()
+    requery = run_current_reference_policy_canary(
+        source_freeze_path=source_freeze,
+        checkpoint_inventory_dir=inventory_dir,
+        initial_observation_manifest_path=initial,
+        output_dir=tmp_path / "requery-output",
+        checkpoint_downloader=lambda _: tmp_path,
+        policy_loader=lambda spec, _: Policy(spec),
+        initial_observation_loader=lambda _: {
+            "prompt": "fixture",
+            "blueprint/same_candidate_policy_id": "pi05_droid",
+        },
+        gpu_evidence_collector=lambda: {"gpu_device_present": True},
+    )
+    assert requery["status"] == "completed"
+    assert calls == ["pi05_droid"]
+    assert requery["frozen_policy_order"] == ["pi05_droid"]
+    assert requery["query_mode"] == "same_candidate_policy_requery"
+    assert requery["same_candidate_policy_id"] == "pi05_droid"
+
     attempted_loads: list[str] = []
 
     def load_with_one_policy_failure(spec, _checkpoint):

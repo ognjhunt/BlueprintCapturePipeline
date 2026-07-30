@@ -142,6 +142,9 @@ used as blind confirmation.
   the underspecified full-GPT-5 challenger with the cost-efficient
   `gpt-5.6-luna` Responses Batch image-input arm while retaining Gemini 3.6
   Flash as the primary native-video judge;
+- `protocol_amendment_13_same_policy_requery_scope_v1.md` — restricts every
+  generated-observation policy query to the exact preceding policy identity
+  while preserving the legacy all-three frame-zero canary;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 

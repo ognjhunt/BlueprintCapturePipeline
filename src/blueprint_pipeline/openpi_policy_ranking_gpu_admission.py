@@ -292,11 +292,19 @@ def build_openpi_policy_ranking_gpu_admission(
         blockers.append("openpi_gpu_input_bundle_contains_raw_3dgs")
     if manifest.get("redistribution_authorized") is not False:
         blockers.append("openpi_gpu_input_bundle_rights_boundary_invalid")
+    current_reference_requery = bool(
+        is_current_reference
+        and manifest.get("purpose") == "label_free_current_reference_same_policy_requery"
+    )
     expected_purpose = (
         "private_internal_noncommercial_new_site_diagnostic_canary"
         if is_canary
         else (
-            "label_free_current_reference_real_policy_identity_canary"
+            (
+                "label_free_current_reference_same_policy_requery"
+                if current_reference_requery
+                else "label_free_current_reference_real_policy_identity_canary"
+            )
             if is_current_reference
             else "private_internal_noncommercial_research_gpu_execution"
         )
@@ -324,8 +332,29 @@ def build_openpi_policy_ranking_gpu_admission(
         if declared_manifest_sha != canonical_sha256(manifest_payload):
             blockers.append("openpi_gpu_input_canary_manifest_sha256_invalid")
     elif is_current_reference:
+        policy_ids = manifest.get("policy_ids")
+        policy_ids_valid = (
+            isinstance(policy_ids, list)
+            and (
+                (
+                    current_reference_requery
+                    and len(policy_ids) == 1
+                    and policy_ids[0] in {"pi05_droid", "pi0_droid", "pi0_fast_droid"}
+                    and manifest.get("same_candidate_policy_id") == policy_ids[0]
+                    and manifest.get("observation_schema")
+                    == "openpi_current_reference_generated_observation.v1"
+                )
+                or (
+                    not current_reference_requery
+                    and policy_ids == ["pi05_droid", "pi0_droid", "pi0_fast_droid"]
+                    and manifest.get("same_candidate_policy_id") is None
+                    and manifest.get("observation_schema")
+                    in {None, "ctrl_world_public_initial_observation.v1"}
+                )
+            )
+        )
         if (
-            manifest.get("policy_ids") != ["pi05_droid", "pi0_droid", "pi0_fast_droid"]
+            not policy_ids_valid
             or manifest.get("requests_per_policy") != 1
             or manifest.get("label_free") is not True
             or manifest.get("confirmation_eligible") is not False

@@ -479,6 +479,27 @@ def test_current_reference_terminal_output_requires_all_three_native_actions() -
     assert valid["status"] == "completed"
     assert valid["execution_mode"] == "current_reference_policy_identity_canary"
 
+    requery_manifest = {
+        **manifest,
+        "frozen_policy_order": ["pi05_droid"],
+        "query_mode": "same_candidate_policy_requery",
+        "same_candidate_policy_id": "pi05_droid",
+        "policy_results": [{"policy_id": "pi05_droid", "status": "completed"}],
+    }
+    requery_manifest["manifest_sha256"] = canonical_sha256(
+        {key: value for key, value in requery_manifest.items() if key != "manifest_sha256"}
+    )
+    requery_buffer = io.BytesIO()
+    with zipfile.ZipFile(requery_buffer, "w") as archive:
+        archive.writestr(
+            "openpi_current_reference_policy_canary.json",
+            json.dumps(requery_manifest),
+        )
+        archive.writestr("pi05_droid_native_action.npy", b"native-action")
+        archive.writestr("pi05_droid_policy_receipt.json", b"{}")
+    requery_valid = _validate_output_archive(requery_buffer.getvalue())
+    assert requery_valid["status"] == "completed", requery_valid["blockers"]
+
     missing = io.BytesIO()
     with zipfile.ZipFile(missing, "w") as archive:
         archive.writestr(
