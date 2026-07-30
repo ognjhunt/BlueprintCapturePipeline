@@ -1,0 +1,110 @@
+{
+  "schema_version": "policy_ranking_oscar_review_views_result.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-30T03:18:52-0500",
+  "status": "completed_review_derivatives_only",
+  "executed_source_commit": "42cd4955850d2bf377252d66dfdbec52823a139a",
+  "protocol_sha256": "8cbbdb8cc586af07c737015e680690463d355a60e9c4ada5e4051265fc4d7a0c",
+  "source": {
+    "arm": "exact_public_oscar_compatibility_replay_canary",
+    "case": "droid_TRI",
+    "generated_video_sha256": "68bcce578a46855b2f56f83a52fb3312ab6938b0a7ee0eda9f65ba4921cf04d4",
+    "skeleton_video_sha256": "4ad9dd1c6cf2acd2bd62fd51a4e5c0744ee0a077b8ea06b7a0a35af24418d08c",
+    "open_loop_recorded_action_replay": true,
+    "closed_loop_policy_requery": false
+  },
+  "execution": {
+    "provider_called": false,
+    "paid_resource_used": false,
+    "stage_cost_usd": 0.0,
+    "physical_future_rgb_pixels_used": false,
+    "physical_outcome_labels_accessed": false,
+    "manifest_sha256": "291648ebdf55267ba95f8d6fb662548739ce6d62362643d0f789e44e9cd53d91",
+    "manifest_file_sha256": "a89b0a22096a23fec3a6891ddacae95dbc7a77178d2427616e9f587cc4b41c0e",
+    "external_evidence_root": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/oscar_public_replay_review_views_v1"
+  },
+  "media": {
+    "skeleton_only": {
+      "sha256": "5c8cae1fad8855807494a0e583283def51c7d3142eef684630310f30456c3413",
+      "classification": "intended_motion_evidence_only"
+    },
+    "visible_skeleton_review": {
+      "sha256": "a90d90f184e98ad9f03f1500c73ff22b8c4c6423cd2d8e192352287d05e55dad",
+      "classification": "review_composite_not_native_oscar_output"
+    },
+    "skeleton_region_occluded_scene": {
+      "sha256": "f2564f086eaa3d6fd735129eae9309c193ecf7be6b77b0cb75cb848824ed8c59",
+      "classification": "occlusion_diagnostic_not_inpainting"
+    },
+    "binary_occlusion_mask": {
+      "sha256": "3b79a93fcf837964312a0b993aaf21665c39d8d068ad6c7e03347535a2fb73f5",
+      "classification": "review_mask"
+    },
+    "common_contract": {
+      "codec": "mpeg4",
+      "width": 640,
+      "height": 480,
+      "fps": 14.0,
+      "frame_count": 81
+    }
+  },
+  "mask_measurements": {
+    "annotation_fraction_mean": 0.011986681777263374,
+    "annotation_fraction_range": [
+      0.010403645833333334,
+      0.013232421875
+    ],
+    "occlusion_fraction_mean": 0.050857606738683135,
+    "occlusion_fraction_range": [
+      0.045966796875,
+      0.05343098958333333
+    ]
+  },
+  "review_frame_inventory": {
+    "selection": "first_middle_last_frames_0_40_80_for_every_derivative",
+    "binary_occlusion_mask": {
+      "0": "a4e63a4d68609abb79a2e0a785a7b2d1b8340ed3166f469c7d8a1a1d04c2f5c0",
+      "40": "1839c9d9c9e5353452baafe5e5f83157656005b1dabc1bf76e05ac4d3f71ad74",
+      "80": "fd0a521b503b7c03d9a2bea5e890a8f0c20b3b1dae849309e7d45f67978f62c3"
+    },
+    "skeleton_only": {
+      "0": "12d0fd37cbf49bfcb218c085abbcb6ec7780a83890ba4efc95bef17eef1485a4",
+      "40": "21bce95ed0d710b19720e4a73d5a9f253459c35892e0c7be111212b3b0fcee69",
+      "80": "c0db3ccaf316b323fd0c1513beb37a444b3c1d1a2765ac375e18a33d6cc7e6b5"
+    },
+    "skeleton_region_occluded_scene": {
+      "0": "9af5b81ffed269145004c97daf6ae325499eebe687ec7a31a4c900ec81e67b5e",
+      "40": "563e0473b86500ba32949df170127f343184aaa8cc6ed8b637a6e4d426afd611",
+      "80": "ead54ea340be0170ba286311c7290b38d71f130291499d8f4958aee77aac32a5"
+    },
+    "visible_skeleton_review": {
+      "0": "4d2dae988e50e8ffa7e8a6619f183ede5000c293cfa91d9610ad420ab83b48b8",
+      "40": "00200e48bfc09c2e4002a1c253eea46f78ff213d6c92f8c2bc432d34f52c32e7",
+      "80": "f9790dc7f9d3c1871caacee0312ede0628f8259781af353939a8971eccb611e7"
+    }
+  },
+  "manual_review": {
+    "first_middle_last_reviewed_for_every_derivative": true,
+    "conditioning_motion_visible": true,
+    "generated_scene_remains_visible_outside_mask": true,
+    "conditioning_projection_is_pixel_perfect": false,
+    "conditioning_projection_observations": [
+      "Projected link centerlines are approximate and portions leave the camera frame.",
+      "The end-effector axes and link centerlines do not cover the full rendered robot body."
+    ],
+    "occlusion_removes_complete_robot": false,
+    "unfavorable_examples_retained": true
+  },
+  "scientific_interpretation": {
+    "skeleton_only_result": "Technical pass for attributable intended-motion visualization only.",
+    "visible_skeleton_result": "Technical pass for an explicitly attributed review composite only.",
+    "skeleton_masked_scene_result": "Technical pass for a deterministic skeleton-region occlusion diagnostic, but it cannot isolate all robot pixels or establish action-conditioned world consequences.",
+    "wam_qualification_advanced": false,
+    "ranking_fidelity_advanced": false,
+    "captured_site_transfer_advanced": false,
+    "economics_and_speed_advanced": false,
+    "thesis_advanced": false
+  },
+  "claim_ceiling": "label_free_open_loop_review_derivatives_only",
+  "result_sha256": "b3c4919a8180e0c8714e421e385e54df24bc2245f4d2b4dd6f1c1f083e2ebe26"
+}
