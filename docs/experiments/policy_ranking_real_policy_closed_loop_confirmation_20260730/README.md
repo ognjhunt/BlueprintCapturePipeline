@@ -42,10 +42,10 @@ The scientific admission state is:
 - blind physical ranking: unavailable and not measured;
 - captured-site transfer: not admitted;
 - economics and speed: not admitted;
-- provider state: the successor's exact Vast prefix is zero; an unrelated
-  user-owned Vast GPU is active under a different prefix and consumes the global
-  one-GPU ceiling. The successor's watchdog conservatively retains its lease and
-  reservation until global Vast zero, but it does not own or alter that resource.
+- provider state: current Vast, RunPod, and DigitalOcean inventory is zero, but
+  the predecessor no-allocation watchdog conservatively retains its lease and
+  reservation until its immutable deadline because that already-running process
+  predates the no-instance-ID early-settlement correction;
 
 The historical frozen-stack verdict remains `thesis_not_supported`. The prior
 specialized successor remains `inconclusive`. Neither result is overwritten or
@@ -135,15 +135,19 @@ used as blind confirmation.
 - `protocol_amendment_10_provider_artifact_path_portability_v1.md` —
   prospective result-root-relative provider artifacts and post-download
   hash-verified rebasing;
+- `protocol_amendment_11_generated_observation_policy_requery_v1.md` —
+  additive generated-view plus commanded-state policy observation contract,
+  bound to the prior policy receipt and WAM request/result chain;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-The next finite gate is to commit and push the provider repair, freeze and hash
-its new exact codeload archive and a newly versioned signed input bundle, then
-wait for global one-GPU admission and execute one identity-bound inference from
-each of the three policy checkpoints. Only after this policy gate may the
-separately sealed Ctrl-World WAM image and one policy-action generation be
-admitted. Judges remain forbidden until a complete episode passes causal
-qualification.
+The next finite gate is the predecessor watchdog's deadline settlement, a fresh
+post-terminal global provider-zero snapshot, and conservative no-allocation
+budget reconciliation. Blueprint will then run the already frozen current-
+reference policy canary from its clean pushed SHA: one identity-bound inference
+from each of the three policy checkpoints. Only after that policy gate may the
+separately attributed Ctrl-World WAM bundle be frozen around one real policy
+action and admitted. Judges remain forbidden until a complete episode passes
+causal qualification.

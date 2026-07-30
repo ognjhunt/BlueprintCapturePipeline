@@ -14,6 +14,9 @@ from .common import ensure_dir, write_json
 from .openpi_current_reference_droid_policy_runtime import (
     CURRENT_REFERENCE_INVENTORY_FILES,
 )
+from .openpi_current_reference_observation import (
+    validate_current_reference_policy_observation_manifest,
+)
 from .policy_ranking_thesis import canonical_sha256, file_sha256
 
 
@@ -37,16 +40,11 @@ def _read_object(path: str | Path) -> dict[str, Any]:
 
 def _portable_initial_observation(*, source_manifest: Path, staging_root: Path) -> dict[str, Any]:
     payload = _read_object(source_manifest)
-    recorded = str(payload.get("manifest_sha256") or "")
-    digest_payload = dict(payload)
-    digest_payload.pop("manifest_sha256", None)
-    if (
-        payload.get("schema_version") != "ctrl_world_public_initial_observation.v1"
-        or recorded != canonical_sha256(digest_payload)
-        or payload.get("engineering_canary_eligible") is not True
-        or payload.get("confirmation_eligible") is not False
-    ):
-        raise ValueError("current_reference_bundle_initial_observation_invalid")
+    try:
+        payload = validate_current_reference_policy_observation_manifest(payload)
+    except ValueError as exc:
+        raise ValueError("current_reference_bundle_initial_observation_invalid") from exc
+    recorded = str(payload["manifest_sha256"])
     portable = dict(payload)
     views = portable.get("views")
     state = portable.get("state")

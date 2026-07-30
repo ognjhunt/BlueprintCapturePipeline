@@ -28,6 +28,9 @@ from .openpi_current_reference_droid_policy_runtime import (
     load_current_reference_policy_specs,
     verify_local_current_reference_checkpoint,
 )
+from .openpi_current_reference_observation import (
+    validate_current_reference_policy_observation_manifest,
+)
 from .policy_ranking_thesis import canonical_sha256, file_sha256
 
 
@@ -63,16 +66,11 @@ def load_current_reference_initial_observation(
 
     path = Path(manifest_path).expanduser().resolve()
     payload = json.loads(path.read_text(encoding="utf-8"))
-    recorded_digest = str(payload.get("manifest_sha256") or "")
-    digest_payload = dict(payload)
-    digest_payload.pop("manifest_sha256", None)
-    if (
-        payload.get("schema_version") != "ctrl_world_public_initial_observation.v1"
-        or recorded_digest != canonical_sha256(digest_payload)
-        or payload.get("engineering_canary_eligible") is not True
-        or payload.get("confirmation_eligible") is not False
-    ):
-        raise ValueError("current_reference_initial_observation_manifest_invalid")
+    try:
+        payload = validate_current_reference_policy_observation_manifest(payload)
+    except ValueError as exc:
+        raise ValueError("current_reference_initial_observation_manifest_invalid") from exc
+    recorded_digest = str(payload["manifest_sha256"])
     views = payload.get("views")
     state = payload.get("state")
     if not isinstance(views, Mapping) or set(views) != set(CTRL_WORLD_RELEASED_VIEW_ORDER):
