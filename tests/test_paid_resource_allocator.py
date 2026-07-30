@@ -731,6 +731,58 @@ def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def test_gpu_canary_dispatches_native_warehouse_camera_through_canonical_allocator(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_native_camera_gpu_lane", fake_run)
+    monkeypatch.setattr(
+        allocator, "_source_checkout_blockers", lambda _expected, **_kwargs: ([], "c" * 40)
+    )
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider-launch-request",
+            "request.json",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "unused-models.json",
+            "--preflight-bundle",
+            "preflight.json",
+            "--admission-out",
+            "admission.json",
+            "--bound-request-out",
+            "bound.json",
+            "--adapter-output",
+            "adapter.json",
+            "--pod-name",
+            "blueprint-native-warehouse-camera-test",
+            "--expected-source-commit",
+            "c" * 40,
+            "--probe-kind",
+            allocator.NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
+            "--provider",
+            "vast",
+            "--native-camera-input-bundle-receipt",
+            "input-receipt.json",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["expected_source_commit"] == "c" * 40
+    assert observed["execute"] is False
+    assert observed["input_bundle_receipt"] == "input-receipt.json"
+    assert observed["provider_name"] == "vast"
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
 def test_gpu_canary_rejects_missing_source_and_output_sink_before_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

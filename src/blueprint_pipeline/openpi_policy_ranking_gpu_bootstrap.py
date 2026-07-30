@@ -308,6 +308,7 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
                 ),
                 menagerie_root="/opt/mujoco-menagerie/franka_emika_panda",
                 output_dir=campaign_output,
+                initial_camera_paths=extracted_input.get("initial_camera_paths") or None,
             )
         else:
             extracted_input = extract_private_input_bundle(
@@ -446,6 +447,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     canary.add_argument("--background", required=True)
     canary.add_argument("--output", required=True)
     canary.add_argument("--arm", choices=("skeleton_only",), required=True)
+    canary.add_argument("--native-camera-canary-result")
     background = subparsers.add_parser("materialize-canary-background")
     background.add_argument("--source", required=True)
     background.add_argument("--output", required=True)
@@ -480,6 +482,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             background_path=args.background,
             output_zip=args.output,
             arm_id=args.arm,
+            native_camera_canary_result_path=args.native_camera_canary_result,
         )
         if receipt.get("schema_version") != CANARY_INPUT_RECEIPT_SCHEMA_VERSION:
             raise RuntimeError("canary_input_receipt_schema_invalid")

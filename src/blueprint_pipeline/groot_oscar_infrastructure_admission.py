@@ -32,6 +32,11 @@ from .openpi_policy_ranking_remote_build_packet import (
     SCHEMA_VERSION as OPENPI_POLICY_RANKING_PACKET_SCHEMA,
     validate_openpi_policy_ranking_archive,
 )
+from .isaac_worker_remote_build_packet import (
+    PACKET_KIND as ISAAC_WORKER_PACKET_KIND,
+    SCHEMA_VERSION as ISAAC_WORKER_PACKET_SCHEMA,
+    validate_isaac_worker_archive,
+)
 
 
 # RunPod's create API returned this authoritative network-volume-capable set on
@@ -265,6 +270,7 @@ def build_live_machine_capability_evidence(
         "thin_release",
         "carrier_image",
         OPENPI_POLICY_RANKING_PACKET_KIND,
+        ISAAC_WORKER_PACKET_KIND,
         "model_cache_s3",
     }:
         blockers.append("live_machine_packet_kind_unsupported")
@@ -272,6 +278,7 @@ def build_live_machine_capability_evidence(
         "thin_release",
         "carrier_image",
         OPENPI_POLICY_RANKING_PACKET_KIND,
+        ISAAC_WORKER_PACKET_KIND,
     }:
         if observation.get("docker_cli_present") is not True:
             blockers.append("live_machine_docker_cli_missing")
@@ -556,6 +563,7 @@ def build_build_plane_admission(
         "thin_release",
         "carrier_image",
         OPENPI_POLICY_RANKING_PACKET_KIND,
+        ISAAC_WORKER_PACKET_KIND,
         "model_cache_s3",
     }:
         blockers.append("builder_packet_kind_unsupported")
@@ -563,6 +571,7 @@ def build_build_plane_admission(
         "thin_release": "image_build",
         "carrier_image": "image_build",
         OPENPI_POLICY_RANKING_PACKET_KIND: "image_build",
+        ISAAC_WORKER_PACKET_KIND: "image_build",
         "model_cache_s3": "model_cache_s3",
     }.get(packet_kind)
     if packet_kind == "carrier_image":
@@ -589,6 +598,20 @@ def build_build_plane_admission(
         if not _COMMIT.fullmatch(_string(packet.get("source_commit"))):
             blockers.append("builder_openpi_source_commit_invalid")
         blockers.extend(validate_openpi_policy_ranking_archive(packet))
+    if packet_kind == ISAAC_WORKER_PACKET_KIND:
+        if packet.get("schema_version") != ISAAC_WORKER_PACKET_SCHEMA:
+            blockers.append("builder_isaac_packet_schema_invalid")
+        if not _versioned_image_ref(packet.get("image_ref")):
+            blockers.append("builder_isaac_image_ref_not_versioned")
+        if not _DIGEST_REF.fullmatch(_string(packet.get("base_image_ref"))):
+            blockers.append("builder_isaac_base_image_not_digest_pinned")
+        if not _HEX64.fullmatch(_string(packet.get("dockerfile_sha256"))):
+            blockers.append("builder_isaac_dockerfile_sha256_invalid")
+        if not _HEX64.fullmatch(_string(packet.get("context_manifest_sha256"))):
+            blockers.append("builder_isaac_context_manifest_sha256_invalid")
+        if not _COMMIT.fullmatch(_string(packet.get("source_commit"))):
+            blockers.append("builder_isaac_source_commit_invalid")
+        blockers.extend(validate_isaac_worker_archive(packet))
     if provider in {"runpod", "runpod_pod", "runpod-pod"}:
         blockers.append("runpod_pods_are_serve_plane_not_image_build_plane")
     if expected_purpose is not None and _string(builder.get("purpose")) != expected_purpose:
@@ -599,6 +622,7 @@ def build_build_plane_admission(
         "thin_release",
         "carrier_image",
         OPENPI_POLICY_RANKING_PACKET_KIND,
+        ISAAC_WORKER_PACKET_KIND,
     }:
         if builder.get("docker_daemon_verified") is not True:
             blockers.append("builder_docker_daemon_not_verified")
@@ -627,7 +651,13 @@ def build_build_plane_admission(
     if type(free_bytes) is not int or free_bytes < MIN_BUILD_FREE_BYTES:
         blockers.append("builder_free_disk_below_120_gib")
     if (
-        packet_kind in {"thin_release", "carrier_image", OPENPI_POLICY_RANKING_PACKET_KIND}
+        packet_kind
+        in {
+            "thin_release",
+            "carrier_image",
+            OPENPI_POLICY_RANKING_PACKET_KIND,
+            ISAAC_WORKER_PACKET_KIND,
+        }
         and builder.get("registry_push_auth_file_verified") is not True
     ):
         blockers.append("builder_file_based_registry_push_auth_not_verified")
@@ -677,7 +707,13 @@ def build_build_plane_admission(
         "execution_runtime_ready": (
             builder.get("docker_daemon_verified") is True
             and builder.get("docker_buildx_verified") is True
-            if packet_kind in {"thin_release", "carrier_image", OPENPI_POLICY_RANKING_PACKET_KIND}
+            if packet_kind
+            in {
+                "thin_release",
+                "carrier_image",
+                OPENPI_POLICY_RANKING_PACKET_KIND,
+                ISAAC_WORKER_PACKET_KIND,
+            }
             else builder.get("python_runtime_verified") is True
             and builder.get("python_version") == "3.12"
             and builder.get("dependency_lock_verified") is True
