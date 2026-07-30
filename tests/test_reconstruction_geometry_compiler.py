@@ -4,13 +4,17 @@ import json
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_geometry_compiler import (
     COMPILER_SCHEMA,
+    QUALIFICATION_MEASUREMENT_SCHEMA,
+    QUALIFICATION_REQUEST_SCHEMA,
     ReconstructionGeometryCompilerError,
     compile_collision_candidate,
     compile_metric_geometry,
+    qualify_collision_candidate,
 )
 from blueprint_pipeline.task_evaluation_supervisor.capabilities import SupervisorContext
 from blueprint_pipeline.task_evaluation_supervisor.contracts import AutonomyMode
@@ -147,6 +151,93 @@ def _request(root: Path, **updates: object) -> dict:
     return value
 
 
+def _qualification_request(
+    root: Path, candidate: dict, *, measurement_updates: dict | None = None
+) -> dict:
+    evaluator = {
+        "method_id": "blueprint.hermetic_independent_collider_evaluator",
+        "method_version": "1.0.0",
+        "candidate_method_independent": True,
+    }
+    measurements = {
+        "scale_error_fraction": 0.01,
+        "gravity_alignment_error_deg": 1.0,
+        "floor_height_residual_m": 0.01,
+        "wall_offset_residual_m": 0.02,
+        "visual_to_collider_disagreement_m": 0.02,
+        "clearance_error_m": 0.03,
+        "mesh_coverage_fraction": 0.95,
+        "minimum_obstacle_thickness_m": 0.04,
+    }
+    measurement = {
+        "schema_version": QUALIFICATION_MEASUREMENT_SCHEMA,
+        "collider_candidate_manifest_digest": candidate[
+            "collider_candidate_manifest_digest"
+        ],
+        "collider_asset_digest": candidate["collider_asset_digest"],
+        "evaluator": evaluator,
+        "measurements": measurements,
+        "evaluated_task_region_ids": ["floor"],
+        "robot_footprint_navigability_checked": True,
+        "candidate_self_graded": False,
+        "thresholds_modified_after_measurement": False,
+        "generated_geometry_promoted_to_collision_truth": False,
+        "blockers": [],
+    }
+    if measurement_updates:
+        measurement.update(measurement_updates)
+    measurement_path = root / "inputs" / "collider_measurements.json"
+    measurement_path.write_text(json.dumps(measurement, sort_keys=True), encoding="utf-8")
+    measurement_digest = _digest_bytes(measurement_path.read_bytes())
+    thresholds = {
+        "scale_error_fraction": 0.03,
+        "gravity_alignment_error_deg": 3.0,
+        "floor_height_residual_m": 0.03,
+        "wall_offset_residual_m": 0.05,
+        "visual_to_collider_disagreement_m": 0.05,
+        "clearance_error_m": 0.05,
+        "mesh_coverage_fraction": 0.9,
+        "minimum_obstacle_thickness_m": 0.03,
+    }
+    request = {
+        "schema_version": QUALIFICATION_REQUEST_SCHEMA,
+        "stable_run_identity": "collider-qualification-run-1",
+        "source_capture_identity": candidate["source_capture_identity"],
+        "source_capture_digest": candidate["source_capture_digest"],
+        "original_file_references": [
+            *candidate["original_file_references"],
+            {"artifact_id": "collider_measurements", "digest": measurement_digest},
+        ],
+        "source_commit_sha": candidate["source_commit_sha"],
+        "deterministic_configuration_digest": "sha256:" + "7" * 64,
+        "train_heldout_split_digest": candidate["train_heldout_split_digest"],
+        "camera_calibration_binding": candidate["camera_calibration_binding"],
+        "coordinate_frame_declaration": candidate["coordinate_frame_declaration"],
+        "authority_used": {"mode": "execute_non_spend"},
+        "timestamp": "2026-07-30T22:30:00Z",
+        "collider_candidate_manifest_digest": candidate[
+            "collider_candidate_manifest_digest"
+        ],
+        "metric_scale_status": candidate["metric_scale_status"],
+        "measurement_artifact": {
+            "relative_path": "inputs/collider_measurements.json",
+            "digest": measurement_digest,
+        },
+        "thresholds": thresholds,
+        "qa_thresholds_digest": canonical_digest(
+            thresholds, digest_field="qa_thresholds_digest"
+        ),
+        "independent_evaluator": evaluator,
+        "task_region_ids": ["floor"],
+        "warnings": [],
+        "blockers": [],
+    }
+    request["collider_qualification_request_digest"] = canonical_digest(
+        request, digest_field="collider_qualification_request_digest"
+    )
+    return request
+
+
 def test_compiler_filters_low_confidence_observed_surface_without_fill(tmp_path: Path) -> None:
     request = _request(tmp_path)
     manifest = compile_metric_geometry(
@@ -215,6 +306,132 @@ def test_metric_compilation_and_collider_baseline_replay_exactly(tmp_path: Path)
     }
     assert candidate["hole_statistics"]["boundary_edge_count"] == 4
     assert candidate["hole_statistics"]["count"] == 1
+
+
+def test_independent_collider_qualification_accepts_only_frozen_measured_thresholds(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+    metric = compile_metric_geometry(
+        source_artifact=request,
+        output_root=tmp_path / "generated" / "metric",
+        artifact_root=tmp_path,
+    )
+    candidate = compile_collision_candidate(
+        source_artifact=metric,
+        output_root=tmp_path / "generated" / "collider",
+        artifact_root=tmp_path,
+    )
+    qualification_request = _qualification_request(tmp_path, candidate)
+    report = qualify_collision_candidate(
+        source_artifact=candidate,
+        output_root=tmp_path / "generated" / "qualification",
+        artifact_root=tmp_path,
+        qualification_request=qualification_request,
+    )
+    assert report["decision"] == "accepted_bounded_navigation"
+    assert report["candidate_self_graded"] is False
+    assert report["failed_threshold_ids"] == []
+    assert set(report["unsupported_claims"]) >= {
+        "grasping",
+        "articulation",
+        "contact_force",
+        "deployment",
+        "physical_success",
+    }
+    replay = qualify_collision_candidate(
+        source_artifact=candidate,
+        output_root=tmp_path / "generated" / "qualification",
+        artifact_root=tmp_path,
+        qualification_request=qualification_request,
+    )
+    assert replay == report
+
+
+def test_collider_qualification_request_and_measurement_match_versioned_schemas(
+    tmp_path: Path,
+) -> None:
+    metric = compile_metric_geometry(
+        source_artifact=_request(tmp_path),
+        output_root=tmp_path / "generated" / "metric",
+        artifact_root=tmp_path,
+    )
+    candidate = compile_collision_candidate(
+        source_artifact=metric,
+        output_root=tmp_path / "generated" / "collider",
+        artifact_root=tmp_path,
+    )
+    request = _qualification_request(tmp_path, candidate)
+    schema_root = Path(__file__).parents[1] / "docs" / "schemas"
+    request_schema = json.loads(
+        (schema_root / "collider_qualification_request.v1.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    measurement_schema = json.loads(
+        (schema_root / "collider_qualification_measurements.v1.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    measurement = json.loads(
+        (tmp_path / request["measurement_artifact"]["relative_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    Draft202012Validator(request_schema).validate(request)
+    Draft202012Validator(measurement_schema).validate(measurement)
+
+
+def test_independent_collider_qualification_rejects_bad_clearance_and_self_grading(
+    tmp_path: Path,
+) -> None:
+    metric = compile_metric_geometry(
+        source_artifact=_request(tmp_path),
+        output_root=tmp_path / "generated" / "metric",
+        artifact_root=tmp_path,
+    )
+    candidate = compile_collision_candidate(
+        source_artifact=metric,
+        output_root=tmp_path / "generated" / "collider",
+        artifact_root=tmp_path,
+    )
+    request = _qualification_request(
+        tmp_path,
+        candidate,
+        measurement_updates={
+            "measurements": {
+                "scale_error_fraction": 0.01,
+                "gravity_alignment_error_deg": 1.0,
+                "floor_height_residual_m": 0.01,
+                "wall_offset_residual_m": 0.02,
+                "visual_to_collider_disagreement_m": 0.02,
+                "clearance_error_m": 0.5,
+                "mesh_coverage_fraction": 0.95,
+                "minimum_obstacle_thickness_m": 0.04,
+            }
+        },
+    )
+    report = qualify_collision_candidate(
+        source_artifact=candidate,
+        output_root=tmp_path / "generated" / "qualification",
+        artifact_root=tmp_path,
+        qualification_request=request,
+    )
+    assert report["decision"] == "rejected"
+    assert report["failed_threshold_ids"] == ["clearance_error_m"]
+
+    request = _qualification_request(
+        tmp_path, candidate, measurement_updates={"candidate_self_graded": True}
+    )
+    with pytest.raises(
+        ReconstructionGeometryCompilerError, match="measurement_independence_invalid"
+    ):
+        qualify_collision_candidate(
+            source_artifact=candidate,
+            output_root=tmp_path / "generated" / "qualification",
+            artifact_root=tmp_path,
+            qualification_request=request,
+        )
 
 
 @pytest.mark.parametrize(
@@ -363,6 +580,47 @@ def test_registered_tools_use_repository_owned_geometry_runtimes(tmp_path: Path)
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
     assert candidate["collision_validated"] is False
     assert candidate["unobserved_regions_filled"] is False
+
+    qualification_request = _qualification_request(tmp_path, candidate)
+    qualifier_context = SupervisorContext(
+        run_id="repository-owned-qualifier-runtime",
+        customer_question="Qualify collider candidate",
+        supervisor_output_dir=str(tmp_path),
+        collider_candidate_manifest=candidate,
+        collider_qualification_request=qualification_request,
+    )
+    qualifier_authority = default_authority_envelope(
+        run_id=qualifier_context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[candidate["collider_candidate_manifest_digest"]],
+    ).to_mapping()
+    qualifier_bindings = {
+        item.tool_id: item
+        for item in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=qualifier_context,
+            registry=registry,
+            authority=qualifier_authority,
+        )
+    }
+    qualifier_observation = qualifier_bindings["qualify_collision_candidate"].invoke(
+        {
+            "collider_candidate_manifest_digest": candidate[
+                "collider_candidate_manifest_digest"
+            ]
+        }
+    )
+    assert qualifier_observation["status"] == "completed"
+    report_path = (
+        tmp_path
+        / "generated"
+        / "qualify_collision_candidate"
+        / "collider_qualification_report.v1.json"
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["decision"] == "accepted_bounded_navigation"
+    assert report["candidate_self_graded"] is False
 
 
 def test_compiler_rejects_duplicate_json_keys_and_output_escape(tmp_path: Path) -> None:

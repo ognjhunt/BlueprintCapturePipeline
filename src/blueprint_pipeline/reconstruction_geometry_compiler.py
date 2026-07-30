@@ -24,6 +24,7 @@ from .decision_evidence_contracts import canonical_digest
 from .reconstruction_geometry_contracts import (
     ReconstructionGeometryContractError,
     build_collider_candidate_manifest,
+    build_collider_qualification_report,
     build_metric_geometry_manifest,
 )
 
@@ -34,12 +35,26 @@ COMPILER_METHOD = "blueprint.observed_surface_confidence_filter"
 COMPILER_VERSION = "1.0.0"
 COLLIDER_METHOD = "blueprint.observed_surface_collider_baseline"
 COLLIDER_VERSION = "1.0.0"
+QUALIFICATION_REQUEST_SCHEMA = "collider_qualification_request.v1"
+QUALIFICATION_MEASUREMENT_SCHEMA = "collider_qualification_measurements.v1"
+QUALIFICATION_METHOD = "blueprint.independent_collider_measurement_evaluator"
+QUALIFICATION_VERSION = "1.0.0"
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_VERTICES = 2_000_000
 MAX_FACES = 4_000_000
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_UPPER_LIMITS = {
+    "scale_error_fraction",
+    "gravity_alignment_error_deg",
+    "floor_height_residual_m",
+    "wall_offset_residual_m",
+    "visual_to_collider_disagreement_m",
+    "clearance_error_m",
+}
+_LOWER_LIMITS = {"mesh_coverage_fraction", "minimum_obstacle_thickness_m"}
+_QUALIFICATION_METRICS = _UPPER_LIMITS | _LOWER_LIMITS
 
 
 class ReconstructionGeometryCompilerError(ValueError):
@@ -571,14 +586,231 @@ def compile_collision_candidate(
     return build_collider_candidate_manifest(value)
 
 
+def _validated_metric_map(value: Any, *, code: str) -> dict[str, float]:
+    if not isinstance(value, Mapping) or set(value) != _QUALIFICATION_METRICS:
+        raise ReconstructionGeometryCompilerError([code])
+    normalized: dict[str, float] = {}
+    for key in sorted(_QUALIFICATION_METRICS):
+        number = _finite_number(value.get(key), minimum=0.0)
+        if number is None:
+            raise ReconstructionGeometryCompilerError([code])
+        normalized[key] = float(number)
+    return normalized
+
+
+def qualify_collision_candidate(
+    *,
+    source_artifact: Mapping[str, Any],
+    output_root: str | Path,
+    artifact_root: str | Path,
+    qualification_request: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Qualify a collider from independent, frozen measurement evidence."""
+
+    del output_root  # The supervisor owns report persistence.
+    try:
+        candidate = build_collider_candidate_manifest(source_artifact)
+    except ReconstructionGeometryContractError as exc:
+        raise ReconstructionGeometryCompilerError(exc.codes) from exc
+    request = json.loads(json.dumps(dict(qualification_request)))
+    request_digest = request.get("collider_qualification_request_digest")
+    if (
+        request.get("schema_version") != QUALIFICATION_REQUEST_SCHEMA
+        or not isinstance(request_digest, str)
+        or request_digest
+        != canonical_digest(request, digest_field="collider_qualification_request_digest")
+    ):
+        raise ReconstructionGeometryCompilerError(["collider_qualification_request_invalid"])
+    if request.get("collider_candidate_manifest_digest") != candidate.get(
+        "collider_candidate_manifest_digest"
+    ):
+        raise ReconstructionGeometryCompilerError(["collider_qualification_candidate_mismatch"])
+    for key in (
+        "source_capture_digest",
+        "train_heldout_split_digest",
+        "coordinate_frame_declaration",
+        "camera_calibration_binding",
+    ):
+        if request.get(key) != candidate.get(key):
+            raise ReconstructionGeometryCompilerError(
+                [f"collider_qualification_lineage_mismatch:{key}"]
+            )
+    if request.get("metric_scale_status") != candidate.get("metric_scale_status"):
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_metric_scale_binding_mismatch"]
+        )
+
+    thresholds = _validated_metric_map(
+        request.get("thresholds"), code="collider_qualification_thresholds_invalid"
+    )
+    threshold_digest = canonical_digest(thresholds, digest_field="qa_thresholds_digest")
+    if request.get("qa_thresholds_digest") != threshold_digest:
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_thresholds_digest_mismatch"]
+        )
+    evaluator = request.get("independent_evaluator")
+    if (
+        not isinstance(evaluator, Mapping)
+        or evaluator.get("candidate_method_independent") is not True
+        or not isinstance(evaluator.get("method_id"), str)
+        or not evaluator.get("method_id")
+        or evaluator.get("method_id") == candidate.get("producing_method")
+    ):
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_independent_evaluator_required"]
+        )
+    measurement_binding = request.get("measurement_artifact")
+    if not isinstance(measurement_binding, Mapping):
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_measurement_binding_missing"]
+        )
+    root = Path(artifact_root)
+    measurement_path = _safe_source_path(root, measurement_binding.get("relative_path"))
+    if measurement_path.stat().st_size > MAX_SOURCE_BYTES:
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_measurement_oversized"]
+        )
+    measurement_digest = _sha256(measurement_path)
+    if measurement_binding.get("digest") != measurement_digest:
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_measurement_digest_mismatch"]
+        )
+    original_digests = {
+        str(row.get("digest") or "")
+        for row in request.get("original_file_references") or []
+        if isinstance(row, Mapping)
+    }
+    if measurement_digest not in original_digests:
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_measurement_provenance_missing"]
+        )
+    measurement = _load_json_object(measurement_path)
+    if measurement.get("schema_version") != QUALIFICATION_MEASUREMENT_SCHEMA:
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_measurement_schema_invalid"]
+        )
+    if measurement.get("collider_candidate_manifest_digest") != candidate.get(
+        "collider_candidate_manifest_digest"
+    ) or measurement.get("collider_asset_digest") != candidate.get("collider_asset_digest"):
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_measurement_candidate_binding_mismatch"]
+        )
+    if (
+        measurement.get("candidate_self_graded") is not False
+        or measurement.get("thresholds_modified_after_measurement") is not False
+        or measurement.get("generated_geometry_promoted_to_collision_truth") is not False
+        or measurement.get("evaluator") != evaluator
+    ):
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_measurement_independence_invalid"]
+        )
+    measurements = _validated_metric_map(
+        measurement.get("measurements"),
+        code="collider_qualification_measurements_invalid",
+    )
+    requested_regions = request.get("task_region_ids")
+    measured_regions = measurement.get("evaluated_task_region_ids")
+    if (
+        not isinstance(requested_regions, list)
+        or not requested_regions
+        or any(_ID.fullmatch(str(item)) is None for item in requested_regions)
+        or sorted(set(str(item) for item in measured_regions or []))
+        != sorted(set(str(item) for item in requested_regions))
+    ):
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_task_region_coverage_invalid"]
+        )
+    robot_checked = measurement.get("robot_footprint_navigability_checked") is True
+    measurement_blockers = measurement.get("blockers")
+    if not isinstance(measurement_blockers, list):
+        raise ReconstructionGeometryCompilerError(
+            ["collider_qualification_measurement_blockers_invalid"]
+        )
+    passed = (
+        candidate.get("metric_scale_status") == "validated"
+        and robot_checked
+        and not measurement_blockers
+    )
+    for key in sorted(_QUALIFICATION_METRICS):
+        if key in _UPPER_LIMITS and measurements[key] > thresholds[key]:
+            passed = False
+        if key in _LOWER_LIMITS and measurements[key] < thresholds[key]:
+            passed = False
+    decision = "accepted_bounded_navigation" if passed else "rejected"
+    failed_thresholds = sorted(
+        key
+        for key in _QUALIFICATION_METRICS
+        if (key in _UPPER_LIMITS and measurements[key] > thresholds[key])
+        or (key in _LOWER_LIMITS and measurements[key] < thresholds[key])
+    )
+    value = {
+        **_lineage(request),
+        "producing_method": QUALIFICATION_METHOD,
+        "implementation_version": QUALIFICATION_VERSION,
+        "input_digests": [
+            {
+                "artifact_id": "collider_candidate_manifest",
+                "digest": candidate["collider_candidate_manifest_digest"],
+            },
+            {
+                "artifact_id": "independent_collider_measurements",
+                "digest": measurement_digest,
+            },
+            {"artifact_id": "qa_thresholds", "digest": threshold_digest},
+            {"artifact_id": "qualification_request", "digest": request_digest},
+        ],
+        "output_digests": [],
+        "units": "meters",
+        "provider_runtime_identity": {"provider": "local", "runtime": "python"},
+        "cost_usd": 0.0,
+        "duration_seconds": 0.0,
+        "warnings": list(request.get("warnings") or []),
+        "blockers": sorted(set(str(item) for item in measurement_blockers)),
+        "parent_artifact_or_event": {
+            "digest": candidate["collider_candidate_manifest_digest"]
+        },
+        "collider_candidate_manifest_digest": candidate[
+            "collider_candidate_manifest_digest"
+        ],
+        "collider_asset_digest": candidate["collider_asset_digest"],
+        "collider_qualification_request_digest": request_digest,
+        "measurement_artifact_digest": measurement_digest,
+        "qa_thresholds_digest": threshold_digest,
+        "measurements": measurements,
+        "thresholds": thresholds,
+        "failed_threshold_ids": failed_thresholds,
+        "metric_scale_status": candidate["metric_scale_status"],
+        "robot_footprint_navigability_checked": robot_checked,
+        "task_region_ids": sorted(set(str(item) for item in requested_regions)),
+        "independent_evaluator": dict(evaluator),
+        "candidate_self_graded": False,
+        "decision": decision,
+        "unsupported_claims": [
+            "grasping",
+            "articulation",
+            "contact_force",
+            "deployment",
+            "physical_success",
+        ],
+        "proof_effect": "bounded_navigation_collision_qualification",
+        "claim_ceiling": "bounded_navigation_simulation",
+    }
+    return build_collider_qualification_report(value)
+
+
 __all__ = [
     "COLLIDER_METHOD",
     "COLLIDER_VERSION",
     "COMPILER_METHOD",
     "COMPILER_SCHEMA",
     "COMPILER_VERSION",
+    "QUALIFICATION_MEASUREMENT_SCHEMA",
+    "QUALIFICATION_METHOD",
+    "QUALIFICATION_REQUEST_SCHEMA",
+    "QUALIFICATION_VERSION",
     "ReconstructionGeometryCompilerError",
     "SOURCE_SCHEMA",
     "compile_collision_candidate",
     "compile_metric_geometry",
+    "qualify_collision_candidate",
 ]

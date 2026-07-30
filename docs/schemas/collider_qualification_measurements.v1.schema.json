@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/collider_qualification_measurements.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "collider_candidate_manifest_digest",
+    "collider_asset_digest",
+    "evaluator",
+    "measurements",
+    "evaluated_task_region_ids",
+    "robot_footprint_navigability_checked",
+    "candidate_self_graded",
+    "thresholds_modified_after_measurement",
+    "generated_geometry_promoted_to_collision_truth",
+    "blockers"
+  ],
+  "properties": {
+    "schema_version": {"const": "collider_qualification_measurements.v1"},
+    "collider_candidate_manifest_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "collider_asset_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "evaluator": {
+      "type": "object",
+      "required": ["method_id", "method_version", "candidate_method_independent"],
+      "properties": {
+        "method_id": {"type": "string", "minLength": 1},
+        "method_version": {"type": "string", "minLength": 1},
+        "candidate_method_independent": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "measurements": {
+      "type": "object",
+      "required": [
+        "scale_error_fraction",
+        "gravity_alignment_error_deg",
+        "floor_height_residual_m",
+        "wall_offset_residual_m",
+        "visual_to_collider_disagreement_m",
+        "clearance_error_m",
+        "mesh_coverage_fraction",
+        "minimum_obstacle_thickness_m"
+      ],
+      "properties": {
+        "scale_error_fraction": {"type": "number", "minimum": 0},
+        "gravity_alignment_error_deg": {"type": "number", "minimum": 0},
+        "floor_height_residual_m": {"type": "number", "minimum": 0},
+        "wall_offset_residual_m": {"type": "number", "minimum": 0},
+        "visual_to_collider_disagreement_m": {"type": "number", "minimum": 0},
+        "clearance_error_m": {"type": "number", "minimum": 0},
+        "mesh_coverage_fraction": {"type": "number", "minimum": 0},
+        "minimum_obstacle_thickness_m": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "evaluated_task_region_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "robot_footprint_navigability_checked": {"type": "boolean"},
+    "candidate_self_graded": {"const": false},
+    "thresholds_modified_after_measurement": {"const": false},
+    "generated_geometry_promoted_to_collision_truth": {"const": false},
+    "blockers": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

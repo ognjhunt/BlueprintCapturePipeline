@@ -79,6 +79,7 @@ class SupervisorContext:
     metric_geometry_manifest: Mapping[str, Any] | None = None
     collision_candidate_compiler: Any | None = None
     collider_candidate_manifest: Mapping[str, Any] | None = None
+    collider_qualification_request: Mapping[str, Any] | None = None
     collision_candidate_qualifier: Any | None = None
     nurec_packaging_request: Mapping[str, Any] | None = None
     nurec_openusd_packager: Any | None = None

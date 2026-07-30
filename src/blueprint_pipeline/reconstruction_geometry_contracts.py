@@ -195,7 +195,7 @@ def build_collider_qualification_report(value: Mapping[str, Any]) -> dict[str, A
     required = _UPPER_LIMITS | _LOWER_LIMITS
     if set(measurements) < required or set(thresholds) < required:
         errors.append("collider_required_measurements_missing")
-    passed = not errors
+    passed = not errors and not artifact.get("blockers")
     for key in required:
         measured = _number(measurements.get(key), minimum=0)
         threshold = _number(thresholds.get(key), minimum=0)

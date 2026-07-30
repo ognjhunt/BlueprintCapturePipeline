@@ -185,6 +185,15 @@ def test_unknown_metric_scale_cannot_accept_collider():
         _qualification(metric_scale_status="anchor_required")
 
 
+def test_independent_measurement_blocker_forces_collider_rejection():
+    with pytest.raises(ReconstructionGeometryContractError, match="collider_decision_not_deterministic"):
+        _qualification(blockers=["task_region_measurement_incomplete"])
+    report = _qualification(
+        blockers=["task_region_measurement_incomplete"], decision="rejected"
+    )
+    assert report["decision"] == "rejected"
+
+
 def test_openusd_package_requires_visual_and_collision_prims_in_one_metric_frame():
     package = _package()
     assert package["stage_meters_per_unit"] == 1.0

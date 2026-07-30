@@ -35,6 +35,7 @@ from ..reconstruction_geometry_contracts import (
 from ..reconstruction_geometry_compiler import (
     compile_collision_candidate as compile_collision_candidate_runtime,
     compile_metric_geometry as compile_metric_geometry_runtime,
+    qualify_collision_candidate as qualify_collision_candidate_runtime,
 )
 from ..reconstruction_heldout_evaluation import (
     build_heldout_appearance_evaluation_request,
@@ -2354,6 +2355,14 @@ def _execute_geometry_contract_tool(
     builtin = _BUILTIN_GEOMETRY_RUNTIMES.get(tool_id)
     if runtime is None and builtin is not None:
         runtime = partial(builtin, artifact_root=root_value)
+    if runtime is None and tool_id == "qualify_collision_candidate":
+        qualification_request = getattr(context, "collider_qualification_request", None)
+        if isinstance(qualification_request, Mapping):
+            runtime = partial(
+                qualify_collision_candidate_runtime,
+                artifact_root=root_value,
+                qualification_request=qualification_request,
+            )
     if not isinstance(source, Mapping) or not callable(runtime):
         raise ValueError(f"registered_tool_runtime_not_injected:{tool_id}")
     if tool_id == "package_nurec_openusd":
@@ -2927,6 +2936,10 @@ def non_spend_tool_bindings(
             runtime_available = callable(getattr(context, runtime_attr, None)) or (
                 tool_id in _BUILTIN_GEOMETRY_RUNTIMES
             )
+            if tool_id == "qualify_collision_candidate" and isinstance(
+                getattr(context, "collider_qualification_request", None), Mapping
+            ):
+                runtime_available = True
             if not isinstance(getattr(context, source_attr, None), Mapping) or not runtime_available:
                 continue
         if tool_id == "diagnose_reconstruction_failure" and not isinstance(
