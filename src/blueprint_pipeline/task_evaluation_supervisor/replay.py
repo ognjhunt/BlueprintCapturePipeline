@@ -35,6 +35,7 @@ from .phase2_artifacts import (
     validate_clarification_request,
     validate_authorization_receipt,
     validate_authorization_request,
+    validate_customer_report,
     validate_recapture_reinspection,
     validate_targeted_recapture_receipt,
     validate_targeted_recapture_request,
@@ -192,10 +193,11 @@ def replay_supervisor_run(
     if root not in customer_report_path.parents:
         raise SupervisorReplayError("customer_report_path_escape")
     customer_report = read_json(customer_report_path)
-    customer_report_digest = canonical_digest(
-        customer_report,
-        digest_field="customer_report_digest",
-    )
+    try:
+        customer_report = validate_customer_report(customer_report)
+    except Phase2ArtifactError as exc:
+        raise SupervisorReplayError("customer_report_contract_mismatch") from exc
+    customer_report_digest = customer_report["customer_report_digest"]
     if (
         customer_report.get("customer_report_digest") != customer_report_digest
         or report_value.get("customer_report_digest") != customer_report_digest

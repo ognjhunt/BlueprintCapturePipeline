@@ -58,6 +58,15 @@ def _require_digest(value: Any, *, field: str) -> str:
     return rendered
 
 
+def _is_nonnegative_finite_number(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and value >= 0
+    )
+
+
 def _parse_time(value: Any, *, field: str) -> datetime:
     text = str(value or "").replace("Z", "+00:00")
     try:
@@ -1431,7 +1440,100 @@ def deterministic_customer_report(
         ),
         "proof_state_mutated_by_report": False,
     }
-    return _finalize(value, digest_field="customer_report_digest")
+    return validate_customer_report(_finalize(value, digest_field="customer_report_digest"))
+
+
+def validate_customer_report(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the customer-facing projection without granting it proof authority."""
+
+    required_fields = {
+        "schema_version",
+        "run_id",
+        "customer_original_question",
+        "validated_interpretation",
+        "accepted_leaf_claims",
+        "rejected_or_unresolved_interpretations",
+        "claim_evidence",
+        "methods_attempted",
+        "failed_methods",
+        "skipped_methods",
+        "agent_actions_and_recommendations",
+        "agent_output_authoritative",
+        "deterministic_validations",
+        "spending_and_runtime",
+        "decision",
+        "partial_decision",
+        "abstention",
+        "uncertainty_and_evidence_ceiling",
+        "next_experiments",
+        "generated_artifact_references",
+        "blueprint_cannot_claim",
+        "proof_state_mutated_by_report",
+        "customer_report_digest",
+    }
+    if set(value) != required_fields:
+        raise Phase2ArtifactError("customer_report_fields_invalid")
+    _validate_untrusted_response_json(value)
+    try:
+        serialized = json.dumps(value, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise Phase2ArtifactError("customer_report_value_invalid") from exc
+    if len(serialized.encode("utf-8")) > 2_000_000:
+        raise Phase2ArtifactError("customer_report_too_large")
+    decision = value.get("decision")
+    spending = value.get("spending_and_runtime")
+    validations = value.get("deterministic_validations")
+    cannot_claim = value.get("blueprint_cannot_claim")
+    required_prohibitions = {
+        "agent_output_is_proof",
+        "provider_completion_proves_scientific_claim",
+        "simulation_proves_physical_success",
+        "deployment_readiness_without_qualified_evidence",
+    }
+    numeric_fields = (
+        "reported_agent_cost_usd",
+        "invocation_count",
+        "reported_action_cost_usd",
+        "reported_action_duration_seconds",
+        "tool_observation_count",
+    )
+    expected = canonical_digest(value, digest_field="customer_report_digest")
+    if (
+        value.get("schema_version") != CUSTOMER_REPORT_SCHEMA_VERSION
+        or not str(value.get("run_id") or "").strip()
+        or not str(value.get("customer_original_question") or "").strip()
+        or decision not in {"decision", "partial_decision", "abstention"}
+        or value.get("partial_decision") is not (decision == "partial_decision")
+        or value.get("abstention") is not (decision == "abstention")
+        or value.get("agent_output_authoritative") is not False
+        or value.get("proof_state_mutated_by_report") is not False
+        or not isinstance(spending, Mapping)
+        or set(spending) != set(numeric_fields)
+        or any(not _is_nonnegative_finite_number(spending.get(field)) for field in numeric_fields)
+        or not isinstance(validations, Mapping)
+        or set(validations)
+        != {"request_digest", "testbed_digest", "plan_digest", "decision_envelope_digest"}
+        or not isinstance(cannot_claim, list)
+        or any(not isinstance(item, str) or not item for item in cannot_claim)
+        or cannot_claim != sorted(set(cannot_claim))
+        or not required_prohibitions.issubset(set(cannot_claim))
+        or value.get("customer_report_digest") != expected
+    ):
+        raise Phase2ArtifactError("customer_report_contract_invalid")
+    for field in (
+        "accepted_leaf_claims",
+        "rejected_or_unresolved_interpretations",
+        "claim_evidence",
+        "methods_attempted",
+        "failed_methods",
+        "skipped_methods",
+        "agent_actions_and_recommendations",
+        "next_experiments",
+        "generated_artifact_references",
+    ):
+        if not isinstance(value.get(field), list):
+            raise Phase2ArtifactError("customer_report_contract_invalid")
+    return dict(value)
 
 
 def write_phase2_artifact(
@@ -1476,6 +1578,7 @@ __all__ = [
     "validate_clarification_request",
     "validate_authorization_receipt",
     "validate_authorization_request",
+    "validate_customer_report",
     "validate_frozen_scenario_manifest",
     "validate_scenario_proposal_set",
     "write_phase2_artifact",

@@ -282,6 +282,12 @@ tool version, mutability, runtime identity, output digest, cost, and retry
 limits. Unknown or injected fields are refused before ledger persistence.
 Replay does not ask a current model to regenerate prose.
 
+The customer report has its own exact-schema validator at creation and replay.
+It rejects unknown fields, non-finite or negative spend, inconsistent
+decision/partial/abstention flags, agent-authoritative output, proof mutation,
+or removal of the mandatory physical-success and deployment claim boundaries,
+even if all report digests are recomputed.
+
 Blueprint durably records a trusted observation inside the run from the
 registered tool binding before control returns to the SDK adapter. If the
 adapter later omits, changes, or loses that observation—or the process is

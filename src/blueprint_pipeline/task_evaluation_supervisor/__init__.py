@@ -84,6 +84,7 @@ from .phase2_artifacts import (
     validate_clarification_request,
     validate_authorization_receipt,
     validate_authorization_request,
+    validate_customer_report,
     validate_frozen_scenario_manifest,
     validate_scenario_proposal_set,
 )
@@ -241,6 +242,7 @@ __all__ = [
     "validate_clarification_request",
     "validate_authorization_receipt",
     "validate_authorization_request",
+    "validate_customer_report",
     "validate_frozen_scenario_manifest",
     "validate_scenario_proposal_set",
     "validate_tool_observation_binding",

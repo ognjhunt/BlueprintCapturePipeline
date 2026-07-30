@@ -88,6 +88,7 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     validate_capture_build_ingress,
     validate_clarification_receipt,
     validate_authorization_receipt,
+    validate_customer_report,
     validate_frozen_scenario_manifest,
     validate_recapture_reinspection,
     validate_scenario_proposal_set,
@@ -3049,6 +3050,29 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     assert customer_report["agent_output_authoritative"] is False
     assert customer_report["proof_state_mutated_by_report"] is False
     assert replay["customer_report_digest"] == customer_report["customer_report_digest"]
+    assert validate_customer_report(customer_report) == customer_report
+
+    promoted_report = dict(customer_report)
+    promoted_report["agent_output_authoritative"] = True
+    promoted_report["customer_report_digest"] = canonical_digest(
+        promoted_report,
+        digest_field="customer_report_digest",
+    )
+    with pytest.raises(Phase2ArtifactError, match="customer_report_contract_invalid"):
+        validate_customer_report(promoted_report)
+
+    suppressed_boundary = dict(customer_report)
+    suppressed_boundary["blueprint_cannot_claim"] = [
+        item
+        for item in customer_report["blueprint_cannot_claim"]
+        if item != "simulation_proves_physical_success"
+    ]
+    suppressed_boundary["customer_report_digest"] = canonical_digest(
+        suppressed_boundary,
+        digest_field="customer_report_digest",
+    )
+    with pytest.raises(Phase2ArtifactError, match="customer_report_contract_invalid"):
+        validate_customer_report(suppressed_boundary)
 
     authority = json.loads(
         (execution.output_dir / "authority_envelope.json").read_text(encoding="utf-8")
