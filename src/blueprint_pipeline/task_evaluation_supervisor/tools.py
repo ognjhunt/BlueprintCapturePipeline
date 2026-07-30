@@ -31,6 +31,10 @@ from ..reconstruction_geometry_contracts import (
     build_nurec_openusd_packaging_request,
     build_nurec_openusd_packaging_result,
 )
+from ..reconstruction_heldout_evaluation import (
+    build_heldout_appearance_evaluation_request,
+    build_visual_heldout_evaluation_report,
+)
 from ..reconstruction_capability import normalize_reconstruction_result
 from ..reconstruction_worker_contracts import (
     build_pose_estimation_request,
@@ -187,6 +191,18 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "heldout_labels_included": {"const": False},
             "candidate_self_graded": {"const": False},
             "claim_ceiling": {"const": "appearance_reconstruction"},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "evaluate_heldout_appearance": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "artifact_digest": {"type": "string"},
+            "claim_ceiling": {"const": "appearance_reconstruction"},
+            "decision": {
+                "enum": ["passed_appearance_only", "rejected_appearance_quality"]
+            },
             "proof_state_changed": {"const": False},
         }
     ),
@@ -545,6 +561,20 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
             minimum_mode="execute_non_spend",
             timeout_seconds=14_400.0,
+        ),
+        _descriptor(
+            "evaluate_heldout_appearance",
+            "capture_reconstruction_independent_appearance_qa",
+            expected_artifacts=["visual_heldout_evaluation_report.v1"],
+            input_properties={
+                "heldout_appearance_evaluation_request_digest": {"type": "string"}
+            },
+            required_inputs=["heldout_appearance_evaluation_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=1_800.0,
+            idempotency="frozen_hidden_split_independent_evaluator",
         ),
         _descriptor(
             "compile_metric_geometry", "capture_reconstruction_metric_geometry",
@@ -1005,6 +1035,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "compile_equirectangular_virtual_rig",
         "run_pose_estimation",
         "train_gaussian_reconstruction",
+        "evaluate_heldout_appearance",
         "compile_metric_geometry",
         "compile_collision_candidate",
         "qualify_collision_candidate",
@@ -1990,6 +2021,13 @@ def _train_gaussian_reconstruction(
 
 
 _GEOMETRY_TOOL_CONFIG = {
+    "evaluate_heldout_appearance": (
+        "heldout_appearance_evaluation_request", "heldout_appearance_evaluator",
+        "heldout_appearance_evaluation_request_digest",
+        build_visual_heldout_evaluation_report,
+        "visual_heldout_evaluation_report_digest",
+        "visual_heldout_evaluation_report.v1", "appearance_reconstruction", "status",
+    ),
     "compile_metric_geometry": (
         "metric_geometry_source", "metric_geometry_compiler", "source_artifact_digest",
         build_metric_geometry_manifest, "metric_geometry_manifest_digest",
@@ -2043,6 +2081,11 @@ def _execute_geometry_contract_tool(
             source = build_nurec_openusd_packaging_request(source)
         except ValueError as exc:
             raise ValueError(f"registered_tool_request_contract_invalid:{tool_id}") from exc
+    if tool_id == "evaluate_heldout_appearance":
+        try:
+            source = build_heldout_appearance_evaluation_request(source)
+        except ValueError as exc:
+            raise ValueError(f"registered_tool_request_contract_invalid:{tool_id}") from exc
     if tool_id == "import_external_reconstruction":
         try:
             source = build_external_reconstruction_import_request(source)
@@ -2085,6 +2128,23 @@ def _execute_geometry_contract_tool(
     if tool_id == "import_external_reconstruction" and (
         result.get("external_import_request_digest") != actual
         or result.get("source_capture_digest") != source.get("source_capture_digest")
+    ):
+        raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
+    if tool_id == "evaluate_heldout_appearance" and any(
+        result.get(field) != source.get(source_field)
+        for field, source_field in (
+            ("source_capture_digest", "source_capture_digest"),
+            ("reconstruction_dataset_digest", "reconstruction_dataset_digest"),
+            ("frozen_split_digest", "frozen_split_digest"),
+            (
+                "candidate_reconstruction_result_digest",
+                "candidate_reconstruction_result_digest",
+            ),
+            (
+                "evaluation_request_digest",
+                "heldout_appearance_evaluation_request_digest",
+            ),
+        )
     ):
         raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
     result_digest = result[result_digest_field]

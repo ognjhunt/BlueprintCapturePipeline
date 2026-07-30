@@ -377,6 +377,17 @@ baseline, excludes hidden held-out observations, and remains bounded to
 generated visual support with no metric, collision, physical, or deployment
 effect.
 
+Independent baseline and enhancement grading now uses the registered
+`evaluate_heldout_appearance` tool and the
+`heldout_appearance_evaluation_request.v1` /
+`visual_heldout_evaluation_report.v1` contract family. The agent receives only
+the request digest. Real held-out paths remain in evaluator-owned trusted
+state, the candidate and evaluator identities must differ, and the split and
+thresholds must have been frozen before evaluation. The initial hermetic
+evaluator reports PSNR, mean absolute error, and a deterministic global-SSIM
+equivalent; it explicitly labels the latter and does not claim canonical
+windowed SSIM or LPIPS. A passing report raises only the appearance ceiling.
+
 ## Normalized results and layers
 
 `reconstruction_result.v1` binds exact capture, method-profile,
