@@ -2736,6 +2736,36 @@ def test_all_proof_adjacent_supervisor_artifacts_reject_recomputed_unknown_field
         ):
             contract.from_mapping(tampered)
 
+    nested_invocation = json.loads(json.dumps(execution.invocation_manifests[0].to_mapping()))
+    nested_invocation["budget_state"]["agent_selected_budget_override"] = 1_000_000
+    nested_invocation["invocation_digest"] = canonical_digest(
+        nested_invocation,
+        digest_field="invocation_digest",
+    )
+    with pytest.raises(SupervisorContractError, match="budget_state:fields_invalid"):
+        AgentInvocationManifest.from_mapping(nested_invocation)
+
+    nested_report = json.loads(json.dumps(execution.report.to_mapping()))
+    nested_report["inference_spend"]["agent_selected_budget_override"] = 1_000_000
+    nested_report["terminal_report_digest"] = canonical_digest(
+        nested_report,
+        digest_field="terminal_report_digest",
+    )
+    with pytest.raises(SupervisorContractError, match="inference_spend:fields_invalid"):
+        TerminalSupervisorReport.from_mapping(nested_report)
+
+    rewritten_harness = execution.run.to_mapping()
+    rewritten_harness["agent_harness"] = "unregistered_agent_harness"
+    rewritten_harness["supervisor_run_digest"] = canonical_digest(
+        rewritten_harness,
+        digest_field="supervisor_run_digest",
+    )
+    with pytest.raises(
+        SupervisorContractError,
+        match="agent_harness:must_be_blueprint_task_evaluation_supervisor",
+    ):
+        SupervisorRun.from_mapping(rewritten_harness)
+
 
 def test_advise_disposition_requires_approval_but_still_enforces_tool_limits() -> None:
     registry = ToolRegistry.default()

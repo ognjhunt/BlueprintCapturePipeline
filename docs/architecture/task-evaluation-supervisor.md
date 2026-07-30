@@ -211,7 +211,10 @@ artifact: authority envelopes, tool descriptors, action proposals, capability
 results, events, invocation manifests, durable runs, states, and terminal
 reports. Recomputing an artifact digest does not permit an agent-selected
 authority, proof, budget, hidden-label, or deployment field to hitchhike through
-an otherwise valid contract.
+an otherwise valid contract. Budget-state, inference-spend, action-spend,
+manager-reference, and tool-observation-reference envelopes also use exact
+nested fields; the durable run is bound to Blueprint's registered supervisor
+harness and manager identity.
 
 Observation custody belongs to Blueprint's registered binding, not to the SDK
 adapter. The binding durably records each validated result inside the run before

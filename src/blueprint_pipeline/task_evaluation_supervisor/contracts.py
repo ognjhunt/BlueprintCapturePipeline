@@ -759,6 +759,14 @@ class AgentInvocationManifest(ValidatedSupervisorArtifact):
         if not isinstance(value.get("budget_state"), Mapping):
             errors.append("budget_state:must_be_mapping")
         else:
+            expected_budget_fields = {
+                "max_cost_usd",
+                "reported_cost_usd",
+                "cumulative_reserved_cost_usd",
+                "remaining_unreserved_usd",
+            }
+            if set(value["budget_state"]) != expected_budget_fields:
+                errors.append("budget_state:fields_invalid")
             for key in (
                 "max_cost_usd",
                 "reported_cost_usd",
@@ -784,6 +792,22 @@ class AgentInvocationManifest(ValidatedSupervisorArtifact):
             errors.append("usage:must_be_mapping")
         if not isinstance(value.get("tool_observation_references"), list):
             errors.append("tool_observation_references:must_be_list")
+        else:
+            for index, reference in enumerate(value.get("tool_observation_references") or []):
+                if not isinstance(reference, Mapping) or set(reference) != {
+                    "artifact_path",
+                    "digest",
+                }:
+                    errors.append(f"tool_observation_references[{index}]:fields_invalid")
+                    continue
+                path = _string(reference.get("artifact_path")).replace("\\", "/")
+                if not path or path.startswith("/") or ".." in path.split("/"):
+                    errors.append(f"tool_observation_references[{index}].artifact_path:unsafe")
+                reference_errors: list[str] = []
+                _digest(reference_errors, reference, "digest")
+                errors.extend(
+                    f"tool_observation_references[{index}].{error}" for error in reference_errors
+                )
         _digest(errors, value, "parent_event_digest")
         if _string(value.get("proof_effect")) != "none":
             errors.append("proof_effect:must_be_none")
@@ -831,6 +855,13 @@ class SupervisorRun(ValidatedSupervisorArtifact):
             errors.append("input_artifact_digests:must_be_list")
         if not _strings(value.get("capabilities"), nonempty=True):
             errors.append("capabilities:missing_or_invalid")
+        if _string(value.get("agent_harness")) != "blueprint_task_evaluation_supervisor":
+            errors.append("agent_harness:must_be_blueprint_task_evaluation_supervisor")
+        if value.get("manager_agent_required") is not True:
+            errors.append("manager_agent_required:must_be_true")
+        for key in ("manager_adapter_id", "manager_adapter_version"):
+            if not _string(value.get(key)):
+                errors.append(f"{key}:missing")
         if _string(value.get("status")) not in {"initialized", "disabled"}:
             errors.append("status:unsupported")
         if not _string(value.get("generated_at")):
@@ -887,6 +918,11 @@ class SupervisorState(ValidatedSupervisorArtifact):
                 errors.append(f"{key}:invalid")
         if value.get("proof_state_mutated_by_agent") is not False:
             errors.append("proof_state_mutated_by_agent:must_be_false")
+        terminal_report_digest = value.get("terminal_report_digest")
+        if value.get("terminal") is True:
+            _digest(errors, value, "terminal_report_digest")
+        elif terminal_report_digest is not None:
+            errors.append("terminal_report_digest:must_be_null_while_in_progress")
         return errors
 
 
@@ -942,10 +978,46 @@ class TerminalSupervisorReport(ValidatedSupervisorArtifact):
             "blocked",
         }:
             errors.append("status:unsupported")
+        try:
+            AutonomyMode(_string(value.get("mode")))
+        except ValueError:
+            errors.append("mode:unsupported")
+        if not _string(value.get("customer_question")):
+            errors.append("customer_question:missing")
         if not _rows(value.get("capability_results")):
             errors.append("capability_results:must_be_rows")
+        else:
+            for index, row in enumerate(value.get("capability_results") or []):
+                if set(row) != {"capability", "status", "digest", "artifact_path"}:
+                    errors.append(f"capability_results[{index}]:fields_invalid")
         if not _rows(value.get("invocation_manifests")):
             errors.append("invocation_manifests:must_be_rows")
+        else:
+            for index, row in enumerate(value.get("invocation_manifests") or []):
+                if set(row) != {"capability", "digest", "artifact_path"}:
+                    errors.append(f"invocation_manifests[{index}]:fields_invalid")
+        manager_row_fields = {
+            "step_index",
+            "status",
+            "next_capability",
+            "terminal_reason",
+            "digest",
+            "artifact_path",
+        }
+        if not _rows(value.get("manager_decisions")) or any(
+            set(row) != manager_row_fields for row in value.get("manager_decisions") or []
+        ):
+            errors.append("manager_decisions:fields_invalid")
+        if not _rows(value.get("manager_invocations")) or any(
+            set(row) != {"step_index", "digest", "artifact_path"}
+            for row in value.get("manager_invocations") or []
+        ):
+            errors.append("manager_invocations:fields_invalid")
+        if not _rows(value.get("manager_refusals")) or any(
+            set(row) != {"step_index", "digest", "artifact_path"}
+            for row in value.get("manager_refusals") or []
+        ):
+            errors.append("manager_refusals:fields_invalid")
         if not isinstance(value.get("event_count"), int) or value.get("event_count", -1) < 0:
             errors.append("event_count:invalid")
         for key in ("last_event_digest", "proof_boundary_digest", "tool_registry_digest"):
@@ -954,6 +1026,10 @@ class TerminalSupervisorReport(ValidatedSupervisorArtifact):
             errors.append("authoritative_decision_produced_by_agent:must_be_false")
         if value.get("proof_state_mutated_by_agent") is not False:
             errors.append("proof_state_mutated_by_agent:must_be_false")
+        if value.get("authoritative_decision_source") != "deterministic_decision_envelope_only":
+            errors.append("authoritative_decision_source:invalid")
+        if not _strings(value.get("blockers")):
+            errors.append("blockers:must_be_string_list")
         if not isinstance(value.get("actions_executed"), bool):
             errors.append("actions_executed:must_be_boolean")
         elif value.get("actions_executed") is True and _string(value.get("mode")) not in {
@@ -975,6 +1051,20 @@ class TerminalSupervisorReport(ValidatedSupervisorArtifact):
         if not isinstance(inference_spend, Mapping):
             errors.append("inference_spend:must_be_mapping")
         else:
+            if set(inference_spend) != {
+                "budget_usd",
+                "reserved_max_cost_usd",
+                "reported_cost_usd",
+                "remaining_unreserved_usd",
+                "live_invocation_count",
+                "manager_invocation_count",
+                "reservation_count",
+                "in_flight_unknown_count",
+                "reservation_manifest_digest",
+                "reservation_manifest_path",
+                "reported_cost_is_final",
+            }:
+                errors.append("inference_spend:fields_invalid")
             for key in (
                 "budget_usd",
                 "reserved_max_cost_usd",
@@ -989,6 +1079,13 @@ class TerminalSupervisorReport(ValidatedSupervisorArtifact):
         if not isinstance(action_spend, Mapping):
             errors.append("action_spend:must_be_mapping")
         else:
+            if set(action_spend) != {
+                "authorized_max_cost_usd",
+                "reported_actual_cost_usd",
+                "reported_duration_seconds",
+                "preauthorization_receipt_digest",
+            }:
+                errors.append("action_spend:fields_invalid")
             for key in (
                 "authorized_max_cost_usd",
                 "reported_actual_cost_usd",
