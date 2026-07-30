@@ -12,6 +12,7 @@ from PIL import Image
 from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _apply_runtime_asset_relocations,
     _camera_quaternion_wxyz,
+    _load_materialization_manifest,
     _project_world_points,
     _simulation_app_launch_config,
     import_simulation_app,
@@ -148,6 +149,44 @@ def test_runtime_asset_relocations_require_exact_local_binding(tmp_path: Path) -
             "./Textures/albedo.png",
         )
     ]
+
+
+def test_materialization_manifest_resolves_from_extracted_bundle_layout(
+    tmp_path: Path,
+) -> None:
+    extracted = tmp_path / "input"
+    assets = extracted / "assets"
+    assets.mkdir(parents=True)
+    manifest_path = extracted / "materialization_manifest.json"
+    manifest_path.write_text(
+        json.dumps({"runtime_asset_relocations": []}), encoding="utf-8"
+    )
+
+    resolved_path, manifest = _load_materialization_manifest(assets)
+
+    assert resolved_path == manifest_path
+    assert manifest == {"runtime_asset_relocations": []}
+
+
+def test_materialization_manifest_prefers_direct_materialization_root(
+    tmp_path: Path,
+) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    direct = assets / "materialization_manifest.json"
+    direct.write_text(
+        json.dumps({"runtime_asset_relocations": [{"source": "direct"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "materialization_manifest.json").write_text(
+        json.dumps({"runtime_asset_relocations": [{"source": "parent"}]}),
+        encoding="utf-8",
+    )
+
+    resolved_path, manifest = _load_materialization_manifest(assets)
+
+    assert resolved_path == direct
+    assert manifest["runtime_asset_relocations"] == [{"source": "direct"}]
 
 
 def test_native_camera_canary_requires_scene_robot_rigid_object_and_two_synced_views(

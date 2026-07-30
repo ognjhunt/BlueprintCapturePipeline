@@ -202,6 +202,27 @@ def _apply_runtime_asset_relocations(
     }
 
 
+def _load_materialization_manifest(assets_root: Path) -> tuple[Path, dict[str, Any]]:
+    """Load the manifest from a materialization root or extracted bundle layout."""
+
+    root = assets_root.expanduser().resolve()
+    direct = root / "materialization_manifest.json"
+    extracted = root.parent / "materialization_manifest.json"
+    candidates = [direct]
+    if root.name == "assets":
+        candidates.append(extracted)
+    manifest_path = next(
+        (path for path in candidates if path.is_file() and not path.is_symlink()),
+        None,
+    )
+    if manifest_path is None:
+        raise FileNotFoundError("native_warehouse_materialization_manifest_missing")
+    value = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(value, Mapping):
+        raise ValueError("native_warehouse_materialization_manifest_not_object")
+    return manifest_path, dict(value)
+
+
 def isaac_sim_6_backend(
     *, spec: Mapping[str, Any], assets_root: Path, output_dir: Path
 ) -> dict[str, Any]:  # pragma: no cover - requires the pinned Isaac GPU image
@@ -218,8 +239,7 @@ def isaac_sim_6_backend(
         from pxr import Gf, Usd, UsdGeom, UsdLux, UsdPhysics
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = assets_root / "materialization_manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        _manifest_path, manifest = _load_materialization_manifest(assets_root)
         relocation_evidence = _apply_runtime_asset_relocations(
             assets_root=assets_root, manifest=manifest
         )
