@@ -992,20 +992,36 @@ def test_watchdog_closes_pod_record_and_returns_lane_owner(
     assert retried["campaign_budget_settlement"]["status"] == "settled"
 
 
-def test_watchdog_closes_openpi_compute_lane_and_settles_budget(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("campaign_kind", "lane", "prefix", "pod_id"),
+    (
+        (
+            "openpi_policy_ranking",
+            "openpi_policy_ranking_gpu_canary",
+            "blueprint-groot-oscar-canary-openpi-ranking-",
+            "pod-openpi",
+        ),
+        (
+            "nvidia_warehouse_native_camera",
+            "nvidia_warehouse_native_camera_gpu_canary",
+            "blueprint-native-warehouse-camera-",
+            "pod-camera",
+        ),
+    ),
+)
+def test_watchdog_closes_guarded_compute_lane_and_settles_budget(
+    tmp_path, monkeypatch, campaign_kind, lane, prefix, pod_id
 ) -> None:
-    prefix = "blueprint-groot-oscar-canary-openpi-ranking-"
     pending_path = tmp_path / "openpi-pending.json"
     pending_path.write_text(
         json.dumps(
             {
                 "status": "open",
                 "provider": "runpod",
-                "lane": "openpi_policy_ranking_gpu_canary",
+                "lane": lane,
                 "resource_kind": "compute_instance",
                 "resource_name": prefix + "test",
-                "instance_id": "pod-openpi",
+                "instance_id": pod_id,
             }
         ),
         encoding="utf-8",
@@ -1015,7 +1031,7 @@ def test_watchdog_closes_openpi_compute_lane_and_settles_budget(
         json.dumps(
             {
                 "provider": "runpod",
-                "lane": "openpi_policy_ranking_gpu_canary",
+                "lane": lane,
                 "owner_pid": os.getpid(),
                 "retained_teardown_owner_pid": os.getpid(),
             }
@@ -1039,9 +1055,10 @@ def test_watchdog_closes_openpi_compute_lane_and_settles_budget(
         "owner_pid": os.getpid(),
         "provider_lane_release_mode": "watchdog_direct_compute",
         "pod_pending_teardown_record": str(pending_path),
-        "pod_id": "pod-openpi",
+        "pod_id": pod_id,
         "pod_name_prefix": prefix,
-        "campaign_kind": "openpi_policy_ranking",
+        "campaign_kind": campaign_kind,
+        "paid_lane": lane,
         "campaign_budget": {
             "status": "reserved",
             "ledger_path": str(ledger_path),

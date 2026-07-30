@@ -89,6 +89,9 @@ def test_native_camera_canary_requires_scene_robot_rigid_object_and_two_synced_v
 
     assert result["status"] == "passed"
     assert result["blockers"] == []
+    assert result["assessment"]["views"]["external"]["frames"]["initial"][
+        "relative_path"
+    ] == "runtime/external_initial.png"
     assert result["paid_policy_or_wam_model_invoked"] is False
     assert result["claim_boundary"]["policy_wam_loop_proven"] is False
 

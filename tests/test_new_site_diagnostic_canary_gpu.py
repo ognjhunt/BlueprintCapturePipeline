@@ -218,6 +218,55 @@ def test_canary_input_roundtrip_carries_passed_native_initial_camera_frames(
         assert Image.open(path).size == (640, 480)
 
 
+def test_canary_input_accepts_portable_native_camera_relative_paths(
+    tmp_path: Path,
+) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224), color=(12, 34, 56)).save(background)
+    frame_entries = {}
+    for view_key, view_id, color in (
+        ("external", EXTERIOR_VIEW, (20, 40, 60)),
+        ("wrist", WRIST_VIEW, (60, 40, 20)),
+    ):
+        path = tmp_path / "runtime" / f"{view_key}_initial.png"
+        path.parent.mkdir(exist_ok=True)
+        Image.new("RGB", (640, 480), color=color).save(path)
+        frame_entries[view_key] = {
+            "frames": {
+                "initial": {
+                    "path": f"/provider/ephemeral/{view_key}_initial.png",
+                    "relative_path": f"runtime/{view_key}_initial.png",
+                    "sha256": file_sha256(path),
+                    "resolution": [640, 480],
+                    "nonblank": True,
+                }
+            }
+        }
+    native_result = {
+        "status": "passed",
+        "label_free": True,
+        "rankings_or_policy_outcomes_accessed": False,
+        "assessment": {"views": frame_entries},
+    }
+    native_result["result_sha256"] = canonical_sha256(native_result)
+    native_result_path = tmp_path / "native_camera_canary_result.json"
+    native_result_path.write_text(json.dumps(native_result), encoding="utf-8")
+
+    receipt = build_canary_input_bundle(
+        protocol_path=protocol_path,
+        background_path=background,
+        output_zip=tmp_path / "native_canary.zip",
+        arm_id="skeleton_only",
+        native_camera_canary_result_path=native_result_path,
+    )
+
+    assert receipt["manifest"]["initial_observation_source"] == (
+        "native_isaac_simready_warehouse_camera_canary"
+    )
+
+
 def test_canary_input_rejects_mutated_protocol_identity(tmp_path: Path) -> None:
     protocol_path = tmp_path / "protocol.json"
     protocol = _write_protocol(protocol_path)

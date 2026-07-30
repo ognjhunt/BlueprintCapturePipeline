@@ -66,7 +66,10 @@ def _default_fetch(relative_path: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.name + ".partial")
     try:
-        with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as out:
+        # DATASET_RESOLVE_BASE is a fixed HTTPS origin and relative_path was made safe above.
+        with urllib.request.urlopen(  # nosec B310
+            request, timeout=120
+        ) as response, temporary.open("wb") as out:
             while chunk := response.read(1024 * 1024):
                 out.write(chunk)
         temporary.replace(destination)

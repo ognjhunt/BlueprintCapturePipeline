@@ -215,6 +215,15 @@ def build_canary_input_bundle(
             frame = frames.get("initial")
             frame = frame if isinstance(frame, Mapping) else {}
             path = Path(str(frame.get("path") or "")).expanduser().resolve()
+            if not path.is_file():
+                relative_value = str(frame.get("relative_path") or "")
+                relative = PurePosixPath(relative_value)
+                if (
+                    relative_value
+                    and not relative.is_absolute()
+                    and ".." not in relative.parts
+                ):
+                    path = (native_result_path.parent / relative.as_posix()).resolve()
             if (
                 not path.is_file()
                 or path.is_symlink()

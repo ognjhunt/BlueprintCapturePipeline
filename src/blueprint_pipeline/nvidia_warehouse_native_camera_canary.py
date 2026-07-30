@@ -451,6 +451,18 @@ def run_native_camera_canary(
     if not isinstance(backend_result, Mapping):
         raise ValueError("nvidia_warehouse_native_camera_backend_result_invalid")
     assessment = assess_native_camera_backend_result(spec=spec, backend_result=backend_result)
+    for view in assessment["views"].values():
+        for frame in view["frames"].values():
+            try:
+                frame["relative_path"] = (
+                    Path(str(frame["path"])).resolve().relative_to(output).as_posix()
+                )
+            except (KeyError, ValueError):
+                assessment["blockers"].append(
+                    "native_camera_frame_outside_canary_output"
+                )
+    assessment["blockers"] = sorted(set(assessment["blockers"]))
+    assessment["status"] = "passed" if not assessment["blockers"] else "failed"
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": assessment["status"],
