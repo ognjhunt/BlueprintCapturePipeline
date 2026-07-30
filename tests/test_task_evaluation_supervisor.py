@@ -3870,6 +3870,46 @@ def test_identical_evidence_produces_identical_kernel_decision_despite_agent_pro
         first_replay["replayed_deterministic_decision"]["decision_envelope_digest"]
         == (context.decision_envelope["decision_envelope_digest"])
     )
+    customer_report = json.loads(
+        (first.output_dir / "customer_decision_report.json").read_text(encoding="utf-8")
+    )
+    source = customer_report["claim_evidence"][0]["evidence_sources"][0]
+    assert source["method_id"] == "simulation-reach"
+    assert source["method_family"] == "traditional_simulation"
+    assert source["authority_level"] == {
+        "authority_tier": 1,
+        "proof_tier": "tier_1",
+        "self_qualified": False,
+    }
+    assert source["claim_ceiling"] == context.evidence_results[0]["claim_ceiling"]
+
+    forged_authority = json.loads(json.dumps(customer_report))
+    forged_authority["claim_evidence"][0]["evidence_sources"][0][
+        "agent_selected_authority"
+    ] = "physical_proof"
+    forged_authority["customer_report_digest"] = canonical_digest(
+        forged_authority,
+        digest_field="customer_report_digest",
+    )
+    with pytest.raises(
+        Phase2ArtifactError,
+        match="customer_report_evidence_source_invalid",
+    ):
+        validate_customer_report(forged_authority)
+
+    self_qualified = json.loads(json.dumps(customer_report))
+    self_qualified["claim_evidence"][0]["evidence_sources"][0]["authority_level"][
+        "self_qualified"
+    ] = True
+    self_qualified["customer_report_digest"] = canonical_digest(
+        self_qualified,
+        digest_field="customer_report_digest",
+    )
+    with pytest.raises(
+        Phase2ArtifactError,
+        match="customer_report_evidence_source_invalid",
+    ):
+        validate_customer_report(self_qualified)
     first_diagnosis = next(
         row
         for row in first.capability_results

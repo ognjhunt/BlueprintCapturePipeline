@@ -1348,12 +1348,33 @@ def deterministic_customer_report(
     for claim in claims:
         claim_id = claim.get("claim_id")
         matching = [row for row in results if row.get("claim_id") == claim_id]
+        evidence_sources = []
+        for row in matching:
+            profile = row.get("method_profile_snapshot") or {}
+            evidence_sources.append(
+                {
+                    "result_digest": row.get("result_digest"),
+                    "method_profile_digest": row.get("method_profile_digest"),
+                    "method_id": profile.get("method_id"),
+                    "method_version": profile.get("version"),
+                    "method_family": profile.get("method_family"),
+                    "authority_level": {
+                        "authority_tier": profile.get("authority_tier"),
+                        "proof_tier": profile.get("proof_tier"),
+                        "self_qualified": profile.get("self_qualified"),
+                    },
+                    "claim_ceiling": dict(row.get("claim_ceiling") or {}),
+                    "status": row.get("status"),
+                    "validity": row.get("validity"),
+                }
+            )
         claim_evidence.append(
             {
                 "claim_id": claim_id,
                 "claim_type": claim.get("claim_type"),
                 "evidence_result_digests": [row.get("result_digest") for row in matching],
                 "evidence_statuses": [row.get("status") for row in matching],
+                "evidence_sources": evidence_sources,
                 "accepted_by_agent": False,
             }
         )
@@ -1533,6 +1554,68 @@ def validate_customer_report(value: Mapping[str, Any]) -> dict[str, Any]:
     ):
         if not isinstance(value.get(field), list):
             raise Phase2ArtifactError("customer_report_contract_invalid")
+    for claim in value.get("claim_evidence") or []:
+        if not isinstance(claim, Mapping) or set(claim) != {
+            "claim_id",
+            "claim_type",
+            "evidence_result_digests",
+            "evidence_statuses",
+            "evidence_sources",
+            "accepted_by_agent",
+        }:
+            raise Phase2ArtifactError("customer_report_claim_evidence_invalid")
+        sources = claim.get("evidence_sources")
+        if (
+            claim.get("accepted_by_agent") is not False
+            or not isinstance(sources, list)
+            or claim.get("evidence_result_digests")
+            != [source.get("result_digest") for source in sources if isinstance(source, Mapping)]
+            or claim.get("evidence_statuses")
+            != [source.get("status") for source in sources if isinstance(source, Mapping)]
+        ):
+            raise Phase2ArtifactError("customer_report_claim_evidence_invalid")
+        for source in sources:
+            if not isinstance(source, Mapping) or set(source) != {
+                "result_digest",
+                "method_profile_digest",
+                "method_id",
+                "method_version",
+                "method_family",
+                "authority_level",
+                "claim_ceiling",
+                "status",
+                "validity",
+            }:
+                raise Phase2ArtifactError("customer_report_evidence_source_invalid")
+            authority = source.get("authority_level")
+            if (
+                not isinstance(authority, Mapping)
+                or set(authority) != {"authority_tier", "proof_tier", "self_qualified"}
+                or not _is_nonnegative_finite_number(authority.get("authority_tier"))
+                or not str(authority.get("proof_tier") or "").strip()
+                or authority.get("self_qualified") is not False
+                or any(
+                    not str(source.get(field) or "").strip()
+                    for field in ("method_id", "method_version", "method_family")
+                )
+                or not isinstance(source.get("claim_ceiling"), Mapping)
+                or source.get("status")
+                not in {
+                    "valid",
+                    "invalid",
+                    "uncertain",
+                    "contradictory",
+                    "unavailable",
+                    "evidence_requested",
+                }
+                or not isinstance(source.get("validity"), bool)
+            ):
+                raise Phase2ArtifactError("customer_report_evidence_source_invalid")
+            _require_digest(source.get("result_digest"), field="evidence_source_result_digest")
+            _require_digest(
+                source.get("method_profile_digest"),
+                field="evidence_source_method_profile_digest",
+            )
     return dict(value)
 
 

@@ -99,7 +99,9 @@ The package `blueprint_pipeline.task_evaluation_supervisor` provides:
 - deterministic customer decision reports bound to the validated request,
   testbed, evidence plan, normalized evidence, Decision Envelope, agent
   proposals, action artifacts, spend, runtime, uncertainty, claim ceilings,
-  next experiments, and prohibited claims;
+  next experiments, and prohibited claims. Each claim names its result digests,
+  method identity and family, method-profile digest, authority/proof tiers,
+  self-qualification flag, validity, status, and exact claim ceiling;
 - clarification and authorization request/receipt contracts in which an agent
   may request input or authority but cannot answer or approve its own request;
 - pre-evaluation scenario proposal artifacts plus a separate operator-only
