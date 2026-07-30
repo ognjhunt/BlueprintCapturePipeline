@@ -186,8 +186,10 @@ def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path)
         "uv pip install --python /.ctrl-world-venv/bin/python"
     )
     assert "if ! /opt/oscar-venv/bin/python -c 'import cv2'" in text
-    assert "--no-cache-dir --no-deps --require-hashes" in text
-    assert '--target "${oscar_site_packages}"' in text
+    assert "uv pip install --python /opt/oscar-venv/bin/python" in text
+    assert "--no-cache --no-deps --require-hashes" in text
+    assert "/opt/oscar-venv/bin/python -m pip" not in text
+    assert "oscar_site_packages" not in text
     assert "assert cv2.__version__ == '4.11.0'" in text
     assert "token=False" in text
     assert "offline_preflight" in text

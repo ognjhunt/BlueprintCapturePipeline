@@ -88,11 +88,9 @@ RUN export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 \
     && /.ctrl-world-venv/bin/python -m compileall -q /opt/blueprint-current/src/blueprint_pipeline \
     && /.ctrl-world-venv/bin/python -c "import torch; assert torch.__version__ == '2.7.1+cu128'; import accelerate, decord, diffusers, einops, mediapy, swanlab, transformers, wandb" \
     && /.ctrl-world-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.ctrl_world_joint_position_reference_runtime import _validate_source_manifest; result=_validate_source_manifest(Path('/opt/ctrl-world'), Path('/opt/ctrl-world-runtime/ctrl_world_source_manifest.json')); assert result['file_count'] == 8" \
-    && oscar_site_packages="$(/opt/oscar-venv/bin/python -c 'import site; print(site.getsitepackages()[0])')" \
     && if ! /opt/oscar-venv/bin/python -c 'import cv2'; then \
-      /opt/oscar-venv/bin/python -m pip install \
-        --no-cache-dir --no-deps --require-hashes \
-        --target "${oscar_site_packages}" \
+      uv pip install --python /opt/oscar-venv/bin/python \
+        --no-cache --no-deps --require-hashes \
         -r /opt/oscar-runtime/requirements_embedded_carrier_opencv.lock; \
       fi \
     && /opt/oscar-venv/bin/python -c "import cv2; assert cv2.__version__ == '4.11.0'" \
