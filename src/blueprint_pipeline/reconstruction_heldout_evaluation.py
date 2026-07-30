@@ -369,6 +369,58 @@ def build_visual_heldout_evaluation_report(value: Mapping[str, Any]) -> dict[str
     )
     if not isinstance(aggregate, Mapping) or not isinstance(thresholds_passed, bool):
         errors.append("heldout_report_aggregate_invalid")
+    elif isinstance(rows, list) and rows and not any(
+        code.startswith("heldout_report_row_metric_invalid") for code in errors
+    ):
+        thresholds = aggregate.get("thresholds")
+        threshold_fields = {
+            "minimum_mean_psnr_db",
+            "minimum_mean_global_ssim",
+            "maximum_mean_absolute_error",
+        }
+        if not isinstance(thresholds, Mapping) or set(thresholds) != threshold_fields:
+            errors.append("heldout_report_thresholds_invalid")
+        elif any(
+            isinstance(thresholds.get(key), bool)
+            or not isinstance(thresholds.get(key), (int, float))
+            or not math.isfinite(float(thresholds[key]))
+            for key in threshold_fields
+        ):
+            errors.append("heldout_report_thresholds_invalid")
+        else:
+            finite_psnr = [
+                float(row["psnr_db"])
+                for row in rows
+                if row.get("psnr_db") != "infinity"
+            ]
+            mean_psnr = (
+                float("inf")
+                if len(finite_psnr) < len(rows)
+                else float(np.mean(finite_psnr))
+            )
+            mean_ssim = float(
+                np.mean([float(row["global_ssim"]) for row in rows])
+            )
+            mean_mae = float(
+                np.mean([float(row["mean_absolute_error"]) for row in rows])
+            )
+            expected_aggregate = {
+                "mean_psnr_db": (
+                    "infinity" if math.isinf(mean_psnr) else round(mean_psnr, 6)
+                ),
+                "mean_global_ssim": round(mean_ssim, 8),
+                "mean_absolute_error": round(mean_mae, 8),
+                "thresholds": dict(thresholds),
+                "thresholds_passed": bool(
+                    mean_psnr >= float(thresholds["minimum_mean_psnr_db"])
+                    and mean_ssim
+                    >= float(thresholds["minimum_mean_global_ssim"])
+                    and mean_mae
+                    <= float(thresholds["maximum_mean_absolute_error"])
+                ),
+            }
+            if dict(aggregate) != expected_aggregate:
+                errors.append("heldout_report_aggregate_recomputation_mismatch")
     expected_status = (
         "passed_appearance_only" if thresholds_passed is True else "rejected_appearance_quality"
     )

@@ -14,6 +14,7 @@ from blueprint_pipeline.reconstruction_heldout_evaluation import (
     HELDOUT_APPEARANCE_REQUEST_SCHEMA_VERSION,
     HeldoutAppearanceEvaluationError,
     build_heldout_appearance_evaluation_request,
+    build_visual_heldout_evaluation_report,
     evaluate_heldout_appearance,
 )
 from blueprint_pipeline.task_evaluation_supervisor import (
@@ -252,3 +253,80 @@ def test_registered_heldout_tool_rejects_malicious_pass_label(tmp_path: Path) ->
 
     assert observation["status"] == "refused"
     assert "result_contract_invalid" in observation["typed_failure"]["reason"]
+
+
+def test_recorded_heldout_report_recomputes_aggregate_and_decision(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    report = evaluate_heldout_appearance(source_artifact=request, output_root=tmp_path / "out")
+
+    forged = dict(report)
+    forged["aggregate"] = dict(report["aggregate"])
+    forged["aggregate"]["mean_absolute_error"] = 0.5
+    forged["visual_heldout_evaluation_report_digest"] = canonical_digest(
+        forged, digest_field="visual_heldout_evaluation_report_digest"
+    )
+
+    with pytest.raises(
+        HeldoutAppearanceEvaluationError,
+        match="aggregate_recomputation_mismatch",
+    ):
+        build_visual_heldout_evaluation_report(forged)
+
+
+def test_registered_heldout_tool_rejects_threshold_and_evaluator_lineage_drift(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+
+    def drifting_evaluator(*, source_artifact: dict, output_root: Path) -> dict:
+        result = evaluate_heldout_appearance(
+            source_artifact=source_artifact, output_root=output_root
+        )
+        result["evaluator_identity"] = "candidate-controlled-evaluator"
+        result["aggregate"]["thresholds"] = {
+            "minimum_mean_psnr_db": 0.0,
+            "minimum_mean_global_ssim": 0.0,
+            "maximum_mean_absolute_error": 1.0,
+        }
+        result["visual_heldout_evaluation_report_digest"] = canonical_digest(
+            result, digest_field="visual_heldout_evaluation_report_digest"
+        )
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="drifting-heldout-tool-run",
+        customer_question="Reject evaluator lineage drift.",
+        supervisor_output_dir=str(tmp_path / "run"),
+        heldout_appearance_evaluation_request=request,
+        heldout_appearance_evaluator=drifting_evaluator,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[
+            request["heldout_appearance_evaluation_request_digest"]
+        ],
+    ).to_mapping()
+    binding = next(
+        binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+        if binding.tool_id == "evaluate_heldout_appearance"
+    )
+
+    observation = binding.invoke(
+        {
+            "heldout_appearance_evaluation_request_digest": request[
+                "heldout_appearance_evaluation_request_digest"
+            ]
+        }
+    )
+
+    assert observation["status"] == "refused"
+    assert "result_lineage_mismatch" in observation["typed_failure"]["reason"]

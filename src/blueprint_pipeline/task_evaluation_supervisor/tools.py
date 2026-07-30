@@ -2593,6 +2593,8 @@ def _execute_geometry_contract_tool(
     if tool_id == "evaluate_heldout_appearance" and any(
         result.get(field) != source.get(source_field)
         for field, source_field in (
+            ("stable_run_identity", "stable_run_identity"),
+            ("source_capture_identity", "source_capture_identity"),
             ("source_capture_digest", "source_capture_digest"),
             ("reconstruction_dataset_digest", "reconstruction_dataset_digest"),
             ("frozen_split_digest", "frozen_split_digest"),
@@ -2604,7 +2606,36 @@ def _execute_geometry_contract_tool(
                 "evaluation_request_digest",
                 "heldout_appearance_evaluation_request_digest",
             ),
+            ("candidate_method_id", "candidate_method_id"),
+            ("candidate_provider_identity", "candidate_provider_identity"),
+            ("evaluator_identity", "evaluator_identity"),
+            ("evaluator_provider_identity", "evaluator_provider_identity"),
+            ("evaluator_implementation_digest", "evaluator_implementation_digest"),
+            ("source_commit_sha", "source_commit_sha"),
+            ("coordinate_frame_declaration", "coordinate_frame_declaration"),
+            ("authority_used", "authority_used"),
+            ("timestamp", "timestamp"),
         )
+    ):
+        raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
+    if tool_id == "evaluate_heldout_appearance" and (
+        result.get("aggregate", {}).get("thresholds") != source.get("thresholds")
+        or [
+            {
+                "view_id": row.get("view_id"),
+                "real_view_digest": row.get("real_view_digest"),
+                "candidate_render_digest": row.get("candidate_render_digest"),
+            }
+            for row in result.get("rows", [])
+        ]
+        != [
+            {
+                "view_id": pair.get("view_id"),
+                "real_view_digest": pair.get("real_view_digest"),
+                "candidate_render_digest": pair.get("candidate_render_digest"),
+            }
+            for pair in source.get("pairs", [])
+        ]
     ):
         raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
     result_digest = result[result_digest_field]
