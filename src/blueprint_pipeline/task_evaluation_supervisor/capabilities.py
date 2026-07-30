@@ -57,6 +57,7 @@ class SupervisorContext:
     # arguments plus a supervisor-owned output directory.
     reconstruction_dataset_compiler: Any | None = None
     native_360_normalizer: Any | None = None
+    equirectangular_virtual_rig_compiler: Any | None = None
 
 
 class SupervisorCapability(Protocol):

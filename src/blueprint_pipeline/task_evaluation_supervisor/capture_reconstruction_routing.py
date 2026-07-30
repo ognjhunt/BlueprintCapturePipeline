@@ -50,9 +50,9 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
     "camera_360_equirectangular": (
         ("verify_equirectangular_metadata", "capture_validation", "required_deterministic_gate"),
         (
-            "project_spherical_to_perspective_views",
+            "compile_equirectangular_virtual_rig",
             "equirectangular_normalization",
-            "required_not_registered",
+            "registered_conditional",
         ),
         ("estimate_camera_poses_with_sfm", "pose_sfm_estimation", "required_not_registered"),
         ("train_unscaled_appearance_3dgs", "gaussian_splat_3d", "required_not_registered"),
@@ -67,9 +67,9 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "registered_conditional",
         ),
         (
-            "project_spherical_to_perspective_views",
+            "compile_equirectangular_virtual_rig",
             "equirectangular_normalization",
-            "required_not_registered",
+            "registered_conditional",
         ),
         ("estimate_camera_poses_with_sfm", "pose_sfm_estimation", "required_not_registered"),
         ("train_unscaled_appearance_3dgs", "gaussian_splat_3d", "required_not_registered"),
@@ -185,9 +185,15 @@ def build_capture_reconstruction_route(
         if profile == "iphone_arkit_lidar"
         else [
             "local://decoded-observation-index-v1",
+            "local://equirectangular-virtual-rig-v1",
             "local://native-360-normalization-v1",
         ]
         if profile == "camera_360_native"
+        else [
+            "local://decoded-observation-index-v1",
+            "local://equirectangular-virtual-rig-v1",
+        ]
+        if profile == "camera_360_equirectangular"
         else ["local://decoded-observation-index-v1"]
         if profile in _VIDEO_PROFILES
         else []
@@ -301,9 +307,15 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
             if profile == "iphone_arkit_lidar"
             else [
                 "local://decoded-observation-index-v1",
+                "local://equirectangular-virtual-rig-v1",
                 "local://native-360-normalization-v1",
             ]
             if profile == "camera_360_native"
+            else [
+                "local://decoded-observation-index-v1",
+                "local://equirectangular-virtual-rig-v1",
+            ]
+            if profile == "camera_360_equirectangular"
             else ["local://decoded-observation-index-v1"]
             if profile in _VIDEO_PROFILES
             else []

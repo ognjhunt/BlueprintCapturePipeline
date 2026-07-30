@@ -62,10 +62,13 @@ def test_iphone_lidar_and_360_capture_receive_different_reconstruction_routes(
     assert panorama["capture_authority_profile"] == "camera_360_equirectangular"
     assert "local://arkit-metric-scaffold-v1" in iphone["currently_registered_adapters"]
     assert "local://arkit-metric-scaffold-v1" not in panorama["currently_registered_adapters"]
+    assert "local://equirectangular-virtual-rig-v1" in panorama[
+        "currently_registered_adapters"
+    ]
     assert [row["stage_id"] for row in iphone["stages"]] != [
         row["stage_id"] for row in panorama["stages"]
     ]
-    assert "project_spherical_to_perspective_views" in {
+    assert "compile_equirectangular_virtual_rig" in {
         row["stage_id"] for row in panorama["stages"]
     }
     assert "metric_reference_layer" in panorama["required_representations"]
@@ -484,6 +487,102 @@ def test_agents_sdk_executes_digest_bound_native_360_normalizer_without_proof_au
     )
 
     refused = bindings["normalize_native_360_capture"].invoke(
+        {
+            "capture_build_digest": capture_build["capture_build_digest"],
+            "capture_reconstruction_route_digest": "sha256:" + "0" * 64,
+        }
+    )
+    assert refused["status"] == "refused"
+    assert "route_binding_mismatch" in refused["typed_failure"]["reason"]
+
+
+def test_agents_sdk_executes_shared_center_virtual_rig_compiler_without_pixel_promotion(
+    tmp_path: Path,
+) -> None:
+    capture_build = _capture_build(
+        tmp_path, profile="camera_360_equirectangular"
+    )
+    route = build_capture_reconstruction_route(
+        capture_build, requested_claim_types=["navigation_clearance"]
+    )
+
+    def compiler(*, request: dict, output_root: Path) -> dict:
+        assert output_root.name == "equirectangular_virtual_rig"
+        assert request["access_scope"] == "candidate_training_and_validation_only"
+        result = {
+            "schema_version": "equirectangular_virtual_rig_compilation.v1",
+            "source_capture_digest": "sha256:" + "1" * 64,
+            "access_scope": request["access_scope"],
+            "output_digests": {"virtual_rig_digest": "sha256:" + "2" * 64},
+            "virtual_observation_count": 12,
+            "proof_effect": "deterministic_shared_center_projection_only",
+            "claim_ceiling": "equirectangular_virtual_camera_rig",
+            "source_panorama_pixels_remain_authoritative": True,
+            "virtual_views_are_captured_evidence": False,
+            "virtual_views_are_independent_physical_cameras": False,
+            "camera_trajectory_proven": False,
+            "metric_scale_proven": False,
+            "appearance_reconstruction_proven": False,
+            "collision_geometry_proven": False,
+            "isaac_compatibility_proven": False,
+            "parent_artifact_or_event": {
+                "capture_build_digest": request["capture_build_digest"],
+                "capture_reconstruction_route_digest": request[
+                    "capture_reconstruction_route_digest"
+                ],
+            },
+        }
+        result["equirectangular_compilation_digest"] = canonical_digest(
+            result, digest_field="equirectangular_compilation_digest"
+        )
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="equirectangular-rig-tool",
+        customer_question="Compile fixed shared-center perspective views.",
+        capture_build=capture_build,
+        decision_request={"claims": [{"claim_type": "navigation_clearance"}]},
+        supervisor_output_dir=str(tmp_path / "run"),
+        equirectangular_virtual_rig_compiler=compiler,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[capture_build["capture_build_digest"]],
+    ).to_mapping()
+    bindings = {
+        binding.tool_id: binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+    }
+
+    observation = bindings["compile_equirectangular_virtual_rig"].invoke(
+        {
+            "capture_build_digest": capture_build["capture_build_digest"],
+            "capture_reconstruction_route_digest": route[
+                "capture_reconstruction_route_digest"
+            ],
+        }
+    )
+
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["virtual_observation_count"] == 12
+    assert observation["typed_result"]["shared_optical_center_required"] is True
+    assert observation["typed_result"]["virtual_views_are_captured_evidence"] is False
+    assert observation["typed_result"]["proof_state_changed"] is False
+    assert observation["proof_effect"] == "none"
+    assert observation["cost_usd"] == 0.0
+    assert observation["produced_artifact_references"][0]["artifact_type"] == (
+        "equirectangular_virtual_rig_compilation.v1"
+    )
+
+    refused = bindings["compile_equirectangular_virtual_rig"].invoke(
         {
             "capture_build_digest": capture_build["capture_build_digest"],
             "capture_reconstruction_route_digest": "sha256:" + "0" * 64,

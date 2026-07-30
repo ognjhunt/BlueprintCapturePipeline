@@ -99,6 +99,18 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "proof_state_changed": {"const": False},
         }
     ),
+    "compile_equirectangular_virtual_rig": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "compilation_digest": {"type": "string"},
+            "virtual_rig_digest": {"type": "string"},
+            "virtual_observation_count": {"type": "integer"},
+            "shared_optical_center_required": {"const": True},
+            "virtual_views_are_captured_evidence": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
     "validate_proposed_claim_graph": _output_schema(
         {
             "contract_present": {"const": True},
@@ -322,6 +334,23 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
             minimum_mode="execute_non_spend",
             timeout_seconds=300.0,
+        ),
+        _descriptor(
+            "compile_equirectangular_virtual_rig",
+            "equirectangular_normalization",
+            expected_artifacts=["equirectangular_virtual_rig_compilation.v1"],
+            input_properties={
+                "capture_build_digest": {"type": "string"},
+                "capture_reconstruction_route_digest": {"type": "string"},
+            },
+            required_inputs=[
+                "capture_build_digest",
+                "capture_reconstruction_route_digest",
+            ],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=600.0,
         ),
         _descriptor(
             "validate_proposed_claim_graph",
@@ -708,6 +737,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "plan_capture_reconstruction_route",
         "compile_frozen_frame_dataset",
         "normalize_native_360_capture",
+        "compile_equirectangular_virtual_rig",
         "propose_targeted_recapture",
     ),
     "evaluation_method_router": (
@@ -1241,6 +1271,124 @@ def _normalize_native_360_capture(
     ]
 
 
+def _compile_equirectangular_virtual_rig(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    compiler = getattr(context, "equirectangular_virtual_rig_compiler", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError(
+            "registered_tool_execution_scope_missing:compile_equirectangular_virtual_rig"
+        )
+    if not callable(compiler):
+        raise ValueError("equirectangular_virtual_rig_compiler_not_injected")
+    capture_build = context.capture_build
+    expected_capture_digest = arguments.get("capture_build_digest")
+    actual_capture_digest = (
+        capture_build.get("capture_build_digest")
+        if isinstance(capture_build, Mapping)
+        else None
+    )
+    claim_types = sorted(
+        {
+            str(row.get("claim_type") or "").strip()
+            for row in (
+                context.decision_request.get("claims", [])
+                if isinstance(context.decision_request, Mapping)
+                else []
+            )
+            if isinstance(row, Mapping) and str(row.get("claim_type") or "").strip()
+        }
+    )
+    route = (
+        build_capture_reconstruction_route(
+            capture_build, requested_claim_types=claim_types
+        )
+        if isinstance(capture_build, Mapping)
+        and expected_capture_digest
+        and expected_capture_digest == actual_capture_digest
+        else None
+    )
+    expected_route_digest = arguments.get("capture_reconstruction_route_digest")
+    if (
+        route is None
+        or route.get("status") != "route_proposed"
+        or route.get("capture_authority_profile")
+        not in {"camera_360_equirectangular", "camera_360_native"}
+        or expected_route_digest != route.get("capture_reconstruction_route_digest")
+    ):
+        raise ValueError("registered_tool_equirectangular_route_binding_mismatch")
+    output_root = Path(root_value) / "generated" / "equirectangular_virtual_rig"
+    compiled = compiler(
+        request={
+            "capture_build_digest": actual_capture_digest,
+            "capture_reconstruction_route_digest": expected_route_digest,
+            "capture_authority_profile": route["capture_authority_profile"],
+            "requested_claim_types": claim_types,
+            "access_scope": "candidate_training_and_validation_only",
+        },
+        output_root=output_root,
+    )
+    if not isinstance(compiled, Mapping):
+        raise ValueError("equirectangular_virtual_rig_compiler_result_not_object")
+    result = dict(compiled)
+    result_digest = result.get("equirectangular_compilation_digest")
+    rig_digest = result.get("output_digests", {}).get("virtual_rig_digest")
+    parent = result.get("parent_artifact_or_event")
+    view_count = result.get("virtual_observation_count")
+    if (
+        result.get("schema_version")
+        != "equirectangular_virtual_rig_compilation.v1"
+        or not isinstance(parent, Mapping)
+        or parent.get("capture_build_digest") != actual_capture_digest
+        or parent.get("capture_reconstruction_route_digest") != expected_route_digest
+        or result.get("access_scope")
+        != "candidate_training_and_validation_only"
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(result_digest or "")) is None
+        or result_digest
+        != canonical_digest(result, digest_field="equirectangular_compilation_digest")
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(rig_digest or "")) is None
+        or isinstance(view_count, bool)
+        or not isinstance(view_count, int)
+        or view_count < 12
+        or view_count % 12 != 0
+        or result.get("proof_effect")
+        != "deterministic_shared_center_projection_only"
+        or result.get("claim_ceiling")
+        != "equirectangular_virtual_camera_rig"
+        or result.get("source_panorama_pixels_remain_authoritative") is not True
+        or result.get("virtual_views_are_captured_evidence") is not False
+        or result.get("virtual_views_are_independent_physical_cameras") is not False
+        or result.get("camera_trajectory_proven") is not False
+        or result.get("metric_scale_proven") is not False
+        or result.get("appearance_reconstruction_proven") is not False
+        or result.get("collision_geometry_proven") is not False
+        or result.get("isaac_compatibility_proven") is not False
+    ):
+        raise ValueError("equirectangular_virtual_rig_compiler_result_contract_invalid")
+    path = write_phase2_artifact(
+        root_value,
+        "generated/equirectangular_virtual_rig/equirectangular_virtual_rig_compilation.json",
+        result,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "compilation_digest": result_digest,
+        "virtual_rig_digest": rig_digest,
+        "virtual_observation_count": view_count,
+        "shared_optical_center_required": True,
+        "virtual_views_are_captured_evidence": False,
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": result_digest,
+            "artifact_type": "equirectangular_virtual_rig_compilation.v1",
+        }
+    ]
+
+
 def _bound_artifact(
     context: Any,
     *,
@@ -1325,6 +1473,10 @@ def _bound_artifact(
         return _compile_frozen_frame_dataset(context=context, arguments=arguments)
     elif tool_id == "normalize_native_360_capture":
         return _normalize_native_360_capture(context=context, arguments=arguments)
+    elif tool_id == "compile_equirectangular_virtual_rig":
+        return _compile_equirectangular_virtual_rig(
+            context=context, arguments=arguments
+        )
     elif tool_id == "compile_deterministic_evidence_plan":
         value = context.evidence_plan
         expected = arguments.get("plan_digest")
@@ -1407,6 +1559,10 @@ def non_spend_tool_bindings(
             continue
         if tool_id == "normalize_native_360_capture" and not callable(
             getattr(context, "native_360_normalizer", None)
+        ):
+            continue
+        if tool_id == "compile_equirectangular_virtual_rig" and not callable(
+            getattr(context, "equirectangular_virtual_rig_compiler", None)
         ):
             continue
         descriptor = registry.resolve(tool_id)

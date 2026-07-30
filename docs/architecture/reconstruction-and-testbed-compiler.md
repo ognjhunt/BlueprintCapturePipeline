@@ -191,11 +191,37 @@ Evaluation Supervisor exposes it only through a typed, zero-cost, digest-bound
 registered tool backed by an injected trusted runtime; the agent receives no
 filesystem path or generic execution handle.
 
+## Stitched equirectangular shared-center rig
+
+`equirectangular_virtual_rig.py` accepts only retained, digest-bound 2:1
+panorama observations plus a versioned stitch declaration. The declaration
+records whether pixels were customer-provided, official-SDK-produced, or
+externally produced; names the producer and stitch receipt; and binds the
+preserved original 360 source. Unknown stitch provenance or a missing original
+source fails closed.
+
+The compiler uses the fixed
+`blueprint_erp_shared_center_12x100deg_v1` profile: four yaw angles at each of
+three pitch angles, identical 512-square pinhole intrinsics, and deterministic
+bilinear sampling. All 12 derived views from a panorama share one explicit
+optical-center group and zero relative translation. Candidate and held-out
+panoramas must be compiled under separate access scopes. The agent cannot
+change the view definitions or request evaluator pixels through the candidate
+tool.
+
+The output is `equirectangular_virtual_camera_rig.v1` plus a material
+`equirectangular_virtual_rig_compilation.v1` receipt. Its ceiling is only
+`equirectangular_virtual_camera_rig`: perspective projections are derived
+support pixels, not independent physical observations. The compiler does not
+establish the source camera trajectory, native lens calibration, stitch
+quality, metric scale, appearance reconstruction, geometry, collision, or
+Isaac compatibility.
+
 ## Remaining reconstruction qualification gaps
 
 The executable local kernel should be extended, not replaced. Remaining work
-includes bounded ARKit pose refinement; calibrated shared-center virtual rigs
-and real native `.insv` execution; frozen pose-method comparison; a pinned
+includes bounded ARKit pose refinement; real native `.insv` and stitched-360
+execution; frozen rig-constrained pose-method comparison; a pinned
 headless CUDA/ONNX COLMAP plus
 gsplat/3DGUT worker; independent appearance and geometry evaluation;
 metric-anchor and collider qualification; reproducible NuRec/OpenUSD packaging;
