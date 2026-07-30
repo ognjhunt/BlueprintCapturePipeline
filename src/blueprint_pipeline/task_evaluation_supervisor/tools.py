@@ -39,6 +39,10 @@ from ..reconstruction_failure_diagnosis import (
     build_reconstruction_failure_diagnosis_request,
     diagnose_reconstruction_failure,
 )
+from ..reconstruction_terminal_report import (
+    build_reconstruction_terminal_report_request,
+    generate_reconstruction_terminal_report,
+)
 from ..reconstruction_capability import normalize_reconstruction_result
 from ..reconstruction_worker_contracts import (
     build_pose_estimation_request,
@@ -272,6 +276,19 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "terminal_for_current_configuration": {"type": "boolean"},
             "legal_next_actions": {"type": "array"},
             "failed_evidence_preserved": {"const": True},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "generate_reconstruction_report": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "report_digest": {"type": "string"},
+            "decision": {
+                "enum": ["usable", "partially_usable", "rejected", "abstention"]
+            },
+            "failed_method_count": {"type": "integer"},
+            "agent_output_authoritative": {"const": False},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -813,6 +830,20 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             input_properties={"decision_envelope_digest": {"type": "string"}},
             required_inputs=["decision_envelope_digest"],
         ),
+        _descriptor(
+            "generate_reconstruction_report",
+            "capture_reconstruction_terminal_reporting",
+            expected_artifacts=["reconstruction_terminal_report.v1"],
+            input_properties={
+                "reconstruction_terminal_report_request_digest": {"type": "string"}
+            },
+            required_inputs=["reconstruction_terminal_report_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=30.0,
+            idempotency="recorded_artifact_replay_deterministic_report",
+        ),
     )
 
 
@@ -1087,7 +1118,10 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "execute_preauthorized_recovery",
     ),
     "scenario_adversarial_proposer": ("propose_adversarial_scenarios",),
-    "post_run_diagnostician": ("explain_deterministic_decision",),
+    "post_run_diagnostician": (
+        "explain_deterministic_decision",
+        "generate_reconstruction_report",
+    ),
 }
 
 
@@ -2249,6 +2283,49 @@ def _diagnose_reconstruction_failure(
     ]
 
 
+def _generate_reconstruction_report(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    source_value = getattr(context, "reconstruction_terminal_report_request", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError(
+            "registered_tool_execution_scope_missing:generate_reconstruction_report"
+        )
+    if not isinstance(source_value, Mapping):
+        raise ValueError("reconstruction_terminal_report_request_not_injected")
+    try:
+        request = build_reconstruction_terminal_report_request(source_value)
+    except ValueError as exc:
+        raise ValueError("reconstruction_terminal_report_request_contract_invalid") from exc
+    expected_digest = arguments.get("reconstruction_terminal_report_request_digest")
+    if expected_digest != request["reconstruction_terminal_report_request_digest"]:
+        raise ValueError(
+            "registered_tool_source_digest_mismatch:generate_reconstruction_report"
+        )
+    report = generate_reconstruction_terminal_report(request)
+    path = write_phase2_artifact(
+        root_value,
+        "generated/reconstruction_terminal_report/reconstruction_terminal_report.json",
+        report,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "report_digest": report["reconstruction_terminal_report_digest"],
+        "decision": report["decision"],
+        "failed_method_count": len(report["failed_methods"]),
+        "agent_output_authoritative": False,
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": report["reconstruction_terminal_report_digest"],
+            "artifact_type": "reconstruction_terminal_report.v1",
+        }
+    ]
+
+
 def _bound_artifact(
     context: Any,
     *,
@@ -2353,6 +2430,10 @@ def _bound_artifact(
         )
     elif tool_id == "diagnose_reconstruction_failure":
         return _diagnose_reconstruction_failure(
+            context=context, arguments=arguments
+        )
+    elif tool_id == "generate_reconstruction_report":
+        return _generate_reconstruction_report(
             context=context, arguments=arguments
         )
     elif tool_id == "compile_deterministic_evidence_plan":
@@ -2474,6 +2555,10 @@ def non_spend_tool_bindings(
                 continue
         if tool_id == "diagnose_reconstruction_failure" and not isinstance(
             getattr(context, "reconstruction_failure_diagnosis_request", None), Mapping
+        ):
+            continue
+        if tool_id == "generate_reconstruction_report" and not isinstance(
+            getattr(context, "reconstruction_terminal_report_request", None), Mapping
         ):
             continue
         descriptor = registry.resolve(tool_id)

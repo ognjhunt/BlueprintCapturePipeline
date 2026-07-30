@@ -397,6 +397,17 @@ propose one bounded retry. A second identical failure is rewritten to
 next actions to preserving evidence and abstaining. Diagnosis never executes
 recovery or grants authority.
 
+The registered `generate_reconstruction_report` tool compiles a
+`reconstruction_terminal_report.v1` from a frozen request digest. It records
+the original capture and request, rights, selected and rejected observations,
+all attempted/failed/skipped/recovered methods, separate appearance/metric/
+collision/Isaac artifacts, independent metrics, cost, provider and teardown
+state, agent proposals, deterministic validations, blockers, and what could
+change the result. Its eleven boolean evidence ceilings remain distinct from
+the overall usability decision. The report is a replayable explanation: it
+cannot mutate proof, hide a supplied failed attempt, grant authority, or turn
+simulation into physical or deployment success.
+
 ## Normalized results and layers
 
 `reconstruction_result.v1` binds exact capture, method-profile,

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/reconstruction_terminal_report.v1.schema.json",
+  "title": "Blueprint Reconstruction Terminal Report Contracts v1",
+  "oneOf": [
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/report"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "decision": {"enum": ["usable", "partially_usable", "rejected", "abstention"]},
+    "ceilings": {
+      "type": "object",
+      "required": [
+        "decoded_observation_availability", "calibrated_camera_trajectory",
+        "appearance_reconstruction", "metric_scale", "metric_reference_geometry",
+        "collision_geometry", "physics_readiness", "isaac_load_render_compatibility",
+        "simulator_task_evidence", "physical_task_success", "deployment_readiness"
+      ],
+      "additionalProperties": {"type": "boolean"}
+    },
+    "request": {
+      "type": "object",
+      "required": [
+        "schema_version", "stable_run_identity", "original_capture_location",
+        "source_capture_digest", "implementation_digest", "input_digests",
+        "recorded_output_digests", "validated_capture_profile", "original_customer_request",
+        "rights_and_permitted_use", "selected_frames", "rejected_frames",
+        "frozen_split_digest", "calibration_and_coordinate_status",
+        "camera_calibration_binding", "coordinate_frame_declaration",
+        "units_and_metric_scale_status", "pose_methods_attempted",
+        "registered_observations", "rejected_observations", "scale_validation",
+        "reconstruction_methods_attempted", "failed_methods", "skipped_methods",
+        "recovered_methods", "appearance_asset", "metric_reference_asset",
+        "collision_candidate", "independent_visual_metrics", "independent_geometric_metrics",
+        "collider_qualification", "nurec_openusd_package", "isaac_verification",
+        "fixed_camera_render_references", "physics_collision_verification",
+        "provider_execution", "provider_runtime_identity", "source_commit_sha",
+        "container_image_digests",
+        "runtime_and_spend", "agent_proposals_and_actions", "deterministic_validations",
+        "decision", "evidence_ceilings", "what_could_change_result",
+        "what_blueprint_cannot_claim", "warnings", "blockers",
+        "teardown_and_provider_zero", "authority_used", "timestamp",
+        "reconstruction_terminal_report_request_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_terminal_report_request.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "implementation_digest": {"$ref": "#/$defs/sha256"},
+        "frozen_split_digest": {"$ref": "#/$defs/sha256"},
+        "decision": {"$ref": "#/$defs/decision"},
+        "evidence_ceilings": {"$ref": "#/$defs/ceilings"},
+        "reconstruction_terminal_report_request_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "report": {
+      "type": "object",
+      "required": [
+        "schema_version", "stable_run_identity", "source_request_digest",
+        "producing_method", "implementation_version", "deterministic_configuration_digest",
+        "input_digests", "recorded_output_digests",
+        "source_capture_digest", "validated_capture_profile", "original_customer_request",
+        "decision", "customer_summary", "evidence_ceilings", "failed_methods",
+        "agent_output_authoritative", "proof_state_mutated_by_report", "proof_effect",
+        "claim_ceiling",
+        "what_blueprint_cannot_claim", "teardown_and_provider_zero",
+        "reconstruction_terminal_report_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_terminal_report.v1"},
+        "source_request_digest": {"$ref": "#/$defs/sha256"},
+        "implementation_version": {"$ref": "#/$defs/sha256"},
+        "deterministic_configuration_digest": {"$ref": "#/$defs/sha256"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "decision": {"$ref": "#/$defs/decision"},
+        "evidence_ceilings": {"$ref": "#/$defs/ceilings"},
+        "agent_output_authoritative": {"const": false},
+        "proof_state_mutated_by_report": {"const": false},
+        "proof_effect": {"const": "deterministic_reconstruction_explanation_only"},
+        "claim_ceiling": {"$ref": "#/$defs/ceilings"},
+        "reconstruction_terminal_report_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    }
+  }
+}
