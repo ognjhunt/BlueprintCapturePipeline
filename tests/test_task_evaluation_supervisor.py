@@ -3646,6 +3646,7 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     }
     assert set(bindings) == {
         "compile_deterministic_evidence_plan",
+        "inspect_capture_build",
         "inspect_site_task_testbed",
         "plan_capture_reconstruction_route",
         "materialize_clarification_request",
