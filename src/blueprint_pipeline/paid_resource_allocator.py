@@ -88,6 +88,10 @@ from .policy_ranking_cosmos_reasoner_gpu_admission import (
     run_gpu_lane as run_cosmos_reasoner_gpu_lane,
 )
 from .policy_ranking_successor_retained_session import refresh_retained_session
+from .reconstruction_gpu_admission import (
+    PROBE_KIND as RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
+    prepare_reconstruction_gpu_canary,
+)
 from .single_g1_kitchen_episode_runpod import (
     PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
     run_single_episode,
@@ -629,6 +633,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
+            RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
         ),
         default="strict-policy-smoke",
     )
@@ -686,6 +691,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
     )
     gpu.add_argument("--finetune-checkpoint-vast-session-manifest")
+    gpu.add_argument("--reconstruction-max-spend-usd", type=float)
+    gpu.add_argument("--reconstruction-hard-ttl-seconds", type=int)
+    gpu.add_argument("--reconstruction-retry-cap", type=int)
+    gpu.add_argument("--reconstruction-authority-id")
     gpu.add_argument(
         "--qualification-action",
         choices=QUALIFICATION_SESSION_ACTIONS,
@@ -903,6 +912,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
+        if args.probe_kind == RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND:
+            source_blockers, checkout_commit = _source_checkout_blockers(
+                args.expected_source_commit or "",
+                allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
+            )
+            if source_blockers:
+                result = {
+                    "status": "blocked",
+                    "blockers": source_blockers,
+                    "provider_mutations_performed": 0,
+                }
+                write_json(Path(args.admission_out), result)
+            else:
+                result = prepare_reconstruction_gpu_canary(
+                    request_path=args.provider_launch_request,
+                    preflight_path=args.preflight_bundle,
+                    admission_out=args.admission_out,
+                    bound_request_out=args.bound_request_out,
+                    adapter_output=args.adapter_output,
+                    provider=args.provider,
+                    expected_source_commit=args.expected_source_commit or "",
+                    checkout_source_commit=checkout_commit,
+                    checkout_clean=True,
+                    max_spend_usd=args.reconstruction_max_spend_usd,
+                    hard_ttl_seconds=args.reconstruction_hard_ttl_seconds,
+                    retry_cap=args.reconstruction_retry_cap,
+                    authority_id=args.reconstruction_authority_id,
+                    execute=args.execute,
+                )
+            success = result.get("status") == "dry_run_ready"
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
         if args.probe_kind == NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND:
             missing = [
                 name

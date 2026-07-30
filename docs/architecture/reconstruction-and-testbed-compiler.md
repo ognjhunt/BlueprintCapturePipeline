@@ -544,3 +544,24 @@ Hermetic compilation proves deterministic composition and contract integrity.
 It does not prove reconstruction fidelity, collision correctness, task success,
 deployment readiness, safety certification, or physical performance. The
 comparative policy-ranking verdict remains `thesis_not_supported`.
+
+## Pinned worker and paid canary boundary
+
+`deploy/docker/reconstruction_worker/Dockerfile` is the Linux/amd64 headless
+candidate recipe for pinned FFmpeg, CUDA/ONNX COLMAP, gsplat, 3DGRUT, OpenUSD,
+and deterministic QA dependencies. The build and runtime healthcheck validates
+source revisions, model bytes, imports, display absence, and (at runtime) the
+NVIDIA device. A checked-in recipe is not a resolved image, build receipt, GPU
+smoke receipt, or scientific qualification.
+
+The `reconstruction-worker-smoke` probe is reachable only through
+`python -m blueprint_pipeline.paid_resource_allocator gpu-canary`. Its request
+is provider-neutral and binds the exact source commit, resolved image,
+reconstruction dataset, frozen split, calibration, configuration, budget, TTL,
+retry cap, and authority. The first qualification provider is Vast. Admission
+requires a fresh supported offer, provider-zero inventory, no conflicting
+owner, and an independent watchdog. The execute path remains deterministically
+blocked by `reconstruction_vast_execution_adapter_not_qualified` until the
+provider adapter, output retrieval, teardown, provider-zero proof, and spend
+reconciliation are implemented and focused-tested. Admission or allocation can
+never establish reconstruction quality.
