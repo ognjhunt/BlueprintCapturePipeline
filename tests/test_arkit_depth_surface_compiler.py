@@ -16,6 +16,15 @@ from blueprint_pipeline.arkit_depth_surface_compiler import (
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_geometry_compiler import compile_metric_geometry
+from blueprint_pipeline.task_evaluation_supervisor.capabilities import SupervisorContext
+from blueprint_pipeline.task_evaluation_supervisor.contracts import AutonomyMode
+from blueprint_pipeline.task_evaluation_supervisor.supervisor import (
+    default_authority_envelope,
+)
+from blueprint_pipeline.task_evaluation_supervisor.tools import (
+    ToolRegistry,
+    non_spend_tool_bindings,
+)
 
 
 def _digest(path: Path) -> str:
@@ -288,3 +297,108 @@ def test_request_and_result_validate_against_versioned_schemas(tmp_path: Path) -
     )
     Draft202012Validator(request_schema).validate(request)
     Draft202012Validator(result_schema).validate(result)
+
+
+def test_registered_tool_uses_digest_bound_repository_runtime(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="registered-arkit-depth-surface",
+        customer_question="Compile the observed ARKit depth surface.",
+        supervisor_output_dir=str(tmp_path),
+        arkit_depth_surface_compilation_request=request,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[
+            request["arkit_depth_surface_compilation_request_digest"]
+        ],
+    ).to_mapping()
+    binding = next(
+        item
+        for item in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+        if item.tool_id == "compile_arkit_observed_surface"
+    )
+    observation = binding.invoke(
+        {
+            "arkit_depth_surface_compilation_request_digest": request[
+                "arkit_depth_surface_compilation_request_digest"
+            ]
+        }
+    )
+
+    assert observation["status"] == "completed"
+    assert observation["proof_effect"] == "none"
+    assert observation["typed_result"]["emitted_vertex_count"] == 9
+    assert observation["typed_result"]["emitted_triangle_count"] == 8
+    assert observation["typed_result"]["generated_fill_used"] is False
+    assert observation["typed_result"]["raw_arkit_poses_modified"] is False
+    assert {row["artifact_type"] for row in observation["produced_artifact_references"]} == {
+        "arkit_depth_surface_compilation_result.v1",
+        "observed_surface_mesh.v1",
+    }
+
+    refused = binding.invoke(
+        {"arkit_depth_surface_compilation_request_digest": "sha256:" + "f" * 64}
+    )
+    assert refused["status"] == "refused"
+    assert refused["typed_failure"]["retryable"] is False
+
+
+def test_registered_tool_rejects_fabricated_compiler_artifact(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+
+    def malicious_compiler(**kwargs: object) -> dict:
+        result = compile_arkit_depth_surface(**kwargs)
+        result["surface_asset"]["digest"] = "sha256:" + "e" * 64
+        result["arkit_depth_surface_compilation_result_digest"] = canonical_digest(
+            result,
+            digest_field="arkit_depth_surface_compilation_result_digest",
+        )
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="malicious-arkit-depth-surface-output",
+        customer_question="Compile the observed ARKit depth surface.",
+        supervisor_output_dir=str(tmp_path),
+        arkit_depth_surface_compilation_request=request,
+        arkit_depth_surface_compiler=malicious_compiler,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[
+            request["arkit_depth_surface_compilation_request_digest"]
+        ],
+    ).to_mapping()
+    binding = next(
+        item
+        for item in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+        if item.tool_id == "compile_arkit_observed_surface"
+    )
+
+    observation = binding.invoke(
+        {
+            "arkit_depth_surface_compilation_request_digest": request[
+                "arkit_depth_surface_compilation_request_digest"
+            ]
+        }
+    )
+
+    assert observation["status"] == "refused"
+    assert observation["typed_failure"]["reason"] == "emitted_artifact_digest_mismatch"
+    assert observation["produced_artifact_references"] == []

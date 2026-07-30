@@ -44,6 +44,11 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("compile_arkit_metric_scaffold", "lidar_depth_fusion", "registered_conditional"),
         (
+            "compile_arkit_observed_surface",
+            "observed_depth_surface",
+            "registered_conditional",
+        ),
+        (
             "export_arkit_reconstruction_dataset",
             "calibrated_dataset_export",
             "registered_conditional",

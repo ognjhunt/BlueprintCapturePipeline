@@ -57,6 +57,8 @@ class SupervisorContext:
     # arguments plus a supervisor-owned output directory.
     reconstruction_dataset_compiler: Any | None = None
     arkit_metric_scaffold_compiler: Any | None = None
+    arkit_depth_surface_compilation_request: Mapping[str, Any] | None = None
+    arkit_depth_surface_compiler: Any | None = None
     arkit_reconstruction_dataset_request: Mapping[str, Any] | None = None
     arkit_reconstruction_dataset_exporter: Any | None = None
     native_360_normalizer: Any | None = None

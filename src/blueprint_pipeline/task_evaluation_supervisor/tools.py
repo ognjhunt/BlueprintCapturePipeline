@@ -8,14 +8,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
+import hashlib
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Callable, Mapping, Sequence
 
 from ..common import write_json
 from ..arkit_reconstruction_dataset import (
     build_arkit_reconstruction_dataset_export_request,
+)
+from ..arkit_depth_surface_compiler import (
+    compile_arkit_depth_surface as compile_arkit_depth_surface_runtime,
 )
 from ..decision_evidence_contracts import canonical_digest
 from ..decision_evidence_router import route_decision_evidence
@@ -94,6 +98,37 @@ from .phase2_artifacts import (
 TOOL_REGISTRY_SCHEMA_VERSION = "task_evaluation_supervisor_tool_registry.v1"
 
 
+def _validated_emitted_artifact(
+    *, root: str | Path, relative_path: Any, expected_digest: Any
+) -> Path:
+    root_path = Path(root).resolve(strict=True)
+    text = str(relative_path or "").replace("\\", "/")
+    relative = PurePosixPath(text)
+    if (
+        not text
+        or relative.is_absolute()
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or ":" in relative.parts[0]
+    ):
+        raise ValueError("emitted_artifact_relative_path_unsafe")
+    candidate = root_path.joinpath(*relative.parts)
+    if candidate.is_symlink():
+        raise ValueError("emitted_artifact_symlink_forbidden")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("emitted_artifact_missing") from exc
+    if root_path not in resolved.parents or not resolved.is_file():
+        raise ValueError("emitted_artifact_escape_or_not_file")
+    digest = hashlib.sha256()
+    with resolved.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if expected_digest != f"sha256:{digest.hexdigest()}":
+        raise ValueError("emitted_artifact_digest_mismatch")
+    return resolved
+
+
 def _output_schema(
     properties: Mapping[str, Mapping[str, Any]],
     *,
@@ -162,6 +197,22 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "raw_arkit_poses_modified": {"const": False},
             "metric_scale_independently_validated": {"const": False},
             "claim_ceiling": {"const": "sensor_declared_metric_scaffold"},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "compile_arkit_observed_surface": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "arkit_depth_surface_compilation_result_digest": {"type": "string"},
+            "surface_digest": {"type": "string"},
+            "accepted_high_confidence_pixel_count": {"type": "integer"},
+            "emitted_vertex_count": {"type": "integer"},
+            "emitted_triangle_count": {"type": "integer"},
+            "hidden_heldout_observations_accessed": {"const": False},
+            "generated_fill_used": {"const": False},
+            "raw_arkit_poses_modified": {"const": False},
+            "claim_ceiling": {"const": "observed_arkit_depth_surface_candidate"},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -616,6 +667,25 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             minimum_mode="execute_non_spend",
             timeout_seconds=1_800.0,
             idempotency="content_addressed_raw_contract_3_2_compilation",
+        ),
+        _descriptor(
+            "compile_arkit_observed_surface",
+            "arkit_depth_observed_surface_compilation",
+            expected_artifacts=[
+                "arkit_depth_surface_compilation_result.v1",
+                "observed_surface_mesh.v1",
+            ],
+            input_properties={
+                "arkit_depth_surface_compilation_request_digest": {
+                    "type": "string"
+                }
+            },
+            required_inputs=["arkit_depth_surface_compilation_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=1_800.0,
+            idempotency="content_addressed_confidence_filtered_backprojection",
         ),
         _descriptor(
             "export_arkit_reconstruction_dataset",
@@ -1221,6 +1291,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "plan_capture_reconstruction_route",
         "compile_frozen_frame_dataset",
         "compile_arkit_metric_scaffold",
+        "compile_arkit_observed_surface",
         "export_arkit_reconstruction_dataset",
         "normalize_native_360_capture",
         "compile_equirectangular_virtual_rig",
@@ -1766,6 +1837,106 @@ def _compile_arkit_metric_scaffold(
             "artifact_digest": result_digest,
             "artifact_type": "reconstruction_result.v1",
         }
+    ]
+
+
+def _compile_arkit_observed_surface(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    request_value = getattr(
+        context, "arkit_depth_surface_compilation_request", None
+    )
+    compiler = getattr(context, "arkit_depth_surface_compiler", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError(
+            "registered_tool_execution_scope_missing:compile_arkit_observed_surface"
+        )
+    if not isinstance(request_value, Mapping):
+        raise ValueError("arkit_depth_surface_compilation_request_not_injected")
+    if compiler is None:
+        compiler = compile_arkit_depth_surface_runtime
+    if not callable(compiler):
+        raise ValueError("arkit_depth_surface_compiler_not_callable")
+    request = dict(request_value)
+    digest_field = "arkit_depth_surface_compilation_request_digest"
+    expected_digest = arguments.get(digest_field)
+    if (
+        request.get("schema_version")
+        != "arkit_depth_surface_compilation_request.v1"
+        or request.get(digest_field) != expected_digest
+        or expected_digest != canonical_digest(request, digest_field=digest_field)
+    ):
+        raise ValueError("arkit_depth_surface_compilation_request_binding_mismatch")
+    output_root = Path(root_value) / "generated" / "arkit_observed_surface"
+    emitted = compiler(
+        source_artifact=request,
+        artifact_root=root_value,
+        output_root=output_root,
+    )
+    if not isinstance(emitted, Mapping):
+        raise ValueError("arkit_depth_surface_compiler_result_not_object")
+    result = dict(emitted)
+    result_digest_field = "arkit_depth_surface_compilation_result_digest"
+    surface_asset = result.get("surface_asset")
+    if (
+        result.get("schema_version")
+        != "arkit_depth_surface_compilation_result.v1"
+        or result.get(result_digest_field)
+        != canonical_digest(result, digest_field=result_digest_field)
+        or result.get("source_capture_digest")
+        != request.get("source_capture_digest")
+        or result.get("train_heldout_split_digest")
+        != request.get("train_heldout_split_digest")
+        or result.get("camera_calibration_binding")
+        != request.get("camera_calibration_binding")
+        or result.get("source_commit_sha") != request.get("source_commit_sha")
+        or result.get("hidden_heldout_observations_accessed") is not False
+        or result.get("generated_fill_used") is not False
+        or result.get("raw_arkit_poses_modified") is not False
+        or result.get("claim_ceiling")
+        != "observed_arkit_depth_surface_candidate"
+        or not isinstance(surface_asset, Mapping)
+        or not isinstance(surface_asset.get("digest"), str)
+        or not isinstance(surface_asset.get("relative_path"), str)
+    ):
+        raise ValueError("arkit_depth_surface_compiler_result_contract_invalid")
+    _validated_emitted_artifact(
+        root=root_value,
+        relative_path=surface_asset["relative_path"],
+        expected_digest=surface_asset["digest"],
+    )
+    path = write_phase2_artifact(
+        root_value,
+        "generated/arkit_observed_surface/compilation_result.json",
+        result,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        result_digest_field: result[result_digest_field],
+        "surface_digest": surface_asset["digest"],
+        "accepted_high_confidence_pixel_count": result[
+            "accepted_high_confidence_pixel_count"
+        ],
+        "emitted_vertex_count": result["emitted_vertex_count"],
+        "emitted_triangle_count": result["emitted_triangle_count"],
+        "hidden_heldout_observations_accessed": False,
+        "generated_fill_used": False,
+        "raw_arkit_poses_modified": False,
+        "claim_ceiling": "observed_arkit_depth_surface_candidate",
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": result[result_digest_field],
+            "artifact_type": "arkit_depth_surface_compilation_result.v1",
+        },
+        {
+            "artifact_path": surface_asset["relative_path"],
+            "artifact_digest": surface_asset["digest"],
+            "artifact_type": "observed_surface_mesh.v1",
+        },
     ]
 
 
@@ -2779,6 +2950,10 @@ def _bound_artifact(
         return _compile_frozen_frame_dataset(context=context, arguments=arguments)
     elif tool_id == "compile_arkit_metric_scaffold":
         return _compile_arkit_metric_scaffold(context=context, arguments=arguments)
+    elif tool_id == "compile_arkit_observed_surface":
+        return _compile_arkit_observed_surface(
+            context=context, arguments=arguments
+        )
     elif tool_id == "export_arkit_reconstruction_dataset":
         return _export_arkit_reconstruction_dataset(
             context=context, arguments=arguments
@@ -2897,6 +3072,11 @@ def non_spend_tool_bindings(
             continue
         if tool_id == "compile_arkit_metric_scaffold" and not callable(
             getattr(context, "arkit_metric_scaffold_compiler", None)
+        ):
+            continue
+        if tool_id == "compile_arkit_observed_surface" and not isinstance(
+            getattr(context, "arkit_depth_surface_compilation_request", None),
+            Mapping,
         ):
             continue
         if tool_id == "export_arkit_reconstruction_dataset" and (
