@@ -181,6 +181,10 @@ def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path)
     assert "chmod 0444 /opt/blueprint/oscar_source_provenance.json" in text
     assert "rm -rf /opt/OSCAR/.git /tmp/oscar_te_shim.py" in text
     assert "requirements_embedded_carrier_opencv.lock" in text
+    assert "export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5" in text
+    assert text.index("export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5") < text.index(
+        "uv pip install --python /.ctrl-world-venv/bin/python"
+    )
     assert "if ! /opt/oscar-venv/bin/python -c 'import cv2'" in text
     assert "--no-cache-dir --no-deps --require-hashes" in text
     assert '--target "${oscar_site_packages}"' in text

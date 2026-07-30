@@ -21,6 +21,10 @@ def test_combined_worker_preserves_separate_pinned_runtimes() -> None:
     assert "BLUEPRINT_CTRL_WORLD_MODEL_ROOT=/workspace/ctrl-world-models" in dockerfile
     assert "torch==2.7.1 torchvision==0.22.1" in dockerfile
     assert "https://download.pytorch.org/whl/cu128" in dockerfile
+    assert "export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5" in dockerfile
+    assert dockerfile.index("export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5") < dockerfile.index(
+        "uv pip install --python /.ctrl-world-venv/bin/python"
+    )
     assert "XLA_PYTHON_CLIENT_PREALLOCATE=false" in dockerfile
     assert "VIRTUAL_ENV=/.venv uv pip install --no-deps" in dockerfile
     assert "VIRTUAL_ENV=/.ctrl-world-venv uv pip install --no-deps" in dockerfile

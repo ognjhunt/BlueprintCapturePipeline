@@ -62,7 +62,8 @@ COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_embedd
 COPY pyproject.toml README.md LICENSE /opt/blueprint-current/
 COPY src /opt/blueprint-current/src
 
-RUN uv venv --python 3.11.9 /.ctrl-world-venv \
+RUN export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 \
+    && uv venv --python 3.11.9 /.ctrl-world-venv \
     && uv pip install --python /.ctrl-world-venv/bin/python \
       --index-url https://download.pytorch.org/whl/cu128 \
       torch==2.7.1 torchvision==0.22.1 \
