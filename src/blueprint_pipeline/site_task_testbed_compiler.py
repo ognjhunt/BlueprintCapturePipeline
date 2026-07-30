@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -614,24 +615,38 @@ def write_testbed_version(
                 raise SiteTaskTestbedCompilerError([f"immutable_artifact_conflict:{target.name}"])
         return replayed
 
-    already_exists = False
-    already_exists = write_once(path, payload)
-    cards = verified.get("compiled_cards")
-    if not isinstance(cards, Mapping):
-        raise SiteTaskTestbedCompilerError(["compiled_cards:missing"])
-    for key, prefix in (
-        ("site_card", "site_card"),
-        ("task_cards", "task_card"),
-        ("scenario_cards", "scenario_card"),
-        ("eval_cards", "eval_card"),
-    ):
-        value = cards.get(key)
-        rows = value if isinstance(value, list) else [value]
-        if not rows or not all(isinstance(row, Mapping) for row in rows):
-            raise SiteTaskTestbedCompilerError([f"compiled_cards.{key}:invalid"])
-        for index, row in enumerate(rows, start=1):
-            card_payload = (canonical_json(row) + "\n").encode("utf-8")
-            write_once(path.parent / f"{prefix}_{index}.json", card_payload)
+    version_binding = {
+        "schema_version": "site_task_testbed_version_binding.v1",
+        "testbed_id": verified["testbed_id"],
+        "version": verified["version"],
+        "testbed_digest": verified["testbed_digest"],
+    }
+    binding_payload = (canonical_json(version_binding) + "\n").encode("utf-8")
+    lock_path = path.parent.parent / ".version-lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        binding_path = path.parent / "version_binding.json"
+        if binding_path.is_file() and binding_path.read_bytes() != binding_payload:
+            raise SiteTaskTestbedCompilerError(["testbed_version_digest_conflict"])
+        write_once(binding_path, binding_payload)
+        already_exists = write_once(path, payload)
+        cards = verified.get("compiled_cards")
+        if not isinstance(cards, Mapping):
+            raise SiteTaskTestbedCompilerError(["compiled_cards:missing"])
+        for key, prefix in (
+            ("site_card", "site_card"),
+            ("task_cards", "task_card"),
+            ("scenario_cards", "scenario_card"),
+            ("eval_cards", "eval_card"),
+        ):
+            value = cards.get(key)
+            rows = value if isinstance(value, list) else [value]
+            if not rows or not all(isinstance(row, Mapping) for row in rows):
+                raise SiteTaskTestbedCompilerError([f"compiled_cards.{key}:invalid"])
+            for index, row in enumerate(rows, start=1):
+                card_payload = (canonical_json(row) + "\n").encode("utf-8")
+                write_once(path.parent / f"{prefix}_{index}.json", card_payload)
     result = {
         "schema_version": COMPILATION_RESULT_SCHEMA_VERSION,
         "status": "testbed_ready",

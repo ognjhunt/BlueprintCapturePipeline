@@ -461,3 +461,23 @@ def load_task_candidate_control_plane_state(
 ) -> dict[str, Any]:
     session_id = _identifier(capture_session_id, field="capture_session_id")
     return _read_mapping(_session_dir(Path(state_root).expanduser().resolve(), session_id) / "state.json")
+
+
+def load_latest_task_candidate_decision_result(
+    *, state_root: str | Path, capture_session_id: str
+) -> dict[str, Any]:
+    session_id = _identifier(capture_session_id, field="capture_session_id")
+    root = Path(state_root).expanduser().resolve()
+    state = _read_mapping(_session_dir(root, session_id) / "state.json")
+    command_request_id = _text(state.get("latest_command_request_id"))
+    if not command_request_id:
+        raise TaskCandidateControlPlaneError("task_decision_not_recorded", status_code=404)
+    result = _read_mapping(
+        _session_dir(root, session_id)
+        / "decisions"
+        / _identifier(command_request_id, field="command_request_id")
+        / "result.json"
+    )
+    if not result:
+        raise TaskCandidateControlPlaneError("task_decision_result_missing", status_code=500)
+    return result

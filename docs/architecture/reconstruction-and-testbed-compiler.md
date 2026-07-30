@@ -74,10 +74,21 @@ governance, validation envelope, unsupported conditions, invalidation triggers,
 and provenance.
 
 Artifacts are stored by testbed ID, version, and digest using create-once
-semantics. A correction or reconstruction must name a new version and bind the
-predecessor digest. The compiler rejects unaccepted QA, stale capture/result
-bindings, results from methods absent from the exact plan, credential-bearing
-artifact URIs, and same-version successors.
+semantics. An inter-process lock and immutable version binding prevent two
+digests from occupying one logical testbed version. A correction or
+reconstruction must name a new version and bind the predecessor digest. The
+compiler rejects unaccepted QA, stale capture/result bindings, results from
+methods absent from the exact plan, credential-bearing artifact URIs, and
+same-version successors.
+
+The signed `/api/live-pipeline/testbeds/compile` service loads the authoritative
+approved task from Pipeline state rather than trusting a caller-supplied task.
+After compilation it can publish the full digest-bound testbed to WebApp through
+`PIPELINE_TESTBED_WEBAPP_URL`, authenticated with `PIPELINE_SYNC_TOKEN`. A 2xx
+response is insufficient: Pipeline accepts only a receipt matching the exact
+session, intake, task digest, testbed ID/version/digest, artifact reference, and
+proof boundary. Set `PIPELINE_TESTBED_WEBAPP_SYNC_REQUIRED=true` in a deployment
+that requires customer-visible state before reporting service success.
 
 ## Proof boundary
 

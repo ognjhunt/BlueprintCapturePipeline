@@ -37,7 +37,17 @@ from .live_pipeline_input_intake import build_live_pipeline_input_intake
 from .core.security_controls import json_shape_within_limits, strict_identifier
 from .task_candidate_control_plane import (
     TaskCandidateControlPlaneError,
+    load_latest_task_candidate_decision_result,
     process_task_candidate_decision_submission,
+)
+from .site_task_testbed_compiler import (
+    SiteTaskTestbedCompilerError,
+    compile_site_task_testbed,
+    write_testbed_version,
+)
+from .site_task_testbed_webapp_sync import (
+    TESTBED_WEBAPP_SYNC_REQUIRED_ENV,
+    sync_site_task_testbed_to_webapp,
 )
 
 
@@ -107,6 +117,10 @@ def _work_dir(manifest_path: Path) -> Path:
 
 def _task_candidate_control_plane_root(manifest_path: Path) -> Path:
     return _work_dir(manifest_path).expanduser().resolve() / "task_candidate_control_plane"
+
+
+def _maintained_testbed_root(manifest_path: Path) -> Path:
+    return _work_dir(manifest_path).expanduser().resolve() / "maintained_site_task_testbeds"
 
 
 def _safe_stem(value: str) -> str:
@@ -1681,6 +1695,126 @@ def create_app() -> FastAPI:
             )
         except TaskCandidateControlPlaneError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+
+    @app.post(
+        "/api/live-pipeline/testbeds/compile",
+        dependencies=[Depends(_require_admission)],
+    )
+    async def compile_testbed(request: Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        if payload.get("schema_version") != "site_task_testbed_compilation_submission.v1":
+            raise HTTPException(
+                status_code=422,
+                detail="schema_version:must_be:site_task_testbed_compilation_submission.v1",
+            )
+        manifest_path = _manifest_path().resolve()
+        if not manifest_path.is_file():
+            raise HTTPException(
+                status_code=503,
+                detail=f"control-plane manifest missing: {manifest_path}",
+            )
+        try:
+            session_id = strict_identifier(
+                payload.get("capture_session_id"),
+                field="capture_session_id",
+                max_length=192,
+            )
+            intake_id = strict_identifier(
+                payload.get("intake_id"), field="intake_id", max_length=192
+            )
+            authoritative = load_latest_task_candidate_decision_result(
+                state_root=_task_candidate_control_plane_root(manifest_path),
+                capture_session_id=session_id,
+            )
+            approved = _mapping(authoritative.get("approved_task_definition"))
+            if authoritative.get("pipeline_approval_status") != "approved" or not approved:
+                raise SiteTaskTestbedCompilerError(
+                    ["authoritative_task_decision:not_approved"]
+                )
+            if authoritative.get("capture_session_id") != session_id:
+                raise SiteTaskTestbedCompilerError(
+                    ["authoritative_task_decision:session_mismatch"]
+                )
+            if authoritative.get("intake_id") != intake_id:
+                raise SiteTaskTestbedCompilerError(
+                    ["authoritative_task_decision:intake_mismatch"]
+                )
+            if payload.get("approved_task_digest") != approved.get("approved_task_digest"):
+                raise SiteTaskTestbedCompilerError(
+                    ["approved_task_digest:authoritative_mismatch"]
+                )
+            results_value = payload.get("reconstruction_results")
+            if not isinstance(results_value, list) or not all(
+                isinstance(row, Mapping) for row in results_value
+            ):
+                raise SiteTaskTestbedCompilerError(
+                    ["reconstruction_results:not_object_list"]
+                )
+            previous_value = payload.get("previous_testbed")
+            if previous_value is not None and not isinstance(previous_value, Mapping):
+                raise SiteTaskTestbedCompilerError(["previous_testbed:not_object"])
+            testbed = compile_site_task_testbed(
+                testbed_id=str(payload.get("testbed_id") or ""),
+                version=str(payload.get("version") or ""),
+                capture_intake_envelope=_mapping(payload.get("capture_intake_envelope")),
+                capture_qa_report=_mapping(payload.get("capture_qa_report")),
+                approved_task_definition=approved,
+                reconstruction_plan=_mapping(payload.get("reconstruction_plan")),
+                reconstruction_results=[dict(row) for row in results_value],
+                simready_decision=_mapping(payload.get("simready_decision")),
+                robot_placement_result=_mapping(payload.get("robot_placement_result")),
+                artifact_references=_mapping(payload.get("artifact_references")),
+                supported_condition_ranges=_mapping(
+                    payload.get("supported_condition_ranges")
+                ),
+                previous_testbed=(
+                    dict(previous_value) if isinstance(previous_value, Mapping) else None
+                ),
+            )
+            compilation = write_testbed_version(
+                output_root=_maintained_testbed_root(manifest_path),
+                testbed=testbed,
+            )
+        except TaskCandidateControlPlaneError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+        except (SiteTaskTestbedCompilerError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        webapp_sync = sync_site_task_testbed_to_webapp(
+            capture_session_id=session_id,
+            intake_id=intake_id,
+            approved_task_digest=approved["approved_task_digest"],
+            testbed=testbed,
+        )
+        if _truthy(os.getenv(TESTBED_WEBAPP_SYNC_REQUIRED_ENV)) and webapp_sync["status"] != "succeeded":
+            raise HTTPException(
+                status_code=503,
+                detail=f"testbed WebApp sync required:{webapp_sync['status']}:{webapp_sync.get('reason', 'unknown')}",
+            )
+        return {
+            "schema_version": "site_task_testbed_compilation_response.v1",
+            "status": "testbed_ready",
+            "capture_session_id": session_id,
+            "intake_id": intake_id,
+            "testbed_id": testbed["testbed_id"],
+            "version": testbed["version"],
+            "testbed_digest": testbed["testbed_digest"],
+            "already_exists": compilation["already_exists"],
+            "artifact_reference": {
+                "uri": (
+                    f"testbed://{testbed['testbed_id']}/{testbed['version']}/"
+                    f"{testbed['testbed_digest'].removeprefix('sha256:')}.json"
+                ),
+                "digest": testbed["testbed_digest"],
+            },
+            "testbed": testbed,
+            "webapp_sync": webapp_sync,
+            "proof_boundary": testbed["proof_boundary"],
+        }
 
     @app.post("/api/live-pipeline/capture-handoffs", dependencies=[Depends(_require_admission)])
     async def intake_capture_handoff(request: Request) -> Dict[str, Any]:

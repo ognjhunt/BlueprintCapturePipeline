@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import copy
+import hmac
 import json
+from datetime import datetime, timezone
 
 import pytest
+from fastapi.testclient import TestClient
 
 from blueprint_pipeline.capture_intake import validate_capture_intake_envelope
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline import live_pipeline_intake_service as service
+from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
 from blueprint_pipeline.reconstruction_capability import (
     decide_simready_assets,
     plan_reconstruction_methods,
@@ -18,6 +23,10 @@ from blueprint_pipeline.site_task_testbed_compiler import (
     write_testbed_version,
 )
 from blueprint_pipeline.site_task_testbed_compiler_cli import main as compiler_cli_main
+from blueprint_pipeline.site_task_testbed_webapp_sync import (
+    build_site_task_testbed_webapp_publication,
+    sync_site_task_testbed_to_webapp,
+)
 from blueprint_pipeline.task_candidate_discovery import compile_approved_task_decision_request
 
 
@@ -439,13 +448,24 @@ def test_testbed_versions_are_immutable_and_successors_bind_predecessor(tmp_path
     assert successor["predecessor_testbed_digest"] == first["testbed_digest"]
     assert successor["supersedes"] == [first["testbed_digest"]]
     assert successor_write["testbed_digest"] != first_write["testbed_digest"]
-    assert len(list(tmp_path.rglob("*.json"))) == 10
+    assert len(list(tmp_path.rglob("*.json"))) == 12
 
 
 def test_compiler_rejects_same_version_successor() -> None:
     first = _compile()
     with pytest.raises(SiteTaskTestbedCompilerError, match="version_must_change"):
         _compile(previous=first, version="1")
+
+
+def test_writer_rejects_two_digests_for_one_logical_version(tmp_path) -> None:
+    first = _compile()
+    write_testbed_version(output_root=tmp_path, testbed=first)
+    conflicting = copy.deepcopy(first)
+    conflicting["supported_condition_ranges"] = {"lighting_lux": [200, 700]}
+    conflicting.pop("testbed_digest")
+
+    with pytest.raises(SiteTaskTestbedCompilerError, match="testbed_version_digest_conflict"):
+        write_testbed_version(output_root=tmp_path, testbed=conflicting)
 
 
 def test_compiler_cli_writes_one_immutable_testbed_version(tmp_path, capsys) -> None:
@@ -479,3 +499,231 @@ def test_compiler_cli_writes_one_immutable_testbed_version(tmp_path, capsys) -> 
     replay = json.loads(capsys.readouterr().out)
     assert replay["already_exists"] is True
     assert replay["testbed_digest"] == receipt["testbed_digest"]
+
+
+def test_signed_service_compiles_only_the_authoritative_approved_task(
+    tmp_path, monkeypatch
+) -> None:
+    manifest = tmp_path / "control" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+    work_dir = tmp_path / "work"
+    session_dir = (
+        work_dir
+        / "task_candidate_control_plane"
+        / "sessions"
+        / "capture-session-1"
+    )
+    result_dir = session_dir / "decisions" / "task-command-1"
+    result_dir.mkdir(parents=True)
+    approved = _approved_task()
+    (session_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "task_candidate_control_plane_state.v1",
+                "capture_session_id": "capture-session-1",
+                "intake_id": "intake-1",
+                "latest_command_request_id": "task-command-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (result_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "task_candidate_decision_processing_result.v1",
+                "pipeline_approval_status": "approved",
+                "capture_session_id": "capture-session-1",
+                "intake_id": "intake-1",
+                "approved_task_definition": approved,
+            }
+        ),
+        encoding="utf-8",
+    )
+    token = "test-testbed-service-secret"
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest))
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(work_dir))
+    monkeypatch.setenv(
+        service.INTAKE_CLIENT_SECRETS_ENV,
+        json.dumps({"blueprint-webapp": token}),
+    )
+    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / "nonces"))
+    monkeypatch.delenv(service.INTAKE_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
+    envelope = _envelope()
+    qa = _qa(envelope)
+    plan = _plan(qa)
+    payload = {
+        "schema_version": "site_task_testbed_compilation_submission.v1",
+        "capture_session_id": "capture-session-1",
+        "intake_id": "intake-1",
+        "testbed_id": "site-task-service",
+        "version": "1",
+        "approved_task_digest": approved["approved_task_digest"],
+        "capture_intake_envelope": envelope,
+        "capture_qa_report": qa,
+        "reconstruction_plan": plan,
+        "reconstruction_results": [_result(plan)],
+        "simready_decision": _simready(),
+        "robot_placement_result": _placement(),
+        "artifact_references": _refs(),
+        "supported_condition_ranges": {"lighting_lux": [300, 600]},
+        "previous_testbed": None,
+    }
+    body = json.dumps(payload, separators=(",", ":"))
+    timestamp = datetime.now(timezone.utc).isoformat()
+    nonce = "testbed-compile-nonce-1"
+    signature = hmac.new(
+        token.encode("utf-8"),
+        f"{timestamp}.blueprint-webapp.{nonce}.{body}".encode("utf-8"),
+        "sha256",
+    ).hexdigest()
+    response = TestClient(service.create_app()).post(
+        "/api/live-pipeline/testbeds/compile",
+        content=body,
+        headers={
+            "content-type": "application/json",
+            "x-blueprint-pipeline-timestamp": timestamp,
+            "x-blueprint-pipeline-client-id": "blueprint-webapp",
+            "x-blueprint-pipeline-nonce": nonce,
+            "x-blueprint-pipeline-signature": f"sha256={signature}",
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "testbed_ready"
+    assert result["testbed"]["approved_task_definition"]["digest"] == (
+        approved["approved_task_digest"]
+    )
+    assert "artifact_path" not in json.dumps(result)
+    assert result["proof_boundary"]["deployment_or_safety_approved"] is False
+    assert result["webapp_sync"]["status"] == "skipped"
+
+
+def test_testbed_webapp_publication_is_exactly_bound_and_receipt_verified(
+    monkeypatch,
+) -> None:
+    envelope = _envelope()
+    qa = _qa(envelope)
+    plan = _plan(qa)
+    approved = _approved_task()
+    testbed = compile_site_task_testbed(
+        testbed_id="sync-testbed",
+        version="1",
+        capture_intake_envelope=envelope,
+        capture_qa_report=qa,
+        approved_task_definition=approved,
+        reconstruction_plan=plan,
+        reconstruction_results=[_result(plan)],
+        simready_decision=_simready(),
+        robot_placement_result=_placement(),
+        artifact_references=_refs(),
+        supported_condition_ranges={"lighting_lux": [300, 600]},
+    )
+    publication = build_site_task_testbed_webapp_publication(
+        capture_session_id="capture-session-1",
+        intake_id="intake-1",
+        approved_task_digest=approved["approved_task_digest"],
+        testbed=testbed,
+    )
+    assert publication["testbed_digest"] == testbed["testbed_digest"]
+    assert publication["proof_boundary"]["comparative_policy_ranking_verdict"] == (
+        "thesis_not_supported"
+    )
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            receipt = {
+                "schema_version": "capture_site_task_testbed_publication_receipt.v1",
+                "status": "testbed_ready",
+                "already_exists": False,
+                **{
+                    field: publication[field]
+                    for field in (
+                        "capture_session_id",
+                        "intake_id",
+                        "approved_task_digest",
+                        "testbed_id",
+                        "version",
+                        "testbed_digest",
+                        "artifact_reference",
+                        "proof_boundary",
+                    )
+                },
+            }
+            return json.dumps(receipt).encode("utf-8")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.site_task_testbed_webapp_sync.urllib_request.urlopen",
+        lambda *_args, **_kwargs: Response(),
+    )
+    result = sync_site_task_testbed_to_webapp(
+        capture_session_id="capture-session-1",
+        intake_id="intake-1",
+        approved_task_digest=approved["approved_task_digest"],
+        testbed=testbed,
+        endpoint_url="https://webapp.test/api/internal/pipeline/capture-testbeds",
+        token="sync-secret",
+    )
+    assert result["status"] == "succeeded"
+    assert result["testbed_digest"] == testbed["testbed_digest"]
+
+
+def test_testbed_webapp_sync_rejects_mismatched_success_receipt(monkeypatch) -> None:
+    envelope = _envelope()
+    qa = _qa(envelope)
+    plan = _plan(qa)
+    approved = _approved_task()
+    testbed = compile_site_task_testbed(
+        testbed_id="sync-testbed",
+        version="1",
+        capture_intake_envelope=envelope,
+        capture_qa_report=qa,
+        approved_task_definition=approved,
+        reconstruction_plan=plan,
+        reconstruction_results=[_result(plan)],
+        simready_decision=_simready(),
+        robot_placement_result=_placement(),
+        artifact_references=_refs(),
+        supported_condition_ranges={"lighting_lux": [300, 600]},
+    )
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "schema_version": "capture_site_task_testbed_publication_receipt.v1",
+                    "status": "testbed_ready",
+                    "already_exists": False,
+                    "testbed_digest": "sha256:" + "f" * 64,
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.site_task_testbed_webapp_sync.urllib_request.urlopen",
+        lambda *_args, **_kwargs: Response(),
+    )
+    result = sync_site_task_testbed_to_webapp(
+        capture_session_id="capture-session-1",
+        intake_id="intake-1",
+        approved_task_digest=approved["approved_task_digest"],
+        testbed=testbed,
+        endpoint_url="https://webapp.test/api/internal/pipeline/capture-testbeds",
+        token="sync-secret",
+        max_attempts=1,
+    )
+    assert result["status"] == "failed"
+    assert result["reason"] == "response_binding_mismatch"
