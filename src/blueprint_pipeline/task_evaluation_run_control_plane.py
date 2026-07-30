@@ -15,10 +15,12 @@ from .decision_evidence_contracts import (
     canonical_digest,
     canonical_json,
 )
+from .core.security_controls import strict_identifier
 from .decision_evidence_execution import build_decision_envelope, execute_evidence_plan
 from .decision_evidence_router import route_decision_evidence
 from .local_evidence_adapters import authorized_local_evidence_adapter_registry
 from .task_evaluation_run_state import TaskEvaluationRunStateStore
+from .task_evaluation_run_webapp_sync import sync_task_evaluation_run_to_webapp
 
 
 class TaskEvaluationRunControlPlaneError(ValueError):
@@ -67,14 +69,31 @@ def prepare_task_evaluation_run(
     *,
     state_root: str | Path,
     run_id: str,
+    capture_session_id: str,
+    intake_id: str,
     request_value: Mapping[str, Any],
     testbed_value: Mapping[str, Any],
     method_values: Sequence[Mapping[str, Any]],
     qualification_values: Sequence[Mapping[str, Any]],
     idempotency_key: str,
 ) -> dict[str, Any]:
+    try:
+        run_id = strict_identifier(run_id, field="run_id", max_length=192)
+        capture_session_id = strict_identifier(
+            capture_session_id, field="capture_session_id", max_length=192
+        )
+        intake_id = strict_identifier(intake_id, field="intake_id", max_length=192)
+    except ValueError as exc:
+        raise TaskEvaluationRunControlPlaneError(str(exc)) from exc
     request = DecisionEvidenceRequest.from_mapping(request_value).to_mapping()
     testbed = MaintainedSiteTaskTestbed.from_mapping(testbed_value).to_mapping()
+    matching_sources = [
+        source
+        for source in testbed["source_capture_bundles"]
+        if isinstance(source, Mapping) and source.get("bundle_id") == intake_id
+    ]
+    if len(matching_sources) != 1:
+        raise TaskEvaluationRunControlPlaneError("run_intake_testbed_binding_mismatch")
     methods = [EvidenceMethodProfile.from_mapping(row).to_mapping() for row in method_values]
     qualifications = [
         QualificationRecord.from_mapping(row).to_mapping() for row in qualification_values
@@ -83,6 +102,12 @@ def prepare_task_evaluation_run(
     root = _run_root(state_root, run_id)
     artifacts = root / "artifacts"
     for name, value in (
+        ("run_context.json", {
+            "schema_version": "task_evaluation_run_context.v1",
+            "run_id": run_id,
+            "capture_session_id": capture_session_id,
+            "intake_id": intake_id,
+        }),
         ("request.json", request),
         ("testbed.json", testbed),
         ("evidence_plan.json", plan),
@@ -123,6 +148,8 @@ def prepare_task_evaluation_run(
     return {
         "schema_version": "task_evaluation_run_preparation.v1",
         "run_id": run_id,
+        "capture_session_id": capture_session_id,
+        "intake_id": intake_id,
         "state": state["to_state"],
         "request": request,
         "evidence_plan": plan,
@@ -204,12 +231,23 @@ def execute_and_aggregate_task_evaluation_run(
     current = store.inspect(run_id)["state"]
     terminal = {"decided", "partially_decided", "abstained"}
     if current in terminal:
+        context = _read(artifacts / "run_context.json")
+        envelope = _read(artifacts / "decision_envelope.json")
+        webapp_sync = sync_task_evaluation_run_to_webapp(
+            capture_session_id=str(context.get("capture_session_id") or ""),
+            intake_id=str(context.get("intake_id") or ""),
+            run_id=run_id,
+            state=current,
+            evidence_plan=plan,
+            decision_envelope=envelope,
+        )
         return {
             "schema_version": "task_evaluation_run_execution_result.v1",
             "run_id": run_id,
             "state": current,
             "already_exists": True,
-            "decision_envelope": _read(artifacts / "decision_envelope.json"),
+            "decision_envelope": envelope,
+            "webapp_sync": webapp_sync,
         }
     binding = _binding(request, testbed)
     actor = {"role": "pipeline", "identity": "pipeline:evidence-executor"}
@@ -262,6 +300,15 @@ def execute_and_aggregate_task_evaluation_run(
         binding=binding,
         artifacts={"decision_envelope_digest": envelope["decision_envelope_digest"]},
     )
+    context = _read(artifacts / "run_context.json")
+    webapp_sync = sync_task_evaluation_run_to_webapp(
+        capture_session_id=str(context.get("capture_session_id") or ""),
+        intake_id=str(context.get("intake_id") or ""),
+        run_id=run_id,
+        state=state["to_state"],
+        evidence_plan=plan,
+        decision_envelope=envelope,
+    )
     return {
         "schema_version": "task_evaluation_run_execution_result.v1",
         "run_id": run_id,
@@ -270,6 +317,7 @@ def execute_and_aggregate_task_evaluation_run(
         "execution_manifest": execution.execution_manifest,
         "evidence_results": result_values,
         "decision_envelope": envelope,
+        "webapp_sync": webapp_sync,
     }
 
 

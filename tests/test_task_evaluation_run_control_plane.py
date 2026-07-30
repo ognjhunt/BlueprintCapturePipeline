@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import json
 from datetime import datetime, timezone
+from io import BytesIO
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +22,11 @@ from blueprint_pipeline.task_evaluation_run_control_plane import (
     authorize_task_evaluation_run,
     execute_and_aggregate_task_evaluation_run,
     prepare_task_evaluation_run,
+)
+from blueprint_pipeline.task_evaluation_run_webapp_sync import (
+    TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV,
+    build_task_evaluation_run_webapp_publication,
+    sync_task_evaluation_run_to_webapp,
 )
 
 
@@ -196,6 +202,8 @@ def test_run_control_plane_requires_authorization_and_returns_bound_decision(tmp
     preparation = prepare_task_evaluation_run(
         state_root=tmp_path,
         run_id="run-local-1",
+        capture_session_id="capture-session-1",
+        intake_id="capture-1",
         request_value=request,
         testbed_value=testbed,
         method_values=[profile],
@@ -243,6 +251,8 @@ def test_run_authorization_rejects_stale_plan_and_unknown_adapter(tmp_path) -> N
     prepared = prepare_task_evaluation_run(
         state_root=tmp_path,
         run_id="run-local-2",
+        capture_session_id="capture-session-2",
+        intake_id="capture-1",
         request_value=_request(testbed),
         testbed_value=testbed,
         method_values=[profile],
@@ -269,6 +279,147 @@ def test_run_authorization_rejects_stale_plan_and_unknown_adapter(tmp_path) -> N
         )
 
 
+def test_run_preparation_rejects_invalid_or_unbound_capture_context(tmp_path) -> None:
+    testbed = _testbed()
+    profile = _profile()
+    with pytest.raises(TaskEvaluationRunControlPlaneError, match="capture_session_id"):
+        prepare_task_evaluation_run(
+            state_root=tmp_path,
+            run_id="run-invalid-context",
+            capture_session_id="../escape",
+            intake_id="capture-1",
+            request_value=_request(testbed),
+            testbed_value=testbed,
+            method_values=[profile],
+            qualification_values=[_qualification(profile)],
+            idempotency_key="prepare-invalid-context",
+        )
+    with pytest.raises(
+        TaskEvaluationRunControlPlaneError,
+        match="run_intake_testbed_binding_mismatch",
+    ):
+        prepare_task_evaluation_run(
+            state_root=tmp_path,
+            run_id="run-unbound-context",
+            capture_session_id="capture-session-3",
+            intake_id="different-intake",
+            request_value=_request(testbed),
+            testbed_value=testbed,
+            method_values=[profile],
+            qualification_values=[_qualification(profile)],
+            idempotency_key="prepare-unbound-context",
+        )
+
+
+def test_terminal_run_sync_requires_exact_signed_receipt(tmp_path, monkeypatch) -> None:
+    testbed = _testbed()
+    profile = _profile()
+    prepared = prepare_task_evaluation_run(
+        state_root=tmp_path,
+        run_id="run-webapp-sync",
+        capture_session_id="capture-session-sync",
+        intake_id="capture-1",
+        request_value=_request(testbed),
+        testbed_value=testbed,
+        method_values=[profile],
+        qualification_values=[_qualification(profile)],
+        idempotency_key="prepare-webapp-sync",
+    )
+    authorize_task_evaluation_run(
+        state_root=tmp_path,
+        run_id="run-webapp-sync",
+        plan_digest=prepared["evidence_plan"]["plan_digest"],
+        authorized_adapter_references=[ANALYTIC_REACHABILITY_ADAPTER],
+        actor={"role": "customer", "identity": "firebase:buyer-1"},
+        idempotency_key="authorize-webapp-sync",
+    )
+    terminal = execute_and_aggregate_task_evaluation_run(
+        state_root=tmp_path,
+        run_id="run-webapp-sync",
+    )
+    assert terminal["webapp_sync"]["status"] == "skipped"
+    publication = build_task_evaluation_run_webapp_publication(
+        capture_session_id="capture-session-sync",
+        intake_id="capture-1",
+        run_id="run-webapp-sync",
+        state=terminal["state"],
+        evidence_plan=prepared["evidence_plan"],
+        decision_envelope=terminal["decision_envelope"],
+    )
+    captured: dict[str, object] = {}
+
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            receipt = {
+                "schema_version": "capture_task_evaluation_run_publication_receipt.v1",
+                "status": publication["state"],
+                "already_exists": False,
+                "capture_session_id": publication["capture_session_id"],
+                "intake_id": publication["intake_id"],
+                "run_id": publication["run_id"],
+                "testbed_digest": publication["testbed_digest"],
+                "request_digest": publication["request_digest"],
+                "plan_digest": publication["plan_digest"],
+                "decision_envelope_digest": publication["decision_envelope"][
+                    "decision_envelope_digest"
+                ],
+                "proof_boundary": publication["proof_boundary"],
+            }
+            return BytesIO(json.dumps(receipt).encode("utf-8")).read()
+
+    def fake_urlopen(request: object, *, timeout: float) -> Response:
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_run_webapp_sync.urllib_request.urlopen",
+        fake_urlopen,
+    )
+    synced = sync_task_evaluation_run_to_webapp(
+        capture_session_id="capture-session-sync",
+        intake_id="capture-1",
+        run_id="run-webapp-sync",
+        state=terminal["state"],
+        evidence_plan=prepared["evidence_plan"],
+        decision_envelope=terminal["decision_envelope"],
+        endpoint_url="https://webapp.example/api/internal/pipeline/capture-task-evaluation-runs",
+        token="sync-secret",
+        max_attempts=1,
+    )
+    assert synced["status"] == "succeeded"
+    assert getattr(captured["request"], "headers")[
+        "X-blueprint-pipeline-signature"
+    ].startswith("sha256=")
+    assert "sync-secret" not in json.dumps(synced)
+
+    class WrongResponse(Response):
+        def read(self) -> bytes:
+            return b'{"schema_version":"capture_task_evaluation_run_publication_receipt.v1","status":"decided","already_exists":false,"run_id":"wrong"}'
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_run_webapp_sync.urllib_request.urlopen",
+        lambda *_args, **_kwargs: WrongResponse(),
+    )
+    mismatched = sync_task_evaluation_run_to_webapp(
+        capture_session_id="capture-session-sync",
+        intake_id="capture-1",
+        run_id="run-webapp-sync",
+        state=terminal["state"],
+        evidence_plan=prepared["evidence_plan"],
+        decision_envelope=terminal["decision_envelope"],
+        endpoint_url="https://webapp.example/api/internal/pipeline/capture-task-evaluation-runs",
+        token="sync-secret",
+        max_attempts=1,
+    )
+    assert mismatched["status"] == "failed"
+    assert mismatched["reason"] == "response_binding_mismatch"
 def test_signed_service_plans_authorizes_executes_and_inspects(tmp_path, monkeypatch) -> None:
     manifest = tmp_path / "control" / "manifest.json"
     manifest.parent.mkdir(parents=True)
@@ -304,6 +455,8 @@ def test_signed_service_plans_authorizes_executes_and_inspects(tmp_path, monkeyp
     plan_submission = {
         "schema_version": "task_evaluation_run_plan_submission.v1",
         "run_id": "run-service-1",
+        "capture_session_id": "capture-session-service-1",
+        "intake_id": "capture-1",
         "decision_evidence_request": _request(testbed),
         "testbed": testbed,
         "method_profiles": [profile],
@@ -345,6 +498,17 @@ def test_signed_service_plans_authorizes_executes_and_inspects(tmp_path, monkeyp
     assert executed.status_code == 200
     assert executed.json()["state"] == "decided"
     assert executed.json()["decision_envelope"]["overall_outcome"] == "decision"
+    assert executed.json()["webapp_sync"]["status"] == "skipped"
+
+    monkeypatch.setenv(TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV, "true")
+    required_sync = client.post(
+        "/api/live-pipeline/task-evaluation-runs/run-service-1/execute",
+        content=b"",
+        headers=signed_headers("", "run-service-required-sync-nonce"),
+    )
+    assert required_sync.status_code == 502
+    assert "task_evaluation_run_webapp_sync_required" in required_sync.json()["detail"]
+    monkeypatch.delenv(TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV, raising=False)
 
     inspected = client.get(
         "/api/live-pipeline/task-evaluation-runs/run-service-1",

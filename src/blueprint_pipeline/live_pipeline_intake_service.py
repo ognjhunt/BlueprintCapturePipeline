@@ -59,6 +59,9 @@ from .task_evaluation_run_state import (
     TaskEvaluationRunStateError,
     TaskEvaluationRunStateStore,
 )
+from .task_evaluation_run_webapp_sync import (
+    TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV,
+)
 
 
 DEFAULT_MANIFEST_PATH = (
@@ -1854,6 +1857,8 @@ def create_app() -> FastAPI:
             return prepare_task_evaluation_run(
                 state_root=_task_evaluation_run_root(manifest_path),
                 run_id=str(payload.get("run_id") or ""),
+                capture_session_id=str(payload.get("capture_session_id") or ""),
+                intake_id=str(payload.get("intake_id") or ""),
                 request_value=_mapping(payload.get("decision_evidence_request")),
                 testbed_value=_mapping(payload.get("testbed")),
                 method_values=[dict(row) for row in methods if isinstance(row, Mapping)],
@@ -1904,12 +1909,25 @@ def create_app() -> FastAPI:
     async def execute_task_evaluation_run(run_id: str) -> Dict[str, Any]:
         manifest_path = _manifest_path().resolve()
         try:
-            return execute_and_aggregate_task_evaluation_run(
+            result = execute_and_aggregate_task_evaluation_run(
                 state_root=_task_evaluation_run_root(manifest_path),
                 run_id=run_id,
             )
         except (TaskEvaluationRunControlPlaneError, TaskEvaluationRunStateError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        webapp_sync = _mapping(result.get("webapp_sync"))
+        if (
+            _truthy(os.getenv(TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV))
+            and webapp_sync.get("status") != "succeeded"
+        ):
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "task_evaluation_run_webapp_sync_required:"
+                    f"{webapp_sync.get('reason') or webapp_sync.get('status')}"
+                ),
+            )
+        return result
 
     @app.get(
         "/api/live-pipeline/task-evaluation-runs/{run_id}",
