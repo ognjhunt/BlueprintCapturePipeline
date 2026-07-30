@@ -158,7 +158,7 @@ def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path)
         )
         assert dockerfile is not None
         text = dockerfile.read().decode("utf-8")
-    assert "blueprint-groot-oscar-eval@sha256:93d99a5e" in text
+    assert "blueprint-groot-oscar-eval@sha256:ab8fbccb" in text
     assert (
         "COPY --from=oscar_runtime /opt/blueprint/oscar_source_provenance.json"
         not in text

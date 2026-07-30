@@ -2,7 +2,9 @@
 # Diagnostic-only OpenPI + Ctrl-World + OSCAR worker. Each model family runs in
 # its own Python environment and the admitted GPU is shared sequentially.
 
-FROM docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:93d99a5e93b42f1557c908e460cbf042cf62ea8c6ec0055605af4e197ddd0d57 AS oscar_runtime
+# Use the immutable production monolith as the OSCAR donor. The smaller legacy
+# donor omitted packages that are hard-imported by the official OSCAR graph.
+FROM docker.io/nijelhunt/blueprint-groot-oscar-eval@sha256:ab8fbccb714242b55811aa5142933001dfba76d56b5cc29dead4d0bdf1346e88 AS oscar_runtime
 
 FROM docker.io/nijelhunt/blueprint-openpi-policy-ranking@sha256:badde151b360cd5227ede3e4e037b5e12f36ed59ac09ca89470a22511e72c6c4
 
