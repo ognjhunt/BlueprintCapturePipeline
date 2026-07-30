@@ -83,10 +83,15 @@ def _camera_quaternion_wxyz(forward: Any, up: Any) -> np.ndarray:
         index = int(np.argmax(np.diag(rotation)))
         next_index = (index + 1) % 3
         final_index = (index + 2) % 3
-        scale = math.sqrt(
-            1.0 + rotation[index, index] - rotation[next_index, next_index]
-            - rotation[final_index, final_index]
-        ) * 2.0
+        scale = (
+            math.sqrt(
+                1.0
+                + rotation[index, index]
+                - rotation[next_index, next_index]
+                - rotation[final_index, final_index]
+            )
+            * 2.0
+        )
         xyz = np.zeros(3)
         xyz[index] = 0.25 * scale
         xyz[next_index] = (rotation[next_index, index] + rotation[index, next_index]) / scale
@@ -121,6 +126,61 @@ def _project_world_points(
 
 def _matrix_array(matrix: Any) -> np.ndarray:
     return np.asarray([[float(matrix[row][column]) for column in range(4)] for row in range(4)])
+
+
+def _rigid_wrist_mount_from_initial_task_framing(
+    *,
+    parent_to_world: Any,
+    mount_translation_parent: Any,
+    target_world_points: Mapping[str, Any],
+    world_up: Any = (0.0, 0.0, 1.0),
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Calibrate one rigid parent-local wrist gaze from initial task geometry."""
+
+    matrix = np.asarray(parent_to_world, dtype=float).reshape(4, 4)
+    mount = np.asarray(mount_translation_parent, dtype=float).reshape(3)
+    up_world = np.asarray(world_up, dtype=float).reshape(3)
+    points = {
+        str(name): np.asarray(value, dtype=float).reshape(3)
+        for name, value in target_world_points.items()
+    }
+    if (
+        not points
+        or not np.isfinite(matrix).all()
+        or not np.isfinite(mount).all()
+        or not np.isfinite(up_world).all()
+    ):
+        raise ValueError("native_wrist_mount_calibration_input_invalid")
+    target_world = np.mean(np.stack(list(points.values())), axis=0)
+    world_to_parent = np.linalg.inv(matrix)
+    target_parent = np.concatenate((target_world, [1.0])) @ world_to_parent
+    forward_parent = target_parent[:3] - mount
+    forward_norm = float(np.linalg.norm(forward_parent))
+    if not math.isfinite(forward_norm) or forward_norm <= 1e-9:
+        raise ValueError("native_wrist_mount_calibration_target_degenerate")
+    forward_parent /= forward_norm
+    up_parent = (np.concatenate((up_world, [0.0])) @ world_to_parent)[:3]
+    up_norm = float(np.linalg.norm(up_parent))
+    if not math.isfinite(up_norm) or up_norm <= 1e-9:
+        raise ValueError("native_wrist_mount_calibration_up_degenerate")
+    up_parent /= up_norm
+    if float(np.linalg.norm(np.cross(forward_parent, up_parent))) <= 1e-6:
+        candidates = np.eye(3)
+        up_parent = max(
+            candidates,
+            key=lambda candidate: float(np.linalg.norm(np.cross(forward_parent, candidate))),
+        )
+    quaternion = _camera_quaternion_wxyz(forward_parent, up_parent)
+    eye_world = (np.concatenate((mount, [1.0])) @ matrix)[:3]
+    return quaternion, {
+        "mode": "one_time_initial_task_framing_rigid_parent_local_mount",
+        "target_entity_ids": sorted(points),
+        "target_centroid_world_m": target_world.tolist(),
+        "camera_eye_world_m": eye_world.tolist(),
+        "mount_forward_parent": forward_parent.tolist(),
+        "mount_up_parent": np.asarray(up_parent, dtype=float).tolist(),
+        "per_frame_task_reaim_performed": False,
+    }
 
 
 def _relocate_layer_asset_path(
@@ -179,7 +239,9 @@ def _apply_runtime_asset_relocations(
             or not replacement_authored.startswith(("./", "../"))
         ):
             raise ValueError("native_warehouse_asset_relocation_path_invalid")
-        expected_authored = posixpath.relpath(replacement_relative, posixpath.dirname(owner_relative))
+        expected_authored = posixpath.relpath(
+            replacement_relative, posixpath.dirname(owner_relative)
+        )
         if not expected_authored.startswith(("./", "../")):
             expected_authored = "./" + expected_authored
         if replacement_authored != expected_authored:
@@ -312,26 +374,9 @@ def isaac_sim_6_backend(
         )
         set_pose(external_path, external_eye, external_quaternion)
 
-        wrist = spec["cameras"]["wrist"]
-        wrist_path = "/World/Franka/panda_hand/BlueprintWristCamera"
-        wrist_prim = UsdGeom.Camera.Define(stage, wrist_path)
-        wrist_prim.CreateVerticalApertureAttr(15.2908)
-        wrist_prim.CreateHorizontalApertureAttr(15.2908 * 640.0 / 480.0)
-        wrist_prim.CreateFocalLengthAttr(
-            15.2908 / (2.0 * math.tan(math.radians(float(wrist["vertical_fov_deg"])) / 2.0))
-        )
-        wrist_quaternion = _camera_quaternion_wxyz(
-            wrist["mount_forward_parent"], wrist["mount_up_parent"]
-        )
-        set_pose(wrist_path, wrist["mount_translation_m"], wrist_quaternion)
-
         robot = SingleArticulation(prim_path="/World/Franka", name="native_warehouse_franka")
         world.scene.add(robot)
         world.reset()
-        camera_objects["external"] = Camera(prim_path=external_path, resolution=(640, 480))
-        camera_objects["wrist"] = Camera(prim_path=wrist_path, resolution=(640, 480))
-        for camera in camera_objects.values():
-            camera.initialize()
 
         initial_joints = np.asarray(
             [0.2897, 0.50732, -0.140016, -2.176, -0.0310497, 2.51592, -0.49251, 0.04, 0.04]
@@ -346,11 +391,38 @@ def isaac_sim_6_backend(
             cache = UsdGeom.XformCache()
             return _matrix_array(cache.GetLocalToWorldTransform(stage.GetPrimAtPath(path)))
 
+        wrist = spec["cameras"]["wrist"]
+        calibration = wrist["rigid_mount_orientation"]
+        wrist_path = "/World/Franka/panda_hand/BlueprintWristCamera"
+        hand_initial_matrix = camera_matrix("/World/Franka/panda_hand")
+        wrist_quaternion, wrist_mount_calibration = _rigid_wrist_mount_from_initial_task_framing(
+            parent_to_world=hand_initial_matrix,
+            mount_translation_parent=wrist["mount_translation_m"],
+            target_world_points={
+                "spraycan": placements["spraycan_translation_m"],
+                "tray": tray_center,
+            },
+            world_up=calibration["world_up"],
+        )
+        wrist_prim = UsdGeom.Camera.Define(stage, wrist_path)
+        wrist_prim.CreateVerticalApertureAttr(15.2908)
+        wrist_prim.CreateHorizontalApertureAttr(15.2908 * 640.0 / 480.0)
+        wrist_prim.CreateFocalLengthAttr(
+            15.2908 / (2.0 * math.tan(math.radians(float(wrist["vertical_fov_deg"])) / 2.0))
+        )
+        set_pose(wrist_path, wrist["mount_translation_m"], wrist_quaternion)
+        camera_objects["external"] = Camera(prim_path=external_path, resolution=(640, 480))
+        camera_objects["wrist"] = Camera(prim_path=wrist_path, resolution=(640, 480))
+        for camera in camera_objects.values():
+            camera.initialize()
+        for _ in range(4):
+            world.step(render=True)
+
         wrist_local_initial = _matrix_array(
             UsdGeom.Xformable(stage.GetPrimAtPath(wrist_path)).GetLocalTransformation()
         )
         wrist_world_initial = camera_matrix(wrist_path)
-        hand_initial = camera_matrix("/World/Franka/panda_hand")[3, :3]
+        hand_initial = hand_initial_matrix[3, :3]
         entity_points = {
             "franka": hand_initial,
             "spraycan": placements["spraycan_translation_m"],
@@ -414,6 +486,7 @@ def isaac_sim_6_backend(
             "spraycan_runtime_rigid_body": spray_prim.HasAPI(UsdPhysics.RigidBodyAPI),
             "spraycan_kinematic_for_camera_canary": True,
             "views": frames,
+            "wrist_mount_calibration": wrist_mount_calibration,
             "wrist_camera_world_displacement_m": float(
                 np.linalg.norm(wrist_world_commanded[3, :3] - wrist_world_initial[3, :3])
             ),
@@ -531,12 +604,8 @@ def assess_native_camera_backend_result(
             "required_entities_projected_in_frame": dict(projected or {}),
         }
 
-    wrist_world_delta = _finite_float(
-        backend_result.get("wrist_camera_world_displacement_m")
-    )
-    wrist_local_delta = _finite_float(
-        backend_result.get("wrist_camera_local_transform_delta")
-    )
+    wrist_world_delta = _finite_float(backend_result.get("wrist_camera_world_displacement_m"))
+    wrist_local_delta = _finite_float(backend_result.get("wrist_camera_local_transform_delta"))
     if wrist_world_delta is None:
         blockers.append("native_wrist_camera_world_displacement_missing_or_invalid")
     elif wrist_world_delta <= MIN_WRIST_WORLD_DISPLACEMENT_M:
@@ -545,6 +614,12 @@ def assess_native_camera_backend_result(
         blockers.append("native_wrist_camera_local_transform_missing_or_invalid")
     elif wrist_local_delta > MAX_WRIST_LOCAL_TRANSFORM_DELTA:
         blockers.append("native_wrist_camera_mount_not_rigid")
+    mount_value = backend_result.get("wrist_mount_calibration")
+    mount = mount_value if isinstance(mount_value, Mapping) else {}
+    if mount.get("mode") != "one_time_initial_task_framing_rigid_parent_local_mount":
+        blockers.append("native_wrist_mount_calibration_missing_or_invalid")
+    if mount.get("per_frame_task_reaim_performed") is not False:
+        blockers.append("native_wrist_camera_per_frame_reaim_not_forbidden")
     if backend_result.get("external_wrist_timestamp_pairs_exact") is not True:
         blockers.append("native_camera_timestamps_not_synchronized")
 
@@ -556,8 +631,10 @@ def assess_native_camera_backend_result(
         "wrist_camera_world_displacement_min_m": MIN_WRIST_WORLD_DISPLACEMENT_M,
         "wrist_camera_local_transform_delta": wrist_local_delta,
         "wrist_camera_local_transform_delta_max": MAX_WRIST_LOCAL_TRANSFORM_DELTA,
+        "wrist_mount_calibration": dict(mount),
         "camera_motion_and_mount_checks_passed": not any(
-            blocker.startswith("native_wrist_camera") for blocker in blockers
+            blocker.startswith("native_wrist_camera") or blocker.startswith("native_wrist_mount")
+            for blocker in blockers
         ),
     }
 
@@ -591,9 +668,7 @@ def run_native_camera_canary(
                     Path(str(frame["path"])).resolve().relative_to(output).as_posix()
                 )
             except (KeyError, ValueError):
-                assessment["blockers"].append(
-                    "native_camera_frame_outside_canary_output"
-                )
+                assessment["blockers"].append("native_camera_frame_outside_canary_output")
     assessment["blockers"] = sorted(set(assessment["blockers"]))
     assessment["status"] = "passed" if not assessment["blockers"] else "failed"
     result: dict[str, Any] = {

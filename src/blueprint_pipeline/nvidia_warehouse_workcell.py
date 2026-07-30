@@ -38,8 +38,7 @@ ROOT_USD = "physical_ai_simready_warehouse_01.usd"
 SORTING_USD = "SubLayers/sorting_area_physics.usd"
 WORKCELL_USD = "Props/assembly/SM_CratePacking_Table_A1/SM_CratePacking_Table_A1_physics.usd"
 TABLE_USD = (
-    "Props/general/SM_HeavyDutyPackingTable_C02_01/"
-    "SM_HeavyDutyPackingTable_C02_01_physics.usd"
+    "Props/general/SM_HeavyDutyPackingTable_C02_01/SM_HeavyDutyPackingTable_C02_01_physics.usd"
 )
 SPRAYCAN_USD = (
     "Props/general/HandManipulation/paint_container_spraycan_a/"
@@ -82,9 +81,12 @@ def _default_fetch(relative_path: str, destination: Path) -> None:
     temporary = destination.with_name(destination.name + ".partial")
     try:
         # DATASET_RESOLVE_BASE is a fixed HTTPS origin and relative_path was made safe above.
-        with urllib.request.urlopen(  # nosec B310
-            request, timeout=120
-        ) as response, temporary.open("wb") as out:
+        with (
+            urllib.request.urlopen(  # nosec B310
+                request, timeout=120
+            ) as response,
+            temporary.open("wb") as out,
+        ):
             while chunk := response.read(1024 * 1024):
                 out.write(chunk)
         temporary.replace(destination)
@@ -156,9 +158,7 @@ def _default_expand_dependency(relative_path: str) -> Sequence[str]:
         return (safe,)
     parent = posixpath.dirname(safe)
     filename = posixpath.basename(safe)
-    pattern = re.compile(
-        "^" + re.escape(filename).replace(re.escape("<UDIM>"), r"\d{4}") + "$"
-    )
+    pattern = re.compile("^" + re.escape(filename).replace(re.escape("<UDIM>"), r"\d{4}") + "$")
     url = DATASET_TREE_BASE + urllib.parse.quote(parent, safe="/")
     request = urllib.request.Request(
         url + "?recursive=false&expand=false&limit=1000",
@@ -418,8 +418,13 @@ def build_native_camera_canary_spec(
                 "resolution": [640, 480],
                 "parent_link_suffix": "/panda_hand",
                 "mount_translation_m": [0.0, 0.10, 0.03],
-                "mount_forward_parent": [0.0, 0.0, 1.0],
-                "mount_up_parent": [0.0, 1.0, 0.0],
+                "rigid_mount_orientation": {
+                    "mode": "one_time_initial_task_framing_rigid_parent_local_mount",
+                    "target_entity_ids": ["spraycan", "tray"],
+                    "world_up": [0.0, 0.0, 1.0],
+                    "calibrated_before_initial_observation": True,
+                    "per_frame_task_reaim": False,
+                },
                 "vertical_fov_deg": 82.0,
                 "inherits_parent_transform": True,
                 "per_frame_task_reaim_forbidden": True,

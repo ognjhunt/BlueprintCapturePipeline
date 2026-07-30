@@ -24,18 +24,14 @@ def _fixture_material() -> tuple[dict[str, bytes], dict[str, list[str]]]:
     table = TABLE_USD
     workcell_child = "Props/general/workcell_child/child.usd"
     table_mdl = "Props/general/SM_HeavyDutyPackingTable_C02_01/materials/Wood.mdl"
-    table_texture = (
-        "Props/general/SM_HeavyDutyPackingTable_C02_01/materials/textures/wood.png"
-    )
+    table_texture = "Props/general/SM_HeavyDutyPackingTable_C02_01/materials/textures/wood.png"
     spraycan_texture_1001 = (
         "Props/general/HandManipulation/paint_container_spraycan_a/Textures/albedo.1001.png"
     )
     spraycan_texture_1002 = (
         "Props/general/HandManipulation/paint_container_spraycan_a/Textures/albedo.1002.png"
     )
-    mirrored_table_texture = (
-        "Props/general/SM_HeavyDutyPackingTable_C02_01/Textures/external.png"
-    )
+    mirrored_table_texture = "Props/general/SM_HeavyDutyPackingTable_C02_01/Textures/external.png"
     material = {
         PROVENANCE_FILES[0]: b"root-usd",
         PROVENANCE_FILES[1]: b"sorting-usd",
@@ -66,7 +62,11 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
     tmp_path: Path,
 ) -> None:
     material, dependencies = _fixture_material()
-    pinned = {path: _sha(value) for path, value in material.items() if path != "Props/general/workcell_child/child.usd"}
+    pinned = {
+        path: _sha(value)
+        for path, value in material.items()
+        if path != "Props/general/workcell_child/child.usd"
+    }
 
     def fetch(relative: str, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -75,7 +75,9 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
     result = materialize_pinned_workcell(
         output_root=tmp_path / "assets",
         fetcher=fetch,
-        dependency_reader=lambda path: dependencies[path.relative_to(tmp_path / "assets").as_posix()],
+        dependency_reader=lambda path: dependencies[
+            path.relative_to(tmp_path / "assets").as_posix()
+        ],
         asset_dependency_reader=lambda path: {
             TABLE_USD: [
                 "./materials/Wood.mdl",
@@ -130,9 +132,18 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
     )
     assert spec["paid_gpu_execution_admitted"] is False
     assert spec["cameras"]["wrist"]["inherits_parent_transform"] is True
-    assert "at_least_two_policy_calls_separated_by_one_wam_generated_observation" in spec[
-        "required_checks"
-    ]
+    assert spec["cameras"]["wrist"]["rigid_mount_orientation"] == {
+        "mode": "one_time_initial_task_framing_rigid_parent_local_mount",
+        "target_entity_ids": ["spraycan", "tray"],
+        "world_up": [0.0, 0.0, 1.0],
+        "calibrated_before_initial_observation": True,
+        "per_frame_task_reaim": False,
+    }
+    assert "mount_forward_parent" not in spec["cameras"]["wrist"]
+    assert (
+        "at_least_two_policy_calls_separated_by_one_wam_generated_observation"
+        in spec["required_checks"]
+    )
     assert spec_path.is_file()
 
 

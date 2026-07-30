@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 import types
 from pathlib import Path
@@ -14,6 +15,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _camera_quaternion_wxyz,
     _load_materialization_manifest,
     _project_world_points,
+    _rigid_wrist_mount_from_initial_task_framing,
     _simulation_app_launch_config,
     import_simulation_app,
     run_native_camera_canary,
@@ -62,6 +64,11 @@ def _backend(*, output_dir: Path, **_kwargs):
         "spraycan_collision_mesh_count": 3,
         "spraycan_runtime_rigid_body": True,
         "views": views,
+        "wrist_mount_calibration": {
+            "mode": "one_time_initial_task_framing_rigid_parent_local_mount",
+            "target_entity_ids": ["spraycan", "tray"],
+            "per_frame_task_reaim_performed": False,
+        },
         "wrist_camera_world_displacement_m": 0.02,
         "wrist_camera_local_transform_delta": 0.0,
         "external_wrist_timestamp_pairs_exact": True,
@@ -79,6 +86,51 @@ def test_usd_camera_convention_projects_negative_z_forward_and_builds_identity_p
         vfov_deg=60.0,
     )
     assert projected == {"center": True, "behind": False}
+
+
+def test_wrist_mount_is_calibrated_once_in_parent_coordinates_toward_task_centroid() -> None:
+    parent_to_world = np.eye(4)
+    angle = math.radians(37.0)
+    parent_to_world[:3, :3] = [
+        [math.cos(angle), math.sin(angle), 0.0],
+        [-math.sin(angle), math.cos(angle), 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    parent_to_world[3, :3] = [0.4, -0.2, 1.1]
+    mount = np.asarray([0.0, 0.1, 0.03])
+    points = {
+        "spraycan": [0.1, 0.05, 0.9],
+        "tray": [-0.1, 0.35, 0.9],
+    }
+
+    quaternion, evidence = _rigid_wrist_mount_from_initial_task_framing(
+        parent_to_world=parent_to_world,
+        mount_translation_parent=mount,
+        target_world_points=points,
+    )
+
+    expected_target = np.mean(np.asarray(list(points.values())), axis=0)
+    eye_world = np.concatenate((mount, [1.0])) @ parent_to_world
+    expected_forward = expected_target - eye_world[:3]
+    expected_forward /= np.linalg.norm(expected_forward)
+    observed_forward = np.concatenate((evidence["mount_forward_parent"], [0.0])) @ parent_to_world
+    observed_forward = observed_forward[:3] / np.linalg.norm(observed_forward[:3])
+    assert observed_forward == pytest.approx(expected_forward)
+    assert np.linalg.norm(quaternion) == pytest.approx(1.0)
+    assert evidence["target_entity_ids"] == ["spraycan", "tray"]
+    assert evidence["per_frame_task_reaim_performed"] is False
+
+
+def test_wrist_mount_calibration_handles_world_up_parallel_to_gaze() -> None:
+    quaternion, evidence = _rigid_wrist_mount_from_initial_task_framing(
+        parent_to_world=np.eye(4),
+        mount_translation_parent=[0.0, 0.0, 0.0],
+        target_world_points={"spraycan": [0.0, 0.0, 1.0]},
+    )
+
+    assert np.isfinite(quaternion).all()
+    assert np.linalg.norm(quaternion) == pytest.approx(1.0)
+    assert abs(np.dot(evidence["mount_forward_parent"], evidence["mount_up_parent"])) < 1e-9
 
 
 def test_simulation_app_import_falls_back_when_isaacsim_shim_is_not_callable(
@@ -158,9 +210,7 @@ def test_materialization_manifest_resolves_from_extracted_bundle_layout(
     assets = extracted / "assets"
     assets.mkdir(parents=True)
     manifest_path = extracted / "materialization_manifest.json"
-    manifest_path.write_text(
-        json.dumps({"runtime_asset_relocations": []}), encoding="utf-8"
-    )
+    manifest_path.write_text(json.dumps({"runtime_asset_relocations": []}), encoding="utf-8")
 
     resolved_path, manifest = _load_materialization_manifest(assets)
 
@@ -203,9 +253,10 @@ def test_native_camera_canary_requires_scene_robot_rigid_object_and_two_synced_v
 
     assert result["status"] == "passed"
     assert result["blockers"] == []
-    assert result["assessment"]["views"]["external"]["frames"]["initial"][
-        "relative_path"
-    ] == "runtime/external_initial.png"
+    assert (
+        result["assessment"]["views"]["external"]["frames"]["initial"]["relative_path"]
+        == "runtime/external_initial.png"
+    )
     assert result["paid_policy_or_wam_model_invoked"] is False
     assert result["claim_boundary"]["policy_wam_loop_proven"] is False
 
@@ -230,6 +281,43 @@ def test_native_camera_canary_fails_static_or_slipping_wrist_mount(tmp_path: Pat
     assert result["status"] == "failed"
     assert "native_wrist_camera_did_not_move_with_hand" in result["blockers"]
     assert "native_wrist_camera_mount_not_rigid" in result["blockers"]
+
+
+def test_native_camera_canary_fails_closed_on_missing_or_reaimed_mount_calibration(
+    tmp_path: Path,
+) -> None:
+    spec_path = tmp_path / "spec.json"
+    _spec(spec_path)
+
+    def broken_backend(**kwargs):
+        value = _backend(**kwargs)
+        value["wrist_mount_calibration"] = {
+            "mode": "one_time_initial_task_framing_rigid_parent_local_mount",
+            "per_frame_task_reaim_performed": True,
+        }
+        return value
+
+    result = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "result",
+        backend=broken_backend,
+    )
+
+    assert result["status"] == "failed"
+    assert "native_wrist_camera_per_frame_reaim_not_forbidden" in result["blockers"]
+
+    missing_result = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "missing_result",
+        backend=lambda **kwargs: {
+            key: value
+            for key, value in _backend(**kwargs).items()
+            if key != "wrist_mount_calibration"
+        },
+    )
+    assert "native_wrist_mount_calibration_missing_or_invalid" in missing_result["blockers"]
 
 
 def test_native_camera_canary_fails_closed_on_missing_wrist_measurements(
