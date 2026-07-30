@@ -45,7 +45,6 @@ COPY --from=oscar_runtime /opt/oscar-venv /opt/oscar-venv
 # symlink substitution while retaining the sealed /opt/OSCAR identity.
 COPY --from=oscar_runtime /opt/oscar-public /opt/OSCAR
 COPY --from=oscar_runtime /opt/blueprint/ckpts/oscar /opt/blueprint/ckpts/oscar
-COPY --from=oscar_runtime /opt/blueprint/oscar_source_provenance.json /opt/blueprint/oscar_source_provenance.json
 
 RUN git clone --filter=blob:none --no-checkout "${CTRL_WORLD_SOURCE_URL}" /opt/ctrl-world \
     && git -C /opt/ctrl-world fetch --depth 1 origin "${CTRL_WORLD_SOURCE_REVISION}" \
@@ -67,6 +66,15 @@ RUN uv venv --python 3.11.9 /.ctrl-world-venv \
     && VIRTUAL_ENV=/.venv uv pip install --no-deps -e /opt/blueprint-current \
     && VIRTUAL_ENV=/.ctrl-world-venv uv pip install --no-deps -e /opt/blueprint-current \
     && uv pip install --python /opt/oscar-venv/bin/python --no-deps -e /opt/blueprint-current \
+    && find /opt/OSCAR -type d -name __pycache__ -prune -exec rm -rf '{}' + \
+    && find /opt/OSCAR -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
+    && rm -f /tmp/oscar_source_provenance_absent.json \
+    && /opt/oscar-venv/bin/python -m blueprint_pipeline.oscar_runtime_source_provenance normalize \
+      --source-root /opt/OSCAR \
+      --existing-seal /tmp/oscar_source_provenance_absent.json \
+      --output /opt/blueprint/oscar_source_provenance.json \
+      --runtime-source-root /opt/OSCAR \
+    && chmod 0444 /opt/blueprint/oscar_source_provenance.json \
     && /.venv/bin/python -m compileall -q /opt/blueprint-current/src/blueprint_pipeline \
     && /.ctrl-world-venv/bin/python -m compileall -q /opt/blueprint-current/src/blueprint_pipeline \
     && /.ctrl-world-venv/bin/python -c "import torch; assert torch.__version__ == '2.7.1+cu128'; import accelerate, decord, diffusers, einops, mediapy, swanlab, transformers, wandb" \

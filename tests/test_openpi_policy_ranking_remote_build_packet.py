@@ -159,6 +159,19 @@ def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path)
         assert dockerfile is not None
         text = dockerfile.read().decode("utf-8")
     assert "blueprint-groot-oscar-eval@sha256:93d99a5e" in text
+    assert (
+        "COPY --from=oscar_runtime /opt/blueprint/oscar_source_provenance.json"
+        not in text
+    )
+    cleanup = "find /opt/OSCAR -type d -name __pycache__"
+    normalize = "blueprint_pipeline.oscar_runtime_source_provenance normalize"
+    assert cleanup in text
+    assert normalize in text
+    assert text.index(cleanup) < text.index(normalize)
+    assert "--existing-seal /tmp/oscar_source_provenance_absent.json" in text
+    assert "--output /opt/blueprint/oscar_source_provenance.json" in text
+    assert "--runtime-source-root /opt/OSCAR" in text
+    assert "chmod 0444 /opt/blueprint/oscar_source_provenance.json" in text
     assert "token=False" in text
     assert "offline_preflight" in text
 
