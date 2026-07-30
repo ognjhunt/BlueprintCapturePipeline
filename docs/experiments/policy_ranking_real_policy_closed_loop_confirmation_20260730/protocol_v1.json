@@ -1,0 +1,134 @@
+{
+  "schema_version": "policy_ranking_real_policy_closed_loop_confirmation_protocol.v1",
+  "frozen_at": "2026-07-30T09:59:06-0500",
+  "provider_called": false,
+  "paid_execution_admitted": false,
+  "blind_physical_outcome_labels_accessed": false,
+  "public_exposed_outcome_metadata_accessed_for_availability_audit": true,
+  "arm_id": "blueprint_ctrl_world_current_reference",
+  "candidate_policies": ["pi0_droid", "pi0_fast_droid", "pi05_droid"],
+  "closed_loop": {
+    "harness": "blueprint_pipeline.policy_wam_closed_loop.run_policy_wam_closed_loop",
+    "same_policy_requery_required": true,
+    "exactly_one_wam_per_interaction": true,
+    "wam_chaining_forbidden": true,
+    "executed_native_rows": 8,
+    "seconds_per_interaction": 0.5333333333333333,
+    "required_generated_views": [
+      "observation/exterior_image_2_left",
+      "observation/exterior_image_1_left",
+      "observation/wrist_image_left"
+    ],
+    "generated_frames_per_view": 5,
+    "state_source": "commanded_prefix_through_released_action_adapter_and_registered_franka_fk",
+    "physical_future_rgb_forbidden": true,
+    "future_recorded_physical_state_forbidden": true
+  },
+  "finite_progression": [
+    "one_identity_bound_query_each_for_pi0_droid_pi0_fast_droid_pi05_droid",
+    "one_ctrl_world_generation_from_one_real_policy_action",
+    "one_three_interaction_policy_wam_same_policy_episode",
+    "one_complete_label_free_episode",
+    "complete_registered_causal_control_matrix",
+    "wider_cohort_only_after_all_prior_gates_pass"
+  ],
+  "frozen_rollout_reliability_thresholds": {
+    "downscale_width": 160,
+    "blank_spatial_std_min": 4.0,
+    "command_active_energy_min": 0.05,
+    "command_null_energy_max": 0.01,
+    "static_motion_max": 0.05,
+    "null_motion_max": 0.60,
+    "timing_correlation_min": 0.15,
+    "timing_check_min_energy_std": 0.05,
+    "rot6d_orthonormal_tol": 0.15,
+    "threshold_anchor": "unchanged from policy_ranking_roboarena_powered_droid_confirmation_20260729 before successor output"
+  },
+  "frozen_session_reliability_rule": {
+    "minimum_eligible_timing_windows": 3,
+    "timing_correlation_median_min": 0.15,
+    "hard_failure_in_any_window": "session_abstains",
+    "minimum_reliable_session_rate": 0.80,
+    "session_clustered_bootstrap_lower95_min": 0.50
+  },
+  "frozen_causal_gates": {
+    "conditions": ["own_action", "no_motion", "shuffled", "reversed", "shifted", "policy_swapped"],
+    "minimum_original_action_motion_correlation": 0.10,
+    "minimum_excess_over_strongest_temporal_placebo": 0.05,
+    "minimum_session_clustered_validity_pass_rate": 0.80,
+    "minimum_session_clustered_validity_pass_rate_lower95": 0.80,
+    "same_seed_recorded_vs_zero_scene_difference_min": 0.01,
+    "seeds": [0, 1],
+    "both_seed_robustness_required": true,
+    "each_camera_view_scored_separately": true,
+    "recorded_must_exceed_no_motion_in_each_camera_view": true,
+    "skeleton_visible_and_scene_masked_channels_required_where_applicable": true,
+    "action_effect_to_cross_seed_noise_ratio_min": 1.0,
+    "increasing_rollout_depth_required": true,
+    "collapse_or_corruption_counts_against_reliability": true,
+    "all_gates_required": true,
+    "thresholds_may_not_be_lowered_after_failure": true
+  },
+  "judge_order": {
+    "judges_forbidden_before_qualified_complete_episode": true,
+    "primary": "current_prospectively_frozen_gemini_flash_native_video_batch",
+    "independent_challenger": "full_gpt5_openai_responses_batch",
+    "same_frozen_unordered_pair_inventory": true,
+    "gemini_runs_first": true,
+    "partial_graph_ranking_credit": false,
+    "both_complete_graphs_required_for_original_two_judge_confirmation": true
+  },
+  "blind_confirmation": {
+    "independent_unit": "session",
+    "new_disjoint_unexposed_outcomes_required": true,
+    "freeze_predictions_before_outcome_join": true,
+    "minimum_policies_target": 3,
+    "preferred_policies": "5_to_7",
+    "exposed_441_oscar_episodes_forbidden": true,
+    "previously_unsealed_17_session_cohort_forbidden": true,
+    "generated_success_labels_forbidden": true
+  },
+  "cost_authority": {
+    "combined_evaluator_api_cap_usd": 25.0,
+    "combined_evaluator_api_spend_usd": 8.418512,
+    "combined_evaluator_api_remaining_usd": 16.581488,
+    "gpu_cap_usd": 50.0,
+    "gpu_spend_usd": 3.986999,
+    "gpu_remaining_usd": 46.013001,
+    "storage_transfer_cap_usd": 10.0,
+    "campaign_total_cap_usd": 100.0,
+    "campaign_total_spend_usd": 12.405511,
+    "campaign_total_remaining_usd": 87.594489,
+    "maximum_concurrent_gpus": 1
+  },
+  "paid_stage_requirements": [
+    "canonical_fail_closed_admission",
+    "immutable_pushed_experimental_sha",
+    "immutable_input_hashes",
+    "exact_model_and_source_bindings",
+    "provider_zero",
+    "one_gpu_concurrency",
+    "spend_watchdog",
+    "ttl",
+    "teardown_on_failure",
+    "retained_session_for_code_only_fixes",
+    "provider_zero_after_closure",
+    "cost_ledger_update"
+  ],
+  "captured_site_admission": [
+    "wam_causal_qualification_passed",
+    "real_policy_closed_loop_completed",
+    "blind_benchmark_ranking_passed",
+    "abstention_useful_selective_behavior_passed"
+  ],
+  "claim_ceiling_before_blind_outcomes": {
+    "engineering_contract_only": true,
+    "wam_causal_qualification": false,
+    "policy_ranking_confirmation": false,
+    "captured_site_transfer": false,
+    "economics_and_speed": false,
+    "physical_success": false,
+    "thesis_support": false
+  },
+  "public_ctrl_world_trajectory_899_use": "exposed_label_excluded_engineering_input_only_never_confirmation"
+}

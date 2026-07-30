@@ -1,0 +1,127 @@
+{
+  "schema_version": "policy_ranking_real_policy_closed_loop_source_freeze.v1",
+  "frozen_at": "2026-07-30T09:59:06-0500",
+  "arm_id": "blueprint_ctrl_world_current_reference",
+  "exact_public_paper_reproduction": false,
+  "reason": "the historical Ctrl-World OpenPI and policy revisions remain unpublished",
+  "ctrl_world": {
+    "repository": "https://github.com/Robert-gyj/Ctrl-World",
+    "revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+    "tree": "11375dd0003ec9052023a1f09c8f2885a56606d3",
+    "license": "MIT",
+    "files": {
+      "LICENSE.txt": "6f4b58b0ca0f41d51df6c24b03cb2844edc32a23b88d8afb8d0a25f629525f3e",
+      "README.md": "8240c328dfa3dbf8f24b641eb933f628f0366eaca7bd3248852189f771693278",
+      "requirements.txt": "1b0b03c8afd54c8133a00fb35476d5a2899ff1231ed2a1599d327190bf1e1e0a",
+      "scripts/rollout_interact_pi.py": "cb270ebefdbe102ee78d3f6b1b0947345388d9d64a2403205515ffba66b38663",
+      "scripts/rollout_interact_pi_eval.py": "130523033c1b1b79d3ae5d967ea6137c7ee33d5b3b47cb18e208b9a7aaab662a",
+      "models/action_adapter/train2.py": "44e5c91d8339512c1a121b72159e77a4aa469dbb134d3f0b373a7447af8a88e2",
+      "models/action_adapter/model2_15_9.pth": "b1a232a9c0539127ca23e202fd4fbc5c4756d385c890dd4af792ade51dc72f77",
+      "dataset_meta_info/droid/stat.json": "1e6fa202c87d6295f8b988dfd2764dec88796c910846cecdf684670fb818f208"
+    },
+    "checkpoint": {
+      "repository": "yjguo/Ctrl-World",
+      "revision": "8cf814693f411962dc866a2ddb5b785afd17a93a",
+      "checkpoint_sha256": "ed17de48180d4e6f89fd33c53e9fb7a0196189c1a67d44c2c486a279a80ea8a8",
+      "public": true,
+      "gated": false,
+      "license": "MIT"
+    },
+    "supported_observation_views": [
+      "observation/exterior_image_2_left",
+      "observation/exterior_image_1_left",
+      "observation/wrist_image_left"
+    ],
+    "released_action_contract": "OpenPI joint velocities 7D plus gripper position 1D -> learned future joint positions -> Franka FK -> XYZ EulerXYZ gripper",
+    "history_rows": 6,
+    "future_indices": [0, 2, 4, 6, 8],
+    "conditioning_shape": [11, 7],
+    "generated_frames_per_view": 5
+  },
+  "openpi": {
+    "repository": "https://github.com/Physical-Intelligence/openpi",
+    "revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "tree": "a7f18af2745255b5fa98c86d6031f858bf73d1be",
+    "license": "Apache-2.0",
+    "files": {
+      "LICENSE": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+      "README.md": "567fc57766bd736664f50126cab8145af4071ca16cc5e238f2b11e369169c3b5",
+      "examples/droid/README.md": "6f64c246a78a5c203b4b032db9b6b6daea33e98d91ecdac1a3da30a9863290d0",
+      "src/openpi/policies/droid_policy.py": "99ebf8b252bde5e33dba7af10552137c421589ec88887bb0ee6507366d24da68",
+      "src/openpi/training/config.py": "c34231f888dba5dc981d808765b3d98775ab845b04313bf53fcecd567c520b0d",
+      "packages/openpi-client/src/openpi_client/websocket_client_policy.py": "36557cb0b91ccf31cd4fb4b508306850d76ed0feb4028dac5182d0f5a5d88005",
+      "pyproject.toml": "e1f457bd81622a47a4c4de17b92815977ac5fcd40116bec92398eb400bf76483",
+      "uv.lock": "793488b5a55bb87200db90a61fd0af51922b686d94e1da4f4c587ab119b37d74"
+    },
+    "submodules_initialized": false,
+    "submodules_required_for_droid_inference": false,
+    "policy_contract": {
+      "observation_views": [
+        "observation/exterior_image_1_left",
+        "observation/wrist_image_left"
+      ],
+      "image_shape": [224, 224, 3],
+      "joint_state_shape": [7],
+      "gripper_state_shape": [1],
+      "task_text_required": true,
+      "native_action_width": 8,
+      "native_action_semantics": "joint_velocity_7d_plus_gripper_position_1d"
+    }
+  },
+  "policies": [
+    {
+      "policy_id": "pi0_droid",
+      "config_name": "pi0_droid",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/pi0_droid",
+      "native_action_shape": [10, 8],
+      "ctrl_world_padding_rule": "repeat_final_row_to_15",
+      "object_count": 26,
+      "total_bytes": 12009244513,
+      "object_inventory_sha256": "97a269c68755b739634874701e44f2df70232f456b239ba1200419c8fb878417",
+      "manifest_sha256": "dd0919f28bb844d83bce925d397262c4042c3ad2dc4e400735a9fac14bfce9ad",
+      "external_inventory_file_sha256": "248ea9cbe0ade1e4d9defefb202ea121bd38d5c3127b827a7397d687d3b49e98"
+    },
+    {
+      "policy_id": "pi0_fast_droid",
+      "config_name": "pi0_fast_droid",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/pi0_fast_droid",
+      "native_action_shape": [10, 8],
+      "ctrl_world_padding_rule": "repeat_final_row_to_15",
+      "object_count": 20,
+      "total_bytes": 10841351138,
+      "object_inventory_sha256": "f99e8b40b0e873ce15d7eb1e5fe8292d78927a6b9cb2d7391abb909275f276d9",
+      "manifest_sha256": "b3a862babf78a208b9242cdb2680ad17527efe081e57b38c7b89332c63a4ec62",
+      "external_inventory_file_sha256": "1a49ab85f4e723e4a8c8efd1c7c2854bd7a8016829f58abe46db1c556a12d331"
+    },
+    {
+      "policy_id": "pi05_droid",
+      "config_name": "pi05_droid",
+      "checkpoint_uri": "gs://openpi-assets/checkpoints/pi05_droid",
+      "native_action_shape": [15, 8],
+      "ctrl_world_padding_rule": "none",
+      "object_count": 20,
+      "total_bytes": 12429488598,
+      "object_inventory_sha256": "4d35968545b296130d4e13e9cc41d0cfba11e69ac1ec99a0ca151122ca81cf12",
+      "manifest_sha256": "3193fc2c1467c7c3107567b1ecbfc671d3ea0ce193a8ad484fdeb19c5521378d",
+      "external_inventory_file_sha256": "ce3a1d28b9b42d11a38b0d62dd93f102f2165662370812bee5971a6741d74d2a"
+    }
+  ],
+  "wam_dependencies": {
+    "stable_video_diffusion": {
+      "repository": "stabilityai/stable-video-diffusion-img2vid",
+      "revision": "9cf024d5bfa8f56622af86c884f26a52f6676f2e",
+      "license": "other_svd_community_license"
+    },
+    "clip": {
+      "repository": "openai/clip-vit-base-patch32",
+      "revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
+      "license": "not_declared_in_hugging_face_card",
+      "commercial_rights_asserted": false
+    }
+  },
+  "policy_droid_compatible": false,
+  "policy_droid_exclusion_reason": "absolute joint positions are not the released Ctrl-World joint-velocity input contract",
+  "raw_secret_values_recorded": false,
+  "provider_called": false,
+  "checkpoint_weight_bytes_downloaded": false
+}

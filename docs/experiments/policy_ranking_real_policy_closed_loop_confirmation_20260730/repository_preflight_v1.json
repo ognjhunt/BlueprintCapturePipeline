@@ -1,0 +1,89 @@
+{
+  "schema_version": "policy_ranking_real_policy_closed_loop_repository_preflight.v1",
+  "observed_at": "2026-07-30T09:59:06-0500",
+  "fetch_all_remotes_completed": true,
+  "repository": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline",
+  "successor_worktree": "/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-policy-ranking-real-policy-closed-loop-confirmation-20260730",
+  "successor_branch": "codex/policy-ranking-real-policy-closed-loop-confirmation-20260730",
+  "exact_main": {
+    "local_main_sha": "0923fc820388900df53ac246c671f8dea1810ba3",
+    "origin_main_sha": "0923fc820388900df53ac246c671f8dea1810ba3",
+    "successor_base_sha": "0923fc820388900df53ac246c671f8dea1810ba3",
+    "base_divergence_left_right": [0, 0],
+    "old_handoff_sha_trusted": false
+  },
+  "worktree_audit": {
+    "registered_worktree_count": 151,
+    "live_worktree_count": 61,
+    "stale_registration_count": 90,
+    "dirty_live_worktrees_observed": 4,
+    "dirty_worktrees_treated_as_user_owned": true,
+    "other_checkout_content_modified": false,
+    "appropriate_clean_successor_preexisted": false,
+    "new_clean_successor_created": true
+  },
+  "hosted_state": {
+    "open_pull_request_count": 21,
+    "relevant_predecessor_pr_246": "open_with_failing_checks",
+    "relevant_predecessor_pr_226": "open_clean",
+    "specialized_successor_pr_251": "merged",
+    "active_successor_pr": false,
+    "hosted_checks_inspected": true
+  },
+  "cleanliness_and_writer_state": {
+    "main_checkout_clean": true,
+    "successor_clean_before_writes": true,
+    "active_git_test_or_paid_successor_writer_detected": false,
+    "chatgpt_codex_or_claude_host_processes_present": true,
+    "another_writer_claimed_inactive_from_process_names_alone": false
+  },
+  "provider_inventory": {
+    "runpod_active_resources": 0,
+    "openai_active_batches": 0,
+    "gemini_active_batches": 0,
+    "vast_active_instances": 1,
+    "vast_instance": {
+      "instance_id": "46293311",
+      "gpu": "RTX 6000Ada",
+      "hourly_rate_usd": 0.722222,
+      "status": "running",
+      "label": "blueprint-native-warehouse-camera-v19-27e696de-a2",
+      "successor_owned": false,
+      "mutation_authorized": false
+    },
+    "maximum_concurrent_gpus": 1,
+    "successor_gpu_allocation_admitted": false,
+    "reason": "unrelated_user_owned_vast_instance_occupies_one_gpu_ceiling"
+  },
+  "authoritative_ledger_recalculation": {
+    "campaign_total_spend_usd": 12.405511,
+    "evaluator_api_spend_usd": 8.418512,
+    "gpu_spend_usd": 3.986999,
+    "gpu_components_usd": {
+      "powered_droid": 2.226112,
+      "cosmos_oscar_ctrl_successor": 1.760887
+    },
+    "remaining_evaluator_api_usd": 16.581488,
+    "remaining_gpu_usd": 46.013001,
+    "remaining_total_usd": 87.594489,
+    "storage_transfer_spend_verified": false,
+    "storage_transfer_cap_usd": 10.0,
+    "old_provider_state_or_spend_statement_trusted": false
+  },
+  "credential_presence": {
+    "values_printed_or_serialized": false,
+    "required_file_mode": "0600",
+    "openai": "present_mode_0600",
+    "gemini": "present_mode_0600",
+    "vast": "present_mode_0600",
+    "runpod": "present_mode_0600",
+    "hugging_face": "present_mode_0600",
+    "environment_key_presence_checked": true
+  },
+  "paid_allocator": {
+    "canonical_entrypoint": "python -m blueprint_pipeline.paid_resource_allocator gpu-canary",
+    "provider_specific_launcher_authorized": false,
+    "paid_execution_admitted": false
+  },
+  "raw_secret_values_recorded": false
+}

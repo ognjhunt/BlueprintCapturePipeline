@@ -1,0 +1,36 @@
+{
+  "schema_version": "policy_ranking_real_policy_closed_loop_evidence_integrity.v1",
+  "frozen_at": "2026-07-30T10:14:45-0500",
+  "repo_files": {
+    "README.md": "b2201da972f34e80be6645dcb798e2a458af26e2379c3997702707552571d4e2",
+    "confirmation_availability_audit_v1.json": "aa5c2ee5118137a01b44bae7f07653677412673c731be767a42507fc6200f45d",
+    "engineering_contract_admission_v1.json": "5b3798c1902ce506f46002bea210b48cecf2d585896f83e5243e46be639e2f40",
+    "protocol_v1.json": "081084cc87eec5e370ca53e8a167ec7cf882e4e9c1c9db419fb0befc7b9a1a14",
+    "provider_state_refresh_v1.json": "feb9c3515504123fdfb1782ecc5b8214c2b555cd16296e9e795ac1b459fd8930",
+    "repository_preflight_v1.json": "4a35824f0a66a02827477b73d3c15372d5e32ba6fbd42906d0c09a7febb08d5b",
+    "source_freeze_v1.json": "e711a65bbfe86d7902d4765d169dea3acbc2e379f56ecfb88ec1fb0205b0a944",
+    "src/blueprint_pipeline/ctrl_world_droid_action_adapter.py": "8f55dff3e0f8324df3b7fbd024639d5fc95a936af245cf0fcafe2b89b41fc6d5",
+    "src/blueprint_pipeline/ctrl_world_openpi_preprocessing.py": "c80a5059b26cefae7e5a1981fb1fcd157ff74e0a6643b0e474750a647e2ff28a",
+    "src/blueprint_pipeline/ctrl_world_public_initial_observation.py": "be8f3f6cbe7610e76926422efb90c1ebf457d440238d5c09d2dcd9c32c008c0f",
+    "src/blueprint_pipeline/droid_ctrl_world_closed_loop_adapter.py": "97bfc8c7e22e4ff3aac7458af1a518527ecb382ddb6ddc1d5df4dcf996ada58e",
+    "src/blueprint_pipeline/openpi_current_reference_droid_policy_runtime.py": "9fe1b926aecba477072a40ce55e9f44dcbc0cb4eddae3e3d3929b6eb24c82e12",
+    "src/blueprint_pipeline/openpi_current_reference_policy_canary.py": "f8430201d96a3102baaba0091893194815461a123c36c095010d26a0a00bb358",
+    "src/blueprint_pipeline/public_gcs_checkpoint_inventory.py": "325f5a85a4b95f0aab62427aeaca2ef3d9ea714227da30426d280ab7bd33c278"
+  },
+  "external_checkpoint_inventory_files": {
+    "openpi_pi0_droid_gcs_inventory_v1.json": "248ea9cbe0ade1e4d9defefb202ea121bd38d5c3127b827a7397d687d3b49e98",
+    "openpi_pi0_fast_droid_gcs_inventory_v1.json": "1a49ab85f4e723e4a8c8efd1c7c2854bd7a8016829f58abe46db1c556a12d331",
+    "openpi_pi05_droid_gcs_inventory_v1.json": "ce3a1d28b9b42d11a38b0d62dd93f102f2165662370812bee5971a6741d74d2a"
+  },
+  "external_initial_observation_files": {
+    "initial_observation_manifest.json": "0185c5a020f984b4959341ecfb0406c3a0ddd34ce7354c5ab8b923312bd76965",
+    "joint_position.npy": "93eb142b772940538cc02b3cae55e5ee87ece127393808bc83880d1a2e30573b",
+    "gripper_position.npy": "02fcf6a2d17f32c6d543e461ca7153bb33744f77743d69e715d9cfbce788ca0c",
+    "cartesian_pose_7d.npy": "150f43cace2bad8512bf28e7bb412d9231f29162ec9d76b7367d279c38a4b1a5",
+    "view_0_frame_0000.png": "e6b61de5dd3d2fe462b0a982e510ea54db5fec8b0a7aa74276105bf5fedd6852",
+    "view_1_frame_0000.png": "1427c6dad7ac81bb2ba79cc11880627fd74c6a56fc0fda4dacf9c04b81b3869b",
+    "view_2_frame_0000.png": "11a3cba118a9fe4b3aadf899c0df61166d60263680e631dddd1cb38299140e48"
+  },
+  "external_initial_observation_manifest_sha256": "eaaffd55d9c1201de5184154a93dc356b039dd554d1738d0e1672fbfbc667534",
+  "raw_secret_values_recorded": false
+}

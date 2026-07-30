@@ -1,0 +1,50 @@
+{
+  "schema_version": "policy_ranking_real_policy_closed_loop_confirmation_availability.v1",
+  "audited_at": "2026-07-30T09:59:06-0500",
+  "status": "blind_multi_policy_physical_outcomes_unavailable",
+  "provider_called": false,
+  "paid_resources_used": false,
+  "blind_physical_outcome_labels_accessed_for_successor": false,
+  "public_exposed_outcome_metadata_accessed_for_availability_audit": true,
+  "runnable_policy_candidates": ["pi0_droid", "pi0_fast_droid", "pi05_droid"],
+  "public_ctrl_world_example": {
+    "source_revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+    "three_view_validation_episode_count": 45,
+    "success_value_counts": {"1": 45},
+    "episodes_with_policy_or_checkpoint_identity": 0,
+    "independent_policy_outcome_attribution": false,
+    "blind_to_successor_adapter_development": false,
+    "usable_for_initial_observation_engineering": true,
+    "usable_for_confirmatory_ranking": false,
+    "reason": "all public examples are marked successful and lack exact policy identity, so no policy ordering or attributable physical comparison exists"
+  },
+  "previous_successor_cohort": {
+    "session_count": 17,
+    "complete_three_view_session_count": 14,
+    "policies": ["pi0_droid", "pi0_fast_droid"],
+    "previously_unsealed": true,
+    "confirmation_reuse_forbidden": true,
+    "diagnostic_only": true,
+    "historical_power_ceiling": {
+      "test": "exact_one_sided_binomial_accuracy_vs_0_5",
+      "alpha": 0.05,
+      "independent_sessions": 14,
+      "critical_correct_count": 11,
+      "true_accuracy_needed_for_80_percent_power": 0.831248026047,
+      "interpretation": "powered only for a very large two-policy effect"
+    }
+  },
+  "excluded_confirmation_sources": [
+    "exposed_441_oscar_episodes",
+    "previously_unsealed_17_session_successor_cohort",
+    "sessions_used_for_adapter_or_causal_control_development",
+    "duplicated_or_resampled_sessions",
+    "generated_success_labels"
+  ],
+  "current_eligible_blind_sessions": 0,
+  "prospective_power_analysis_possible": false,
+  "phase_b_measured": false,
+  "phase_b_admitted": false,
+  "claim_ceiling": "engineering_and_label_free_wam_qualification_only_until_an_independently_administered_blind_outcome_join_exists",
+  "next_valid_availability_action": "seek an independently administered new disjoint outcome package with exact policy identities and complete three-view initial observations; do not inspect outcome labels before predictions are frozen"
+}

@@ -10,7 +10,7 @@ Ctrl-World's separately trained learned adapter.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +25,12 @@ SCHEMA_VERSION = "ctrl_world_droid_action_conditioning.v1"
 OFFICIAL_LOCAL_ACTION_ADAPTER_SHA256 = (
     "b1a232a9c0539127ca23e202fd4fbc5c4756d385c890dd4af792ade51dc72f77"
 )
+CTRL_WORLD_RELEASED_ACTION_ADAPTER_SOURCE_SHA256 = (
+    "44e5c91d8339512c1a121b72159e77a4aa469dbb134d3f0b373a7447af8a88e2"
+)
+CTRL_WORLD_RELEASED_ACTION_ROWS = 15
+CTRL_WORLD_FUTURE_FRAME_INDICES = (0, 2, 4, 6, 8)
+CTRL_WORLD_HISTORY_ROWS = 6
 
 
 def validate_ctrl_world_runtime_assets(
@@ -85,6 +91,180 @@ def _matrix_to_xyz_euler(rotation: np.ndarray) -> np.ndarray:
         y = math.atan2(-float(rotation[2, 0]), sy)
         z = 0.0
     return np.asarray([x, y, z], dtype=np.float64)
+
+
+def _pose_from_fk(value: Any) -> np.ndarray:
+    """Normalize a registered Franka FK result to XYZ plus intrinsic XYZ Euler."""
+
+    result = np.asarray(value, dtype=np.float64)
+    if result.shape == (7,):
+        if not np.isfinite(result).all():
+            raise ValueError("ctrl_world_fk_pose_nonfinite")
+        return result
+    if result.shape != (4, 4) or not np.isfinite(result).all():
+        raise ValueError("ctrl_world_fk_result_must_be_pose7_or_transform4x4")
+    return np.concatenate((result[:3, 3], _matrix_to_xyz_euler(result[:3, :3])))
+
+
+def cartesian_pose_rows_to_reliability_actions_10d(
+    pose_rows: Sequence[Sequence[float]],
+) -> np.ndarray:
+    """Convert Ctrl-World XYZ/Euler/gripper rows for reliability scoring only.
+
+    The WAM continues to receive its released seven-dimensional Cartesian
+    contract.  This representation is a deterministic measurement adapter for
+    Blueprint's existing translation/rotation-6D/gripper reliability gate; it
+    is never used as WAM conditioning.
+    """
+
+    poses = np.asarray(pose_rows, dtype=np.float64)
+    if poses.ndim != 2 or poses.shape[1] != 7 or not np.isfinite(poses).all():
+        raise ValueError("ctrl_world_pose_rows_must_be_finite_nx7")
+    actions = np.empty((poses.shape[0], 10), dtype=np.float64)
+    actions[:, :3] = poses[:, :3]
+    actions[:, 9] = poses[:, 6]
+    for index, (rx, ry, rz) in enumerate(poses[:, 3:6]):
+        cx, sx = math.cos(float(rx)), math.sin(float(rx))
+        cy, sy = math.cos(float(ry)), math.sin(float(ry))
+        cz, sz = math.cos(float(rz)), math.sin(float(rz))
+        rotation = np.asarray(
+            [
+                [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+                [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+                [-sy, cy * sx, cy * cx],
+            ],
+            dtype=np.float64,
+        )
+        actions[index, 3:6] = rotation[0]
+        actions[index, 6:9] = rotation[1]
+    return actions
+
+
+@dataclass(frozen=True)
+class CtrlWorldReleasedJointVelocityAdapter:
+    """Execute Ctrl-World's released DROID joint-velocity state adapter contract.
+
+    ``dynamics_adapter`` is the exact released ``Dynamics`` checkpoint-bound
+    inference call and ``forward_kinematics`` is the registered Franka FK used
+    by the public Ctrl-World code.  Their concrete runtimes stay injectable so
+    the contract can be tested hermetically and run under a pinned GPU image.
+    Absolute joint-position policies are intentionally rejected.
+    """
+
+    dynamics_adapter: Callable[[np.ndarray, np.ndarray], np.ndarray]
+    forward_kinematics: Callable[[np.ndarray], Any]
+    gripper_max: float
+    adapter_id: str = "ctrl_world_released_joint_velocity_to_cartesian_v1"
+
+    def adapt(
+        self,
+        *,
+        policy_action: Sequence[Sequence[float]],
+        current_joint_position: Sequence[float],
+        current_gripper_position: Sequence[float],
+        history_cartesian_pose_7d: Sequence[Sequence[float]],
+        source_action_space: str,
+    ) -> dict[str, Any]:
+        if source_action_space != "joint_velocity_plus_gripper_position":
+            raise ValueError("ctrl_world_released_adapter_requires_joint_velocity_policy")
+        action = np.asarray(policy_action, dtype=np.float64)
+        if action.ndim != 2 or action.shape[1] != 8 or action.shape[0] not in {10, 15}:
+            raise ValueError("ctrl_world_joint_velocity_action_must_be_10x8_or_15x8")
+        if not np.isfinite(action).all():
+            raise ValueError("ctrl_world_joint_velocity_action_nonfinite")
+        current_joint = np.asarray(current_joint_position, dtype=np.float64)
+        current_gripper = np.asarray(current_gripper_position, dtype=np.float64)
+        history = np.asarray(history_cartesian_pose_7d, dtype=np.float64)
+        if current_joint.shape != (7,) or not np.isfinite(current_joint).all():
+            raise ValueError("ctrl_world_current_joint_position_invalid")
+        if current_gripper.shape != (1,) or not np.isfinite(current_gripper).all():
+            raise ValueError("ctrl_world_current_gripper_position_invalid")
+        if (
+            history.shape != (CTRL_WORLD_HISTORY_ROWS, 7)
+            or not np.isfinite(history).all()
+        ):
+            raise ValueError("ctrl_world_history_cartesian_pose_must_be_finite_6x7")
+        if not math.isfinite(self.gripper_max) or not 0.0 < self.gripper_max <= 1.0:
+            raise ValueError("ctrl_world_gripper_max_invalid")
+
+        if action.shape[0] == 10:
+            row_indices = np.asarray([*range(10), 9, 9, 9, 9, 9], dtype=int)
+            released_action = action[row_indices]
+            padding_rule = "repeat_final_row_to_15"
+        else:
+            released_action = action.copy()
+            padding_rule = "none"
+        joint_velocity = released_action[:, :7]
+        gripper = np.clip(released_action[:, 7:8], 0.0, self.gripper_max)
+        future_joint = np.asarray(
+            self.dynamics_adapter(current_joint.copy(), joint_velocity.copy()),
+            dtype=np.float64,
+        )
+        if (
+            future_joint.shape != (CTRL_WORLD_RELEASED_ACTION_ROWS, 7)
+            or not np.isfinite(future_joint).all()
+        ):
+            raise ValueError("ctrl_world_dynamics_adapter_output_invalid")
+
+        joint_series = np.concatenate((current_joint[None, :], future_joint), axis=0)[
+            :CTRL_WORLD_RELEASED_ACTION_ROWS
+        ]
+        gripper_series = np.concatenate((current_gripper[None, :], gripper), axis=0)[
+            :CTRL_WORLD_RELEASED_ACTION_ROWS
+        ]
+        pose_series = np.asarray(
+            [
+                np.concatenate(
+                    (
+                        _pose_from_fk(self.forward_kinematics(joint_row)),
+                        gripper_series[index],
+                    )
+                )
+                for index, joint_row in enumerate(joint_series)
+            ],
+            dtype=np.float64,
+        )
+        future_pose = pose_series[np.asarray(CTRL_WORLD_FUTURE_FRAME_INDICES)]
+        conditioning = np.concatenate((history, future_pose), axis=0)
+        reliability = cartesian_pose_rows_to_reliability_actions_10d(future_pose)
+        next_index = CTRL_WORLD_FUTURE_FRAME_INDICES[-1]
+        result: dict[str, Any] = {
+            "schema_version": "ctrl_world_released_joint_velocity_conditioning.v1",
+            "adapter_id": self.adapter_id,
+            "source_action_space": source_action_space,
+            "target_action_space": "ctrl_world_cartesian_xyz_euler_xyz_plus_gripper",
+            "native_policy_action": action,
+            "native_policy_action_shape": list(action.shape),
+            "released_action_rows": CTRL_WORLD_RELEASED_ACTION_ROWS,
+            "ten_row_padding_rule": padding_rule,
+            "action_conditioning_7d": conditioning,
+            "action_conditioning_shape": list(conditioning.shape),
+            "future_cartesian_pose_7d": future_pose,
+            "reliability_actions_10d": reliability,
+            "next_joint_position": joint_series[next_index],
+            "next_gripper_position": gripper_series[next_index],
+            "next_cartesian_pose_7d": pose_series[next_index],
+            "future_frame_indices": list(CTRL_WORLD_FUTURE_FRAME_INDICES),
+            "official_ctrl_world_learned_action_adapter_used": True,
+            "official_action_adapter_checkpoint_sha256": (
+                OFFICIAL_LOCAL_ACTION_ADAPTER_SHA256
+            ),
+            "official_action_adapter_source_sha256": (
+                CTRL_WORLD_RELEASED_ACTION_ADAPTER_SOURCE_SHA256
+            ),
+            "physical_future_observation_used": False,
+            "task_outcome_accessed": False,
+            "claim_boundary": (
+                "released input-format and commanded-state adaptation only; not "
+                "Ctrl-World causal qualification, policy rank fidelity, or physical success"
+            ),
+        }
+        identity_material = {
+            key: value.tolist() if isinstance(value, np.ndarray) else value
+            for key, value in result.items()
+        }
+        result["conditioning_sha256"] = canonical_sha256(identity_material)
+        return result
 
 
 @dataclass(frozen=True)
@@ -158,8 +338,14 @@ class FrankaCtrlWorldJointPositionAdapter:
 
 
 __all__ = [
+    "CTRL_WORLD_FUTURE_FRAME_INDICES",
+    "CTRL_WORLD_HISTORY_ROWS",
+    "CTRL_WORLD_RELEASED_ACTION_ADAPTER_SOURCE_SHA256",
+    "CTRL_WORLD_RELEASED_ACTION_ROWS",
+    "CtrlWorldReleasedJointVelocityAdapter",
     "FrankaCtrlWorldJointPositionAdapter",
     "OFFICIAL_LOCAL_ACTION_ADAPTER_SHA256",
     "SCHEMA_VERSION",
+    "cartesian_pose_rows_to_reliability_actions_10d",
     "validate_ctrl_world_runtime_assets",
 ]

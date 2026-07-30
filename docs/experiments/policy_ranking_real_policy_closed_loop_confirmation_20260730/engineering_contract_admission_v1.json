@@ -1,0 +1,73 @@
+{
+  "schema_version": "policy_ranking_real_policy_closed_loop_engineering_contract_admission.v1",
+  "observed_at": "2026-07-30T10:14:45-0500",
+  "status": "offline_contract_admitted_paid_execution_not_admitted",
+  "arm_id": "blueprint_ctrl_world_current_reference",
+  "blueprint_base_sha": "0923fc820388900df53ac246c671f8dea1810ba3",
+  "implementation": {
+    "existing_closed_loop_harness_extended": true,
+    "parallel_experiment_harness_created": false,
+    "same_policy_requery_enforced": true,
+    "exactly_one_wam_per_interaction_enforced": true,
+    "three_generated_views_required": true,
+    "commanded_state_registered": true,
+    "future_physical_rgb_forbidden": true,
+    "policy_droid_absolute_position_adapter_created": false,
+    "current_reference_not_exact_paper_reproduction": true
+  },
+  "candidate_policy_identities": {
+    "pi0_droid": "b7e32969dac65a77ce5a443074a71512df8a6d891f359635e71e8698fc309408",
+    "pi0_fast_droid": "04ece229b29a08b84ed96940911322865af5c6600c0c280c12ce9039ed1118cb",
+    "pi05_droid": "ef2133d7cde82ef08bd9d0cabc7091cab9c4d80779e544c19831c23ff9f15fb8"
+  },
+  "exposed_engineering_input": {
+    "trajectory_id": "899",
+    "manifest_sha256": "eaaffd55d9c1201de5184154a93dc356b039dd554d1738d0e1672fbfbc667534",
+    "manifest_file_sha256": "0185c5a020f984b4959341ecfb0406c3a0ddd34ce7354c5ab8b923312bd76965",
+    "native_view_shape": [192, 320, 3],
+    "history_seed_rows": 24,
+    "future_physical_rgb_used": false,
+    "confirmation_eligible": false
+  },
+  "focused_verification": {
+    "command": "pytest -q tests/test_ctrl_world_public_initial_observation.py tests/test_droid_ctrl_world_closed_loop_adapter.py tests/test_openpi_current_reference_droid_policy_runtime.py tests/test_openpi_current_reference_policy_canary.py tests/test_public_gcs_checkpoint_inventory.py tests/test_policy_wam_closed_loop.py tests/test_policy_wam_reliability_gate.py tests/test_wam_rollout_reliability.py tests/test_wam_rollout_reliability_session.py tests/test_openpi_droid_policy_runtime.py tests/test_droid_oscar_closed_loop_adapter.py tests/test_franka_diagnostic_arm_adapters.py",
+    "collected": 56,
+    "passed": 56,
+    "failed": 0,
+    "elapsed_seconds": 1.90,
+    "ruff_changed_files": "passed",
+    "py_compile_changed_files": "passed",
+    "git_diff_check": "passed"
+  },
+  "offline_contract_gates": {
+    "source_and_checkpoint_identities_frozen": true,
+    "native_action_shapes_frozen": true,
+    "complete_native_action_preserved_before_derivation": true,
+    "released_velocity_adapter_bound": true,
+    "ten_row_repeat_final_padding_frozen": true,
+    "eight_row_execution_prefix_frozen": true,
+    "three_view_order_frozen": true,
+    "released_image_preprocessing_bound": true,
+    "initial_observation_hashes_frozen": true,
+    "deterministic_policy_request_response_receipts_implemented": true,
+    "reliability_and_causal_thresholds_frozen": true
+  },
+  "live_execution_gates": {
+    "real_checkpoint_bytes_downloaded_and_locally_verified": false,
+    "one_identity_bound_query_each_completed": false,
+    "one_real_policy_action_to_ctrl_world_generation_completed": false,
+    "three_interaction_same_policy_loop_completed": false,
+    "complete_label_free_episode_completed": false,
+    "causal_control_matrix_completed": false,
+    "immutable_experimental_sha_pushed": false,
+    "canonical_paid_admission_passed": false,
+    "provider_zero": false
+  },
+  "active_paid_blocker": "unrelated_vast_instance_46295734_occupies_one_gpu_ceiling",
+  "blind_confirmation_available": false,
+  "judge_calls_admitted": false,
+  "captured_site_transfer_admitted": false,
+  "economics_measurement_admitted": false,
+  "terminal_verdict_available": false,
+  "next_finite_gate": "commit_and_push_offline_contract_then_refresh_provider_zero_and_run_exactly_one_query_each_only_after_canonical_admission"
+}

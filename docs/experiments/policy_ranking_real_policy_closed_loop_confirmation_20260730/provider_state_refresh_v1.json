@@ -1,0 +1,21 @@
+{
+  "schema_version": "policy_ranking_real_policy_closed_loop_provider_state_refresh.v1",
+  "observed_at": "2026-07-30T10:14:45-0500",
+  "supersedes_provider_observation_only": "repository_preflight_v1.json",
+  "historical_preflight_preserved": true,
+  "vast_active_instances": 1,
+  "vast_instance": {
+    "instance_id": "46295734",
+    "actual_status": "loading",
+    "gpu": "L40S",
+    "hourly_rate_usd": 0.5518518518518518,
+    "label": "blueprint-native-warehouse-camera-v20-8287ff11-a1",
+    "successor_owned": false,
+    "mutation_authorized": false
+  },
+  "maximum_concurrent_gpus": 1,
+  "successor_gpu_allocation_admitted": false,
+  "provider_state_statement_from_old_handoff_trusted": false,
+  "next_paid_action_requires_another_live_refresh": true,
+  "raw_secret_values_recorded": false
+}
