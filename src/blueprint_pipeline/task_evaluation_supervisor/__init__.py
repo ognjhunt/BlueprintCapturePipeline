@@ -62,6 +62,7 @@ from .lifecycle import (
     CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION,
     MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD,
     capture_supervisor_execution_options_from_env,
+    capture_supervisor_health_status,
     capture_supervisor_execution_profile,
     run_capture_build_supervisor,
 )
@@ -173,6 +174,7 @@ __all__ = [
     "CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD_ENV",
     "MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD",
     "capture_supervisor_execution_options_from_env",
+    "capture_supervisor_health_status",
     "CaptureBuildIngressError",
     "FrozenAgenticPolicyAdapter",
     "IndependentCandidateEvaluator",

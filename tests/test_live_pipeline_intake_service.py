@@ -36,6 +36,7 @@ def _allow_legacy_bearer_for_existing_intake_tests(
         "BLUEPRINT_CAPTURE_SUPERVISOR_AGENT_MODEL",
         "BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK",
         "BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD",
+        "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, "true")
@@ -445,6 +446,17 @@ def test_live_pipeline_intake_service_error_edges(
 
     health = client.get("/health").json()
     assert health["control_plane_ready"] is False
+    assert health["task_evaluation_supervisor"]["agent_harness"] == "openai_agents_sdk"
+    assert health["task_evaluation_supervisor"]["configuration_status"] == "valid"
+    assert health["task_evaluation_supervisor"]["zero_spend_lifecycle_ready"] is True
+    assert health["task_evaluation_supervisor"]["live_inference_configured"] is False
+    assert health["task_evaluation_supervisor"]["live_inference_ready"] is False
+    assert health["task_evaluation_supervisor"]["execution_profile_digest"].startswith(
+        "sha256:"
+    )
+    assert (
+        health["task_evaluation_supervisor"]["proof_or_recovery_authority_granted"] is False
+    )
     assert "manifest_path" not in health
     assert "endpoints" not in health
     assert (
@@ -506,6 +518,7 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
     monkeypatch.setenv("BLUEPRINT_CAPTURE_SUPERVISOR_AGENT_MODEL", "gpt-5-mini")
     monkeypatch.setenv("BLUEPRINT_CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK", "true")
     monkeypatch.setenv("BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD", "0.5")
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
     seen: dict[str, object] = {}
 
     def process(payload, *, store_root):
@@ -579,7 +592,14 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
             "authorization": "ephemeral-secret",
         },
     }
-    response = TestClient(create_app()).post(
+    client = TestClient(create_app())
+    supervisor_health = client.get("/health").json()["task_evaluation_supervisor"]
+    assert supervisor_health["configuration_status"] == "valid"
+    assert supervisor_health["live_inference_configured"] is True
+    assert supervisor_health["live_operator_gate_enabled"] is True
+    assert supervisor_health["live_inference_ready"] is True
+    assert supervisor_health["execution_profile_digest"].startswith("sha256:")
+    response = client.post(
         "/api/live-pipeline/capture-upload-intakes",
         json=submission,
         headers={"x-blueprint-intake-token": "token"},
@@ -628,7 +648,19 @@ def test_live_pipeline_capture_upload_refuses_invalid_supervisor_execution_confi
         raise AssertionError("capture processing must not start with invalid supervisor authority")
 
     monkeypatch.setattr(service, "process_capture_upload_submission", process)
-    response = TestClient(create_app()).post(
+    client = TestClient(create_app())
+    supervisor_health = client.get("/health").json()["task_evaluation_supervisor"]
+    assert supervisor_health == {
+        "agent_harness": "openai_agents_sdk",
+        "configuration_status": "invalid",
+        "zero_spend_lifecycle_ready": False,
+        "live_inference_configured": False,
+        "live_operator_gate_enabled": False,
+        "live_inference_ready": False,
+        "execution_profile_digest": None,
+        "proof_or_recovery_authority_granted": False,
+    }
+    response = client.post(
         "/api/live-pipeline/capture-upload-intakes",
         json={
             "schema_version": "capture_upload_transfer_submission.v1",

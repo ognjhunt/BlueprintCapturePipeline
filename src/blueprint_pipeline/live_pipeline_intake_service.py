@@ -79,6 +79,7 @@ from .task_evaluation_method_catalog import (
 )
 from .task_evaluation_supervisor import (
     capture_supervisor_execution_options_from_env,
+    capture_supervisor_health_status,
     run_capture_build_supervisor,
 )
 from .task_evaluation_run_webapp_sync import (
@@ -1658,6 +1659,7 @@ def create_app() -> FastAPI:
                 and _string(os.getenv(CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV))
                 and _string(os.getenv(CAPTURE_MALWARE_SCANNER_ARGV_ENV))
             ),
+            "task_evaluation_supervisor": capture_supervisor_health_status(),
             "proof_boundary": {
                 "authorized_hermetic_local_reconstruction_supported": True,
                 "paid_or_live_provider_execution_supported": False,

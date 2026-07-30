@@ -353,6 +353,14 @@ The service exposes:
 - `POST /api/live-pipeline/task-evaluation-runs/{run_id}/authorize`
 - `POST /api/live-pipeline/task-evaluation-runs/{run_id}/execute`
 - `GET /api/live-pipeline/task-evaluation-runs/{run_id}`
+
+`GET /health` includes a non-secret `task_evaluation_supervisor` object. Check
+`configuration_status`, `zero_spend_lifecycle_ready`,
+`live_inference_configured`, `live_operator_gate_enabled`,
+`live_inference_ready`, and `execution_profile_digest` before enabling capture
+traffic. The health response never exposes the configured budget, credentials,
+or raw environment values, and always reports that proof/recovery authority is
+not granted by the inference profile.
 - `POST /api/live-pipeline/job-requests`
 - `POST /api/live-pipeline/policy-packages`
 - `POST /api/live-pipeline/real-robot-pov`

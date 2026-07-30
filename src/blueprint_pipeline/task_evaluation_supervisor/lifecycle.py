@@ -93,6 +93,38 @@ def capture_supervisor_execution_profile(
     return value
 
 
+def capture_supervisor_health_status(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Return a non-secret, fail-closed view of capture-supervisor readiness."""
+
+    status = {
+        "agent_harness": "openai_agents_sdk",
+        "configuration_status": "invalid",
+        "zero_spend_lifecycle_ready": False,
+        "live_inference_configured": False,
+        "live_operator_gate_enabled": False,
+        "live_inference_ready": False,
+        "execution_profile_digest": None,
+        "proof_or_recovery_authority_granted": False,
+    }
+    try:
+        options = capture_supervisor_execution_options_from_env(environ)
+        profile = capture_supervisor_execution_profile(**options)
+    except ValueError:
+        return status
+    live_configured = options["allow_live_agents_sdk"] is True
+    live_gate = profile["live_operator_gate_enabled"] is True
+    return status | {
+        "configuration_status": "valid",
+        "zero_spend_lifecycle_ready": True,
+        "live_inference_configured": live_configured,
+        "live_operator_gate_enabled": live_gate,
+        "live_inference_ready": live_configured and live_gate,
+        "execution_profile_digest": profile["execution_profile_digest"],
+    }
+
+
 def run_capture_build_supervisor(
     *,
     capture_root: str | Path,
@@ -184,6 +216,7 @@ __all__ = [
     "CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION",
     "MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD",
     "capture_supervisor_execution_options_from_env",
+    "capture_supervisor_health_status",
     "capture_supervisor_execution_profile",
     "run_capture_build_supervisor",
 ]
