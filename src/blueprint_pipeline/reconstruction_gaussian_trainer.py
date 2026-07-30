@@ -94,6 +94,17 @@ def _latest_checkpoint(paths: Sequence[Path]) -> Path | None:
     return max(paths, key=iteration, default=None)
 
 
+def _stable_checkpoint(run_dir: Path) -> Path | None:
+    stable = run_dir / "checkpoint_last.pt"
+    if stable.is_file() and not stable.is_symlink():
+        return stable
+    latest = _latest_checkpoint(sorted((run_dir / "training").rglob("ckpt*.pt")))
+    if latest is None:
+        return None
+    shutil.copyfile(latest, stable)
+    return stable
+
+
 def _result_base(request: Mapping[str, Any], *, duration: float) -> dict[str, Any]:
     lineage = {
         key: json.loads(json.dumps(request[key]))
@@ -159,6 +170,45 @@ def _verified_replay(path: Path, *, request_digest: str) -> dict[str, Any]:
     return result
 
 
+def _record_interrupted_run(
+    *,
+    run_dir: Path,
+    request: Mapping[str, Any],
+    observation_ids: Sequence[str],
+    rejected_ids: Sequence[str],
+) -> dict[str, Any]:
+    log_path = run_dir / "training.log"
+    if not log_path.is_file() or log_path.is_symlink():
+        log_path.write_text(
+            "recovered interrupted run without a terminal training receipt\n",
+            encoding="utf-8",
+        )
+    checkpoint = _stable_checkpoint(run_dir)
+    result = _result_base(request, duration=0.0)
+    result.update(
+        status="interrupted",
+        failure_code="provider_interruption",
+        output_digests=[{"artifact_id": "training.log", "digest": _sha256(log_path)}],
+        checkpoint_references=(
+            [{"artifact_id": "checkpoint_last.pt", "digest": _sha256(checkpoint)}]
+            if checkpoint is not None
+            else []
+        ),
+        registered_observation_ids=list(observation_ids),
+        rejected_observation_ids=list(rejected_ids),
+        warnings=["interrupted_training_evidence_preserved"],
+        blockers=["provider_interruption"],
+        legal_next_actions=(
+            ["resume_bound_checkpoint"]
+            if checkpoint is not None
+            else ["preserve_evidence_and_stop"]
+        ),
+    )
+    normalized = build_training_result(result)
+    write_json(run_dir / "reconstruction_training_result.json", normalized)
+    return normalized
+
+
 def run_gaussian_reconstruction_training(
     *,
     training_request: Mapping[str, Any],
@@ -211,6 +261,7 @@ def run_gaussian_reconstruction_training(
         raise GaussianTrainerRuntimeError("training_worker_image_digest_mismatch")
     dataset = _safe_dataset(Path(artifact_root), str(dataset_export.get("relative_path") or ""))
     run_dir = Path(output_root).resolve() / request["reconstruction_training_request_digest"][7:23]
+    prior_run = run_dir.exists()
     run_dir.mkdir(parents=True, exist_ok=True)
     result_path = run_dir / "reconstruction_training_result.json"
     if result_path.exists():
@@ -218,7 +269,15 @@ def run_gaussian_reconstruction_training(
             result_path,
             request_digest=request["reconstruction_training_request_digest"],
         )
+    if prior_run:
+        return _record_interrupted_run(
+            run_dir=run_dir,
+            request=request,
+            observation_ids=observation_ids,
+            rejected_ids=rejected_ids,
+        )
     log_path = run_dir / "training.log"
+    log_path.write_text("training process started; terminal result pending\n", encoding="utf-8")
     ply_path = run_dir / "appearance_candidate.ply"
     iterations = int(request["iteration_budget"])
     command = [
@@ -260,13 +319,8 @@ def run_gaussian_reconstruction_training(
         returncode = 127
     duration = time.monotonic() - started
     log_path.write_text(output_text[-2_000_000:], encoding="utf-8")
-    upstream_checkpoints = sorted((run_dir / "training").rglob("ckpt*.pt"))
-    latest_checkpoint = _latest_checkpoint(upstream_checkpoints)
-    checkpoints: list[Path] = []
-    if latest_checkpoint is not None:
-        stable_checkpoint = run_dir / "checkpoint_last.pt"
-        shutil.copyfile(latest_checkpoint, stable_checkpoint)
-        checkpoints.append(stable_checkpoint)
+    stable_checkpoint = _stable_checkpoint(run_dir)
+    checkpoints = [stable_checkpoint] if stable_checkpoint is not None else []
     result = _result_base(request, duration=duration)
     result["registered_observation_ids"] = list(observation_ids)
     result["rejected_observation_ids"] = list(rejected_ids)

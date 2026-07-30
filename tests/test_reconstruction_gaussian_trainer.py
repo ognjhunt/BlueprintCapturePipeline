@@ -249,3 +249,43 @@ def test_trainer_rejects_missing_observation_ledger(tmp_path: Path) -> None:
             output_root=tmp_path / "outputs-malformed",
             command_runner=_successful_runner,
         )
+
+
+def test_process_restart_preserves_partial_checkpoint_without_retry(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    dataset_export = _dataset(artifacts)
+    request = _request()
+    run_dir = tmp_path / "outputs" / request["reconstruction_training_request_digest"][7:23]
+    partial = run_dir / "training/interrupted-run/ours_10/ckpt_10.pt"
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"partial-checkpoint")
+    calls = 0
+
+    def must_not_run(command, timeout):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("unchanged interrupted request must not retry")
+
+    result = run_gaussian_reconstruction_training(
+        training_request=request,
+        dataset_export=dataset_export,
+        artifact_root=artifacts,
+        output_root=tmp_path / "outputs",
+        command_runner=must_not_run,
+    )
+    assert calls == 0
+    assert result["status"] == "interrupted"
+    assert result["failure_code"] == "provider_interruption"
+    assert result["legal_next_actions"] == ["resume_bound_checkpoint"]
+    assert result["checkpoint_references"][0]["artifact_id"] == "checkpoint_last.pt"
+    assert (run_dir / "checkpoint_last.pt").read_bytes() == b"partial-checkpoint"
+
+    replay = run_gaussian_reconstruction_training(
+        training_request=request,
+        dataset_export=dataset_export,
+        artifact_root=artifacts,
+        output_root=tmp_path / "outputs",
+        command_runner=must_not_run,
+    )
+    assert replay == result
+    assert calls == 0
