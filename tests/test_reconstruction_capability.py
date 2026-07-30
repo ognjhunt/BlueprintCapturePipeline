@@ -75,9 +75,9 @@ def test_reconstruction_planner_selects_cheapest_sufficient_not_always_3dgs() ->
         permitted_provider_identities=["local"],
         method_profiles=[
             _method(
-                "calibrated-frames",
-                "pose_sfm_estimation",
-                ["calibrated_frames"],
+                "decoded-observations",
+                "decoded_observation_index",
+                ["decoded_observation_frames"],
                 cost=0.01,
             ),
             _method(
@@ -98,7 +98,7 @@ def test_reconstruction_planner_selects_cheapest_sufficient_not_always_3dgs() ->
 
     assert plan["status"] == "planned"
     assert [row["method_id"] for row in plan["selected_methods"]] == [
-        "calibrated-frames",
+        "decoded-observations",
         "lidar-scaffold",
     ]
     assert "appearance_layer" not in plan["required_representations"]
@@ -116,8 +116,8 @@ def test_reconstruction_planner_minimizes_total_method_set_cost() -> None:
         method_profiles=[
             _method(
                 "frames-only",
-                "pose_sfm_estimation",
-                ["calibrated_frames"],
+                "decoded_observation_index",
+                ["decoded_observation_frames"],
                 cost=0.04,
             ),
             _method(
@@ -129,7 +129,7 @@ def test_reconstruction_planner_minimizes_total_method_set_cost() -> None:
             _method(
                 "combined-local",
                 "lidar_depth_fusion",
-                ["calibrated_frames", "metric_reference_layer"],
+                ["decoded_observation_frames", "metric_reference_layer"],
                 cost=0.07,
             ),
         ],
@@ -138,7 +138,7 @@ def test_reconstruction_planner_minimizes_total_method_set_cost() -> None:
     assert plan["estimated_cost_usd"] == 0.07
     assert plan["selected_methods"] == [
         {
-            "representations": ["calibrated_frames", "metric_reference_layer"],
+            "representations": ["decoded_observation_frames", "metric_reference_layer"],
             "method_id": "combined-local",
             "method_version": "1",
             "method_profile_digest": plan["selected_methods"][0]["method_profile_digest"],

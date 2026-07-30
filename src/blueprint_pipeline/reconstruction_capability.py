@@ -20,6 +20,7 @@ SIMREADY_DECISION_SCHEMA_VERSION = "simready_asset_decision.v1"
 ROBOT_PLACEMENT_SCHEMA_VERSION = "robot_placement_result.v1"
 
 METHOD_KINDS = {
+    "decoded_observation_index",
     "pose_sfm_estimation",
     "metric_scaffold",
     "lidar_depth_fusion",
@@ -35,6 +36,7 @@ METHOD_KINDS = {
     "manual_owner_attested_correction",
 }
 REPRESENTATIONS = {
+    "decoded_observation_frames",
     "calibrated_frames",
     "appearance_layer",
     "metric_reference_layer",
@@ -183,7 +185,7 @@ def _required_representations(claim_types: Sequence[str]) -> list[str]:
     claims = {_text(claim) for claim in claim_types if _text(claim)}
     required: set[str] = set()
     if claims.intersection({"perception_visibility", "task_discovery", "appearance_review"}):
-        required.add("calibrated_frames")
+        required.add("decoded_observation_frames")
     if claims.intersection({"reachability", "robot_placement", "navigation_clearance"}):
         required.add("metric_reference_layer")
     if claims.intersection(PHYSICS_DEPENDENT_CLAIMS):
