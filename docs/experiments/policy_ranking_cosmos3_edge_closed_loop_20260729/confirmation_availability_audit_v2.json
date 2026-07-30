@@ -39,7 +39,7 @@
       "paligemma_vq_droid"
     ],
     "policy_droid_is_matching_physical_policy": false,
-    "minimum_valid_comparison": "pi0_droid_vs_pi0_fast_droid_across_17_sessions",
+    "minimum_valid_comparison": "pi0_droid_vs_pi0_fast_droid_across_14_complete_three_view_sessions",
     "required_input_audit": [
       "three_initial_DROID_views_exist_for_every_selected_session_and_policy",
       "initial_joint_and_gripper_state_exist",
@@ -52,27 +52,52 @@
   },
   "local_input_availability": {
     "checkout": "/Users/nijelhunt_1/workspace/policy-ranking-experiment-2-inputs/RoboArena_DataDump_07-17-2026",
+    "dataset_head": "7931db81f3f6a48a3245427f7213a4c461f92ccc",
+    "dataset_head_matches_frozen_revision": true,
     "audit_scope": "17_selected_sessions_x_2_Ctrl_World_supported_policies_x_left_right_wrist_state_assets",
     "expected_asset_paths": 136,
-    "present_asset_paths": 32,
-    "missing_asset_paths": 104,
-    "present_paths_are_git_lfs_pointers": 32,
+    "sparse_worktree_pointer_paths": 32,
+    "sparse_worktree_absent_paths": 104,
+    "pinned_git_tree_pointer_paths": 130,
+    "pinned_git_tree_absent_paths": 6,
+    "unique_lfs_oids": 130,
+    "pointer_declared_target_bytes": 86555754,
+    "absent_assets": {
+      "kind": "right_camera_video",
+      "affected_policy_rows": 6,
+      "affected_sessions": 3,
+      "session_ids_internal_only": [
+        "c53bcbf0-c324-4e28-b342-761a0ac4a31c",
+        "71aadabf-b8b4-436e-ad44-fc293c13b232",
+        "bc84dde3-b274-4256-b532-38d608875f41"
+      ]
+    },
+    "complete_three_view_session_comparisons": 14,
+    "complete_three_view_sessions": 14,
+    "cached_lfs_objects_before_targeted_fetch": 0,
+    "targeted_fetch_attempt": {
+      "scope": "130_exact_non_metadata_paths_at_frozen_HEAD",
+      "method": "git_lfs_fetch_exact_include",
+      "outcome": "transport_stalled_with_zero_objects_then_terminated",
+      "objects_downloaded": 0,
+      "paid_cost_usd": 0.0,
+      "outcome_metadata_fetched": false
+    },
     "materialized_data_files": 0,
-    "pointer_declared_target_bytes": 25163684,
     "outcome_metadata_opened": false,
     "input_contract_auditable_from_local_bytes": false,
-    "interpretation": "The sparse local checkout contains no realized image or state bytes for this candidate lane, and most expected selected paths are absent even as pointers. Three-view and state compatibility therefore cannot yet be verified."
+    "interpretation": "The pinned tree proves 130 immutable input-object identities, but six right-camera assets are absent and no LFS payload was cached before the targeted fetch. Exact three-view Ctrl-World eligibility is therefore limited to 14 sessions, pending payload retrieval and state-contract validation."
   },
   "power_analysis": {
     "independent_unit": "session",
     "comparison_count_per_session": 1,
-    "session_count": 17,
+    "session_count": 14,
     "test": "exact_one_sided_binomial_pairwise_accuracy_vs_0_5",
     "alpha": 0.05,
-    "critical_correct_count": 13,
-    "null_tail_probability_at_critical_count": 0.024520874023,
-    "true_pairwise_accuracy_needed_for_80_percent_power": 0.812715987107,
-    "interpretation": "The 17-session two-policy lane is powered only for a very large ordering effect; weaker but potentially useful effects remain inconclusive."
+    "critical_correct_count": 11,
+    "null_tail_probability_at_critical_count": 0.028686523438,
+    "true_pairwise_accuracy_needed_for_80_percent_power": 0.831248026047,
+    "interpretation": "The 14-session two-policy lane is powered only for a very large ordering effect; weaker but potentially useful effects remain inconclusive."
   },
   "fallback_ceiling": {
     "if_two_policy_ctrl_world_closed_loop_executes": "small_disjoint_confirmatory_comparison_with_severe_power_and_policy_coverage_limits",
@@ -82,13 +107,13 @@
   },
   "current_blockers": [
     "Ctrl_World_source_bytes_and_dependency_licenses_not_fully_frozen",
-    "selected_session_three_view_state_input_contract_not_verifiable_from_current_sparse_LFS_checkout",
-    "104_of_136_expected_selected_input_asset_paths_missing_locally",
-    "32_present_selected_input_assets_are_unmaterialized_Git_LFS_pointers",
+    "selected_session_three_view_state_input_contract_not_yet_verified_from_LFS_payloads",
+    "six_right_camera_assets_absent_from_the_pinned_dataset_tree_limiting_confirmation_to_14_sessions",
+    "130_selected_input_assets_have_pinned_LFS_oids_but_were_not_cached_before_targeted_fetch",
     "exact_pi0_and_pi0_fast_checkpoint_bytes_not_frozen_for_this_successor",
     "Ctrl_World_label_free_canary_not_yet_run",
     "immutable_Blueprint_source_commit_not_yet_pushed"
   ],
   "phase_b_admitted": false,
-  "audit_sha256": "9ad674c0b7d0c2d563f94637aaa46f3598d55afa119cc4dc3f8f213932052453"
+  "audit_sha256": "1dcc057440d4e03c6edc78214457d78e8ccaeba28e736f69d18195681748d629"
 }
