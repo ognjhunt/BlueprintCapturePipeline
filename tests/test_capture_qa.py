@@ -12,6 +12,10 @@ import blueprint_pipeline.capture_qa as capture_qa
 import blueprint_pipeline.capture_quality_analyzer as capture_quality_analyzer
 from blueprint_pipeline.capture_intake import CaptureIntakeError
 from blueprint_pipeline.capture_qa import build_capture_qa_report
+from blueprint_pipeline.capture_qa_webapp_sync import (
+    build_capture_qa_webapp_publication,
+    sync_capture_qa_to_webapp,
+)
 
 
 def _digest(payload: bytes) -> str:
@@ -156,6 +160,72 @@ def test_complete_360_media_passes_qa_without_upgrading_metric_or_physical_claim
         "scale_anchor_verified",
     ]
     assert report["next_cheapest_experiment"]["kind"] == "local_or_operator_measurement"
+
+
+def test_capture_qa_publication_is_exactly_bound_and_receipt_verified(
+    tmp_path: Path, monkeypatch
+) -> None:
+    payload = b"rights-cleared-360-video-sync"
+    report = build_capture_qa_report(
+        _envelope(payload),
+        upload_root=_upload(tmp_path, payload),
+        media_probe=_probe(payload),
+        quality_observations=_observations(payload),
+    )
+    publication = build_capture_qa_webapp_publication(
+        capture_session_id="capture-session-qa-1",
+        report=report,
+    )
+    assert publication["qa_report_digest"] == report["qa_report_digest"]
+    assert publication["proof_boundary"]["qa_is_physical_success"] is False
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            receipt = {
+                "schema_version": "capture_qa_publication_receipt.v1",
+                "already_exists": False,
+                **{
+                    field: publication[field]
+                    for field in (
+                        "capture_session_id",
+                        "intake_id",
+                        "capture_authority_profile",
+                        "envelope_digest",
+                        "qa_report_digest",
+                        "status",
+                        "state",
+                        "proof_boundary",
+                    )
+                },
+            }
+            return json.dumps(receipt).encode("utf-8")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.capture_qa_webapp_sync.urllib_request.urlopen",
+        lambda *_args, **_kwargs: Response(),
+    )
+    result = sync_capture_qa_to_webapp(
+        capture_session_id="capture-session-qa-1",
+        report=report,
+        endpoint_url="https://webapp.test/api/internal/pipeline/capture-qa",
+        token="fixture-sync-key",
+    )
+    assert result["status"] == "succeeded"
+    assert result["qa_report_digest"] == report["qa_report_digest"]
+
+    tampered = json.loads(json.dumps(report))
+    tampered["missing_evidence"] = []
+    with pytest.raises(ValueError, match="qa_report_digest_mismatch"):
+        build_capture_qa_webapp_publication(
+            capture_session_id="capture-session-qa-1",
+            report=tampered,
+        )
 
 
 def test_pts_gap_fails_with_specific_export_or_recapture_instruction(tmp_path: Path) -> None:
