@@ -92,9 +92,26 @@ def load_sealed_supervisor_evaluation_corpus(
 
     corpus_path = Path(path).expanduser().resolve()
     value = read_json(corpus_path)
+    expected_fields = {
+        "schema_version",
+        "description",
+        "cases",
+        "corpus_id",
+        "status",
+        "operator_id",
+        "issued_by_agent",
+        "frozen_at",
+        "frozen_before_agent_execution",
+        "development_cases_excluded_from_promotion",
+        "hidden_expected_properties_sent_to_agent",
+        "minimum_required_improvement",
+        "proof_effect",
+        "corpus_digest",
+    }
     expected_digest = canonical_digest(value, digest_field="corpus_digest")
     if (
-        value.get("schema_version") != SEALED_SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION
+        set(value) != expected_fields
+        or value.get("schema_version") != SEALED_SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION
         or value.get("corpus_digest") != expected_digest
         or value.get("status") != "frozen"
         or value.get("issued_by_agent") is not False

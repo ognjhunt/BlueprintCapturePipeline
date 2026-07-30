@@ -78,6 +78,7 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     freeze_scenario_manifest,
     freeze_candidate_policy_manifest,
     load_capture_build_ingress,
+    load_sealed_supervisor_evaluation_corpus,
     load_supervisor_evaluation_corpus,
     load_recorded_supervisor_execution,
     replay_supervisor_run,
@@ -3735,6 +3736,14 @@ def test_supervisor_evaluation_cli_validates_corpus_without_hidden_output(
     assert refused["status"] == "blocked"
     assert refused["model_invoked"] is False
     assert not (tmp_path / "tampered-validation.json").exists()
+
+    expanded_path = _sealed_corpus(tmp_path)
+    expanded = json.loads(expanded_path.read_text(encoding="utf-8"))
+    expanded["agent_selected_promotion_override"] = True
+    expanded["corpus_digest"] = canonical_digest(expanded, digest_field="corpus_digest")
+    expanded_path.write_text(json.dumps(expanded), encoding="utf-8")
+    with pytest.raises(SupervisorEvaluationError, match="sealed_evaluation_corpus_invalid"):
+        load_sealed_supervisor_evaluation_corpus(expanded_path)
 
 
 def test_evaluation_configuration_refuses_hidden_or_unregistered_spec_fields(

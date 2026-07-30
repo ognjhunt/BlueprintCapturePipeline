@@ -126,8 +126,21 @@ def load_supervisor_evaluation_corpus(
         raise SupervisorEvaluationError("evaluation_corpus_too_small")
     cases: list[SupervisorEvaluationCase] = []
     identities: set[str] = set()
+    allowed_case_fields = {
+        "case_id",
+        "split",
+        "required_claim_ids",
+        "allowed_claim_ids",
+        "clarification_required",
+        "targeted_recapture_required",
+        "expected_failure_types",
+        "expected_abstention_capabilities",
+        "expected_triggered_capabilities",
+        "hidden_canaries",
+        "baseline_metrics",
+    }
     for row in rows:
-        if not isinstance(row, Mapping):
+        if not isinstance(row, Mapping) or not set(row).issubset(allowed_case_fields):
             raise SupervisorEvaluationError("evaluation_corpus_case_invalid")
         case = SupervisorEvaluationCase(
             case_id=str(row.get("case_id") or ""),
