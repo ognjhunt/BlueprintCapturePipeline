@@ -492,6 +492,7 @@ class MultiViewCanaryReliabilityGate:
     """
 
     thresholds: ReliabilityThresholds
+    required_views: tuple[str, ...] = (EXTERIOR_VIEW, WRIST_VIEW)
     assessor: Callable[..., RolloutReliabilityReport] = assess_rollout_reliability
     gate_id: str = "new_site_multiview_tier1_reliability_v1"
 
@@ -506,8 +507,8 @@ class MultiViewCanaryReliabilityGate:
     ) -> dict[str, Any]:
         del previous_observation, query_index, output_dir
         videos = wam_prediction.get("generated_videos_by_view")
-        if not isinstance(videos, Mapping) or set(videos) != {EXTERIOR_VIEW, WRIST_VIEW}:
-            raise ValueError("new_site_canary_requires_external_and_wrist_videos")
+        if not isinstance(videos, Mapping) or set(videos) != set(self.required_views):
+            raise ValueError("new_site_canary_required_view_videos_mismatch")
         actions = np.asarray(prepared_transition.get("reliability_actions_10d"), dtype=float)
         if actions.ndim != 2 or actions.shape[1] != 10 or not np.isfinite(actions).all():
             raise ValueError("new_site_canary_reliability_actions_invalid")
@@ -517,7 +518,7 @@ class MultiViewCanaryReliabilityGate:
             wam_prediction.get("skeleton_only") is True
             and wam_prediction.get("intended_motion_only") is True
         )
-        for view_id in (EXTERIOR_VIEW, WRIST_VIEW):
+        for view_id in self.required_views:
             video = Path(str(videos[view_id])).expanduser().resolve()
             if not video.is_file() or video.is_symlink():
                 raise ValueError(f"new_site_canary_video_missing:{view_id}")
@@ -558,6 +559,7 @@ class MultiViewCanaryReliabilityGate:
             "abstain": bool(flags),
             "reasons": flags,
             "reports_by_view": reports,
+            "required_views": list(self.required_views),
             "thresholds": asdict(self.thresholds),
             "thresholds_sha256": canonical_sha256(asdict(self.thresholds)),
             "timing_flag_scope": TIMING_SCOPE_SESSION,
