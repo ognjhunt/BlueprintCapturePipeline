@@ -24,6 +24,10 @@ RECORDED_REAL_PROXY = (
     Path(__file__).parents[1]
     / "docs/evidence/arkitscenes_raw_proxy_40958756_b2d7297f.json"
 )
+RECORDED_REAL_DEPTH_SURFACE = (
+    Path(__file__).parents[1]
+    / "docs/evidence/arkitscenes_observed_surface_40958756_2ad2b7df.json"
+)
 AUTHORITY = {
     "arkitscenes_license_accepted": True,
     "license_acceptance_authority": "explicit_test_authority",
@@ -406,3 +410,36 @@ def test_recorded_real_scene_proxy_preserves_reduced_authority_contract() -> Non
     assert receipt["metric_geometry_proven"] is False
     assert receipt["collision_or_physics_proven"] is False
     assert receipt["isaac_compatibility_proven"] is False
+
+
+def test_recorded_real_depth_surface_preserves_proxy_claim_ceiling() -> None:
+    receipt = json.loads(RECORDED_REAL_DEPTH_SURFACE.read_text(encoding="utf-8"))
+
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    assert receipt["source_capture_digest"] == (
+        "sha256:bc493651dcc0950146e49bab91c9303a4d5f49c319c3e0b1048de1344d568e04"
+    )
+    assert receipt["contract_artifacts"]["surface_compilation_result_digest"] == (
+        "sha256:2ad2b7dfad9a5a296a804c2f98e02b6c1985edfeaa694e061b3646eb4c01f2fc"
+    )
+    assert receipt["contract_artifacts"]["observed_surface_digest"] == (
+        "sha256:f3085b732a4ccf4b80f7f587f8775b5b69fe64596bb280d2a8dda730c979923d"
+    )
+    assert receipt["surface_measurements"]["deterministic_replay_exact"] is True
+    assert receipt["surface_measurements"]["hidden_heldout_observations_accessed"] is False
+    assert receipt["surface_measurements"]["raw_arkit_poses_modified"] is False
+    assert receipt["surface_measurements"]["generated_fill_used"] is False
+    assert receipt["coordinate_frame_declaration"]["up_axis"] == (
+        "not_independently_validated"
+    )
+    assert receipt["claim_ceiling"]["observed_depth_surface_proxy"] is True
+    assert receipt["claim_ceiling"]["blueprint_raw_contract_3_2"] is False
+    assert receipt["claim_ceiling"]["iphone_route_proven"] is False
+    assert receipt["claim_ceiling"]["metric_reference_geometry"] is False
+    assert receipt["claim_ceiling"]["collision_geometry"] is False
+    assert receipt["claim_ceiling"]["isaac_load_render_compatibility"] is False
+    assert receipt["claim_ceiling"]["physical_task_success"] is False
+    assert receipt["runtime"]["cost_usd"] == 0.0
+    assert receipt["runtime"]["live_provider_inventory"] == 0
