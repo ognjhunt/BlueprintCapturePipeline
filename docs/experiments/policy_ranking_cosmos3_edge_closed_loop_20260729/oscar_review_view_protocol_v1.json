@@ -1,0 +1,47 @@
+{
+  "schema_version": "policy_ranking_oscar_review_view_protocol.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-30T03:14:00-0500",
+  "status": "prospective_before_review_derivative_generation",
+  "source_rollout": {
+    "arm": "exact_public_oscar_compatibility_replay_canary",
+    "case": "droid_TRI",
+    "oscar_source_revision": "4dea2f657e221b0ff24c895fcc8ab4d46d5a9adb",
+    "oscar_checkpoint_revision": "c9781ffa7dd8556d862d7d9f338a2ea008a58ca6",
+    "generated_video_sha256": "68bcce578a46855b2f56f83a52fb3312ab6938b0a7ee0eda9f65ba4921cf04d4",
+    "skeleton_video_sha256": "4ad9dd1c6cf2acd2bd62fd51a4e5c0744ee0a077b8ea06b7a0a35af24418d08c",
+    "skeleton_start_frame": 116,
+    "frame_count": 81,
+    "width": 640,
+    "height": 480,
+    "fps": 14.0,
+    "physical_future_rgb_used_by_oscar": false,
+    "physical_outcome_labels_accessed": false
+  },
+  "frozen_derivatives": {
+    "skeleton_only": "Public-compatible OpenCV-fallback decode of the exact conditioning segment after OpenCV INTER_LINEAR resize; intended-motion evidence only.",
+    "visible_skeleton_review": "Generated OSCAR pixels with only detected conditioning-annotation pixels alpha blended at 0.85; review composite, not native OSCAR output.",
+    "skeleton_region_occluded_scene": "Generated OSCAR pixels under the dilated conditioning mask replaced with RGB black; occlusion diagnostic, not inpainting.",
+    "binary_occlusion_mask": "The exact dilated mask used by the occlusion diagnostic.",
+    "individual_videos_required": true,
+    "composite_only_review_forbidden": true
+  },
+  "mask_contract": {
+    "input": "decoded RGB uint8 exact skeleton-conditioning frames",
+    "annotation_rule": "max_channel>=48_and_max_minus_min>=24",
+    "dilation": "OpenCV elliptical kernel, radius 7 pixels, one iteration",
+    "selection_basis": "Label-free conditioning-only coverage audit; no generated outcome or physical label was used to choose thresholds.",
+    "expected_mean_occlusion_fraction_from_label_free_audit": 0.050857606738683135,
+    "occluded_pixel_value_rgb": [0, 0, 0]
+  },
+  "claim_boundaries": {
+    "review_derivatives_are_wam_outputs": false,
+    "review_derivatives_may_feed_a_wam_or_policy": false,
+    "skeleton_only_proves_world_prediction": false,
+    "occlusion_guarantees_complete_robot_removal": false,
+    "technical_review_execution_proves_ranking": false,
+    "technical_review_execution_proves_physical_success": false,
+    "technical_review_execution_proves_thesis": false
+  },
+  "protocol_sha256": "8cbbdb8cc586af07c737015e680690463d355a60e9c4ada5e4051265fc4d7a0c"
+}
