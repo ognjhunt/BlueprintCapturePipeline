@@ -31,8 +31,14 @@ from .ctrl_world_replay_bundle_inspection import (
     inspect_ctrl_world_archive_inputs,
 )
 from .ctrl_world_current_reference_provider_bundle import (
+    EXPERIMENT_ID as CTRL_WORLD_CURRENT_REFERENCE_EXPERIMENT_ID,
+    RECEIPT_SCHEMA_VERSION as CTRL_WORLD_CURRENT_REFERENCE_RECEIPT_SCHEMA_VERSION,
     inspect_ctrl_world_current_reference_archive_inputs,
 )
+from .ctrl_world_current_reference_provider_runtime import (
+    MODEL_FREEZE as CTRL_WORLD_CURRENT_REFERENCE_MODEL_FREEZE,
+)
+from .ctrl_world_provider_bundle import CTRL_WORLD_PUBLIC_IMAGE
 from .policy_ranking_specialized_gpu_profiles import (
     build_ctrl_world_replay_profile,
     build_oscar_public_replay_profile,
@@ -78,6 +84,9 @@ from .watchdog_owner_teardown_contract import write_owner_teardown_cancel_reques
 
 PROBE_KIND = "policy-ranking-successor-cosmos"
 CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND = "policy-ranking-ctrl-world-current-reference"
+CTRL_WORLD_CURRENT_REFERENCE_PROFILE_FREEZE_SCHEMA = (
+    "policy_ranking_ctrl_world_current_reference_gpu_profile_freeze.v1"
+)
 FOLLOWUP_EXPERIMENT_ID = "policy_ranking_cosmos3_followup_20260728"
 SCHEMA_VERSION = "policy_ranking_successor_gpu_admission.v1"
 AUTHORIZATION_SCHEMA = "policy_ranking_successor_compute_authorization.v1"
@@ -126,6 +135,167 @@ class SuccessorGPUProfile:
     vllm_omni_revision: str | None = None
     allowed_providers: tuple[str, ...] = ("vast",)
     compatible_gpu_keywords: tuple[str, ...] = ("RTX PRO 6000",)
+
+
+def load_committed_ctrl_world_current_reference_profile(
+    path: str | Path | None,
+    *,
+    expected_source_commit: str,
+) -> tuple[SuccessorGPUProfile | None, list[str]]:
+    """Load a request-specific WAM profile only from the exact launch commit."""
+
+    blockers: list[str] = []
+    if path is None:
+        return None, ["successor_ctrl_world_current_reference_profile_freeze_missing"]
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_file() or resolved.is_symlink():
+        return None, ["successor_ctrl_world_current_reference_profile_freeze_invalid"]
+    try:
+        root_result = subprocess.run(  # noqa: S603 - fixed git argv
+            ["git", "-C", str(resolved.parent), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        repository_root = Path(root_result.stdout.strip()).resolve()
+        if not resolved.is_relative_to(repository_root):
+            raise ValueError("profile_outside_repository")
+        relative = resolved.relative_to(repository_root).as_posix()
+        head = subprocess.run(  # noqa: S603 - fixed git argv
+            ["git", "-C", str(repository_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+        if head != expected_source_commit:
+            blockers.append("successor_ctrl_world_current_reference_profile_commit_mismatch")
+        tracked = subprocess.run(  # noqa: S603 - fixed git argv
+            ["git", "-C", str(repository_root), "ls-files", "--error-unmatch", relative],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+        if tracked.returncode != 0:
+            blockers.append("successor_ctrl_world_current_reference_profile_not_tracked")
+            head_bytes = b""
+        else:
+            head_bytes = subprocess.run(  # noqa: S603 - fixed git argv
+                ["git", "-C", str(repository_root), "show", f"HEAD:{relative}"],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            ).stdout
+        file_bytes = resolved.read_bytes()
+        if head_bytes != file_bytes:
+            blockers.append("successor_ctrl_world_current_reference_profile_not_exact_head")
+        payload = json.loads(file_bytes.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+        return None, sorted(
+            set(blockers + ["successor_ctrl_world_current_reference_profile_freeze_unreadable"])
+        )
+    if not isinstance(payload, Mapping):
+        return None, sorted(
+            set(blockers + ["successor_ctrl_world_current_reference_profile_freeze_invalid"])
+        )
+    digest_payload = dict(payload)
+    recorded_digest = digest_payload.pop("manifest_sha256", None)
+    if recorded_digest != canonical_sha256(digest_payload):
+        blockers.append("successor_ctrl_world_current_reference_profile_digest_invalid")
+    if payload.get("schema_version") != CTRL_WORLD_CURRENT_REFERENCE_PROFILE_FREEZE_SCHEMA:
+        blockers.append("successor_ctrl_world_current_reference_profile_schema_invalid")
+    if payload.get("status") != "frozen":
+        blockers.append("successor_ctrl_world_current_reference_profile_not_frozen")
+    values = payload.get("profile")
+    if not isinstance(values, Mapping):
+        return None, sorted(
+            set(blockers + ["successor_ctrl_world_current_reference_profile_values_invalid"])
+        )
+    kwargs = dict(values)
+    authorization_ids = kwargs.get("authorization_ids_by_allocation_index")
+    if isinstance(authorization_ids, Mapping):
+        try:
+            kwargs["authorization_ids_by_allocation_index"] = {
+                int(index): str(value) for index, value in authorization_ids.items()
+            }
+        except (TypeError, ValueError):
+            blockers.append("successor_ctrl_world_current_reference_authorization_ids_invalid")
+    for key in ("allowed_providers", "compatible_gpu_keywords"):
+        value = kwargs.get(key)
+        if isinstance(value, list):
+            kwargs[key] = tuple(str(item) for item in value)
+    try:
+        profile = SuccessorGPUProfile(**kwargs)
+    except TypeError:
+        return None, sorted(
+            set(blockers + ["successor_ctrl_world_current_reference_profile_values_invalid"])
+        )
+    required = {
+        "experiment_id": CTRL_WORLD_CURRENT_REFERENCE_EXPERIMENT_ID,
+        "admission_schema": "policy_ranking_ctrl_world_current_reference_gpu_admission.v1",
+        "authorization_schema": (
+            "policy_ranking_ctrl_world_current_reference_compute_authorization.v1"
+        ),
+        "preflight_schema": "policy_ranking_ctrl_world_current_reference_vast_preflight.v1",
+        "receipt_schema": CTRL_WORLD_CURRENT_REFERENCE_RECEIPT_SCHEMA_VERSION,
+        "probe_kind": CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND,
+        "ctrl_world_current_reference_bundle": True,
+        "provider_bundle_kind": "wam",
+        "bundle_schema": "wam_provider_runtime_manifest.v1",
+        "qualification_canary_request_count": 1,
+        "scientific_matrix_request_count": 0,
+        "total_initial_generation_request_count": 1,
+    }
+    blockers.extend(
+        f"successor_ctrl_world_current_reference_profile_{key}_invalid"
+        for key, expected in required.items()
+        if getattr(profile, key) != expected
+    )
+    source_freeze = CTRL_WORLD_CURRENT_REFERENCE_MODEL_FREEZE["ctrl_world_source"]
+    checkpoint_freeze = CTRL_WORLD_CURRENT_REFERENCE_MODEL_FREEZE["ctrl_world_checkpoint"]
+    if profile.cosmos_framework_revision != source_freeze["revision"]:
+        blockers.append("successor_ctrl_world_current_reference_profile_source_invalid")
+    if (
+        profile.checkpoint_repository != checkpoint_freeze["repository"]
+        or profile.checkpoint_revision != checkpoint_freeze["revision"]
+    ):
+        blockers.append("successor_ctrl_world_current_reference_profile_checkpoint_invalid")
+    if profile.public_image != CTRL_WORLD_PUBLIC_IMAGE:
+        blockers.append("successor_ctrl_world_current_reference_profile_image_invalid")
+    if profile.cosmos_revision is not None or profile.vllm_omni_revision is not None:
+        blockers.append("successor_ctrl_world_current_reference_profile_unrelated_model_invalid")
+    if profile.allowed_providers != ("vast",):
+        blockers.append("successor_ctrl_world_current_reference_profile_provider_invalid")
+    if profile.compatible_gpu_keywords != ("RTX PRO 6000", "H100"):
+        blockers.append("successor_ctrl_world_current_reference_profile_gpu_types_invalid")
+    if profile.request_budget_amendment_sha256 is not None:
+        blockers.append("successor_ctrl_world_current_reference_profile_request_budget_invalid")
+    if not (
+        profile.max_hourly_rate_usd == 2.05
+        and profile.target_spend_usd == 3.0
+        and profile.max_compute_cap_usd == 5.0
+        and profile.hard_ttl_seconds == 4_800
+        and profile.min_gpu_ram_mb == 80_000
+        and profile.max_hourly_rate_usd * profile.hard_ttl_seconds / 3600.0
+        <= profile.target_spend_usd
+    ):
+        blockers.append("successor_ctrl_world_current_reference_profile_spend_limits_invalid")
+    if len(profile.authorization_ids_by_allocation_index) != 1:
+        blockers.append("successor_ctrl_world_current_reference_profile_allocation_count_invalid")
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", profile.expected_bundle_sha256)
+        or profile.expected_bundle_size_bytes <= 0
+        or not profile.expected_embedded_input_hashes
+        or any(
+            not re.fullmatch(r"[0-9a-f]{64}", str(digest))
+            for digest in profile.expected_embedded_input_hashes.values()
+        )
+    ):
+        blockers.append("successor_ctrl_world_current_reference_profile_bundle_binding_invalid")
+    if blockers:
+        return None, sorted(set(blockers))
+    return profile, []
 
 
 MAX_COMPUTE_CAP_USD = 6.0
@@ -1723,6 +1893,7 @@ def run_successor_gpu_lane(
     provider_output_get_url_file: str | Path | None = None,
     observed_now_epoch: float | None = None,
     expected_probe_kind: str | None = None,
+    current_reference_profile_freeze_path: str | Path | None = None,
 ) -> dict[str, Any]:
     input_blockers: list[str] = []
 
@@ -1739,7 +1910,25 @@ def run_successor_gpu_lane(
     provider_preflight = load_input("provider_preflight", provider_preflight_path)
     bundle_receipt = load_input("bundle_receipt", provider_bundle_receipt_path)
     receipt_schema = bundle_receipt.get("schema_version")
-    if receipt_schema == CTRL_WORLD_REPLAY_PROFILE.receipt_schema:
+    if receipt_schema == CTRL_WORLD_CURRENT_REFERENCE_RECEIPT_SCHEMA_VERSION:
+        profile, profile_blockers = load_committed_ctrl_world_current_reference_profile(
+            current_reference_profile_freeze_path,
+            expected_source_commit=expected_source_commit,
+        )
+        if profile is None:
+            blockers = sorted(set(input_blockers + profile_blockers))
+            result = {
+                "schema_version": "policy_ranking_successor_profile_selection.v1",
+                "status": "blocked",
+                "reason": "ctrl_world_current_reference_profile_not_immutably_frozen",
+                "blockers": blockers,
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(admission_out), result)
+            write_json(Path(bound_request_out), result)
+            write_json(Path(adapter_output), result)
+            return result
+    elif receipt_schema == CTRL_WORLD_REPLAY_PROFILE.receipt_schema:
         profile = CTRL_WORLD_REPLAY_PROFILE
     elif receipt_schema == OSCAR_PUBLIC_REPLAY_PROFILE.receipt_schema:
         profile = OSCAR_PUBLIC_REPLAY_PROFILE
@@ -1923,7 +2112,12 @@ def run_successor_gpu_lane(
             pre_provider_mutation_hook=consume_immediately_before_runpod_mutation,
         )
         if consumption["status"] != "consumed":
-            blockers = [str(item) for item in result.get("blockers") or []]
+            result_blockers = result.get("blockers")
+            blockers = (
+                [str(item) for item in result_blockers]
+                if isinstance(result_blockers, list)
+                else []
+            )
             if result.get("status") in {"completed", "retained_owned"}:
                 blockers.append(
                     "successor_compute_authorization_not_consumed_before_provider_mutation"
@@ -2081,6 +2275,7 @@ __all__ = [
     "DROID_REFERENCE_PROFILE",
     "CTRL_WORLD_REPLAY_PROFILE",
     "CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND",
+    "CTRL_WORLD_CURRENT_REFERENCE_PROFILE_FREEZE_SCHEMA",
     "EDGE_CLOSED_LOOP_PROFILE",
     "OSCAR_PUBLIC_REPLAY_PROFILE",
     "POWERED_DROID_PROFILE",
@@ -2093,5 +2288,6 @@ __all__ = [
     "collect_successor_vast_preflight",
     "collect_successor_runpod_preflight",
     "inspect_successor_bundle",
+    "load_committed_ctrl_world_current_reference_profile",
     "run_successor_gpu_lane",
 ]

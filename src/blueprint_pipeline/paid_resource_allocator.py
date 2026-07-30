@@ -331,7 +331,7 @@ def _control_plane_checkout_blockers() -> tuple[list[str], dict[str, object]]:
         blockers.append("gpu_canary_orchestrator_source_commit_unavailable")
     if not checkout_clean:
         blockers.append("gpu_canary_orchestrator_checkout_not_clean")
-    identity = {
+    identity: dict[str, object] = {
         "schema_version": "blueprint.gpu_canary_control_plane_identity.v1",
         "orchestrator_source_commit": checkout_commit or None,
         "checkout_clean": checkout_clean,
@@ -665,6 +665,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--successor-output-path")
     gpu.add_argument("--successor-session-budget-ledger")
     gpu.add_argument("--successor-bundle-receipt")
+    gpu.add_argument(
+        "--successor-profile-freeze",
+        help=(
+            "Tracked exact-HEAD GPU profile freeze for a request-bound successor bundle. "
+            "Required for Blueprint Ctrl-World current-reference execution."
+        ),
+    )
     gpu.add_argument("--reasoner-bundle-receipt")
     gpu.add_argument("--reasoner-public-base-url")
     gpu.add_argument("--reasoner-token-file")
@@ -1208,6 +1215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         expected_source_commit=checkout_commit,
                         execute=args.execute,
                         expected_probe_kind=args.probe_kind,
+                        current_reference_profile_freeze_path=args.successor_profile_freeze,
                     )
             success = result.get("status") in {
                 "dry_run_ready",

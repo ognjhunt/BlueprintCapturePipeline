@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -1013,6 +1014,144 @@ def test_successor_lane_rejects_probe_kind_profile_mismatch(tmp_path: Path) -> N
     assert "successor_probe_kind_profile_mismatch" in result["blockers"]
 
 
+def test_current_reference_receipt_requires_committed_profile_freeze(tmp_path: Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": "ctrl_world_current_reference_provider_bundle_receipt.v1",
+                "experiment_id": "policy_ranking_real_policy_closed_loop_confirmation_20260730",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = admission.run_successor_gpu_lane(
+        authorization_path=tmp_path / "missing-authorization.json",
+        environment_path=tmp_path / "missing-environment.json",
+        smoke_inventory_path=tmp_path / "missing-inventory.json",
+        provider_preflight_path=tmp_path / "missing-preflight.json",
+        provider_bundle_path=tmp_path / "missing-bundle.zip",
+        provider_bundle_receipt_path=receipt,
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "adapter.json",
+        job_dir=tmp_path / "job",
+        public_base_url=None,
+        token_file=None,
+        secret_env_file=None,
+        output_path=None,
+        session_budget_ledger=None,
+        expected_source_commit="e" * 40,
+        execute=False,
+        expected_probe_kind=admission.CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert (
+        "successor_ctrl_world_current_reference_profile_freeze_missing"
+        in result["blockers"]
+    )
+    assert json.loads((tmp_path / "admission.json").read_text()) == result
+    assert json.loads((tmp_path / "bound.json").read_text()) == result
+    assert json.loads((tmp_path / "adapter.json").read_text()) == result
+
+
+def test_current_reference_profile_must_equal_tracked_head(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    profile_values = {
+        "experiment_id": "policy_ranking_real_policy_closed_loop_confirmation_20260730",
+        "admission_schema": "policy_ranking_ctrl_world_current_reference_gpu_admission.v1",
+        "authorization_schema": (
+            "policy_ranking_ctrl_world_current_reference_compute_authorization.v1"
+        ),
+        "preflight_schema": "policy_ranking_ctrl_world_current_reference_vast_preflight.v1",
+        "receipt_schema": "ctrl_world_current_reference_provider_bundle_receipt.v1",
+        "authorization_ids_by_allocation_index": {"1": "ctrl-world-current-reference-allocation-1"},
+        "cost_authorization_binding_sha256": "a" * 64,
+        "expected_bundle_sha256": "b" * 64,
+        "expected_bundle_size_bytes": 123,
+        "expected_embedded_input_hashes": {"request_sha256": "c" * 64},
+        "qualification_canary_request_count": 1,
+        "scientific_matrix_request_count": 0,
+        "total_initial_generation_request_count": 1,
+        "request_budget_amendment_sha256": None,
+        "max_compute_cap_usd": 5.0,
+        "max_hourly_rate_usd": 2.05,
+        "target_spend_usd": 3.0,
+        "hard_ttl_seconds": 4_800,
+        "probe_kind": admission.CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND,
+        "ctrl_world_current_reference_bundle": True,
+        "provider_bundle_kind": "wam",
+        "bundle_schema": "wam_provider_runtime_manifest.v1",
+        "checkpoint_repository": "yjguo/Ctrl-World",
+        "checkpoint_revision": "8cf814693f411962dc866a2ddb5b785afd17a93a",
+        "public_image": (
+            "docker.io/pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime@sha256:"
+            "c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2"
+        ),
+        "min_gpu_ram_mb": 80_000,
+        "cosmos_revision": None,
+        "cosmos_framework_revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+        "vllm_omni_revision": None,
+        "allowed_providers": ["vast"],
+        "compatible_gpu_keywords": ["RTX PRO 6000", "H100"],
+    }
+    payload = {
+        "schema_version": admission.CTRL_WORLD_CURRENT_REFERENCE_PROFILE_FREEZE_SCHEMA,
+        "status": "frozen",
+        "profile": profile_values,
+    }
+    payload["manifest_sha256"] = admission.canonical_sha256(payload)
+    profile_path = repository / "profile.json"
+    profile_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(["git", "-C", str(repository), "add", "profile.json"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Blueprint Test",
+            "-c",
+            "user.email=blueprint-test@example.invalid",
+            "commit",
+            "-qm",
+            "freeze profile",
+        ],
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    profile, blockers = admission.load_committed_ctrl_world_current_reference_profile(
+        profile_path, expected_source_commit=head
+    )
+
+    assert blockers == []
+    assert profile is not None
+    assert profile.expected_bundle_sha256 == "b" * 64
+    assert profile.authorization_ids_by_allocation_index == {
+        1: "ctrl-world-current-reference-allocation-1"
+    }
+
+    profile_path.write_text(profile_path.read_text() + "\n", encoding="utf-8")
+    dirty_profile, dirty_blockers = (
+        admission.load_committed_ctrl_world_current_reference_profile(
+            profile_path, expected_source_commit=head
+        )
+    )
+    assert dirty_profile is None
+    assert "successor_ctrl_world_current_reference_profile_not_exact_head" in dirty_blockers
+
+
 def test_paid_resource_allocator_dispatches_successor_lane_only_through_probe_kind(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1115,6 +1254,8 @@ def test_paid_resource_allocator_dispatches_ctrl_world_current_reference_probe(
             "bundle.zip",
             "--successor-bundle-receipt",
             "receipt.json",
+            "--successor-profile-freeze",
+            "profile.json",
             "--admission-out",
             str(tmp_path / "admission.json"),
             "--bound-request-out",
@@ -1133,3 +1274,4 @@ def test_paid_resource_allocator_dispatches_ctrl_world_current_reference_probe(
     assert captured["expected_probe_kind"] == (
         allocator.CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND
     )
+    assert captured["current_reference_profile_freeze_path"] == "profile.json"

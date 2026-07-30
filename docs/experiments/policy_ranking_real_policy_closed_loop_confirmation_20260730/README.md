@@ -145,6 +145,9 @@ used as blind confirmation.
 - `protocol_amendment_13_same_policy_requery_scope_v1.md` — restricts every
   generated-observation policy query to the exact preceding policy identity
   while preserving the legacy all-three frame-zero canary;
+- `protocol_amendment_14_ctrl_world_paid_profile_freeze_v1.md` — requires the
+  request-specific Ctrl-World bundle identity, limits, and authorization to be
+  byte-identical to a tracked file at the immutable launch commit;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
