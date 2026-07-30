@@ -174,6 +174,18 @@ def _validate_source_usdz(path: Path, name: str) -> None:
         raise NuRecOpenUSDPackagingError([f"{name}_usdz_corrupt"]) from exc
 
 
+def validate_safe_usdz_archive(path: Path, name: str = "source") -> None:
+    """Validate a USDZ as a bounded, self-contained, uncompressed archive.
+
+    This public boundary is shared by local importers that must inspect a USDZ
+    before copying it into a trusted artifact root. It intentionally performs
+    archive-safety checks only; scientific or Isaac qualification remains a
+    separate deterministic gate.
+    """
+
+    _validate_source_usdz(path, name)
+
+
 def _alignment_extra(offset: int, filename: str) -> bytes:
     base = offset + 30 + len(filename.encode("utf-8"))
     if base % 64 == 0:
@@ -423,4 +435,5 @@ __all__ = [
     "NuRecOpenUSDPackagingError",
     "PACKAGER_IMPLEMENTATION_VERSION",
     "package_nurec_openusd",
+    "validate_safe_usdz_archive",
 ]

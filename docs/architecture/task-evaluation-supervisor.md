@@ -186,6 +186,15 @@ complete versioned packaging request before invoking the trusted packager; a
 digest-valid but scientifically unqualified collider request is refused before
 filesystem execution.
 
+Phase 6 registers `import_external_reconstruction` for the local external-export
+lane. Its only model-visible argument is the exact
+`external_reconstruction_import_request.v1` digest. The trusted importer checks
+source-capture binding, provenance and rights, path confinement, exact hashes,
+bounded sizes, and USDZ archive safety, then emits separate rights and import
+receipts. It performs no remote upload and cannot promote provider output to
+raw evidence, metric geometry, collision truth, Isaac compatibility, task
+success, physical success, or deployment readiness.
+
 When no Decision/Evidence Request or maintained Site-Task Testbed exists, the
 manager first triggers claim interpretation, then capture/testbed inspection,
 and stops with a typed clarification or blocker. Scenario, routing, recovery,

@@ -1,12 +1,49 @@
 # Scaniverse Asset Import Lane
 
-Status: local, proof-bounded support-asset lane.
+Status: local, proof-bounded support-asset lanes. Remote provider execution is
+disabled.
 
 `blueprint-import-scaniverse-assets` stages Scaniverse exports into an existing
 Blueprint capture root. It is for capturer/operator workflows where a site was
 also processed through Scaniverse Web from a 360 video capture and exported as
 USDZ, PLY, SPZ, GLB/GLTF, FBX, OBJ, or USD. It is an optional support lane, not
 a replacement for BlueprintCapture raw bundle authority.
+
+This command is the legacy operator-convenience lane. Its sidecar fields are
+advisory and its manifest is not strict reconstruction admission. Task
+Evaluation Supervisor imports use the separate, fail-closed contracts described
+below.
+
+## Strict Supervisor Import
+
+The registered `import_external_reconstruction` tool accepts only the digest of
+an `external_reconstruction_import_request.v1`. Trusted runtime state supplies
+the validated request, source root, output root, and repository-owned local
+importer; the agent receives no path, shell, network, database, or provider
+handle.
+
+The strict request requires exact source-capture identity and digest, immutable
+asset paths and hashes, and an inline Scaniverse provenance/rights declaration.
+That declaration records product tier, terms version, provider scan or job
+identity, ownership or license, commercial-use scope, consent/privacy status,
+confidentiality, retention, deletion, model-training, competitive-use, resale,
+and benchmarking terms. It attests that provider processing was performed by
+the user and that Blueprint performed no remote upload.
+
+Accepted files are `.usdz`, `.usd`, `.usda`, `.usdc`, `.ply`, `.spz`, and
+`.glb`. The importer confines paths to the declared source root, rejects
+symlinks, traversal, digest mismatch, excessive size/count, and unsafe USDZ
+archives, then copies into a content-addressed local directory. Untrusted source
+filenames are sanitized and never treated as instructions. It emits separate
+`niantic_scaniverse_provenance_rights_receipt.v1` and
+`external_reconstruction_import_receipt.v1` artifacts, and re-hashes assets on
+replay.
+
+The receipt proves only that exact, rights-reviewed provider exports were
+admitted as derived support. Raw observation, metric scale, collision validity,
+Isaac compatibility, simulator task evidence, physical success, deployment
+readiness, and remote-upload authority all remain false until their independent
+gates pass.
 
 ## Contract
 

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/external_reconstruction_import_request.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "source_capture_identity", "source_capture_digest", "provider_identity", "import_lane", "asset_bindings", "provenance_rights_declaration", "remote_calls_authorized", "remote_calls_performed", "proof_effect", "claim_ceiling", "external_import_request_digest"],
+  "properties": {
+    "schema_version": {"const": "external_reconstruction_import_request.v1"},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "provider_identity": {"const": "scaniverse"},
+    "import_lane": {"const": "local_external_import"},
+    "asset_bindings": {"type": "array", "minItems": 1, "maxItems": 16},
+    "remote_calls_authorized": {"const": false},
+    "remote_calls_performed": {"const": false},
+    "proof_effect": {"const": "external_import_request_only"},
+    "claim_ceiling": {"const": "none"},
+    "external_import_request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}

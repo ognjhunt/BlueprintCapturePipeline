@@ -313,6 +313,27 @@ Legacy callers remain on v1 and cannot satisfy
 the physics-presence gate. The v2 code path is hermetically contract-tested but
 remains real-Isaac unverified until executed on the pinned GPU worker.
 
+## Strict external reconstruction import
+
+Phase 6 preserves the legacy Scaniverse staging command for operator
+compatibility while adding a separate deterministic supervisor lane. The
+`external_reconstruction_import_request.v1` contract binds local exports to the
+immutable source capture and to an exact, digest-verified Scaniverse provenance
+and rights declaration. The registered `import_external_reconstruction` tool
+accepts only that request digest and invokes an injected repository-owned local
+importer; the model receives no filesystem, network, provider, or authority
+handle.
+
+The importer validates path confinement, symlink exclusion, file count and size
+limits, exact hashes, supported formats, and safe USDZ archive structure before
+copying to a content-addressed directory. It emits separate rights and import
+receipts and re-hashes every replay. Provider exports remain derived support:
+they establish no raw-capture, scale, metric geometry, collision, Isaac, task,
+physical, or deployment claim. The lane performs no remote request. A future
+remote adapter must pass provider admission and explicit confidential-upload,
+terms, spend, retention/deletion, and source-binding authority before receiving
+bytes.
+
 ## Normalized results and layers
 
 `reconstruction_result.v1` binds exact capture, method-profile,

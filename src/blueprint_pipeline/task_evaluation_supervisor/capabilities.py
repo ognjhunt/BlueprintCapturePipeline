@@ -77,6 +77,10 @@ class SupervisorContext:
     nurec_openusd_packager: Any | None = None
     isaac_verification_request: Mapping[str, Any] | None = None
     isaac_asset_verifier: Any | None = None
+    # Phase 6 local external-import artifacts. No provider/network handle is
+    # exposed to the model; only the frozen request digest enters the tool call.
+    external_reconstruction_import_request: Mapping[str, Any] | None = None
+    external_reconstruction_importer: Any | None = None
 
 
 class SupervisorCapability(Protocol):

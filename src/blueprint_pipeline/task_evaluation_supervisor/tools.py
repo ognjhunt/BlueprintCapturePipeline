@@ -16,6 +16,10 @@ from ..common import write_json
 from ..decision_evidence_contracts import canonical_digest
 from ..decision_evidence_router import route_decision_evidence
 from ..evaluation_run_contract import validate_evaluation_run_spec
+from ..external_reconstruction_import import (
+    build_external_reconstruction_import_receipt,
+    build_external_reconstruction_import_request,
+)
 from ..reconstruction_geometry_contracts import (
     build_collider_candidate_manifest,
     build_collider_qualification_report,
@@ -193,6 +197,15 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "artifact_digest": {"type": "string"},
             "claim_ceiling": {"const": "isaac_load_render_compatibility"},
             "decision": {"const": "verified_compatibility_only"},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "import_external_reconstruction": _output_schema(
+        {
+            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "artifact_digest": {"type": "string"},
+            "claim_ceiling": {"const": "external_reconstruction_import"},
+            "decision": {"const": "imported_derived_support_only"},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -501,6 +514,17 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             required_inputs=["isaac_verification_request_digest"], mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
             minimum_mode="execute_non_spend", timeout_seconds=7_200.0,
+        ),
+        _descriptor(
+            "import_external_reconstruction", "capture_reconstruction_external_import",
+            expected_artifacts=["external_reconstruction_import_receipt.v1"],
+            input_properties={"external_import_request_digest": {"type": "string"}},
+            required_inputs=["external_import_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=1_800.0,
+            idempotency="content_addressed_receipt_replay",
         ),
         _descriptor(
             "validate_proposed_claim_graph",
@@ -895,6 +919,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "qualify_collision_candidate",
         "package_nurec_openusd",
         "verify_isaac_asset",
+        "import_external_reconstruction",
         "propose_targeted_recapture",
     ),
     "evaluation_method_router": (
@@ -1706,6 +1731,12 @@ _GEOMETRY_TOOL_CONFIG = {
         "isaac_verification_result_digest", "isaac_asset_verification_result.v1",
         "isaac_load_render_compatibility", "status",
     ),
+    "import_external_reconstruction": (
+        "external_reconstruction_import_request", "external_reconstruction_importer",
+        "external_import_request_digest", build_external_reconstruction_import_receipt,
+        "external_import_receipt_digest", "external_reconstruction_import_receipt.v1",
+        "external_reconstruction_import", "status",
+    ),
 }
 
 
@@ -1723,6 +1754,11 @@ def _execute_geometry_contract_tool(
     if tool_id == "package_nurec_openusd":
         try:
             source = build_nurec_openusd_packaging_request(source)
+        except ValueError as exc:
+            raise ValueError(f"registered_tool_request_contract_invalid:{tool_id}") from exc
+    if tool_id == "import_external_reconstruction":
+        try:
+            source = build_external_reconstruction_import_request(source)
         except ValueError as exc:
             raise ValueError(f"registered_tool_request_contract_invalid:{tool_id}") from exc
     expected = arguments.get(digest_field)
@@ -1757,6 +1793,11 @@ def _execute_geometry_contract_tool(
             "collider_qualification_digest",
             "collider_qualification_decision",
         )
+    ):
+        raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
+    if tool_id == "import_external_reconstruction" and (
+        result.get("external_import_request_digest") != actual
+        or result.get("source_capture_digest") != source.get("source_capture_digest")
     ):
         raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
     result_digest = result[result_digest_field]

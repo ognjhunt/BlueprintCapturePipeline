@@ -159,6 +159,15 @@ digests, qualified-collider binding, path confinement, self-contained USDZ
 closure, deterministic archive layout, and exact composed prims before its
 result can enter the ledger.
 
+Phase 6 adds `import_external_reconstruction` for already-exported local
+Scaniverse assets. The tool accepts only an immutable request digest. The
+trusted request binds exact source-capture and asset hashes plus the full
+provenance/rights declaration; the injected importer rejects traversal,
+symlinks, oversized inputs, unsafe USDZ archives, and altered replay bytes. It
+makes no remote call and cannot grant upload or provider authority. A successful
+receipt remains derived support with every metric, collision, Isaac, task,
+physical, and deployment proof boolean false.
+
 Clarification responses and authorization grants are separate receipts created
 at trusted customer/operator boundaries. Agent output never satisfies its own
 request. Every accepted response is revalidated by deterministic contracts.
