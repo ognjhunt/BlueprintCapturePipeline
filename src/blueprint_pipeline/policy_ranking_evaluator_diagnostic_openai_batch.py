@@ -28,6 +28,11 @@ from .policy_ranking_roboarena_evaluator_openai import validate_rotation_attesta
 
 
 SCHEMA_VERSION = "policy_ranking_openai_pair_batch.v1"
+COMPLETE_GRAPH_PAIR_COUNT = 1323
+TRANSPORT_REPAIR_GRAPH_KIND = "registered_complete_graph_subset"
+TRANSPORT_REPAIR_ARM_ID = "gpt5_complete_graph_transport_repair"
+TRANSPORT_REPAIR_MAX_PAIR_COUNT = 42
+TRANSPORT_REPAIR_MAX_OUTPUT_TOKENS = 6000
 
 
 class OpenAIBatchDiagnosticError(ValueError):
@@ -40,16 +45,27 @@ def _validate_inventory(inventory: Mapping[str, Any]) -> list[Mapping[str, Any]]
         raise OpenAIBatchDiagnosticError("pair_inventory_digest_invalid")
     pairs = inventory.get("pairs")
     pair_count = inventory.get("pair_count")
+    complete_protocol_sha256 = complete_graph_diagnostic_protocol()["protocol_sha256"]
+    standard_matrix = pair_count in {441, COMPLETE_GRAPH_PAIR_COUNT}
+    registered_repair_subset = (
+        inventory.get("comparison_graph_kind") == TRANSPORT_REPAIR_GRAPH_KIND
+        and isinstance(pair_count, int)
+        and not isinstance(pair_count, bool)
+        and 1 <= pair_count <= TRANSPORT_REPAIR_MAX_PAIR_COUNT
+        and inventory.get("protocol_sha256") == complete_protocol_sha256
+        and isinstance(inventory.get("parent_inventory_sha256"), str)
+        and len(inventory["parent_inventory_sha256"]) == 64
+        and inventory.get("outcome_labels_accessed_to_build_pairs") is False
+    )
     if (
         inventory.get("status") != "ready"
-        or pair_count not in {441, 1323}
+        or not (standard_matrix or registered_repair_subset)
         or not isinstance(pairs, list)
         or len(pairs) != pair_count
         or len({str(pair.get("pair_id")) for pair in pairs}) != pair_count
         or (
-            pair_count == 1323
-            and inventory.get("protocol_sha256")
-            != complete_graph_diagnostic_protocol()["protocol_sha256"]
+            pair_count == COMPLETE_GRAPH_PAIR_COUNT
+            and inventory.get("protocol_sha256") != complete_protocol_sha256
         )
     ):
         raise OpenAIBatchDiagnosticError("pair_inventory_not_ready_supported_matrix")
@@ -80,13 +96,20 @@ def prepare_shard(
         max_output_tokens=max_output_tokens,
         arm_id=arm_id,
     )
-    if len(pairs) == 1323 and (
+    if len(pairs) == COMPLETE_GRAPH_PAIR_COUNT and (
         model != "gpt-5-2025-08-07"
         or resolved_effort != "medium"
         or resolved_tokens != 4000
         or resolved_arm != "gpt5_complete_graph"
     ):
         raise OpenAIBatchDiagnosticError("complete_graph_gpt5_config_mismatch")
+    if inventory.get("comparison_graph_kind") == TRANSPORT_REPAIR_GRAPH_KIND and (
+        model != "gpt-5-2025-08-07"
+        or resolved_effort != "medium"
+        or resolved_tokens != TRANSPORT_REPAIR_MAX_OUTPUT_TOKENS
+        or resolved_arm != TRANSPORT_REPAIR_ARM_ID
+    ):
+        raise OpenAIBatchDiagnosticError("complete_graph_transport_repair_config_mismatch")
     selected = pairs[offset : offset + count]
     target = Path(jsonl_path).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
