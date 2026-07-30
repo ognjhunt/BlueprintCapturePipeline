@@ -12,6 +12,7 @@ from blueprint_pipeline.reconstruction_gpu_admission import (
     PROBE_KIND,
     REQUEST_SCHEMA_VERSION,
     build_reconstruction_gpu_canary_admission,
+    collect_reconstruction_vast_preflight,
 )
 
 
@@ -101,6 +102,56 @@ def test_vast_first_reconstruction_canary_dry_run_binds_all_proof_inputs():
         (Path(__file__).resolve().parents[1] / "docs/schemas/reconstruction_gpu_canary.v1.schema.json").read_text(encoding="utf-8")
     )
     jsonschema.validate(admission, schema)
+
+
+def test_preflight_collector_requires_global_zero_and_independent_watchdog():
+    inventories = {
+        "blueprint-reconstruction-": {
+            "api_confirmed": True,
+            "live_resource_count": 0,
+        },
+        "": {"api_confirmed": True, "live_resource_count": 0},
+    }
+    result = collect_reconstruction_vast_preflight(
+        name_prefix="blueprint-reconstruction-",
+        container_disk_bytes=120 * 1024**3,
+        watchdog={"status": "armed", "independent_process": True},
+        conflicting_owner_present=False,
+        capacity_probe=lambda _request: {
+            "status": "available",
+            "selected_offer": {
+                "gpu_name": "L40S",
+                "gpu_ram_mb": 46_068,
+                "hourly_rate_usd": 0.47,
+            },
+        },
+        inventory_probe=lambda prefix: inventories[prefix],
+        max_hourly_rate_usd=0.75,
+        clock=lambda: 1000.0,
+    )
+    assert result["status"] == "verified"
+    assert result["provider_inventory_verified_zero"] is True
+    assert result["capacity_reserved"] is False
+    assert result["provider_mutations_performed"] == 0
+    assert result["gpu_memory_bytes"] == 46_068_000_000
+
+    blocked = collect_reconstruction_vast_preflight(
+        name_prefix="blueprint-reconstruction-",
+        container_disk_bytes=10,
+        watchdog={"status": "missing", "independent_process": False},
+        conflicting_owner_present=True,
+        capacity_probe=lambda _request: {"status": "blocked"},
+        inventory_probe=lambda _prefix: {
+            "api_confirmed": True,
+            "live_resource_count": 1,
+        },
+        max_hourly_rate_usd=0.75,
+        clock=lambda: 1000.0,
+    )
+    assert blocked["status"] == "blocked"
+    assert "reconstruction_gpu_provider_inventory_not_zero" in blocked["blockers"]
+    assert "reconstruction_gpu_conflicting_owner_present" in blocked["blockers"]
+    assert "reconstruction_gpu_independent_watchdog_not_armed" in blocked["blockers"]
 
 
 def test_reconstruction_canary_fails_closed_on_authority_provider_and_evidence_drift():

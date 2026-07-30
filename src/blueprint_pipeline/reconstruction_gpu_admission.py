@@ -7,7 +7,7 @@ import math
 import re
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -32,6 +32,109 @@ OPERATIONS = {"worker_smoke", "pose_canary", "trainer_canary"}
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+
+
+def collect_reconstruction_vast_preflight(
+    *,
+    name_prefix: str,
+    container_disk_bytes: int,
+    watchdog: Mapping[str, Any],
+    conflicting_owner_present: bool,
+    capacity_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    inventory_probe: Callable[[str], Mapping[str, Any]],
+    max_hourly_rate_usd: float,
+    minimum_gpu_ram_mb: int = 24_000,
+    minimum_reliability: float = 0.98,
+    clock: Callable[[], float] = time.time,
+) -> dict[str, Any]:
+    """Collect mutation-free Vast capacity and provider-zero evidence."""
+
+    capacity_request = {
+        "max_hourly_rate_usd": float(max_hourly_rate_usd),
+        "min_gpu_ram_mb": int(minimum_gpu_ram_mb),
+        "min_reliability": float(minimum_reliability),
+        "require_avx": True,
+        "require_known_supported_isaac_driver": False,
+        "require_direct_port": False,
+        "preferred_gpu_keywords": [
+            "A40",
+            "RTX A6000",
+            "L40",
+            "L40S",
+            "RTX 6000Ada",
+        ],
+    }
+    capacity = dict(capacity_probe(capacity_request))
+    scoped_inventory = dict(inventory_probe(name_prefix))
+    global_inventory = dict(inventory_probe(""))
+    selected_value = capacity.get("selected_offer")
+    selected = dict(selected_value) if isinstance(selected_value, Mapping) else {}
+    gpu_memory = int(selected.get("gpu_ram_mb") or 0) * 1_000_000
+    price = float(
+        selected.get("on_demand_price_usd_per_hour")
+        or selected.get("hourly_rate_usd")
+        or 0
+    )
+    provider_api_verified = bool(
+        capacity.get("status") == "available"
+        and scoped_inventory.get("api_confirmed") is True
+        and global_inventory.get("api_confirmed") is True
+    )
+    provider_zero = bool(
+        scoped_inventory.get("live_resource_count") == 0
+        and global_inventory.get("live_resource_count") == 0
+    )
+    single_gpu_available = bool(
+        selected
+        and gpu_memory >= MIN_GPU_MEMORY_BYTES
+        and 0 < price <= float(max_hourly_rate_usd)
+    )
+    watchdog_value = dict(watchdog)
+    blockers: list[str] = []
+    if not provider_api_verified:
+        blockers.append("reconstruction_gpu_provider_api_not_verified")
+    if not provider_zero:
+        blockers.append("reconstruction_gpu_provider_inventory_not_zero")
+    if conflicting_owner_present:
+        blockers.append("reconstruction_gpu_conflicting_owner_present")
+    if watchdog_value.get("status") != "armed" or watchdog_value.get(
+        "independent_process"
+    ) is not True:
+        blockers.append("reconstruction_gpu_independent_watchdog_not_armed")
+    if not single_gpu_available:
+        blockers.append("reconstruction_gpu_single_gpu_unavailable")
+    if container_disk_bytes < MIN_CONTAINER_DISK_BYTES:
+        blockers.append("reconstruction_gpu_container_disk_below_floor")
+    result = {
+        "schema_version": PREFLIGHT_SCHEMA_VERSION,
+        "status": "verified" if not blockers else "blocked",
+        "provider": "vast",
+        "observed_at_epoch": float(clock()),
+        "provider_api_verified": provider_api_verified,
+        "provider_inventory_verified_zero": provider_zero,
+        "conflicting_owner_present": bool(conflicting_owner_present),
+        "watchdog": watchdog_value,
+        "single_gpu_available": single_gpu_available,
+        "gpu_type_id": selected.get("gpu_name") or selected.get("gpu_type_id"),
+        "gpu_memory_bytes": gpu_memory,
+        "container_disk_bytes": int(container_disk_bytes),
+        "on_demand_price_usd_per_hour": price or None,
+        "selected_offer": selected or None,
+        "capacity_request": capacity_request,
+        "capacity_snapshot": capacity,
+        "scoped_billable_inventory": scoped_inventory,
+        "global_billable_inventory": global_inventory,
+        "blockers": sorted(set(blockers)),
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+        "capacity_reserved": False,
+        "proof_effect": "none",
+        "claim_ceiling": "provider_capacity_and_zero_inventory_snapshot_only",
+    }
+    result["preflight_digest"] = canonical_digest(
+        result, digest_field="preflight_digest"
+    )
+    return result
 
 
 def _read(path: str | Path) -> dict[str, Any]:
@@ -279,5 +382,6 @@ __all__ = [
     "PROBE_KIND",
     "REQUEST_SCHEMA_VERSION",
     "build_reconstruction_gpu_canary_admission",
+    "collect_reconstruction_vast_preflight",
     "prepare_reconstruction_gpu_canary",
 ]
