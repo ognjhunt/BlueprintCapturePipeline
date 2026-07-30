@@ -292,21 +292,25 @@ specs and provides an explicitly gated neutral execution harness: candidate
 runtimes receive only public frozen specs, while an independent evaluator alone
 receives the digest-bound hidden manifest. Candidate traces and evaluator
 outputs are independently digest-checked, and candidate-supplied scores or
-unregistered result fields are refused. A paid candidate runtime must also use
-authoritative cost accounting from its trusted Blueprint wrapper;
-candidate-reported token usage cannot satisfy that gate. If a paid runtime
-loses its result after execution begins, the suite stops, preserves a typed
-failure, marks reported cost non-final, and requires reconciliation before
-later candidates can run. A concrete
+unregistered result fields are refused. A paid candidate runtime must also have
+a separate Blueprint-injected cost authority matched to its provider and paid
+resource class. That authority writes a digest-bound maximum reservation before
+candidate execution and independently settles actual cost afterward;
+candidate-reported token usage cannot satisfy the gate. Missing, mismatched,
+malformed, oversized, or non-final settlements fail closed. If a paid runtime
+loses its result after execution begins, the authority must reconcile the
+reservation; otherwise the suite stops, preserves a typed failure, marks
+reported cost non-final, and refuses to run later candidates. A concrete
 external-checkout Pigey adapter binds an exact clean upstream commit and
 entrypoint digest, invokes the
 public CLI without a shell, passes only allowlisted environment variables,
 normalizes `trial.json` into Blueprint's candidate trace, and explicitly drops
 Pigey's own success value. Pigey source is not vendored, and its current adapter
-marks trial-reported usage as non-authoritative. A trusted spend-metering
-gateway, separate third-party license review, and paid-execution authorization
-are all required before a live run. Hermetic fixture execution proves this
-boundary; no live Pigey/provider run or physical validation is claimed.
+marks trial-reported usage as non-authoritative. The provider-neutral cost-
+authority seam is implemented and hermetically tested, but a concrete trusted
+provider billing adapter, separate third-party license review, and paid-
+execution authorization are all required before a live Pigey run. No live
+Pigey/provider run or physical validation is claimed.
 
 No phase may infer physical validation, deployment approval, safety
 certification, or policy-ranking support from simulation or generated media.

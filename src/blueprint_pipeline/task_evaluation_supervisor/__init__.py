@@ -16,6 +16,9 @@ from .agents_sdk import (
 from .capabilities import SupervisorContext, deterministic_baseline_capabilities
 from .capture_ingress import CaptureBuildIngressError, load_capture_build_ingress
 from .candidate_policy import (
+    CANDIDATE_COST_RESERVATION_SCHEMA_VERSION,
+    CANDIDATE_COST_SETTLEMENT_SCHEMA_VERSION,
+    CandidateCostAuthority,
     CandidatePolicyRuntime,
     CandidatePolicyError,
     FrozenAgenticPolicyAdapter,
@@ -98,6 +101,9 @@ __all__ = [
     "AutonomyMode",
     "CapabilityKind",
     "CapabilityResult",
+    "CANDIDATE_COST_RESERVATION_SCHEMA_VERSION",
+    "CANDIDATE_COST_SETTLEMENT_SCHEMA_VERSION",
+    "CandidateCostAuthority",
     "CandidatePolicyError",
     "CandidatePolicyRuntime",
     "CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION",

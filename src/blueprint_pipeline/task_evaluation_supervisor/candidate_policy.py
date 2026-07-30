@@ -27,6 +27,8 @@ CANDIDATE_EVALUATION_SUITE_SCHEMA_VERSION = "task_evaluation_candidate_policy_su
 CANDIDATE_EVALUATION_EXECUTION_SCHEMA_VERSION = (
     "task_evaluation_candidate_policy_execution.v1"
 )
+CANDIDATE_COST_RESERVATION_SCHEMA_VERSION = "candidate_policy_cost_reservation.v1"
+CANDIDATE_COST_SETTLEMENT_SCHEMA_VERSION = "candidate_policy_cost_settlement.v1"
 _STACK_TYPES = {"direct_policy", "decomposed_planner_policy", "verify_recover_supervisor"}
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CANDIDATE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -51,6 +53,31 @@ class CandidatePolicyRuntime(Protocol):
         *,
         evaluation_run_spec: Mapping[str, Any],
         output_dir: Path,
+    ) -> Mapping[str, Any]: ...
+
+
+class CandidateCostAuthority(Protocol):
+    """Blueprint-owned metering boundary, separate from candidate code."""
+
+    authority_id: str
+    provider_id: str
+    paid_resource_class: str
+
+    def reserve(
+        self,
+        *,
+        candidate_id: str,
+        candidate_evaluation_suite_digest: str,
+        authorization_receipt_digest: str,
+        max_cost_usd: float,
+    ) -> Mapping[str, Any]: ...
+
+    def settle(
+        self,
+        *,
+        reservation: Mapping[str, Any],
+        runtime_result: Mapping[str, Any] | None,
+        runtime_exception_type: str | None,
     ) -> Mapping[str, Any]: ...
 
 
@@ -94,6 +121,88 @@ def _authorization_time(value: Any, *, field: str) -> datetime:
     if parsed.tzinfo is None:
         raise CandidatePolicyError(f"{field}:timezone_required")
     return parsed.astimezone(timezone.utc)
+
+
+def _validate_cost_reservation(
+    value: Mapping[str, Any],
+    *,
+    authority: CandidateCostAuthority,
+    candidate_id: str,
+    suite_digest: str,
+    authorization_digest: str,
+    max_cost_usd: float,
+) -> dict[str, Any]:
+    reservation = dict(value)
+    expected = canonical_digest(reservation, digest_field="cost_reservation_digest")
+    reserved_cost_value = reservation.get("reserved_max_cost_usd")
+    if reserved_cost_value is None:
+        raise CandidatePolicyError("candidate_cost_reservation_invalid")
+    try:
+        reserved_cost = float(reserved_cost_value)
+    except (TypeError, ValueError) as exc:
+        raise CandidatePolicyError("candidate_cost_reservation_invalid") from exc
+    if (
+        reservation.get("schema_version") != CANDIDATE_COST_RESERVATION_SCHEMA_VERSION
+        or reservation.get("cost_reservation_digest") != expected
+        or reservation.get("status") != "reserved"
+        or reservation.get("authority_id") != authority.authority_id
+        or reservation.get("provider_id") != authority.provider_id
+        or reservation.get("paid_resource_class") != authority.paid_resource_class
+        or reservation.get("candidate_id") != candidate_id
+        or reservation.get("candidate_evaluation_suite_digest") != suite_digest
+        or reservation.get("authorization_receipt_digest") != authorization_digest
+        or not math.isfinite(reserved_cost)
+        or reserved_cost != max_cost_usd
+        or reservation.get("candidate_reported_usage_is_authoritative") is not False
+        or reservation.get("proof_effect") != "none"
+    ):
+        raise CandidatePolicyError("candidate_cost_reservation_invalid")
+    return reservation
+
+
+def _validate_cost_settlement(
+    value: Mapping[str, Any],
+    *,
+    authority: CandidateCostAuthority,
+    reservation: Mapping[str, Any],
+) -> dict[str, Any]:
+    settlement = dict(value)
+    expected = canonical_digest(settlement, digest_field="cost_settlement_digest")
+    status = settlement.get("status")
+    cost_is_final = settlement.get("cost_is_final")
+    actual_cost_value = settlement.get("actual_cost_usd")
+    actual_cost: float | None = None
+    if actual_cost_value is not None:
+        try:
+            actual_cost = float(actual_cost_value)
+        except (TypeError, ValueError) as exc:
+            raise CandidatePolicyError("candidate_cost_settlement_invalid") from exc
+    if (
+        settlement.get("schema_version") != CANDIDATE_COST_SETTLEMENT_SCHEMA_VERSION
+        or settlement.get("cost_settlement_digest") != expected
+        or status not in {"reconciled", "reconciliation_required"}
+        or settlement.get("authority_id") != authority.authority_id
+        or settlement.get("provider_id") != authority.provider_id
+        or settlement.get("paid_resource_class") != authority.paid_resource_class
+        or settlement.get("candidate_id") != reservation.get("candidate_id")
+        or settlement.get("cost_reservation_digest")
+        != reservation.get("cost_reservation_digest")
+        or not isinstance(cost_is_final, bool)
+        or (status == "reconciled") is not cost_is_final
+        or (cost_is_final and actual_cost is None)
+        or (
+            actual_cost is not None
+            and (
+                not math.isfinite(actual_cost)
+                or actual_cost < 0
+                or actual_cost > float(reservation["reserved_max_cost_usd"])
+            )
+        )
+        or settlement.get("candidate_reported_cost_accepted") is not False
+        or settlement.get("proof_effect") != "none"
+    ):
+        raise CandidatePolicyError("candidate_cost_settlement_invalid")
+    return settlement
 
 
 def _validate_execution_authorization(
@@ -459,6 +568,7 @@ def execute_neutral_candidate_policy_suite(
     suite: Mapping[str, Any],
     *,
     candidate_runtimes: Sequence[CandidatePolicyRuntime],
+    candidate_cost_authorities: Sequence[CandidateCostAuthority] = (),
     evaluator: IndependentCandidateEvaluator,
     hidden_evaluation_manifest: Mapping[str, Any],
     output_dir: str | Path,
@@ -520,6 +630,17 @@ def execute_neutral_candidate_policy_suite(
         or len(runtimes) != len(candidate_runtimes)
     ):
         raise CandidatePolicyError("candidate_runtime_set_mismatch")
+    cost_authorities: dict[tuple[str, str], CandidateCostAuthority] = {}
+    for authority in candidate_cost_authorities:
+        try:
+            key = (authority.provider_id, authority.paid_resource_class)
+            authority_id = authority.authority_id
+        except AttributeError as exc:
+            raise CandidatePolicyError("candidate_cost_authority_invalid") from exc
+        if not all(str(item).strip() for item in (*key, authority_id)) or key in cost_authorities:
+            raise CandidatePolicyError("candidate_cost_authority_invalid")
+        cost_authorities[key] = authority
+    required_cost_authorities: set[tuple[str, str]] = set()
     for candidate_id, runtime in runtimes.items():
         try:
             manifest_digest = runtime.candidate_policy_manifest_digest
@@ -544,8 +665,12 @@ def execute_neutral_candidate_policy_suite(
             or (provider_execution_planned and not str(paid_resource_class or "").strip())
         ):
             raise CandidatePolicyError("candidate_runtime_execution_profile_invalid")
-        if provider_execution_planned and not cost_accounting_authoritative:
-            raise CandidatePolicyError("candidate_runtime_cost_authority_missing")
+        if provider_execution_planned:
+            if cost_accounting_authoritative:
+                raise CandidatePolicyError(
+                    "candidate_runtime_self_declared_cost_authority_forbidden"
+                )
+            required_cost_authorities.add((provider_id, str(paid_resource_class)))
 
     root = Path(output_dir).expanduser().resolve()
     if not allow_execution:
@@ -580,6 +705,7 @@ def execute_neutral_candidate_policy_suite(
     authorized_cost = float(authorization.get("granted_max_cost_usd") or 0.0)
     reported_cost = 0.0
     paid_admission_validated: list[str] = []
+    cost_authority_validated: list[str] = []
     for candidate_id, runtime in sorted(runtimes.items()):
         if not runtime.provider_execution_planned:
             continue
@@ -593,6 +719,8 @@ def execute_neutral_candidate_policy_suite(
                 "candidate_paid_resource_admission_missing_or_invalid"
             ) from exc
         paid_admission_validated.append(candidate_id)
+    if set(cost_authorities) != required_cost_authorities:
+        raise CandidatePolicyError("candidate_cost_authority_missing_or_unexpected")
 
     # No execution artifact or candidate directory exists until both the
     # operator receipt and every planned paid-resource grant validate.
@@ -634,6 +762,35 @@ def execute_neutral_candidate_policy_suite(
             raise CandidatePolicyError("candidate_output_path_escape")
         candidate_root.mkdir(parents=True, exist_ok=True)
         runtime = runtimes[candidate_id]
+        cost_authority: CandidateCostAuthority | None = None
+        cost_reservation: dict[str, Any] | None = None
+        cost_dir = candidate_root / "cost_authority"
+        if runtime.provider_execution_planned:
+            if cost_dir.exists():
+                raise CandidatePolicyError("candidate_cost_reconciliation_required")
+            cost_authority = cost_authorities[
+                (runtime.provider_id, str(runtime.paid_resource_class))
+            ]
+            try:
+                reservation_value = cost_authority.reserve(
+                    candidate_id=candidate_id,
+                    candidate_evaluation_suite_digest=expected_suite_digest,
+                    authorization_receipt_digest=authorization_digest,
+                    max_cost_usd=float(policy.get("max_cost_usd") or 0.0),
+                )
+            except Exception as exc:  # noqa: BLE001 - typed metering refusal
+                raise CandidatePolicyError("candidate_cost_reservation_failed") from exc
+            cost_reservation = _validate_cost_reservation(
+                reservation_value,
+                authority=cost_authority,
+                candidate_id=candidate_id,
+                suite_digest=expected_suite_digest,
+                authorization_digest=authorization_digest,
+                max_cost_usd=float(policy.get("max_cost_usd") or 0.0),
+            )
+            cost_dir.mkdir(parents=True, exist_ok=False)
+            write_json(cost_dir / "reservation.json", cost_reservation)
+            cost_authority_validated.append(candidate_id)
         try:
             runtime_result = dict(
                 runtime.execute(
@@ -642,6 +799,28 @@ def execute_neutral_candidate_policy_suite(
                 )
             )
         except Exception as exc:  # noqa: BLE001 - typed failure, no raw message
+            settlement: dict[str, Any] | None = None
+            if cost_authority is not None and cost_reservation is not None:
+                try:
+                    settlement_value = cost_authority.settle(
+                        reservation=copy.deepcopy(cost_reservation),
+                        runtime_result=None,
+                        runtime_exception_type=type(exc).__name__,
+                    )
+                except Exception as meter_exc:  # noqa: BLE001 - typed metering refusal
+                    raise CandidatePolicyError("candidate_cost_settlement_failed") from meter_exc
+                settlement = _validate_cost_settlement(
+                    settlement_value,
+                    authority=cost_authority,
+                    reservation=cost_reservation,
+                )
+                write_json(cost_dir / "settlement.json", settlement)
+                if settlement["cost_is_final"]:
+                    reported_cost += float(settlement["actual_cost_usd"])
+                    if reported_cost > authorized_cost:
+                        raise CandidatePolicyError(
+                            "candidate_execution_authorized_cost_exceeded"
+                        )
             results.append(
                 {
                     "candidate_id": candidate_id,
@@ -649,11 +828,26 @@ def execute_neutral_candidate_policy_suite(
                     "failure_type": "candidate_runtime_exception",
                     "exception_type": type(exc).__name__,
                     "evaluated": False,
-                    "cost_reconciliation_required": runtime.provider_execution_planned,
+                    "cost_reconciliation_required": bool(
+                        runtime.provider_execution_planned
+                        and (settlement is None or settlement["cost_is_final"] is not True)
+                    ),
+                    "cost_reservation_digest": (
+                        cost_reservation.get("cost_reservation_digest")
+                        if cost_reservation is not None
+                        else None
+                    ),
+                    "cost_settlement_digest": (
+                        settlement.get("cost_settlement_digest")
+                        if settlement is not None
+                        else None
+                    ),
                     "proof_effect": "none",
                 }
             )
-            if runtime.provider_execution_planned:
+            if runtime.provider_execution_planned and (
+                settlement is None or settlement["cost_is_final"] is not True
+            ):
                 cost_reconciliation_required_candidate_ids.append(candidate_id)
                 break
             continue
@@ -678,7 +872,29 @@ def execute_neutral_candidate_policy_suite(
             is not runtime.provider_execution_planned
         ):
             raise CandidatePolicyError("candidate_runtime_accounting_invalid")
-        reported_cost += runtime_cost
+        settlement = None
+        authoritative_runtime_cost = runtime_cost
+        if cost_authority is not None and cost_reservation is not None:
+            try:
+                settlement_value = cost_authority.settle(
+                    reservation=copy.deepcopy(cost_reservation),
+                    runtime_result=copy.deepcopy(runtime_result),
+                    runtime_exception_type=None,
+                )
+            except Exception as exc:  # noqa: BLE001 - typed metering refusal
+                raise CandidatePolicyError("candidate_cost_settlement_failed") from exc
+            settlement = _validate_cost_settlement(
+                settlement_value,
+                authority=cost_authority,
+                reservation=cost_reservation,
+            )
+            write_json(cost_dir / "settlement.json", settlement)
+            if settlement["cost_is_final"]:
+                authoritative_runtime_cost = float(settlement["actual_cost_usd"])
+            else:
+                authoritative_runtime_cost = 0.0
+                cost_reconciliation_required_candidate_ids.append(candidate_id)
+        reported_cost += authoritative_runtime_cost
         if reported_cost > authorized_cost:
             raise CandidatePolicyError("candidate_execution_authorized_cost_exceeded")
         if runtime_result.get("status") != "completed":
@@ -688,9 +904,24 @@ def execute_neutral_candidate_policy_suite(
                     "status": str(runtime_result.get("status") or "failed"),
                     "blockers": list(runtime_result.get("blockers") or []),
                     "evaluated": False,
+                    "cost_reconciliation_required": bool(
+                        settlement is not None and settlement["cost_is_final"] is not True
+                    ),
+                    "cost_reservation_digest": (
+                        cost_reservation.get("cost_reservation_digest")
+                        if cost_reservation is not None
+                        else None
+                    ),
+                    "cost_settlement_digest": (
+                        settlement.get("cost_settlement_digest")
+                        if settlement is not None
+                        else None
+                    ),
                     "proof_effect": "none",
                 }
             )
+            if settlement is not None and settlement["cost_is_final"] is not True:
+                break
             continue
         trace_path = (candidate_root / str(runtime_result.get("trace_artifact_path") or "")).resolve()
         if candidate_root not in trace_path.parents or not trace_path.is_file():
@@ -769,6 +1000,18 @@ def execute_neutral_candidate_policy_suite(
                 "claim_ceiling": evaluation.get("claim_ceiling"),
                 "candidate_self_graded": False,
                 "hidden_labels_sent_to_candidate": False,
+                "candidate_reported_cost_usd": runtime_cost,
+                "candidate_reported_cost_accepted": cost_authority is None,
+                "cost_reservation_digest": (
+                    cost_reservation.get("cost_reservation_digest")
+                    if cost_reservation is not None
+                    else None
+                ),
+                "cost_settlement_digest": (
+                    settlement.get("cost_settlement_digest")
+                    if settlement is not None
+                    else None
+                ),
                 "proof_effect": "none",
             }
         )
@@ -777,7 +1020,9 @@ def execute_neutral_candidate_policy_suite(
         "schema_version": CANDIDATE_EVALUATION_EXECUTION_SCHEMA_VERSION,
         "status": (
             "completed"
-            if results and all(row.get("status") == "evaluated" for row in results)
+            if results
+            and all(row.get("status") == "evaluated" for row in results)
+            and not cost_reconciliation_required_candidate_ids
             else "partial"
         ),
         "candidate_evaluation_suite_digest": expected_suite_digest,
@@ -798,6 +1043,7 @@ def execute_neutral_candidate_policy_suite(
         "paid_resource_admission_validated_candidate_ids": sorted(
             paid_admission_validated
         ),
+        "cost_authority_validated_candidate_ids": sorted(cost_authority_validated),
         "claim_ceiling": suite.get("claim_ceiling"),
         "physical_validation_proven": False,
         "deployment_approval_proven": False,
@@ -814,7 +1060,10 @@ def execute_neutral_candidate_policy_suite(
 __all__ = [
     "CANDIDATE_EVALUATION_SUITE_SCHEMA_VERSION",
     "CANDIDATE_EVALUATION_EXECUTION_SCHEMA_VERSION",
+    "CANDIDATE_COST_RESERVATION_SCHEMA_VERSION",
+    "CANDIDATE_COST_SETTLEMENT_SCHEMA_VERSION",
     "CANDIDATE_POLICY_MANIFEST_SCHEMA_VERSION",
+    "CandidateCostAuthority",
     "CandidatePolicyError",
     "FrozenAgenticPolicyAdapter",
     "IndependentCandidateEvaluator",

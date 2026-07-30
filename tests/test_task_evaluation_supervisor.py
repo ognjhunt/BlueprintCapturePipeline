@@ -644,6 +644,81 @@ class _CandidateRuntime:
         return result
 
 
+class _CandidateCostAuthority:
+    authority_id = "fixture-independent-cost-authority"
+    provider_id = "paid-fixture-provider"
+    paid_resource_class = "gpu_canary"
+
+    def __init__(
+        self,
+        *,
+        actual_cost_usd: float = 0.25,
+        reconcile_exceptions: bool = False,
+    ) -> None:
+        self.actual_cost_usd = actual_cost_usd
+        self.reconcile_exceptions = reconcile_exceptions
+        self.reservations: list[dict] = []
+        self.settlements: list[dict] = []
+
+    def reserve(
+        self,
+        *,
+        candidate_id,
+        candidate_evaluation_suite_digest,
+        authorization_receipt_digest,
+        max_cost_usd,
+    ):
+        value = {
+            "schema_version": "candidate_policy_cost_reservation.v1",
+            "status": "reserved",
+            "authority_id": self.authority_id,
+            "provider_id": self.provider_id,
+            "paid_resource_class": self.paid_resource_class,
+            "candidate_id": candidate_id,
+            "candidate_evaluation_suite_digest": candidate_evaluation_suite_digest,
+            "authorization_receipt_digest": authorization_receipt_digest,
+            "reserved_max_cost_usd": max_cost_usd,
+            "candidate_reported_usage_is_authoritative": False,
+            "proof_effect": "none",
+        }
+        value["cost_reservation_digest"] = canonical_digest(
+            value,
+            digest_field="cost_reservation_digest",
+        )
+        self.reservations.append(dict(value))
+        return value
+
+    def settle(
+        self,
+        *,
+        reservation,
+        runtime_result,
+        runtime_exception_type,
+    ):
+        reconciled = runtime_exception_type is None or self.reconcile_exceptions
+        value = {
+            "schema_version": "candidate_policy_cost_settlement.v1",
+            "status": "reconciled" if reconciled else "reconciliation_required",
+            "authority_id": self.authority_id,
+            "provider_id": self.provider_id,
+            "paid_resource_class": self.paid_resource_class,
+            "candidate_id": reservation["candidate_id"],
+            "cost_reservation_digest": reservation["cost_reservation_digest"],
+            "actual_cost_usd": self.actual_cost_usd if reconciled else None,
+            "cost_is_final": reconciled,
+            "candidate_reported_cost_accepted": False,
+            "runtime_result_observed": runtime_result is not None,
+            "runtime_exception_type": runtime_exception_type,
+            "proof_effect": "none",
+        }
+        value["cost_settlement_digest"] = canonical_digest(
+            value,
+            digest_field="cost_settlement_digest",
+        )
+        self.settlements.append(dict(value))
+        return value
+
+
 class _IndependentCandidateEvaluator:
     provider_id = "independent-evaluator-provider"
     evaluator_digest = SHA_A
@@ -2826,6 +2901,7 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
         candidate_id=str(candidates[2]["candidate_id"]),
         manifest_digest=str(candidates[2]["candidate_policy_manifest_digest"]),
         provider_execution_planned=True,
+        cost_accounting_authoritative=False,
         paid_resource_class="gpu_canary",
     )
     with pytest.raises(
@@ -2850,6 +2926,32 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
         resource_class="gpu_canary",
         expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
     )
+    self_declared_cost_runtimes = list(runtimes)
+    self_declared_cost_runtimes[2] = _CandidateRuntime(
+        candidate_id=str(candidates[2]["candidate_id"]),
+        manifest_digest=str(candidates[2]["candidate_policy_manifest_digest"]),
+        provider_execution_planned=True,
+        cost_accounting_authoritative=True,
+        paid_resource_class="gpu_canary",
+        paid_resource_admission_grant=paid_grant,
+    )
+    with pytest.raises(
+        CandidatePolicyError,
+        match="candidate_runtime_self_declared_cost_authority_forbidden",
+    ):
+        execute_neutral_candidate_policy_suite(
+            suite,
+            candidate_runtimes=self_declared_cost_runtimes,
+            candidate_cost_authorities=[_CandidateCostAuthority()],
+            evaluator=_IndependentCandidateEvaluator(),
+            hidden_evaluation_manifest=hidden_evaluation_manifest,
+            output_dir=tmp_path / "candidate-self-declared-cost-refused",
+            allow_execution=True,
+            execution_authorization=paid_receipt,
+            executed_at="2026-07-29T17:02:00Z",
+        )
+    assert not (tmp_path / "candidate-self-declared-cost-refused").exists()
+
     untrusted_cost_runtimes = list(runtimes)
     untrusted_cost_runtimes[2] = _CandidateRuntime(
         candidate_id=str(candidates[2]["candidate_id"]),
@@ -2861,7 +2963,7 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
     )
     with pytest.raises(
         CandidatePolicyError,
-        match="candidate_runtime_cost_authority_missing",
+        match="candidate_cost_authority_missing_or_unexpected",
     ):
         execute_neutral_candidate_policy_suite(
             suite,
@@ -2881,14 +2983,17 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
             candidate_id=str(candidate["candidate_id"]),
             manifest_digest=str(candidate["candidate_policy_manifest_digest"]),
             provider_execution_planned=index == 2,
+            cost_accounting_authoritative=index != 2,
             paid_resource_class="gpu_canary" if index == 2 else None,
             paid_resource_admission_grant=paid_grant if index == 2 else None,
         )
         for index, candidate in enumerate(candidates)
     ]
+    paid_cost_authority = _CandidateCostAuthority()
     paid_executed = execute_neutral_candidate_policy_suite(
         suite,
         candidate_runtimes=admitted_paid_runtimes,
+        candidate_cost_authorities=[paid_cost_authority],
         evaluator=_IndependentCandidateEvaluator(),
         hidden_evaluation_manifest=hidden_evaluation_manifest,
         output_dir=tmp_path / "candidate-paid-admitted",
@@ -2900,13 +3005,55 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
     assert paid_executed["paid_resource_admission_validated_candidate_ids"] == [
         str(candidates[2]["candidate_id"])
     ]
+    assert paid_executed["cost_authority_validated_candidate_ids"] == [
+        str(candidates[2]["candidate_id"])
+    ]
+    assert paid_executed["reported_cost_usd"] == 0.25
+    assert paid_executed["reported_cost_is_final"] is True
+    assert len(paid_cost_authority.reservations) == 1
+    assert len(paid_cost_authority.settlements) == 1
+    paid_result = next(
+        row
+        for row in paid_executed["candidate_results"]
+        if row["candidate_id"] == str(candidates[2]["candidate_id"])
+    )
+    assert paid_result["candidate_reported_cost_usd"] == 0.0
+    assert paid_result["candidate_reported_cost_accepted"] is False
+    assert (tmp_path / "candidate-paid-admitted" / "candidates" / str(candidates[2]["candidate_id"]) / "cost_authority" / "reservation.json").is_file()
+    assert (tmp_path / "candidate-paid-admitted" / "candidates" / str(candidates[2]["candidate_id"]) / "cost_authority" / "settlement.json").is_file()
     assert all(len(runtime.calls) == 1 for runtime in admitted_paid_runtimes)
+
+    with pytest.raises(
+        CandidatePolicyError,
+        match="candidate_cost_settlement_invalid",
+    ):
+        execute_neutral_candidate_policy_suite(
+            suite,
+            candidate_runtimes=admitted_paid_runtimes,
+            candidate_cost_authorities=[_CandidateCostAuthority(actual_cost_usd=1.25)],
+            evaluator=_IndependentCandidateEvaluator(),
+            hidden_evaluation_manifest=hidden_evaluation_manifest,
+            output_dir=tmp_path / "candidate-paid-oversized-settlement",
+            allow_execution=True,
+            execution_authorization=paid_receipt,
+            executed_at="2026-07-29T17:02:00Z",
+        )
+    oversized_cost_root = (
+        tmp_path
+        / "candidate-paid-oversized-settlement"
+        / "candidates"
+        / str(candidates[2]["candidate_id"])
+        / "cost_authority"
+    )
+    assert (oversized_cost_root / "reservation.json").is_file()
+    assert not (oversized_cost_root / "settlement.json").exists()
 
     ambiguous_paid_runtimes = [
         _CandidateRuntime(
             candidate_id=str(candidate["candidate_id"]),
             manifest_digest=str(candidate["candidate_policy_manifest_digest"]),
             provider_execution_planned=index == 2,
+            cost_accounting_authoritative=index != 2,
             paid_resource_class="gpu_canary" if index == 2 else None,
             paid_resource_admission_grant=paid_grant if index == 2 else None,
             raise_exception=index == 2,
@@ -2916,6 +3063,7 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
     ambiguous = execute_neutral_candidate_policy_suite(
         suite,
         candidate_runtimes=ambiguous_paid_runtimes,
+        candidate_cost_authorities=[_CandidateCostAuthority()],
         evaluator=_IndependentCandidateEvaluator(),
         hidden_evaluation_manifest=hidden_evaluation_manifest,
         output_dir=tmp_path / "candidate-paid-result-lost",
@@ -2931,6 +3079,21 @@ def test_phase4_compiles_neutral_frozen_agentic_candidate_policy_suite(
     ambiguous_failure = ambiguous["candidate_results"][-1]
     assert ambiguous_failure["cost_reconciliation_required"] is True
     assert ambiguous_failure["exception_type"] == "RuntimeError"
+    with pytest.raises(
+        CandidatePolicyError,
+        match="candidate_cost_reconciliation_required",
+    ):
+        execute_neutral_candidate_policy_suite(
+            suite,
+            candidate_runtimes=ambiguous_paid_runtimes,
+            candidate_cost_authorities=[_CandidateCostAuthority()],
+            evaluator=_IndependentCandidateEvaluator(),
+            hidden_evaluation_manifest=hidden_evaluation_manifest,
+            output_dir=tmp_path / "candidate-paid-result-lost",
+            allow_execution=True,
+            execution_authorization=paid_receipt,
+            executed_at="2026-07-29T17:02:00Z",
+        )
 
     executed = execute_neutral_candidate_policy_suite(
         suite,

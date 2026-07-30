@@ -120,8 +120,11 @@ operator/paid-resource admission validates before execution artifacts are
 created. Candidate agents receive no evaluator or proof authority. The external
 Pigey adapter pins a clean exact checkout, excludes the candidate's own success
 field, and marks candidate-reported usage as non-authoritative. It remains
-blocked from live use pending trusted spend metering, separate source-license
-review, and paid authorization.
+blocked from live use pending a concrete provider-backed implementation of the
+Blueprint cost-authority seam, separate source-license review, and paid
+authorization. The seam itself is fail closed: it writes a digest-bound maximum
+reservation before candidate execution and independently reconciles actual cost
+afterward; candidate-reported usage cannot settle it.
 
 The model-neutral, fail-closed composition contract for scientific sim ranking,
 provider execution, buyer delivery, teardown, and billing is documented in
