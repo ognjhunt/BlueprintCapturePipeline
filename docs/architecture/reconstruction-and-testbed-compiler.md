@@ -288,6 +288,15 @@ fixed-camera renders without NaNs or obvious scale mismatch. Even a passing
 result proves only Isaac load/render/physics-presence compatibility—not simulator
 task success, physical success, or deployment readiness.
 
+`isaac_reconstruction_verification.py` is the normalization boundary for the
+headless runtime result. It intentionally rejects the existing visual-only
+`isaac_splat_nurec_render_result.v1`. A v2 runtime receipt must bind the exact
+package digest and report meters/Z-up, transforms, missing assets, ParticleField
+and active collision prim counts, a stepped test-body probe with observed
+contact and no floor fall-through, plus digest-bound nonblank fixed-camera
+renders. This makes the outstanding Isaac runner upgrade explicit and prevents
+historical render success from satisfying the physics-presence gate.
+
 ## Normalized results and layers
 
 `reconstruction_result.v1` binds exact capture, method-profile,

@@ -3,6 +3,10 @@ from __future__ import annotations
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.isaac_reconstruction_verification import (
+    IsaacReconstructionVerificationError,
+    normalize_isaac_reconstruction_verification,
+)
 from blueprint_pipeline.reconstruction_geometry_contracts import (
     ReconstructionGeometryContractError,
     build_collider_candidate_manifest,
@@ -312,3 +316,61 @@ def test_phase5_request_tools_refuse_tampered_request_digest(tmp_path):
     )
     assert refused["status"] == "refused"
     assert "source_digest_mismatch" in refused["typed_failure"]["reason"]
+
+
+def _isaac_runtime_v2():
+    return {
+        "schema_version": "isaac_splat_nurec_render_result.v2",
+        "status": "completed",
+        "package_digest": D[5],
+        "stage": {
+            "meters_per_unit": 1.0,
+            "up_axis": "Z",
+            "transforms_valid": True,
+            "missing_asset_count": 0,
+            "particlefield_prim_count": 1,
+            "active_collision_prim_count": 2,
+        },
+        "physics_probe": {
+            "ground_contact_surface_present": True,
+            "steps_executed": 120,
+            "test_body_fell_through_floor": False,
+            "contact_event_count": 3,
+        },
+        "cameras": [
+            {"id": "fixed-1", "digest": D[1], "pixel_std": 12.0, "nonblank": True}
+        ],
+    }
+
+
+def test_isaac_runtime_v2_normalizer_requires_real_render_and_physics_presence():
+    result = normalize_isaac_reconstruction_verification(
+        packaging_result=_package(), runtime_result=_isaac_runtime_v2(), lineage=_base()
+    )
+    assert result["status"] == "verified_compatibility_only"
+    assert result["checks"]["collision_geometry_active"] is True
+    assert result["simulator_task_success_proven"] is False
+
+
+def test_visual_only_v1_runtime_cannot_pass_physics_verification():
+    runtime = _isaac_runtime_v2()
+    runtime["schema_version"] = "isaac_splat_nurec_render_result.v1"
+    runtime.pop("physics_probe")
+    with pytest.raises(
+        IsaacReconstructionVerificationError, match="isaac_runtime_result_v2_required"
+    ):
+        normalize_isaac_reconstruction_verification(
+            packaging_result=_package(), runtime_result=runtime, lineage=_base()
+        )
+
+
+def test_falling_through_floor_and_missing_contact_fail_closed():
+    runtime = _isaac_runtime_v2()
+    runtime["physics_probe"]["test_body_fell_through_floor"] = True
+    runtime["physics_probe"]["contact_event_count"] = 0
+    with pytest.raises(IsaacReconstructionVerificationError) as error:
+        normalize_isaac_reconstruction_verification(
+            packaging_result=_package(), runtime_result=runtime, lineage=_base()
+        )
+    assert "isaac_test_body_fell_through_floor" in str(error.value)
+    assert "isaac_test_body_contact_not_observed" in str(error.value)
