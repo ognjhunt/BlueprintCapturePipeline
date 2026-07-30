@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
+    _apply_runtime_asset_relocations,
     _camera_quaternion_wxyz,
     _project_world_points,
     _simulation_app_launch_config,
@@ -109,6 +110,44 @@ def test_simulation_app_launch_config_disables_process_terminating_fast_shutdown
     assert first["fast_shutdown"] is False
     assert first["headless"] is True
     assert first is not second
+
+
+def test_runtime_asset_relocations_require_exact_local_binding(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    owner = assets / "Props" / "clock" / "clock.usd"
+    replacement = assets / "Props" / "clock" / "Textures" / "albedo.png"
+    owner.parent.mkdir(parents=True)
+    replacement.parent.mkdir(parents=True)
+    owner.write_bytes(b"usd")
+    replacement.write_bytes(b"png")
+    observed = []
+
+    result = _apply_runtime_asset_relocations(
+        assets_root=assets,
+        manifest={
+            "runtime_asset_relocations": [
+                {
+                    "owner_relative_path": "Props/clock/clock.usd",
+                    "source_asset_uri": "omniverse://art/clock/Textures/albedo.png",
+                    "replacement_relative_path": "Props/clock/Textures/albedo.png",
+                    "replacement_authored_path": "./Textures/albedo.png",
+                }
+            ]
+        },
+        layer_relocator=lambda path, source, replacement_path: (
+            observed.append((path, source, replacement_path)) or 1
+        ),
+    )
+
+    assert result["relocation_count"] == 1
+    assert result["authored_replacement_count"] == 1
+    assert observed == [
+        (
+            owner,
+            "omniverse://art/clock/Textures/albedo.png",
+            "./Textures/albedo.png",
+        )
+    ]
 
 
 def test_native_camera_canary_requires_scene_robot_rigid_object_and_two_synced_views(

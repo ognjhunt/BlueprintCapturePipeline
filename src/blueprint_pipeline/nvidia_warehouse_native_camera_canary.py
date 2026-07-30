@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import posixpath
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -122,6 +123,85 @@ def _matrix_array(matrix: Any) -> np.ndarray:
     return np.asarray([[float(matrix[row][column]) for column in range(4)] for row in range(4)])
 
 
+def _relocate_layer_asset_path(
+    layer_path: Path, source_asset_uri: str, replacement_authored_path: str
+) -> int:  # pragma: no cover - exercised inside the pinned Isaac/OpenUSD image
+    from pxr import Sdf, UsdUtils
+
+    layer = Sdf.Layer.FindOrOpen(str(layer_path))
+    if layer is None:
+        raise ValueError(f"native_warehouse_asset_relocation_layer_missing:{layer_path}")
+    replacements = 0
+
+    def relocate(value: str) -> str:
+        nonlocal replacements
+        if value == source_asset_uri:
+            replacements += 1
+            return replacement_authored_path
+        return value
+
+    UsdUtils.ModifyAssetPaths(layer, relocate)
+    if replacements <= 0:
+        raise ValueError("native_warehouse_asset_relocation_source_not_authored")
+    layer.Save()
+    return replacements
+
+
+def _apply_runtime_asset_relocations(
+    *,
+    assets_root: Path,
+    manifest: Mapping[str, Any],
+    layer_relocator: Callable[[Path, str, str], int] = _relocate_layer_asset_path,
+) -> dict[str, Any]:
+    """Apply hash-bound local mirrors before the workcell composition is loaded."""
+
+    root = assets_root.expanduser().resolve()
+    rows = manifest.get("runtime_asset_relocations") or []
+    if not isinstance(rows, list):
+        raise ValueError("native_warehouse_asset_relocations_invalid")
+    authored_replacement_count = 0
+    applied: list[dict[str, Any]] = []
+    for value in rows:
+        if not isinstance(value, Mapping):
+            raise ValueError("native_warehouse_asset_relocation_invalid")
+        owner_relative = str(value.get("owner_relative_path") or "")
+        replacement_relative = str(value.get("replacement_relative_path") or "")
+        source_asset_uri = str(value.get("source_asset_uri") or "")
+        replacement_authored = str(value.get("replacement_authored_path") or "")
+        owner = (root / owner_relative).resolve()
+        replacement = (root / replacement_relative).resolve()
+        if (
+            not owner.is_relative_to(root)
+            or not replacement.is_relative_to(root)
+            or not owner.is_file()
+            or not replacement.is_file()
+            or not source_asset_uri
+            or not replacement_authored.startswith(("./", "../"))
+        ):
+            raise ValueError("native_warehouse_asset_relocation_path_invalid")
+        expected_authored = posixpath.relpath(replacement_relative, posixpath.dirname(owner_relative))
+        if not expected_authored.startswith(("./", "../")):
+            expected_authored = "./" + expected_authored
+        if replacement_authored != expected_authored:
+            raise ValueError("native_warehouse_asset_relocation_binding_invalid")
+        count = int(layer_relocator(owner, source_asset_uri, replacement_authored))
+        if count <= 0:
+            raise ValueError("native_warehouse_asset_relocation_not_applied")
+        authored_replacement_count += count
+        applied.append(
+            {
+                "owner_relative_path": owner_relative,
+                "replacement_relative_path": replacement_relative,
+                "authored_replacement_count": count,
+            }
+        )
+    return {
+        "relocation_count": len(applied),
+        "authored_replacement_count": authored_replacement_count,
+        "relocations": applied,
+    }
+
+
 def isaac_sim_6_backend(
     *, spec: Mapping[str, Any], assets_root: Path, output_dir: Path
 ) -> dict[str, Any]:  # pragma: no cover - requires the pinned Isaac GPU image
@@ -138,6 +218,11 @@ def isaac_sim_6_backend(
         from pxr import Gf, Usd, UsdGeom, UsdLux, UsdPhysics
 
         output_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = assets_root / "materialization_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        relocation_evidence = _apply_runtime_asset_relocations(
+            assets_root=assets_root, manifest=manifest
+        )
         world = World(stage_units_in_meters=1.0)
         stage = world.stage
         scene = spec["scene"]
@@ -290,8 +375,6 @@ def isaac_sim_6_backend(
             UsdGeom.Xformable(stage.GetPrimAtPath(wrist_path)).GetLocalTransformation()
         )
 
-        manifest_path = assets_root / "materialization_manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         missing = [
             row["relative_path"]
             for row in manifest.get("files") or []
@@ -304,6 +387,7 @@ def isaac_sim_6_backend(
             "isaac_sim_major_version": 6,
             "scene_loaded": stage.GetPrimAtPath("/World/WarehouseWorkcell").IsValid(),
             "missing_dataset_local_dependencies": missing,
+            "runtime_asset_relocations": relocation_evidence,
             "franka_dof_count": int(dof_count),
             "franka_dof_names": list(robot.dof_names),
             "spraycan_collision_mesh_count": collision_count,

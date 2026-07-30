@@ -22,7 +22,7 @@ from .common import write_json
 from .policy_ranking_thesis import canonical_sha256, file_sha256
 
 
-SCHEMA_VERSION = "nvidia_warehouse_workcell_materialization.v2"
+SCHEMA_VERSION = "nvidia_warehouse_workcell_materialization.v3"
 CANARY_SPEC_SCHEMA_VERSION = "nvidia_warehouse_native_camera_canary_spec.v1"
 DATASET_ID = "nvidia/PhysicalAI-SimReady-Warehouse-01"
 DATASET_REVISION = "c7fe115cb79c7ddbd0532630d7768b5736b0ecc4"
@@ -63,6 +63,7 @@ DEPENDENCY_CONTRACT = {
     "usd_authored_asset_fields_included": True,
     "dataset_local_mdl_texture_literals_included": True,
     "udim_patterns_expanded_against_pinned_revision": True,
+    "same_asset_directory_external_mirrors_materialized": True,
 }
 
 
@@ -197,6 +198,24 @@ def _resolve_authored_asset(owner: str, reference: str) -> tuple[str, str]:
     return "dataset", _safe_relative(relative)
 
 
+def _dataset_mirror_for_external_asset(owner: str, reference: str) -> str | None:
+    """Map an external URI to a same-asset-directory mirror in this dataset."""
+
+    parsed = urllib.parse.urlparse(reference)
+    if not parsed.scheme:
+        return None
+    owner_directory = posixpath.dirname(owner)
+    asset_directory_name = posixpath.basename(owner_directory)
+    decoded_path = urllib.parse.unquote(parsed.path)
+    marker = f"/{asset_directory_name}/"
+    if marker not in decoded_path:
+        return None
+    suffix = decoded_path.rsplit(marker, 1)[1]
+    if not suffix:
+        return None
+    return _safe_relative(posixpath.join(owner_directory, suffix))
+
+
 def materialize_pinned_workcell(
     *,
     output_root: str | Path,
@@ -262,10 +281,26 @@ def materialize_pinned_workcell(
             for reference in asset_dependency_reader(root / relative):
                 asset_queue.append((relative, str(reference)))
     asset_dependency_sources: set[str] = set()
+    runtime_asset_relocations: list[dict[str, str]] = []
     while asset_queue:
         owner, reference = asset_queue.popleft()
         kind, resolved = _resolve_authored_asset(owner, reference)
         if kind == "external":
+            mirror = _dataset_mirror_for_external_asset(owner, resolved)
+            if mirror is not None:
+                ensure(mirror)
+                replacement = posixpath.relpath(mirror, posixpath.dirname(owner))
+                if not replacement.startswith(("./", "../")):
+                    replacement = "./" + replacement
+                runtime_asset_relocations.append(
+                    {
+                        "owner_relative_path": owner,
+                        "source_asset_uri": resolved,
+                        "replacement_relative_path": mirror,
+                        "replacement_authored_path": replacement,
+                    }
+                )
+                continue
             external_dependencies.add(resolved)
             continue
         expanded = tuple(dependency_expander(resolved))
@@ -307,6 +342,10 @@ def materialize_pinned_workcell(
         "external_dependencies": sorted(external_dependencies),
         "dataset_local_dependency_closure_complete": True,
         "dependency_contract": dict(DEPENDENCY_CONTRACT),
+        "runtime_asset_relocations": sorted(
+            runtime_asset_relocations,
+            key=lambda row: (row["owner_relative_path"], row["source_asset_uri"]),
+        ),
         "optional_external_material_dependencies_resolved": not external_dependencies,
         "rankings_or_policy_outcomes_accessed": False,
         "claim_boundary": {

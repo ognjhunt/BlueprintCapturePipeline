@@ -33,6 +33,9 @@ def _fixture_material() -> tuple[dict[str, bytes], dict[str, list[str]]]:
     spraycan_texture_1002 = (
         "Props/general/HandManipulation/paint_container_spraycan_a/Textures/albedo.1002.png"
     )
+    mirrored_table_texture = (
+        "Props/general/SM_HeavyDutyPackingTable_C02_01/Textures/external.png"
+    )
     material = {
         PROVENANCE_FILES[0]: b"root-usd",
         PROVENANCE_FILES[1]: b"sorting-usd",
@@ -44,6 +47,7 @@ def _fixture_material() -> tuple[dict[str, bytes], dict[str, list[str]]]:
         table_texture: b"table-texture",
         spraycan_texture_1001: b"spraycan-texture-1001",
         spraycan_texture_1002: b"spraycan-texture-1002",
+        mirrored_table_texture: b"mirrored-table-texture",
     }
     dependencies = {
         WORKCELL_USD: [
@@ -73,7 +77,11 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
         fetcher=fetch,
         dependency_reader=lambda path: dependencies[path.relative_to(tmp_path / "assets").as_posix()],
         asset_dependency_reader=lambda path: {
-            TABLE_USD: ["./materials/Wood.mdl", "OmniPBR.mdl"],
+            TABLE_USD: [
+                "./materials/Wood.mdl",
+                "OmniPBR.mdl",
+                "omniverse://art.example/SM_HeavyDutyPackingTable_C02_01/Textures/external.png",
+            ],
             SPRAYCAN_USD: ["./Textures/albedo.<UDIM>.png"],
         }.get(path.relative_to(tmp_path / "assets").as_posix(), []),
         dependency_expander=lambda relative: (
@@ -99,7 +107,20 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
         "usd_authored_asset_fields_included": True,
         "dataset_local_mdl_texture_literals_included": True,
         "udim_patterns_expanded_against_pinned_revision": True,
+        "same_asset_directory_external_mirrors_materialized": True,
     }
+    assert result["runtime_asset_relocations"] == [
+        {
+            "owner_relative_path": TABLE_USD,
+            "source_asset_uri": (
+                "omniverse://art.example/SM_HeavyDutyPackingTable_C02_01/Textures/external.png"
+            ),
+            "replacement_relative_path": (
+                "Props/general/SM_HeavyDutyPackingTable_C02_01/Textures/external.png"
+            ),
+            "replacement_authored_path": "./Textures/external.png",
+        }
+    ]
     assert result["claim_boundary"]["policy_wam_loop_proven"] is False
 
     spec_path = tmp_path / "native_camera_canary_spec.json"
