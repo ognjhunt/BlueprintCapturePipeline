@@ -11,6 +11,7 @@ from typing import Any, Mapping
 import pytest
 
 from blueprint_pipeline import decision_evidence_cli
+from blueprint_pipeline.task_evaluation_supervisor import lifecycle as supervisor_lifecycle
 from blueprint_pipeline.decision_evidence_contracts import (
     DecisionEvidenceRequest,
     EvidenceMethodProfile,
@@ -469,6 +470,35 @@ class _NonSpendToolCallingInvoker(_FixtureAgentsSDKInvoker):
             else:
                 continue
             observations.append(dict(binding.invoke(arguments)))
+        result = super().invoke(spec, input_text)
+        return replace(result, tool_observations=tuple(observations))
+
+
+class _CaptureNonSpendToolCallingInvoker(_FixtureAgentsSDKInvoker):
+    def invoke(self, spec, input_text: str) -> AgentsSDKInvocationResult:
+        payload = json.loads(input_text)
+        observations = []
+        for binding in spec.tool_bindings:
+            if binding.tool_id != "materialize_clarification_request":
+                continue
+            observations.append(
+                dict(
+                    binding.invoke(
+                        {
+                            "source_digest": payload["capture_build"][
+                                "capture_build_digest"
+                            ],
+                            "questions": [
+                                "What customer decision and robot task should be evaluated?"
+                            ],
+                            "blocking_fields": [
+                                "decision_request",
+                                "site_task_testbed",
+                            ],
+                        }
+                    )
+                )
+            )
         result = super().invoke(spec, input_text)
         return replace(result, tool_observations=tuple(observations))
 
@@ -1802,17 +1832,65 @@ def test_capture_build_alone_enters_required_supervisor_idempotently(
     assert first == second
     assert first["capture_build_alone_can_start_run"] is True
     assert first["agent_harness"] == "openai_agents_sdk"
+    assert first["autonomy_mode"] == "execute_non_spend"
     assert first["all_six_capabilities_present"] is True
     assert first["capability_count"] == 0
     assert first["triggered_capability_count"] == 0
     assert first["registered_capability_count"] == 6
     assert first["agent_inference_started"] is False
     assert first["actions_executed"] is False
+    assert first["registered_tool_reads_executed"] == 0
+    assert first["registered_non_spend_actions_executed"] == 0
     assert first["proof_state_mutated_by_agent"] is False
     assert first["status"] == "blocked"
     assert Path(first["output_dir"]).is_relative_to(capture_root.resolve())
     events = AppendOnlyEventLedger(first["event_ledger_path"]).read()
     assert len(events) == 3
+
+
+def test_capture_build_lifecycle_materializes_non_spend_clarification_when_sdk_is_authorized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    (capture_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "capture_descriptor.v1",
+                "scene_id": "site-1",
+                "capture_id": "capture-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    invoker = _CaptureNonSpendToolCallingInvoker()
+    monkeypatch.setattr(
+        supervisor_lifecycle,
+        "TaskEvaluationSupervisor",
+        lambda **_: TaskEvaluationSupervisor(agents_sdk_invoker=invoker),
+    )
+
+    result = supervisor_lifecycle.run_capture_build_supervisor(
+        capture_root=capture_root,
+    )
+
+    assert result["autonomy_mode"] == "execute_non_spend"
+    assert result["status"] == "blocked"
+    assert result["actions_executed"] is True
+    assert result["registered_non_spend_actions_executed"] == 1
+    assert result["registered_tool_reads_executed"] == 0
+    clarification_path = (
+        Path(result["output_dir"])
+        / "generated"
+        / "clarification_requests"
+        / "request.json"
+    )
+    clarification = json.loads(clarification_path.read_text(encoding="utf-8"))
+    assert clarification["status"] == "awaiting_customer_response"
+    assert clarification["agent_may_answer"] is False
+    assert clarification["proof_effect"] == "none"
+    assert replay_supervisor_run(result["output_dir"])["status"] == "replay_verified"
 
 
 def test_execute_non_spend_exposes_only_registered_scoped_tools(

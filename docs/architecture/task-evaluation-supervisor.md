@@ -201,7 +201,13 @@ blueprint-route-task-evaluation supervise \
 decisions can be added as the run accumulates them. The harness is always
 OpenAI Agents SDK; there is no alternate production agent harness selector.
 The standard `run_e2e` capture path invokes this lifecycle automatically and
-records its status in the stage ledger and run summary.
+records its status in the stage ledger and run summary. That required lifecycle
+uses `execute_non_spend`: once live SDK inference has its separate budget and
+operator gate, it can materialize registered local clarification and recapture
+requests without waiting for a second product path. No provider, paid, physical,
+or proof-mutating action becomes available. The authority change is represented
+as capture-supervisor lifecycle v2 with a new run-id namespace; v1 shadow-run
+ledgers remain immutable and are never resumed as non-spend runs.
 
 Live inference is fail closed and requires `--allow-live-agent-sdk`, a positive
 `--agent-inference-budget-usd`, and

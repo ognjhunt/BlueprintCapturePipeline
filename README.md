@@ -79,7 +79,13 @@ result.
 The normal `run_e2e` capture-build path always enters this supervisor lifecycle
 after capture processing and records its status and artifacts in the stage
 ledger. There is no alternate production harness or flag that skips the
-supervisor; missing live-inference authority is recorded as a typed blocker.
+supervisor. The lifecycle uses `execute_non_spend`, so a live, budget-authorized
+SDK run can materialize safe clarification, targeted-recapture, scenario, and
+local compilation artifacts immediately from the capture build. Missing live-
+inference authority is recorded as a typed blocker; it never silently falls back
+to a different harness or deterministic pseudo-agent. This is lifecycle v2 with
+a versioned run identifier; existing v1 shadow-run artifacts remain immutable
+and are not resumed under broader authority.
 
 `advise` runs the same SDK manager and eligible specialists, but exposes no
 callable tools and executes no action. Blueprint validates each proposed action

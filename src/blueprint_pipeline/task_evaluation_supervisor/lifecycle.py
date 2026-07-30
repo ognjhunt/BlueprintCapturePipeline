@@ -12,7 +12,7 @@ from .contracts import AutonomyMode
 from .supervisor import TaskEvaluationSupervisor
 
 
-CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION = "task_evaluation_capture_supervisor_lifecycle.v1"
+CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION = "task_evaluation_capture_supervisor_lifecycle.v2"
 
 
 def run_capture_build_supervisor(
@@ -32,7 +32,7 @@ def run_capture_build_supervisor(
     root = Path(capture_root).expanduser().resolve()
     capture_build = load_capture_build_ingress(root)
     digest_suffix = str(capture_build["capture_build_digest"]).removeprefix("sha256:")[:24]
-    run_id = f"capture-supervisor-{digest_suffix}"
+    run_id = f"capture-supervisor-v2-{digest_suffix}"
     output_dir = root / "pipeline" / "task_evaluation_supervisor" / "runs" / run_id
     execution = TaskEvaluationSupervisor(
         agent_model=agent_model,
@@ -49,7 +49,7 @@ def run_capture_build_supervisor(
             capture_build=capture_build,
         ),
         output_dir=output_dir,
-        mode=AutonomyMode.SHADOW,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
         resume=True,
     )
     report = execution.report.to_mapping()
@@ -67,6 +67,7 @@ def run_capture_build_supervisor(
         "event_ledger_path": str(output_dir / "supervisor_events.jsonl"),
         "agent_harness": "openai_agents_sdk",
         "agent_model": agent_model,
+        "autonomy_mode": AutonomyMode.EXECUTE_NON_SPEND.value,
         "capability_count": len(execution.capability_results),
         "triggered_capability_count": len(execution.capability_results),
         "registered_capability_count": len(registered_capabilities),
@@ -86,7 +87,13 @@ def run_capture_build_supervisor(
             )
             > 0
         ),
-        "actions_executed": False,
+        "actions_executed": bool(report.get("actions_executed")),
+        "registered_tool_reads_executed": int(
+            report.get("registered_tool_reads_executed") or 0
+        ),
+        "registered_non_spend_actions_executed": int(
+            report.get("registered_non_spend_actions_executed") or 0
+        ),
         "proof_state_mutated_by_agent": False,
         "capture_build_alone_can_start_run": True,
     }
