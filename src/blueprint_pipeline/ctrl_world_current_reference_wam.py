@@ -154,6 +154,31 @@ def validate_ctrl_world_current_reference_request(
             normalized_rows.append({"path": str(path), "sha256": digest})
         normalized_histories[view_id] = normalized_rows
 
+    current_views = request.get("current_views")
+    if not isinstance(current_views, Mapping) or set(current_views) != set(
+        CTRL_WORLD_RELEASED_VIEW_ORDER
+    ):
+        raise ValueError("ctrl_world_current_reference_current_views_invalid")
+    normalized_current: dict[str, dict[str, str]] = {}
+    for view_id in CTRL_WORLD_RELEASED_VIEW_ORDER:
+        row = current_views[view_id]
+        if not isinstance(row, Mapping):
+            raise ValueError(f"ctrl_world_current_reference_current_view_row_invalid:{view_id}")
+        path = _safe_regular_file(
+            row.get("path"),
+            reason=f"ctrl_world_current_reference_current_view_file_invalid:{view_id}",
+        )
+        digest = file_sha256(path)
+        if row.get("sha256") != digest:
+            raise ValueError(f"ctrl_world_current_reference_current_view_hash_mismatch:{view_id}")
+        with Image.open(path) as image:
+            if image.mode != "RGB" or image.size != (320, 192):
+                raise ValueError(
+                    f"ctrl_world_current_reference_current_view_geometry_invalid:{view_id}"
+                )
+            image.verify()
+        normalized_current[view_id] = {"path": str(path), "sha256": digest}
+
     action = np.asarray(request.get("action_conditioning_7d"), dtype=np.float64)
     if action.shape != ACTION_CONDITIONING_SHAPE or not np.isfinite(action).all():
         raise ValueError("ctrl_world_current_reference_action_conditioning_invalid")
@@ -176,6 +201,7 @@ def validate_ctrl_world_current_reference_request(
         "task_prompt": task_prompt.strip(),
         "view_order": list(CTRL_WORLD_RELEASED_VIEW_ORDER),
         "selected_history_views": normalized_histories,
+        "current_views": normalized_current,
         "selected_history_indices": list(CTRL_WORLD_SELECTED_HISTORY_INDICES),
         "action_conditioning_7d": action,
         "action_conditioning_shape": list(ACTION_CONDITIONING_SHAPE),
@@ -199,6 +225,7 @@ def stage_ctrl_world_current_reference_request(
         raise FileExistsError(f"ctrl_world_current_reference_stage_exists:{target}")
     ensure_dir(target)
     staged_histories: dict[str, list[dict[str, str]]] = {}
+    staged_current: dict[str, dict[str, str]] = {}
     for view_index, view_id in enumerate(CTRL_WORLD_RELEASED_VIEW_ORDER):
         staged_histories[view_id] = []
         for frame_index, row in enumerate(normalized["selected_history_views"][view_id]):
@@ -214,6 +241,19 @@ def stage_ctrl_world_current_reference_request(
             staged_histories[view_id].append(
                 {"relative_path": relative.as_posix(), "sha256": digest}
             )
+        current_source = Path(normalized["current_views"][view_id]["path"])
+        current_suffix = current_source.suffix.lower() or ".png"
+        current_relative = Path("current") / f"view_{view_index}{current_suffix}"
+        current_destination = target / current_relative
+        ensure_dir(current_destination.parent)
+        shutil.copyfile(current_source, current_destination)
+        current_digest = file_sha256(current_destination)
+        if current_digest != normalized["current_views"][view_id]["sha256"]:
+            raise RuntimeError("ctrl_world_current_reference_staged_current_hash_mismatch")
+        staged_current[view_id] = {
+            "relative_path": current_relative.as_posix(),
+            "sha256": current_digest,
+        }
     action_path = target / "action_conditioning_11x7.npy"
     np.save(action_path, normalized["action_conditioning_7d"], allow_pickle=False)
     manifest: dict[str, Any] = {
@@ -224,6 +264,7 @@ def stage_ctrl_world_current_reference_request(
         "view_order": normalized["view_order"],
         "selected_history_indices": normalized["selected_history_indices"],
         "selected_history_views": staged_histories,
+        "current_views": staged_current,
         "action_conditioning": {
             "relative_path": action_path.relative_to(target).as_posix(),
             "sha256": file_sha256(action_path),

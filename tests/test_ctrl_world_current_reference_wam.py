@@ -38,6 +38,7 @@ def _request(tmp_path: Path) -> dict[str, Any]:
         "task_prompt": "Pick up the blue block.",
         "view_order": list(CTRL_WORLD_RELEASED_VIEW_ORDER),
         "selected_history_views": histories,
+        "current_views": {view_id: dict(rows[-1]) for view_id, rows in histories.items()},
         "selected_history_indices": list(CTRL_WORLD_SELECTED_HISTORY_INDICES),
         "action_conditioning_7d": np.zeros((11, 7), dtype=np.float64),
         "action_conditioning_shape": [11, 7],
@@ -61,6 +62,7 @@ def test_stage_request_copies_exact_three_view_history_and_action(tmp_path: Path
     assert manifest["physical_future_observation_used"] is False
     assert manifest["policy_identity_in_provider_request"] is False
     assert all(len(rows) == 6 for rows in manifest["selected_history_views"].values())
+    assert len(manifest["current_views"]) == 3
     assert Path(receipt["manifest_path"]).is_file()
 
 

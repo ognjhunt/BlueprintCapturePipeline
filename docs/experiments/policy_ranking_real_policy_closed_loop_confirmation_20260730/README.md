@@ -59,8 +59,8 @@ A generic DROID Ctrl-World transition adapter now binds the released interfaces:
 1. query the same frozen OpenPI DROID policy;
 2. preserve its complete native 10x8 or 15x8 joint-velocity/gripper output;
 3. apply Ctrl-World's released learned joint-velocity state adapter;
-4. condition exactly one Ctrl-World WAM on six history rows plus five future
-   Cartesian-pose rows;
+4. condition exactly one Ctrl-World WAM on six history rows, a separately bound
+   latest three-view observation, and five future Cartesian-pose rows;
 5. require five generated frames for each of the three registered camera views;
 6. propagate commanded joint, gripper, and Cartesian state;
 7. re-query the same policy from generated views only.
@@ -120,6 +120,9 @@ used as blind confirmation.
 - `protocol_amendment_5_conservative_reservation_wall_envelope_v1.md` —
   prospective conservative settlement and wall-accounting envelope without any
   monetary or scientific threshold change;
+- `protocol_amendment_6_ctrl_world_current_observation_runtime_v1.md` —
+  prospective separate current-observation binding and generated-only direct
+  Ctrl-World runtime contract, frozen before any WAM output;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 

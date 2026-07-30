@@ -79,11 +79,59 @@ def wam_registered_alternative_inputs_present(
             "view_2.mp4",
         )
     )
+    ctrl_world_current_reference_inputs_present = False
+    current_reference_manifest_name = (
+        "provider_runtime/ctrl_world_request/ctrl_world_current_reference_request.json"
+    )
+    if current_reference_manifest_name in entries:
+        try:
+            with zipfile.ZipFile(bundle_path) as archive:
+                payload = json.loads(archive.read(current_reference_manifest_name).decode("utf-8"))
+            request = dict(payload) if isinstance(payload, Mapping) else {}
+            histories = request.get("selected_history_views")
+            current_views = request.get("current_views")
+            action = request.get("action_conditioning")
+            action_row = dict(action) if isinstance(action, Mapping) else {}
+            declared_paths = {
+                "provider_runtime/ctrl_world_request/" + str(action_row.get("relative_path") or "")
+            }
+            if isinstance(histories, Mapping):
+                declared_paths.update(
+                    "provider_runtime/ctrl_world_request/" + str(row.get("relative_path") or "")
+                    for rows in histories.values()
+                    if isinstance(rows, list)
+                    for row in rows
+                    if isinstance(row, Mapping)
+                )
+            if isinstance(current_views, Mapping):
+                declared_paths.update(
+                    "provider_runtime/ctrl_world_request/" + str(row.get("relative_path") or "")
+                    for row in current_views.values()
+                    if isinstance(row, Mapping)
+                )
+            ctrl_world_current_reference_inputs_present = (
+                request.get("schema_version")
+                == "blueprint_ctrl_world_current_reference_staged_request.v1"
+                and isinstance(histories, Mapping)
+                and len(histories) == 3
+                and all(isinstance(rows, list) and len(rows) == 6 for rows in histories.values())
+                and isinstance(current_views, Mapping)
+                and len(current_views) == 3
+                and isinstance(action, Mapping)
+                and request.get("physical_future_observation_used") is False
+                and request.get("physical_outcome_labels_accessed") is False
+                and request.get("recorded_action_trace_used") is False
+                and len(declared_paths) == 22
+                and declared_paths.issubset(entries)
+            )
+        except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
+            ctrl_world_current_reference_inputs_present = False
     return (
         standard_inputs_present
         or reference_inputs_present
         or powered_inputs_present
         or ctrl_world_inputs_present
+        or ctrl_world_current_reference_inputs_present
     )
 
 

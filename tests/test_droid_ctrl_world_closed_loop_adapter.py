@@ -138,13 +138,13 @@ def test_transition_adapter_freezes_three_view_history_and_native_output(
 
     assert prepared["wam_request"]["view_order"] == list(CTRL_WORLD_RELEASED_VIEW_ORDER)
     assert prepared["wam_request"]["action_conditioning_shape"] == [11, 7]
+    assert set(prepared["wam_request"]["current_views"]) == set(CTRL_WORLD_RELEASED_VIEW_ORDER)
     assert prepared["wam_request"]["executed_prefix_seconds"] == pytest.approx(8 / 15)
     assert Path(prepared["native_policy_action_path"]).is_file()
     assert len(prepared["native_policy_action_sha256"]) == 64
     assert prepared["openpi_config_name_internal_only"] == "pi05_droid"
     assert all(
-        len(rows) == 6
-        for rows in prepared["wam_request"]["selected_history_views"].values()
+        len(rows) == 6 for rows in prepared["wam_request"]["selected_history_views"].values()
     )
 
 
@@ -167,6 +167,15 @@ def test_current_reference_runs_same_policy_on_wam_generated_three_view_observat
             assert request["view_order"] == list(CTRL_WORLD_RELEASED_VIEW_ORDER)
             assert not any("policy" in str(key).lower() for key in request)
             query_index = int(request["query_index"])
+            if query_index == 1:
+                current_path = Path(request["current_views"][DROID_EXTERIOR_VIEW_1]["path"])
+                history_path = Path(
+                    request["selected_history_views"][DROID_EXTERIOR_VIEW_1][-1]["path"]
+                )
+                with Image.open(current_path) as image:
+                    assert int(np.asarray(image).mean()) == 11
+                with Image.open(history_path) as image:
+                    assert int(np.asarray(image).mean()) == 0
             sequences: dict[str, list[str]] = {}
             for view_index, view_id in enumerate(CTRL_WORLD_RELEASED_VIEW_ORDER):
                 view_dir = output_dir / f"generated_{view_index}"
@@ -196,9 +205,7 @@ def test_current_reference_runs_same_policy_on_wam_generated_three_view_observat
     class Terminal:
         criterion_id = "fixture_two_query_terminal"
 
-        def assess(
-            self, *, observation: dict[str, Any], query_index: int
-        ) -> dict[str, Any]:
+        def assess(self, *, observation: dict[str, Any], query_index: int) -> dict[str, Any]:
             assert CTRL_WORLD_VIEW_HISTORY_PATHS in observation
             assert CTRL_WORLD_STATE_HISTORY in observation
             return {"terminal": query_index == 1, "reason": "fixture_terminal"}

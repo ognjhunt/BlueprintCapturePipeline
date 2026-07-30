@@ -34,9 +34,7 @@ CTRL_WORLD_SELECTED_HISTORY_INDICES = (0, 0, -12, -9, -6, -3)
 CTRL_WORLD_INITIAL_HISTORY_LENGTH = 24
 CTRL_WORLD_STATE_HISTORY = "blueprint/ctrl_world_cartesian_state_history"
 CTRL_WORLD_VIEW_HISTORY_PATHS = "blueprint/ctrl_world_view_history_paths"
-CTRL_WORLD_CURRENT_REFERENCE_POLICIES = frozenset(
-    {"pi0_droid", "pi0_fast_droid", "pi05_droid"}
-)
+CTRL_WORLD_CURRENT_REFERENCE_POLICIES = frozenset({"pi0_droid", "pi0_fast_droid", "pi05_droid"})
 
 
 def _safe_file(value: Any, *, reason: str) -> Path:
@@ -138,9 +136,7 @@ class DroidCtrlWorldCurrentReferenceTransitionAdapter:
 
         view_histories = self._initial_view_histories(observation, output_dir)
         state_history = self._initial_state_history(observation)
-        selected_state_history = state_history[
-            np.asarray(CTRL_WORLD_SELECTED_HISTORY_INDICES)
-        ]
+        selected_state_history = state_history[np.asarray(CTRL_WORLD_SELECTED_HISTORY_INDICES)]
         adapted = self.action_adapter.adapt(
             policy_action=policy_action,
             current_joint_position=observation["observation/joint_position"],
@@ -152,6 +148,7 @@ class DroidCtrlWorldCurrentReferenceTransitionAdapter:
         np.save(native_action_path, np.asarray(policy_action, dtype=np.float64), allow_pickle=False)
 
         selected_histories: dict[str, list[dict[str, str]]] = {}
+        current_views: dict[str, dict[str, str]] = {}
         for view_id in CTRL_WORLD_RELEASED_VIEW_ORDER:
             selected_histories[view_id] = []
             for index in CTRL_WORLD_SELECTED_HISTORY_INDICES:
@@ -159,9 +156,15 @@ class DroidCtrlWorldCurrentReferenceTransitionAdapter:
                     view_histories[view_id][index],
                     reason=f"ctrl_world_selected_history_file_missing:{view_id}",
                 )
-                selected_histories[view_id].append(
-                    {"path": str(path), "sha256": file_sha256(path)}
-                )
+                selected_histories[view_id].append({"path": str(path), "sha256": file_sha256(path)})
+            current_path = _safe_file(
+                view_histories[view_id][-1],
+                reason=f"ctrl_world_current_view_file_missing:{view_id}",
+            )
+            current_views[view_id] = {
+                "path": str(current_path),
+                "sha256": file_sha256(current_path),
+            }
 
         return {
             "wam_request": {
@@ -170,6 +173,7 @@ class DroidCtrlWorldCurrentReferenceTransitionAdapter:
                 "task_prompt": task_prompt,
                 "view_order": list(CTRL_WORLD_RELEASED_VIEW_ORDER),
                 "selected_history_views": selected_histories,
+                "current_views": current_views,
                 "selected_history_indices": list(CTRL_WORLD_SELECTED_HISTORY_INDICES),
                 "action_conditioning_7d": adapted["action_conditioning_7d"],
                 "action_conditioning_shape": [11, 7],
