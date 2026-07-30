@@ -362,11 +362,13 @@ B2 account authorization. The scanner argv must name an absolute installed
 executable; no shell expansion is used. The endpoint consumes an HMAC-authenticated,
 short-lived object-prefix grant, rejects redirects outside the same allowlist,
 streams into quarantine, verifies exact size and media shape, requires a clean
-scanner result, computes SHA-256, and writes an immutable content-addressed
-Capture Intake receipt. It never persists or echoes the URL or grant. That
-receipt is intake evidence, not Capture QA, reconstruction, task success,
-physical success, deployment readiness, safety certification, or policy-ranking
-support.
+scanner result, computes SHA-256, writes an immutable content-addressed Capture
+Intake receipt, and runs deterministic Capture QA against the same verified
+bytes. It returns the intake receipt and a separately digest-validated Capture QA
+publication; it never persists or echoes the URL or grant. Capture QA may accept
+the input or request exact recapture, but neither artifact establishes
+reconstruction, task success, physical success, deployment readiness, safety
+certification, or policy-ranking support.
 
 Signed intake headers are required by default. Temporary legacy bearer support
 exists only when `BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER=true` is
