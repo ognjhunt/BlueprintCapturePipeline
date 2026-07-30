@@ -22,7 +22,10 @@ from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, write_json
 from .decision_evidence_contracts import canonical_digest
-from .reconstruction_worker_contracts import build_worker_stack_manifest
+from .reconstruction_worker_contracts import (
+    ReconstructionWorkerContractError,
+    build_worker_stack_manifest,
+)
 
 
 SCHEMA_VERSION = "reconstruction_worker_build_packet.v1"
@@ -93,6 +96,8 @@ def render_remote_build_script(
     dockerfile_sha256: str,
     requirements_lock_sha256: str,
     context_manifest_sha256: str,
+    worker_stack_manifest_digest: str,
+    license_review_receipt_digest: str,
 ) -> str:
     """Return the only build command accepted for this exact packet."""
 
@@ -106,10 +111,13 @@ source_commit={json.dumps(source_commit)}
 dockerfile_sha256={json.dumps(dockerfile_sha256)}
 requirements_lock_sha256={json.dumps(requirements_lock_sha256)}
 context_manifest_sha256={json.dumps(context_manifest_sha256)}
+worker_stack_manifest_digest={json.dumps(worker_stack_manifest_digest)}
+license_review_receipt_digest={json.dumps(license_review_receipt_digest)}
 username_file="${{BLUEPRINT_DOCKER_USERNAME_FILE:-$HOME/.blueprint-secrets/docker_username}}"
 password_file="${{BLUEPRINT_DOCKER_PASSWORD_FILE:-$HOME/.blueprint-secrets/docker_pat}}"
 metadata="$script_dir/reconstruction_worker_build_metadata.json"
 result="$script_dir/{RESULT_NAME}"
+started_epoch="$(date +%s)"
 
 cleanup() {{
   docker logout >/dev/null 2>&1 || true
@@ -163,25 +171,29 @@ print(repository+"@"+digest)
 PY
 )"
 docker buildx imagetools inspect "$resolved" >/dev/null
-python3 - "$result" "$image_ref" "$resolved" "$source_commit" "$dockerfile_sha256" "$requirements_lock_sha256" "$context_manifest_sha256" <<'PY'
+python3 - "$result" "$resolved" "$source_commit" "$context_manifest_sha256" "$worker_stack_manifest_digest" "$license_review_receipt_digest" "$started_epoch" <<'PY'
 import hashlib,json,sys
+import time
 from datetime import datetime,timezone
 from pathlib import Path
 payload={{
   "schema_version":"reconstruction_worker_build_receipt.v1",
-  "generated_at":datetime.now(timezone.utc).isoformat(),
-  "status":"completed",
+  "timestamp":datetime.now(timezone.utc).isoformat(),
+  "worker_stack_manifest_digest":sys.argv[5],
+  "license_review_receipt_digest":sys.argv[6],
+  "status":"built",
+  "resolved_image_digest":sys.argv[2],
+  "source_commit_sha":sys.argv[3],
+  "build_context_digest":"sha256:"+sys.argv[4],
+  "duration_seconds":max(0.0,time.time()-float(sys.argv[7])),
+  "cost_usd":0.0,
+  "logs":["reconstruction_worker_build_metadata.json"],
   "blockers":[],
-  "image_ref":sys.argv[2],
-  "resolved_digest_ref":sys.argv[3],
-  "source_commit":sys.argv[4],
-  "runnable_platform":"linux/amd64",
-  "dockerfile_sha256":sys.argv[5],
-  "requirements_lock_sha256":sys.argv[6],
-  "context_manifest_sha256":sys.argv[7],
+  "scientific_qualification_inferred":False,
   "build_healthcheck_embedded":True,
   "runtime_gpu_healthcheck_completed":False,
   "raw_secret_values_recorded":False,
+  "warnings":["paid compute cost is reconciled by the outer canonical CPU builder receipt"],
   "proof_effect":"none",
   "claim_ceiling":"resolved_worker_image_build_only",
 }}
@@ -280,6 +292,10 @@ def validate_reconstruction_worker_archive(packet: Mapping[str, Any]) -> list[st
         dockerfile_sha256=str(packet.get("dockerfile_sha256") or ""),
         requirements_lock_sha256=str(packet.get("requirements_lock_sha256") or ""),
         context_manifest_sha256=str(packet.get("context_manifest_sha256") or ""),
+        worker_stack_manifest_digest=str(packet.get("worker_stack_manifest_digest") or ""),
+        license_review_receipt_digest=str(
+            packet.get("license_review_receipt_digest") or ""
+        ),
     ).encode()
     if payloads.get(f"{PACKET_DIRNAME}/{BUILD_SCRIPT_NAME}") != expected_script:
         blockers.append("builder_reconstruction_archive_script_binding_mismatch")
@@ -386,6 +402,8 @@ def prepare_reconstruction_worker_remote_build_packet(
     image_ref: str,
     source_commit: str,
     source_worktree_dirty: bool,
+    worker_stack_manifest: Mapping[str, Any] | None,
+    license_review_receipt: Mapping[str, Any] | None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Materialize a deterministic exact-source Linux/amd64 build archive."""
@@ -395,6 +413,40 @@ def prepare_reconstruction_worker_remote_build_packet(
     packet_dir = output / PACKET_DIRNAME
     context = packet_dir / "context"
     blockers: list[str] = []
+    normalized_stack: dict[str, Any] = {}
+    if isinstance(worker_stack_manifest, Mapping):
+        try:
+            normalized_stack = build_worker_stack_manifest(worker_stack_manifest)
+        except ReconstructionWorkerContractError:
+            blockers.append("reconstruction_worker_stack_manifest_invalid")
+    else:
+        blockers.append("reconstruction_worker_stack_manifest_missing")
+    if normalized_stack.get("source_commit_sha") != source_commit:
+        blockers.append("reconstruction_worker_stack_source_commit_mismatch")
+    license_receipt = (
+        json.loads(json.dumps(dict(license_review_receipt)))
+        if isinstance(license_review_receipt, Mapping)
+        else {}
+    )
+    license_digest = license_receipt.get("license_review_receipt_digest")
+    if not license_receipt:
+        blockers.append("reconstruction_worker_license_review_receipt_missing")
+    else:
+        expected_license_digest = canonical_digest(
+            license_receipt, digest_field="license_review_receipt_digest"
+        )
+        if (
+            license_receipt.get("schema_version")
+            != "reconstruction_worker_license_review_receipt.v1"
+            or license_receipt.get("status") != "accepted_internal_build_only"
+            or license_receipt.get("source_commit_sha") != source_commit
+            or license_receipt.get("registry_visibility") != "private"
+            or license_receipt.get("redistribution_authorized") is not False
+            or license_receipt.get("commercial_distribution_authorized") is not False
+            or not str(license_receipt.get("reviewer_authority_id") or "").strip()
+            or license_digest != expected_license_digest
+        ):
+            blockers.append("reconstruction_worker_license_review_receipt_invalid")
     if _VERSIONED_IMAGE.fullmatch(image_ref) is None or image_ref.rsplit(":", 1)[-1] in {
         "latest",
         "dev",
@@ -476,6 +528,10 @@ def prepare_reconstruction_worker_remote_build_packet(
             dockerfile_sha256=dockerfile_sha256,
             requirements_lock_sha256=requirements_lock_sha256,
             context_manifest_sha256=context_manifest_sha256,
+            worker_stack_manifest_digest=str(
+                normalized_stack.get("worker_stack_manifest_digest") or ""
+            ),
+            license_review_receipt_digest=str(license_digest or ""),
         ),
         encoding="utf-8",
     )
@@ -516,6 +572,10 @@ def prepare_reconstruction_worker_remote_build_packet(
         "context_manifest_sha256": context_manifest_sha256,
         "dockerfile_sha256": dockerfile_sha256,
         "requirements_lock_sha256": requirements_lock_sha256,
+        "worker_stack_manifest_digest": normalized_stack.get(
+            "worker_stack_manifest_digest"
+        ),
+        "license_review_receipt_digest": license_digest,
         "image_ref": image_ref,
         "source_commit": source_commit,
         "source_worktree_dirty": source_worktree_dirty,
@@ -548,6 +608,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--image-ref", default=DEFAULT_IMAGE_REF)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--source-worktree-dirty", action="store_true")
+    parser.add_argument("--worker-stack-manifest", required=True)
+    parser.add_argument("--license-review-receipt", required=True)
     args = parser.parse_args(argv)
     result = prepare_reconstruction_worker_remote_build_packet(
         output_dir=args.output_dir,
@@ -555,6 +617,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         image_ref=args.image_ref,
         source_commit=args.source_commit,
         source_worktree_dirty=args.source_worktree_dirty,
+        worker_stack_manifest=json.loads(
+            Path(args.worker_stack_manifest).read_text(encoding="utf-8")
+        ),
+        license_review_receipt=json.loads(
+            Path(args.license_review_receipt).read_text(encoding="utf-8")
+        ),
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "ready" else 2

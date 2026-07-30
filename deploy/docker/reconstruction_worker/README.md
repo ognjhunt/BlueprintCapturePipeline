@@ -14,3 +14,6 @@ Prepare the deterministic, exact-source build archive with
 `python -m blueprint_pipeline.reconstruction_worker_build_packet`; the archive
 does not build or push anything. Its manifest is accepted only by the canonical
 `cpu-build` allocator, which applies the independent paid-resource controls.
+Preparation requires explicit worker-stack and license-review receipt files;
+the latter must limit the image to a private internal build and cannot be
+inferred from operator or agent prose.

@@ -14,6 +14,10 @@ from blueprint_pipeline.reconstruction_worker_build_packet import (
     prepare_reconstruction_worker_remote_build_packet,
     validate_reconstruction_worker_archive,
 )
+from blueprint_pipeline.reconstruction_worker_contracts import (
+    PINNED_MODEL_ASSETS,
+    build_worker_stack_manifest,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.groot_oscar_infrastructure_admission import (
     MIN_BUILD_FREE_BYTES,
@@ -52,6 +56,42 @@ def _fixture_repo(root: Path) -> str:
     ).stdout.strip()
 
 
+def _worker_stack(source_commit: str) -> dict:
+    return build_worker_stack_manifest(
+        {
+            "worker_family": "blueprint-reconstruction-worker",
+            "runnable_platform": "linux/amd64",
+            "headless_required": True,
+            "display_required": False,
+            "source_commit_sha": source_commit,
+            "qualification_status": "candidate_unbuilt",
+            "minimum_vram_gb": 24,
+            "supported_compute_capabilities": [75, 80, 86, 89],
+            "tested_driver_range": {"status": "not_yet_tested"},
+            "model_assets": list(PINNED_MODEL_ASSETS),
+            "hidden_heldout_access": False,
+            "trainer_self_grading": False,
+        }
+    )
+
+
+def _license_receipt(source_commit: str) -> dict:
+    value = {
+        "schema_version": "reconstruction_worker_license_review_receipt.v1",
+        "status": "accepted_internal_build_only",
+        "source_commit_sha": source_commit,
+        "registry_visibility": "private",
+        "redistribution_authorized": False,
+        "commercial_distribution_authorized": False,
+        "reviewer_authority_id": "fixture-legal-reviewer",
+        "warnings": ["fixture receipt only"],
+    }
+    value["license_review_receipt_digest"] = canonical_digest(
+        value, digest_field="license_review_receipt_digest"
+    )
+    return value
+
+
 def test_remote_packet_is_clean_bound_deterministic_and_secret_free(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -62,6 +102,8 @@ def test_remote_packet_is_clean_bound_deterministic_and_secret_free(tmp_path: Pa
         image_ref=DEFAULT_IMAGE_REF,
         source_commit=head,
         source_worktree_dirty=False,
+        worker_stack_manifest=_worker_stack(head),
+        license_review_receipt=_license_receipt(head),
         generated_at="2026-07-30T12:00:00Z",
     )
     second = prepare_reconstruction_worker_remote_build_packet(
@@ -70,6 +112,8 @@ def test_remote_packet_is_clean_bound_deterministic_and_secret_free(tmp_path: Pa
         image_ref=DEFAULT_IMAGE_REF,
         source_commit=head,
         source_worktree_dirty=False,
+        worker_stack_manifest=_worker_stack(head),
+        license_review_receipt=_license_receipt(head),
         generated_at="2026-07-30T12:00:00Z",
     )
 
@@ -101,6 +145,13 @@ def test_remote_packet_is_clean_bound_deterministic_and_secret_free(tmp_path: Pa
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     recorded = json.loads(Path(first["manifest_path"]).read_text(encoding="utf-8"))
     Draft202012Validator(schema).validate(recorded)
+    license_schema = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "docs/schemas/reconstruction_worker_license_review_receipt.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    Draft202012Validator(license_schema).validate(_license_receipt(head))
 
 
 def test_remote_packet_archive_tamper_fails_closed(tmp_path: Path) -> None:
@@ -113,6 +164,8 @@ def test_remote_packet_archive_tamper_fails_closed(tmp_path: Path) -> None:
         image_ref=DEFAULT_IMAGE_REF,
         source_commit=head,
         source_worktree_dirty=False,
+        worker_stack_manifest=_worker_stack(head),
+        license_review_receipt=_license_receipt(head),
     )
     path = Path(packet["tarball_path"])
     path.write_bytes(path.read_bytes() + b"tamper")
@@ -134,6 +187,8 @@ def test_remote_packet_enters_canonical_cpu_build_admission_and_result_verifier(
         image_ref=DEFAULT_IMAGE_REF,
         source_commit=head,
         source_worktree_dirty=False,
+        worker_stack_manifest=_worker_stack(head),
+        license_review_receipt=_license_receipt(head),
     )
     admission = build_build_plane_admission(
         packet=packet,
@@ -160,18 +215,20 @@ def test_remote_packet_enters_canonical_cpu_build_admission_and_result_verifier(
 
     receipt = {
         "schema_version": "reconstruction_worker_build_receipt.v1",
-        "generated_at": "2026-07-30T12:00:00Z",
-        "status": "completed",
-        "blockers": [],
-        "image_ref": packet["image_ref"],
-        "resolved_digest_ref": packet["image_ref"].rsplit(":", 1)[0]
+        "timestamp": "2026-07-30T12:00:00Z",
+        "worker_stack_manifest_digest": packet["worker_stack_manifest_digest"],
+        "license_review_receipt_digest": packet["license_review_receipt_digest"],
+        "status": "built",
+        "resolved_image_digest": packet["image_ref"].rsplit(":", 1)[0]
         + "@sha256:"
         + "a" * 64,
-        "source_commit": packet["source_commit"],
-        "runnable_platform": "linux/amd64",
-        "dockerfile_sha256": packet["dockerfile_sha256"],
-        "requirements_lock_sha256": packet["requirements_lock_sha256"],
-        "context_manifest_sha256": packet["context_manifest_sha256"],
+        "source_commit_sha": packet["source_commit"],
+        "build_context_digest": "sha256:" + packet["context_manifest_sha256"],
+        "duration_seconds": 12.0,
+        "cost_usd": 0.0,
+        "logs": ["reconstruction_worker_build_metadata.json"],
+        "blockers": [],
+        "scientific_qualification_inferred": False,
         "build_healthcheck_embedded": True,
         "runtime_gpu_healthcheck_completed": False,
         "raw_secret_values_recorded": False,
@@ -209,6 +266,8 @@ def test_remote_packet_rejects_dirty_or_spoofed_source_identity(tmp_path: Path) 
         image_ref=DEFAULT_IMAGE_REF,
         source_commit="f" * 40,
         source_worktree_dirty=False,
+        worker_stack_manifest=_worker_stack(head),
+        license_review_receipt=_license_receipt(head),
     )
 
     assert packet["status"] == "blocked"
@@ -218,3 +277,21 @@ def test_remote_packet_rejects_dirty_or_spoofed_source_identity(tmp_path: Path) 
         "reconstruction_worker_packet_requires_clean_source_worktree",
     } <= set(packet["blockers"])
     assert head != packet["source_commit"]
+
+
+def test_remote_packet_cannot_infer_license_review_authority(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    head = _fixture_repo(repo)
+    packet = prepare_reconstruction_worker_remote_build_packet(
+        output_dir=tmp_path / "packet",
+        repo_root=repo,
+        image_ref=DEFAULT_IMAGE_REF,
+        source_commit=head,
+        source_worktree_dirty=False,
+        worker_stack_manifest=_worker_stack(head),
+        license_review_receipt=None,
+    )
+
+    assert packet["status"] == "blocked"
+    assert "reconstruction_worker_license_review_receipt_missing" in packet["blockers"]

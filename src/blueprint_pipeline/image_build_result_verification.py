@@ -183,17 +183,15 @@ def validate_remote_reconstruction_worker_result(
     blockers: list[str] = []
     path = results_dir / RECONSTRUCTION_WORKER_RESULT_NAME
     payload = _load_object(path) if path.is_file() else {}
-    resolved = str(payload.get("resolved_digest_ref") or "")
+    resolved = str(payload.get("resolved_image_digest") or "")
     expected_tag = str(packet.get("image_ref") or "")
     supplied_digest = payload.get("build_receipt_digest")
     if supplied_digest != canonical_digest(payload, digest_field="build_receipt_digest"):
         blockers.append("reconstruction_remote_build_receipt_digest_mismatch")
     if payload.get("schema_version") != "reconstruction_worker_build_receipt.v1":
         blockers.append("reconstruction_remote_build_result_schema_invalid")
-    if payload.get("status") != "completed" or payload.get("blockers") not in ([], ()):
+    if payload.get("status") != "built" or payload.get("blockers") not in ([], ()):
         blockers.append("reconstruction_remote_build_not_completed")
-    if payload.get("image_ref") != expected_tag:
-        blockers.append("reconstruction_remote_build_image_ref_mismatch")
     if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", resolved):
         blockers.append("reconstruction_remote_build_digest_ref_invalid")
     else:
@@ -204,22 +202,20 @@ def validate_remote_reconstruction_worker_result(
         )
         if resolved.split("@", 1)[0] != expected_repository:
             blockers.append("reconstruction_remote_build_digest_repository_mismatch")
-    for field, blocker in (
-        ("source_commit", "reconstruction_remote_build_source_commit_mismatch"),
-        ("dockerfile_sha256", "reconstruction_remote_build_dockerfile_sha256_mismatch"),
-        (
-            "requirements_lock_sha256",
-            "reconstruction_remote_build_requirements_lock_sha256_mismatch",
-        ),
-        (
-            "context_manifest_sha256",
-            "reconstruction_remote_build_context_manifest_sha256_mismatch",
-        ),
+    if payload.get("source_commit_sha") != packet.get("source_commit"):
+        blockers.append("reconstruction_remote_build_source_commit_mismatch")
+    if payload.get("build_context_digest") != (
+        "sha256:" + str(packet.get("context_manifest_sha256") or "")
     ):
-        if payload.get(field) != packet.get(field):
-            blockers.append(blocker)
-    if payload.get("runnable_platform") != "linux/amd64":
-        blockers.append("reconstruction_remote_build_platform_invalid")
+        blockers.append("reconstruction_remote_build_context_manifest_sha256_mismatch")
+    if payload.get("worker_stack_manifest_digest") != packet.get(
+        "worker_stack_manifest_digest"
+    ):
+        blockers.append("reconstruction_remote_build_stack_manifest_mismatch")
+    if payload.get("license_review_receipt_digest") != packet.get(
+        "license_review_receipt_digest"
+    ):
+        blockers.append("reconstruction_remote_build_license_receipt_mismatch")
     if payload.get("build_healthcheck_embedded") is not True:
         blockers.append("reconstruction_remote_build_healthcheck_missing")
     if payload.get("runtime_gpu_healthcheck_completed") is not False:
@@ -228,6 +224,8 @@ def validate_remote_reconstruction_worker_result(
         blockers.append("reconstruction_remote_build_secret_boundary_invalid")
     if payload.get("proof_effect") != "none":
         blockers.append("reconstruction_remote_build_proof_effect_invalid")
+    if payload.get("scientific_qualification_inferred") is not False:
+        blockers.append("reconstruction_remote_build_scientific_claim_invalid")
     return {
         "schema_version": "reconstruction_worker_remote_build_verification.v1",
         "status": "verified" if not blockers else "blocked",

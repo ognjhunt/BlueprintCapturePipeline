@@ -639,6 +639,18 @@ def build_build_plane_admission(
         ):
             if not _HEX64.fullmatch(_string(packet.get(field))):
                 blockers.append(blocker)
+        for field, blocker in (
+            (
+                "worker_stack_manifest_digest",
+                "builder_reconstruction_stack_manifest_digest_invalid",
+            ),
+            (
+                "license_review_receipt_digest",
+                "builder_reconstruction_license_receipt_digest_invalid",
+            ),
+        ):
+            if not _SHA256.fullmatch(_string(packet.get(field))):
+                blockers.append(blocker)
         if not _COMMIT.fullmatch(_string(packet.get("source_commit"))):
             blockers.append("builder_reconstruction_source_commit_invalid")
         blockers.extend(validate_reconstruction_worker_archive(packet))

@@ -293,7 +293,10 @@ exact-source build context for that seam. It includes only tracked package
 sources and the required Docker recipe/lock files, records every member digest,
 rejects symlinks and unsafe archive members, emits a byte-deterministic archive,
 and binds the executable build script to the source commit, recipe, dependency
-lock, and context manifest. The script builds only `linux/amd64`, requests
+lock, worker-stack manifest, license-review receipt, and context manifest. The
+license receipt can authorize only a private internal build; it cannot grant
+redistribution or commercial distribution rights, and an agent cannot issue it.
+The script builds only `linux/amd64`, requests
 BuildKit provenance and SBOM attestations, resolves the pushed registry digest,
 and emits `reconstruction_worker_build_receipt.v1`. The shared CPU builder
 independently validates both the archive and returned receipt and still requires
