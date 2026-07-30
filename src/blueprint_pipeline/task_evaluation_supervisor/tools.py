@@ -49,6 +49,10 @@ from ..reconstruction_validation_contracts import (
     validate_camera_rig,
     validate_metric_scale,
 )
+from ..reconstruction_pose_refinement import (
+    build_pose_refinement_execution_request,
+    build_pose_refinement_result,
+)
 from ..reconstruction_capability import normalize_reconstruction_result
 from ..reconstruction_worker_contracts import (
     build_pose_estimation_request,
@@ -225,6 +229,20 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "pose_estimation_result_digest": {"type": "string"},
             "registered_observation_count": {"type": "integer"},
             "rejected_observation_count": {"type": "integer"},
+            "heldout_labels_included": {"const": False},
+            "candidate_self_graded": {"const": False},
+            "claim_ceiling": {"const": "calibrated_camera_trajectory"},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "run_pose_refinement": _output_schema(
+        {
+            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "status": {"enum": ["succeeded", "failed", "timed_out", "interrupted"]},
+            "failure_code": {},
+            "pose_refinement_result_digest": {"type": "string"},
+            "drift_within_frozen_thresholds": {"type": "boolean"},
+            "raw_arkit_poses_modified": {"const": False},
             "heldout_labels_included": {"const": False},
             "candidate_self_graded": {"const": False},
             "claim_ceiling": {"const": "calibrated_camera_trajectory"},
@@ -651,6 +669,15 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
             minimum_mode="execute_non_spend",
             timeout_seconds=3_600.0,
+        ),
+        _descriptor(
+            "run_pose_refinement", "arkit_anchored_pose_refinement",
+            expected_artifacts=["pose_refinement_result.v1"],
+            input_properties={"pose_refinement_execution_request_digest": {"type": "string"}},
+            required_inputs=["pose_refinement_execution_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend", timeout_seconds=3_600.0,
         ),
         _descriptor(
             "train_gaussian_reconstruction",
@@ -1167,6 +1194,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "compile_equirectangular_virtual_rig",
         "validate_camera_rig",
         "run_pose_estimation",
+        "run_pose_refinement",
         "validate_metric_scale",
         "train_gaussian_reconstruction",
         "evaluate_heldout_appearance",
@@ -2092,6 +2120,80 @@ def _run_pose_estimation(
     ]
 
 
+def _run_pose_refinement(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    runtime = getattr(context, "pose_refiner", None)
+    request_value = getattr(context, "pose_refinement_request", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError("registered_tool_execution_scope_missing:run_pose_refinement")
+    if not callable(runtime) or not isinstance(request_value, Mapping):
+        raise ValueError("pose_refinement_runtime_not_injected")
+    try:
+        request = build_pose_refinement_execution_request(request_value)
+    except ValueError as exc:
+        raise ValueError("pose_refinement_request_contract_invalid") from exc
+    expected_digest = arguments.get("pose_refinement_execution_request_digest")
+    if expected_digest != request["pose_refinement_execution_request_digest"]:
+        raise ValueError("registered_tool_pose_refinement_request_binding_mismatch")
+    emitted = runtime(
+        request=request,
+        output_root=Path(root_value) / "generated" / "pose_refinement",
+    )
+    if not isinstance(emitted, Mapping):
+        raise ValueError("pose_refiner_result_not_object")
+    try:
+        result = build_pose_refinement_result(emitted)
+    except ValueError as exc:
+        raise ValueError("pose_refinement_result_contract_invalid") from exc
+    if any(
+        result.get(field) != request.get(field)
+        for field in (
+            "source_capture_digest",
+            "frozen_split_digest",
+            "camera_calibration_digest",
+            "initial_pose_manifest_digest",
+            "implementation_digest",
+            "container_image_digest",
+        )
+    ) or result.get("pose_refinement_execution_request_digest") != expected_digest:
+        raise ValueError("pose_refinement_result_lineage_mismatch")
+    metrics = result["drift_metrics"]
+    thresholds = request["drift_thresholds"]
+    within_thresholds = bool(
+        metrics["maximum_translation_m"] <= thresholds["maximum_translation_m"]
+        and metrics["maximum_rotation_degrees"]
+        <= thresholds["maximum_rotation_degrees"]
+    )
+    if result["status"] == "succeeded" and not within_thresholds:
+        raise ValueError("pose_refinement_result_drift_threshold_exceeded")
+    path = write_phase2_artifact(
+        root_value,
+        "generated/pose_refinement/pose_refinement_result.json",
+        result,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "status": result["status"],
+        "failure_code": result.get("failure_code"),
+        "pose_refinement_result_digest": result["pose_refinement_result_digest"],
+        "drift_within_frozen_thresholds": within_thresholds,
+        "raw_arkit_poses_modified": False,
+        "heldout_labels_included": False,
+        "candidate_self_graded": False,
+        "claim_ceiling": "calibrated_camera_trajectory",
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": result["pose_refinement_result_digest"],
+            "artifact_type": "pose_refinement_result.v1",
+        }
+    ]
+
+
 def _train_gaussian_reconstruction(
     *, context: Any, arguments: Mapping[str, Any]
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -2595,6 +2697,8 @@ def _bound_artifact(
         )
     elif tool_id == "run_pose_estimation":
         return _run_pose_estimation(context=context, arguments=arguments)
+    elif tool_id == "run_pose_refinement":
+        return _run_pose_refinement(context=context, arguments=arguments)
     elif tool_id == "train_gaussian_reconstruction":
         return _train_gaussian_reconstruction(context=context, arguments=arguments)
     elif tool_id in _GEOMETRY_TOOL_CONFIG:
@@ -2715,6 +2819,11 @@ def non_spend_tool_bindings(
         if tool_id == "run_pose_estimation" and (
             not callable(getattr(context, "pose_estimator", None))
             or not isinstance(getattr(context, "pose_estimation_request", None), Mapping)
+        ):
+            continue
+        if tool_id == "run_pose_refinement" and (
+            not callable(getattr(context, "pose_refiner", None))
+            or not isinstance(getattr(context, "pose_refinement_request", None), Mapping)
         ):
             continue
         if tool_id == "train_gaussian_reconstruction" and (

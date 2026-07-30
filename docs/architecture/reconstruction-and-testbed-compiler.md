@@ -152,9 +152,15 @@ route digest or export-request digest. The tool observations cannot change
 proof state, calibration, raw poses, or split membership.
 
 The pose-refinement request remains deterministically blocked because a
-repository-approved drift threshold and executable anchored bundle-adjustment
-tool are not registered yet. Accordingly, this export is a calibrated
-reconstruction request, not a refined trajectory or COLMAP/gsplat dataset. The
+threshold must be supplied by a later frozen
+`pose_refinement_execution_request.v1`; the export itself cannot choose one.
+`run_pose_refinement` is now a registered worker boundary for ARKit-anchored
+bundle adjustment or pose-graph refinement. It preserves the raw pose manifest,
+forbids hidden-view access, and rejects a nominally successful result when its
+maximum translation or rotation drift exceeds the precommitted limits. No
+qualified refiner runtime has been executed on a real bundle yet. Accordingly,
+the export alone is a calibrated reconstruction request, not a refined
+trajectory or COLMAP/gsplat dataset. The
 ARKit scaffold records sensor-declared meter units, but its claim ceiling no
 longer says metric scale or a metric reference layer is independently proven:
 confidence filtering, RGB-depth alignment, metric-scale validation, and

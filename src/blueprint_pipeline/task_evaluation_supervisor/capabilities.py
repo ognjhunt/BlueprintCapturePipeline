@@ -66,6 +66,8 @@ class SupervisorContext:
     # objects and callables remain trusted runtime state.
     pose_estimation_request: Mapping[str, Any] | None = None
     pose_estimator: Any | None = None
+    pose_refinement_request: Mapping[str, Any] | None = None
+    pose_refiner: Any | None = None
     reconstruction_training_request: Mapping[str, Any] | None = None
     gaussian_reconstruction_trainer: Any | None = None
     heldout_appearance_evaluation_request: Mapping[str, Any] | None = None

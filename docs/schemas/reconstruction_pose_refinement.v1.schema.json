@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/reconstruction_pose_refinement.v1.schema.json",
+  "title": "Blueprint ARKit Anchored Pose Refinement Contracts v1",
+  "oneOf": [{"$ref": "#/$defs/request"}, {"$ref": "#/$defs/result"}],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "request": {
+      "type": "object",
+      "required": ["schema_version", "stable_run_identity", "source_capture_digest", "capture_profile", "reconstruction_dataset_digest", "frozen_split_digest", "camera_observation_digest", "camera_calibration_digest", "initial_pose_manifest_digest", "initial_pose_source", "method_id", "drift_thresholds", "thresholds_frozen_before_execution", "raw_arkit_poses_may_be_modified", "candidate_may_read_hidden_heldout", "implementation_digest", "container_image_digest", "source_commit_sha", "deterministic_configuration_digest", "pose_refinement_execution_request_digest"],
+      "properties": {
+        "schema_version": {"const": "pose_refinement_execution_request.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "capture_profile": {"const": "iphone_arkit_lidar"},
+        "initial_pose_source": {"const": "verified_arkit_raw_contract_3_2"},
+        "thresholds_frozen_before_execution": {"const": true},
+        "raw_arkit_poses_may_be_modified": {"const": false},
+        "candidate_may_read_hidden_heldout": {"const": false},
+        "deterministic_configuration_digest": {"$ref": "#/$defs/sha256"},
+        "pose_refinement_execution_request_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "result": {
+      "type": "object",
+      "required": ["schema_version", "source_capture_digest", "pose_refinement_execution_request_digest", "frozen_split_digest", "camera_calibration_digest", "initial_pose_manifest_digest", "implementation_digest", "container_image_digest", "status", "failure_code", "drift_metrics", "registered_observation_ids", "rejected_observation_ids", "raw_arkit_poses_modified", "heldout_labels_included", "candidate_self_graded", "proof_effect", "claim_ceiling", "pose_refinement_result_digest"],
+      "properties": {
+        "schema_version": {"const": "pose_refinement_result.v1"},
+        "status": {"enum": ["succeeded", "failed", "timed_out", "interrupted"]},
+        "raw_arkit_poses_modified": {"const": false},
+        "heldout_labels_included": {"const": false},
+        "candidate_self_graded": {"const": false},
+        "proof_effect": {"const": "bounded_refined_trajectory_candidate_only"},
+        "claim_ceiling": {"const": "calibrated_camera_trajectory"},
+        "pose_refinement_result_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

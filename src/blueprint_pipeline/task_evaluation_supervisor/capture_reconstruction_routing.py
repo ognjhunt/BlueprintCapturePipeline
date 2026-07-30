@@ -44,9 +44,9 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
             "registered_conditional",
         ),
         (
-            "refine_arkit_anchored_poses",
+            "run_pose_refinement",
             "pose_refinement",
-            "required_not_registered",
+            "registered_conditional",
         ),
         ("validate_metric_scale", "metric_scale", "registered_conditional"),
         ("train_pose_conditioned_3dgs", "gaussian_splat_3d", "required_not_registered"),
