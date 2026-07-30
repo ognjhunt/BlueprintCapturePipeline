@@ -1,0 +1,49 @@
+{
+  "schema_version": "policy_ranking_real_policy_closed_loop_goal_cost_authorization.v1",
+  "experiment_id": "policy_ranking_real_policy_closed_loop_confirmation_20260730",
+  "authorized_at": "2026-07-30T16:52:52-0500",
+  "authorization_source": "explicit continuing user authorization in the current persistent goal",
+  "scope": "scientifically admitted real-policy closed-loop confirmation stages within the stated campaign ceilings",
+  "hard_ceiling_usd": {
+    "combined_evaluator_api": 25.0,
+    "gpu_compute": 50.0,
+    "storage_and_transfer": 10.0,
+    "total_campaign": 100.0
+  },
+  "maximum_concurrent_gpus": 1,
+  "authoritative_conservative_gpu_ledger_before_first_wam": {
+    "committed_usd": 8.367832,
+    "committed_gpu_seconds": 29473,
+    "open_reservation_count": 0,
+    "internal_ledger_cap_usd": 20.0,
+    "internal_ledger_wall_cap_seconds": 72000
+  },
+  "first_wam_allocation": {
+    "target_spend_usd": 3.0,
+    "per_allocation_hard_cap_usd": 5.0,
+    "maximum_hourly_rate_usd": 2.05,
+    "hard_ttl_seconds": 4800,
+    "maximum_provider_allocations": 1,
+    "maximum_wam_requests": 1
+  },
+  "controls_retained": {
+    "canonical_paid_resource_allocator_only": true,
+    "single_use_admission_per_allocation": true,
+    "one_resource_limit": true,
+    "independent_watchdog_before_create": true,
+    "automatic_spend_cutoff": true,
+    "retained_session_code_only_fix_support": true,
+    "teardown_required": true,
+    "provider_zero_required": true,
+    "physical_robot_endpoint_access_allowed": false
+  },
+  "authorization_does_not_change": [
+    "scientific_gates",
+    "causal_thresholds",
+    "reliability_thresholds",
+    "blind_outcome_requirements",
+    "judge_execution_order",
+    "claim_boundaries"
+  ],
+  "status": "accepted_before_first_ctrl_world_wam_execution"
+}

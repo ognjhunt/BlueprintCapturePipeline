@@ -3,10 +3,12 @@
 ## Current outcome
 
 This successor is **in progress**. It has not earned a terminal thesis verdict.
-The offline contract lane now supports the prospectively named **Blueprint
+The offline contract lane supports the prospectively named **Blueprint
 Ctrl-World current-reference** arm with three current official OpenPI DROID
-policies. No live policy checkpoint, Ctrl-World WAM, judge, physical-label join,
-or judge has completed. One admitted Vast launch attempt reached provider create,
+policies. The live identity-bound policy canary has now completed one real frozen
+checkpoint query for each policy, with complete hash-validated native outputs.
+No Ctrl-World WAM, policy re-query, judge, or physical-label join has completed.
+One earlier admitted Vast launch attempt reached provider create,
 but the selected marketplace ask had already expired. Vast returned HTTP 410,
 and exact-prefix inventory proved that no successor instance was created and
 attributable successor GPU spend was USD 0.
@@ -42,7 +44,8 @@ The scientific admission state is:
 
 - real-policy/WAM contract: offline adapter admitted for `pi0_droid`,
   `pi0_fast_droid`, and `pi05_droid`;
-- real learned-policy inference: not yet measured;
+- real learned-policy inference: completed once for each of `pi0_droid`,
+  `pi0_fast_droid`, and `pi05_droid`;
 - real policy -> WAM -> same-policy re-query: not yet measured;
 - WAM causal qualification: not yet measured;
 - blind physical ranking: unavailable and not measured;
@@ -158,15 +161,23 @@ used as blind confirmation.
 - `protocol_amendment_15_portable_policy_output_artifacts_v1.md` — portable
   result-root-relative action and receipt paths plus independent terminal
   archive validation of their bytes, hashes, shapes, dtype, and claim boundary;
+- `protocol_amendment_16_first_wam_policy_seed_selection_v1.md` — prospectively
+  freezes `pi05_droid`, `pickplace`, gripper maximum `0.75`, and seed 0 for the
+  one-action first Ctrl-World generation before inspecting any WAM output;
+- `goal_cost_authorization_v1.json`,
+  `compute_authorization_ctrl_world_allocation_1.json`, and
+  `ctrl_world_current_reference_first_wam_gpu_profile_freeze_v1.json` — bind the
+  first WAM request to the exact bundle, one allocation, one request, registered
+  ceilings, watchdog, teardown, and provider-zero controls;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-The next finite gate is the predecessor watchdog's deadline settlement, a fresh
-post-terminal global provider-zero snapshot, and conservative no-allocation
-budget reconciliation. Blueprint will then run the newly frozen `b6be7344`
-policy canary: one identity-bound inference from each of the three policy
-checkpoints. Only after that policy gate may the separately attributed
-Ctrl-World WAM bundle be frozen around one real policy action and admitted.
-Judges remain forbidden until a complete episode passes causal qualification.
+The next finite gate is one separately attributable Ctrl-World current-reference
+generation from the frozen `pi05_droid` native action at seed 0. Its request,
+bundle, exact launch profile, budget reservation, watchdog, and teardown
+contracts must all pass before the provider call. If its generated-only
+three-view artifact passes the registered immediate reliability checks, the next
+gate is one three-interaction re-query episode with the same policy. Judges
+remain forbidden until a complete episode passes causal qualification.
