@@ -1,0 +1,73 @@
+{
+  "schema_version": "openusd_local_packaging_execution_receipt.v1",
+  "stable_run_identity": "openusd-local-fixture-5d9675f6",
+  "status": "completed_packaging_fixture_only",
+  "source_commit_sha": "5d9675f6d57cf42bf8b27320e2613984f3144f61",
+  "timestamp": "2026-07-30T21:20:56Z",
+  "source_capture_identity": "synthetic-openusd-packaging-fixture",
+  "source_capture_digest": "sha256:2ea630fc10390a9e804d479c822cbe2706142bd00147189d04080b0ec1ab40db",
+  "runtime": {
+    "provider": "local",
+    "openusd_version": "24.8",
+    "trimesh_version": "4.11.1",
+    "cost_usd": 0.0,
+    "paid_compute_authorized": false,
+    "provider_upload_authorized": false,
+    "live_provider_inventory": 0
+  },
+  "source_assets": {
+    "appearance_asset_digest": "sha256:ffc60d30b326a31e9acd904f217b1da545604d5a52467c0ea476af25bfe3d2ef",
+    "appearance_prim_type": "ParticleField3DGaussianSplat",
+    "collider_asset_digest": "sha256:a75f221bca4ddec7211c260d2a45a7fcde5891aea91ff4bbc6ce5e86640c899e",
+    "collider_prim_type": "Cube",
+    "collider_api_configured": true,
+    "fixture_pixels_or_sensor_geometry_present": false
+  },
+  "contract_artifacts": {
+    "metric_geometry_manifest_digest": "sha256:4de785bc0f49ae571067e991e8349440f499c59c66c2bc13e8f3202ec170432a",
+    "collider_candidate_manifest_digest": "sha256:d30ecc61fc5c9da8d9482db079e168b8b176f6dfa9e9de5eeee1699c5a462c93",
+    "collider_qualification_digest": "sha256:701af4ee5ebb2b6029757e8ca28d3f9c515f8168b69791d6111fd979fd7504a3",
+    "collider_qualification_decision": "accepted_bounded_navigation",
+    "qualification_measurements_are_fixture_declarations": true,
+    "packaging_request_digest": "sha256:92624cd46a9b3826a94ee37d8568acec83f64b2188b9242ce75aff274f49095e",
+    "packaging_result_digest": "sha256:374b6f037bc8dc218f8f288982eb5a58e5e30846977d8b7dcaf381fa24d54d45"
+  },
+  "package": {
+    "artifact_reference": "92624cd46a9b3826a94ee37d8568acec83f64b2188b9242ce75aff274f49095e/blueprint_reconstruction_fixture.usdz",
+    "digest": "sha256:334f8717a7a5012e29eab4fbf4f440386c137bc61e2c9dab4a7f4d80423a9126",
+    "size_bytes": 1923,
+    "member_count": 3,
+    "particlefield_prim_count": 1,
+    "collision_api_prim_count": 1,
+    "missing_asset_count": 0,
+    "unresolved_dependency_count": 0,
+    "meters_per_unit": 1.0,
+    "up_axis": "Z",
+    "exact_package_reopened": true,
+    "deterministic_replay_exact": true
+  },
+  "warnings": [
+    "synthetic_fixture_not_capture_evidence",
+    "metric_and_collider_measurements_are_declared_fixture_values_not_real_sensor_measurements",
+    "source_dependency_localization_warnings_observed_before_final_package_closure"
+  ],
+  "blockers": [
+    "real_metric_geometry_compiler_not_executed",
+    "real_collider_measurements_not_executed",
+    "isaac_runtime_not_executed",
+    "fixed_camera_render_not_produced",
+    "physics_contact_probe_not_executed"
+  ],
+  "proof_effect": "deterministic_openusd_packaging_mechanics_only",
+  "claim_ceiling": {
+    "openusd_package": true,
+    "metric_reference_geometry": false,
+    "collision_geometry": false,
+    "physics_readiness": false,
+    "isaac_load_render_compatibility": false,
+    "simulator_task_evidence": false,
+    "physical_task_success": false,
+    "deployment_readiness": false
+  },
+  "receipt_digest": "sha256:040e3249efbb6015e757429d2cde1eeca85a6ef8c4534577a176582667f07937"
+}

@@ -405,6 +405,16 @@ fixed-camera renders without NaNs or obvious scale mismatch. Even a passing
 result proves only Isaac load/render/physics-presence compatibility—not simulator
 task success, physical success, or deployment readiness.
 
+The current local OpenUSD execution receipt is
+`docs/evidence/openusd_local_packaging_fixture_5d9675f6.json`. On clean commit
+`5d9675f6`, OpenUSD 24.8 authored and reopened a byte-stable, self-contained,
+meter/Z-up USDZ with one ParticleField appearance prim and one collision-API
+prim. The exact replay matched, and final dependency inspection found no
+missing or unresolved assets. This is packaging-mechanics evidence over a
+synthetic fixture. Its metric and collider measurements are declared fixture
+values, so it does not qualify real metric geometry, collision, Isaac load or
+render behavior, physics contact, task success, physical success, or deployment.
+
 `isaac_reconstruction_verification.py` is the normalization boundary for the
 headless runtime result. It intentionally rejects visual-only
 `isaac_splat_nurec_render_result.v1`. The existing ParticleField runner now has

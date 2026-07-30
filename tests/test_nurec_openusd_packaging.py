@@ -28,6 +28,41 @@ REPO = Path(__file__).resolve().parents[1]
 DIGESTS = ["sha256:" + character * 64 for character in "abcdef"]
 
 
+def test_recorded_local_packaging_fixture_does_not_promote_scientific_claims() -> None:
+    receipt = json.loads(
+        (
+            REPO / "docs/evidence/openusd_local_packaging_fixture_5d9675f6.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert receipt["status"] == "completed_packaging_fixture_only"
+    assert receipt["package"]["exact_package_reopened"] is True
+    assert receipt["package"]["deterministic_replay_exact"] is True
+    assert receipt["package"]["particlefield_prim_count"] == 1
+    assert receipt["package"]["collision_api_prim_count"] == 1
+    assert receipt["package"]["missing_asset_count"] == 0
+    assert receipt["package"]["unresolved_dependency_count"] == 0
+    assert receipt["claim_ceiling"]["openusd_package"] is True
+    assert all(
+        receipt["claim_ceiling"][claim] is False
+        for claim in (
+            "metric_reference_geometry",
+            "collision_geometry",
+            "physics_readiness",
+            "isaac_load_render_compatibility",
+            "simulator_task_evidence",
+            "physical_task_success",
+            "deployment_readiness",
+        )
+    )
+    assert receipt["contract_artifacts"][
+        "qualification_measurements_are_fixture_declarations"
+    ] is True
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
