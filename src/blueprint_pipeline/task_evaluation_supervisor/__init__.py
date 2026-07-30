@@ -29,6 +29,7 @@ from .capture_reconstruction_routing import (
 from .reconstruction_execution_readiness import (
     RECONSTRUCTION_EXECUTION_READINESS_SCHEMA_VERSION,
     ReconstructionExecutionReadinessError,
+    bound_tool_ids_for_control_plane_inspection,
     build_reconstruction_execution_readiness,
     validate_reconstruction_execution_readiness,
 )
@@ -74,10 +75,13 @@ from .lifecycle import (
     CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD_ENV,
     CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION,
     MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD,
+    RECONSTRUCTION_READINESS_POINTER_SCHEMA_VERSION,
     capture_supervisor_execution_options_from_env,
     capture_supervisor_health_status,
     capture_supervisor_execution_profile,
+    refresh_capture_reconstruction_execution_readiness,
     run_capture_build_supervisor,
+    validate_reconstruction_readiness_pointer,
 )
 from .manager import (
     AgentsSDKSupervisorManagerOutput,
@@ -231,6 +235,7 @@ __all__ = [
     "AgentsSDKSupervisorManagerOutput",
     "SupervisorReplayError",
     "ReconstructionExecutionReadinessError",
+    "RECONSTRUCTION_READINESS_POINTER_SCHEMA_VERSION",
     "SupervisorRun",
     "SupervisorState",
     "TaskEvaluationSupervisor",
@@ -246,6 +251,7 @@ __all__ = [
     "capture_build_source_binding",
     "capture_supervisor_execution_profile",
     "build_capture_reconstruction_route",
+    "bound_tool_ids_for_control_plane_inspection",
     "build_reconstruction_execution_readiness",
     "compile_neutral_candidate_policy_suite",
     "execute_neutral_candidate_policy_suite",
@@ -266,7 +272,9 @@ __all__ = [
     "proof_boundary",
     "validate_proof_boundary",
     "replay_supervisor_run",
+    "refresh_capture_reconstruction_execution_readiness",
     "run_capture_build_supervisor",
+    "validate_reconstruction_readiness_pointer",
     "authorization_receipt",
     "authorization_request",
     "clarification_receipt",

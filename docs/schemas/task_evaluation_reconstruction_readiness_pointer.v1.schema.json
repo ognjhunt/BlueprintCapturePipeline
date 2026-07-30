@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.example/task_evaluation_reconstruction_readiness_pointer.v1.schema.json",
+  "title": "Task Evaluation Reconstruction Readiness Pointer v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "capture_build_digest",
+    "source_commit_sha",
+    "readiness_digest",
+    "readiness_relative_path",
+    "previous_readiness_digest",
+    "control_plane_binding",
+    "recorded_at",
+    "proof_boundary",
+    "pointer_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "task_evaluation_reconstruction_readiness_pointer.v1"
+    },
+    "run_id": {"type": "string", "minLength": 1},
+    "capture_build_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "readiness_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "readiness_relative_path": {
+      "type": "string",
+      "pattern": "^reconstruction_execution_readiness_history/[0-9a-f]{64}\\.json$"
+    },
+    "previous_readiness_digest": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      ]
+    },
+    "control_plane_binding": {"type": "object"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "proof_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pointer_is_execution_authority",
+        "pointer_is_reconstruction_evidence",
+        "prior_readiness_snapshots_preserved",
+        "physical_task_success_established"
+      ],
+      "properties": {
+        "pointer_is_execution_authority": {"const": false},
+        "pointer_is_reconstruction_evidence": {"const": false},
+        "prior_readiness_snapshots_preserved": {"const": true},
+        "physical_task_success_established": {"const": false}
+      }
+    },
+    "pointer_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

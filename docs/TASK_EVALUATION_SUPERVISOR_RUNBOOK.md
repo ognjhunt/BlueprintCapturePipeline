@@ -130,6 +130,18 @@ authority, or execution receipt. `not_ready`, `route_unresolved`, and
 `source_binding_mismatch` are valid fail-closed outcomes. Readiness is neither
 execution authority nor reconstruction evidence.
 
+Each authenticated reconstruction plan, authorization, and execution mutation
+refreshes this join automatically. The lifecycle preserves the initial record
+and writes later records beneath
+`reconstruction_execution_readiness_history/<digest>.json`. The replaceable
+`reconstruction_execution_readiness_latest.json` pointer is validated against
+`task_evaluation_reconstruction_readiness_pointer.v1`; it links to the prior
+readiness digest and cannot grant authority or upgrade proof. An identical
+control-plane replay reuses the existing snapshot. Pointer updates are
+serialized per supervisor run. A source mismatch or an
+incomplete readiness write fails the service mutation response closed even when
+the underlying idempotent control-plane receipt already exists.
+
 ## Non-spend execution
 
 `execute_non_spend` can inspect registered artifacts, deterministically compile

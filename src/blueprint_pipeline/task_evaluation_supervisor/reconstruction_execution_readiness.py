@@ -55,6 +55,35 @@ _CONTROL_PLANE_STAGE_BINDINGS = {
 }
 
 
+def bound_tool_ids_for_control_plane_inspection(
+    value: Mapping[str, Any],
+) -> list[str]:
+    """Return only repository-registered local tool bindings named by a plan.
+
+    A binding means that the deterministic local implementation is present. It
+    does not mean that the method is authorized; authority is evaluated
+    separately from the immutable control-plane authorization receipt.
+    """
+
+    inspection = _clone(dict(value))
+    plan = inspection.get("reconstruction_plan")
+    selected = plan.get("selected_methods") if isinstance(plan, Mapping) else None
+    if not isinstance(selected, list):
+        raise ReconstructionExecutionReadinessError("control_plane_inspection_invalid")
+    planned_references = {
+        str(row.get("adapter_reference") or "")
+        for row in selected
+        if isinstance(row, Mapping) and str(row.get("adapter_reference") or "")
+    }
+    return sorted(
+        {
+            stage_id
+            for stage_id, bindings in _CONTROL_PLANE_STAGE_BINDINGS.items()
+            if any(reference in planned_references for reference, _ in bindings)
+        }
+    )
+
+
 class ReconstructionExecutionReadinessError(ValueError):
     """Raised when readiness inputs or a recorded artifact fail closed."""
 
@@ -502,6 +531,7 @@ def validate_reconstruction_execution_readiness(value: Mapping[str, Any]) -> dic
 __all__ = [
     "RECONSTRUCTION_EXECUTION_READINESS_SCHEMA_VERSION",
     "ReconstructionExecutionReadinessError",
+    "bound_tool_ids_for_control_plane_inspection",
     "build_reconstruction_execution_readiness",
     "validate_reconstruction_execution_readiness",
 ]

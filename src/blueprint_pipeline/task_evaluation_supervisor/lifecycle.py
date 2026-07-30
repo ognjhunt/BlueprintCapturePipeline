@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import fcntl
 import math
 import os
+import json
 from pathlib import Path
 import re
 import subprocess
+from subprocess import run as _run_subprocess
 from typing import Any, Mapping
 
 from ..agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
@@ -17,7 +20,11 @@ from .capture_ingress import load_capture_build_ingress
 from .capture_reconstruction_routing import build_capture_reconstruction_route
 from .contracts import AutonomyMode
 from .supervisor import TaskEvaluationSupervisor
-from .reconstruction_execution_readiness import build_reconstruction_execution_readiness
+from .reconstruction_execution_readiness import (
+    bound_tool_ids_for_control_plane_inspection,
+    build_reconstruction_execution_readiness,
+    validate_reconstruction_execution_readiness,
+)
 from .tools import ToolRegistry
 from .phase2_artifacts import write_phase2_artifact
 
@@ -27,6 +34,10 @@ CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK_ENV = "BLUEPRINT_CAPTURE_SUPERVISOR_ALL
 CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD_ENV = "BLUEPRINT_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD"
 CAPTURE_SUPERVISOR_AGENT_MODEL_ENV = "BLUEPRINT_CAPTURE_SUPERVISOR_AGENT_MODEL"
 MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD = 100.0
+RECONSTRUCTION_READINESS_POINTER_SCHEMA_VERSION = (
+    "task_evaluation_reconstruction_readiness_pointer.v1"
+)
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def _capture_supervisor_source_commit_sha(
@@ -40,7 +51,7 @@ def _capture_supervisor_source_commit_sha(
         return configured
     repository_root = Path(__file__).resolve().parents[3]
     try:
-        completed = subprocess.run(
+        completed = _run_subprocess(
             ["git", "rev-parse", "HEAD"],
             cwd=repository_root,
             check=True,
@@ -63,6 +74,59 @@ def _readiness_timestamp(value: Any) -> str:
     if text.endswith("+00:00"):
         return text[:-6] + "Z"
     raise ValueError("capture_supervisor_generated_at_not_utc")
+
+
+def validate_reconstruction_readiness_pointer(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the replaceable pointer to an immutable readiness snapshot."""
+
+    pointer = dict(value)
+    required = {
+        "schema_version",
+        "run_id",
+        "capture_build_digest",
+        "source_commit_sha",
+        "readiness_digest",
+        "readiness_relative_path",
+        "previous_readiness_digest",
+        "control_plane_binding",
+        "recorded_at",
+        "proof_boundary",
+        "pointer_digest",
+    }
+    previous = pointer.get("previous_readiness_digest")
+    proof = pointer.get("proof_boundary")
+    readiness_digest = str(pointer.get("readiness_digest") or "")
+    if (
+        set(pointer) != required
+        or pointer.get("schema_version")
+        != RECONSTRUCTION_READINESS_POINTER_SCHEMA_VERSION
+        or not str(pointer.get("run_id") or "").strip()
+        or _SHA256_RE.fullmatch(str(pointer.get("capture_build_digest") or "")) is None
+        or re.fullmatch(r"[0-9a-f]{40}", str(pointer.get("source_commit_sha") or ""))
+        is None
+        or _SHA256_RE.fullmatch(readiness_digest) is None
+        or pointer.get("readiness_relative_path")
+        != (
+            "reconstruction_execution_readiness_history/"
+            f"{readiness_digest.removeprefix('sha256:')}.json"
+        )
+        or (previous is not None and _SHA256_RE.fullmatch(str(previous)) is None)
+        or not isinstance(pointer.get("control_plane_binding"), Mapping)
+        or not _readiness_timestamp(pointer.get("recorded_at"))
+        or proof
+        != {
+            "pointer_is_execution_authority": False,
+            "pointer_is_reconstruction_evidence": False,
+            "prior_readiness_snapshots_preserved": True,
+            "physical_task_success_established": False,
+        }
+        or pointer.get("pointer_digest")
+        != canonical_digest(pointer, digest_field="pointer_digest")
+    ):
+        raise ValueError("reconstruction_readiness_pointer_invalid")
+    return pointer
 
 
 def capture_supervisor_execution_options_from_env(
@@ -277,14 +341,142 @@ def run_capture_build_supervisor(
     }
 
 
+def _write_reconstruction_readiness_snapshot(
+    *,
+    output_dir: Path,
+    lifecycle: Mapping[str, Any],
+    initial: Mapping[str, Any],
+    readiness: Mapping[str, Any],
+) -> dict[str, Any]:
+    readiness_digest = str(readiness["reconstruction_execution_readiness_digest"])
+    relative_snapshot = (
+        "reconstruction_execution_readiness_history/"
+        f"{readiness_digest.removeprefix('sha256:')}.json"
+    )
+    snapshot_path = (output_dir / relative_snapshot).resolve()
+    latest_path = output_dir / "reconstruction_execution_readiness_latest.json"
+    lock_path = output_dir / ".reconstruction_execution_readiness.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if snapshot_path.is_file():
+            existing = validate_reconstruction_execution_readiness(
+                json.loads(snapshot_path.read_text(encoding="utf-8"))
+            )
+            if existing != readiness:
+                raise ValueError("reconstruction_readiness_snapshot_conflict")
+        else:
+            write_phase2_artifact(output_dir, relative_snapshot, readiness)
+
+        previous_digest: str | None = str(
+            initial["reconstruction_execution_readiness_digest"]
+        )
+        if latest_path.is_file():
+            previous = validate_reconstruction_readiness_pointer(
+                json.loads(latest_path.read_text(encoding="utf-8"))
+            )
+            if previous.get("readiness_digest") == readiness_digest:
+                return dict(previous) | {
+                    "status": readiness["status"],
+                    "snapshot_path": str(snapshot_path),
+                    "latest_pointer_path": str(latest_path),
+                    "already_exists": True,
+                }
+            previous_digest = str(previous.get("readiness_digest") or "") or None
+        pointer = {
+            "schema_version": RECONSTRUCTION_READINESS_POINTER_SCHEMA_VERSION,
+            "run_id": lifecycle["run_id"],
+            "capture_build_digest": lifecycle["capture_build_digest"],
+            "source_commit_sha": lifecycle["source_commit_sha"],
+            "readiness_digest": readiness_digest,
+            "readiness_relative_path": relative_snapshot,
+            "previous_readiness_digest": previous_digest,
+            "control_plane_binding": readiness["control_plane_binding"],
+            "recorded_at": readiness["recorded_at"],
+            "proof_boundary": {
+                "pointer_is_execution_authority": False,
+                "pointer_is_reconstruction_evidence": False,
+                "prior_readiness_snapshots_preserved": True,
+                "physical_task_success_established": False,
+            },
+        }
+        pointer["pointer_digest"] = canonical_digest(
+            pointer, digest_field="pointer_digest"
+        )
+        pointer = validate_reconstruction_readiness_pointer(pointer)
+        write_phase2_artifact(
+            output_dir,
+            "reconstruction_execution_readiness_latest.json",
+            pointer,
+        )
+        return pointer | {
+            "status": readiness["status"],
+            "snapshot_path": str(snapshot_path),
+            "latest_pointer_path": str(latest_path),
+            "already_exists": False,
+        }
+
+
+def refresh_capture_reconstruction_execution_readiness(
+    *,
+    capture_root: str | Path,
+    control_plane_inspection: Mapping[str, Any],
+    agent_model: str = DEFAULT_SUPERVISOR_AGENT_MODEL,
+    allow_live_agents_sdk: bool = False,
+    agent_inference_budget_usd: float = 0.0,
+    source_commit_sha: str | None = None,
+) -> dict[str, Any]:
+    """Append an immutable readiness snapshot for one control-plane state.
+
+    The durable supervisor run remains the owner of the readiness history. A
+    replaceable latest pointer is updated only after the content-addressed
+    snapshot exists; prior snapshots are never rewritten or deleted.
+    """
+
+    lifecycle = run_capture_build_supervisor(
+        capture_root=capture_root,
+        agent_model=agent_model,
+        allow_live_agents_sdk=allow_live_agents_sdk,
+        agent_inference_budget_usd=agent_inference_budget_usd,
+        source_commit_sha=source_commit_sha,
+    )
+    output_dir = Path(lifecycle["output_dir"]).resolve()
+    initial_path = Path(lifecycle["reconstruction_execution_readiness_path"]).resolve()
+    initial = validate_reconstruction_execution_readiness(
+        json.loads(initial_path.read_text(encoding="utf-8"))
+    )
+    capture_build = load_capture_build_ingress(capture_root)
+    route = build_capture_reconstruction_route(capture_build)
+    readiness = build_reconstruction_execution_readiness(
+        capture_build_value=capture_build,
+        route_value=route,
+        tool_registry_manifest=ToolRegistry.default().manifest(),
+        bound_tool_ids=bound_tool_ids_for_control_plane_inspection(
+            control_plane_inspection
+        ),
+        source_commit_sha=str(lifecycle["source_commit_sha"]),
+        recorded_at=str(initial["recorded_at"]),
+        control_plane_inspection=control_plane_inspection,
+    )
+    return _write_reconstruction_readiness_snapshot(
+        output_dir=output_dir,
+        lifecycle=lifecycle,
+        initial=initial,
+        readiness=readiness,
+    )
+
+
 __all__ = [
     "CAPTURE_SUPERVISOR_AGENT_MODEL_ENV",
     "CAPTURE_SUPERVISOR_ALLOW_LIVE_AGENTS_SDK_ENV",
     "CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD_ENV",
     "CAPTURE_SUPERVISOR_LIFECYCLE_SCHEMA_VERSION",
     "MAX_CAPTURE_SUPERVISOR_INFERENCE_BUDGET_USD",
+    "RECONSTRUCTION_READINESS_POINTER_SCHEMA_VERSION",
     "capture_supervisor_execution_options_from_env",
     "capture_supervisor_health_status",
     "capture_supervisor_execution_profile",
     "run_capture_build_supervisor",
+    "refresh_capture_reconstruction_execution_readiness",
+    "validate_reconstruction_readiness_pointer",
 ]
