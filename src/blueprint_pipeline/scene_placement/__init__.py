@@ -58,6 +58,13 @@ from .semantic_oriented_box import (
     RESULT_SCHEMA_VERSION as SEMANTIC_ORIENTED_BOX_RESULT_SCHEMA_VERSION,
     fit_semantic_oriented_boxes,
 )
+from .semantic_collision_validation import (
+    COLLISION_SCENE_SCHEMA_VERSION as SEMANTIC_COLLISION_SCENE_SCHEMA_VERSION,
+    REQUEST_SCHEMA_VERSION as SEMANTIC_COLLISION_VALIDATION_REQUEST_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION as SEMANTIC_COLLISION_VALIDATION_RESULT_SCHEMA_VERSION,
+    VALIDATION_METHOD as SEMANTIC_COLLISION_VALIDATION_METHOD,
+    validate_semantic_boxes_against_collision,
+)
 from .placement import compute_stand_pose, ring_scan_stand_pose
 from .robot_profile import (
     DEFAULT_ROBOT_ID,
@@ -146,6 +153,11 @@ __all__ = [
     "SEMANTIC_ORIENTED_BOX_REQUEST_SCHEMA_VERSION",
     "SEMANTIC_ORIENTED_BOX_RESULT_SCHEMA_VERSION",
     "fit_semantic_oriented_boxes",
+    "SEMANTIC_COLLISION_SCENE_SCHEMA_VERSION",
+    "SEMANTIC_COLLISION_VALIDATION_REQUEST_SCHEMA_VERSION",
+    "SEMANTIC_COLLISION_VALIDATION_RESULT_SCHEMA_VERSION",
+    "SEMANTIC_COLLISION_VALIDATION_METHOD",
+    "validate_semantic_boxes_against_collision",
     "resolve_target",
     "resolve_target_by_label",
     "compute_stand_pose",
