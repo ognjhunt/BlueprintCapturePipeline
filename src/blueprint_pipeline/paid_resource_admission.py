@@ -10,6 +10,7 @@ PAID_LANE_ADMISSION_SCHEMA_VERSION = "paid_lane_admission.v1"
 PAID_RESOURCE_CLASSES = frozenset(
     {
         "cpu_build",
+        "evaluator_api",
         "gpu_canary",
         "model_volume",
         "gpu_render",
@@ -51,10 +52,7 @@ def require_paid_resource_admission(
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
     admission_resource_class = admission.get("resource_class")
-    if (
-        admission_resource_class is not None
-        and admission_resource_class != resource_class
-    ) or (
+    if (admission_resource_class is not None and admission_resource_class != resource_class) or (
         expected_schema_version == PAID_LANE_ADMISSION_SCHEMA_VERSION
         and admission_resource_class is None
     ):
