@@ -10,6 +10,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from .decision_evidence_contracts import (
+    DecisionEvidenceRequest,
     DecisionEvidenceContractError,
     MaintainedSiteTaskTestbed,
 )
@@ -34,6 +35,7 @@ def build_site_task_testbed_webapp_publication(
     intake_id: str,
     approved_task_digest: str,
     testbed: Mapping[str, Any],
+    decision_evidence_request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         verified = MaintainedSiteTaskTestbed.from_mapping(testbed).to_mapping()
@@ -56,7 +58,7 @@ def build_site_task_testbed_webapp_publication(
     if _text(approved_task_digest) != expected_task_digest:
         raise ValueError("testbed_approved_task_binding_mismatch")
     digest = verified["testbed_digest"]
-    return {
+    publication = {
         "schema_version": "site_task_testbed_publication.v1",
         "capture_session_id": session_id,
         "intake_id": expected_intake_id,
@@ -75,6 +77,18 @@ def build_site_task_testbed_webapp_publication(
         "status": "testbed_ready",
         "proof_boundary": verified["proof_boundary"],
     }
+    if decision_evidence_request is not None:
+        request = DecisionEvidenceRequest.from_mapping(
+            decision_evidence_request
+        ).to_mapping()
+        if (
+            request["testbed_id"] != verified["testbed_id"]
+            or request["testbed_version"] != verified["version"]
+            or request["testbed_digest"] != verified["testbed_digest"]
+        ):
+            raise ValueError("decision_evidence_request_testbed_binding_mismatch")
+        publication["decision_evidence_request"] = request
+    return publication
 
 
 def sync_site_task_testbed_to_webapp(
@@ -83,6 +97,7 @@ def sync_site_task_testbed_to_webapp(
     intake_id: str,
     approved_task_digest: str,
     testbed: Mapping[str, Any],
+    decision_evidence_request: Mapping[str, Any] | None = None,
     endpoint_url: str | None = None,
     token: str | None = None,
     max_attempts: int = 3,
@@ -94,6 +109,7 @@ def sync_site_task_testbed_to_webapp(
         intake_id=intake_id,
         approved_task_digest=approved_task_digest,
         testbed=testbed,
+        decision_evidence_request=decision_evidence_request,
     )
     resolved_url = _text(endpoint_url) or _text(os.getenv(TESTBED_WEBAPP_URL_ENV))
     resolved_token = _text(token) or _text(os.getenv("PIPELINE_SYNC_TOKEN"))
@@ -152,6 +168,10 @@ def sync_site_task_testbed_to_webapp(
                             "artifact_reference",
                             "proof_boundary",
                         )
+                    )
+                    and receipt.get("request_digest")
+                    == _mapping(payload.get("decision_evidence_request")).get(
+                        "request_digest"
                     )
                 )
                 if matches:

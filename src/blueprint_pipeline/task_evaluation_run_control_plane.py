@@ -214,14 +214,44 @@ def authorize_task_evaluation_run(
     actor: Mapping[str, Any],
     idempotency_key: str,
 ) -> dict[str, Any]:
+    try:
+        run_id = strict_identifier(run_id, field="run_id", max_length=192)
+        idempotency_key = strict_identifier(
+            idempotency_key, field="idempotency_key", max_length=192
+        )
+    except ValueError as exc:
+        raise TaskEvaluationRunControlPlaneError(str(exc)) from exc
     root = _run_root(state_root, run_id)
     plan = EvidencePlan.from_mapping(_read(root / "artifacts" / "evidence_plan.json")).to_mapping()
-    state = TaskEvaluationRunStateStore(state_root).inspect(run_id)
-    if state["state"] != "authorization_required":
-        raise TaskEvaluationRunControlPlaneError("run_not_awaiting_authorization")
     if plan["plan_digest"] != plan_digest:
         raise TaskEvaluationRunControlPlaneError("authorization_plan_digest_mismatch")
     registry = authorized_local_evidence_adapter_registry(authorized_adapter_references)
+    methods = [
+        EvidenceMethodProfile.from_mapping(row).to_mapping()
+        for row in _read(root / "artifacts" / "method_profiles.json").get(
+            "method_profiles", []
+        )
+    ]
+    adapter_by_profile_digest = {
+        row["method_profile_digest"]: row["adapter_reference"] for row in methods
+    }
+    planned_profile_digests = {
+        str(step.get("method_profile_digest") or "")
+        for claim_plan in plan.get("claim_plans", [])
+        if isinstance(claim_plan, Mapping)
+        for step in [
+            *claim_plan.get("selected_methods", []),
+            *claim_plan.get("escalation_methods", []),
+        ]
+        if isinstance(step, Mapping) and step.get("method_profile_digest")
+    }
+    planned_adapters = {
+        adapter_by_profile_digest[digest]
+        for digest in planned_profile_digests
+        if digest in adapter_by_profile_digest
+    }
+    if set(registry.manifest()) - planned_adapters:
+        raise TaskEvaluationRunControlPlaneError("authorization_adapter_not_planned")
     actor_value = dict(actor)
     if any(
         str(key).lower() in {"authorization", "credential", "credentials", "password", "secret", "token"}
@@ -248,13 +278,28 @@ def authorize_task_evaluation_run(
     authorization["authorization_digest"] = canonical_digest(
         authorization, digest_field="authorization_digest"
     )
-    _write_immutable(root / "artifacts" / "execution_authorization.json", authorization)
+    authorization_path = root / "artifacts" / "execution_authorization.json"
+    if authorization_path.is_file():
+        existing = _read(authorization_path)
+        if canonical_json(existing) != canonical_json(authorization):
+            raise TaskEvaluationRunControlPlaneError(
+                "immutable_run_artifact_conflict:execution_authorization.json"
+            )
+        return existing
+    state = TaskEvaluationRunStateStore(state_root).inspect(run_id)
+    if state["state"] != "authorization_required":
+        raise TaskEvaluationRunControlPlaneError("run_not_awaiting_authorization")
+    _write_immutable(authorization_path, authorization)
     return authorization
 
 
 def execute_and_aggregate_task_evaluation_run(
     *, state_root: str | Path, run_id: str
 ) -> dict[str, Any]:
+    try:
+        run_id = strict_identifier(run_id, field="run_id", max_length=192)
+    except ValueError as exc:
+        raise TaskEvaluationRunControlPlaneError(str(exc)) from exc
     root = _run_root(state_root, run_id)
     artifacts = root / "artifacts"
     request = DecisionEvidenceRequest.from_mapping(_read(artifacts / "request.json")).to_mapping()

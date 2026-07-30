@@ -326,6 +326,41 @@ def _compile(*, previous: dict | None = None, version: str = "1") -> dict:
     )
 
 
+def _decision_request(testbed: dict, approved: dict | None = None) -> dict:
+    return compile_approved_task_decision_request(
+        approved or _approved_task(),
+        testbed=testbed,
+        request_id="request-sync-1",
+        decision_id="decision-sync-1",
+        candidates=[{"robot_id": "fixture-arm"}],
+        claims=[{
+            "claim_id": "reach",
+            "claim_type": "reachability",
+            "subject": "fixture-arm:item-1:tote-1",
+            "measurable_threshold": {"operator": ">=", "value": 0.9, "units": "fraction"},
+            "false_safe_consequence": "moderate",
+            "acceptable_false_safe_risk": 0.05,
+            "desired_confidence_or_coverage": {
+                "minimum_coverage": 0.9,
+                "minimum_independent_methods": 1,
+            },
+            "permitted_abstention_behavior": {"allowed": True},
+            "task_family": "rigid_object_pick_place",
+            "site_domain_conditions": {"lighting_lux": [300, 600]},
+            "embodiment": {"robot_id": "fixture-arm"},
+            "sensors": {"camera": "rgb-v1"},
+            "controller_action_representation": {"type": "joint_position"},
+        }],
+        budget={"max_cost_usd": 0.0},
+        deadline="2026-07-30T00:00:00Z",
+        permitted_evidence_methods=["analytic_geometry_kinematics"],
+        restrictions={"external_processing_allowed": False},
+        requested_result_audience="design_partner",
+        caller_identity="pipeline:testbed-compiler",
+        idempotency_key="request-sync-1",
+    )
+
+
 def test_compiler_emits_deterministic_layered_router_compatible_testbed() -> None:
     first = _compile()
     second = _compile()
@@ -580,6 +615,39 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
         "artifact_references": _refs(),
         "supported_condition_ranges": {"lighting_lux": [300, 600]},
         "previous_testbed": None,
+        "decision_request_constraints": {
+            "request_id": "request-service-1",
+            "decision_id": "decision-service-1",
+            "candidates": [{"robot_id": "fixture-arm"}],
+            "claims": [{
+                "claim_id": "reach",
+                "claim_type": "reachability",
+                "subject": "fixture-arm:item-1:tote-1",
+                "measurable_threshold": {
+                    "operator": ">=",
+                    "value": 0.95,
+                    "units": "fraction",
+                },
+                "false_safe_consequence": "moderate",
+                "acceptable_false_safe_risk": 0.05,
+                "desired_confidence_or_coverage": {
+                    "minimum_coverage": 0.95,
+                    "minimum_independent_methods": 1,
+                },
+                "permitted_abstention_behavior": {"allowed": True},
+                "task_family": "rigid_object_pick_place",
+                "site_domain_conditions": {"lighting_lux": [300, 600]},
+                "embodiment": {"robot_id": "fixture-arm"},
+                "sensors": {"camera": "rgb-v1"},
+                "controller_action_representation": {"type": "joint_position"},
+            }],
+            "budget": {"max_cost_usd": 0.0, "max_latency_seconds": 10.0},
+            "deadline": "2026-07-30T00:00:00Z",
+            "permitted_evidence_methods": ["analytic_geometry_kinematics"],
+            "restrictions": {"external_processing_allowed": False},
+            "requested_result_audience": "design_partner",
+            "idempotency_key": "request-service-1",
+        },
     }
     body = json.dumps(payload, separators=(",", ":"))
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -610,6 +678,11 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
     assert "artifact_path" not in json.dumps(result)
     assert result["proof_boundary"]["deployment_or_safety_approved"] is False
     assert result["webapp_sync"]["status"] == "skipped"
+    assert result["decision_evidence_request"]["testbed_digest"] == result["testbed_digest"]
+    assert result["decision_evidence_request_artifact"]["request_digest"] == (
+        result["decision_evidence_request"]["request_digest"]
+    )
+    assert "artifact_path" not in json.dumps(result["decision_evidence_request_artifact"])
 
 
 def test_testbed_webapp_publication_is_exactly_bound_and_receipt_verified(
@@ -632,11 +705,13 @@ def test_testbed_webapp_publication_is_exactly_bound_and_receipt_verified(
         artifact_references=_refs(),
         supported_condition_ranges={"lighting_lux": [300, 600]},
     )
+    decision_request = _decision_request(testbed, approved)
     publication = build_site_task_testbed_webapp_publication(
         capture_session_id="capture-session-1",
         intake_id="intake-1",
         approved_task_digest=approved["approved_task_digest"],
         testbed=testbed,
+        decision_evidence_request=decision_request,
     )
     assert publication["testbed_digest"] == testbed["testbed_digest"]
     assert publication["proof_boundary"]["comparative_policy_ranking_verdict"] == (
@@ -668,6 +743,7 @@ def test_testbed_webapp_publication_is_exactly_bound_and_receipt_verified(
                         "proof_boundary",
                     )
                 },
+                "request_digest": decision_request["request_digest"],
             }
             return json.dumps(receipt).encode("utf-8")
 
@@ -680,6 +756,7 @@ def test_testbed_webapp_publication_is_exactly_bound_and_receipt_verified(
         intake_id="intake-1",
         approved_task_digest=approved["approved_task_digest"],
         testbed=testbed,
+        decision_evidence_request=decision_request,
         endpoint_url="https://webapp.test/api/internal/pipeline/capture-testbeds",
         token="sync-secret",
     )

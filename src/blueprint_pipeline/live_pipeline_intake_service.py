@@ -40,10 +40,12 @@ from .task_candidate_control_plane import (
     load_latest_task_candidate_decision_result,
     process_task_candidate_decision_submission,
 )
+from .task_candidate_discovery import compile_approved_task_decision_request
 from .site_task_testbed_compiler import (
     SiteTaskTestbedCompilerError,
     compile_site_task_testbed,
     write_testbed_version,
+    write_testbed_decision_evidence_request,
 )
 from .site_task_testbed_webapp_sync import (
     TESTBED_WEBAPP_SYNC_REQUIRED_ENV,
@@ -1801,6 +1803,49 @@ def create_app() -> FastAPI:
                 output_root=_maintained_testbed_root(manifest_path),
                 testbed=testbed,
             )
+            request_constraints = payload.get("decision_request_constraints")
+            decision_evidence_request = None
+            request_write = None
+            if request_constraints is not None:
+                if not isinstance(request_constraints, Mapping):
+                    raise SiteTaskTestbedCompilerError(
+                        ["decision_request_constraints:not_object"]
+                    )
+                constraints = dict(request_constraints)
+                decision_evidence_request = compile_approved_task_decision_request(
+                    approved,
+                    testbed=testbed,
+                    request_id=str(constraints.get("request_id") or ""),
+                    decision_id=str(constraints.get("decision_id") or ""),
+                    candidates=[
+                        dict(row)
+                        for row in constraints.get("candidates", [])
+                        if isinstance(row, Mapping)
+                    ],
+                    claims=[
+                        dict(row)
+                        for row in constraints.get("claims", [])
+                        if isinstance(row, Mapping)
+                    ],
+                    budget=_mapping(constraints.get("budget")),
+                    deadline=str(constraints.get("deadline") or ""),
+                    permitted_evidence_methods=[
+                        str(row)
+                        for row in constraints.get("permitted_evidence_methods", [])
+                    ],
+                    restrictions=_mapping(constraints.get("restrictions")),
+                    requested_result_audience=str(
+                        constraints.get("requested_result_audience") or ""
+                    ),
+                    caller_identity="pipeline:testbed-compiler",
+                    idempotency_key=str(constraints.get("idempotency_key") or ""),
+                    proposed_evaluator_identities=[],
+                )
+                request_write = write_testbed_decision_evidence_request(
+                    output_root=_maintained_testbed_root(manifest_path),
+                    testbed=testbed,
+                    request=decision_evidence_request,
+                )
         except TaskCandidateControlPlaneError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
         except (SiteTaskTestbedCompilerError, ValueError) as exc:
@@ -1810,6 +1855,7 @@ def create_app() -> FastAPI:
             intake_id=intake_id,
             approved_task_digest=approved["approved_task_digest"],
             testbed=testbed,
+            decision_evidence_request=decision_evidence_request,
         )
         if _truthy(os.getenv(TESTBED_WEBAPP_SYNC_REQUIRED_ENV)) and webapp_sync["status"] != "succeeded":
             raise HTTPException(
@@ -1833,6 +1879,8 @@ def create_app() -> FastAPI:
                 "digest": testbed["testbed_digest"],
             },
             "testbed": testbed,
+            "decision_evidence_request": decision_evidence_request,
+            "decision_evidence_request_artifact": request_write,
             "webapp_sync": webapp_sync,
             "proof_boundary": testbed["proof_boundary"],
         }

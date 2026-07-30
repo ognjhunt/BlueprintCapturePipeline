@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from .capture_intake import CaptureIntakeError, validate_capture_intake_envelope
 from .decision_evidence_contracts import (
+    DecisionEvidenceRequest,
     DecisionEvidenceContractError,
     MaintainedSiteTaskTestbed,
     canonical_digest,
@@ -672,8 +673,57 @@ def write_testbed_version(
     return result
 
 
+def write_testbed_decision_evidence_request(
+    *,
+    output_root: str | Path,
+    testbed: Mapping[str, Any],
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    verified_testbed = MaintainedSiteTaskTestbed.from_mapping(testbed).to_mapping()
+    verified_request = DecisionEvidenceRequest.from_mapping(request).to_mapping()
+    if (
+        verified_request["testbed_id"] != verified_testbed["testbed_id"]
+        or verified_request["testbed_version"] != verified_testbed["version"]
+        or verified_request["testbed_digest"] != verified_testbed["testbed_digest"]
+    ):
+        raise SiteTaskTestbedCompilerError(["decision_evidence_request:testbed_mismatch"])
+    root = Path(output_root).expanduser().resolve()
+    version_root = root / verified_testbed["testbed_id"] / verified_testbed["version"]
+    testbed_path = version_root / f"{verified_testbed['testbed_digest'][7:]}.json"
+    if not testbed_path.is_file():
+        raise SiteTaskTestbedCompilerError(["decision_evidence_request:testbed_not_persisted"])
+    path = version_root / f"decision_evidence_request-{verified_request['request_digest'][7:]}.json"
+    payload = (canonical_json(verified_request) + "\n").encode("utf-8")
+    already_exists = False
+    try:
+        with path.open("xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError:
+        already_exists = True
+        if path.read_bytes() != payload:
+            raise SiteTaskTestbedCompilerError(
+                ["decision_evidence_request:immutable_artifact_conflict"]
+            )
+    return {
+        "schema_version": "testbed_decision_evidence_request_write.v1",
+        "already_exists": already_exists,
+        "testbed_digest": verified_testbed["testbed_digest"],
+        "request_digest": verified_request["request_digest"],
+        "artifact_reference": {
+            "uri": (
+                f"testbed://{verified_testbed['testbed_id']}/{verified_testbed['version']}/"
+                f"decision_evidence_request-{verified_request['request_digest'][7:]}.json"
+            ),
+            "digest": verified_request["request_digest"],
+        },
+    }
+
+
 __all__ = [
     "SiteTaskTestbedCompilerError",
     "compile_site_task_testbed",
     "write_testbed_version",
+    "write_testbed_decision_evidence_request",
 ]

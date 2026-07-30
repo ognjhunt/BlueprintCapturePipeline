@@ -398,6 +398,15 @@ def test_run_control_plane_requires_authorization_and_returns_bound_decision(tmp
     )
     assert replay["already_exists"] is True
     assert replay["decision_envelope"] == result["decision_envelope"]
+    authorization_replay = authorize_task_evaluation_run(
+        state_root=tmp_path,
+        run_id="run-local-1",
+        plan_digest=preparation["evidence_plan"]["plan_digest"],
+        authorized_adapter_references=[ANALYTIC_REACHABILITY_ADAPTER],
+        actor={"role": "customer", "identity": "firebase:buyer-1"},
+        idempotency_key="authorize-local-1",
+    )
+    assert authorization_replay == authorization
 
 
 def test_run_executes_explicitly_authorized_sim_only_collision_method(tmp_path) -> None:
@@ -466,6 +475,20 @@ def test_run_authorization_rejects_stale_plan_and_unknown_adapter(tmp_path) -> N
             authorized_adapter_references=["provider://live-not-authorized"],
             actor={"role": "customer"},
             idempotency_key="authorize-local-2",
+        )
+    with pytest.raises(TaskEvaluationRunControlPlaneError, match="adapter_not_planned"):
+        authorize_task_evaluation_run(
+            state_root=tmp_path,
+            run_id="run-local-2",
+            plan_digest=prepared["evidence_plan"]["plan_digest"],
+            authorized_adapter_references=[SWEPT_AABB_COLLISION_SIMULATION_ADAPTER],
+            actor={"role": "customer"},
+            idempotency_key="authorize-local-2",
+        )
+    with pytest.raises(TaskEvaluationRunControlPlaneError, match="run_id"):
+        execute_and_aggregate_task_evaluation_run(
+            state_root=tmp_path,
+            run_id="../run-local-2",
         )
 
 
