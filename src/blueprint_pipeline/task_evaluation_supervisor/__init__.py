@@ -84,6 +84,8 @@ from .phase2_artifacts import (
     validate_clarification_request,
     validate_authorization_receipt,
     validate_authorization_request,
+    validate_frozen_scenario_manifest,
+    validate_scenario_proposal_set,
 )
 from .pigey_candidate_runtime import (
     PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION,
@@ -239,6 +241,8 @@ __all__ = [
     "validate_clarification_request",
     "validate_authorization_receipt",
     "validate_authorization_request",
+    "validate_frozen_scenario_manifest",
+    "validate_scenario_proposal_set",
     "validate_tool_observation_binding",
     "validate_pigey_license_attestation",
 ]

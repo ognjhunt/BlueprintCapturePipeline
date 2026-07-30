@@ -88,7 +88,9 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     validate_capture_build_ingress,
     validate_clarification_receipt,
     validate_authorization_receipt,
+    validate_frozen_scenario_manifest,
     validate_recapture_reinspection,
+    validate_scenario_proposal_set,
     validate_targeted_recapture_receipt,
     validate_tool_observation_binding,
 )
@@ -3221,6 +3223,49 @@ def test_phase2_receipts_and_scenario_freeze_require_non_agent_authority(
     assert frozen["frozen"] is True
     assert frozen["hidden_labels_included"] is False
     assert frozen["candidate_results_observed_before_freeze"] is False
+    assert validate_scenario_proposal_set(scenario_value) == scenario_value
+    assert validate_frozen_scenario_manifest(frozen) == frozen
+
+    label_leak = json.loads(json.dumps(scenario_value))
+    label_leak["scenarios"][0]["hidden_label"] = "candidate-a-wins"
+    label_leak["scenario_proposal_set_digest"] = canonical_digest(
+        label_leak,
+        digest_field="scenario_proposal_set_digest",
+    )
+    with pytest.raises(Phase2ArtifactError, match="scenario_contract_invalid"):
+        freeze_scenario_manifest(
+            proposal_set=label_leak,
+            authorization=freeze_receipt,
+            evaluator_digest=SHA_A,
+            success_predicate_digest=SHA_B,
+            hidden_label_manifest_digest=SHA_C,
+            frozen_at="2026-07-29T13:02:00Z",
+        )
+
+    expanded_authority = dict(freeze_receipt)
+    expanded_authority["agent_selected_override"] = True
+    expanded_authority["authorization_receipt_digest"] = canonical_digest(
+        expanded_authority,
+        digest_field="authorization_receipt_digest",
+    )
+    with pytest.raises(Phase2ArtifactError, match="authorization_receipt_fields_invalid"):
+        freeze_scenario_manifest(
+            proposal_set=scenario_value,
+            authorization=expanded_authority,
+            evaluator_digest=SHA_A,
+            success_predicate_digest=SHA_B,
+            hidden_label_manifest_digest=SHA_C,
+            frozen_at="2026-07-29T13:02:00Z",
+        )
+
+    leaky_frozen = dict(frozen)
+    leaky_frozen["hidden_labels_included"] = True
+    leaky_frozen["frozen_scenario_manifest_digest"] = canonical_digest(
+        leaky_frozen,
+        digest_field="frozen_scenario_manifest_digest",
+    )
+    with pytest.raises(Phase2ArtifactError, match="frozen_scenario_manifest_contract_invalid"):
+        validate_frozen_scenario_manifest(leaky_frozen)
 
     with pytest.raises(Phase2ArtifactError, match="scenario_freeze_authority_inactive"):
         freeze_scenario_manifest(

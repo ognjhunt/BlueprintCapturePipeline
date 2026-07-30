@@ -366,8 +366,13 @@ refused when it violates the bounded projection contract. Phase 2 also includes
 deterministic customer report generation, clarification and authorization receipts,
 scenario-proposal materialization with an operator-only freezing boundary, and
 tests proving that identical accepted evidence yields the same kernel decision
-even when agent prose changes. The public synthetic corpus comparison now runs
-each held-out-shaped input separately and correctly refuses autonomy promotion
+even when agent prose changes. The scenario proposal and frozen-manifest
+validators reject unknown fields,
+embedded hidden labels, post-result generation flags, non-canonical scenario
+ordering, or expanded operator receipts even when an attacker recomputes every
+digest. The frozen public artifact contains only the hidden-label manifest
+digest, never the labels themselves. The public synthetic corpus comparison now
+runs each held-out-shaped input separately and correctly refuses autonomy promotion
 for the fixture runner. Separate `blueprint-route-task-evaluation` operations
 validate an external sealed corpus, freeze the exact manager/specialist/tool
 configuration, and score replay-verified recorded runs without mutating them.

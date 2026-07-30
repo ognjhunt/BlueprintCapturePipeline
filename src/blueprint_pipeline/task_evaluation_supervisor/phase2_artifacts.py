@@ -1094,6 +1094,9 @@ def scenario_proposal_set(
     scenarios: Sequence[Mapping[str, Any]],
     candidate_results_observed: bool,
 ) -> dict[str, Any]:
+    normalized_run_id = run_id.strip()
+    if not normalized_run_id:
+        raise Phase2ArtifactError("scenario_run_id_missing")
     if candidate_results_observed:
         raise Phase2ArtifactError("post_result_scenario_generation_forbidden")
     if not scenarios or len(scenarios) > 100:
@@ -1122,8 +1125,8 @@ def scenario_proposal_set(
         )
     value = {
         "schema_version": SCENARIO_PROPOSAL_SET_SCHEMA_VERSION,
-        "proposal_set_id": f"{run_id}-scenario-proposals",
-        "run_id": run_id,
+        "proposal_set_id": f"{normalized_run_id}-scenario-proposals",
+        "run_id": normalized_run_id,
         "request_digest": _require_digest(request_digest, field="request_digest"),
         "scenarios": sorted(normalized, key=lambda row: row["scenario_id"]),
         "candidate_results_observed": False,
@@ -1131,7 +1134,77 @@ def scenario_proposal_set(
         "authoritative": False,
         "proof_effect": "none",
     }
-    return _finalize(value, digest_field="scenario_proposal_set_digest")
+    return validate_scenario_proposal_set(
+        _finalize(value, digest_field="scenario_proposal_set_digest")
+    )
+
+
+def validate_scenario_proposal_set(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a pre-result proposal set without accepting hidden labels."""
+
+    required_fields = {
+        "schema_version",
+        "proposal_set_id",
+        "run_id",
+        "request_digest",
+        "scenarios",
+        "candidate_results_observed",
+        "frozen",
+        "authoritative",
+        "proof_effect",
+        "scenario_proposal_set_digest",
+    }
+    if set(value) != required_fields:
+        raise Phase2ArtifactError("scenario_proposal_set_fields_invalid")
+    run_id = str(value.get("run_id") or "").strip()
+    raw_scenarios = value.get("scenarios")
+    if not isinstance(raw_scenarios, list) or not 1 <= len(raw_scenarios) <= 100:
+        raise Phase2ArtifactError("scenario_count_out_of_range")
+    normalized: list[dict[str, Any]] = []
+    scenario_ids: set[str] = set()
+    for row in raw_scenarios:
+        if not isinstance(row, Mapping) or set(row) != {
+            "scenario_id",
+            "failure_mode",
+            "description",
+            "success_predicate_proposed",
+            "hidden_label",
+        }:
+            raise Phase2ArtifactError("scenario_contract_invalid")
+        scenario_id = str(row.get("scenario_id") or "").strip()
+        failure_mode = str(row.get("failure_mode") or "").strip()
+        description = str(row.get("description") or "").strip()
+        if (
+            not scenario_id
+            or len(scenario_id) > 100
+            or scenario_id in scenario_ids
+            or not failure_mode
+            or len(failure_mode) > 200
+            or not description
+            or len(description) > 2_000
+            or row.get("hidden_label") is not None
+        ):
+            raise Phase2ArtifactError("scenario_contract_invalid")
+        _validate_untrusted_response_json(row.get("success_predicate_proposed"))
+        scenario_ids.add(scenario_id)
+        normalized.append(dict(row))
+    if raw_scenarios != sorted(normalized, key=lambda row: row["scenario_id"]):
+        raise Phase2ArtifactError("scenario_order_invalid")
+    expected = canonical_digest(value, digest_field="scenario_proposal_set_digest")
+    if (
+        value.get("schema_version") != SCENARIO_PROPOSAL_SET_SCHEMA_VERSION
+        or not run_id
+        or value.get("run_id") != run_id
+        or value.get("proposal_set_id") != f"{run_id}-scenario-proposals"
+        or value.get("candidate_results_observed") is not False
+        or value.get("frozen") is not False
+        or value.get("authoritative") is not False
+        or value.get("proof_effect") != "none"
+        or value.get("scenario_proposal_set_digest") != expected
+    ):
+        raise Phase2ArtifactError("scenario_proposal_set_contract_invalid")
+    _require_digest(value.get("request_digest"), field="request_digest")
+    return dict(value)
 
 
 def freeze_scenario_manifest(
@@ -1143,36 +1216,38 @@ def freeze_scenario_manifest(
     hidden_label_manifest_digest: str,
     frozen_at: str,
 ) -> dict[str, Any]:
-    proposal_digest = canonical_digest(proposal_set, digest_field="scenario_proposal_set_digest")
-    if proposal_set.get("scenario_proposal_set_digest") != proposal_digest:
-        raise Phase2ArtifactError("scenario_proposal_set_digest_mismatch")
-    receipt_digest = canonical_digest(authorization, digest_field="authorization_receipt_digest")
-    if authorization.get("authorization_receipt_digest") != receipt_digest:
-        raise Phase2ArtifactError("scenario_freeze_authorization_digest_mismatch")
+    validated_proposal = validate_scenario_proposal_set(proposal_set)
+    validated_authorization = validate_authorization_receipt(authorization)
+    proposal_digest = validated_proposal["scenario_proposal_set_digest"]
+    receipt_digest = validated_authorization["authorization_receipt_digest"]
     if (
-        authorization.get("approved") is not True
-        or authorization.get("issued_by_agent") is not False
+        validated_authorization.get("approved") is not True
+        or validated_authorization.get("issued_by_agent") is not False
     ):
         raise Phase2ArtifactError("scenario_freeze_not_operator_authorized")
-    if authorization.get("granted_tool_id") != "freeze_scenario_manifest":
+    if validated_authorization.get("granted_tool_id") != "freeze_scenario_manifest":
         raise Phase2ArtifactError("scenario_freeze_wrong_authority")
-    if authorization.get("run_id") != proposal_set.get("run_id"):
+    if validated_authorization.get("run_id") != validated_proposal.get("run_id"):
         raise Phase2ArtifactError("scenario_freeze_run_mismatch")
-    if authorization.get("immutable_input_digests") != [proposal_digest]:
+    if validated_authorization.get("immutable_input_digests") != [proposal_digest]:
         raise Phase2ArtifactError("scenario_freeze_input_not_authorized")
     frozen_time = _parse_time(frozen_at, field="scenario_frozen_at")
-    issued = _parse_time(authorization.get("issued_at"), field="scenario_authority_issued_at")
-    expires = _parse_time(authorization.get("expires_at"), field="scenario_authority_expires_at")
+    issued = _parse_time(
+        validated_authorization.get("issued_at"), field="scenario_authority_issued_at"
+    )
+    expires = _parse_time(
+        validated_authorization.get("expires_at"), field="scenario_authority_expires_at"
+    )
     if frozen_time < issued or frozen_time >= expires:
         raise Phase2ArtifactError("scenario_freeze_authority_inactive")
-    if proposal_set.get("candidate_results_observed") is not False:
+    if validated_proposal.get("candidate_results_observed") is not False:
         raise Phase2ArtifactError("post_result_scenario_freeze_forbidden")
     value = {
         "schema_version": FROZEN_SCENARIO_MANIFEST_SCHEMA_VERSION,
-        "manifest_id": f"{proposal_set['proposal_set_id']}-frozen",
-        "run_id": proposal_set["run_id"],
+        "manifest_id": f"{validated_proposal['proposal_set_id']}-frozen",
+        "run_id": validated_proposal["run_id"],
         "scenario_proposal_set_digest": proposal_digest,
-        "scenario_ids": [row["scenario_id"] for row in proposal_set["scenarios"]],
+        "scenario_ids": [row["scenario_id"] for row in validated_proposal["scenarios"]],
         "evaluator_digest": _require_digest(evaluator_digest, field="evaluator_digest"),
         "success_predicate_digest": _require_digest(
             success_predicate_digest, field="success_predicate_digest"
@@ -1187,7 +1262,64 @@ def freeze_scenario_manifest(
         "frozen": True,
         "proof_effect": "none",
     }
-    return _finalize(value, digest_field="frozen_scenario_manifest_digest")
+    return validate_frozen_scenario_manifest(
+        _finalize(value, digest_field="frozen_scenario_manifest_digest")
+    )
+
+
+def validate_frozen_scenario_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the immutable public side of a hidden-evaluation freeze."""
+
+    required_fields = {
+        "schema_version",
+        "manifest_id",
+        "run_id",
+        "scenario_proposal_set_digest",
+        "scenario_ids",
+        "evaluator_digest",
+        "success_predicate_digest",
+        "hidden_label_manifest_digest",
+        "hidden_labels_included",
+        "candidate_results_observed_before_freeze",
+        "authorization_receipt_digest",
+        "frozen_at",
+        "frozen",
+        "proof_effect",
+        "frozen_scenario_manifest_digest",
+    }
+    if set(value) != required_fields:
+        raise Phase2ArtifactError("frozen_scenario_manifest_fields_invalid")
+    run_id = str(value.get("run_id") or "").strip()
+    scenario_ids = _strings(
+        value.get("scenario_ids"),
+        field="scenario_ids",
+        maximum=100,
+        item_maximum=100,
+    )
+    expected = canonical_digest(value, digest_field="frozen_scenario_manifest_digest")
+    if (
+        value.get("schema_version") != FROZEN_SCENARIO_MANIFEST_SCHEMA_VERSION
+        or not run_id
+        or value.get("run_id") != run_id
+        or value.get("manifest_id") != f"{run_id}-scenario-proposals-frozen"
+        or value.get("scenario_ids") != scenario_ids
+        or value.get("hidden_labels_included") is not False
+        or value.get("candidate_results_observed_before_freeze") is not False
+        or value.get("frozen") is not True
+        or value.get("proof_effect") != "none"
+        or value.get("frozen_scenario_manifest_digest") != expected
+    ):
+        raise Phase2ArtifactError("frozen_scenario_manifest_contract_invalid")
+    for field in (
+        "scenario_proposal_set_digest",
+        "evaluator_digest",
+        "success_predicate_digest",
+        "hidden_label_manifest_digest",
+        "authorization_receipt_digest",
+    ):
+        _require_digest(value.get(field), field=field)
+    _parse_time(value.get("frozen_at"), field="scenario_frozen_at")
+    return dict(value)
 
 
 def deterministic_customer_report(
@@ -1344,5 +1476,7 @@ __all__ = [
     "validate_clarification_request",
     "validate_authorization_receipt",
     "validate_authorization_request",
+    "validate_frozen_scenario_manifest",
+    "validate_scenario_proposal_set",
     "write_phase2_artifact",
 ]
