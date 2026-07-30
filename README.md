@@ -83,9 +83,10 @@ supervisor. The lifecycle uses `execute_non_spend`, so a live, budget-authorized
 SDK run can materialize safe clarification, targeted-recapture, scenario, and
 local compilation artifacts immediately from the capture build. Missing live-
 inference authority is recorded as a typed blocker; it never silently falls back
-to a different harness or deterministic pseudo-agent. This is lifecycle v2 with
-a versioned run identifier; existing v1 shadow-run artifacts remain immutable
-and are not resumed under broader authority.
+to a different harness or deterministic pseudo-agent. This is lifecycle v3 with
+a versioned run identifier bound to the capture digest and exact execution
+profile; existing v1 and v2 artifacts remain immutable and are not resumed
+under broader authority.
 
 `advise` runs the same SDK manager and eligible specialists, but exposes no
 callable tools and executes no action. Blueprint validates each proposed action
@@ -132,12 +133,13 @@ separation. Candidate runtime configuration is separately digest-bound and all
 operator/paid-resource admission validates before execution artifacts are
 created. Candidate agents receive no evaluator or proof authority. The external
 Pigey adapter pins a clean exact checkout, excludes the candidate's own success
-field, and marks candidate-reported usage as non-authoritative. It remains
-blocked from live use pending a concrete provider-backed implementation of the
-Blueprint cost-authority seam, separate source-license review, and paid
-authorization. The seam itself is fail closed: it writes a digest-bound maximum
-reservation before candidate execution and independently reconciles actual cost
-afterward; candidate-reported usage cannot settle it.
+field, and marks candidate-reported usage as non-authoritative. The concrete
+OpenAI project/API-key cost authority writes a digest-bound maximum reservation
+before candidate execution, takes a provider-reported zero-cost baseline, and
+requires delayed independent reconciliation after the reporting window;
+candidate-reported usage cannot settle it. Live use remains blocked without a
+dedicated cost scope, rights-holder permission, an operator receipt, and
+explicit paid-execution authorization.
 
 The model-neutral, fail-closed composition contract for scientific sim ranking,
 provider execution, buyer delivery, teardown, and billing is documented in

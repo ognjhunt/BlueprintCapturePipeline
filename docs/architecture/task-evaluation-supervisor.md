@@ -263,9 +263,10 @@ records its status in the stage ledger and run summary. That required lifecycle
 uses `execute_non_spend`: once live SDK inference has its separate budget and
 operator gate, it can materialize registered local clarification and recapture
 requests without waiting for a second product path. No provider, paid, physical,
-or proof-mutating action becomes available. The authority change is represented
-as capture-supervisor lifecycle v2 with a new run-id namespace; v1 shadow-run
-ledgers remain immutable and are never resumed as non-spend runs.
+or proof-mutating action becomes available. Capture-supervisor lifecycle v3
+binds the run-id namespace to both the capture digest and exact execution
+profile; v1 and v2 ledgers remain immutable and are never resumed under broader
+authority.
 
 A returned customer clarification also re-enters the durable run instead of
 remaining an out-of-band conversation:
