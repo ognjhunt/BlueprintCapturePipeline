@@ -36,6 +36,7 @@ from .capture_upload_intake import (
     CaptureUploadTransferError,
     process_capture_upload_submission,
 )
+from .capture_qa_webapp_sync import build_capture_qa_webapp_publication
 from .live_pipeline_control_plane import (
     CONTROL_PLANE_OUTPUT_PATH_ENV,
     WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
@@ -1698,7 +1699,14 @@ def create_app() -> FastAPI:
                     },
                 },
             )
-        return receipt
+        return {
+            "schema_version": "capture_upload_processing_result.v1",
+            "receipt": receipt,
+            "capture_qa_publication": build_capture_qa_webapp_publication(
+                capture_session_id=str(receipt["capture_session_id"]),
+                report=_mapping(receipt.get("capture_qa_report")),
+            ),
+        }
 
     @app.post("/api/live-pipeline/job-requests", dependencies=[Depends(_require_admission)])
     async def intake_job_request(request: Request) -> Dict[str, Any]:

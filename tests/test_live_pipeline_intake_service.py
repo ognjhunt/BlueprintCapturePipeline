@@ -470,6 +470,7 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
                 "status": "passed",
                 "scanner": "fixture",
             },
+            "capture_qa_report": {"qa_report_digest": f"sha256:{'4' * 64}"},
             "already_exists": False,
             "proof_boundary": {
                 "capture_qa_completed": False,
@@ -479,6 +480,15 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
         }
 
     monkeypatch.setattr(service, "process_capture_upload_submission", process)
+    monkeypatch.setattr(
+        service,
+        "build_capture_qa_webapp_publication",
+        lambda *, capture_session_id, report: {
+            "schema_version": "capture_qa_publication.v1",
+            "capture_session_id": capture_session_id,
+            "qa_report_digest": report["qa_report_digest"],
+        },
+    )
     submission = {
         "schema_version": "capture_upload_transfer_submission.v1",
         "capture_session_id": "capture-upload-session-1",
@@ -494,8 +504,10 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
     )
 
     assert response.status_code == 200
-    receipt = response.json()
-    assert receipt["capture_digest"] == f"sha256:{'3' * 64}"
+    result = response.json()
+    assert result["schema_version"] == "capture_upload_processing_result.v1"
+    assert result["receipt"]["capture_digest"] == f"sha256:{'3' * 64}"
+    assert result["capture_qa_publication"]["qa_report_digest"] == f"sha256:{'4' * 64}"
     assert "ephemeral-secret" not in response.text
     assert "download.example.test" not in response.text
     assert seen["payload"] == submission

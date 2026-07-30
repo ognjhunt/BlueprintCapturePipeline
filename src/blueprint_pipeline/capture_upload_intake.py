@@ -22,6 +22,8 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from .capture_intake import CaptureIntakeError, materialize_capture_intake
+from .capture_qa import build_capture_qa_report
+from .capture_qa_webapp_sync import build_capture_qa_webapp_publication
 from .core.security_controls import strict_identifier
 
 
@@ -328,6 +330,7 @@ def process_capture_upload_submission(
     allowed_hosts: Sequence[str] | None = None,
     transfer_opener: Callable[..., ContextManager[BinaryIO]] | None = None,
     malware_scanner: Callable[[Path], Mapping[str, Any]] | None = None,
+    qa_builder: Callable[..., Mapping[str, Any]] | None = None,
     timeout_seconds: float = 300.0,
 ) -> dict[str, Any]:
     """Stream, verify, scan, content-address, and admit one completed Web upload."""
@@ -421,6 +424,25 @@ def process_capture_upload_submission(
                 raise CaptureUploadTransferError(
                     [f"capture_intake:{blocker}" for blocker in exc.errors]
                 ) from exc
+            build_qa = qa_builder or build_capture_qa_report
+            try:
+                candidate_qa_report = dict(
+                    build_qa(materialized.envelope, upload_root=upload_root)
+                )
+                capture_qa_report = dict(
+                    build_capture_qa_webapp_publication(
+                        capture_session_id=str(submission["capture_session_id"]),
+                        report=candidate_qa_report,
+                    )["report"]
+                )
+            except CaptureIntakeError as exc:
+                raise CaptureUploadTransferError(
+                    [f"capture_qa:{blocker}" for blocker in exc.errors]
+                ) from exc
+            _write_once(
+                materialized.artifact_root / "capture_qa_report.json",
+                capture_qa_report,
+            )
     finally:
         # Do not retain the only in-process copies of the grant beyond transfer.
         url = ""
@@ -442,11 +464,12 @@ def process_capture_upload_submission(
             "envelope_digest": materialized.envelope["envelope_digest"],
         },
         "malware_content_validation": dict(materialized.envelope["malware_content_validation"]),
+        "capture_qa_report": capture_qa_report,
         "already_exists": False,
         "proof_boundary": {
             "server_sha256_verified": True,
             "raw_input_content_addressed": True,
-            "capture_qa_completed": False,
+            "capture_qa_completed": True,
             "task_success_established": False,
             "physical_task_success_established": False,
             "deployment_or_safety_approved": False,
