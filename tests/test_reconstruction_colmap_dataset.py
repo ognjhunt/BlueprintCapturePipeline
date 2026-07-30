@@ -21,6 +21,10 @@ CAPTURE = "sha256:" + "a" * 64
 DATASET = "sha256:" + "b" * 64
 SPLIT = "sha256:" + "c" * 64
 COMMIT = "d" * 40
+RECORDED_REAL_EXPORT = (
+    Path(__file__).parents[1]
+    / "docs/evidence/arkitscenes_colmap_training_dataset_40958756_15994335.json"
+)
 
 
 def _digest(path: Path) -> str:
@@ -217,3 +221,26 @@ def test_export_rejects_hidden_paths_digest_spoofing_and_nonrigid_pose(tmp_path:
         export_colmap_training_dataset(
             source_artifact=request, artifact_root=source, output_root=tmp_path / "out-pose"
         )
+
+
+def test_recorded_real_export_is_candidate_only_and_self_digesting() -> None:
+    receipt = json.loads(RECORDED_REAL_EXPORT.read_text(encoding="utf-8"))
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/colmap_training_dataset_export_result.v1.schema.json"
+        ).read_text()
+    )
+    jsonschema.validate(receipt, schema)
+    assert receipt["colmap_training_dataset_export_result_digest"] == canonical_digest(
+        receipt, digest_field="colmap_training_dataset_export_result_digest"
+    )
+    assert receipt["image_count"] == 32
+    assert receipt["initialization_point_count"] == 83757
+    assert receipt["hidden_heldout_pixels_included"] is False
+    assert receipt["raw_input_poses_modified"] is False
+    assert receipt["pose_refinement_executed"] is False
+    assert receipt["trainer_self_grading_permitted"] is False
+    assert receipt["claim_ceiling"] == "reconstruction_training_request"
+    assert receipt["cost_usd"] == 0.0
+    assert "resolved_worker_image_missing" in receipt["blockers"]
