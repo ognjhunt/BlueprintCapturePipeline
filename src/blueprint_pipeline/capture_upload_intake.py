@@ -348,6 +348,11 @@ def process_capture_upload_submission(
         f"{submission['capture_session_id']}\0{request['intake_id']}".encode("utf-8")
     ).hexdigest()
     receipt_path = store_root / "transfer_receipts" / f"{receipt_key}.json"
+    if any(
+        (store_root / directory / f"{receipt_key}.json").is_file()
+        for directory in ("lifecycle_markers", "lifecycle_tombstones")
+    ):
+        raise CaptureUploadTransferError(["capture_upload_revoked_or_expired"])
     if receipt_path.is_file():
         try:
             existing = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -454,6 +459,7 @@ def process_capture_upload_submission(
         "schema_version": CAPTURE_UPLOAD_RECEIPT_SCHEMA_VERSION,
         "capture_session_id": submission["capture_session_id"],
         "intake_id": request["intake_id"],
+        "capture_upload_received_at": datetime.now(timezone.utc).isoformat(),
         "request_digest": request_digest,
         "envelope_digest": materialized.envelope["envelope_digest"],
         "capture_digest": materialized.content_objects[0]["sha256"],
