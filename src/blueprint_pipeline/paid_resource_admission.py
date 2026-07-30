@@ -12,6 +12,7 @@ PAID_RESOURCE_CLASSES = frozenset(
         "cpu_build",
         "gpu_canary",
         "model_volume",
+        "openai_api_candidate",
         "gpu_render",
         "lambda_provider_adapter",
         "runpod_provider_adapter",
@@ -31,6 +32,7 @@ class PaidResourceAdmissionGrant:
     resource_class: str
     schema_version: str
     _issuer: object = field(repr=False, compare=False)
+    allocation_binding_digest: str | None = None
 
 
 class PaidResourceAdmissionBlocked(RuntimeError):
@@ -51,10 +53,7 @@ def require_paid_resource_admission(
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
     admission_resource_class = admission.get("resource_class")
-    if (
-        admission_resource_class is not None
-        and admission_resource_class != resource_class
-    ) or (
+    if (admission_resource_class is not None and admission_resource_class != resource_class) or (
         expected_schema_version == PAID_LANE_ADMISSION_SCHEMA_VERSION
         and admission_resource_class is None
     ):
@@ -71,6 +70,11 @@ def require_paid_resource_admission(
     return PaidResourceAdmissionGrant(
         resource_class=resource_class,
         schema_version=expected_schema_version,
+        allocation_binding_digest=(
+            str(admission.get("allocation_binding_digest"))
+            if admission.get("allocation_binding_digest") is not None
+            else None
+        ),
         _issuer=_GRANT_ISSUER,
     )
 
@@ -79,6 +83,8 @@ def require_paid_resource_admission_grant(
     grant: PaidResourceAdmissionGrant | None,
     *,
     resource_class: str,
+    allocation_binding_digest: str | None = None,
+    require_allocation_binding: bool = False,
 ) -> None:
     """Validate the opaque in-process capability issued by the chokepoint."""
 
@@ -90,6 +96,13 @@ def require_paid_resource_admission_grant(
             blockers.append("paid_resource_admission_grant_issuer_invalid")
         if grant.resource_class != resource_class:
             blockers.append("paid_resource_admission_grant_class_mismatch")
+        if require_allocation_binding and not grant.allocation_binding_digest:
+            blockers.append("paid_resource_admission_grant_binding_missing")
+        if (
+            allocation_binding_digest is not None
+            and grant.allocation_binding_digest != allocation_binding_digest
+        ):
+            blockers.append("paid_resource_admission_grant_binding_mismatch")
     if blockers:
         raise PaidResourceAdmissionBlocked(blockers)
 

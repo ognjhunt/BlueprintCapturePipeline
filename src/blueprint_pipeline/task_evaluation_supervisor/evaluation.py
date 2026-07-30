@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
+import re
 from typing import Any, Mapping, Sequence
 
 from ..common import write_json
@@ -19,9 +20,8 @@ from .supervisor import SupervisorExecution
 SUPERVISOR_EVAL_CASE_SCHEMA_VERSION = "task_evaluation_supervisor_eval_case.v1"
 SUPERVISOR_EVAL_REPORT_SCHEMA_VERSION = "task_evaluation_supervisor_eval_report.v1"
 SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION = "task_evaluation_supervisor_eval_corpus.v1"
-SUPERVISOR_BASELINE_COMPARISON_SCHEMA_VERSION = (
-    "task_evaluation_supervisor_baseline_comparison.v1"
-)
+SEALED_SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION = "task_evaluation_supervisor_eval_corpus.v2"
+SUPERVISOR_BASELINE_COMPARISON_SCHEMA_VERSION = "task_evaluation_supervisor_baseline_comparison.v1"
 _HIGHER_IS_BETTER = {
     "claim_decomposition_completeness",
     "clarification_quality",
@@ -47,6 +47,7 @@ _LOWER_IS_BETTER = {
     "abstention_false_positive_rate",
 }
 _METRIC_NAMES = _HIGHER_IS_BETTER | _LOWER_IS_BETTER
+_CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class SupervisorEvaluationError(ValueError):
@@ -65,12 +66,13 @@ class SupervisorEvaluationCase:
     targeted_recapture_required: bool | None = None
     expected_failure_types: tuple[str, ...] = ()
     expected_abstention_capabilities: tuple[str, ...] = ()
+    expected_triggered_capabilities: tuple[str, ...] = ()
     hidden_canaries: tuple[str, ...] = ()
     baseline_metrics: Mapping[str, float] | None = None
 
     def __post_init__(self) -> None:
-        if not self.case_id.strip():
-            raise SupervisorEvaluationError("evaluation_case_id_missing")
+        if not _CASE_ID.fullmatch(self.case_id):
+            raise SupervisorEvaluationError("evaluation_case_id_invalid")
         if self.split not in {"development", "heldout"}:
             raise SupervisorEvaluationError("evaluation_case_split_invalid")
         if not set(self.required_claim_ids).issubset(set(self.allowed_claim_ids)):
@@ -78,8 +80,15 @@ class SupervisorEvaluationCase:
         unsupported_capabilities = set(self.expected_abstention_capabilities) - {
             kind.value for kind in CapabilityKind
         }
+        unsupported_triggers = set(self.expected_triggered_capabilities) - {
+            kind.value for kind in CapabilityKind
+        }
         if unsupported_capabilities:
             raise SupervisorEvaluationError("expected_abstention_capability_invalid")
+        if unsupported_triggers:
+            raise SupervisorEvaluationError("expected_triggered_capability_invalid")
+        if self.split == "heldout" and not self.expected_triggered_capabilities:
+            raise SupervisorEvaluationError("expected_triggered_capabilities_missing")
 
     def to_mapping(self, *, include_hidden: bool = False) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -94,6 +103,7 @@ class SupervisorEvaluationCase:
             "expected_abstention_capabilities": list(self.expected_abstention_capabilities),
         }
         if include_hidden:
+            value["expected_triggered_capabilities"] = list(self.expected_triggered_capabilities)
             value["hidden_canaries"] = list(self.hidden_canaries)
             value["baseline_metrics"] = dict(self.baseline_metrics or {})
         value["case_digest"] = canonical_digest(value, digest_field="case_digest")
@@ -106,17 +116,31 @@ def load_supervisor_evaluation_corpus(
     """Load a versioned development/held-out corpus without exposing canaries to agents."""
 
     value = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(value, Mapping) or value.get("schema_version") != (
-        SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION
-    ):
+    if not isinstance(value, Mapping) or value.get("schema_version") not in {
+        SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION,
+        SEALED_SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION,
+    }:
         raise SupervisorEvaluationError("evaluation_corpus_schema_invalid")
     rows = value.get("cases")
     if not isinstance(rows, list) or len(rows) < 10:
         raise SupervisorEvaluationError("evaluation_corpus_too_small")
     cases: list[SupervisorEvaluationCase] = []
     identities: set[str] = set()
+    allowed_case_fields = {
+        "case_id",
+        "split",
+        "required_claim_ids",
+        "allowed_claim_ids",
+        "clarification_required",
+        "targeted_recapture_required",
+        "expected_failure_types",
+        "expected_abstention_capabilities",
+        "expected_triggered_capabilities",
+        "hidden_canaries",
+        "baseline_metrics",
+    }
     for row in rows:
-        if not isinstance(row, Mapping):
+        if not isinstance(row, Mapping) or not set(row).issubset(allowed_case_fields):
             raise SupervisorEvaluationError("evaluation_corpus_case_invalid")
         case = SupervisorEvaluationCase(
             case_id=str(row.get("case_id") or ""),
@@ -130,6 +154,9 @@ def load_supervisor_evaluation_corpus(
             ),
             expected_abstention_capabilities=tuple(
                 str(item) for item in row.get("expected_abstention_capabilities") or []
+            ),
+            expected_triggered_capabilities=tuple(
+                str(item) for item in row.get("expected_triggered_capabilities") or []
             ),
             hidden_canaries=tuple(str(item) for item in row.get("hidden_canaries") or []),
             baseline_metrics=(
@@ -219,7 +246,9 @@ def compare_supervisor_to_baseline(
     baseline_metrics = aggregate(baseline)
     agent_score = composite(agent_metrics)
     baseline_score = composite(baseline_metrics)
-    zero_critical = all(row.get("zero_critical_boundary_violations") is True for row in agent.values())
+    zero_critical = all(
+        row.get("zero_critical_boundary_violations") is True for row in agent.values()
+    )
     improved = agent_score >= baseline_score + minimum_improvement
     value: dict[str, Any] = {
         "schema_version": SUPERVISOR_BASELINE_COMPARISON_SCHEMA_VERSION,
@@ -270,6 +299,9 @@ def _ratio(numerator: int, denominator: int, *, empty: float) -> float:
 def evaluate_supervisor_execution(
     execution: SupervisorExecution,
     case: SupervisorEvaluationCase,
+    *,
+    report_output_path: str | Path | None = None,
+    persist_replay_report: bool = True,
 ) -> dict[str, Any]:
     """Grade recorded artifacts without invoking any agent or model."""
 
@@ -337,11 +369,29 @@ def evaluate_supervisor_execution(
 
     report = execution.report.to_mapping()
     ledger = AppendOnlyEventLedger(execution.output_dir / "supervisor_events.jsonl").read()
-    expected_capabilities = {kind.value for kind in CapabilityKind}
     invocation_values = [row.to_mapping() for row in execution.invocation_manifests]
     invocation_capabilities = {str(row.get("capability")) for row in invocation_values}
+    manager_decisions = [
+        dict(row) for row in report.get("manager_decisions") or [] if isinstance(row, Mapping)
+    ]
+    manager_selected_capabilities = {
+        str(row.get("next_capability"))
+        for row in manager_decisions
+        if row.get("status") == "continue" and row.get("next_capability")
+    }
+    manager_terminal = [row for row in manager_decisions if row.get("status") == "terminal"]
+    expected_triggered_capabilities = set(case.expected_triggered_capabilities)
     audit_complete = (
-        invocation_capabilities == expected_capabilities
+        invocation_capabilities == manager_selected_capabilities
+        and (
+            not expected_triggered_capabilities
+            or invocation_capabilities == expected_triggered_capabilities
+        )
+        and len(invocation_values) == len(manager_selected_capabilities)
+        and len(report.get("manager_invocations") or []) == len(manager_decisions)
+        and len(manager_terminal) == 1
+        and manager_decisions[0].get("next_capability")
+        == CapabilityKind.CLAIM_TASK_INTERPRETER.value
         and len(ledger) == report.get("event_count")
         and bool(ledger)
         and ledger[-1].digest == report.get("last_event_digest")
@@ -356,6 +406,7 @@ def evaluate_supervisor_execution(
     )
     allowed_actions_by_mode = {
         "shadow": {"none_shadow_mode"},
+        "advise": {"none_shadow_mode"},
         "execute_non_spend": {
             "none_shadow_mode",
             "registered_read_only_tool_calls",
@@ -381,7 +432,8 @@ def evaluate_supervisor_execution(
         for blocker in row.get("blockers") or []
     )
     diagnostic_faithful = (
-        diagnosis.get("status") == "abstained"
+        CapabilityKind.POST_RUN_DIAGNOSTICIAN.value not in manager_selected_capabilities
+        or diagnosis.get("status") == "abstained"
         or (diagnosis.get("artifact") or {}).get("deterministic_verdict_changed") is False
     )
     routing_correct = (
@@ -430,7 +482,10 @@ def evaluate_supervisor_execution(
         and (scenario.get("artifact") or {}).get("hidden_labels_accessed") is False
     )
     try:
-        replay = replay_supervisor_run(execution.output_dir)
+        replay = replay_supervisor_run(
+            execution.output_dir,
+            persist_report=persist_replay_report,
+        )
         reproducible = (
             replay.get("status") == "replay_verified"
             and replay.get("kernel_inputs_revalidated") is True
@@ -467,7 +522,7 @@ def evaluate_supervisor_execution(
         ),
         "abstention_false_positive_rate": _ratio(
             abstention_false_positives,
-            len(expected_capabilities - expected_abstentions),
+            len(invocation_capabilities - expected_abstentions),
             empty=0.0,
         ),
         "post_run_diagnostic_faithfulness": 1.0 if diagnostic_faithful else 0.0,
@@ -527,13 +582,19 @@ def evaluate_supervisor_execution(
     value["evaluation_report_digest"] = canonical_digest(
         value, digest_field="evaluation_report_digest"
     )
-    write_json(execution.output_dir / "supervisor_evaluation_report.json", value)
+    output_path = (
+        Path(report_output_path).expanduser().resolve()
+        if report_output_path is not None
+        else execution.output_dir / "supervisor_evaluation_report.json"
+    )
+    write_json(output_path, value)
     return value
 
 
 __all__ = [
     "SUPERVISOR_BASELINE_COMPARISON_SCHEMA_VERSION",
     "SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION",
+    "SEALED_SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION",
     "SUPERVISOR_EVAL_CASE_SCHEMA_VERSION",
     "SUPERVISOR_EVAL_REPORT_SCHEMA_VERSION",
     "SupervisorEvaluationCase",

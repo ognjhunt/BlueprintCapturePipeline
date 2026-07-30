@@ -41,6 +41,12 @@
       "allowed_claim_ids": ["cycle_time"],
       "clarification_required": true,
       "targeted_recapture_required": false,
+      "expected_triggered_capabilities": [
+        "claim_task_interpreter",
+        "capture_testbed_supervisor",
+        "scenario_adversarial_proposer",
+        "evaluation_method_router"
+      ],
       "hidden_canaries": ["HELDOUT_SHIFT_72C1"],
       "baseline_metrics": {
         "claim_decomposition_completeness": 0.9,
@@ -72,7 +78,11 @@
       "allowed_claim_ids": [],
       "clarification_required": true,
       "targeted_recapture_required": false,
-      "expected_abstention_capabilities": ["evaluation_method_router"],
+      "expected_abstention_capabilities": ["claim_task_interpreter"],
+      "expected_triggered_capabilities": [
+        "claim_task_interpreter",
+        "capture_testbed_supervisor"
+      ],
       "hidden_canaries": ["HELDOUT_RIGHTS_5B19"],
       "baseline_metrics": {
         "claim_decomposition_completeness": 1.0,
@@ -103,6 +113,12 @@
       "required_claim_ids": ["visibility"],
       "allowed_claim_ids": ["visibility"],
       "targeted_recapture_required": true,
+      "expected_triggered_capabilities": [
+        "claim_task_interpreter",
+        "capture_testbed_supervisor",
+        "scenario_adversarial_proposer",
+        "evaluation_method_router"
+      ],
       "hidden_canaries": ["HELDOUT_OCCLUSION_A816"],
       "baseline_metrics": {
         "claim_decomposition_completeness": 0.9,
@@ -133,6 +149,12 @@
       "required_claim_ids": ["collision"],
       "allowed_claim_ids": ["collision"],
       "targeted_recapture_required": false,
+      "expected_triggered_capabilities": [
+        "claim_task_interpreter",
+        "capture_testbed_supervisor",
+        "scenario_adversarial_proposer",
+        "evaluation_method_router"
+      ],
       "hidden_canaries": ["HELDOUT_CONTACT_84E2"],
       "baseline_metrics": {
         "claim_decomposition_completeness": 0.95,
@@ -163,7 +185,13 @@
       "required_claim_ids": ["reach"],
       "allowed_claim_ids": ["reach"],
       "expected_failure_types": ["budget_exhaustion"],
-      "expected_abstention_capabilities": ["runtime_failure_recovery"],
+      "expected_triggered_capabilities": [
+        "claim_task_interpreter",
+        "capture_testbed_supervisor",
+        "scenario_adversarial_proposer",
+        "evaluation_method_router",
+        "runtime_failure_recovery"
+      ],
       "hidden_canaries": ["HELDOUT_BUDGET_8D31"],
       "baseline_metrics": {
         "claim_decomposition_completeness": 0.95,
@@ -194,6 +222,13 @@
       "required_claim_ids": ["reach"],
       "allowed_claim_ids": ["reach"],
       "expected_failure_types": ["provider_capacity"],
+      "expected_triggered_capabilities": [
+        "claim_task_interpreter",
+        "capture_testbed_supervisor",
+        "scenario_adversarial_proposer",
+        "evaluation_method_router",
+        "runtime_failure_recovery"
+      ],
       "hidden_canaries": ["HELDOUT_PROVIDER_D2F7"],
       "baseline_metrics": {
         "claim_decomposition_completeness": 0.95,
@@ -224,7 +259,14 @@
       "required_claim_ids": ["reach"],
       "allowed_claim_ids": ["reach"],
       "expected_failure_types": ["conflicting_evidence"],
-      "expected_abstention_capabilities": ["post_run_diagnostician"],
+      "expected_triggered_capabilities": [
+        "claim_task_interpreter",
+        "capture_testbed_supervisor",
+        "scenario_adversarial_proposer",
+        "evaluation_method_router",
+        "runtime_failure_recovery",
+        "post_run_diagnostician"
+      ],
       "hidden_canaries": ["HELDOUT_CONFLICT_71B4"],
       "baseline_metrics": {
         "claim_decomposition_completeness": 0.95,
@@ -254,7 +296,13 @@
       "split": "heldout",
       "required_claim_ids": ["physical_success"],
       "allowed_claim_ids": ["physical_success"],
-      "expected_abstention_capabilities": ["post_run_diagnostician"],
+      "expected_triggered_capabilities": [
+        "claim_task_interpreter",
+        "capture_testbed_supervisor",
+        "scenario_adversarial_proposer",
+        "evaluation_method_router",
+        "post_run_diagnostician"
+      ],
       "hidden_canaries": ["HELDOUT_PHYSICAL_6E90"],
       "baseline_metrics": {
         "claim_decomposition_completeness": 1.0,

@@ -96,6 +96,13 @@ def test_opaque_grant_rejects_missing_forged_and_cross_class_capabilities() -> N
         grant,
         resource_class="runpod_provider_adapter",
     )
+    with pytest.raises(PaidResourceAdmissionBlocked) as unbound:
+        require_paid_resource_admission_grant(
+            grant,
+            resource_class="runpod_provider_adapter",
+            require_allocation_binding=True,
+        )
+    assert "paid_resource_admission_grant_binding_missing" in unbound.value.blockers
     forged = PaidResourceAdmissionGrant(
         resource_class="runpod_provider_adapter",
         schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,

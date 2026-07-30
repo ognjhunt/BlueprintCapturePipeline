@@ -4,16 +4,28 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import metadata
-from typing import Any, Mapping, Protocol
+import math
+from pathlib import Path
+from typing import Any, Callable, Mapping, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
+from ..common import read_json, write_json
 from ..decision_evidence_contracts import canonical_digest
 from .contracts import ActionProposal, CapabilityKind, CapabilityResult, ProposalDisposition
-from .tools import RegisteredToolBinding, ToolRegistry, non_spend_tool_bindings
+from .inference_reservations import (
+    INFERENCE_COMPLETION_SCHEMA_VERSION,
+    INFERENCE_RESERVATION_SCHEMA_VERSION,
+)
+from .tools import (
+    RegisteredToolBinding,
+    ToolRegistry,
+    non_spend_tool_bindings,
+    validate_tool_observation_binding,
+)
 
 
 DEFAULT_SUPERVISOR_AGENT_MODEL = "gpt-5.6-terra"
@@ -65,18 +77,19 @@ class AgentsSDKCapabilityOutput(BaseModel):
 @dataclass(frozen=True)
 class AgentsSDKAgentSpec:
     run_id: str
-    capability: CapabilityKind
+    capability: CapabilityKind | str
     name: str
     instructions: str
     model: str
     max_turns: int
     max_output_tokens: int
     tool_bindings: tuple[RegisteredToolBinding, ...] = ()
+    output_type: type[BaseModel] = AgentsSDKCapabilityOutput
 
 
 @dataclass(frozen=True)
 class AgentsSDKInvocationResult:
-    output: AgentsSDKCapabilityOutput
+    output: BaseModel
     provider: str
     model: str
     sdk_version: str
@@ -122,6 +135,26 @@ class OpenAIAgentsSDKInvoker:
     def __init__(self, config: OpenAIAgentsSDKConfig | None = None) -> None:
         self.config = config or OpenAIAgentsSDKConfig()
         self._reserved_cost_usd = 0.0
+        self._record_reservation: Callable[[Mapping[str, Any]], None] | None = None
+        self._record_completion: Callable[[Mapping[str, Any]], None] | None = None
+
+    def configure_reservation_audit(
+        self,
+        *,
+        record_reservation: Callable[[Mapping[str, Any]], None],
+        record_completion: Callable[[Mapping[str, Any]], None],
+        restored_reserved_cost_usd: float,
+    ) -> None:
+        restored = float(restored_reserved_cost_usd)
+        if not math.isfinite(restored) or restored < 0:
+            raise ValueError("agents_sdk_restored_reservation_invalid")
+        if restored > self.config.max_inference_cost_usd:
+            raise ValueError("agents_sdk_restored_reservation_exceeds_budget")
+        if restored < self._reserved_cost_usd:
+            raise ValueError("agents_sdk_restored_reservation_cannot_decrease")
+        self._reserved_cost_usd = restored
+        self._record_reservation = record_reservation
+        self._record_completion = record_completion
 
     def invoke(self, spec: AgentsSDKAgentSpec, input_text: str) -> AgentsSDKInvocationResult:
         if not self.config.allow_live_invocation:
@@ -138,6 +171,40 @@ class OpenAIAgentsSDKInvoker:
         ) / 1_000_000
         if self._reserved_cost_usd + projected_max_cost > self.config.max_inference_cost_usd:
             raise AgentsSDKInvocationBlocked("agents_sdk_inference_budget_ceiling_exceeded")
+        capability_id = (
+            spec.capability.value
+            if isinstance(spec.capability, CapabilityKind)
+            else str(spec.capability)
+        )
+        reservation_id = canonical_digest(
+            {
+                "run_id": spec.run_id,
+                "capability": capability_id,
+                "model": spec.model,
+                "input_digest": canonical_digest({"input_text": input_text}),
+                "max_turns": spec.max_turns,
+                "max_output_tokens": spec.max_output_tokens,
+            }
+        )
+        reservation: dict[str, Any] = {
+            "schema_version": INFERENCE_RESERVATION_SCHEMA_VERSION,
+            "reservation_id": reservation_id,
+            "run_id": spec.run_id,
+            "capability": capability_id,
+            "model": spec.model,
+            "input_digest": canonical_digest({"input_text": input_text}),
+            "max_turns": spec.max_turns,
+            "max_output_tokens": spec.max_output_tokens,
+            "projected_max_cost_usd": projected_max_cost,
+            "billing_status": "worst_case_reserved_before_provider_call",
+            "proof_effect": "none",
+        }
+        reservation["inference_reservation_digest"] = canonical_digest(
+            reservation,
+            digest_field="inference_reservation_digest",
+        )
+        if self._record_reservation is not None:
+            self._record_reservation(reservation)
         self._reserved_cost_usd += projected_max_cost
         try:
             from agents import Agent, FunctionTool, ModelSettings, RunConfig, Runner
@@ -187,11 +254,11 @@ class OpenAIAgentsSDKInvoker:
                 include_usage=True,
                 verbosity="low",
             ),
-            output_type=AgentsSDKCapabilityOutput,
+            output_type=spec.output_type,
             tools=sdk_tools,
         )
         trace_id = canonical_digest(
-            {"run_id": spec.run_id, "capability": spec.capability.value, "model": spec.model}
+            {"run_id": spec.run_id, "capability": capability_id, "model": spec.model}
         ).removeprefix("sha256:")
         started = time.monotonic()
         result = Runner.run_sync(
@@ -206,12 +273,30 @@ class OpenAIAgentsSDKInvoker:
                 tracing_disabled=self.config.tracing_disabled,
                 trace_metadata={
                     "harness_id": AGENTS_SDK_HARNESS_ID,
-                    "capability": spec.capability.value,
+                    "capability": capability_id,
                 },
             ),
         )
         latency = max(0.0, time.monotonic() - started)
-        output = AgentsSDKCapabilityOutput.model_validate(result.final_output)
+        output = spec.output_type.model_validate(result.final_output)
+        sdk_version = metadata.version("openai-agents")
+        if self._record_completion is not None:
+            completion: dict[str, Any] = {
+                "schema_version": INFERENCE_COMPLETION_SCHEMA_VERSION,
+                "reservation_id": reservation_id,
+                "run_id": spec.run_id,
+                "capability": capability_id,
+                "provider": "openai",
+                "model": spec.model,
+                "agents_sdk_version": sdk_version,
+                "structured_output_digest": canonical_digest(output.model_dump(mode="json")),
+                "proof_effect": "none",
+            }
+            completion["inference_completion_digest"] = canonical_digest(
+                completion,
+                digest_field="inference_completion_digest",
+            )
+            self._record_completion(completion)
         usage_value = getattr(getattr(result, "context_wrapper", None), "usage", None)
         usage = (
             usage_value.model_dump(mode="json")
@@ -222,7 +307,7 @@ class OpenAIAgentsSDKInvoker:
             output=output,
             provider="openai",
             model=spec.model,
-            sdk_version=metadata.version("openai-agents"),
+            sdk_version=sdk_version,
             latency_seconds=latency,
             usage={
                 **usage,
@@ -336,6 +421,8 @@ class OpenAIAgentsSDKCapability:
             f"{_COMMON_INSTRUCTIONS}\n\nSpecialist role:\n{_SPECIALIST_INSTRUCTIONS[kind]}"
         )
         self._last_invocation: AgentsSDKInvocationResult | None = None
+        self._trusted_tool_observations: tuple[Mapping[str, Any], ...] = ()
+        self._tool_observation_integrity_status = "not_invoked"
 
     def propose(self, context: Any) -> CapabilityResult:
         payload = {
@@ -345,6 +432,7 @@ class OpenAIAgentsSDKCapability:
             "customer_question": context.customer_question or "",
             "customer_question_is_untrusted": True,
             "capture_build": context.capture_build,
+            "capture_build_is_untrusted": True,
             "decision_request": context.decision_request,
             "site_task_testbed": context.testbed,
             "method_profiles": list(context.method_profiles),
@@ -352,6 +440,13 @@ class OpenAIAgentsSDKCapability:
             "evidence_plan": context.evidence_plan,
             "evidence_results": list(context.evidence_results),
             "decision_envelope": context.decision_envelope,
+            "clarification_request": context.clarification_request,
+            "clarification_receipt": context.clarification_receipt,
+            "authorization_request": context.authorization_request,
+            "authorization_receipt": context.authorization_receipt,
+            "targeted_recapture_request": context.targeted_recapture_request,
+            "targeted_recapture_receipt": context.targeted_recapture_receipt,
+            "recapture_reinspection": context.recapture_reinspection,
             "tool_registry": self.tool_registry_manifest,
             "proof_boundary": {
                 "agent_output_authoritative": False,
@@ -359,16 +454,60 @@ class OpenAIAgentsSDKCapability:
                 "hidden_labels_included": False,
             },
         }
+        trusted_tool_observations: list[Mapping[str, Any]] = []
+        self._last_invocation = None
+        self._trusted_tool_observations = ()
+        self._tool_observation_integrity_status = "not_invoked"
+
+        def record_trusted_observation(observation: Mapping[str, Any]) -> None:
+            root_value = getattr(context, "supervisor_output_dir", None)
+            if not isinstance(root_value, str) or not root_value:
+                raise ValueError("trusted_tool_observation_scope_missing")
+            observations_dir = Path(root_value).resolve() / "observations"
+            observations_dir.mkdir(parents=True, exist_ok=True)
+            ordinal = len(trusted_tool_observations)
+            observation_path = observations_dir / f"{self.kind.value}-{ordinal:03d}.json"
+            if observation_path.exists():
+                raise ValueError("trusted_tool_observation_ordinal_collision")
+            write_json(observation_path, observation)
+            trusted_tool_observations.append(dict(observation))
+
         bindings = (
             non_spend_tool_bindings(
                 capability=self.kind.value,
                 context=context,
                 registry=self.tool_registry,
                 authority=context.authority_envelope,
+                observation_sink=record_trusted_observation,
             )
             if self.tool_registry is not None and isinstance(context.authority_envelope, Mapping)
             else ()
         )
+        if bindings:
+            if self.tool_registry is None:  # pragma: no cover - bindings require a registry
+                raise ValueError("trusted_tool_observation_registry_missing")
+            root_value = getattr(context, "supervisor_output_dir", None)
+            if not isinstance(root_value, str) or not root_value:
+                raise ValueError("trusted_tool_observation_scope_missing")
+            observations_dir = Path(root_value).resolve() / "observations"
+            existing_paths = (
+                sorted(observations_dir.glob(f"{self.kind.value}-*.json"))
+                if observations_dir.is_dir()
+                else []
+            )
+            for ordinal, observation_path in enumerate(existing_paths):
+                expected_path = observations_dir / f"{self.kind.value}-{ordinal:03d}.json"
+                if observation_path != expected_path:
+                    raise ValueError("trusted_tool_observation_sequence_invalid")
+                trusted_tool_observations.append(
+                    validate_tool_observation_binding(
+                        read_json(observation_path),
+                        run_id=context.run_id,
+                        capability=self.kind.value,
+                        registry=self.tool_registry,
+                        authority=context.authority_envelope,
+                    )
+                )
         spec = AgentsSDKAgentSpec(
             run_id=context.run_id,
             capability=self.kind,
@@ -379,9 +518,41 @@ class OpenAIAgentsSDKCapability:
             max_output_tokens=self.config.max_output_tokens,
             tool_bindings=bindings,
         )
-        invocation = self.invoker.invoke(spec, json.dumps(payload, sort_keys=True))
+        try:
+            invocation = self.invoker.invoke(spec, json.dumps(payload, sort_keys=True))
+        except BaseException:
+            self._trusted_tool_observations = tuple(trusted_tool_observations)
+            self._tool_observation_integrity_status = (
+                "invoker_failed_after_tool_execution"
+                if trusted_tool_observations
+                else "invoker_failed_before_tool_execution"
+            )
+            raise
+        self._trusted_tool_observations = tuple(trusted_tool_observations)
+        try:
+            reported_observation_digests = sorted(
+                canonical_digest(dict(row)) for row in invocation.tool_observations
+            )
+        except (TypeError, ValueError):
+            reported_observation_digests = []
+            reported_observations_valid = False
+        else:
+            reported_observations_valid = True
+        trusted_observation_digests = sorted(
+            canonical_digest(dict(row)) for row in self._trusted_tool_observations
+        )
+        self._tool_observation_integrity_status = (
+            "matched"
+            if reported_observations_valid
+            and reported_observation_digests == trusted_observation_digests
+            else "transport_mismatch"
+        )
+        invocation = replace(
+            invocation,
+            tool_observations=self._trusted_tool_observations,
+        )
         self._last_invocation = invocation
-        output = invocation.output
+        output = AgentsSDKCapabilityOutput.model_validate(invocation.output)
         artifact = json.loads(output.artifact_json)
         if not isinstance(artifact, Mapping):
             raise ValueError("agents_sdk_artifact_json_must_be_object")
@@ -445,9 +616,8 @@ class OpenAIAgentsSDKCapability:
             "usage": {} if invocation is None else dict(invocation.usage),
             "trace_id": None if invocation is None else invocation.trace_id,
             "sdk_version": None if invocation is None else invocation.sdk_version,
-            "tool_observations": []
-            if invocation is None
-            else [dict(row) for row in invocation.tool_observations],
+            "tool_observations": [dict(row) for row in self._trusted_tool_observations],
+            "tool_observation_integrity_status": self._tool_observation_integrity_status,
             "harness_id": AGENTS_SDK_HARNESS_ID,
         }
 

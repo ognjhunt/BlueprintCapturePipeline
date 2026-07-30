@@ -2,7 +2,7 @@
   "schema_version": "blueprint.public_launch_sc3_quality_gap_ledger.v3",
   "ledger_id": "public-launch-sc3-quality-2026-07-09",
   "generated_at": "2026-07-10T13:01:59+00:00",
-  "updated_at": "2026-07-10T13:13:27+00:00",
+  "updated_at": "2026-07-30T12:32:00+00:00",
   "source_audit": "docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md",
   "source_audit_sha256": "sha256:0d700a385fb77c36b60b24321f2354b6177fe5886ba7cf768d321cf43c22a864",
   "evidence_mapping_sha256": "sha256:5edb2016c1c26f094901b6a1abd87d1e181b462a23040e74a04c69a1b0f42ad7",
@@ -11385,7 +11385,7 @@
             {
               "artifact_id": "RUN-13-AC-01-EV-01",
               "path": "src/blueprint_pipeline/live_pipeline_intake_service.py",
-              "sha256": "sha256:3fdd21796c5e1a23f7a340b45d98aeffbb55b95522733457fd6bdd26e4581e6a",
+              "sha256": "sha256:186d6de5779b04746c09bcfc3923cef766de9fb2a6fb8fb941e2976be62a54b0",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11401,7 +11401,7 @@
             {
               "artifact_id": "RUN-13-AC-01-EV-02",
               "path": "tests/test_live_pipeline_intake_service.py",
-              "sha256": "sha256:2e6d639b0e82890c352e1568163cb7167868fdc9cad54c1e0a53f7d6538852fe",
+              "sha256": "sha256:a30170e1a4f70a41b9447d92d0cb291248053e41ea3ee555c01e45c82830cd4f",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11515,7 +11515,7 @@
             {
               "artifact_id": "RUN-14-AC-01-EV-01",
               "path": "src/blueprint_pipeline/live_pipeline_intake_service.py",
-              "sha256": "sha256:3fdd21796c5e1a23f7a340b45d98aeffbb55b95522733457fd6bdd26e4581e6a",
+              "sha256": "sha256:186d6de5779b04746c09bcfc3923cef766de9fb2a6fb8fb941e2976be62a54b0",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11531,7 +11531,7 @@
             {
               "artifact_id": "RUN-14-AC-01-EV-02",
               "path": "tests/test_live_pipeline_intake_service.py",
-              "sha256": "sha256:2e6d639b0e82890c352e1568163cb7167868fdc9cad54c1e0a53f7d6538852fe",
+              "sha256": "sha256:a30170e1a4f70a41b9447d92d0cb291248053e41ea3ee555c01e45c82830cd4f",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11645,7 +11645,7 @@
             {
               "artifact_id": "RUN-15-AC-01-EV-01",
               "path": "src/blueprint_pipeline/live_pipeline_intake_service.py",
-              "sha256": "sha256:3fdd21796c5e1a23f7a340b45d98aeffbb55b95522733457fd6bdd26e4581e6a",
+              "sha256": "sha256:186d6de5779b04746c09bcfc3923cef766de9fb2a6fb8fb941e2976be62a54b0",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -11661,7 +11661,7 @@
             {
               "artifact_id": "RUN-15-AC-01-EV-02",
               "path": "tests/test_live_pipeline_intake_service.py",
-              "sha256": "sha256:2e6d639b0e82890c352e1568163cb7167868fdc9cad54c1e0a53f7d6538852fe",
+              "sha256": "sha256:a30170e1a4f70a41b9447d92d0cb291248053e41ea3ee555c01e45c82830cd4f",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

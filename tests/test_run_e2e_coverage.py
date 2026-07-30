@@ -280,6 +280,69 @@ def test_run_end_to_end_resumes_completed_stage_snapshots(monkeypatch, tmp_path:
     )
 
 
+def test_run_end_to_end_reruns_only_supervisor_when_inference_profile_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture_root = _capture_root(tmp_path)
+    (capture_root / "capture_descriptor.json").write_text("{}", encoding="utf-8")
+    calls = {"preflight": 0, "pipeline": 0, "supervisor": 0}
+
+    def fake_preflight(_root):
+        calls["preflight"] += 1
+        return {"status": "ready"}
+
+    def fake_pipeline(**kwargs):
+        calls["pipeline"] += 1
+        return {"status": "completed", "lanes": [kwargs["lane"]]}
+
+    def fake_supervisor(**kwargs):
+        calls["supervisor"] += 1
+        profile = run_e2e.capture_supervisor_execution_profile(
+            agent_model=kwargs["agent_model"],
+            allow_live_agents_sdk=kwargs["allow_live_agents_sdk"],
+            agent_inference_budget_usd=kwargs["agent_inference_budget_usd"],
+        )
+        return {
+            "status": "blocked",
+            "run_id": f"supervisor-attempt-{calls['supervisor']}",
+            "agent_harness": "openai_agents_sdk",
+            "capture_build_alone_can_start_run": True,
+            "execution_profile_digest": profile["execution_profile_digest"],
+        }
+
+    monkeypatch.setattr(run_e2e, "build_capture_preflight_report", fake_preflight)
+    monkeypatch.setattr(run_e2e, "run_capture_pipeline", fake_pipeline)
+    monkeypatch.setattr(run_e2e, "run_capture_build_supervisor", fake_supervisor)
+
+    first = run_e2e.run_end_to_end(
+        capture_root=str(capture_root),
+        provider="openai",
+    )
+    assert first["task_evaluation_supervisor"]["run_id"] == "supervisor-attempt-1"
+    assert calls == {"preflight": 1, "pipeline": 1, "supervisor": 1}
+
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    second = run_e2e.run_end_to_end(
+        capture_root=str(capture_root),
+        provider="openai",
+        allow_live_supervisor_agents=True,
+        supervisor_inference_budget_usd=1.0,
+        resume_completed_stages=True,
+    )
+
+    assert second["task_evaluation_supervisor"]["run_id"] == "supervisor-attempt-2"
+    assert calls == {"preflight": 1, "pipeline": 1, "supervisor": 2}
+    stage_ledger = json.loads(Path(second["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8"))
+    assert stage_ledger["stages"]["preflight"]["resume_used"] is True
+    assert stage_ledger["stages"]["capture_pipeline"]["resume_used"] is True
+    assert "resume_used" not in stage_ledger["stages"]["task_evaluation_supervisor"]
+    assert (
+        stage_ledger["stages"]["task_evaluation_supervisor"]["input_binding_digest"]
+        == second["task_evaluation_supervisor"]["execution_profile_digest"]
+    )
+
+
 def test_run_end_to_end_invalidates_resume_when_capture_inputs_change(
     monkeypatch,
     tmp_path: Path,

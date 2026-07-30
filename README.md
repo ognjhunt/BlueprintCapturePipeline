@@ -63,18 +63,38 @@ authorization, performs no provider discovery, paid compute, or physical run,
 and fails closed otherwise.
 
 `supervise` uses OpenAI Agents SDK as the required harness for the durable
-supervisor and all six specialist agents. A capture build alone can start the
-run; absent task, robot, success, rights, or evidence contracts produce typed
-clarification or abstention. Live SDK inference additionally requires
+manager and all six registered specialist agents. The manager observes each
+validated specialist result and selects only the next specialist whose
+deterministic prerequisites are present. A capture build alone starts with
+claim interpretation and capture/testbed inspection; absent task, robot,
+success, rights, or evidence contracts then produce a typed clarification or
+blocker instead of invoking irrelevant specialists. Live SDK inference additionally requires
 `--allow-live-agent-sdk` and the shared live-operator environment gate. Agent
 inference also requires a positive `--agent-inference-budget-usd`; each call
-reserves a conservative worst-case cost before execution. Agent output is
-advisory and cannot alter the deterministic proof result.
+persists a conservative worst-case reservation before provider execution.
+Interrupted calls retain that reservation and cannot be silently repeated after
+restart. Agent output is advisory and cannot alter the deterministic proof
+result.
 
 The normal `run_e2e` capture-build path always enters this supervisor lifecycle
 after capture processing and records its status and artifacts in the stage
 ledger. There is no alternate production harness or flag that skips the
-supervisor; missing live-inference authority is recorded as a typed blocker.
+supervisor. The lifecycle uses `execute_non_spend`, so a live, budget-authorized
+SDK run can materialize safe clarification, targeted-recapture, scenario, and
+local compilation artifacts immediately from the capture build. Missing live-
+inference authority is recorded as a typed blocker; it never silently falls back
+to a different harness or deterministic pseudo-agent. This is lifecycle v3 with
+a versioned run identifier bound to the capture digest and exact execution
+profile; existing v1 and v2 artifacts remain immutable and are not resumed
+under broader authority.
+
+`advise` runs the same SDK manager and eligible specialists, but exposes no
+callable tools and executes no action. Blueprint validates each proposed action
+against the registered tool contract; a valid proposal is recorded as
+`requires_operator_approval`, while an unregistered, malformed, oversized, or
+proof-changing proposal is refused. Approval is not implicit: an operator must
+issue the appropriate validated receipt and start a separately authorized
+execution mode.
 
 `execute_non_spend` exposes only capability-scoped registered tools through the
 Agents SDK. These include proof-safe reads plus deterministic materialization of
@@ -94,13 +114,32 @@ preferred first live canary backend based on prior Blueprint execution evidence;
 RunPod remains a separately qualified fallback. No provider is chosen merely
 because its adapter exists. The generic allocator's older RunPod default applies
 only to its RunPod-specific strict-smoke launcher; it is not a supervisor
-default.
+default. The concrete supervisor Vast adapter reuses the authorized Vast WAM
+runner and requires versioned result/teardown artifacts plus terminal watchdog
+closure; it does not introduce a parallel provider launcher.
+
+An operator receipt can be returned with `supervise --authorization-request
+... --authorization-receipt ...`; this only records and replays the strict,
+digest-bound response. It never grants SDK tool authority or constructs the
+controller. Any injected recovery controller must carry the identical receipt,
+and remains responsible for expiry, spend, provider/action, retry, watchdog,
+and teardown enforcement.
 
 Agentic robot stacks enter evaluation through
 `blueprint_agentic_candidate_policy@1`. Direct policy, decomposed planner+policy,
 and verify/recover supervisor candidates are frozen and compiled against the
 same scenario manifest, evaluator, predicates, claim ceiling, and hidden-test
-separation. Candidate agents receive no evaluator or proof authority.
+separation. Candidate runtime configuration is separately digest-bound and all
+operator/paid-resource admission validates before execution artifacts are
+created. Candidate agents receive no evaluator or proof authority. The external
+Pigey adapter pins a clean exact checkout, excludes the candidate's own success
+field, and marks candidate-reported usage as non-authoritative. The concrete
+OpenAI project/API-key cost authority writes a digest-bound maximum reservation
+before candidate execution, takes a provider-reported zero-cost baseline, and
+requires delayed independent reconciliation after the reporting window;
+candidate-reported usage cannot settle it. Live use remains blocked without a
+dedicated cost scope, rights-holder permission, an operator receipt, and
+explicit paid-execution authorization.
 
 The model-neutral, fail-closed composition contract for scientific sim ranking,
 provider execution, buyer delivery, teardown, and billing is documented in

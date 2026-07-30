@@ -169,6 +169,11 @@ class _ValidatedArtifact:
             errors.append(f"schema_version:must_be:{cls.SCHEMA_VERSION}")
         errors.extend(cls._validation_errors(normalized))
         errors.extend(f"secret_value_forbidden:{path}" for path in _secret_paths(normalized))
+        # Invalid artifacts, including secret-bearing artifacts, are rejected before
+        # any integrity digest is computed. SHA-256 below identifies canonical JSON;
+        # it is never a password-storage primitive.
+        if errors:
+            raise DecisionEvidenceContractError(errors)
         expected_digest = canonical_digest(normalized, digest_field=cls.DIGEST_FIELD)
         supplied_digest = _string(normalized.get(cls.DIGEST_FIELD))
         if supplied_digest and supplied_digest != expected_digest:

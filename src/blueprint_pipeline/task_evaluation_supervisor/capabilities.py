@@ -38,6 +38,13 @@ class SupervisorContext:
     evidence_plan: Mapping[str, Any] | None = None
     evidence_results: Sequence[Mapping[str, Any]] = ()
     decision_envelope: Mapping[str, Any] | None = None
+    clarification_request: Mapping[str, Any] | None = None
+    clarification_receipt: Mapping[str, Any] | None = None
+    authorization_request: Mapping[str, Any] | None = None
+    authorization_receipt: Mapping[str, Any] | None = None
+    targeted_recapture_request: Mapping[str, Any] | None = None
+    targeted_recapture_receipt: Mapping[str, Any] | None = None
+    recapture_reinspection: Mapping[str, Any] | None = None
     autonomy_mode: str | None = None
     authority_envelope: Mapping[str, Any] | None = None
     # Internal execution scope for deterministic registered tools. This path is
@@ -134,12 +141,19 @@ class DeterministicClaimTaskInterpreter:
 
     def propose(self, context: SupervisorContext) -> CapabilityResult:
         if context.decision_request is None:
+            clarification_response = dict(context.clarification_receipt or {})
             clarification = _proposal(
                 context=context,
                 capability=self.kind,
                 ordinal=0,
                 action_type="request_claim_contract_clarification",
-                reasons=["validated_decision_evidence_request_missing"],
+                reasons=[
+                    (
+                        "validated_decision_evidence_request_missing_after_clarification"
+                        if clarification_response
+                        else "validated_decision_evidence_request_missing"
+                    )
+                ],
                 parameters={
                     "customer_question": context.customer_question,
                     "required_fields": [
@@ -161,9 +175,33 @@ class DeterministicClaimTaskInterpreter:
                     "claims": [],
                     "clarification_required": True,
                     "validated_by_deterministic_contract": False,
+                    "clarification_response_received": bool(clarification_response),
+                    "clarification_response_keys": sorted(
+                        str(key) for key in (clarification_response.get("responses") or {})
+                    ),
+                    "clarification_response_requires_validated_decision_request": bool(
+                        clarification_response
+                    ),
+                    "clarification_response_is_proof": False,
                 },
                 proposals=[clarification],
-                blockers=["validated_decision_evidence_request_missing"],
+                blockers=[
+                    (
+                        "validated_decision_evidence_request_missing_after_clarification"
+                        if clarification_response
+                        else "validated_decision_evidence_request_missing"
+                    )
+                ],
+                evidence_refs=(
+                    [
+                        {
+                            "artifact": "clarification_receipt",
+                            "digest": clarification_response.get("clarification_receipt_digest"),
+                        }
+                    ]
+                    if clarification_response
+                    else []
+                ),
             )
 
         request = DecisionEvidenceRequest.from_mapping(context.decision_request).to_mapping()
@@ -227,6 +265,7 @@ class DeterministicCaptureTestbedSupervisor:
 
     def propose(self, context: SupervisorContext) -> CapabilityResult:
         if context.testbed is None:
+            recapture_receipt = dict(context.targeted_recapture_receipt or {})
             return _result(
                 context=context,
                 capability=self.kind,
@@ -235,10 +274,26 @@ class DeterministicCaptureTestbedSupervisor:
                     "schema_version": "capture_testbed_inspection.v1",
                     "inspection_completed": False,
                     "targeted_recapture_required": False,
+                    "targeted_recapture_received": bool(recapture_receipt),
+                    "original_blocker_resolution": recapture_receipt.get(
+                        "original_blocker_resolution"
+                    ),
+                    "recapture_requires_testbed_recompilation": bool(recapture_receipt),
                 },
                 blockers=["maintained_site_task_testbed_missing"],
+                evidence_refs=(
+                    [
+                        {
+                            "artifact": "targeted_recapture_receipt",
+                            "digest": recapture_receipt.get("targeted_recapture_receipt_digest"),
+                        }
+                    ]
+                    if recapture_receipt
+                    else []
+                ),
             )
         testbed = MaintainedSiteTaskTestbed.from_mapping(context.testbed).to_mapping()
+        recapture_reinspection = dict(context.recapture_reinspection or {})
         inventory = {
             _string(row.get("evidence_id")) for row in _rows(testbed.get("evidence_inventory"))
         }
@@ -248,6 +303,16 @@ class DeterministicCaptureTestbedSupervisor:
             for key in ("rights", "consent", "privacy")
             if _string(governance.get(key)).lower() not in {"accepted", "cleared", "approved"}
         ]
+        recapture_blockers = (
+            [
+                "targeted_recapture_not_deterministically_resolved:"
+                f"{recapture_reinspection.get('status')}"
+            ]
+            if recapture_reinspection
+            and recapture_reinspection.get("status")
+            != "resolved_by_deterministic_testbed_reinspection"
+            else []
+        )
         claim_types: set[str] = set()
         if context.decision_request is not None:
             request = DecisionEvidenceRequest.from_mapping(context.decision_request).to_mapping()
@@ -270,6 +335,25 @@ class DeterministicCaptureTestbedSupervisor:
                     action_type="request_governance_resolution",
                     reasons=governance_blockers,
                     parameters={"testbed_digest": testbed["testbed_digest"]},
+                )
+            )
+        elif recapture_blockers:
+            proposals.append(
+                _proposal(
+                    context=context,
+                    capability=self.kind,
+                    ordinal=0,
+                    action_type="request_testbed_rebuild_or_recapture_gap_resolution",
+                    reasons=recapture_blockers,
+                    parameters={
+                        "recapture_reinspection_digest": recapture_reinspection.get(
+                            "recapture_reinspection_digest"
+                        ),
+                        "unresolved_missing_evidence": recapture_reinspection.get(
+                            "unresolved_missing_evidence"
+                        )
+                        or [],
+                    },
                 )
             )
         elif missing:
@@ -316,11 +400,27 @@ class DeterministicCaptureTestbedSupervisor:
                 "full_site_recapture_required": False,
                 "raw_capture_truth_rewritten": False,
                 "rights_clearance_inferred": False,
+                "targeted_recapture_received": bool(context.targeted_recapture_receipt),
+                "recapture_reinspection_status": recapture_reinspection.get("status"),
+                "recapture_reinspection_digest": recapture_reinspection.get(
+                    "recapture_reinspection_digest"
+                ),
+                "recapture_gap_resolution_claimed_by_agent": False,
             },
             proposals=proposals,
-            blockers=governance_blockers,
+            blockers=[*governance_blockers, *recapture_blockers],
             evidence_refs=[
-                {"artifact": "maintained_site_task_testbed", "digest": testbed["testbed_digest"]}
+                {"artifact": "maintained_site_task_testbed", "digest": testbed["testbed_digest"]},
+                *(
+                    [
+                        {
+                            "artifact": "recapture_reinspection",
+                            "digest": recapture_reinspection.get("recapture_reinspection_digest"),
+                        }
+                    ]
+                    if recapture_reinspection
+                    else []
+                ),
             ],
         )
 
@@ -405,6 +505,7 @@ def _failure_type(result: Mapping[str, Any]) -> str:
     ).lower()
     rules = (
         ("budget", "budget_exhaustion"),
+        ("conflict", "conflicting_evidence"),
         ("capacity", "provider_capacity"),
         ("admission", "infrastructure_admission"),
         ("container", "container_startup"),
@@ -446,6 +547,7 @@ class DeterministicRuntimeFailureRecovery:
                 "permanent_incompatibility": "stop_as_incompatible",
                 "budget_exhaustion": "request_authorization_or_abstain",
                 "invalid_scientific_output": "preserve_and_abstain",
+                "conflicting_evidence": "preserve_disagreement_and_request_adjudication",
                 "unclassified_failure": "request_operator_diagnosis",
             }[failure]
             diagnoses.append(
@@ -488,6 +590,9 @@ class DeterministicRuntimeFailureRecovery:
                 "recovery_executed": False,
                 "failed_evidence_suppressed": False,
                 "additional_authority_inferred": False,
+                "authorization_receipt_present": bool(context.authorization_receipt),
+                "authorization_granted_to_agent": False,
+                "execution_requires_preauthorized_controller": True,
             },
             proposals=proposals,
             blockers=[] if diagnoses else ["no_failed_normalized_results_supplied"],
@@ -554,8 +659,8 @@ class DeterministicScenarioAdversarialProposer:
             tool_id="propose_adversarial_scenarios",
             parameters={
                 "request_digest": request["request_digest"],
-                "scenario_count": len(scenarios),
-                "freeze_requested": False,
+                "scenarios": scenarios,
+                "candidate_results_observed": False,
             },
         )
         return _result(

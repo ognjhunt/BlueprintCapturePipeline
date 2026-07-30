@@ -7,6 +7,7 @@ in this registry owns proof transitions, paid allocation, or physical actions.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import re
 from typing import Any, Callable, Mapping, Sequence
@@ -15,17 +16,147 @@ from ..common import write_json
 from ..decision_evidence_contracts import canonical_digest
 from ..decision_evidence_router import route_decision_evidence
 from ..evaluation_run_contract import validate_evaluation_run_spec
-from .contracts import ActionProposal, AuthorityEnvelope, AutonomyMode, ToolDescriptor
+from .contracts import (
+    TOOL_OBSERVATION_SCHEMA_VERSION,
+    ActionProposal,
+    AuthorityEnvelope,
+    AutonomyMode,
+    ToolDescriptor,
+    ToolObservation,
+)
 from .phase2_artifacts import (
     authorization_request,
     clarification_request,
     scenario_proposal_set,
+    targeted_recapture_request,
     write_phase2_artifact,
 )
 
 
 TOOL_REGISTRY_SCHEMA_VERSION = "task_evaluation_supervisor_tool_registry.v1"
-TOOL_OBSERVATION_SCHEMA_VERSION = "task_evaluation_supervisor_tool_observation.v1"
+
+
+def _output_schema(
+    properties: Mapping[str, Mapping[str, Any]],
+    *,
+    additional_properties: bool = False,
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "required": list(properties),
+        "properties": {key: dict(schema) for key, schema in properties.items()},
+        "additionalProperties": additional_properties,
+    }
+
+
+_TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "inspect_site_task_testbed": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "evidence_inventory_count": {"type": "integer"},
+            "governance": {"type": "object"},
+        }
+    ),
+    "validate_proposed_claim_graph": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "claim_ids": {"type": "array"},
+        }
+    ),
+    "materialize_clarification_request": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "request_id": {"type": "string"},
+            "awaiting_customer_response": {"const": True},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "compile_deterministic_evidence_plan": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "step_count": {"type": "integer"},
+            "compiled_by_agent": {"const": False},
+        }
+    ),
+    "materialize_compiled_leaf_runs": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "plan_digest": {"type": "string"},
+            "compiled_leaf_run_count": {"type": "integer"},
+            "compiled_leaf_run_references": {"type": "array"},
+            "provider_execution_started": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "inspect_normalized_evidence_results": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "status": {},
+            "failure_type": {},
+            "execution_requested": {"type": "boolean"},
+        }
+    ),
+    "propose_targeted_recapture": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "request_id": {"type": "string"},
+            "targeted_recapture_request_digest": {"type": "string"},
+            "capture_started": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "propose_adversarial_scenarios": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "scenario_count": {"type": "integer"},
+            "frozen": {"const": False},
+            "hidden_labels_included": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "materialize_authorization_request": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "request_id": {"type": "string"},
+            "authorization_granted": {"const": False},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "execute_preauthorized_recovery": _output_schema(
+        {
+            "schema_version": {"const": "task_evaluation_recovery_result.v1"},
+            "run_id": {"type": "string"},
+            "attempt_id": {"type": "string"},
+            "status": {
+                "enum": ["completed", "failed", "timed_out", "failed_teardown"]
+            },
+            "typed_result": {"type": "object"},
+            "shared_paid_resource_admission_validated": {"const": True},
+            "proof_effect": {"const": "none"},
+            "scientific_validity_inferred": {"const": False},
+            "recovery_result_digest": {"type": "string"},
+        },
+        additional_properties=True,
+    ),
+    "explain_deterministic_decision": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "overall_outcome": {},
+            "claim_ceiling": {},
+            "verdict_changed_by_tool": {"const": False},
+        }
+    ),
+}
 
 
 def _descriptor(
@@ -48,6 +179,9 @@ def _descriptor(
     timeout_seconds: float = 30.0,
     idempotency: str = "deterministic_for_bound_inputs",
 ) -> ToolDescriptor:
+    output_schema = _TOOL_OUTPUT_SCHEMAS.get(tool_id)
+    if output_schema is None:
+        raise ValueError(f"registered_tool_output_schema_missing:{tool_id}")
     safety_level = {
         "read_only": "proof_safe_read_only",
         "reversible_mutation": "proof_safe_reversible_non_spend",
@@ -72,17 +206,7 @@ def _descriptor(
                 "properties": {key: dict(schema) for key, schema in input_properties.items()},
                 "additionalProperties": False,
             },
-            "output_schema": {
-                "type": "object",
-                "required": ["schema_version", "status"],
-                "properties": {
-                    "schema_version": {"type": "string"},
-                    "status": {"type": "string"},
-                    "artifact_references": {"type": "array"},
-                    "proof_effect": {"const": "none"},
-                },
-                "additionalProperties": True,
-            },
+            "output_schema": output_schema,
             "expected_artifacts": list(expected_artifacts),
             "max_cost_usd": max_cost_usd,
             "timeout_seconds": timeout_seconds,
@@ -184,7 +308,7 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         _descriptor(
             "propose_adversarial_scenarios",
             "scenario_generation",
-            expected_artifacts=["scenario_proposal_set.v1"],
+            expected_artifacts=["task_evaluation_scenario_proposal_set.v1"],
             input_properties={
                 "request_digest": {"type": "string"},
                 "scenarios": {"type": "array"},
@@ -277,6 +401,13 @@ class ToolRegistry:
     def resolve(self, tool_id: str) -> ToolDescriptor | None:
         return self._tools.get(str(tool_id or "").strip())
 
+    def allowed_tool_ids_for_capability(self, capability: str) -> tuple[str, ...]:
+        return tuple(
+            tool_id
+            for tool_id in _CAPABILITY_TOOL_IDS.get(str(capability or ""), ())
+            if tool_id in self._tools
+        )
+
     def manifest(self) -> dict[str, Any]:
         descriptors = [self._tools[tool_id].to_mapping() for tool_id in sorted(self._tools)]
         value = {
@@ -315,11 +446,18 @@ class ToolRegistry:
         if tool_id and tool is None:
             blockers.append("unregistered_tool")
         tool_value = tool.to_mapping() if tool is not None else {}
-        if tool is not None and mode.value not in set(tool_value.get("allowed_modes") or []):
+        if (
+            tool is not None
+            and mode is not AutonomyMode.ADVISE
+            and mode.value not in set(tool_value.get("allowed_modes") or [])
+        ):
             blockers.append("tool_not_allowed_in_mode")
         if tool_id and tool_id not in set(authority.get("allowed_tool_ids") or []):
             blockers.append("tool_not_in_authority_envelope")
-        if float(proposal.get("estimated_cost_usd") or 0) > float(
+        proposal_cost = float(proposal.get("estimated_cost_usd") or 0)
+        if tool is not None and proposal_cost > float(tool_value.get("max_cost_usd") or 0):
+            blockers.append("proposal_exceeds_tool_cost_limit")
+        if mode is not AutonomyMode.ADVISE and proposal_cost > float(
             authority.get("max_cost_usd") or 0
         ):
             blockers.append("proposal_exceeds_cost_authority")
@@ -342,31 +480,123 @@ class ToolRegistry:
         return "eligible", ()
 
     @staticmethod
-    def _input_schema_errors(value: Any, schema_value: Any) -> list[str]:
+    def _schema_errors(value: Any, schema_value: Any, *, prefix: str) -> list[str]:
         if not isinstance(value, Mapping):
-            return ["tool_input_not_mapping"]
+            return [f"{prefix}_not_mapping"]
         schema = dict(schema_value) if isinstance(schema_value, Mapping) else {}
         properties = dict(schema.get("properties") or {})
         required = {str(item) for item in schema.get("required") or []}
-        errors = [f"tool_input_missing:{key}" for key in sorted(required - set(value))]
+        errors = [f"{prefix}_missing:{key}" for key in sorted(required - set(value))]
         if schema.get("additionalProperties") is False:
             errors.extend(
-                f"tool_input_unknown:{key}" for key in sorted(set(value) - set(properties))
+                f"{prefix}_unknown:{key}" for key in sorted(set(value) - set(properties))
             )
         type_checks = {
             "string": lambda item: isinstance(item, str),
             "boolean": lambda item: isinstance(item, bool),
             "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
-            "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
+            "number": lambda item: (
+                isinstance(item, (int, float))
+                and not isinstance(item, bool)
+                and math.isfinite(float(item))
+            ),
             "array": lambda item: isinstance(item, list),
             "object": lambda item: isinstance(item, Mapping),
         }
         for key in sorted(set(value) & set(properties)):
-            expected = str(dict(properties[key]).get("type") or "")
+            property_schema = dict(properties[key])
+            expected = str(property_schema.get("type") or "")
             check = type_checks.get(expected)
             if check is not None and not check(value[key]):
-                errors.append(f"tool_input_type:{key}:{expected}")
+                errors.append(f"{prefix}_type:{key}:{expected}")
+            if "const" in property_schema and value[key] != property_schema["const"]:
+                errors.append(f"{prefix}_const:{key}")
+            if "enum" in property_schema and value[key] not in property_schema["enum"]:
+                errors.append(f"{prefix}_enum:{key}")
         return errors
+
+    @classmethod
+    def _input_schema_errors(cls, value: Any, schema_value: Any) -> list[str]:
+        return cls._schema_errors(value, schema_value, prefix="tool_input")
+
+
+def validate_tool_observation_binding(
+    observation_value: Mapping[str, Any],
+    *,
+    run_id: str,
+    capability: str,
+    registry: ToolRegistry,
+    authority: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate a tool result against the exact registered execution scope."""
+
+    observation = ToolObservation.from_mapping(observation_value).to_mapping()
+    validated_authority = AuthorityEnvelope.from_mapping(authority).to_mapping()
+    if observation["run_id"] != run_id:
+        raise ValueError("tool_observation_run_mismatch")
+    if observation["capability"] != capability:
+        raise ValueError("tool_observation_capability_mismatch")
+    if observation["authority_digest"] != validated_authority["authority_digest"]:
+        raise ValueError("tool_observation_authority_mismatch")
+    tool_id = str(observation["tool_id"])
+    descriptor = registry.resolve(tool_id)
+    if descriptor is None:
+        raise ValueError("tool_observation_unregistered_tool")
+    descriptor_value = descriptor.to_mapping()
+    if tool_id not in registry.allowed_tool_ids_for_capability(capability):
+        raise ValueError("tool_observation_capability_tool_mismatch")
+    if tool_id not in set(validated_authority.get("allowed_tool_ids") or []):
+        raise ValueError("tool_observation_tool_not_authorized")
+    if observation["tool_version"] != descriptor_value["version"]:
+        raise ValueError("tool_observation_version_mismatch")
+    if observation["mutability"] != descriptor_value["mutability"]:
+        raise ValueError("tool_observation_mutability_mismatch")
+    expected_runtime = (
+        "blueprint_preauthorized_recovery_controller"
+        if observation["mutability"] == "external_side_effect"
+        else "blueprint_local_deterministic_non_spend"
+    )
+    if observation["runtime_identity"] != expected_runtime:
+        raise ValueError("tool_observation_runtime_identity_mismatch")
+    if observation["output_digest"] != canonical_digest(observation["typed_result"]):
+        raise ValueError("tool_observation_output_digest_mismatch")
+    if observation["status"] != "refused":
+        output_errors = registry._schema_errors(
+            observation["typed_result"],
+            descriptor_value["output_schema"],
+            prefix="tool_output",
+        )
+        if output_errors:
+            raise ValueError(
+                "tool_observation_output_schema_invalid:" + ",".join(output_errors)
+            )
+    produced_artifact_types = {
+        str(row.get("artifact_type") or "") for row in observation["produced_artifact_references"]
+    }
+    if not produced_artifact_types.issubset(set(descriptor_value["expected_artifacts"])):
+        raise ValueError("tool_observation_artifact_type_not_registered")
+    cost = float(observation["cost_usd"])
+    duration = float(observation["duration_seconds"])
+    retries = int(observation["retries"])
+    if cost > float(descriptor_value["max_cost_usd"]):
+        raise ValueError("tool_observation_tool_cost_exceeded")
+    if cost > float(validated_authority["max_cost_usd"]):
+        raise ValueError("tool_observation_authority_cost_exceeded")
+    if duration > float(descriptor_value["timeout_seconds"]):
+        raise ValueError("tool_observation_tool_duration_exceeded")
+    if duration > float(validated_authority["max_duration_seconds"]):
+        raise ValueError("tool_observation_authority_duration_exceeded")
+    if retries > int(descriptor_value["max_retries"]):
+        raise ValueError("tool_observation_tool_retries_exceeded")
+    if retries > int(validated_authority["max_retries"]):
+        raise ValueError("tool_observation_authority_retries_exceeded")
+    if observation["mutability"] != "external_side_effect" and cost != 0:
+        raise ValueError("tool_observation_non_spend_cost_nonzero")
+    if observation["mutability"] == "external_side_effect" and (
+        validated_authority["mode"] != AutonomyMode.EXECUTE_PREAUTHORIZED.value
+    ):
+        raise ValueError("tool_observation_external_side_effect_wrong_mode")
+    return observation
 
 
 @dataclass(frozen=True)
@@ -520,25 +750,11 @@ def _materialize_targeted_recapture_request(
         raise ValueError("targeted_recapture_scope_out_of_range")
     if arguments.get("full_site_recapture_requested") is True:
         raise ValueError("full_site_recapture_requires_separate_operator_authorization")
-    request: dict[str, Any] = {
-        "schema_version": "targeted_recapture_request.v1",
-        "request_id": f"{context.run_id}-targeted-recapture",
-        "run_id": context.run_id,
-        "source_digest": source_digest,
-        "source_type": "site_task_testbed" if source_digest == testbed_digest else "capture_build",
-        "missing_evidence": normalized_missing,
-        "requested_scope": "targeted_only",
-        "full_site_recapture_requested": False,
-        "status": "proposed_for_review",
-        "capture_started": False,
-        "rights_clearance_inferred": False,
-        "raw_capture_mutated": False,
-        "authoritative": False,
-        "proof_effect": "none",
-    }
-    request["targeted_recapture_request_digest"] = canonical_digest(
-        request,
-        digest_field="targeted_recapture_request_digest",
+    request = targeted_recapture_request(
+        run_id=context.run_id,
+        source_digest=str(source_digest),
+        source_type="site_task_testbed" if source_digest == testbed_digest else "capture_build",
+        missing_evidence=normalized_missing,
     )
     artifact_path = (
         Path(root_value)
@@ -558,9 +774,7 @@ def _materialize_targeted_recapture_request(
             "contract_present": True,
             "digest_matches": True,
             "request_id": request["request_id"],
-            "targeted_recapture_request_digest": request[
-                "targeted_recapture_request_digest"
-            ],
+            "targeted_recapture_request_digest": request["targeted_recapture_request_digest"],
             "capture_started": False,
             "proof_state_changed": False,
         },
@@ -584,7 +798,9 @@ def _materialize_clarification_request(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     root_value = getattr(context, "supervisor_output_dir", None)
     if not isinstance(root_value, str) or not root_value:
-        raise ValueError("registered_tool_execution_scope_missing:materialize_clarification_request")
+        raise ValueError(
+            "registered_tool_execution_scope_missing:materialize_clarification_request"
+        )
     artifact = clarification_request(
         run_id=context.run_id,
         source_digest=_source_digest(context, arguments.get("source_digest")),
@@ -616,7 +832,9 @@ def _materialize_authorization_request(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     root_value = getattr(context, "supervisor_output_dir", None)
     if not isinstance(root_value, str) or not root_value:
-        raise ValueError("registered_tool_execution_scope_missing:materialize_authorization_request")
+        raise ValueError(
+            "registered_tool_execution_scope_missing:materialize_authorization_request"
+        )
     authority = context.authority_envelope or {}
     artifact = authorization_request(
         run_id=context.run_id,
@@ -698,10 +916,7 @@ def _execute_preauthorized_recovery(
     result = controller.execute(arguments)
     path = write_phase2_artifact(
         root_value,
-        (
-            "generated/recovery_attempts/"
-            f"{_safe_artifact_name(result['attempt_id'])}.json"
-        ),
+        (f"generated/recovery_attempts/{_safe_artifact_name(result['attempt_id'])}.json"),
         result,
     )
     reference = {
@@ -816,6 +1031,7 @@ def non_spend_tool_bindings(
     context: Any,
     registry: ToolRegistry,
     authority: Mapping[str, Any],
+    observation_sink: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> tuple[RegisteredToolBinding, ...]:
     """Bind only capability-scoped read tools in execute_non_spend mode."""
 
@@ -879,9 +1095,7 @@ def non_spend_tool_bindings(
                     or typed_result.get("status") == "completed"
                     else "failed"
                 )
-                typed_failure = (
-                    typed_result.get("typed_failure") if status == "failed" else None
-                )
+                typed_failure = typed_result.get("typed_failure") if status == "failed" else None
             except ValueError as exc:
                 typed_result = {}
                 produced_artifact_references = []
@@ -922,7 +1136,16 @@ def non_spend_tool_bindings(
             observation["observation_digest"] = canonical_digest(
                 observation, digest_field="observation_digest"
             )
-            return observation
+            validated_observation = validate_tool_observation_binding(
+                observation,
+                run_id=context.run_id,
+                capability=capability,
+                registry=registry,
+                authority=validated_authority,
+            )
+            if observation_sink is not None:
+                observation_sink(validated_observation)
+            return validated_observation
 
         bindings.append(
             RegisteredToolBinding(
@@ -946,4 +1169,5 @@ __all__ = [
     "ToolRegistry",
     "default_tool_descriptors",
     "non_spend_tool_bindings",
+    "validate_tool_observation_binding",
 ]

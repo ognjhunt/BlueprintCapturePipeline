@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 from ..decision_evidence_contracts import canonical_digest
@@ -12,6 +13,7 @@ from ..decision_evidence_contracts import canonical_digest
 
 CAPTURE_BUILD_INGRESS_SCHEMA_VERSION = "task_evaluation_capture_build_ingress.v1"
 _MAX_JSON_BYTES = 2_000_000
+_STANDALONE_MANIFEST_LABEL = "submitted_manifest.json"
 _KNOWN_ARTIFACTS = (
     "pipeline_handoff.json",
     "capture_descriptor.json",
@@ -66,6 +68,95 @@ class CaptureBuildIngressError(ValueError):
     """Raised when a capture build cannot be safely projected."""
 
 
+def validate_capture_build_ingress(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the complete bounded projection accepted by the supervisor."""
+
+    required_fields = {
+        "schema_version",
+        "source_kind",
+        "artifact_count",
+        "artifacts",
+        "raw_media_included",
+        "arbitrary_files_read",
+        "projection_is_authoritative_evidence",
+        "requires_deterministic_capture_validation",
+        "capture_build_digest",
+    }
+    if set(value) != required_fields:
+        raise CaptureBuildIngressError("capture_build_ingress_fields_invalid")
+    artifacts = value.get("artifacts")
+    artifact_count = value.get("artifact_count")
+    source_kind = value.get("source_kind")
+    if (
+        value.get("schema_version") != CAPTURE_BUILD_INGRESS_SCHEMA_VERSION
+        or source_kind not in {"capture_root", "manifest"}
+        or isinstance(artifact_count, bool)
+        or not isinstance(artifact_count, int)
+        or artifact_count < 1
+        or not isinstance(artifacts, list)
+        or len(artifacts) != artifact_count
+        or artifact_count > len(_KNOWN_ARTIFACTS)
+        or (source_kind == "manifest" and artifact_count != 1)
+        or value.get("raw_media_included") is not False
+        or value.get("arbitrary_files_read") is not False
+        or value.get("projection_is_authoritative_evidence") is not False
+        or value.get("requires_deterministic_capture_validation") is not True
+    ):
+        raise CaptureBuildIngressError("capture_build_ingress_contract_invalid")
+    seen_paths: set[str] = set()
+    required_artifact_fields = {
+        "relative_path",
+        "sha256",
+        "size_bytes",
+        "schema_version",
+        "top_level_keys",
+        "approved_projection",
+    }
+    for artifact in artifacts:
+        if not isinstance(artifact, Mapping) or set(artifact) != required_artifact_fields:
+            raise CaptureBuildIngressError("capture_build_ingress_artifact_fields_invalid")
+        relative_path = str(artifact.get("relative_path") or "")
+        normalized_path = relative_path.replace("\\", "/")
+        if (
+            not relative_path
+            or normalized_path.startswith("/")
+            or ".." in normalized_path.split("/")
+            or relative_path in seen_paths
+        ):
+            raise CaptureBuildIngressError("capture_build_ingress_artifact_path_invalid")
+        if source_kind == "capture_root" and relative_path not in _KNOWN_ARTIFACTS:
+            raise CaptureBuildIngressError("capture_build_ingress_artifact_unregistered")
+        if source_kind == "manifest" and relative_path != _STANDALONE_MANIFEST_LABEL:
+            raise CaptureBuildIngressError("capture_build_ingress_manifest_name_invalid")
+        seen_paths.add(relative_path)
+        sha256 = str(artifact.get("sha256") or "")
+        size_bytes = artifact.get("size_bytes")
+        top_level_keys = artifact.get("top_level_keys")
+        projection = artifact.get("approved_projection")
+        if (
+            not isinstance(top_level_keys, list)
+            or len(top_level_keys) > 200
+            or any(not isinstance(key, str) for key in top_level_keys)
+        ):
+            raise CaptureBuildIngressError("capture_build_ingress_artifact_keys_invalid")
+        if (
+            not re.fullmatch(r"sha256:[0-9a-f]{64}", sha256)
+            or isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+            or size_bytes > _MAX_JSON_BYTES
+            or not str(artifact.get("schema_version") or "").strip()
+            or top_level_keys != sorted(set(top_level_keys))
+            or not isinstance(projection, Mapping)
+            or _safe_projection(projection) != dict(projection)
+        ):
+            raise CaptureBuildIngressError("capture_build_ingress_artifact_contract_invalid")
+    expected = canonical_digest(value, digest_field="capture_build_digest")
+    if value.get("capture_build_digest") != expected:
+        raise CaptureBuildIngressError("capture_build_digest_mismatch")
+    return dict(value)
+
+
 def _safe_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     projection: dict[str, Any] = {}
     for key in sorted(_SAFE_FIELDS & set(value)):
@@ -115,7 +206,7 @@ def load_capture_build_ingress(path: str | Path) -> dict[str, Any]:
     source_kind: str
     if source.is_file():
         source_kind = "manifest"
-        artifacts.append(_load_artifact(source, relative_path=source.name))
+        artifacts.append(_load_artifact(source, relative_path=_STANDALONE_MANIFEST_LABEL))
     elif source.is_dir():
         source_kind = "capture_root"
         resolved_root = source.resolve()
@@ -142,11 +233,12 @@ def load_capture_build_ingress(path: str | Path) -> dict[str, Any]:
         "requires_deterministic_capture_validation": True,
     }
     value["capture_build_digest"] = canonical_digest(value, digest_field="capture_build_digest")
-    return value
+    return validate_capture_build_ingress(value)
 
 
 __all__ = [
     "CAPTURE_BUILD_INGRESS_SCHEMA_VERSION",
     "CaptureBuildIngressError",
     "load_capture_build_ingress",
+    "validate_capture_build_ingress",
 ]

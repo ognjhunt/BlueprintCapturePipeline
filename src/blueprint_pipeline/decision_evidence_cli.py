@@ -25,9 +25,21 @@ from .physical_outcome_learning import join_physical_outcome
 from .task_evaluation_supervisor import (
     AutonomyMode,
     DEFAULT_SUPERVISOR_AGENT_MODEL,
+    OpenAIOrganizationCostsClient,
+    OpenAIProjectCandidateCostAuthority,
     SupervisorContext,
     TaskEvaluationSupervisor,
+    evaluate_recorded_supervisor_corpus,
+    freeze_supervisor_evaluation_configuration,
     load_capture_build_ingress,
+    load_sealed_supervisor_evaluation_corpus,
+    reconcile_neutral_candidate_policy_costs,
+    validate_clarification_receipt,
+    validate_clarification_request,
+    validate_authorization_receipt,
+    validate_authorization_request,
+    validate_targeted_recapture_receipt,
+    validate_targeted_recapture_request,
 )
 
 
@@ -86,13 +98,74 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
     capture_build = load_capture_build_ingress(args.capture_build) if args.capture_build else None
     request = read_json(args.request) if args.request else None
     testbed = read_json(args.testbed) if args.testbed else None
-    if capture_build is None and request is None and testbed is None:
-        raise ValueError("supervisor_requires_capture_build_request_or_testbed")
+    clarification_request = (
+        validate_clarification_request(read_json(args.clarification_request))
+        if args.clarification_request
+        else None
+    )
+    clarification_receipt = (
+        validate_clarification_receipt(
+            read_json(args.clarification_receipt),
+            request=clarification_request,
+        )
+        if args.clarification_receipt
+        else None
+    )
+    if clarification_receipt is not None and clarification_request is None:
+        raise ValueError("supervisor_clarification_receipt_requires_request")
+    authorization_request = (
+        validate_authorization_request(read_json(args.authorization_request))
+        if args.authorization_request
+        else None
+    )
+    authorization_receipt = (
+        validate_authorization_receipt(
+            read_json(args.authorization_receipt),
+            request=authorization_request,
+        )
+        if args.authorization_receipt
+        else None
+    )
+    if authorization_receipt is not None and authorization_request is None:
+        raise ValueError("supervisor_authorization_receipt_requires_request")
+    recapture_request = (
+        validate_targeted_recapture_request(read_json(args.targeted_recapture_request))
+        if args.targeted_recapture_request
+        else None
+    )
+    recapture_receipt = (
+        validate_targeted_recapture_receipt(
+            read_json(args.targeted_recapture_receipt),
+            request=recapture_request,
+            capture_build=capture_build,
+        )
+        if args.targeted_recapture_receipt
+        else None
+    )
+    if (recapture_request is None) != (recapture_receipt is None):
+        raise ValueError("supervisor_recapture_request_and_receipt_required_together")
+    if recapture_receipt is not None and capture_build is None:
+        raise ValueError("supervisor_recapture_receipt_requires_capture_build")
+    if (
+        capture_build is None
+        and request is None
+        and testbed is None
+        and clarification_request is None
+        and authorization_request is None
+    ):
+        raise ValueError(
+            "supervisor_requires_capture_build_request_testbed_clarification_or_authorization"
+        )
     plan = read_json(args.plan) if args.plan else None
     decision = read_json(args.decision) if args.decision else None
     results = _read_many(args.result)
     identity = (
-        (request or {}).get("request_id")
+        (recapture_receipt or {}).get("receipt_id")
+        or (clarification_receipt or {}).get("receipt_id")
+        or (clarification_request or {}).get("request_id")
+        or (authorization_receipt or {}).get("receipt_id")
+        or (authorization_request or {}).get("request_id")
+        or (request or {}).get("request_id")
         or (testbed or {}).get("testbed_id")
         or (capture_build or {}).get("capture_build_digest", "capture-build")[7:23]
     )
@@ -100,8 +173,23 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
     question = str((request or {}).get("decision_question") or "").strip()
     if not question:
         question = (
-            "What task evaluations can this capture build currently support, "
-            "and what customer, robot, task, success, or evidence details are still missing?"
+            "Inspect the returned operator authorization alongside the typed failure, but execute "
+            "nothing unless a separately injected preauthorized controller matches it exactly."
+            if authorization_receipt is not None
+            else (
+                "Interpret the returned customer clarification, identify what remains ambiguous, "
+                "and require a validated Decision Evidence Request before evaluation."
+                if clarification_receipt is not None
+                else (
+                    "Did this targeted recapture resolve the specifically requested capture gap, "
+                    "and what deterministic testbed validation is still required?"
+                    if recapture_receipt is not None
+                    else (
+                        "What task evaluations can this capture build currently support, "
+                        "and what customer, robot, task, success, or evidence details are still missing?"
+                    )
+                )
+            )
         )
     execution = TaskEvaluationSupervisor(
         agent_model=args.agent_model,
@@ -119,6 +207,12 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
             evidence_plan=plan,
             evidence_results=results,
             decision_envelope=decision,
+            clarification_request=clarification_request,
+            clarification_receipt=clarification_receipt,
+            authorization_request=authorization_request,
+            authorization_receipt=authorization_receipt,
+            targeted_recapture_request=recapture_request,
+            targeted_recapture_receipt=recapture_receipt,
         ),
         output_dir=args.output_dir,
         mode=AutonomyMode(args.mode),
@@ -131,6 +225,10 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
         and row.to_mapping().get("validation_status") == "accepted_as_proposal"
     ]
     actions_executed = report.get("actions_executed") is True
+    inference_spend = dict(report.get("inference_spend") or {})
+    agent_inference_started = (
+        bool(live_invocations) or int(inference_spend.get("reservation_count") or 0) > 0
+    )
     tool_execution_started = actions_executed or any(
         int(report.get(key) or 0) > 0
         for key in (
@@ -149,14 +247,25 @@ def _supervise(args: argparse.Namespace) -> dict[str, Any]:
         "terminal_report": str(args.output_dir / "terminal_supervisor_report.json"),
         "event_ledger": str(args.output_dir / "supervisor_events.jsonl"),
         "capability_count": len(execution.capability_results),
+        "triggered_capability_count": len(execution.capability_results),
+        "registered_capability_count": len(execution.run.to_mapping().get("capabilities") or []),
         "agent_harness": "openai_agents_sdk",
         "agent_model": args.agent_model,
         "agent_inference_budget_usd": args.agent_inference_budget_usd,
         "capture_build_ingested": capture_build is not None,
+        "clarification_request_ingested": clarification_request is not None,
+        "clarification_receipt_ingested": clarification_receipt is not None,
+        "clarification_response_accepted_as_proof": False,
+        "authorization_request_ingested": authorization_request is not None,
+        "authorization_receipt_ingested": authorization_receipt is not None,
+        "authorization_granted_to_agent": False,
+        "preauthorized_controller_injected": False,
+        "targeted_recapture_receipt_ingested": recapture_receipt is not None,
+        "targeted_recapture_resolution_claimed": False,
         "execution_started": tool_execution_started,
         "actions_executed": actions_executed,
-        "agent_inference_started": bool(live_invocations),
-        "live_agent_inference": bool(live_invocations),
+        "agent_inference_started": agent_inference_started,
+        "live_agent_inference": agent_inference_started,
         # Model inference is not an evidence-provider or robot-policy execution.
         "live_provider_execution": False,
         "physical_robot_run_initiated": False,
@@ -244,6 +353,87 @@ def _ingest_outcome(args: argparse.Namespace) -> dict[str, Any]:
     return manifest
 
 
+def _reconcile_candidate_costs(args: argparse.Namespace) -> dict[str, Any]:
+    attestation = read_json(args.scope_attestation)
+    client = OpenAIOrganizationCostsClient(
+        project_id=args.openai_project_id,
+        api_key_id=args.openai_api_key_id,
+        admin_api_key_file=args.openai_admin_key_file,
+        timeout_seconds=args.provider_read_timeout_seconds,
+    )
+    authority = OpenAIProjectCandidateCostAuthority(
+        client=client,
+        scope_attestation=attestation,
+        provider_id=args.provider_id,
+        paid_resource_class="openai_api_candidate",
+    )
+    report = reconcile_neutral_candidate_policy_costs(
+        args.execution_dir,
+        candidate_cost_authorities=[authority],
+    )
+    return {
+        "schema_version": "decision_evidence_cli_result.v1",
+        "operation": "reconcile-candidate-costs",
+        "status": report["status"],
+        "candidate_cost_reconciliation_digest": report["candidate_cost_reconciliation_digest"],
+        "reported_cost_usd": report.get("reported_cost_usd"),
+        "reported_cost_is_final": report["reported_cost_is_final"],
+        "candidate_execution_repeated": False,
+        "candidate_evaluation_repeated": False,
+        "provider_cost_reconciliation_requested": True,
+        "provider_mutation_performed": False,
+        "candidate_reported_cost_accepted": False,
+        "physical_robot_run_initiated": False,
+        "proof_effect": "none",
+    }
+
+
+def _recorded_run_mapping(rows: Sequence[str]) -> dict[str, Path]:
+    mapped: dict[str, Path] = {}
+    for row in rows:
+        case_id, separator, raw_path = row.partition("=")
+        if not separator or not case_id or not raw_path or case_id in mapped:
+            raise ValueError("recorded_run_mapping_invalid")
+        mapped[case_id] = Path(raw_path).expanduser().resolve()
+    return mapped
+
+
+def _validate_supervisor_corpus(args: argparse.Namespace) -> dict[str, Any]:
+    corpus, cases = load_sealed_supervisor_evaluation_corpus(args.corpus)
+    result = {
+        "schema_version": "task_evaluation_supervisor_corpus_validation.v1",
+        "operation": "validate-supervisor-corpus",
+        "status": "passed",
+        "corpus_id": corpus["corpus_id"],
+        "corpus_digest": corpus["corpus_digest"],
+        "heldout_case_count": sum(case.split == "heldout" for case in cases),
+        "development_case_count": sum(case.split == "development" for case in cases),
+        "hidden_case_properties_emitted": False,
+        "proof_effect": "none",
+    }
+    write_json(args.output.expanduser().resolve(), result)
+    return result
+
+
+def _freeze_supervisor_evaluation(args: argparse.Namespace) -> dict[str, Any]:
+    corpus, _cases = load_sealed_supervisor_evaluation_corpus(args.corpus)
+    result = freeze_supervisor_evaluation_configuration(
+        read_json(args.spec),
+        corpus_digest=str(corpus["corpus_digest"]),
+    )
+    write_json(args.output.expanduser().resolve(), result)
+    return result
+
+
+def _evaluate_recorded_supervisor(args: argparse.Namespace) -> dict[str, Any]:
+    return evaluate_recorded_supervisor_corpus(
+        corpus_path=args.corpus,
+        configuration=read_json(args.configuration),
+        recorded_runs=_recorded_run_mapping(args.run),
+        output_dir=args.output_dir,
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="operation", required=True)
@@ -272,6 +462,36 @@ def _parser() -> argparse.ArgumentParser:
     supervise.add_argument("--plan", type=Path)
     supervise.add_argument("--result", action="append", type=Path, default=[])
     supervise.add_argument("--decision", type=Path)
+    supervise.add_argument(
+        "--clarification-request",
+        type=Path,
+        help="Original Blueprint clarification request bound to a returned customer response.",
+    )
+    supervise.add_argument(
+        "--clarification-receipt",
+        type=Path,
+        help="Bound, untrusted customer clarification response receipt.",
+    )
+    supervise.add_argument(
+        "--authorization-request",
+        type=Path,
+        help="Original Blueprint authorization request bound to an operator receipt.",
+    )
+    supervise.add_argument(
+        "--authorization-receipt",
+        type=Path,
+        help="Bound operator authorization receipt; does not itself construct a controller.",
+    )
+    supervise.add_argument(
+        "--targeted-recapture-request",
+        type=Path,
+        help="Original Blueprint targeted-recapture request bound to this follow-up capture.",
+    )
+    supervise.add_argument(
+        "--targeted-recapture-receipt",
+        type=Path,
+        help="Customer submission receipt binding the request to this capture build.",
+    )
     supervise.add_argument("--run-id")
     supervise.add_argument("--agent-model", default=DEFAULT_SUPERVISOR_AGENT_MODEL)
     supervise.add_argument("--agent-inference-budget-usd", type=float, default=0.0)
@@ -322,6 +542,62 @@ def _parser() -> argparse.ArgumentParser:
     ingest.add_argument("--existing-outcome", action="append", type=Path, default=[])
     ingest.add_argument("--output-dir", required=True, type=Path)
     ingest.set_defaults(handler=_ingest_outcome)
+
+    validate_corpus = subparsers.add_parser(
+        "validate-supervisor-corpus",
+        help="Validate a sealed supervisor corpus without exposing hidden properties.",
+    )
+    validate_corpus.add_argument("--corpus", required=True, type=Path)
+    validate_corpus.add_argument("--output", required=True, type=Path)
+    validate_corpus.set_defaults(handler=_validate_supervisor_corpus)
+
+    freeze_evaluation = subparsers.add_parser(
+        "freeze-supervisor-evaluation",
+        help="Freeze the manager and six specialist identities before held-out execution.",
+    )
+    freeze_evaluation.add_argument("--corpus", required=True, type=Path)
+    freeze_evaluation.add_argument("--spec", required=True, type=Path)
+    freeze_evaluation.add_argument("--output", required=True, type=Path)
+    freeze_evaluation.set_defaults(handler=_freeze_supervisor_evaluation)
+
+    recorded_evaluation = subparsers.add_parser(
+        "evaluate-recorded-supervisor",
+        help="Replay and independently score a complete recorded held-out matrix.",
+    )
+    recorded_evaluation.add_argument("--corpus", required=True, type=Path)
+    recorded_evaluation.add_argument("--configuration", required=True, type=Path)
+    recorded_evaluation.add_argument(
+        "--run",
+        action="append",
+        default=[],
+        required=True,
+        metavar="CASE_ID=RUN_DIR",
+    )
+    recorded_evaluation.add_argument("--output-dir", required=True, type=Path)
+    recorded_evaluation.set_defaults(handler=_evaluate_recorded_supervisor)
+
+    reconcile_costs = subparsers.add_parser(
+        "reconcile-candidate-costs",
+        help=(
+            "Reconcile delayed paid-candidate cost from OpenAI's read-only "
+            "organization Costs endpoint without rerunning candidates."
+        ),
+    )
+    reconcile_costs.add_argument("--execution-dir", required=True, type=Path)
+    reconcile_costs.add_argument(
+        "--provider-id",
+        default="pigey_external_candidate",
+    )
+    reconcile_costs.add_argument("--openai-project-id", required=True)
+    reconcile_costs.add_argument("--openai-api-key-id", required=True)
+    reconcile_costs.add_argument("--openai-admin-key-file", required=True, type=Path)
+    reconcile_costs.add_argument("--scope-attestation", required=True, type=Path)
+    reconcile_costs.add_argument(
+        "--provider-read-timeout-seconds",
+        type=float,
+        default=30.0,
+    )
+    reconcile_costs.set_defaults(handler=_reconcile_candidate_costs)
     return parser
 
 
@@ -341,6 +617,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             "live_provider_execution": False,
             "physical_robot_run_initiated": False,
         }
+        if args.operation in {
+            "validate-supervisor-corpus",
+            "freeze-supervisor-evaluation",
+            "evaluate-recorded-supervisor",
+        }:
+            result.update(
+                {
+                    "model_invoked": False,
+                    "recorded_runs_mutated": False,
+                    "proof_effect": "none",
+                }
+            )
         print(json.dumps(result, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import math
 import re
 import time
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from ..decision_evidence_contracts import canonical_digest
@@ -15,6 +16,7 @@ from ..paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
 )
+from .phase2_artifacts import Phase2ArtifactError, validate_authorization_receipt
 
 
 RECOVERY_ACTION_SCHEMA_VERSION = "task_evaluation_recovery_action.v1"
@@ -76,6 +78,186 @@ def _digest(value: Any, *, field: str) -> str:
     return text
 
 
+def _nonnegative_finite_number(value: Any, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RecoveryControlError(f"{field}:invalid")
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise RecoveryControlError(f"{field}:invalid")
+    return number
+
+
+def validate_recovery_result(
+    value: Mapping[str, Any],
+    *,
+    run_id: str | None = None,
+    authority: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate a persisted recovery attempt without trusting provider text."""
+
+    required_fields = {
+        "schema_version",
+        "run_id",
+        "attempt_id",
+        "action_id",
+        "provider_id",
+        "paid_resource_class",
+        "shared_paid_resource_admission_validated",
+        "status",
+        "typed_result",
+        "typed_failure",
+        "failed_evidence_preserved",
+        "immutable_commit_sha",
+        "immutable_input_digests",
+        "projected_cost_usd",
+        "actual_cost_usd",
+        "cumulative_cost_usd",
+        "max_cost_usd",
+        "duration_seconds",
+        "watchdog_seconds",
+        "effective_timeout_seconds",
+        "attempt_number",
+        "max_attempts",
+        "authorization_receipt_digest",
+        "teardown",
+        "provider_zero_proven",
+        "cost_reconciliation_required",
+        "proof_effect",
+        "scientific_validity_inferred",
+        "suggested_next_legal_actions",
+        "recovery_result_digest",
+    }
+    if set(value) != required_fields:
+        raise RecoveryControlError("recovery_result_fields_invalid")
+    expected_digest = canonical_digest(value, digest_field="recovery_result_digest")
+    normalized_run_id = str(value.get("run_id") or "").strip()
+    action_id = str(value.get("action_id") or "").strip()
+    provider_id = str(value.get("provider_id") or "").strip()
+    paid_resource_class = str(value.get("paid_resource_class") or "").strip()
+    status = str(value.get("status") or "")
+    raw_attempt_number = value.get("attempt_number")
+    attempt_index = (
+        raw_attempt_number - 1
+        if isinstance(raw_attempt_number, int) and not isinstance(raw_attempt_number, bool)
+        else -1
+    )
+    if (
+        value.get("schema_version") != RECOVERY_RESULT_SCHEMA_VERSION
+        or value.get("recovery_result_digest") != expected_digest
+        or not normalized_run_id
+        or (run_id is not None and normalized_run_id != run_id)
+        or not action_id
+        or not provider_id
+        or not paid_resource_class
+        or value.get("attempt_id") != f"{normalized_run_id}-{action_id}-{attempt_index}"
+        or value.get("shared_paid_resource_admission_validated") is not True
+        or status not in {"completed", "failed", "timed_out", "failed_teardown"}
+        or value.get("proof_effect") != "none"
+        or value.get("scientific_validity_inferred") is not False
+    ):
+        raise RecoveryControlError("recovery_result_contract_invalid")
+    if not _COMMIT_SHA.fullmatch(str(value.get("immutable_commit_sha") or "")):
+        raise RecoveryControlError("recovery_result_commit_sha_invalid")
+    input_digests = value.get("immutable_input_digests")
+    if (
+        not isinstance(input_digests, list)
+        or not input_digests
+        or input_digests != sorted(set(str(row) for row in input_digests))
+    ):
+        raise RecoveryControlError("recovery_result_input_digests_invalid")
+    for digest in input_digests:
+        _digest(digest, field="recovery_result_input_digest")
+    projected_cost = _nonnegative_finite_number(
+        value.get("projected_cost_usd"), field="recovery_result_projected_cost"
+    )
+    cumulative_cost = _nonnegative_finite_number(
+        value.get("cumulative_cost_usd"), field="recovery_result_cumulative_cost"
+    )
+    max_cost = _nonnegative_finite_number(
+        value.get("max_cost_usd"), field="recovery_result_max_cost"
+    )
+    duration = _nonnegative_finite_number(
+        value.get("duration_seconds"), field="recovery_result_duration"
+    )
+    watchdog = _nonnegative_finite_number(
+        value.get("watchdog_seconds"), field="recovery_result_watchdog"
+    )
+    effective_timeout = _nonnegative_finite_number(
+        value.get("effective_timeout_seconds"), field="recovery_result_effective_timeout"
+    )
+    actual_cost_value = value.get("actual_cost_usd")
+    actual_cost = (
+        None
+        if actual_cost_value is None
+        else _nonnegative_finite_number(
+            actual_cost_value,
+            field="recovery_result_actual_cost",
+        )
+    )
+    attempt_number = value.get("attempt_number")
+    max_attempts = value.get("max_attempts")
+    if (
+        projected_cost > max_cost
+        or cumulative_cost > max_cost
+        or duration < 0
+        or watchdog <= 0
+        or effective_timeout <= 0
+        or effective_timeout > watchdog
+        or (actual_cost is not None and actual_cost > projected_cost)
+        or not isinstance(attempt_number, int)
+        or isinstance(attempt_number, bool)
+        or not isinstance(max_attempts, int)
+        or isinstance(max_attempts, bool)
+        or not 1 <= attempt_number <= max_attempts <= MAX_RECOVERY_RETRIES + 1
+    ):
+        raise RecoveryControlError("recovery_result_bounds_invalid")
+    receipt_digest = _digest(
+        value.get("authorization_receipt_digest"),
+        field="recovery_result_authorization_receipt_digest",
+    )
+    typed_result = value.get("typed_result")
+    typed_failure = value.get("typed_failure")
+    teardown = value.get("teardown")
+    provider_zero = value.get("provider_zero_proven")
+    cost_reconciliation = value.get("cost_reconciliation_required")
+    suggested_actions = value.get("suggested_next_legal_actions")
+    if (
+        not isinstance(typed_result, Mapping)
+        or not isinstance(teardown, Mapping)
+        or not isinstance(provider_zero, bool)
+        or provider_zero is not (teardown.get("provider_zero") is True)
+        or not isinstance(cost_reconciliation, bool)
+        or not isinstance(suggested_actions, list)
+        or any(not isinstance(row, str) or not row for row in suggested_actions)
+    ):
+        raise RecoveryControlError("recovery_result_shape_invalid")
+    if status == "completed":
+        if (
+            typed_failure is not None
+            or value.get("failed_evidence_preserved") is not False
+            or not provider_zero
+            or actual_cost is None
+            or cost_reconciliation
+            or suggested_actions
+        ):
+            raise RecoveryControlError("recovery_result_completed_shape_invalid")
+    elif (
+        not isinstance(typed_failure, Mapping)
+        or not str(typed_failure.get("failure_type") or "").strip()
+        or not isinstance(typed_failure.get("retryable"), bool)
+        or typed_result
+        or value.get("failed_evidence_preserved") is not True
+        or suggested_actions not in (["bounded_retry"], ["stop_and_preserve_evidence"])
+    ):
+        raise RecoveryControlError("recovery_result_failure_shape_invalid")
+    if authority is not None and (
+        receipt_digest != authority.get("preauthorization_receipt_digest")
+        or float(max_cost) != float(authority.get("max_cost_usd") or 0.0)
+    ):
+        raise RecoveryControlError("recovery_result_authority_mismatch")
+    return dict(value)
+
+
 @dataclass(frozen=True)
 class PreauthorizedRecoveryPolicy:
     run_id: str
@@ -100,8 +282,12 @@ class PreauthorizedRecoveryPolicy:
             raise RecoveryControlError("recovery_authorization_run_mismatch")
         if not _COMMIT_SHA.fullmatch(self.immutable_commit_sha):
             raise RecoveryControlError("recovery_commit_sha_invalid")
-        normalized_inputs = tuple(sorted({_digest(row, field="input_digest") for row in self.immutable_input_digests}))
-        receipt_inputs = tuple(sorted(str(row) for row in receipt.get("immutable_input_digests") or []))
+        normalized_inputs = tuple(
+            sorted({_digest(row, field="input_digest") for row in self.immutable_input_digests})
+        )
+        receipt_inputs = tuple(
+            sorted(str(row) for row in receipt.get("immutable_input_digests") or [])
+        )
         if (
             not normalized_inputs
             or self.immutable_input_digests != normalized_inputs
@@ -128,7 +314,9 @@ class PreauthorizedRecoveryPolicy:
             or (expires - issued).total_seconds() > granted_ttl
         ):
             raise RecoveryControlError("recovery_receipt_expiry_exceeds_ttl")
-        receipt_providers = tuple(sorted(str(row) for row in receipt.get("granted_provider_ids") or []))
+        receipt_providers = tuple(
+            sorted(str(row) for row in receipt.get("granted_provider_ids") or [])
+        )
         receipt_actions = tuple(sorted(str(row) for row in receipt.get("granted_action_ids") or []))
         if tuple(sorted(set(self.allowed_provider_ids))) != receipt_providers:
             raise RecoveryControlError("recovery_provider_allowlist_not_authorized")
@@ -140,6 +328,15 @@ class PreauthorizedRecoveryPolicy:
             raise RecoveryControlError("recovery_watchdog_exceeds_ttl")
         if not self.teardown_required:
             raise RecoveryControlError("recovery_teardown_required")
+        try:
+            validated_receipt = validate_authorization_receipt(receipt)
+        except Phase2ArtifactError as exc:
+            raise RecoveryControlError("recovery_authorization_receipt_contract_invalid") from exc
+        object.__setattr__(
+            self,
+            "authorization_receipt",
+            MappingProxyType(dict(validated_receipt)),
+        )
 
     @property
     def receipt(self) -> dict[str, Any]:
@@ -291,10 +488,14 @@ class PreauthorizedRecoveryController:
                             "failure_type": "provider_cost_invalid",
                             "retryable": False,
                         }
-                if typed_failure is None and actual_cost is not None and (
-                    not math.isfinite(actual_cost)
-                    or actual_cost < 0
-                    or actual_cost > projected_cost
+                if (
+                    typed_failure is None
+                    and actual_cost is not None
+                    and (
+                        not math.isfinite(actual_cost)
+                        or actual_cost < 0
+                        or actual_cost > projected_cost
+                    )
                 ):
                     if not math.isfinite(actual_cost):
                         actual_cost = None
@@ -305,10 +506,22 @@ class PreauthorizedRecoveryController:
                         "retryable": False,
                     }
                 elif typed_failure is None and status != "completed":
-                    typed_failure = {
-                        "failure_type": str(raw.get("failure_type") or "provider_failure"),
-                        "retryable": len(self._attempts) + 1 < max_attempts,
-                    }
+                    adapter_retryable = raw.get("retryable")
+                    if adapter_retryable not in {None, True, False}:
+                        status = "failed"
+                        typed_failure = {
+                            "failure_type": "provider_retryability_invalid",
+                            "retryable": False,
+                        }
+                    else:
+                        retryable = (
+                            len(self._attempts) + 1 < max_attempts
+                            and adapter_retryable is not False
+                        )
+                        typed_failure = {
+                            "failure_type": str(raw.get("failure_type") or "provider_failure"),
+                            "retryable": retryable,
+                        }
         except Exception as exc:  # noqa: BLE001 - normalized and preserved below
             elapsed = max(0.0, self._monotonic() - started)
             actual_cost = None
@@ -383,8 +596,12 @@ class PreauthorizedRecoveryController:
             result,
             digest_field="recovery_result_digest",
         )
-        self._attempts.append(result)
-        return result
+        validated_result = validate_recovery_result(
+            result,
+            run_id=self.policy.run_id,
+        )
+        self._attempts.append(validated_result)
+        return validated_result
 
 
 __all__ = [
@@ -397,4 +614,5 @@ __all__ = [
     "MAX_RECOVERY_TTL_SECONDS",
     "RecoveryAdapter",
     "RecoveryControlError",
+    "validate_recovery_result",
 ]

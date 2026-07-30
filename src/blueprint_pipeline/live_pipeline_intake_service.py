@@ -17,7 +17,8 @@ import hmac
 import json
 import os
 import re
-import subprocess
+# Subprocess use is limited to fixed systemctl argv plus a strict unit allowlist.
+import subprocess  # nosec B404
 import time
 import uuid
 from datetime import datetime, timezone
@@ -77,6 +78,11 @@ from .task_evaluation_method_catalog import (
     TaskEvaluationMethodCatalogError,
     load_task_evaluation_method_catalog,
 )
+from .task_evaluation_supervisor import (
+    capture_supervisor_execution_options_from_env,
+    capture_supervisor_health_status,
+    run_capture_build_supervisor,
+)
 from .task_evaluation_run_webapp_sync import (
     TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV,
 )
@@ -85,7 +91,8 @@ from .task_evaluation_run_webapp_sync import (
 DEFAULT_MANIFEST_PATH = (
     "/var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json"
 )
-INTAKE_TOKEN_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN"
+# This constant names an environment variable; it is not a credential value.
+INTAKE_TOKEN_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN"  # nosec B105
 INTAKE_ALLOW_LEGACY_BEARER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER"
 INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV = (
     "BLUEPRINT_LIVE_PIPELINE_ALLOW_LEGACY_WEBAPP_HMAC_WITHOUT_CLIENT_ID"
@@ -848,7 +855,8 @@ def _capture_handoff_to_webapp_request(
             "capture_id": handoff_capture_id or capture_ids["capture_id"],
             "blockers": blockers,
         }
-    assert dataset_selection is not None
+    if dataset_selection is None:
+        raise RuntimeError("capture_handoff_dataset_selection_invariant")
     identity_digest_material = {
         "handoff_payload": dict(payload),
         "dataset_selection": dataset_selection,
@@ -1344,7 +1352,8 @@ def _trigger_control_plane() -> Dict[str, Any]:
             "blockers": ["intake_trigger_systemd_unit_invalid"],
         }
     command_argv = ["systemctl", "start", "--no-block", unit]
-    completed = subprocess.run(
+    # The executable/arguments are fixed and the unit is constrained by the regex above.
+    completed = subprocess.run(  # nosec B603
         command_argv,
         shell=False,
         check=False,
@@ -1654,6 +1663,7 @@ def create_app() -> FastAPI:
                 and _string(os.getenv(CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV))
                 and _string(os.getenv(CAPTURE_MALWARE_SCANNER_ARGV_ENV))
             ),
+            "task_evaluation_supervisor": capture_supervisor_health_status(),
             "proof_boundary": {
                 "authorized_hermetic_local_reconstruction_supported": True,
                 "paid_or_live_provider_execution_supported": False,
@@ -1673,6 +1683,13 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid JSON body") from exc
         if not isinstance(payload, Mapping):
             raise HTTPException(status_code=400, detail="expected JSON object")
+        try:
+            supervisor_options = capture_supervisor_execution_options_from_env()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="capture supervisor execution configuration is invalid",
+            ) from exc
         store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
         if not store_root_text:
             raise HTTPException(
@@ -1715,6 +1732,19 @@ def create_app() -> FastAPI:
                     },
                 },
             )
+        artifact_root = (
+            store_root / str(_mapping(receipt.get("artifact_reference")).get("uri") or "")
+        ).resolve()
+        if store_root != artifact_root and store_root not in artifact_root.parents:
+            raise HTTPException(
+                status_code=500,
+                detail="capture intake artifact reference escaped configured store",
+            )
+        supervisor = await run_in_threadpool(
+            run_capture_build_supervisor,
+            capture_root=artifact_root / "capture_intake_envelope.json",
+            **supervisor_options,
+        )
         return {
             "schema_version": "capture_upload_processing_result.v1",
             "receipt": receipt,
@@ -1722,6 +1752,7 @@ def create_app() -> FastAPI:
                 capture_session_id=str(receipt["capture_session_id"]),
                 report=_mapping(receipt.get("capture_qa_report")),
             ),
+            "task_evaluation_supervisor": supervisor,
         }
 
     @app.post(
