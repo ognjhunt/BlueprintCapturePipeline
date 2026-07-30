@@ -86,6 +86,7 @@ class SupervisorContext:
     # exposed to the model; only the frozen request digest enters the tool call.
     external_reconstruction_import_request: Mapping[str, Any] | None = None
     external_reconstruction_importer: Any | None = None
+    reconstruction_failure_diagnosis_request: Mapping[str, Any] | None = None
 
 
 class SupervisorCapability(Protocol):

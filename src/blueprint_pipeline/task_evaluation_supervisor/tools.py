@@ -35,6 +35,10 @@ from ..reconstruction_heldout_evaluation import (
     build_heldout_appearance_evaluation_request,
     build_visual_heldout_evaluation_report,
 )
+from ..reconstruction_failure_diagnosis import (
+    build_reconstruction_failure_diagnosis_request,
+    diagnose_reconstruction_failure,
+)
 from ..reconstruction_capability import normalize_reconstruction_result
 from ..reconstruction_worker_contracts import (
     build_pose_estimation_request,
@@ -254,6 +258,20 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "artifact_digest": {"type": "string"},
             "claim_ceiling": {"const": "external_reconstruction_import"},
             "decision": {"const": "imported_derived_support_only"},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "diagnose_reconstruction_failure": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "diagnosis_digest": {"type": "string"},
+            "diagnosed_failure_code": {"type": "string"},
+            "identical_attempt_count": {"type": "integer"},
+            "unchanged_deterministic_retry_allowed": {"type": "boolean"},
+            "terminal_for_current_configuration": {"type": "boolean"},
+            "legal_next_actions": {"type": "array"},
+            "failed_evidence_preserved": {"const": True},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -644,6 +662,20 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             max_retries=3,
             timeout_seconds=86_400.0,
             idempotency="provider_job_identity_bound_no_unchanged_blocker_retry",
+        ),
+        _descriptor(
+            "diagnose_reconstruction_failure",
+            "capture_reconstruction_failure_diagnosis",
+            expected_artifacts=["reconstruction_failure_diagnosis.v1"],
+            input_properties={
+                "reconstruction_failure_diagnosis_request_digest": {"type": "string"}
+            },
+            required_inputs=["reconstruction_failure_diagnosis_request_digest"],
+            mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend",
+            timeout_seconds=30.0,
+            idempotency="deterministic_failure_fingerprint_no_unchanged_retry",
         ),
         _descriptor(
             "validate_proposed_claim_graph",
@@ -1050,6 +1082,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
     ),
     "runtime_failure_recovery": (
         "inspect_normalized_evidence_results",
+        "diagnose_reconstruction_failure",
         "materialize_authorization_request",
         "execute_preauthorized_recovery",
     ),
@@ -2166,6 +2199,56 @@ def _execute_geometry_contract_tool(
     }]
 
 
+def _diagnose_reconstruction_failure(
+    *, context: Any, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    source_value = getattr(context, "reconstruction_failure_diagnosis_request", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError(
+            "registered_tool_execution_scope_missing:diagnose_reconstruction_failure"
+        )
+    if not isinstance(source_value, Mapping):
+        raise ValueError("reconstruction_failure_diagnosis_request_not_injected")
+    try:
+        request = build_reconstruction_failure_diagnosis_request(source_value)
+    except ValueError as exc:
+        raise ValueError("reconstruction_failure_diagnosis_request_contract_invalid") from exc
+    expected_digest = arguments.get("reconstruction_failure_diagnosis_request_digest")
+    if expected_digest != request["reconstruction_failure_diagnosis_request_digest"]:
+        raise ValueError(
+            "registered_tool_source_digest_mismatch:diagnose_reconstruction_failure"
+        )
+    diagnosis = diagnose_reconstruction_failure(request)
+    path = write_phase2_artifact(
+        root_value,
+        "generated/reconstruction_failure_diagnosis/reconstruction_failure_diagnosis.json",
+        diagnosis,
+    )
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "diagnosis_digest": diagnosis["reconstruction_failure_diagnosis_digest"],
+        "diagnosed_failure_code": diagnosis["diagnosed_failure_code"],
+        "identical_attempt_count": diagnosis["identical_attempt_count"],
+        "unchanged_deterministic_retry_allowed": diagnosis[
+            "unchanged_deterministic_retry_allowed"
+        ],
+        "terminal_for_current_configuration": diagnosis[
+            "terminal_for_current_configuration"
+        ],
+        "legal_next_actions": diagnosis["legal_next_actions"],
+        "failed_evidence_preserved": True,
+        "proof_state_changed": False,
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": diagnosis["reconstruction_failure_diagnosis_digest"],
+            "artifact_type": "reconstruction_failure_diagnosis.v1",
+        }
+    ]
+
+
 def _bound_artifact(
     context: Any,
     *,
@@ -2267,6 +2350,10 @@ def _bound_artifact(
     elif tool_id in _GEOMETRY_TOOL_CONFIG:
         return _execute_geometry_contract_tool(
             context=context, tool_id=tool_id, arguments=arguments
+        )
+    elif tool_id == "diagnose_reconstruction_failure":
+        return _diagnose_reconstruction_failure(
+            context=context, arguments=arguments
         )
     elif tool_id == "compile_deterministic_evidence_plan":
         value = context.evidence_plan
@@ -2385,6 +2472,10 @@ def non_spend_tool_bindings(
                 getattr(context, runtime_attr, None)
             ):
                 continue
+        if tool_id == "diagnose_reconstruction_failure" and not isinstance(
+            getattr(context, "reconstruction_failure_diagnosis_request", None), Mapping
+        ):
+            continue
         descriptor = registry.resolve(tool_id)
         if descriptor is None:
             raise ValueError(f"registered_non_spend_tool_missing:{tool_id}")

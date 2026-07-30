@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/reconstruction_failure_diagnosis.v1.schema.json",
+  "title": "Blueprint Reconstruction Failure Diagnosis Contracts v1",
+  "oneOf": [
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/diagnosis"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "request": {
+      "type": "object",
+      "required": [
+        "schema_version", "stable_run_identity", "source_capture_identity",
+        "source_capture_digest", "failed_event_digest", "stage_id", "failure_code",
+        "attempt_ledger", "authority_state", "execution_requires_paid_compute",
+        "execution_requires_provider", "timestamp",
+        "reconstruction_failure_diagnosis_request_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_failure_diagnosis_request.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "failed_event_digest": {"$ref": "#/$defs/sha256"},
+        "attempt_ledger": {"type": "array", "minItems": 1},
+        "authority_state": {
+          "type": "object",
+          "required": ["paid_execution_authorized", "provider_execution_authorized"],
+          "properties": {
+            "paid_execution_authorized": {"type": "boolean"},
+            "provider_execution_authorized": {"type": "boolean"}
+          }
+        },
+        "execution_requires_paid_compute": {"type": "boolean"},
+        "execution_requires_provider": {"type": "boolean"},
+        "reconstruction_failure_diagnosis_request_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "diagnosis": {
+      "type": "object",
+      "required": [
+        "schema_version", "stable_run_identity", "source_capture_identity",
+        "source_capture_digest", "failure_diagnosis_request_digest", "failed_event_digest",
+        "stage_id", "reported_failure_code", "diagnosed_failure_code",
+        "blocker_fingerprint", "identical_attempt_count", "attempt_ids",
+        "failed_evidence_preserved", "unchanged_deterministic_retry_allowed",
+        "terminal_for_current_configuration", "legal_next_actions",
+        "authority_requested_not_granted", "recovery_executed", "agent_changed_failure_code",
+        "agent_granted_authority", "proof_effect", "claim_ceiling",
+        "parent_artifact_or_event", "timestamp", "reconstruction_failure_diagnosis_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_failure_diagnosis.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "failure_diagnosis_request_digest": {"$ref": "#/$defs/sha256"},
+        "failed_event_digest": {"$ref": "#/$defs/sha256"},
+        "blocker_fingerprint": {"$ref": "#/$defs/sha256"},
+        "identical_attempt_count": {"type": "integer", "minimum": 1},
+        "failed_evidence_preserved": {"const": true},
+        "unchanged_deterministic_retry_allowed": {"type": "boolean"},
+        "terminal_for_current_configuration": {"type": "boolean"},
+        "recovery_executed": {"const": false},
+        "agent_changed_failure_code": {"const": false},
+        "agent_granted_authority": {"const": false},
+        "proof_effect": {"const": "none"},
+        "claim_ceiling": {"const": "failure_diagnosis_only"},
+        "reconstruction_failure_diagnosis_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

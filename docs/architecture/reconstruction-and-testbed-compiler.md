@@ -388,6 +388,15 @@ evaluator reports PSNR, mean absolute error, and a deterministic global-SSIM
 equivalent; it explicitly labels the latter and does not claim canonical
 windowed SSIM or LPIPS. A passing report raises only the appearance ceiling.
 
+`diagnose_reconstruction_failure` is registered as a digest-only, non-spend
+recovery tool. Its `reconstruction_failure_diagnosis.v1` output uses the shared
+worker failure taxonomy, preserves every attempt, and fingerprints the failure
+code plus immutable input and configuration. A first transient failure may
+propose one bounded retry. A second identical failure is rewritten to
+`repeated_identical_blocker`, forbids an unchanged retry, and limits the legal
+next actions to preserving evidence and abstaining. Diagnosis never executes
+recovery or grants authority.
+
 ## Normalized results and layers
 
 `reconstruction_result.v1` binds exact capture, method-profile,
