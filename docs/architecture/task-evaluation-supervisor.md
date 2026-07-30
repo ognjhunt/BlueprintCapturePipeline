@@ -216,6 +216,13 @@ manager-reference, and tool-observation-reference envelopes also use exact
 nested fields; the durable run is bound to Blueprint's registered supervisor
 harness and manager identity.
 
+Authority is re-derived during replay rather than trusted by digest alone. The
+authority mode must match the run and terminal report, its immutable inputs must
+match the run, and its allowed tools must equal the recorded registry (or be
+empty in `disabled`). Every mode except `execute_preauthorized` has zero action
+spend and no recovery receipt or expiry; external processing exists exactly when
+agent inference is authorized.
+
 Observation custody belongs to Blueprint's registered binding, not to the SDK
 adapter. The binding durably records each validated result inside the run before
 returning it to the agent harness. The adapter-reported observation set must

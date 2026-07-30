@@ -2628,6 +2628,7 @@ def test_contracts_reject_proof_and_authority_escalation() -> None:
             }
         )
     assert "proof_mutation_allowed:must_be_false" in authority_error.value.errors
+    assert "non_preauthorized_action_cost_must_be_zero" in authority_error.value.errors
 
     with pytest.raises(SupervisorContractError) as proposal_error:
         ActionProposal.from_mapping(

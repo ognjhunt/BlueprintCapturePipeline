@@ -285,6 +285,17 @@ class AuthorityEnvelope(ValidatedSupervisorArtifact):
                 errors.append("preauthorization_expiry_missing")
         if mode is AutonomyMode.DISABLED and float(value.get("max_cost_usd") or 0) != 0:
             errors.append("disabled_mode_cost_must_be_zero")
+        if mode is not AutonomyMode.EXECUTE_PREAUTHORIZED:
+            if float(value.get("max_cost_usd") or 0) != 0:
+                errors.append("non_preauthorized_action_cost_must_be_zero")
+            if value.get("action_spend_allowed") is not False:
+                errors.append("non_preauthorized_action_spend_must_be_false")
+            if value.get("preauthorization_receipt_digest") is not None:
+                errors.append("non_preauthorized_receipt_must_be_null")
+            if value.get("expires_at") is not None:
+                errors.append("non_preauthorized_expiry_must_be_null")
+        if value.get("external_processing_allowed") is not value.get("agent_inference_allowed"):
+            errors.append("external_processing_must_match_agent_inference")
         for key in (
             "proof_mutation_allowed",
             "rights_mutation_allowed",

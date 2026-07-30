@@ -140,6 +140,8 @@ def replay_supervisor_run(
         raise SupervisorReplayError("run_report_identity_mismatch")
     if run_value["authority_digest"] != authority.digest:
         raise SupervisorReplayError("run_authority_digest_mismatch")
+    if authority_value["mode"] != run_value["mode"] or report_value["mode"] != run_value["mode"]:
+        raise SupervisorReplayError("run_authority_mode_mismatch")
     if (
         run_value["proof_boundary_digest"] != boundary["proof_boundary_digest"]
         or report_value["proof_boundary_digest"] != boundary["proof_boundary_digest"]
@@ -169,6 +171,13 @@ def replay_supervisor_run(
         raise SupervisorReplayError("tool_registry_manifest_mismatch") from exc
     if tool_registry.manifest() != tool_manifest:
         raise SupervisorReplayError("tool_registry_manifest_mismatch")
+    expected_allowed_tool_ids = (
+        [] if authority_value["mode"] == "disabled" else sorted(row["tool_id"] for row in tool_rows)
+    )
+    if authority_value["allowed_tool_ids"] != expected_allowed_tool_ids:
+        raise SupervisorReplayError("authority_tool_registry_mismatch")
+    if authority_value["immutable_input_digests"] != run_value["input_artifact_digests"]:
+        raise SupervisorReplayError("authority_run_inputs_mismatch")
 
     events = AppendOnlyEventLedger(root / "supervisor_events.jsonl").read()
     if not events or events[-1].digest != report_value["last_event_digest"]:
