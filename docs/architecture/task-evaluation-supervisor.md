@@ -145,6 +145,24 @@ sufficient to fabricate a customer decision. The deterministic ingress reads
 only registered manifest paths, records their hashes and schema names, and
 builds an allowlisted metadata projection. It does not read raw media.
 
+The Capture and Testbed Supervisor now proposes a deterministic
+`task_evaluation_capture_reconstruction_route.v1` whenever that bounded build
+contains an explicit capture authority profile. The route is profile-specific:
+ARKit/LiDAR uses the strict metric-scaffold lane; equirectangular 360 capture
+requires spherical-to-perspective normalization before SfM/3DGS; native 360
+capture additionally requires original-container normalization; and monocular
+video requires SfM plus a separate metric-scale qualification. Conflicting or
+missing profiles fail closed. A LiDAR hint alone does not select the ARKit lane.
+
+In `execute_non_spend`, the specialist may call the registered read-only
+`plan_capture_reconstruction_route` tool using the exact capture-build digest.
+The deterministic tool, rather than agent prose, returns the profile, ordered
+method kinds, implementation status, registered adapters, missing stages, and
+proof boundary. The result is still a planning observation: it cannot authorize
+an adapter, establish reconstruction evidence, or promote a 3DGS appearance
+layer into metric, semantic, collision, physics, physical-success, or deployment
+truth.
+
 When no Decision/Evidence Request or maintained Site-Task Testbed exists, the
 manager first triggers claim interpretation, then capture/testbed inspection,
 and stops with a typed clarification or blocker. Scenario, routing, recovery,
@@ -231,6 +249,7 @@ be replayed independently.
 | Supervisor event | `task_evaluation_supervisor_event.v1` in the hash-chained JSONL ledger | Append-only audit record |
 | Clarification request and receipt | `task_evaluation_clarification_request.v1` and `task_evaluation_clarification_receipt.v1` | Non-proof customer input; an agent cannot answer its own request |
 | Targeted recapture request, receipt, and reinspection | `targeted_recapture_request.v1`, `task_evaluation_targeted_recapture_receipt.v1`, and `task_evaluation_recapture_reinspection.v1` | Request and receipt are non-proof; the kernel derives reinspection status |
+| Capture reconstruction route | `task_evaluation_capture_reconstruction_route.v1` plus the registered `plan_capture_reconstruction_route` observation | Profile-specific planning only; no execution authorization or reconstruction proof |
 | Evidence-method selection | `evidence_method_selection.v1` capability artifact and the existing versioned Evidence Plan | The deterministic router qualifies and selects methods |
 | Leaf-run compilation | Existing `evaluation_run_spec.v1` artifacts materialized under `generated/compiled_leaf_runs/` | Deterministic local compilation; no provider execution |
 | Typed failure diagnosis and recovery | `typed_failure_diagnosis.v1`, `task_evaluation_recovery_action.v1`, and `task_evaluation_recovery_result.v1` | Diagnosis is advisory; a bounded controller owns execution and result validation |

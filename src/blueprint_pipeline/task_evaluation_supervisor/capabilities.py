@@ -24,6 +24,7 @@ from .contracts import (
     CapabilityResult,
     ProposalDisposition,
 )
+from .capture_reconstruction_routing import build_capture_reconstruction_route
 
 
 @dataclass(frozen=True)
@@ -264,6 +265,48 @@ class DeterministicCaptureTestbedSupervisor:
     )
 
     def propose(self, context: SupervisorContext) -> CapabilityResult:
+        claim_types: set[str] = set()
+        if context.decision_request is not None:
+            request = DecisionEvidenceRequest.from_mapping(context.decision_request).to_mapping()
+            claim_types = {_string(row.get("claim_type")) for row in _rows(request.get("claims"))}
+        reconstruction_route = (
+            build_capture_reconstruction_route(
+                context.capture_build,
+                requested_claim_types=sorted(claim_types),
+            )
+            if context.capture_build is not None
+            else None
+        )
+        route_proposal = (
+            _proposal(
+                context=context,
+                capability=self.kind,
+                ordinal=0,
+                action_type=(
+                    "plan_profile_specific_reconstruction"
+                    if reconstruction_route["status"] == "route_proposed"
+                    else "resolve_capture_profile_before_reconstruction"
+                ),
+                reasons=(
+                    ["capture_profile_deterministically_selected"]
+                    if reconstruction_route["status"] == "route_proposed"
+                    else reconstruction_route["blockers"]
+                ),
+                tool_id="plan_capture_reconstruction_route",
+                parameters={
+                    "capture_build_digest": reconstruction_route["capture_build_digest"],
+                    "requested_claim_types": sorted(claim_types),
+                },
+                evidence_refs=[
+                    {
+                        "artifact": "capture_build_ingress",
+                        "digest": reconstruction_route["capture_build_digest"],
+                    }
+                ],
+            )
+            if reconstruction_route is not None
+            else None
+        )
         if context.testbed is None:
             recapture_receipt = dict(context.targeted_recapture_receipt or {})
             return _result(
@@ -279,7 +322,10 @@ class DeterministicCaptureTestbedSupervisor:
                         "original_blocker_resolution"
                     ),
                     "recapture_requires_testbed_recompilation": bool(recapture_receipt),
+                    "capture_reconstruction_route": reconstruction_route,
+                    "capture_profile_controls_reconstruction_method_eligibility": True,
                 },
+                proposals=[route_proposal] if route_proposal is not None else [],
                 blockers=["maintained_site_task_testbed_missing"],
                 evidence_refs=(
                     [
@@ -313,10 +359,6 @@ class DeterministicCaptureTestbedSupervisor:
             != "resolved_by_deterministic_testbed_reinspection"
             else []
         )
-        claim_types: set[str] = set()
-        if context.decision_request is not None:
-            request = DecisionEvidenceRequest.from_mapping(context.decision_request).to_mapping()
-            claim_types = {_string(row.get("claim_type")) for row in _rows(request.get("claims"))}
         missing: list[str] = []
         if (
             claim_types & {"reachability", "collision_contact"}
@@ -325,13 +367,14 @@ class DeterministicCaptureTestbedSupervisor:
             missing.append("metric_geometry")
         if "perception_visibility" in claim_types and "captured_rgb_frames" not in inventory:
             missing.append("captured_rgb_frames")
-        proposals: list[dict[str, Any]] = []
+        proposals: list[dict[str, Any]] = [route_proposal] if route_proposal is not None else []
+        follow_up_ordinal = len(proposals)
         if governance_blockers:
             proposals.append(
                 _proposal(
                     context=context,
                     capability=self.kind,
-                    ordinal=0,
+                    ordinal=follow_up_ordinal,
                     action_type="request_governance_resolution",
                     reasons=governance_blockers,
                     parameters={"testbed_digest": testbed["testbed_digest"]},
@@ -342,7 +385,7 @@ class DeterministicCaptureTestbedSupervisor:
                 _proposal(
                     context=context,
                     capability=self.kind,
-                    ordinal=0,
+                    ordinal=follow_up_ordinal,
                     action_type="request_testbed_rebuild_or_recapture_gap_resolution",
                     reasons=recapture_blockers,
                     parameters={
@@ -361,7 +404,7 @@ class DeterministicCaptureTestbedSupervisor:
                 _proposal(
                     context=context,
                     capability=self.kind,
-                    ordinal=0,
+                    ordinal=follow_up_ordinal,
                     action_type="request_targeted_recapture",
                     reasons=[f"required_evidence_missing:{item}" for item in missing],
                     tool_id="propose_targeted_recapture",
@@ -377,7 +420,7 @@ class DeterministicCaptureTestbedSupervisor:
                 _proposal(
                     context=context,
                     capability=self.kind,
-                    ordinal=0,
+                    ordinal=follow_up_ordinal,
                     action_type="continue_to_evidence_planning",
                     reasons=["declared_testbed_inventory_covers_seed_claim_inputs"],
                     tool_id="inspect_site_task_testbed",
@@ -406,6 +449,8 @@ class DeterministicCaptureTestbedSupervisor:
                     "recapture_reinspection_digest"
                 ),
                 "recapture_gap_resolution_claimed_by_agent": False,
+                "capture_reconstruction_route": reconstruction_route,
+                "capture_profile_controls_reconstruction_method_eligibility": True,
             },
             proposals=proposals,
             blockers=[*governance_blockers, *recapture_blockers],

@@ -50,6 +50,15 @@ experiment. Execution is local, zero-paid-compute, deterministic, retry-safe,
 and stores a normalized immutable result. Adapter failure is evidence
 insufficiency; it never becomes a pass.
 
+Before this control plane is invoked, the Task Evaluation Capture and Testbed
+Supervisor may emit `task_evaluation_capture_reconstruction_route.v1`. That
+artifact separates iPhone ARKit/LiDAR, non-LiDAR ARKit, equirectangular 360,
+native 360, monocular video, and external-reconstruction import sequences. It
+also names stages that are required but not yet registered, including 360
+normalization, SfM, 3DGS training, and independent scale validation. This is a
+planning aid only: the control plane still owns method-profile eligibility and
+separate execution authorization.
+
 ## Normalized results and layers
 
 `reconstruction_result.v1` binds exact capture, method-profile,

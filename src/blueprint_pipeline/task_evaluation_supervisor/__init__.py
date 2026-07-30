@@ -19,6 +19,12 @@ from .capture_ingress import (
     load_capture_build_ingress,
     validate_capture_build_ingress,
 )
+from .capture_reconstruction_routing import (
+    CAPTURE_RECONSTRUCTION_ROUTE_SCHEMA_VERSION,
+    CaptureReconstructionRouteError,
+    build_capture_reconstruction_route,
+    validate_capture_reconstruction_route,
+)
 from .candidate_policy import (
     CANDIDATE_COST_RESERVATION_SCHEMA_VERSION,
     CANDIDATE_COST_SETTLEMENT_SCHEMA_VERSION,
@@ -176,6 +182,8 @@ __all__ = [
     "capture_supervisor_execution_options_from_env",
     "capture_supervisor_health_status",
     "CaptureBuildIngressError",
+    "CAPTURE_RECONSTRUCTION_ROUTE_SCHEMA_VERSION",
+    "CaptureReconstructionRouteError",
     "FrozenAgenticPolicyAdapter",
     "IndependentCandidateEvaluator",
     "InferenceReservationAudit",
@@ -227,6 +235,7 @@ __all__ = [
     "deterministic_baseline_capabilities",
     "compare_supervisor_to_baseline",
     "capture_supervisor_execution_profile",
+    "build_capture_reconstruction_route",
     "compile_neutral_candidate_policy_suite",
     "execute_neutral_candidate_policy_suite",
     "reconcile_neutral_candidate_policy_costs",
@@ -235,6 +244,7 @@ __all__ = [
     "freeze_supervisor_evaluation_configuration",
     "load_capture_build_ingress",
     "validate_capture_build_ingress",
+    "validate_capture_reconstruction_route",
     "load_supervisor_evaluation_corpus",
     "load_recorded_supervisor_execution",
     "load_sealed_supervisor_evaluation_corpus",

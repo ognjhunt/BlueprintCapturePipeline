@@ -24,6 +24,10 @@ from .contracts import (
     ToolDescriptor,
     ToolObservation,
 )
+from .capture_reconstruction_routing import (
+    build_capture_reconstruction_route,
+    validate_capture_reconstruction_route,
+)
 from .phase2_artifacts import (
     authorization_request,
     clarification_request,
@@ -56,6 +60,17 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "digest_matches": {"const": True},
             "evidence_inventory_count": {"type": "integer"},
             "governance": {"type": "object"},
+        }
+    ),
+    "plan_capture_reconstruction_route": _output_schema(
+        {
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
+            "route": {"type": "object"},
+            "route_digest": {"type": "string"},
+            "capture_authority_profile": {},
+            "execution_authorized_by_route": {"const": False},
+            "proof_state_changed": {"const": False},
         }
     ),
     "validate_proposed_claim_graph": _output_schema(
@@ -136,9 +151,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "schema_version": {"const": "task_evaluation_recovery_result.v1"},
             "run_id": {"type": "string"},
             "attempt_id": {"type": "string"},
-            "status": {
-                "enum": ["completed", "failed", "timed_out", "failed_teardown"]
-            },
+            "status": {"enum": ["completed", "failed", "timed_out", "failed_teardown"]},
             "typed_result": {"type": "object"},
             "shared_paid_resource_admission_validated": {"const": True},
             "proof_effect": {"const": "none"},
@@ -239,6 +252,16 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             expected_artifacts=["capture_testbed_inspection.v1"],
             input_properties={"testbed_digest": {"type": "string"}},
             required_inputs=["testbed_digest"],
+        ),
+        _descriptor(
+            "plan_capture_reconstruction_route",
+            "capture_reconstruction_routing",
+            expected_artifacts=["task_evaluation_capture_reconstruction_route.v1"],
+            input_properties={
+                "capture_build_digest": {"type": "string"},
+                "requested_claim_types": {"type": "array"},
+            },
+            required_inputs=["capture_build_digest", "requested_claim_types"],
         ),
         _descriptor(
             "validate_proposed_claim_graph",
@@ -488,9 +511,7 @@ class ToolRegistry:
         required = {str(item) for item in schema.get("required") or []}
         errors = [f"{prefix}_missing:{key}" for key in sorted(required - set(value))]
         if schema.get("additionalProperties") is False:
-            errors.extend(
-                f"{prefix}_unknown:{key}" for key in sorted(set(value) - set(properties))
-            )
+            errors.extend(f"{prefix}_unknown:{key}" for key in sorted(set(value) - set(properties)))
         type_checks = {
             "string": lambda item: isinstance(item, str),
             "boolean": lambda item: isinstance(item, bool),
@@ -567,9 +588,16 @@ def validate_tool_observation_binding(
             prefix="tool_output",
         )
         if output_errors:
-            raise ValueError(
-                "tool_observation_output_schema_invalid:" + ",".join(output_errors)
-            )
+            raise ValueError("tool_observation_output_schema_invalid:" + ",".join(output_errors))
+        if tool_id == "plan_capture_reconstruction_route":
+            route = validate_capture_reconstruction_route(observation["typed_result"]["route"])
+            if (
+                observation["typed_result"].get("route_digest")
+                != route["capture_reconstruction_route_digest"]
+                or observation["typed_result"].get("capture_authority_profile")
+                != route["capture_authority_profile"]
+            ):
+                raise ValueError("tool_observation_capture_reconstruction_route_binding_mismatch")
     produced_artifact_types = {
         str(row.get("artifact_type") or "") for row in observation["produced_artifact_references"]
     }
@@ -617,6 +645,7 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
     ),
     "capture_testbed_supervisor": (
         "inspect_site_task_testbed",
+        "plan_capture_reconstruction_route",
         "propose_targeted_recapture",
     ),
     "evaluation_method_router": (
@@ -966,6 +995,47 @@ def _bound_artifact(
             "governance": dict((value or {}).get("governance") or {})
             if isinstance(value, Mapping)
             else {},
+        }
+    elif tool_id == "plan_capture_reconstruction_route":
+        value = context.capture_build
+        expected = arguments.get("capture_build_digest")
+        actual = value.get("capture_build_digest") if isinstance(value, Mapping) else None
+        supplied_claim_types = arguments.get("requested_claim_types")
+        expected_claim_types = sorted(
+            {
+                str(row.get("claim_type") or "").strip()
+                for row in (
+                    context.decision_request.get("claims", [])
+                    if isinstance(context.decision_request, Mapping)
+                    else []
+                )
+                if isinstance(row, Mapping) and str(row.get("claim_type") or "").strip()
+            }
+        )
+        if (
+            not isinstance(supplied_claim_types, list)
+            or not all(isinstance(item, str) and item.strip() for item in supplied_claim_types)
+            or sorted(set(supplied_claim_types)) != expected_claim_types
+        ):
+            raise ValueError(
+                "registered_tool_claim_scope_mismatch:plan_capture_reconstruction_route"
+            )
+        route = (
+            build_capture_reconstruction_route(
+                value,
+                requested_claim_types=expected_claim_types,
+            )
+            if isinstance(value, Mapping) and actual and expected == actual
+            else None
+        )
+        typed_result = {
+            "contract_present": value is not None,
+            "digest_matches": bool(actual and expected == actual),
+            "route": route or {},
+            "route_digest": (route or {}).get("capture_reconstruction_route_digest"),
+            "capture_authority_profile": (route or {}).get("capture_authority_profile"),
+            "execution_authorized_by_route": False,
+            "proof_state_changed": False,
         }
     elif tool_id == "compile_deterministic_evidence_plan":
         value = context.evidence_plan

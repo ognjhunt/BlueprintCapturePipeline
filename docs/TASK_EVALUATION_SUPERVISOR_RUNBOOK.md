@@ -112,12 +112,23 @@ shown to an agent; task text remains visible as data because it is needed for
 interpretation. Protected output validation, the tool registry, and the
 authority envelope—not prompt obedience—must contain any injected instruction.
 
+When the bounded projection contains `capture_authority_profile` or a supported
+`capture_modality`, the Capture and Testbed Supervisor emits a digest-bound,
+profile-specific reconstruction route. Operators should expect different
+ordered stages for ARKit/LiDAR, equirectangular 360, native 360, monocular video,
+and external reconstruction imports. Missing or conflicting profiles return a
+typed route blocker; `has_lidar=true` alone is not sufficient to select the
+metric ARKit adapter.
+
 ## Non-spend execution
 
 `execute_non_spend` can inspect registered artifacts, deterministically compile
 an Evidence Plan and leaf Evaluation Run specs, materialize clarification and
 authorization requests, write targeted recapture proposals, and materialize
-pre-evaluation scenario proposals. It cannot start capture, run a provider,
+pre-evaluation scenario proposals. It can also call the read-only
+`plan_capture_reconstruction_route` tool against the exact capture-build digest.
+That tool identifies registered versus missing reconstruction stages but does
+not execute them. It cannot start capture, run a provider,
 spend money, expose hidden labels, or mutate proof state.
 
 Clarification responses and authorization grants are separate receipts created
