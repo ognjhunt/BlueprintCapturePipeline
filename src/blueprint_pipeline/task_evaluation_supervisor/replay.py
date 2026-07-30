@@ -313,6 +313,7 @@ def replay_supervisor_run(
 
     invocation_digests: list[str] = []
     tool_observation_digests: list[str] = []
+    referenced_tool_observation_paths: set[Path] = set()
     generated_artifact_digests: list[str] = []
     replayed_tool_cost_usd = 0.0
     for row in report_value.get("invocation_manifests") or []:
@@ -336,6 +337,9 @@ def replay_supervisor_run(
             observation_path = (root / str(observation_ref.get("artifact_path") or "")).resolve()
             if root not in observation_path.parents:
                 raise SupervisorReplayError("tool_observation_path_escape")
+            if observation_path in referenced_tool_observation_paths:
+                raise SupervisorReplayError("tool_observation_reference_duplicated")
+            referenced_tool_observation_paths.add(observation_path)
             try:
                 observation = validate_tool_observation_binding(
                     read_json(observation_path),
@@ -405,6 +409,14 @@ def replay_supervisor_run(
             [],
         ):
             raise SupervisorReplayError("capability_structured_observations_mismatch")
+    observations_dir = root / "observations"
+    persisted_tool_observation_paths = (
+        {path.resolve() for path in observations_dir.glob("*.json")}
+        if observations_dir.is_dir()
+        else set()
+    )
+    if persisted_tool_observation_paths != referenced_tool_observation_paths:
+        raise SupervisorReplayError("tool_observation_inventory_mismatch")
     if replayed_tool_cost_usd > float(authority_value.get("max_cost_usd") or 0.0):
         raise SupervisorReplayError("replayed_tool_cost_exceeds_authority")
 

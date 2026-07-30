@@ -206,6 +206,14 @@ output digest, cost ceiling, and retry ceiling. Unknown fields or a mismatched
 binding are refused before the result can be written to the event ledger; raw
 injected tool text is not preserved as evidence.
 
+Observation custody belongs to Blueprint's registered binding, not to the SDK
+adapter. The binding durably records each validated result inside the run before
+returning it to the agent harness. The adapter-reported observation set must
+match that trusted set exactly. If the adapter omits or alters a result—or fails
+or is interrupted after a tool action—the specialist output is blocked while
+the trusted observation and any action that already occurred remain visible in
+the audit, report, resume, and replay.
+
 `replay_supervisor_run(...)` verifies the hash chain and all recorded contracts.
 Replay also reconstructs the recorded tool registry from its validated
 descriptors and rejects a manifest that grants undeclared shell, filesystem,

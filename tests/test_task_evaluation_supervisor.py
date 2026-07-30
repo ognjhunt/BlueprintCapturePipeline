@@ -454,6 +454,35 @@ class _InjectedToolObservationInvoker(_FixtureAgentsSDKInvoker):
         return replace(result, tool_observations=(observation,))
 
 
+class _OmittedObservationAfterActionInvoker(_FixtureAgentsSDKInvoker):
+    def __init__(self, *, failure_after_action: str | None = None) -> None:
+        super().__init__()
+        self.failure_after_action = failure_after_action
+
+    def invoke(self, spec, input_text: str) -> AgentsSDKInvocationResult:
+        payload = json.loads(input_text)
+        if spec.capability == CapabilityKind.CLAIM_TASK_INTERPRETER:
+            binding = next(
+                binding
+                for binding in spec.tool_bindings
+                if binding.tool_id == "materialize_clarification_request"
+            )
+            binding.invoke(
+                {
+                    "source_digest": payload["decision_request"]["request_digest"],
+                    "questions": ["Which operating shift should be evaluated?"],
+                    "blocking_fields": ["operating_conditions.shift"],
+                }
+            )
+            if self.failure_after_action == "runtime_error":
+                raise RuntimeError("fixture_invoker_failed_after_tool_action")
+            if self.failure_after_action == "interrupt":
+                raise KeyboardInterrupt("fixture_interrupted_after_tool_action")
+            result = super().invoke(spec, input_text)
+            return replace(result, tool_observations=())
+        return super().invoke(spec, input_text)
+
+
 class _InterruptingAgentsSDKInvoker(_FixtureAgentsSDKInvoker):
     def __init__(self, *, interrupt_on_call: int) -> None:
         super().__init__()
@@ -1550,7 +1579,7 @@ def test_injected_tool_observation_is_refused_before_ledger_persistence(
     assert report["registered_non_spend_actions_executed"] == 0
     assert not (execution.output_dir / "observations").exists()
     assert execution.capability_results[0].to_mapping()["blockers"] == [
-        "tool_observation_contract_invalid"
+        "tool_observation_transport_mismatch"
     ]
     assert execution.invocation_manifests[0].to_mapping()["validation_status"] == "refused"
     assert execution.invocation_manifests[0].to_mapping()["action_taken"] == "none_shadow_mode"
@@ -1559,6 +1588,39 @@ def test_injected_tool_observation_is_refused_before_ledger_persistence(
     )
     assert "threshold_override" not in persisted_text
     assert "fabricated_success" not in persisted_text
+    assert replay_supervisor_run(execution.output_dir)["status"] == "replay_verified"
+
+
+@pytest.mark.parametrize("failure_after_action", [None, "runtime_error"])
+def test_blueprint_preserves_trusted_tool_audit_when_sdk_omits_or_fails(
+    tmp_path: Path,
+    failure_after_action: str | None,
+) -> None:
+    execution = TaskEvaluationSupervisor(
+        agents_sdk_invoker=_OmittedObservationAfterActionInvoker(
+            failure_after_action=failure_after_action
+        )
+    ).run(
+        _context(),
+        output_dir=tmp_path / f"lost-tool-observation-{failure_after_action}",
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        generated_at="2026-07-29T12:00:00+00:00",
+    )
+
+    report = execution.report.to_mapping()
+    assert report["status"] == "blocked"
+    assert report["proof_state_mutated_by_agent"] is False
+    assert report["registered_non_spend_actions_executed"] == 1
+    observations = sorted((execution.output_dir / "observations").glob("*.json"))
+    assert len(observations) == 1
+    observation = json.loads(observations[0].read_text(encoding="utf-8"))
+    assert observation["tool_id"] == "materialize_clarification_request"
+    assert observation["status"] == "completed"
+    claim_result = execution.capability_results[0].to_mapping()
+    assert claim_result["blockers"] == ["tool_observation_transport_mismatch"]
+    claim_invocation = execution.invocation_manifests[0].to_mapping()
+    assert claim_invocation["validation_status"] == "refused"
+    assert claim_invocation["action_taken"] == "registered_non_spend_actions_executed"
     assert replay_supervisor_run(execution.output_dir)["status"] == "replay_verified"
 
 
@@ -1915,6 +1977,41 @@ def test_interrupted_sdk_supervisor_resumes_only_uncommitted_capabilities(
     assert execution.report.to_mapping()["event_count"] == 11
 
 
+def test_interrupted_tool_action_is_recovered_into_audited_resume(tmp_path: Path) -> None:
+    output = tmp_path / "interrupted-tool-action"
+    with pytest.raises(KeyboardInterrupt, match="fixture_interrupted_after_tool_action"):
+        TaskEvaluationSupervisor(
+            agents_sdk_invoker=_OmittedObservationAfterActionInvoker(
+                failure_after_action="interrupt"
+            )
+        ).run(
+            _context(),
+            output_dir=output,
+            mode=AutonomyMode.EXECUTE_NON_SPEND,
+            generated_at="2026-07-29T12:00:00+00:00",
+        )
+
+    observations = sorted((output / "observations").glob("*.json"))
+    assert len(observations) == 1
+    assert json.loads(observations[0].read_text(encoding="utf-8"))["tool_id"] == (
+        "materialize_clarification_request"
+    )
+
+    execution = TaskEvaluationSupervisor(agents_sdk_invoker=_FixtureAgentsSDKInvoker()).run(
+        _context(),
+        output_dir=output,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        generated_at="2026-07-29T12:00:00+00:00",
+    )
+    report = execution.report.to_mapping()
+    assert report["status"] == "blocked"
+    assert report["registered_non_spend_actions_executed"] == 1
+    assert execution.capability_results[0].to_mapping()["blockers"] == [
+        "tool_observation_transport_mismatch"
+    ]
+    assert replay_supervisor_run(output)["status"] == "replay_verified"
+
+
 def test_capture_build_alone_enters_required_supervisor_idempotently(
     tmp_path: Path,
 ) -> None:
@@ -2199,6 +2296,12 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     with pytest.raises(ValueError, match="tool_registry_manifest_mismatch"):
         replay_supervisor_run(execution.output_dir)
     tool_manifest_path.write_text(json.dumps(tool_manifest), encoding="utf-8")
+
+    unreferenced_observation = execution.output_dir / "observations" / "unreferenced.json"
+    unreferenced_observation.write_text(observations[0].read_text(encoding="utf-8"))
+    with pytest.raises(ValueError, match="tool_observation_inventory_mismatch"):
+        replay_supervisor_run(execution.output_dir)
+    unreferenced_observation.unlink()
 
     tampered_leaf = dict(generated_leaf)
     tampered_leaf["run_id"] = "tampered-leaf-run"

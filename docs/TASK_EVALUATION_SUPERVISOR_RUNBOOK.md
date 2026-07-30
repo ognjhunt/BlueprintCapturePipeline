@@ -204,6 +204,13 @@ tool version, mutability, runtime identity, output digest, cost, and retry
 limits. Unknown or injected fields are refused before ledger persistence.
 Replay does not ask a current model to regenerate prose.
 
+Blueprint durably records a trusted observation inside the run from the
+registered tool binding before control returns to the SDK adapter. If the
+adapter later omits, changes, or loses that observation—or the process is
+interrupted—treat the specialist result as compromised, but do not erase the
+action: resume revalidates the staged observation, and it remains counted and
+replayable.
+
 The deterministic customer report must identify the original question,
 validated interpretation, claims, evidence, attempted/failed/skipped methods,
 agent recommendations, deterministic validations, spend/runtime, outcome,

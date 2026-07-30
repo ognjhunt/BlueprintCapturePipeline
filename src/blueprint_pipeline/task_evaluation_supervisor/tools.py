@@ -899,6 +899,7 @@ def non_spend_tool_bindings(
     context: Any,
     registry: ToolRegistry,
     authority: Mapping[str, Any],
+    observation_sink: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> tuple[RegisteredToolBinding, ...]:
     """Bind only capability-scoped read tools in execute_non_spend mode."""
 
@@ -1003,13 +1004,16 @@ def non_spend_tool_bindings(
             observation["observation_digest"] = canonical_digest(
                 observation, digest_field="observation_digest"
             )
-            return validate_tool_observation_binding(
+            validated_observation = validate_tool_observation_binding(
                 observation,
                 run_id=context.run_id,
                 capability=capability,
                 registry=registry,
                 authority=validated_authority,
             )
+            if observation_sink is not None:
+                observation_sink(validated_observation)
+            return validated_observation
 
         bindings.append(
             RegisteredToolBinding(

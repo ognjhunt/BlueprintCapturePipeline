@@ -927,6 +927,40 @@ class TaskEvaluationSupervisor:
                     )
                     validation_status = "refused"
                     run_blockers.append(f"capability_blocked:{capability.kind.value}")
+                tool_observation_integrity_status = invocation_metadata.get(
+                    "tool_observation_integrity_status"
+                )
+                if tool_observation_integrity_status not in {
+                    None,
+                    "matched",
+                    "invoker_failed_before_tool_execution",
+                }:
+                    result = CapabilityResult.from_mapping(
+                        {
+                            "schema_version": "task_evaluation_supervisor_capability_result.v1",
+                            "result_id": f"{context.run_id}-{capability.kind.value}",
+                            "run_id": context.run_id,
+                            "capability": capability.kind.value,
+                            "status": "blocked",
+                            "artifact": {
+                                "schema_version": (
+                                    "supervisor_tool_observation_transport_refusal.v1"
+                                ),
+                                "integrity_status": tool_observation_integrity_status,
+                                "raw_adapter_tool_result_recorded": False,
+                                "trusted_tool_observations_preserved": bool(tool_observations),
+                            },
+                            "proposals": [],
+                            "proposal_dispositions": [],
+                            "blockers": ["tool_observation_transport_mismatch"],
+                            "evidence_refs": [],
+                            "authoritative": False,
+                            "proof_booleans_mutable": False,
+                            "proof_effect": "none",
+                        }
+                    )
+                    validation_status = "refused"
+                    run_blockers.append(f"capability_blocked:{capability.kind.value}")
                 result_value = result.to_mapping()
                 result_value["structured_observations"] = [
                     {
