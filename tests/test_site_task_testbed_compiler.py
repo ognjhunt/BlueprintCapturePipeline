@@ -4,6 +4,7 @@ import copy
 import hmac
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -33,6 +34,19 @@ from blueprint_pipeline.task_candidate_discovery import compile_approved_task_de
 SHA_A = "sha256:" + "a" * 64
 SHA_B = "sha256:" + "b" * 64
 SHA_C = "sha256:" + "c" * 64
+
+
+def _beta_fixture(case_id: str) -> dict:
+    matrix = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "tests"
+            / "fixtures"
+            / "design_partner_beta_v1"
+            / "fixture_matrix.json"
+        ).read_text(encoding="utf-8")
+    )
+    return next(row for row in matrix["cases"] if row["case_id"] == case_id)
 
 
 def _envelope() -> dict:
@@ -446,6 +460,8 @@ def test_compiled_testbed_unlocks_provider_neutral_decision_request() -> None:
 
 
 def test_compiler_rejects_stale_capture_reconstruction_and_unaccepted_qa() -> None:
+    fixture = _beta_fixture("stale_reconstruction_wrong_source_digest")
+    assert fixture["source_capture_digest_matches"] is False
     envelope = _envelope()
     qa = _qa(envelope)
     plan = _plan(qa)
@@ -478,6 +494,7 @@ def test_compiler_rejects_stale_capture_reconstruction_and_unaccepted_qa() -> No
         )
     assert "capture_qa_report:not_accepted" in exc_info.value.errors
     assert "reconstruction_results[0]:capture_digest_mismatch" in exc_info.value.errors
+    assert fixture["expected_blocker"] == "source_capture_digest_mismatch"
     assert "reconstruction_results[0]:output_not_selected_in_plan" in exc_info.value.errors
     assert "robot_placement_result:robot_binding_digest_mismatch" in exc_info.value.errors
 

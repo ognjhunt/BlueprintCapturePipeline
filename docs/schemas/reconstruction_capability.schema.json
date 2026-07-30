@@ -86,13 +86,61 @@
           "items": {
             "type": "object",
             "required": ["mask_reference"],
-            "properties": {"mask_reference": {"type": "string", "minLength": 1}},
+            "properties": {
+              "region_id": {"type": "string", "minLength": 1},
+              "mask_reference": {"type": "string", "minLength": 1},
+              "intersects_planned_trajectory": {"type": "boolean"}
+            },
             "additionalProperties": true
           }
+        },
+        "generated_trajectory_intersection": {
+          "type": "object",
+          "required": ["intersects_planned_trajectory", "region_ids", "physics_use_allowed"],
+          "properties": {
+            "intersects_planned_trajectory": {"const": true},
+            "region_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "physics_use_allowed": {"const": false}
+          },
+          "additionalProperties": false
+        },
+        "next_cheapest_experiment": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": [
+                "targeted_recapture",
+                "owner_measurement",
+                "verified_asset",
+                "targeted_physical_evidence",
+                "abstention",
+                "targeted_recapture_or_verified_asset"
+              ]
+            }
+          },
+          "additionalProperties": true
         },
         "cost_usd": {"type": "number", "minimum": 0},
         "duration_seconds": {"type": "number", "minimum": 0}
       },
+      "allOf": [{
+        "if": {
+          "properties": {
+            "generated_regions": {
+              "contains": {
+                "type": "object",
+                "properties": {"intersects_planned_trajectory": {"const": true}},
+                "required": ["intersects_planned_trajectory"]
+              }
+            }
+          },
+          "required": ["generated_regions"]
+        },
+        "then": {
+          "required": ["generated_trajectory_intersection", "next_cheapest_experiment"]
+        }
+      }],
       "additionalProperties": true
     },
     "simready_decision": {

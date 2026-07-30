@@ -405,6 +405,41 @@ def normalize_reconstruction_result(value: Mapping[str, Any]) -> dict[str, Any]:
     if generated and any(item in outputs for item in GENERATED_FORBIDDEN_CLAIM_OUTPUTS):
         if result.get("claim_ceiling", {}).get("generated_regions_excluded_from_physics") is not True:
             errors.append("generated_regions:physics_exclusion_required")
+    trajectory_intersections = [
+        row for row in generated if row.get("intersects_planned_trajectory") is True
+    ]
+    if trajectory_intersections:
+        if any(item in outputs for item in GENERATED_FORBIDDEN_CLAIM_OUTPUTS):
+            errors.append("generated_regions:trajectory_intersection_forbids_physics_output")
+        claim_ceiling = result.get("claim_ceiling")
+        if isinstance(claim_ceiling, dict):
+            if claim_ceiling.get("trajectory_clearance_established") is True:
+                errors.append("generated_regions:trajectory_clearance_claim_forbidden")
+            claim_ceiling["trajectory_clearance_established"] = False
+            claim_ceiling["generated_trajectory_intersection_physics_use"] = False
+        next_experiment = result.get("next_cheapest_experiment")
+        allowed_experiments = {
+            "targeted_recapture",
+            "owner_measurement",
+            "verified_asset",
+            "targeted_physical_evidence",
+            "abstention",
+            "targeted_recapture_or_verified_asset",
+        }
+        if (
+            not isinstance(next_experiment, Mapping)
+            or _text(next_experiment.get("kind")) not in allowed_experiments
+        ):
+            errors.append("generated_regions:trajectory_intersection_experiment_required")
+        result["generated_trajectory_intersection"] = {
+            "intersects_planned_trajectory": True,
+            "region_ids": sorted(
+                _text(row.get("region_id"))
+                for row in trajectory_intersections
+                if _text(row.get("region_id"))
+            ),
+            "physics_use_allowed": False,
+        }
     cost = _number(result.get("cost_usd"))
     duration = _number(result.get("duration_seconds"))
     if cost is None:

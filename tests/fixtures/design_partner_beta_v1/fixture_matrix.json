@@ -1,0 +1,157 @@
+{
+  "schema_version": "design_partner_beta_fixture_matrix.v1",
+  "fixture_set_id": "controlled-design-partner-beta-v1",
+  "synthetic_or_redacted_only": true,
+  "real_capture_gate_satisfied": false,
+  "comparative_policy_ranking_verdict": "thesis_not_supported",
+  "cases": [
+    {
+      "case_id": "complete_iphone_arkit_lidar_bundle",
+      "category": "capture_intake",
+      "capture_authority_profile": "iphone_arkit_lidar",
+      "available_streams": ["retained_video", "decoded_video_pts", "frame_retention_mapping", "camera_poses", "camera_intrinsics", "depth", "depth_confidence", "tracking_state", "coordinate_frame_semantics", "motion"],
+      "expected_state": "capture_accepted",
+      "expected_metric_authority": true
+    },
+    {
+      "case_id": "iphone_encoder_frame_sync_omissions",
+      "category": "capture_intake",
+      "capture_authority_profile": "iphone_arkit_lidar",
+      "available_streams": ["retained_video", "camera_poses", "camera_intrinsics", "depth", "depth_confidence", "tracking_state", "coordinate_frame_semantics", "motion"],
+      "expected_state": "rejected_or_recapture_required",
+      "expected_missing_evidence": ["decoded_video_pts", "frame_retention_mapping"]
+    },
+    {
+      "case_id": "supported_360_equirectangular_metadata",
+      "category": "capture_intake",
+      "capture_authority_profile": "camera_360_equirectangular",
+      "available_streams": ["retained_video", "camera_metadata"],
+      "expected_state": "capture_accepted",
+      "expected_metric_authority": false
+    },
+    {
+      "case_id": "360_without_scale_evidence",
+      "category": "capture_intake",
+      "capture_authority_profile": "camera_360_equirectangular",
+      "available_streams": ["retained_video", "camera_metadata"],
+      "scale_anchor_verified": false,
+      "expected_state": "capture_accepted",
+      "expected_metric_authority": false,
+      "next_cheapest_experiment": "include_metric_calibration_board_or_owner_measurement"
+    },
+    {
+      "case_id": "ordinary_monocular_video",
+      "category": "capture_intake",
+      "capture_authority_profile": "monocular_video",
+      "available_streams": ["retained_video"],
+      "expected_state": "capture_accepted",
+      "expected_metric_authority": false
+    },
+    {
+      "case_id": "privacy_restricted_capture",
+      "category": "governance",
+      "capture_authority_profile": "camera_360_equirectangular",
+      "available_streams": ["retained_video", "camera_metadata"],
+      "privacy": "restricted_local_only",
+      "external_processing_allowed": false,
+      "permitted_reconstruction_providers": ["local_only"],
+      "expected_external_provider_execution": false
+    },
+    {
+      "case_id": "provider_forbidden_capture",
+      "category": "governance",
+      "capture_authority_profile": "camera_360_equirectangular",
+      "available_streams": ["retained_video", "camera_metadata"],
+      "external_processing_allowed": false,
+      "permitted_reconstruction_providers": ["external-provider-forbidden"],
+      "expected_state": "failed",
+      "expected_blocker": "provider_restriction_conflict"
+    },
+    {
+      "case_id": "low_overlap_or_blurred_capture",
+      "category": "capture_qa",
+      "capture_authority_profile": "camera_360_equirectangular",
+      "available_streams": ["retained_video", "camera_metadata"],
+      "sharp_frame_fraction": 0.2,
+      "visual_overlap_fraction": 0.3,
+      "expected_state": "rejected_or_recapture_required",
+      "expected_recapture_codes": ["excessive_blur", "low_visual_overlap"]
+    },
+    {
+      "case_id": "generated_only_gap_intersects_trajectory",
+      "category": "reconstruction",
+      "generated_region_mask_intersects_trajectory": true,
+      "expected_physics_use": false,
+      "expected_next_experiment": "targeted_recapture_or_verified_asset"
+    },
+    {
+      "case_id": "valid_external_reconstruction_import",
+      "category": "reconstruction",
+      "source_capture_digest_matches": true,
+      "provider_profile_bound": true,
+      "expected_raw_capture_authority_upgrade": false
+    },
+    {
+      "case_id": "stale_reconstruction_wrong_source_digest",
+      "category": "reconstruction",
+      "source_capture_digest_matches": false,
+      "expected_state": "failed",
+      "expected_blocker": "source_capture_digest_mismatch"
+    },
+    {
+      "case_id": "unqualified_simready_asset",
+      "category": "simready",
+      "asset_required_for_claim": true,
+      "independent_physics_qualification": false,
+      "expected_physics_use": false
+    },
+    {
+      "case_id": "robot_placement_outside_captured_coverage",
+      "category": "robot_placement",
+      "placement_area_covered": false,
+      "expected_verdict": "abstention",
+      "expected_next_experiment": "capture_robot_placement_area"
+    },
+    {
+      "case_id": "inferred_task_awaiting_approval",
+      "category": "task_intent",
+      "intent_source": "model_inferred_candidate",
+      "approval_state": "task_approval_required",
+      "decision_evidence_request_allowed": false
+    },
+    {
+      "case_id": "explicit_customer_task",
+      "category": "task_intent",
+      "intent_source": "customer_supplied",
+      "thresholds_and_units_present": true,
+      "approval_state": "approved",
+      "decision_evidence_request_allowed": true
+    },
+    {
+      "case_id": "full_decision",
+      "category": "decision",
+      "overall_outcome": "decision",
+      "next_cheapest_experiment_present": true
+    },
+    {
+      "case_id": "partial_decision",
+      "category": "decision",
+      "overall_outcome": "partial_decision",
+      "next_cheapest_experiment_present": true
+    },
+    {
+      "case_id": "explicit_abstention",
+      "category": "decision",
+      "overall_outcome": "abstention",
+      "next_cheapest_experiment_present": true
+    },
+    {
+      "case_id": "physical_evidence_request",
+      "category": "decision",
+      "claim_type": "deployment_readiness",
+      "expected_verdict": "abstention",
+      "physical_evidence_request_present": true,
+      "deployment_approval": false
+    }
+  ]
+}

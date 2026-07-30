@@ -21,6 +21,19 @@ SHA_B = "sha256:" + "b" * 64
 SHA_C = "sha256:" + "c" * 64
 
 
+def _beta_fixture(case_id: str) -> dict:
+    matrix = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "tests"
+            / "fixtures"
+            / "design_partner_beta_v1"
+            / "fixture_matrix.json"
+        ).read_text(encoding="utf-8")
+    )
+    return next(row for row in matrix["cases"] if row["case_id"] == case_id)
+
+
 def _source_capture() -> dict:
     return {
         "intake_id": "intake-1",
@@ -144,11 +157,14 @@ def _approve(discovery: dict) -> tuple[dict, dict]:
 
 
 def test_discovery_is_deterministic_and_keeps_observation_and_inference_separate() -> None:
+    fixture = _beta_fixture("inferred_task_awaiting_approval")
     first = _discovery()
     second = _discovery()
 
     assert first == second
     assert first["approval_state"] == "task_approval_required"
+    assert first["approval_state"] == fixture["approval_state"]
+    assert fixture["decision_evidence_request_allowed"] is False
     candidate = first["task_candidates"][0]
     assert candidate["confidence"] == 0.99
     assert candidate["approval_status"] == "approval_required"
@@ -246,6 +262,7 @@ def test_candidate_observed_objects_must_bind_direct_observation_facts() -> None
 
 
 def test_customer_supplied_task_requires_explicit_thresholds_and_units() -> None:
+    fixture = _beta_fixture("explicit_customer_task")
     task = {
         "description": "Place the tote inside the marked box.",
         "task_family": "rigid_object_pick_place",
@@ -263,6 +280,9 @@ def test_customer_supplied_task_requires_explicit_thresholds_and_units() -> None
 
     assert receipt["schema_version"] == "customer_supplied_task_receipt.v1"
     assert approved["intent_source"] == "customer_supplied"
+    assert approved["intent_source"] == fixture["intent_source"]
+    assert fixture["thresholds_and_units_present"] is True
+    assert fixture["decision_evidence_request_allowed"] is True
     assert approved["task"] == task
 
     invalid = copy.deepcopy(task)

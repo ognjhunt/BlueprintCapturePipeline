@@ -22,6 +22,19 @@ SHA_B = "sha256:" + "b" * 64
 SHA_C = "sha256:" + "c" * 64
 
 
+def _beta_fixture(case_id: str) -> dict:
+    matrix = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "tests"
+            / "fixtures"
+            / "design_partner_beta_v1"
+            / "fixture_matrix.json"
+        ).read_text(encoding="utf-8")
+    )
+    return next(row for row in matrix["cases"] if row["case_id"] == case_id)
+
+
 def _method(
     method_id: str,
     kind: str,
@@ -243,7 +256,58 @@ def test_reconstruction_result_requires_generated_region_masks_and_physics_exclu
         normalize_reconstruction_result(stale_digest)
 
 
+def test_generated_only_trajectory_intersection_forces_next_experiment_and_no_physics() -> None:
+    fixture = _beta_fixture("generated_only_gap_intersects_trajectory")
+    assert fixture["generated_region_mask_intersects_trajectory"] is True
+    intersecting = _reconstruction_result()
+    intersecting["generated_regions"] = [{
+        "region_id": "hidden-rear",
+        "mask_reference": "fixture://generated-mask",
+        "intersects_planned_trajectory": True,
+    }]
+    intersecting["next_cheapest_experiment"] = {
+        "kind": fixture["expected_next_experiment"],
+        "instructions": "Capture the hidden rear or provide a verified owner asset.",
+    }
+    normalized = normalize_reconstruction_result(intersecting)
+    assert normalized["generated_trajectory_intersection"] == {
+        "intersects_planned_trajectory": True,
+        "region_ids": ["hidden-rear"],
+        "physics_use_allowed": False,
+    }
+    assert normalized["claim_ceiling"]["trajectory_clearance_established"] is False
+    assert normalized["claim_ceiling"]["generated_trajectory_intersection_physics_use"] is False
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs"
+            / "schemas"
+            / "reconstruction_capability.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.Draft202012Validator(schema).validate(normalized)
+
+    unsafe = copy.deepcopy(intersecting)
+    unsafe["outputs"] = ["appearance_layer", "collision_geometry"]
+    unsafe["claim_ceiling"]["generated_regions_excluded_from_physics"] = True
+    with pytest.raises(
+        ReconstructionContractError,
+        match="trajectory_intersection_forbids_physics_output",
+    ):
+        normalize_reconstruction_result(unsafe)
+
+    missing_experiment = copy.deepcopy(intersecting)
+    missing_experiment.pop("next_cheapest_experiment")
+    with pytest.raises(
+        ReconstructionContractError,
+        match="trajectory_intersection_experiment_required",
+    ):
+        normalize_reconstruction_result(missing_experiment)
+
+
 def test_simready_is_per_object_per_claim_and_generated_assets_do_not_self_qualify() -> None:
+    fixture = _beta_fixture("unqualified_simready_asset")
+    assert fixture["asset_required_for_claim"] is True
     visual_only = decide_simready_assets(
         approved_task_digest=SHA_B,
         capture_digest=SHA_A,
@@ -271,6 +335,7 @@ def test_simready_is_per_object_per_claim_and_generated_assets_do_not_self_quali
     )
     assert physics["status"] == "blocked_missing_asset"
     assert physics["object_decisions"][0]["rejected_asset_digests"] == [SHA_C]
+    assert fixture["expected_physics_use"] is False
 
     independently_verified = decide_simready_assets(
         approved_task_digest=SHA_B,
@@ -368,6 +433,8 @@ def test_robot_placement_is_deterministic_and_coverage_aware() -> None:
 
 
 def test_robot_placement_abstains_and_requests_capture_when_no_candidate_is_covered() -> None:
+    fixture = _beta_fixture("robot_placement_outside_captured_coverage")
+    assert fixture["placement_area_covered"] is False
     result = score_robot_placements(
         robot_binding=_robot_binding(),
         approved_task_digest=SHA_B,
@@ -378,6 +445,7 @@ def test_robot_placement_abstains_and_requests_capture_when_no_candidate_is_cove
     )
 
     assert result["status"] == "abstained"
+    assert fixture["expected_verdict"] == "abstention"
     assert result["next_cheapest_experiment"]["kind"] == "targeted_recapture_or_measurement"
 
 
