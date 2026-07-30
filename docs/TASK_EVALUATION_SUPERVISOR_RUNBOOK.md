@@ -147,6 +147,14 @@ reconstruction qualification. Paid image build or GPU execution must separately
 pass the canonical shared allocator with exact budget, TTL, retries, clean SHA,
 worker-image, watchdog, teardown, and provider-zero receipts.
 
+The registered Phase 5 sequence is `compile_metric_geometry` →
+`compile_collision_candidate` → `qualify_collision_candidate` →
+`package_nurec_openusd` → `verify_isaac_asset`. Every call accepts only the
+immutable predecessor or request digest. Missing injected executors omit the
+tool from the live SDK surface; mismatched digests, malformed results, altered
+lineage, self-issued collision validity, or inflated Isaac claims are refused
+and preserved as typed tool failures.
+
 Clarification responses and authorization grants are separate receipts created
 at trusted customer/operator boundaries. Agent output never satisfies its own
 request. Every accepted response is revalidated by deterministic contracts.

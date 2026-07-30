@@ -65,6 +65,18 @@ class SupervisorContext:
     pose_estimator: Any | None = None
     reconstruction_training_request: Mapping[str, Any] | None = None
     gaussian_reconstruction_trainer: Any | None = None
+    # Phase 5 request/source artifacts and executors remain trusted runtime
+    # state. The SDK receives only the registered immutable digest.
+    metric_geometry_source: Mapping[str, Any] | None = None
+    metric_geometry_compiler: Any | None = None
+    metric_geometry_manifest: Mapping[str, Any] | None = None
+    collision_candidate_compiler: Any | None = None
+    collider_candidate_manifest: Mapping[str, Any] | None = None
+    collision_candidate_qualifier: Any | None = None
+    nurec_packaging_request: Mapping[str, Any] | None = None
+    nurec_openusd_packager: Any | None = None
+    isaac_verification_request: Mapping[str, Any] | None = None
+    isaac_asset_verifier: Any | None = None
 
 
 class SupervisorCapability(Protocol):

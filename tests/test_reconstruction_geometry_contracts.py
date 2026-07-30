@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_geometry_contracts import (
     ReconstructionGeometryContractError,
     build_collider_candidate_manifest,
@@ -10,6 +11,10 @@ from blueprint_pipeline.reconstruction_geometry_contracts import (
     build_metric_geometry_manifest,
     build_nurec_openusd_packaging_result,
 )
+from blueprint_pipeline.task_evaluation_supervisor.capabilities import SupervisorContext
+from blueprint_pipeline.task_evaluation_supervisor.contracts import AutonomyMode
+from blueprint_pipeline.task_evaluation_supervisor.supervisor import default_authority_envelope
+from blueprint_pipeline.task_evaluation_supervisor.tools import ToolRegistry, non_spend_tool_bindings
 
 
 D = ["sha256:" + str(i) * 64 for i in range(1, 7)]
@@ -216,3 +221,94 @@ def test_isaac_verification_requires_render_and_active_collision_without_claim_p
                 claim_ceiling="isaac_load_render_compatibility",
             )
         )
+
+
+def test_phase5_tools_are_registered_digest_only_and_metric_runtime_cannot_change_proof(tmp_path):
+    registry = ToolRegistry.default()
+    expected = {
+        "compile_metric_geometry": "source_artifact_digest",
+        "compile_collision_candidate": "metric_geometry_manifest_digest",
+        "qualify_collision_candidate": "collider_candidate_manifest_digest",
+        "package_nurec_openusd": "packaging_request_digest",
+        "verify_isaac_asset": "isaac_verification_request_digest",
+    }
+    for tool_id, field in expected.items():
+        descriptor = registry.resolve(tool_id)
+        assert descriptor is not None
+        assert set(descriptor.to_mapping()["input_schema"]["properties"]) == {field}
+
+    source = {"source_artifact_digest": D[0]}
+
+    def compiler(*, source_artifact, output_root):
+        assert source_artifact == source
+        assert output_root.name == "compile_metric_geometry"
+        return _metric()
+
+    context = SupervisorContext(
+        run_id="metric-geometry-tool",
+        customer_question="Compile metric geometry",
+        supervisor_output_dir=str(tmp_path),
+        metric_geometry_source=source,
+        metric_geometry_compiler=compiler,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[D[0]],
+    ).to_mapping()
+    bindings = {
+        item.tool_id: item
+        for item in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+    }
+    observation = bindings["compile_metric_geometry"].invoke(
+        {"source_artifact_digest": D[0]}
+    )
+    assert observation["status"] == "completed"
+    assert observation["typed_result"]["claim_ceiling"] == "metric_reference_geometry"
+    assert observation["typed_result"]["proof_state_changed"] is False
+    assert observation["proof_effect"] == "none"
+
+
+def test_phase5_request_tools_refuse_tampered_request_digest(tmp_path):
+    request = {"packaging_result_digest": D[0]}
+    request["isaac_verification_request_digest"] = canonical_digest(
+        request, digest_field="isaac_verification_request_digest"
+    )
+
+    def verifier(**_kwargs):
+        raise AssertionError("tampered request must stop before runtime")
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="isaac-request-binding",
+        customer_question="Verify Isaac package",
+        supervisor_output_dir=str(tmp_path),
+        isaac_verification_request=request,
+        isaac_asset_verifier=verifier,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[D[0]],
+    ).to_mapping()
+    bindings = {
+        item.tool_id: item
+        for item in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+    }
+    refused = bindings["verify_isaac_asset"].invoke(
+        {"isaac_verification_request_digest": D[1]}
+    )
+    assert refused["status"] == "refused"
+    assert "source_digest_mismatch" in refused["typed_failure"]["reason"]

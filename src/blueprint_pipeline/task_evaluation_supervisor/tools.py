@@ -16,6 +16,13 @@ from ..common import write_json
 from ..decision_evidence_contracts import canonical_digest
 from ..decision_evidence_router import route_decision_evidence
 from ..evaluation_run_contract import validate_evaluation_run_spec
+from ..reconstruction_geometry_contracts import (
+    build_collider_candidate_manifest,
+    build_collider_qualification_report,
+    build_isaac_asset_verification_result,
+    build_metric_geometry_manifest,
+    build_nurec_openusd_packaging_result,
+)
 from ..reconstruction_worker_contracts import (
     build_pose_estimation_request,
     build_pose_estimation_result,
@@ -143,6 +150,48 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "heldout_labels_included": {"const": False},
             "candidate_self_graded": {"const": False},
             "claim_ceiling": {"const": "appearance_reconstruction"},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "compile_metric_geometry": _output_schema(
+        {
+            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "artifact_digest": {"type": "string"},
+            "claim_ceiling": {"const": "metric_reference_geometry"},
+            "decision": {}, "proof_state_changed": {"const": False},
+        }
+    ),
+    "compile_collision_candidate": _output_schema(
+        {
+            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "artifact_digest": {"type": "string"},
+            "claim_ceiling": {"const": "collision_geometry_candidate"},
+            "decision": {}, "proof_state_changed": {"const": False},
+        }
+    ),
+    "qualify_collision_candidate": _output_schema(
+        {
+            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "artifact_digest": {"type": "string"},
+            "claim_ceiling": {"const": "bounded_navigation_simulation"},
+            "decision": {"enum": ["accepted_bounded_navigation", "rejected"]},
+            "proof_state_changed": {"const": False},
+        }
+    ),
+    "package_nurec_openusd": _output_schema(
+        {
+            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "artifact_digest": {"type": "string"},
+            "claim_ceiling": {"const": "openusd_package"},
+            "decision": {}, "proof_state_changed": {"const": False},
+        }
+    ),
+    "verify_isaac_asset": _output_schema(
+        {
+            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "artifact_digest": {"type": "string"},
+            "claim_ceiling": {"const": "isaac_load_render_compatibility"},
+            "decision": {"const": "verified_compatibility_only"},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -410,6 +459,46 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
             minimum_mode="execute_non_spend",
             timeout_seconds=14_400.0,
+        ),
+        _descriptor(
+            "compile_metric_geometry", "capture_reconstruction_metric_geometry",
+            expected_artifacts=["metric_geometry_manifest.v1"],
+            input_properties={"source_artifact_digest": {"type": "string"}},
+            required_inputs=["source_artifact_digest"], mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend", timeout_seconds=3_600.0,
+        ),
+        _descriptor(
+            "compile_collision_candidate", "capture_reconstruction_collision",
+            expected_artifacts=["mesh_collider_candidate_manifest.v1"],
+            input_properties={"metric_geometry_manifest_digest": {"type": "string"}},
+            required_inputs=["metric_geometry_manifest_digest"], mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend", timeout_seconds=3_600.0,
+        ),
+        _descriptor(
+            "qualify_collision_candidate", "capture_reconstruction_collision_qa",
+            expected_artifacts=["collider_qualification_report.v1"],
+            input_properties={"collider_candidate_manifest_digest": {"type": "string"}},
+            required_inputs=["collider_candidate_manifest_digest"], mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend", timeout_seconds=1_800.0,
+        ),
+        _descriptor(
+            "package_nurec_openusd", "capture_reconstruction_packaging",
+            expected_artifacts=["nurec_openusd_packaging_result.v1"],
+            input_properties={"packaging_request_digest": {"type": "string"}},
+            required_inputs=["packaging_request_digest"], mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend", timeout_seconds=3_600.0,
+        ),
+        _descriptor(
+            "verify_isaac_asset", "capture_reconstruction_isaac_verification",
+            expected_artifacts=["isaac_asset_verification_result.v1"],
+            input_properties={"isaac_verification_request_digest": {"type": "string"}},
+            required_inputs=["isaac_verification_request_digest"], mutability="reversible_mutation",
+            allowed_modes=["execute_non_spend", "execute_preauthorized"],
+            minimum_mode="execute_non_spend", timeout_seconds=7_200.0,
         ),
         _descriptor(
             "validate_proposed_claim_graph",
@@ -799,6 +888,11 @@ _CAPABILITY_TOOL_IDS: dict[str, tuple[str, ...]] = {
         "compile_equirectangular_virtual_rig",
         "run_pose_estimation",
         "train_gaussian_reconstruction",
+        "compile_metric_geometry",
+        "compile_collision_candidate",
+        "qualify_collision_candidate",
+        "package_nurec_openusd",
+        "verify_isaac_asset",
         "propose_targeted_recapture",
     ),
     "evaluation_method_router": (
@@ -1581,6 +1675,92 @@ def _train_gaussian_reconstruction(
     ]
 
 
+_GEOMETRY_TOOL_CONFIG = {
+    "compile_metric_geometry": (
+        "metric_geometry_source", "metric_geometry_compiler", "source_artifact_digest",
+        build_metric_geometry_manifest, "metric_geometry_manifest_digest",
+        "metric_geometry_manifest.v1", "metric_reference_geometry", None,
+    ),
+    "compile_collision_candidate": (
+        "metric_geometry_manifest", "collision_candidate_compiler",
+        "metric_geometry_manifest_digest", build_collider_candidate_manifest,
+        "collider_candidate_manifest_digest", "mesh_collider_candidate_manifest.v1",
+        "collision_geometry_candidate", None,
+    ),
+    "qualify_collision_candidate": (
+        "collider_candidate_manifest", "collision_candidate_qualifier",
+        "collider_candidate_manifest_digest", build_collider_qualification_report,
+        "collider_qualification_digest", "collider_qualification_report.v1",
+        "bounded_navigation_simulation", "decision",
+    ),
+    "package_nurec_openusd": (
+        "nurec_packaging_request", "nurec_openusd_packager", "packaging_request_digest",
+        build_nurec_openusd_packaging_result, "packaging_result_digest",
+        "nurec_openusd_packaging_result.v1", "openusd_package", None,
+    ),
+    "verify_isaac_asset": (
+        "isaac_verification_request", "isaac_asset_verifier",
+        "isaac_verification_request_digest", build_isaac_asset_verification_result,
+        "isaac_verification_result_digest", "isaac_asset_verification_result.v1",
+        "isaac_load_render_compatibility", "status",
+    ),
+}
+
+
+def _execute_geometry_contract_tool(
+    *, context: Any, tool_id: str, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    root_value = getattr(context, "supervisor_output_dir", None)
+    if not isinstance(root_value, str) or not root_value:
+        raise ValueError(f"registered_tool_execution_scope_missing:{tool_id}")
+    source_attr, runtime_attr, digest_field, builder, result_digest_field, artifact_type, ceiling, decision_field = _GEOMETRY_TOOL_CONFIG[tool_id]
+    source = getattr(context, source_attr, None)
+    runtime = getattr(context, runtime_attr, None)
+    if not isinstance(source, Mapping) or not callable(runtime):
+        raise ValueError(f"registered_tool_runtime_not_injected:{tool_id}")
+    expected = arguments.get(digest_field)
+    actual = source.get(digest_field)
+    if not isinstance(actual, str) or expected != actual:
+        raise ValueError(f"registered_tool_source_digest_mismatch:{tool_id}")
+    if digest_field.endswith("request_digest") and actual != canonical_digest(
+        source, digest_field=digest_field
+    ):
+        raise ValueError(f"registered_tool_request_contract_invalid:{tool_id}")
+    output_root = Path(root_value) / "generated" / tool_id
+    emitted = runtime(source_artifact=dict(source), output_root=output_root)
+    if not isinstance(emitted, Mapping):
+        raise ValueError(f"registered_tool_result_not_object:{tool_id}")
+    try:
+        result = builder(emitted)
+    except ValueError as exc:
+        raise ValueError(f"registered_tool_result_contract_invalid:{tool_id}") from exc
+    if tool_id == "compile_collision_candidate" and result.get(digest_field) != actual:
+        raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
+    if tool_id == "qualify_collision_candidate" and result.get(digest_field) != actual:
+        raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
+    if tool_id == "verify_isaac_asset" and result.get("packaging_result_digest") != source.get(
+        "packaging_result_digest"
+    ):
+        raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
+    result_digest = result[result_digest_field]
+    path = write_phase2_artifact(
+        root_value, f"generated/{tool_id}/{artifact_type}.json", result
+    )
+    decision = result.get(decision_field) if decision_field else None
+    return {
+        "contract_present": True,
+        "digest_matches": True,
+        "artifact_digest": result_digest,
+        "claim_ceiling": ceiling,
+        "decision": decision,
+        "proof_state_changed": False,
+    }, [{
+        "artifact_path": str(path.relative_to(Path(root_value))),
+        "artifact_digest": result_digest,
+        "artifact_type": artifact_type,
+    }]
+
+
 def _bound_artifact(
     context: Any,
     *,
@@ -1673,6 +1853,10 @@ def _bound_artifact(
         return _run_pose_estimation(context=context, arguments=arguments)
     elif tool_id == "train_gaussian_reconstruction":
         return _train_gaussian_reconstruction(context=context, arguments=arguments)
+    elif tool_id in _GEOMETRY_TOOL_CONFIG:
+        return _execute_geometry_contract_tool(
+            context=context, tool_id=tool_id, arguments=arguments
+        )
     elif tool_id == "compile_deterministic_evidence_plan":
         value = context.evidence_plan
         expected = arguments.get("plan_digest")
@@ -1773,6 +1957,12 @@ def non_spend_tool_bindings(
             )
         ):
             continue
+        if tool_id in _GEOMETRY_TOOL_CONFIG:
+            source_attr, runtime_attr, *_ = _GEOMETRY_TOOL_CONFIG[tool_id]
+            if not isinstance(getattr(context, source_attr, None), Mapping) or not callable(
+                getattr(context, runtime_attr, None)
+            ):
+                continue
         descriptor = registry.resolve(tool_id)
         if descriptor is None:
             raise ValueError(f"registered_non_spend_tool_missing:{tool_id}")

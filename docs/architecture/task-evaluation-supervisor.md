@@ -174,6 +174,15 @@ incompatible feature/matcher pairs, hidden-held-out access, split mutation,
 self-grading, malformed results, and untyped failures. Pose and appearance
 results remain candidates and cannot modify proof state.
 
+Phase 5 registers `compile_metric_geometry`, `compile_collision_candidate`,
+`qualify_collision_candidate`, `package_nurec_openusd`, and
+`verify_isaac_asset` using the same digest-only execution pattern. Source and
+request artifacts plus executor callables remain trusted runtime state. The
+model cannot supply paths, thresholds, calibration, package contents, Isaac
+checks, or provider handles. Each emitted artifact is revalidated and bound to
+its predecessor before it enters the ledger; the enclosing tool observation
+retains `proof_effect=none`.
+
 When no Decision/Evidence Request or maintained Site-Task Testbed exists, the
 manager first triggers claim interpretation, then capture/testbed inspection,
 and stops with a typed clarification or blocker. Scenario, routing, recovery,
