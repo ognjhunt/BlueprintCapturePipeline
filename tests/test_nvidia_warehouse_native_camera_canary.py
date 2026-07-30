@@ -306,7 +306,7 @@ def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
     calls: list[dict[str, object]] = []
 
     class Camera:
-        def set_world_pose(self, **kwargs):
+        def set_world_poses(self, **kwargs):
             calls.append(kwargs)
 
     parent_initial = _world_pose_matrix_from_backend_pose(
@@ -336,6 +336,9 @@ def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
 
     assert len(calls) == 2
     assert all(call["camera_axes"] == "usd" for call in calls)
+    assert all(call["usd"] is False for call in calls)
+    assert all(np.asarray(call["positions"]).shape == (1, 3) for call in calls)
+    assert all(np.asarray(call["orientations"]).shape == (1, 4) for call in calls)
     assert np.linalg.norm(commanded[3, :3] - initial[3, :3]) > 0.001
     assert commanded @ np.linalg.inv(parent_commanded) == pytest.approx(
         initial @ np.linalg.inv(parent_initial)
@@ -345,6 +348,20 @@ def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
         _quaternion_wxyz_from_world_pose_matrix(commanded),
     )
     assert roundtrip == pytest.approx(commanded)
+
+
+def test_world_camera_sync_rejects_stale_single_pose_usd_writer() -> None:
+    class Camera:
+        def set_world_pose(self, **_kwargs):
+            raise AssertionError("single-pose USD writer must not be used")
+
+    with pytest.raises(ValueError, match="native_wrist_camera_live_world_poses_api_missing"):
+        _synchronize_camera_to_rigid_link(
+            camera=Camera(),
+            parent_to_world=np.eye(4),
+            mount_translation_parent=[0.0, 0.1, 0.03],
+            mount_orientation_parent_wxyz=[1.0, 0.0, 0.0, 0.0],
+        )
 
 
 def test_wrist_mount_is_calibrated_once_in_parent_coordinates_toward_task_centroid() -> None:

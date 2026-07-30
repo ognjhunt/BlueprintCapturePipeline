@@ -312,13 +312,16 @@ def _synchronize_camera_to_rigid_link(
         mount_orientation_parent_wxyz,
     )
     camera_to_world = mount_to_parent @ np.asarray(parent_to_world, dtype=float).reshape(4, 4)
-    set_world_pose = getattr(camera, "set_world_pose", None)
-    if not callable(set_world_pose):
-        raise ValueError("native_wrist_camera_world_pose_api_missing")
-    set_world_pose(
-        position=camera_to_world[3, :3],
-        orientation=_quaternion_wxyz_from_world_pose_matrix(camera_to_world),
+    set_world_poses = getattr(camera, "set_world_poses", None)
+    if not callable(set_world_poses):
+        raise ValueError("native_wrist_camera_live_world_poses_api_missing")
+    set_world_poses(
+        positions=np.asarray([camera_to_world[3, :3]], dtype=float),
+        orientations=np.asarray(
+            [_quaternion_wxyz_from_world_pose_matrix(camera_to_world)], dtype=float
+        ),
         camera_axes="usd",
+        usd=False,
     )
     return camera_to_world
 
@@ -905,9 +908,10 @@ def isaac_sim_6_backend(
             "views": frames,
             "wrist_mount_calibration": wrist_mount_calibration,
             "wrist_mount_implementation": {
-                "mode": "explicit_world_sensor_sync_from_physics_link_tensor",
+                "mode": "explicit_live_backend_world_sensor_sync_from_physics_link_tensor",
                 "parent_link": "panda_hand",
                 "physics_link_pose_source": "get_link_transforms_after_update_articulations_kinematic",
+                "camera_pose_write_backend": "set_world_poses_usd_false",
                 "per_frame_task_reaim_performed": False,
             },
             "franka_render_only_joint_state": {
