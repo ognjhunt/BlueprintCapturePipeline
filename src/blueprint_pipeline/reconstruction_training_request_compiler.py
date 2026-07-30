@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import math
 import re
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .reconstruction_gaussian_trainer import bind_gaussian_reconstruction_trainer
 from .reconstruction_worker_contracts import (
     ReconstructionWorkerContractError,
     build_training_request,
@@ -326,7 +328,40 @@ def compile_reconstruction_training_request(
         ) from exc
 
 
+def compile_gaussian_training_supervisor_bindings(
+    *,
+    compiler_arguments: Mapping[str, Any],
+    dataset_export: Mapping[str, Any],
+    artifact_root: str | Path,
+    command_runner: Any | None = None,
+    python_executable: str = "/opt/venv/bin/python",
+    threedgrut_root: str | Path = "/opt/3dgrut",
+) -> dict[str, Any]:
+    """Prepare trusted context fields for the digest-only supervisor tool."""
+
+    arguments = dict(compiler_arguments)
+    compiled_dataset = arguments.get("dataset_export")
+    if not isinstance(compiled_dataset, Mapping) or canonical_json(
+        dict(compiled_dataset)
+    ) != canonical_json(dict(dataset_export)):
+        raise ReconstructionTrainingRequestCompilationError(
+            ["supervisor_training_dataset_binding_mismatch"]
+        )
+    request = compile_reconstruction_training_request(**arguments)
+    return {
+        "reconstruction_training_request": request,
+        "gaussian_reconstruction_trainer": bind_gaussian_reconstruction_trainer(
+            dataset_export=dataset_export,
+            artifact_root=artifact_root,
+            command_runner=command_runner,
+            python_executable=python_executable,
+            threedgrut_root=threedgrut_root,
+        ),
+    }
+
+
 __all__ = [
     "ReconstructionTrainingRequestCompilationError",
+    "compile_gaussian_training_supervisor_bindings",
     "compile_reconstruction_training_request",
 ]

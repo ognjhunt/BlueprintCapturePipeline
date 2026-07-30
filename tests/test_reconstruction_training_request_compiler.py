@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_training_request_compiler import (
     ReconstructionTrainingRequestCompilationError,
+    compile_gaussian_training_supervisor_bindings,
     compile_reconstruction_training_request,
 )
 from blueprint_pipeline.reconstruction_worker_contracts import (
@@ -94,10 +96,12 @@ def _dataset() -> dict:
         "camera_observation_digest": D[5],
         "initialization_surface_digest": D[6],
         "colmap_training_dataset_digest": D[7],
+        "relative_path": "candidate-colmap",
         "hidden_heldout_pixels_included": False,
         "trainer_self_grading_permitted": False,
         "raw_input_poses_modified": False,
         "observation_ids": ["frame-1", "frame-2"],
+        "rejected_observation_ids": [],
         "coordinate_frame_declaration": {"frame": "arkit-world", "units": "meters"},
         "units": "meters",
         "metric_scale_status": "sensor_metric_unvalidated",
@@ -169,23 +173,27 @@ def _authority() -> dict:
     }
 
 
-def _compile(**overrides) -> dict:
+def _compiler_arguments(**overrides) -> dict:
     stack = overrides.pop("worker_stack_manifest", _stack())
     build, smoke = _worker_receipts(stack)
-    return compile_reconstruction_training_request(
-        stable_run_identity="training-run-1",
-        capture_evidence=overrides.pop("capture_evidence", _capture()),
-        dataset_export=overrides.pop("dataset_export", _dataset()),
-        worker_stack_manifest=stack,
-        worker_build_receipt=overrides.pop("worker_build_receipt", build),
-        worker_smoke_receipt=overrides.pop("worker_smoke_receipt", smoke),
-        pose_binding=overrides.pop("pose_binding", _pose()),
-        evaluation_contract=overrides.pop("evaluation_contract", _evaluation()),
-        execution_configuration=overrides.pop("execution_configuration", _configuration()),
-        execution_authority=overrides.pop("execution_authority", _authority()),
-        timestamp="2026-07-30T23:00:00Z",
+    return {
+        "stable_run_identity": "training-run-1",
+        "capture_evidence": overrides.pop("capture_evidence", _capture()),
+        "dataset_export": overrides.pop("dataset_export", _dataset()),
+        "worker_stack_manifest": stack,
+        "worker_build_receipt": overrides.pop("worker_build_receipt", build),
+        "worker_smoke_receipt": overrides.pop("worker_smoke_receipt", smoke),
+        "pose_binding": overrides.pop("pose_binding", _pose()),
+        "evaluation_contract": overrides.pop("evaluation_contract", _evaluation()),
+        "execution_configuration": overrides.pop("execution_configuration", _configuration()),
+        "execution_authority": overrides.pop("execution_authority", _authority()),
+        "timestamp": "2026-07-30T23:00:00Z",
         **overrides,
-    )
+    }
+
+
+def _compile(**overrides) -> dict:
+    return compile_reconstruction_training_request(**_compiler_arguments(**overrides))
 
 
 def test_compiler_binds_dataset_worker_smoke_authority_and_claim_ceiling() -> None:
@@ -202,6 +210,50 @@ def test_compiler_binds_dataset_worker_smoke_authority_and_claim_ceiling() -> No
     assert request["claim_ceiling"] == "request_only"
     assert request["worker_build_receipt_digest"]
     assert request["worker_smoke_receipt_digest"]
+
+
+def test_compiler_prepares_trusted_digest_only_supervisor_runtime(tmp_path: Path) -> None:
+    arguments = _compiler_arguments()
+    dataset = arguments["dataset_export"]
+    artifact_root = tmp_path / "artifacts"
+    candidate = artifact_root / dataset["relative_path"]
+    (candidate / "images").mkdir(parents=True)
+    (candidate / "images/frame.png").write_bytes(b"image")
+    (candidate / "sparse/0").mkdir(parents=True)
+    (candidate / "sparse/0/cameras.txt").write_text("camera\n", encoding="utf-8")
+    (candidate / "sparse/0/images.txt").write_text("image\n", encoding="utf-8")
+
+    def runner(command, timeout):
+        assert timeout == 3600
+        values = {item.split("=", 1)[0]: item.split("=", 1)[1] for item in command if "=" in item}
+        run_dir = Path(values["out_dir"])
+        checkpoint = run_dir / "training/candidate-colmap-fixture/ckpt_last.pt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_bytes(b"checkpoint")
+        Path(values["export_ply.path"]).write_bytes(b"ply\n")
+        return subprocess.CompletedProcess(command, 0, stdout="trained", stderr="")
+
+    bindings = compile_gaussian_training_supervisor_bindings(
+        compiler_arguments=arguments,
+        dataset_export=dataset,
+        artifact_root=artifact_root,
+        command_runner=runner,
+        python_executable="python",
+        threedgrut_root="/fixture/3dgrut",
+    )
+    request = bindings["reconstruction_training_request"]
+    result = bindings["gaussian_reconstruction_trainer"](
+        request=request,
+        output_root=tmp_path / "outputs",
+    )
+    assert result["status"] == "succeeded"
+    assert (
+        result["reconstruction_training_request_digest"]
+        == request["reconstruction_training_request_digest"]
+    )
+    assert result["registered_observation_ids"] == ["frame-1", "frame-2"]
+    assert result["heldout_labels_included"] is False
+    assert result["candidate_self_graded"] is False
 
 
 def test_compiler_rejects_unaccepted_worker_and_cross_receipt_image_drift() -> None:
