@@ -29,6 +29,9 @@ from .groot_oscar_runpod_watchdog import (
     terminate_canary_resources,
     write_owner_teardown_cancel_request,
 )
+from .new_site_diagnostic_canary_gpu import (
+    INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
+)
 from .openpi_policy_ranking_gpu_bootstrap import (
     EXECUTION_MODE_FULL_CAMPAIGN,
     EXECUTION_MODE_NEW_SITE_CANARY,
@@ -587,7 +590,7 @@ def _build_vast_launch_request(
     execution_mode = (
         EXECUTION_MODE_NEW_SITE_CANARY
         if input_bundle.get("schema_version")
-        == "new_site_diagnostic_canary_input_receipt.v1"
+        == CANARY_INPUT_RECEIPT_SCHEMA_VERSION
         else EXECUTION_MODE_FULL_CAMPAIGN
     )
     spec = RenderLaunchSpec(

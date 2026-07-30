@@ -16,6 +16,9 @@ from blueprint_pipeline import new_site_diagnostic_smoke
 
 
 ROOT = Path(__file__).resolve().parents[1]
+WAREHOUSE_SCENE_SPEC = Path(
+    "docs/experiments/policy_ranking_thesis_20260726/nvidia_warehouse_control_spec.json"
+)
 
 
 def test_freeze_uses_development_scene_and_excludes_confirmation_sessions() -> None:
@@ -41,6 +44,25 @@ def test_freeze_hash_links_local_decoded_scene(tmp_path: Path) -> None:
     scene_input = protocol["scene"]["local_scene_input"]
     assert scene_input["sha256"] == hashlib.sha256(splat.read_bytes()).hexdigest()
     assert scene_input["authoritative_source_replacement"] is False
+
+
+def test_freeze_can_select_previously_exposed_native_nvidia_warehouse_scene(
+    tmp_path: Path,
+) -> None:
+    usd = tmp_path / "physical_ai_simready_warehouse_01.usd"
+    usd.write_bytes(b"pinned-openusd-fixture")
+    protocol = build_protocol(
+        ROOT,
+        usd,
+        experiment_id="policy_ranking_new_site_smoke_nvidia_warehouse_20260729_v1",
+        scene_spec_path=WAREHOUSE_SCENE_SPEC,
+    )
+
+    assert protocol["scene"]["scene_id"] == "nvidia_warehouse_franka_can_to_tray_control_v2"
+    assert protocol["scene"]["source_representation"] == "usd"
+    assert protocol["scene"]["native_isaac_initial_observation_required"] is True
+    assert protocol["scene"]["local_scene_input"]["representation"] == "openusd"
+    assert protocol["media_contract"]["nvidia_cc_by_attribution_required"] is True
 
 
 def test_successor_version_requires_immediate_parent_and_disclosure() -> None:

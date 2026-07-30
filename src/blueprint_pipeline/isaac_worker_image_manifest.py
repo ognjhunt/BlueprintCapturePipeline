@@ -26,6 +26,8 @@ _CUDA_ENV_KEYS = (
     "BLUEPRINT_GROOT_OSCAR_REQUIRED_CUDA_VERSION",
     "CUDA_VERSION",
 )
+_SOURCE_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _digest_ref(image_ref: str, digest: str) -> str:
@@ -105,10 +107,7 @@ def _runnable_child_digest(raw_manifest: Mapping[str, Any]) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
-def derive_required_cuda_version(
-    image_config: Mapping[str, Any] | None,
-) -> tuple[str | None, str | None]:
-    """Derive the CUDA major/minor contract from immutable image config metadata."""
+def _image_environment(image_config: Mapping[str, Any] | None) -> dict[str, str]:
     payload = image_config if isinstance(image_config, Mapping) else {}
     config = payload.get("config")
     if not isinstance(config, Mapping):
@@ -124,11 +123,53 @@ def derive_required_cuda_version(
             if isinstance(item, str) and "=" in item:
                 key, value = item.split("=", 1)
                 env[key] = value
+    return env
+
+
+def derive_required_cuda_version(
+    image_config: Mapping[str, Any] | None,
+) -> tuple[str | None, str | None]:
+    """Derive the CUDA major/minor contract from immutable image config metadata."""
+    env = _image_environment(image_config)
     for key in _CUDA_ENV_KEYS:
         match = _CUDA_VERSION_RE.fullmatch(env.get(key, "").strip())
         if match:
             return f"{match.group(1)}.{match.group(2)}", f"image_config_env:{key}"
     return None, None
+
+
+def derive_worker_build_identity(
+    image_config: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Read source identity embedded by the immutable Isaac worker build."""
+
+    env = _image_environment(image_config)
+    source_commit = env.get("BLUEPRINT_SOURCE_COMMIT", "").strip().lower()
+    dirty_patch = env.get("BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256", "").strip().lower()
+    family = env.get("BLUEPRINT_WORKER_IMAGE_FAMILY", "").strip()
+    isaac_major_raw = env.get("BLUEPRINT_ISAAC_SIM_MAJOR_VERSION", "").strip()
+    try:
+        isaac_major = int(isaac_major_raw)
+    except ValueError:
+        isaac_major = None
+    blockers = []
+    if not _SOURCE_COMMIT_RE.fullmatch(source_commit):
+        blockers.append("worker_image_source_commit_missing_or_invalid")
+    if not _SHA256_RE.fullmatch(dirty_patch):
+        blockers.append("worker_image_source_dirty_patch_missing_or_invalid")
+    if family != "isaac-eval-worker":
+        blockers.append("worker_image_family_invalid")
+    if isaac_major != 6:
+        blockers.append("worker_image_isaac_major_invalid")
+    return {
+        "status": "verified" if not blockers else "blocked",
+        "blockers": blockers,
+        "source_commit": source_commit or None,
+        "source_dirty_patch_sha256": dirty_patch or None,
+        "worker_image_family": family or None,
+        "isaac_sim_major_version": isaac_major,
+        "identity_source": "immutable_registry_image_config_environment",
+    }
 
 
 def summarize_manifest(
@@ -181,6 +222,7 @@ def summarize_manifest(
     required_cuda_version, required_cuda_version_source = derive_required_cuda_version(
         config
     )
+    worker_build_identity = derive_worker_build_identity(config)
     raw_history = config.get("history")
     raw_history = raw_history if isinstance(raw_history, list) else []
     nonempty_history = [
@@ -226,6 +268,7 @@ def summarize_manifest(
         "runnable_child_digest": runnable_child_digest,
         "required_cuda_version": required_cuda_version,
         "required_cuda_version_source": required_cuda_version_source,
+        "worker_build_identity": worker_build_identity,
         "history_available": history_available,
         "nonempty_history_count": len(nonempty_history),
         "history_layer_count_matches": bool(

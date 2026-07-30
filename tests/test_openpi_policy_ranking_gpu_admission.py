@@ -3,6 +3,10 @@ from blueprint_pipeline.openpi_policy_ranking_gpu_admission import (
     collect_openpi_policy_ranking_runpod_preflight,
     collect_openpi_policy_ranking_vast_preflight,
 )
+from blueprint_pipeline.new_site_diagnostic_canary_gpu import (
+    INPUT_RECEIPT_SCHEMA_VERSION,
+    INPUT_SCHEMA_VERSION,
+)
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
 
 
@@ -84,7 +88,7 @@ def test_openpi_gpu_admission_passes_exact_contract() -> None:
 def test_openpi_gpu_admission_accepts_one_arm_label_free_canary_receipt() -> None:
     release, _bundle, preflight, spend = _inputs()
     manifest = {
-        "schema_version": "new_site_diagnostic_canary_input.v1",
+        "schema_version": INPUT_SCHEMA_VERSION,
         "experiment_id": "diagnostic_v6",
         "protocol_filename": "protocol.json",
         "protocol_file_sha256": "f" * 64,
@@ -101,10 +105,11 @@ def test_openpi_gpu_admission_accepts_one_arm_label_free_canary_receipt() -> Non
         "redistribution_authorized": False,
         "label_free": True,
         "purpose": "private_internal_noncommercial_new_site_diagnostic_canary",
+        "initial_observation_source": "mujoco_hybrid_camera_render",
     }
     manifest["manifest_sha256"] = canonical_sha256(manifest)
     bundle = {
-        "schema_version": "new_site_diagnostic_canary_input_receipt.v1",
+        "schema_version": INPUT_RECEIPT_SCHEMA_VERSION,
         "bundle_sha256": "c" * 64,
         "manifest": manifest,
     }

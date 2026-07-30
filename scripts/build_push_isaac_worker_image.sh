@@ -8,6 +8,7 @@ platform="${BLUEPRINT_ISAAC_WORKER_PLATFORM:-linux/amd64}"
 base_image="${BLUEPRINT_ISAAC_SIM_BASE_IMAGE:-nvcr.io/nvidia/isaac-sim:6.0.0@sha256:68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d}"
 allow_push="${BLUEPRINT_ALLOW_ISAAC_WORKER_IMAGE_PUSH:-false}"
 manifest_output="${BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_OUTPUT:-$repo_root/output/isaac_worker_image_manifest_diagnostic.json}"
+camera_release_output="${BLUEPRINT_NVIDIA_WAREHOUSE_CAMERA_RELEASE_OUTPUT:-}"
 source_commit="$(git -C "$repo_root" rev-parse HEAD)"
 source_dirty_patch_sha256="$(
   PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
@@ -27,6 +28,11 @@ fi
 
 if [[ "$image_ref" != *:* && "$image_ref" != *@sha256:* ]]; then
   echo "BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF must be versioned: $image_ref" >&2
+  exit 2
+fi
+
+if [[ "$allow_push" == "true" ]] && [[ -n "$(git -C "$repo_root" status --porcelain=v1)" ]]; then
+  echo "refuses pushed Isaac worker build from a dirty source tree" >&2
   exit 2
 fi
 
@@ -92,6 +98,15 @@ PY
     printf '%s\n' "$resolved_digest_ref" > "$digest_output"
     echo "resolved immutable digest: $resolved_digest_ref"
     echo "wrote resolved digest ref: $digest_output"
+  fi
+  if [[ -n "$camera_release_output" ]]; then
+    PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" \
+      python3 -m blueprint_pipeline.nvidia_warehouse_native_camera_gpu_admission \
+        build-release \
+        --image-manifest "$manifest_output" \
+        --expected-source-commit "$source_commit" \
+        --output "$camera_release_output"
+    echo "wrote native Warehouse camera release evidence: $camera_release_output"
   fi
 else
   echo "python3 not found; skipped Isaac worker image manifest diagnostic" >&2

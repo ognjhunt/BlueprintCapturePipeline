@@ -7,11 +7,15 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.isaac_worker_image_manifest import (
+    derive_worker_build_identity,
     derive_required_cuda_version,
     _inspect_local_image,
     _runnable_child_digest,
     inspect_image_manifest,
     summarize_manifest,
+)
+from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
+    CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
 )
 
 
@@ -46,6 +50,36 @@ def test_required_cuda_version_is_derived_from_image_config(
     config: dict, expected: str | None, source: str | None
 ) -> None:
     assert derive_required_cuda_version(config) == (expected, source)
+
+
+def test_worker_build_identity_is_derived_from_immutable_config() -> None:
+    result = derive_worker_build_identity(
+        {
+            "config": {
+                "Env": [
+                    "BLUEPRINT_SOURCE_COMMIT=" + "a" * 40,
+                    "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256="
+                    + CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+                    "BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker",
+                    "BLUEPRINT_ISAAC_SIM_MAJOR_VERSION=6",
+                ]
+            }
+        }
+    )
+
+    assert result["status"] == "verified"
+    assert result["source_commit"] == "a" * 40
+    assert result["source_dirty_patch_sha256"] == (
+        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
+    )
+    assert result["isaac_sim_major_version"] == 6
+
+
+def test_worker_build_identity_blocks_missing_source_environment() -> None:
+    result = derive_worker_build_identity({"config": {"Env": ["CUDA_VERSION=12.6"]}})
+
+    assert result["status"] == "blocked"
+    assert "worker_image_source_commit_missing_or_invalid" in result["blockers"]
 
 
 def test_split_image_manifest_is_digest_pinned_and_sizes_drive_startup_timeout() -> None:
@@ -285,3 +319,9 @@ def test_isaac_build_script_keeps_digest_pinned_base_default() -> None:
         Path(__file__).resolve().parents[1] / "scripts" / "build_push_isaac_worker_image.sh"
     ).read_text(encoding="utf-8")
     assert "nvcr.io/nvidia/isaac-sim:6.0.0@sha256:" in script
+    assert "refuses pushed Isaac worker build from a dirty source tree" in script
+    assert "BLUEPRINT_NVIDIA_WAREHOUSE_CAMERA_RELEASE_OUTPUT" in script
+    assert (
+        "blueprint_pipeline.nvidia_warehouse_native_camera_gpu_admission" in script
+    )
+    assert "build-release" in script
