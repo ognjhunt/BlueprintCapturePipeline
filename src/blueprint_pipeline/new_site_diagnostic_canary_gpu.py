@@ -13,6 +13,14 @@ from typing import Any
 import numpy as np
 
 from .common import write_json
+from .ctrl_world_droid_action_adapter import FrankaCtrlWorldJointPositionAdapter
+from .ctrl_world_joint_position_reference_wam import (
+    CallableCtrlWorldJointPositionReferenceWamArm,
+)
+from .droid_ctrl_world_joint_position_closed_loop_adapter import (
+    CTRL_WORLD_RELEASED_VIEW_ORDER,
+    DroidCtrlWorldJointPositionTransitionAdapter,
+)
 from .droid_oscar_closed_loop_adapter import (
     EXTERIOR_VIEW,
     WRIST_VIEW,
@@ -415,6 +423,32 @@ def extract_canary_input_bundle(
     }
 
 
+def _load_native_initial_camera_views(
+    initial_camera_paths: Mapping[str, str | Path], *, np_module: Any
+) -> dict[str, Any]:
+    """Load exactly the two- or three-view native camera contract for OpenPI."""
+
+    from PIL import Image
+
+    allowed_camera_sets = (
+        {EXTERIOR_VIEW, WRIST_VIEW},
+        {EXTERIOR_VIEW, DROID_EXTERIOR_VIEW_2, WRIST_VIEW},
+    )
+    if set(initial_camera_paths) not in allowed_camera_sets:
+        raise ValueError("new_site_canary_native_initial_camera_set_invalid")
+    loaded = {}
+    for view_id, path_value in initial_camera_paths.items():
+        path = Path(path_value).expanduser().resolve()
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"new_site_canary_native_initial_camera_unsafe:{view_id}")
+        with Image.open(path) as image:
+            loaded[view_id] = np_module.asarray(
+                image.convert("RGB").resize((224, 224), Image.Resampling.LANCZOS),
+                dtype=np_module.uint8,
+            )
+    return loaded
+
+
 def _initial_observation(
     *,
     runtime: Mapping[str, Any],
@@ -456,15 +490,7 @@ def _initial_observation(
         fov_deg=82.0,
     )
     if initial_camera_paths:
-        if set(initial_camera_paths) != {EXTERIOR_VIEW, WRIST_VIEW}:
-            raise ValueError("new_site_canary_native_initial_camera_set_invalid")
-        loaded = {}
-        for view_id in (EXTERIOR_VIEW, WRIST_VIEW):
-            with Image.open(Path(initial_camera_paths[view_id]).expanduser().resolve()) as image:
-                loaded[view_id] = np_module.asarray(
-                    image.convert("RGB").resize((224, 224), Image.Resampling.LANCZOS),
-                    dtype=np_module.uint8,
-                )
+        loaded = _load_native_initial_camera_views(initial_camera_paths, np_module=np_module)
         external, wrist = loaded[EXTERIOR_VIEW], loaded[WRIST_VIEW]
         interaction_pixels = int(np_module.count_nonzero(np_module.std(external, axis=2) > 1.0))
     else:
@@ -500,6 +526,8 @@ def _initial_observation(
         ),
         "prompt": prompt,
     }
+    if initial_camera_paths and DROID_EXTERIOR_VIEW_2 in initial_camera_paths:
+        observation[DROID_EXTERIOR_VIEW_2] = loaded[DROID_EXTERIOR_VIEW_2]
     blockers = validate_droid_observation(observation)
     if blockers:
         raise ValueError(f"new_site_canary_initial_observation_invalid:{blockers[0]}")
@@ -881,6 +909,191 @@ def run_skeleton_only_canary(
     return result
 
 
+def run_ctrl_world_canary(
+    *,
+    protocol_path: str | Path,
+    background_path: str | Path,
+    cohort_path: str | Path,
+    checkpoint_inventory_path: str | Path,
+    menagerie_root: str | Path,
+    output_dir: str | Path,
+    initial_camera_paths: Mapping[str, str | Path],
+    ctrl_world_runner: Callable[..., Mapping[str, Any]],
+    seed: int,
+    checkpoint_downloader: Callable[[str], Path] = _default_checkpoint_downloader,
+    policy_loader: Callable[[Any, Path], Any] = _default_openpi_loader,
+) -> dict[str, Any]:
+    """Run one three-view joint-position policy through the Ctrl-World seam."""
+
+    if set(initial_camera_paths) != set(CTRL_WORLD_RELEASED_VIEW_ORDER):
+        raise ValueError("new_site_ctrl_world_initial_three_view_set_invalid")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("new_site_ctrl_world_seed_invalid")
+    protocol = _read_object(protocol_path)
+    output = Path(output_dir).expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    rule = protocol.get("canary_rule")
+    rule = rule if isinstance(rule, Mapping) else {}
+    policy_id = str(rule.get("frozen_policy_id") or "")
+    spec = load_policy_spec(cohort_path, policy_id=policy_id)
+    checkpoint = checkpoint_downloader(spec.checkpoint_uri)
+    local_verification = verify_local_checkpoint(
+        spec=spec,
+        checkpoint_dir=checkpoint,
+        checkpoint_inventory_path=checkpoint_inventory_path,
+    )
+    policy = policy_loader(spec, checkpoint)
+    client = LocalOpenPIDroidPolicyClient(
+        spec=spec,
+        policy=policy,
+        local_verification=local_verification,
+    )
+    runtime = prepare_franka_droid_runtime(
+        menagerie_root=menagerie_root,
+        output_dir=output / "runtime",
+    )
+    prompt = str(protocol["scene"]["task_instruction"])
+    observation = _initial_observation(
+        runtime=runtime,
+        background_path=background_path,
+        prompt=prompt,
+        initial_camera_paths=initial_camera_paths,
+    )
+    interaction_pixels = int(observation.pop("_diagnostic_interaction_pixel_count"))
+    exact_initial_observation_sha256 = policy_observation_sha256(observation)
+    initial_camera_sha256_by_view = {
+        view_id: file_sha256(Path(path).expanduser().resolve())
+        for view_id, path in initial_camera_paths.items()
+    }
+    loop = run_policy_wam_closed_loop(
+        initial_observation=observation,
+        policy_client=client,
+        wam_arm=CallableCtrlWorldJointPositionReferenceWamArm(
+            runner=ctrl_world_runner,
+            seed=seed,
+        ),
+        transition_adapter=DroidCtrlWorldJointPositionTransitionAdapter(
+            action_adapter=FrankaCtrlWorldJointPositionAdapter(runtime),
+            action_chunk_rows=spec.action_chunk_rows,
+        ),
+        reliability_gate=MultiViewCanaryReliabilityGate(
+            _thresholds(protocol), required_views=CTRL_WORLD_RELEASED_VIEW_ORDER
+        ),
+        terminal_criterion=FrozenMaximumHorizonTerminalCriterion(),
+        config=ClosedLoopConfig(
+            task_prompt=prompt,
+            executed_prefix_steps=8,
+            max_policy_queries=2,
+            execution_mode="engineering_smoke",
+        ),
+        output_dir=output / "loop",
+    )
+    trace_path = Path(loop["trace_path"])
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    row_mappings = [row if isinstance(row, Mapping) else {} for row in rows]
+    reliabilities: list[Mapping[str, Any]] = []
+    reasons: list[str] = []
+    if any(not isinstance(row, Mapping) for row in rows):
+        reasons.append("policy_wam_trace_row_invalid")
+    for row in row_mappings:
+        reliability_value = row.get("reliability")
+        reliability = reliability_value if isinstance(reliability_value, Mapping) else {}
+        reliabilities.append(reliability)
+        reasons.extend(str(reason) for reason in reliability.get("reasons") or [])
+    first_provenance_value = (
+        row_mappings[0].get("next_observation_provenance") if row_mappings else None
+    )
+    first_provenance = first_provenance_value if isinstance(first_provenance_value, Mapping) else {}
+    first_policy_observation_sha256 = (
+        row_mappings[0].get("policy_observation_sha256") if row_mappings else None
+    )
+    first_wam_observation_sha256 = (
+        row_mappings[0].get("next_observation_sha256") if row_mappings else None
+    )
+    second_policy_observation_sha256 = (
+        row_mappings[1].get("policy_observation_sha256") if len(row_mappings) >= 2 else None
+    )
+    round_trip_passed = (
+        len(rows) == 2
+        and len(row_mappings) == 2
+        and all(isinstance(row, Mapping) for row in rows)
+        and row_mappings[0].get("query_index") == 0
+        and row_mappings[1].get("query_index") == 1
+        and all(
+            row.get("schema_version") == "policy_wam_closed_loop_trace.v1" for row in row_mappings
+        )
+        and loop.get("trace_sha256") == file_sha256(trace_path)
+        and loop.get("policy_call_count") == 2
+        and loop.get("wam_call_count") == 2
+        and loop.get("initial_observation_sha256") == exact_initial_observation_sha256
+        and first_policy_observation_sha256 == exact_initial_observation_sha256
+        and first_provenance.get("visual_source") == "wam_prediction"
+        and _is_sha256(first_wam_observation_sha256)
+        and first_wam_observation_sha256 == second_policy_observation_sha256
+    )
+    all_transitions_completed = bool(row_mappings) and all(
+        row.get("status") == "completed" for row in row_mappings
+    )
+    all_reliability_passed = bool(reliabilities) and all(
+        reliability.get("status") == "passed" for reliability in reliabilities
+    )
+    if not round_trip_passed:
+        reasons.append("policy_wam_policy_round_trip_incomplete")
+    evidence = {
+        "arm_id": "ctrl_world",
+        "wam_arm_id": "blueprint_ctrl_world_joint_position_reference",
+        "protocol_sha256": protocol["protocol_sha256"],
+        "label_free": True,
+        "ranking_outputs_accessed": False,
+        "attempt_stage": "rollout",
+        "model_invoked": int(loop.get("policy_call_count") or 0) >= 1,
+        "scene_id": protocol["scene"]["scene_id"],
+        "task_instruction": prompt,
+        "policy_id": policy_id,
+        "variant": rule.get("frozen_variant"),
+        "seed": seed,
+        "observation_validity_passed": all_transitions_completed and round_trip_passed,
+        "motion_passed": all_reliability_passed,
+        "collapse_checks_passed": all_reliability_passed,
+        "policy_wam_policy_round_trip_passed": round_trip_passed,
+        "transition_count": len(rows),
+        "exact_initial_observation_sha256": exact_initial_observation_sha256,
+        "initial_camera_sha256_by_view": initial_camera_sha256_by_view,
+        "first_wam_observation_sha256": first_wam_observation_sha256,
+        "second_policy_observation_sha256": second_policy_observation_sha256,
+        "blockers": [*loop.get("blockers", []), *reasons],
+    }
+    canary = assess_canary(protocol, evidence)
+    write_json(output / "canary_attempt_evidence.json", evidence)
+    write_json(output / "canary.json", canary)
+    result: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "status": "completed" if canary["status"] in {"passed", "failed"} else "blocked",
+        "arm_id": "ctrl_world",
+        "wam_arm_id": "blueprint_ctrl_world_joint_position_reference",
+        "protocol_sha256": protocol["protocol_sha256"],
+        "policy_id": policy_id,
+        "variant": rule.get("frozen_variant"),
+        "seed": seed,
+        "policy_checkpoint_verification": local_verification,
+        "initial_observation_interaction_pixel_count": interaction_pixels,
+        "exact_initial_observation_sha256": exact_initial_observation_sha256,
+        "initial_camera_sha256_by_view": initial_camera_sha256_by_view,
+        "first_wam_observation_sha256": first_wam_observation_sha256,
+        "second_policy_observation_sha256": second_policy_observation_sha256,
+        "initial_observation_source": "native_isaac_simready_warehouse_camera_canary",
+        "loop_manifest": loop,
+        "policy_wam_policy_round_trip_passed": round_trip_passed,
+        "canary": canary,
+        "provider_execution_required_for_result": True,
+        "physical_robot_operated": False,
+        "claim_boundary": dict(protocol["claim_boundary"]),
+    }
+    result["manifest_sha256"] = canonical_sha256(result)
+    write_json(output / "new_site_diagnostic_canary_gpu.json", result)
+    return result
+
+
 __all__ = [
     "INPUT_RECEIPT_SCHEMA_VERSION",
     "INPUT_SCHEMA_VERSION",
@@ -888,5 +1101,6 @@ __all__ = [
     "build_canary_input_bundle",
     "extract_canary_input_bundle",
     "materialize_canary_background",
+    "run_ctrl_world_canary",
     "run_skeleton_only_canary",
 ]

@@ -16,6 +16,7 @@ from blueprint_pipeline.new_site_diagnostic_canary_gpu import (
     build_canary_input_bundle,
     extract_canary_input_bundle,
     materialize_canary_background,
+    run_ctrl_world_canary,
     run_skeleton_only_canary,
 )
 from blueprint_pipeline.new_site_diagnostic_smoke import build_protocol
@@ -291,6 +292,25 @@ def test_ctrl_world_input_rejects_missing_native_three_view_result(tmp_path: Pat
             output_zip=tmp_path / "ctrl_world_canary.zip",
             arm_id="ctrl_world",
         )
+
+
+def test_native_initial_camera_loader_preserves_distinct_ctrl_world_views(
+    tmp_path: Path,
+) -> None:
+    paths = {}
+    expected_means = {}
+    for view_index, view_id in enumerate((EXTERIOR_VIEW, DROID_EXTERIOR_VIEW_2, WRIST_VIEW)):
+        color = 20 + view_index * 30
+        path = tmp_path / f"native_{view_index}.png"
+        Image.new("RGB", (640, 480), color=(color,) * 3).save(path)
+        paths[view_id] = str(path)
+        expected_means[view_id] = color
+
+    loaded = canary_module._load_native_initial_camera_views(paths, np_module=np)
+
+    assert set(loaded) == set(paths)
+    assert all(image.shape == (224, 224, 3) for image in loaded.values())
+    assert {view_id: int(np.mean(image)) for view_id, image in loaded.items()} == expected_means
 
 
 def test_canary_input_accepts_portable_native_camera_relative_paths(
@@ -617,6 +637,108 @@ def test_skeleton_canary_runs_two_policy_wam_transitions_without_ranking(
         WRIST_VIEW: file_sha256(native_wrist),
     }
     assert result["initial_observation_source"] == ("native_isaac_simready_warehouse_camera_canary")
+    assert "rankings" not in result
+    assert result["claim_boundary"]["physical_success"] is False
+
+
+def test_ctrl_world_canary_wires_three_view_exact_round_trip_without_ranking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    protocol = _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224)).save(background)
+    initial_camera_paths = {}
+    for view_index, view_id in enumerate((EXTERIOR_VIEW, DROID_EXTERIOR_VIEW_2, WRIST_VIEW)):
+        path = tmp_path / f"native_{view_index}.png"
+        Image.new("RGB", (640, 480), color=(20 + view_index * 20,) * 3).save(path)
+        initial_camera_paths[view_id] = str(path)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    spec = SimpleNamespace(checkpoint_uri="s3://example/checkpoint", action_chunk_rows=15)
+    monkeypatch.setattr(canary_module, "load_policy_spec", lambda *_args, **_kwargs: spec)
+    monkeypatch.setattr(
+        canary_module, "verify_local_checkpoint", lambda **_kwargs: {"status": "verified"}
+    )
+    monkeypatch.setattr(canary_module, "LocalOpenPIDroidPolicyClient", lambda **_kwargs: object())
+    monkeypatch.setattr(canary_module, "prepare_franka_droid_runtime", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        canary_module,
+        "_initial_observation",
+        lambda **_kwargs: {
+            EXTERIOR_VIEW: np.zeros((224, 224, 3), dtype=np.uint8),
+            DROID_EXTERIOR_VIEW_2: np.ones((224, 224, 3), dtype=np.uint8),
+            WRIST_VIEW: np.full((224, 224, 3), 2, dtype=np.uint8),
+            "observation/joint_position": np.zeros(7),
+            "observation/gripper_position": np.zeros(1),
+            "prompt": protocol["scene"]["task_instruction"],
+            "_diagnostic_interaction_pixel_count": 10,
+        },
+    )
+
+    def fake_loop(**kwargs):
+        assert kwargs["config"].max_policy_queries == 2
+        assert kwargs["wam_arm"].seed == 0
+        assert kwargs["reliability_gate"].required_views == (
+            DROID_EXTERIOR_VIEW_2,
+            EXTERIOR_VIEW,
+            WRIST_VIEW,
+        )
+        initial_sha256 = canary_module.policy_observation_sha256(kwargs["initial_observation"])
+        wam_observation_sha256 = "2" * 64
+        trace = Path(kwargs["output_dir"]) / "closed_loop_trace.jsonl"
+        trace.parent.mkdir(parents=True)
+        rows = [
+            {
+                "schema_version": "policy_wam_closed_loop_trace.v1",
+                "query_index": 0,
+                "status": "completed",
+                "policy_observation_sha256": initial_sha256,
+                "next_observation_sha256": wam_observation_sha256,
+                "next_observation_provenance": {"visual_source": "wam_prediction"},
+                "reliability": {"status": "passed", "reasons": []},
+            },
+            {
+                "schema_version": "policy_wam_closed_loop_trace.v1",
+                "query_index": 1,
+                "status": "completed",
+                "policy_observation_sha256": wam_observation_sha256,
+                "next_observation_sha256": "3" * 64,
+                "next_observation_provenance": {"visual_source": "wam_prediction"},
+                "reliability": {"status": "passed", "reasons": []},
+            },
+        ]
+        trace.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        return {
+            "status": "max_horizon",
+            "trace_path": str(trace),
+            "trace_sha256": file_sha256(trace),
+            "policy_call_count": 2,
+            "wam_call_count": 2,
+            "initial_observation_sha256": initial_sha256,
+            "blockers": [],
+        }
+
+    monkeypatch.setattr(canary_module, "run_policy_wam_closed_loop", fake_loop)
+
+    result = run_ctrl_world_canary(
+        protocol_path=protocol_path,
+        background_path=background,
+        cohort_path=tmp_path / "cohort.json",
+        checkpoint_inventory_path=tmp_path / "inventory.json",
+        menagerie_root=tmp_path / "menagerie",
+        output_dir=tmp_path / "output",
+        initial_camera_paths=initial_camera_paths,
+        ctrl_world_runner=lambda **_kwargs: pytest.fail("mock loop must not invoke runner"),
+        seed=0,
+        checkpoint_downloader=lambda _uri: checkpoint,
+        policy_loader=lambda _spec, _checkpoint: object(),
+    )
+
+    assert result["status"] == "completed"
+    assert result["arm_id"] == "ctrl_world"
+    assert result["policy_wam_policy_round_trip_passed"] is True
+    assert set(result["initial_camera_sha256_by_view"]) == set(initial_camera_paths)
     assert "rankings" not in result
     assert result["claim_boundary"]["physical_success"] is False
 
