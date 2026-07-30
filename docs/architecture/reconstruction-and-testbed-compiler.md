@@ -348,6 +348,27 @@ provider qualification, metric, collision, Isaac, physical, and deployment
 claims false. The tool descriptor exists, but the supervisor exposes no remote
 call until a separately qualified adapter is injected through the paid boundary.
 
+## Generated reconstruction enhancement audit
+
+Phase 7 keeps ArtiFixer, Difix3D+, and DiffusionHarmonizer replaceable behind the
+enhancer registry. `reconstruction_enhancement_method_audit.v1` freezes the
+reviewed source commits, distinct source/model licenses, modes, runtime facts,
+blockers, and legal next actions. All three candidates are currently rejected:
+ArtiFixer pending model-license and pinned-runtime qualification, Difix3D+ for
+the commercial default because its published license is non-commercial, and
+Harmonizer pending its checkpoint/base-model/worker qualification.
+
+The ArtiFixer wrapper now refuses even an installed runtime unless it receives
+exact source, container, checkpoint, base-model, license, baseline, and frozen
+split digests plus a real held-out manifest. The 1.3B and 14B checkpoints require
+the corresponding explicit Wan2.1 model identity, and syntactically valid pins
+cannot override the rejected method audit. Difix3D+ and Harmonizer are
+registered as deterministic rejected candidates rather than executable
+subprocesses. Every method requires an existing baseline, preserves that
+baseline, excludes hidden held-out observations, and remains bounded to
+generated visual support with no metric, collision, physical, or deployment
+effect.
+
 ## Normalized results and layers
 
 `reconstruction_result.v1` binds exact capture, method-profile,
