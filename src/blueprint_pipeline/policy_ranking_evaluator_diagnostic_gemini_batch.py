@@ -40,6 +40,10 @@ TERMINAL_STATES = {
     "JOB_STATE_CANCELLED",
     "JOB_STATE_EXPIRED",
 }
+ALLOWED_ARM_IDS = {
+    "gemini36_flash_native_video",
+    "gemini36_flash_complete_graph",
+}
 
 
 class GeminiBatchDiagnosticError(ValueError):
@@ -195,6 +199,9 @@ def collect_pilot(
     payload = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
     if canonical_sha256(payload) != receipt.get("receipt_sha256"):
         raise GeminiBatchDiagnosticError("batch_receipt_digest_invalid")
+    arm_id = str(receipt.get("arm_id") or "")
+    if arm_id not in ALLOWED_ARM_IDS:
+        raise GeminiBatchDiagnosticError("batch_receipt_arm_id_invalid")
     key = _secure_file(api_key_file)
     from google import genai
 
@@ -208,6 +215,7 @@ def collect_pilot(
             "schema_version": "policy_ranking_gemini_pair_batch_collection.v1",
             "status": state,
             "batch_name": receipt["batch_name"],
+            "arm_id": arm_id,
             "completed": False,
             "terminal": terminal,
             "provider_error": (
@@ -261,7 +269,7 @@ def collect_pilot(
         result: dict[str, Any] = {
             "schema_version": PAIR_RESULT_SCHEMA_VERSION,
             "pair_id": pair_id,
-            "arm_id": "gemini36_flash_native_video",
+            "arm_id": arm_id,
             "provider": "google_gemini_api",
             "model": GEMINI_MODEL,
             "response_id": str(getattr(response, "response_id", "") or ""),
@@ -288,6 +296,7 @@ def collect_pilot(
         ),
         "provider_job_state": state,
         "batch_name": receipt["batch_name"],
+        "arm_id": arm_id,
         "completed": True,
         "result_count": len(results),
         "error_count": len(errors),
