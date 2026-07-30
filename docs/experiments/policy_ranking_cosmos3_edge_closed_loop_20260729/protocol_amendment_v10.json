@@ -1,0 +1,58 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v10",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-30T03:44:22-0500",
+  "supersedes_amendment_sha256": "67cdf7df54de8d572219fa9eaeed367e231bde62f7229d1749a8381b7eddf6ae",
+  "phase": "phase_4_ctrl_world",
+  "prospective_arm": {
+    "name": "ctrl_world_public_replay_reduced_canary",
+    "attribution": "Ctrl-World_not_Cosmos_not_OSCAR",
+    "exact_public_script_bytes": true,
+    "fixture_trajectory_id": "899",
+    "start_index": 8,
+    "interaction_count": 1,
+    "bundle_version": 3,
+    "bundle_sha256": "6f3b4acd71addec24251c19bba4a304268ba086ed1017007e8d06a884accc558",
+    "dependency_resolution_sha256": "c982d21932fdb015e09b9cc56234875130f19b0f6a69cb968a610a43f7714cd7",
+    "public_default_interaction_count": 12,
+    "views": 3,
+    "action_source": "released_recorded_DROID_cartesian_state_trajectory",
+    "task_text_source": "released_annotation_texts_0",
+    "candidate_policy_requeried": false,
+    "closed_loop_policy_evaluation": false,
+    "physical_future_rgb_used_as_generation_condition": false,
+    "physical_future_rgb_decoded_by_public_script_for_comparison": true,
+    "provider_output_must_remove_all_physical_comparison_pixels": true,
+    "physical_outcome_labels_accessed": false
+  },
+  "admission_gates": [
+    "immutable pushed experimental commit",
+    "deterministic provider bundle and embedded input hashes",
+    "focused scientific allocator watchdog teardown and provider-zero tests",
+    "one GPU concurrency and provider inventory gate",
+    "single-use allocation 8 authorization",
+    "spend watchdog and 7200 second TTL",
+    "teardown and provider-zero proof"
+  ],
+  "stop_conditions": [
+    "dependency or checkpoint hash mismatch",
+    "exact public script bytes mismatch",
+    "CUDA or model load failure",
+    "generated-only crop cannot be proven",
+    "any physical outcome label access",
+    "live unrelated GPU keeps maximum campaign concurrency at one"
+  ],
+  "budget": {
+    "allocation_index": 8,
+    "allocation_hard_cap_usd": 5.0,
+    "allocation_target_spend_usd": 3.0,
+    "maximum_hourly_rate_usd": 2.05,
+    "hard_ttl_seconds": 7200,
+    "maximum_concurrent_gpus": 1,
+    "campaign_gpu_spend_before_allocation_8_usd": 3.54067,
+    "gpu_category_ceiling_usd": 50.0,
+    "campaign_total_ceiling_usd": 100.0
+  },
+  "claim_boundary": "A pass establishes only one label-free reduced exact-code Ctrl-World open-loop replay and generated-only media extraction. It does not establish the paper's exact closed-loop policy results, ranking fidelity, causal WAM qualification, captured-site transfer, economics, physical success, or thesis support.",
+  "amendment_sha256": "7010c5f67c8f1d87bc583ac46425ca6fcf4e45af36d0cfeb55fda4064f178ce3"
+}

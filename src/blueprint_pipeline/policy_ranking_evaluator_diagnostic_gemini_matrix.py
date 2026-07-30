@@ -12,6 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from .common import write_json
+from .paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    PaidResourceAdmissionGrant,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
+    require_paid_resource_admission_grant,
+)
 from .policy_ranking_evaluator_diagnostic import (
     complete_graph_diagnostic_protocol,
     diagnostic_protocol,
@@ -23,21 +30,257 @@ from .policy_ranking_evaluator_diagnostic_gemini import (
     _validated_manifest_rows,
 )
 from .policy_ranking_evaluator_diagnostic_gemini_batch import _build_inline_request, _job_state
-from .policy_ranking_roboarena_calibration import canonical_sha256
+from .policy_ranking_roboarena_calibration import canonical_sha256, file_sha256
 
 
 LEDGER_SCHEMA = "policy_ranking_gemini_matrix_media_ledger.v1"
+PAID_ADMISSION_SCHEMA = "policy_ranking_gemini_complete_graph_paid_admission.v3"
+PAID_RESOURCE_CLASS = "evaluator_api"
+COMPLETE_GRAPH_ARM_ID = "gemini36_flash_complete_graph"
+COMPLETE_GRAPH_MODEL = "gemini-3.6-flash"
+MISSING_PAIR_COUNT = 882
+COMPLETE_PAIR_COUNT = 1323
+NATIVE_VIDEO_COUNT = 441
+MISSING_GRAPH_SHARD_COUNT = 14
+PAIRS_PER_SHARD = 63
+MINIMUM_MEDIA_READY_AGE_SECONDS = 90
 
 
 class GeminiMatrixError(ValueError):
     """The full-matrix Gemini media stage is invalid."""
 
 
-def _arm_id(inventory: Mapping[str, Any]) -> str:
+def _without_digest(value: Mapping[str, Any], field: str) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if key != field}
+
+
+def build_complete_graph_paid_admission(
+    missing_inventory: Mapping[str, Any],
+    complete_inventory: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    reuse_audit: Mapping[str, Any],
+    prior_collection: Mapping[str, Any],
+    *,
+    missing_inventory_file_sha256: str,
+    complete_inventory_file_sha256: str,
+    manifest_file_sha256: str,
+    reuse_audit_file_sha256: str,
+    prior_collection_file_sha256: str,
+    source_commit: str,
+    realized_api_spend_usd: float,
+    projected_missing_arm_cost_usd: float,
+    missing_arm_cap_usd: float,
+    campaign_api_cap_usd: float,
+    credential_ready: bool,
+) -> dict[str, Any]:
+    """Build the immutable, diagnostic-only admission for the missing Gemini edges."""
+
+    blockers: list[str] = []
+    try:
+        missing_pairs = _validate_inventory(missing_inventory)
+        complete_pairs = _validate_inventory(complete_inventory)
+        _validated_manifest_rows(manifest)
+    except (GeminiMatrixError, ValueError) as exc:
+        blockers.append(f"input_contract_invalid:{type(exc).__name__}")
+        missing_pairs = []
+        complete_pairs = []
+    if len(missing_pairs) != MISSING_PAIR_COUNT:
+        blockers.append("missing_pair_count_not_882")
+    if len(complete_pairs) != COMPLETE_PAIR_COUNT:
+        blockers.append("complete_pair_count_not_1323")
+    missing_pair_ids = {str(pair.get("pair_id")) for pair in missing_pairs}
+    complete_pair_ids = {str(pair.get("pair_id")) for pair in complete_pairs}
+    reuse_mappings = reuse_audit.get("mappings")
+    reused_complete_pair_ids = (
+        {str(row.get("complete_pair_id")) for row in reuse_mappings}
+        if isinstance(reuse_mappings, list)
+        else set()
+    )
     if (
-        inventory.get("protocol_sha256")
-        == complete_graph_diagnostic_protocol()["protocol_sha256"]
+        len(reused_complete_pair_ids) != NATIVE_VIDEO_COUNT
+        or missing_pair_ids & reused_complete_pair_ids
+        or missing_pair_ids | reused_complete_pair_ids != complete_pair_ids
     ):
+        blockers.append("missing_and_reused_pairs_do_not_partition_complete_graph")
+    if missing_inventory.get("parent_inventory_sha256") != complete_inventory.get(
+        "inventory_sha256"
+    ):
+        blockers.append("missing_inventory_parent_mismatch")
+    if missing_inventory.get("outcome_labels_accessed_to_build_pairs") is not False:
+        blockers.append("outcome_labels_used_to_build_missing_inventory")
+    if manifest.get("all_physical_right_half_pixels_excluded") is not True:
+        blockers.append("physical_ground_truth_pixels_not_excluded")
+    if (
+        reuse_audit.get("status") != "passed"
+        or reuse_audit.get("reused_pair_count") != NATIVE_VIDEO_COUNT
+        or reuse_audit.get("missing_pair_count") != MISSING_PAIR_COUNT
+        or reuse_audit.get("complete_inventory_sha256")
+        != complete_inventory.get("inventory_sha256")
+        or reuse_audit.get("prior_collection_file_sha256") != prior_collection_file_sha256
+        or reuse_audit.get("prior_collection_report_sha256")
+        != prior_collection.get("report_sha256")
+    ):
+        blockers.append("frozen_subset_reuse_evidence_invalid")
+    prior_results = prior_collection.get("results")
+    if (
+        prior_collection.get("status") != "completed"
+        or prior_collection.get("result_count") != NATIVE_VIDEO_COUNT
+        or prior_collection.get("error_count") != 0
+        or not isinstance(prior_results, list)
+        or len(prior_results) != NATIVE_VIDEO_COUNT
+        or any(result.get("model") != COMPLETE_GRAPH_MODEL for result in prior_results)
+        or any(result.get("arm_id") != "gemini36_flash_native_video" for result in prior_results)
+    ):
+        blockers.append("prior_same_configuration_collection_invalid")
+    if not credential_ready:
+        blockers.append("gemini_credential_not_ready")
+    if len(source_commit) != 40 or any(char not in "0123456789abcdef" for char in source_commit):
+        blockers.append("source_commit_not_full_lowercase_sha")
+    costs = (
+        realized_api_spend_usd,
+        projected_missing_arm_cost_usd,
+        missing_arm_cap_usd,
+        campaign_api_cap_usd,
+    )
+    if any(not isinstance(value, (int, float)) or value < 0 for value in costs):
+        blockers.append("cost_value_invalid")
+    if not 0 < missing_arm_cap_usd <= campaign_api_cap_usd <= 25.0:
+        blockers.append("cost_caps_invalid")
+    if projected_missing_arm_cost_usd > missing_arm_cap_usd:
+        blockers.append("projected_missing_arm_cost_exceeds_arm_cap")
+    if realized_api_spend_usd + projected_missing_arm_cost_usd > campaign_api_cap_usd:
+        blockers.append("projected_campaign_api_cost_exceeds_category_cap")
+    expected_file_hashes = {
+        "missing_inventory": missing_inventory_file_sha256,
+        "complete_inventory": complete_inventory_file_sha256,
+        "native_video_manifest": manifest_file_sha256,
+        "reuse_audit": reuse_audit_file_sha256,
+        "prior_collection": prior_collection_file_sha256,
+    }
+    if any(
+        len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
+        for value in expected_file_hashes.values()
+    ):
+        blockers.append("source_file_sha256_invalid")
+    shared = build_paid_lane_admission(
+        resource_class=PAID_RESOURCE_CLASS,
+        blockers=blockers,
+    )
+    admission: dict[str, Any] = {
+        "schema_version": PAID_ADMISSION_SCHEMA,
+        "status": shared["status"],
+        "arm_id": COMPLETE_GRAPH_ARM_ID,
+        "model": COMPLETE_GRAPH_MODEL,
+        "claim_class": "post_unseal_diagnostic_only",
+        "source_commit": source_commit,
+        "request_count": MISSING_PAIR_COUNT,
+        "unique_video_count": NATIVE_VIDEO_COUNT,
+        "missing_inventory_sha256": missing_inventory.get("inventory_sha256"),
+        "complete_inventory_sha256": complete_inventory.get("inventory_sha256"),
+        "native_video_manifest_sha256": manifest.get("manifest_sha256"),
+        "reuse_audit_report_sha256": reuse_audit.get("report_sha256"),
+        "prior_collection_report_sha256": prior_collection.get("report_sha256"),
+        "source_file_sha256": expected_file_hashes,
+        "cost_boundary": {
+            "realized_api_spend_before_stage_usd": realized_api_spend_usd,
+            "projected_missing_arm_cost_usd": projected_missing_arm_cost_usd,
+            "missing_arm_hard_cap_usd": missing_arm_cap_usd,
+            "projected_api_spend_after_stage_usd": (
+                realized_api_spend_usd + projected_missing_arm_cost_usd
+            ),
+            "campaign_api_hard_cap_usd": campaign_api_cap_usd,
+            "contingency_does_not_expand_category_cap": True,
+        },
+        "execution_contract": {
+            "frozen_prior_results_reused": NATIVE_VIDEO_COUNT,
+            "prospective_requests": MISSING_PAIR_COUNT,
+            "batch_shard_count": MISSING_GRAPH_SHARD_COUNT,
+            "pairs_per_batch_shard": PAIRS_PER_SHARD,
+            "shard_assignment": "contiguous_frozen_inventory_order",
+            "minimum_media_ready_age_seconds": MINIMUM_MEDIA_READY_AGE_SECONDS,
+            "temporary_uploads_expected": NATIVE_VIDEO_COUNT,
+            "upload_idempotency_required": True,
+            "cleanup_on_submission_or_collection_terminal": True,
+            "policy_identity_sent_to_provider": False,
+            "physical_outcome_sent_to_provider": False,
+            "physical_ground_truth_pixels_uploaded": False,
+            "partial_matrix_ranking_credit": False,
+            "aggregate_only_after_complete_1323_predictions_frozen": True,
+        },
+        "shared_paid_lane_admission": shared,
+        "blockers": sorted(set(blockers)),
+        "provider_mutations_performed": 0,
+        "raw_secret_values_recorded": False,
+    }
+    admission["admission_sha256"] = canonical_sha256(admission)
+    return admission
+
+
+def _require_complete_graph_paid_admission(
+    admission: Mapping[str, Any] | None,
+    *,
+    inventory: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    source_commit: str,
+) -> PaidResourceAdmissionGrant:
+    if not isinstance(admission, Mapping):
+        raise GeminiMatrixError("complete_graph_paid_admission_missing")
+    payload = _without_digest(admission, "admission_sha256")
+    cost = admission.get("cost_boundary") or {}
+    contract = admission.get("execution_contract") or {}
+    blockers: list[str] = []
+    if canonical_sha256(payload) != admission.get("admission_sha256"):
+        blockers.append("complete_graph_paid_admission_digest_invalid")
+    if admission.get("schema_version") != PAID_ADMISSION_SCHEMA:
+        blockers.append("complete_graph_paid_admission_schema_invalid")
+    if admission.get("status") != "admitted" or admission.get("blockers") not in ([], None):
+        blockers.append("complete_graph_paid_admission_not_admitted")
+    if (
+        admission.get("arm_id") != COMPLETE_GRAPH_ARM_ID
+        or admission.get("model") != COMPLETE_GRAPH_MODEL
+        or admission.get("claim_class") != "post_unseal_diagnostic_only"
+        or admission.get("request_count") != MISSING_PAIR_COUNT
+        or admission.get("unique_video_count") != NATIVE_VIDEO_COUNT
+    ):
+        blockers.append("complete_graph_paid_admission_arm_contract_mismatch")
+    if (
+        admission.get("source_commit") != source_commit
+        or admission.get("missing_inventory_sha256") != inventory.get("inventory_sha256")
+        or admission.get("native_video_manifest_sha256") != manifest.get("manifest_sha256")
+    ):
+        blockers.append("complete_graph_paid_admission_input_binding_mismatch")
+    if (
+        cost.get("projected_missing_arm_cost_usd", float("inf"))
+        > cost.get("missing_arm_hard_cap_usd", -1)
+        or cost.get("projected_api_spend_after_stage_usd", float("inf"))
+        > cost.get("campaign_api_hard_cap_usd", -1)
+        or cost.get("campaign_api_hard_cap_usd", float("inf")) > 25.0
+    ):
+        blockers.append("complete_graph_paid_admission_cost_boundary_invalid")
+    if (
+        contract.get("partial_matrix_ranking_credit") is not False
+        or contract.get("aggregate_only_after_complete_1323_predictions_frozen") is not True
+        or contract.get("physical_ground_truth_pixels_uploaded") is not False
+        or contract.get("batch_shard_count") != MISSING_GRAPH_SHARD_COUNT
+        or contract.get("pairs_per_batch_shard") != PAIRS_PER_SHARD
+        or contract.get("shard_assignment") != "contiguous_frozen_inventory_order"
+        or contract.get("minimum_media_ready_age_seconds") != MINIMUM_MEDIA_READY_AGE_SECONDS
+    ):
+        blockers.append("complete_graph_paid_admission_claim_boundary_invalid")
+    if blockers:
+        raise GeminiMatrixError(";".join(sorted(set(blockers))))
+    try:
+        return require_paid_resource_admission(
+            admission["shared_paid_lane_admission"],
+            resource_class=PAID_RESOURCE_CLASS,
+            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+        )
+    except Exception as exc:
+        raise GeminiMatrixError("shared_paid_resource_admission_rejected") from exc
+
+
+def _arm_id(inventory: Mapping[str, Any]) -> str:
+    if inventory.get("protocol_sha256") == complete_graph_diagnostic_protocol()["protocol_sha256"]:
         return "gemini36_flash_complete_graph"
     return "gemini36_flash_native_video"
 
@@ -93,6 +336,55 @@ def _validate_inventory(inventory: Mapping[str, Any]) -> list[Mapping[str, Any]]
     return pairs
 
 
+def _shard_pairs(
+    pairs: Sequence[Mapping[str, Any]], *, shard_index: int, shard_count: int
+) -> list[Mapping[str, Any]]:
+    if (
+        len(pairs) != MISSING_PAIR_COUNT
+        or shard_count != MISSING_GRAPH_SHARD_COUNT
+        or shard_index < 0
+        or shard_index >= shard_count
+        or len(pairs) % shard_count != 0
+    ):
+        raise GeminiMatrixError("complete_graph_batch_shard_contract_invalid")
+    size = len(pairs) // shard_count
+    if size != PAIRS_PER_SHARD:
+        raise GeminiMatrixError("complete_graph_batch_shard_size_invalid")
+    start = shard_index * size
+    return list(pairs[start : start + size])
+
+
+def _provider_error_payload(exc: Exception) -> dict[str, Any]:
+    """Preserve provider diagnostics without serializing response/request objects."""
+
+    details = getattr(exc, "details", None)
+    try:
+        provider_details = json.loads(json.dumps(details))
+    except (TypeError, ValueError):
+        provider_details = None
+    return {
+        "error_type": type(exc).__name__,
+        "provider_code": getattr(exc, "code", None),
+        "provider_status": getattr(exc, "status", None),
+        "provider_message": getattr(exc, "message", None),
+        "provider_details": provider_details,
+    }
+
+
+def _media_ledger_ready_age_seconds(
+    ledger: Mapping[str, Any], *, now: datetime | None = None
+) -> float:
+    raw = str(ledger.get("updated_at_utc") or "")
+    try:
+        ready_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GeminiMatrixError("matrix_media_ledger_ready_time_invalid") from exc
+    if ready_at.tzinfo is None:
+        raise GeminiMatrixError("matrix_media_ledger_ready_time_not_utc")
+    current = now or datetime.now(timezone.utc)
+    return (current - ready_at).total_seconds()
+
+
 def _delete_receipts(client: Any, receipts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for receipt in receipts:
@@ -115,6 +407,7 @@ def upload_matrix_media(
     ledger_path: str | Path,
     source_commit: str,
     workers: int = 4,
+    paid_admission: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
         raise GeminiMatrixError(f"missing_env_{GATE_ENV}")
@@ -129,15 +422,19 @@ def upload_matrix_media(
     )
     if len(required_ids) != 441 or set(required_ids) != set(manifest_rows):
         raise GeminiMatrixError("matrix_video_identity_set_not_exact_441")
+    paid_grant = _require_complete_graph_paid_admission(
+        paid_admission,
+        inventory=inventory,
+        manifest=manifest,
+        source_commit=source_commit,
+    )
     key_path = _secure_file(api_key_file)
     api_key = key_path.read_text(encoding="utf-8").strip()
     target = Path(ledger_path)
     existing: list[dict[str, Any]] = []
     if target.is_file():
         previous = json.loads(target.read_text(encoding="utf-8"))
-        previous_payload = {
-            key: value for key, value in previous.items() if key != "ledger_sha256"
-        }
+        previous_payload = {key: value for key, value in previous.items() if key != "ledger_sha256"}
         if (
             canonical_sha256(previous_payload) != previous.get("ledger_sha256")
             or previous.get("inventory_sha256") != inventory["inventory_sha256"]
@@ -153,6 +450,10 @@ def upload_matrix_media(
     def upload_one(request_id: str) -> dict[str, Any]:
         from google import genai
 
+        require_paid_resource_admission_grant(
+            paid_grant,
+            resource_class=PAID_RESOURCE_CLASS,
+        )
         client = genai.Client(api_key=api_key)
         _, receipt = _upload_video(client, manifest_rows[request_id])
         return receipt
@@ -242,11 +543,22 @@ def submit_matrix_batch(
     api_key_file: str | Path,
     receipt_path: str | Path,
     source_commit: str,
+    paid_admission: Mapping[str, Any] | None = None,
+    shard_index: int = 0,
+    shard_count: int = MISSING_GRAPH_SHARD_COUNT,
+    cleanup_uploads_on_terminal: bool = False,
 ) -> dict[str, Any]:
     if os.getenv(GATE_ENV, "").lower() not in {"1", "true", "yes"}:
         raise GeminiMatrixError(f"missing_env_{GATE_ENV}")
     pairs = _validate_inventory(inventory)
     pair_count = len(pairs)
+    shard_pairs = _shard_pairs(
+        pairs,
+        shard_index=shard_index,
+        shard_count=shard_count,
+    )
+    if cleanup_uploads_on_terminal is not (shard_index == shard_count - 1):
+        raise GeminiMatrixError("complete_graph_batch_shard_cleanup_contract_invalid")
     target = Path(receipt_path)
     if target.is_file():
         previous = json.loads(target.read_text(encoding="utf-8"))
@@ -258,14 +570,23 @@ def submit_matrix_batch(
         if (
             previous.get("batch_name")
             and previous.get("arm_id") == _arm_id(inventory)
-            and previous.get("request_count") == pair_count
-            and (
-                pair_count == 441
-                or previous.get("inventory_sha256") == inventory["inventory_sha256"]
-            )
+            and previous.get("request_count") == len(shard_pairs)
+            and previous.get("full_inventory_request_count") == pair_count
+            and previous.get("inventory_sha256") == inventory["inventory_sha256"]
+            and previous.get("shard_index") == shard_index
+            and previous.get("shard_count") == shard_count
+            and previous.get("cleanup_uploads_on_terminal") is cleanup_uploads_on_terminal
         ):
             return previous
         raise GeminiMatrixError("existing_matrix_batch_failure_receipt_requires_review")
+    paid_grant = _require_complete_graph_paid_admission(
+        paid_admission,
+        inventory=inventory,
+        manifest={
+            "manifest_sha256": ledger.get("native_video_manifest_sha256"),
+        },
+        source_commit=source_commit,
+    )
     ledger_payload = {key: value for key, value in ledger.items() if key != "ledger_sha256"}
     if (
         canonical_sha256(ledger_payload) != ledger.get("ledger_sha256")
@@ -274,6 +595,8 @@ def submit_matrix_batch(
         or ledger.get("uploaded_video_count") != 441
     ):
         raise GeminiMatrixError("matrix_media_ledger_not_ready_bound_and_valid_441")
+    if _media_ledger_ready_age_seconds(ledger) < MINIMUM_MEDIA_READY_AGE_SECONDS:
+        raise GeminiMatrixError("matrix_media_ready_propagation_grace_not_elapsed")
     key_path = _secure_file(api_key_file)
     from google import genai
     from google.genai import types
@@ -295,14 +618,19 @@ def submit_matrix_batch(
             files_by_id[str(pair["episode_b"]["source_request_id"])],
             types_module=types,
         )
-        for pair in pairs
+        for pair in shard_pairs
     ]
     try:
+        require_paid_resource_admission_grant(
+            paid_grant,
+            resource_class=PAID_RESOURCE_CLASS,
+        )
         job = client.batches.create(
             model="gemini-3.6-flash",
             src=requests,
             config=types.CreateBatchJobConfig(
                 display_name="blueprint-roboarena-gemini36-complete-graph-v1"
+                + f"-shard-{shard_index:02d}-of-{shard_count:02d}"
             ),
         )
     except Exception as exc:
@@ -311,10 +639,13 @@ def submit_matrix_batch(
             "schema_version": "policy_ranking_gemini_matrix_batch_submission.v1",
             "status": "failed_before_batch_creation",
             "batch_name": None,
-            "request_count": pair_count,
+            "request_count": len(shard_pairs),
+            "full_inventory_request_count": pair_count,
+            "shard_index": shard_index,
+            "shard_count": shard_count,
             "inventory_sha256": inventory["inventory_sha256"],
             "media_ledger_sha256": ledger["ledger_sha256"],
-            "error_type": type(exc).__name__,
+            "provider_error": _provider_error_payload(exc),
             "deletions": deletions,
             "all_task_media_deleted": all(row["deleted"] for row in deletions),
             "provider_generation_rows_created": 0,
@@ -329,8 +660,11 @@ def submit_matrix_batch(
         "batch_name": str(job.name),
         "model": "gemini-3.6-flash",
         "arm_id": _arm_id(inventory),
-        "pair_ids": [str(pair["pair_id"]) for pair in pairs],
-        "request_count": pair_count,
+        "pair_ids": [str(pair["pair_id"]) for pair in shard_pairs],
+        "request_count": len(shard_pairs),
+        "full_inventory_request_count": pair_count,
+        "shard_index": shard_index,
+        "shard_count": shard_count,
         "unique_video_count": 441,
         "inventory_sha256": inventory["inventory_sha256"],
         "uploads": ledger["uploads"],
@@ -345,6 +679,7 @@ def submit_matrix_batch(
         "physical_ground_truth_pixels_uploaded": False,
         "credential_path_or_value_persisted": False,
         "duplicate_submission_refused_when_receipt_exists": True,
+        "cleanup_uploads_on_terminal": cleanup_uploads_on_terminal,
     }
     receipt["receipt_sha256"] = canonical_sha256(receipt)
     write_json(target, receipt)
@@ -354,12 +689,26 @@ def submit_matrix_batch(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    admit = commands.add_parser("admit")
+    admit.add_argument("--inventory", required=True)
+    admit.add_argument("--complete-inventory", required=True)
+    admit.add_argument("--native-video-manifest", required=True)
+    admit.add_argument("--reuse-audit", required=True)
+    admit.add_argument("--prior-collection", required=True)
+    admit.add_argument("--api-key-file", required=True)
+    admit.add_argument("--source-commit", required=True)
+    admit.add_argument("--realized-api-spend-usd", type=float, required=True)
+    admit.add_argument("--projected-missing-arm-cost-usd", type=float, required=True)
+    admit.add_argument("--missing-arm-cap-usd", type=float, required=True)
+    admit.add_argument("--campaign-api-cap-usd", type=float, required=True)
+    admit.add_argument("--output", required=True)
     upload = commands.add_parser("upload")
     upload.add_argument("--inventory", required=True)
     upload.add_argument("--native-video-manifest", required=True)
     upload.add_argument("--api-key-file", required=True)
     upload.add_argument("--ledger", required=True)
     upload.add_argument("--source-commit", required=True)
+    upload.add_argument("--paid-admission", required=True)
     upload.add_argument("--workers", type=int, default=4)
     cleanup = commands.add_parser("cleanup")
     cleanup.add_argument("--ledger", required=True)
@@ -371,8 +720,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     submit.add_argument("--api-key-file", required=True)
     submit.add_argument("--receipt", required=True)
     submit.add_argument("--source-commit", required=True)
+    submit.add_argument("--paid-admission", required=True)
+    submit.add_argument("--shard-index", type=int, required=True)
+    submit.add_argument("--shard-count", type=int, required=True)
+    submit.add_argument("--cleanup-uploads-on-terminal", action="store_true")
     args = parser.parse_args(argv)
-    if args.command == "upload":
+    if args.command == "admit":
+        paths = {
+            "missing_inventory": Path(args.inventory),
+            "complete_inventory": Path(args.complete_inventory),
+            "manifest": Path(args.native_video_manifest),
+            "reuse_audit": Path(args.reuse_audit),
+            "prior_collection": Path(args.prior_collection),
+        }
+        try:
+            _secure_file(args.api_key_file)
+            credential_ready = True
+        except ValueError:
+            credential_ready = False
+        result = build_complete_graph_paid_admission(
+            json.loads(paths["missing_inventory"].read_text(encoding="utf-8")),
+            json.loads(paths["complete_inventory"].read_text(encoding="utf-8")),
+            json.loads(paths["manifest"].read_text(encoding="utf-8")),
+            json.loads(paths["reuse_audit"].read_text(encoding="utf-8")),
+            json.loads(paths["prior_collection"].read_text(encoding="utf-8")),
+            missing_inventory_file_sha256=file_sha256(paths["missing_inventory"]),
+            complete_inventory_file_sha256=file_sha256(paths["complete_inventory"]),
+            manifest_file_sha256=file_sha256(paths["manifest"]),
+            reuse_audit_file_sha256=file_sha256(paths["reuse_audit"]),
+            prior_collection_file_sha256=file_sha256(paths["prior_collection"]),
+            source_commit=args.source_commit,
+            realized_api_spend_usd=args.realized_api_spend_usd,
+            projected_missing_arm_cost_usd=args.projected_missing_arm_cost_usd,
+            missing_arm_cap_usd=args.missing_arm_cap_usd,
+            campaign_api_cap_usd=args.campaign_api_cap_usd,
+            credential_ready=credential_ready,
+        )
+        write_json(Path(args.output), result)
+    elif args.command == "upload":
         result = upload_matrix_media(
             json.loads(Path(args.inventory).read_text(encoding="utf-8")),
             json.loads(Path(args.native_video_manifest).read_text(encoding="utf-8")),
@@ -380,6 +765,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ledger_path=args.ledger,
             source_commit=args.source_commit,
             workers=args.workers,
+            paid_admission=json.loads(Path(args.paid_admission).read_text(encoding="utf-8")),
         )
     elif args.command == "cleanup":
         result = cleanup_matrix_media(
@@ -394,12 +780,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             api_key_file=args.api_key_file,
             receipt_path=args.receipt,
             source_commit=args.source_commit,
+            paid_admission=json.loads(Path(args.paid_admission).read_text(encoding="utf-8")),
+            shard_index=args.shard_index,
+            shard_count=args.shard_count,
+            cleanup_uploads_on_terminal=args.cleanup_uploads_on_terminal,
         )
-    print(json.dumps({key: value for key, value in result.items() if key not in {"uploads", "deletions"}}))
+    print(
+        json.dumps(
+            {key: value for key, value in result.items() if key not in {"uploads", "deletions"}}
+        )
+    )
     return (
         0
         if result.get("status")
-        in {"ready", "passed", "JOB_STATE_PENDING", "JOB_STATE_RUNNING"}
+        in {"admitted", "ready", "passed", "JOB_STATE_PENDING", "JOB_STATE_RUNNING"}
         else 2
     )
 

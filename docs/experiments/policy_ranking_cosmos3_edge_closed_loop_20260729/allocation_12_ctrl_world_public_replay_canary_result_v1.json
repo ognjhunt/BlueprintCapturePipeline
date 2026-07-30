@@ -1,0 +1,207 @@
+{
+  "schema_version": "policy_ranking_ctrl_world_public_replay_canary_result.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "recorded_at": "2026-07-30T05:52:10-0500",
+  "allocation_id": "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-12",
+  "provider": "vast",
+  "provider_instance_id": 46277251,
+  "status": "completed",
+  "authorization_consumed": true,
+  "authorization_consumption_record_sha256": "8f2df28974ae4cb0c6102b343f2f9cdc1b7e00bf303440252ffe18de968ed3bd",
+  "paid_launch_attempted": true,
+  "executed_source_commit": "9ffe6bed2bd1f516421c4d8103977dd0a022a624",
+  "executed_bundle": {
+    "version": 5,
+    "sha256": "9d1133f481c5ba75386d8dfa35b1a70d4eca8f382242422cf263c9ed5df36070",
+    "size_bytes": 2579230,
+    "receipt_sha256": "e92a9c864f67640581a3ad312a5da78f8a865f2bc342afdfd65ad98f0a923400",
+    "runtime_manifest_file_sha256": "9efb0badcc347b76b445a352623d125dbbd5bc74d8dbb1e644a097840adbbe50",
+    "runner_sha256": "f79b63c23dd5e0ae78e8962ffa764b5aaa5d55fe02e37e564d7397a20c532655"
+  },
+  "pre_provider_incidents": [
+    {
+      "incident": "non_content_addressed_staging_from_wrong_editable_install",
+      "effect": "rejected before paid launch and replaced by content-addressed staging v4",
+      "provider_compute_mutations": 0,
+      "authorization_consumed": false,
+      "scientific_inputs_changed": false,
+      "exact_staged_objects_deleted_and_absence_proven": true
+    },
+    {
+      "incident": "vast_launch_environment_gates_omitted",
+      "effect": "allocator blocked before authorization consumption or provider mutation",
+      "provider_compute_mutations": 0,
+      "authorization_consumed": false,
+      "scientific_inputs_changed": false
+    }
+  ],
+  "runtime": {
+    "model_name": "Ctrl-World",
+    "arm_id": "ctrl_world_public_replay_reduced_canary",
+    "exact_source_commit": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+    "exact_checkpoint_repo": "yjguo/Ctrl-World",
+    "exact_checkpoint_revision": "8cf814693f411962dc866a2ddb5b785afd17a93a",
+    "runtime_image": "docker.io/pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "torch_distribution_version": "2.7.1+cu128",
+    "cuda_device": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "cuda_device_count": 1,
+    "exact_public_script_executed_unchanged": true,
+    "blueprint_wrapper_only_reduced_trajectory_and_interaction_count": true,
+    "trajectory_id": "899",
+    "start_index": 8,
+    "task_instruction": "Move the banana to the right",
+    "interaction_count": 1,
+    "learned_world_model_ran": true,
+    "action_conditioned_video_rollout_generated": true,
+    "candidate_policy_requeried": false,
+    "closed_loop_policy_evaluation": false,
+    "future_physical_rgb_used_for_generation": false,
+    "future_physical_rgb_decoded_by_public_script_for_comparison": true,
+    "physical_comparison_pixels_returned_to_blueprint": false,
+    "public_comparison_video_deleted_after_redaction": true,
+    "hard_coded_runtime_success_field_used_as_ground_truth": false,
+    "physical_outcome_labels_accessed": false,
+    "dependency_install_duration_seconds": 171.392513,
+    "public_replay_duration_seconds": 46.280297,
+    "runtime_duration_seconds": 354.570936,
+    "gpu_memory_peak": "not_recorded",
+    "blockers": []
+  },
+  "checkpoint_blobs": [
+    {
+      "identity": "ctrl_world/checkpoint-10000.pt",
+      "size_bytes": 9281040326,
+      "sha256": "ed17de48180d4e6f89fd33c53e9fb7a0196189c1a67d44c2c486a279a80ea8a8"
+    },
+    {
+      "identity": "stable_video_diffusion/image_encoder/model.safetensors",
+      "size_bytes": 2528371296,
+      "sha256": "ed1e5af7b4042ca30ec29999a4a5cfcac90b7fb610fd05ace834f2dcbb763eab"
+    },
+    {
+      "identity": "stable_video_diffusion/unet/diffusion_pytorch_model.safetensors",
+      "size_bytes": 6098682464,
+      "sha256": "98c5e6b99df6bef015b2681c0f8ab9d4c807b733be46c067d6c9966101698f58"
+    },
+    {
+      "identity": "stable_video_diffusion/vae/diffusion_pytorch_model.safetensors",
+      "size_bytes": 391017740,
+      "sha256": "9975042d7bee021bd53a72b1af14c8627d624f6547ec9abe661b68b962b88c49"
+    },
+    {
+      "identity": "clip/pytorch_model.bin",
+      "size_bytes": 605247071,
+      "sha256": "a63082132ba4f97a80bea76823f544493bffa8082296d62d71581a4feff1576f"
+    }
+  ],
+  "generated_media": {
+    "video_count": 4,
+    "single_view_count": 3,
+    "three_view_composite_count": 1,
+    "codec": "mpeg4",
+    "fps": 4.0,
+    "frame_count": 5,
+    "duration_seconds": 1.25,
+    "single_view_width": 320,
+    "three_view_width": 960,
+    "height": 192,
+    "all_videos_ffprobe_valid": true,
+    "videos": [
+      {
+        "view": "three_view_composite",
+        "size_bytes": 57717,
+        "sha256": "c98d98ce10a4e839ad5defdd5237b0c59f9e057a939af7e3a0a9b0b9aa3d9a8a"
+      },
+      {
+        "view": "external_0",
+        "size_bytes": 22891,
+        "sha256": "8933602a397bb4554505179192b5403de6a9451aa1382d31e9fa70b1c7216ad4"
+      },
+      {
+        "view": "external_1",
+        "size_bytes": 17864,
+        "sha256": "db1cde24233511527ea130f6e0aee1e23ae08cfa492a7e5da0c4e11ec7bb15dc"
+      },
+      {
+        "view": "wrist_2",
+        "size_bytes": 20047,
+        "sha256": "f67f1b67b8cfa9faf0b5f814ff80fea8b63c5ff197180f5b279e4af2156c646e"
+      }
+    ]
+  },
+  "review": {
+    "manual_all_frame_all_view_review_completed": true,
+    "review_manifest": "ctrl_world_public_replay_review_views_result_v1.json",
+    "scene_content_visually_coherent_over_five_frames": true,
+    "nonzero_generated_motion_present_in_all_views": true,
+    "task_success_label_assigned": false,
+    "causal_action_response_established": false,
+    "ranking_or_abstention_gate_run": false
+  },
+  "cost": {
+    "selected_provider_all_in_hourly_rate_usd": 1.537037037037037,
+    "actual_live_runtime_seconds_observed_by_adapter": 455.65505325,
+    "estimated_all_in_stage_cost_usd": 0.194544,
+    "ctrl_world_stage_cost_before_allocation_usd": 0.251785,
+    "updated_ctrl_world_stage_cost_usd": 0.446329,
+    "campaign_gpu_cost_before_allocation_usd": 3.792455,
+    "updated_campaign_gpu_cost_usd": 3.986999,
+    "campaign_api_plus_gpu_cost_before_allocation_usd": 12.210967,
+    "updated_campaign_api_plus_gpu_cost_usd": 12.405511,
+    "gpu_category_cap_usd": 50.0,
+    "campaign_total_cap_usd": 100.0
+  },
+  "teardown": {
+    "destroy_request_completed": true,
+    "watchdog_status": "provider_terminal",
+    "provider_zero_api_confirmed": true,
+    "task_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "continuing_spend": false,
+    "staged_object_count_deleted": 4,
+    "all_staged_objects_absent": true,
+    "signed_url_files_removed": true,
+    "local_runtime_evidence_retained": true
+  },
+  "evidence": {
+    "external_job_root": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/ctrl_world_replay_provider_job_allocation_12_v1",
+    "provider_output_zip_sha256": "d51d02770ccb901bdc74f93c3fbb816aa9991b2a36e3b9adfcd6eebb79022854",
+    "runtime_result_sha256": "91064273a5f3d14548822179d9d8502e89278700e4b8d2492612b1b95b0aa572",
+    "adapter_output_sha256": "e02726c25853f5f507193160ba76c43998d9222e8a64e4412a2df7922fedf2e6",
+    "admission_sha256": "c350d4e664b4381f764e453133e8ffcf0ed2dec3ca3742a4b982327729da3f3f",
+    "bound_request_sha256": "877c5e18ad9fa791792a314cc6cccee3027b86c7158de668798ac8e66f3377f6",
+    "authorized_runner_manifest_sha256": "ed3e45d2e25443171f0ebd000a733def97cd79502b50c4242f3f4cbbe16fa9f6",
+    "provider_adapter_result_sha256": "c945d14b0f234a3aae59704e378bf8f5453e59cfaff77e20f3f5eecd97c9640e",
+    "budget_ledger_sha256": "484948c2cc4fbd7bc375284f2934822974e2e458692a8277b6a3a05308d6d36a",
+    "session_budget_ledger_sha256": "b5f3870cd22987194f2863adcd6203b39669e1a344107b134ae89ec719a94667",
+    "all_in_cost_binding_sha256": "30639dad768d8a2723413f73a88abfac1cc64bef8ae0fbd0a8aca13cb73706ef",
+    "watchdog_manifest_sha256": "ac7e3fbe920d4ed837fd4a52281358e88854760f22fa226e6f08c2d1dee53945",
+    "watchdog_cancel_manifest_sha256": "f1ef6ab7f2c6acb588bd8dfd420feed98b3d8ee5d81dbd6e3a350506e0035530",
+    "teardown_manifest_sha256": "316013a6ea9eadb488c2cb7c1237f3ab5293677ec1b47089d27355981b26eb0a",
+    "final_validation_sha256": "9f41d3de396e934a2f2c5dda529f48cc1449e3acc78ea948c281f618bb93855d",
+    "video_smoke_result_sha256": "f6104475e93c3912236ce21f2c3d9944e0ab2192055cff56dd12361b6f3ea660",
+    "gpu_sanity_report_sha256": "c3beac9baf2d95e4efcc902a5f9b80c0ea075b54f6994211396a810b4fb0de96",
+    "output_download_manifest_sha256": "0f2aedf84fa126e70c40c6ec9113cce8c4e4b353d0eb5becc521b429a3f30190",
+    "provider_zero_report_sha256": "bc903e9456dda1ef9256223e94f22452ae3eedcde1dda0c08707b3aabe8078e6",
+    "provider_zero_manifest_sha256": "469c6b65c02abb4eaaca6cca112eaf7b51284d9520ee643c8cc052ae219fd0dc",
+    "eligible_staging_manifest_sha256": "ba85c87d32dd1d5eff928d106662a24121b5406bd6b363de8f26c0aa97018c54",
+    "eligible_staging_binding_sha256": "6ef23d0d74fcded0f28a2ff9b021b230c4ab9d28152937d5007761d7a02a72a1",
+    "eligible_staging_cleanup_sha256": "2b1a39256964765b55744380e705f7821dd5e77ef08da06518f2c94c85ac389a",
+    "rejected_staging_cleanup_sha256": "e0593a67bbc9ea1477b7c891c2c567d48b577727d0884af3c04859301d79fd4a"
+  },
+  "claims": {
+    "exact_public_ctrl_world_runtime_compatibility": true,
+    "generated_media": true,
+    "open_loop_recorded_action_replay": true,
+    "closed_loop_policy_evaluation": false,
+    "wam_causal_validity": false,
+    "ranking_fidelity": false,
+    "abstention_calibration": false,
+    "captured_site_transfer": false,
+    "economics_and_speed": false,
+    "physical_success": false
+  },
+  "historical_frozen_stack_verdict_unchanged": "thesis_not_supported",
+  "claim_ceiling": "label_free_exact_public_ctrl_world_open_loop_replay_canary_only",
+  "result_sha256": "2af92d8d74faabc486f6c06e31880e4f1c6ce6b37c55628cfb551dc62f460f1f"
+}

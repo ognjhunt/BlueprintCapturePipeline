@@ -70,7 +70,10 @@ _TRANSITIONS: Mapping[str | None, frozenset[str]] = {
     "terminal_success": frozenset({"teardown_requested"}),
     "terminal_failure": frozenset({"teardown_requested"}),
     "teardown_requested": frozenset({"provider_absent"}),
-    "provider_absent": frozenset(),
+    # A job directory may hold multiple prospectively authorized attempts.  The
+    # prior attempt must reach provider_absent before a new allocation can
+    # extend the same append-only, hash-bound journal.
+    "provider_absent": frozenset({"allocated"}),
 }
 
 

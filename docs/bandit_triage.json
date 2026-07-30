@@ -627,18 +627,6 @@
     {
       "disposition": "accepted_risk",
       "expires_on": "2026-08-08",
-      "filename": "src/blueprint_pipeline/vast_provider_adapter.py",
-      "fingerprint": "1fbb75c9719e1d40ee793a6e2a06ebc42831c24a97e95bc05821a7d11f0c1d9a",
-      "line_number": 5737,
-      "owner": "@ognjhunt",
-      "reason": "This existing URL-open site was reviewed at its exact code fingerprint after confirmed unsafe endpoints were migrated to bounded validators; remaining reachability and provenance assumptions must be re-reviewed before expiry. Re-fingerprinted after unchanged validation logic moved into the shared provider-runtime contract module; canonical finding code was verified unchanged.",
-      "reviewed_on": "2026-07-27",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-08-08",
       "filename": "src/blueprint_pipeline/video_to_world_client.py",
       "fingerprint": "baa74dc8b14f7618db4b8a96111f8087877d40bfb749e73e486899eeb88261ee",
       "line_number": 76,

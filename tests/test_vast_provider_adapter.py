@@ -90,6 +90,25 @@ def test_retention_requires_healthy_host_and_armed_watchdog() -> None:
     assert decision["blockers"] == []
 
 
+def test_lifecycle_record_failure_blocks_result_without_raising() -> None:
+    result: dict[str, object] = {"status": "completed", "blockers": ["prior_blocker"]}
+
+    recorded = vpa._record_lifecycle_or_block(
+        result,
+        operation="terminal",
+        recorder=lambda: (_ for _ in ()).throw(ValueError("sensitive details omitted")),
+    )
+
+    assert recorded is False
+    assert result["status"] == "failed"
+    assert result["reason"] == "retained_gpu_lifecycle_record_failed"
+    assert result["blockers"] == [
+        "prior_blocker",
+        "retained_gpu_lifecycle_terminal_record_failed:ValueError",
+    ]
+    assert "sensitive details omitted" not in json.dumps(result)
+
+
 def test_retention_reads_loaded_nonterminal_cosmos_evidence_from_output_zip(
     tmp_path: Path,
 ) -> None:
@@ -5781,6 +5800,8 @@ def test_vast_adapter_run_clears_stale_artifacts_and_blocks_session_budget(
     for stale_name in stale_names:
         (job_dir / stale_name).write_text('{"stale": true}', encoding="utf-8")
     (job_dir / "vast_runtime_phase_log.jsonl").write_text('{"phase":"old"}\n', encoding="utf-8")
+    stale_output = job_dir / "provider_runtime_output.zip"
+    stale_output.write_bytes(b"old-provider-output")
     budget = tmp_path / "budget.json"
     budget.write_text(
         json.dumps(
@@ -5805,6 +5826,8 @@ def test_vast_adapter_run_clears_stale_artifacts_and_blocks_session_budget(
         session_budget_ledger_path=budget,
         session_max_live_minutes=10,
         hard_cap_usd=1.0,
+        provider_runtime_output_zip=stale_output,
+        provider_output_get_url="https://object.example/current-attempt.zip",
     )
 
     assert result["status"] == "blocked"
@@ -5817,6 +5840,7 @@ def test_vast_adapter_run_clears_stale_artifacts_and_blocks_session_budget(
     assert preservation["raw_secret_values_recorded"] is False
     assert "vast_runtime_phase_log.jsonl" in preservation["copied_artifacts"]
     assert "vast_startup_probe_manifest.json" in preservation["copied_artifacts"]
+    assert "provider_runtime_output.zip" in preservation["copied_artifacts"]
     preserved_dir = Path(preservation["preserve_dir"])
     assert (preserved_dir / "vast_runtime_phase_log.jsonl").read_text(
         encoding="utf-8"
@@ -5824,6 +5848,8 @@ def test_vast_adapter_run_clears_stale_artifacts_and_blocks_session_budget(
     assert json.loads(
         (preserved_dir / "vast_startup_probe_manifest.json").read_text(encoding="utf-8")
     ) == {"stale": True}
+    assert (preserved_dir / "provider_runtime_output.zip").read_bytes() == b"old-provider-output"
+    assert not stale_output.exists()
     assert (job_dir / "vast_runtime_phase_log.jsonl").read_text(encoding="utf-8") != (
         '{"phase":"old"}\n'
     )
@@ -6480,6 +6506,7 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
         if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/8081":
             return 200, {"success": True, "result_url": "https://logs.example/wam"}
         if kwargs["method"] == "DELETE":
+            mutation_order.append("provider_delete")
             return 200, {"success": True}
         raise AssertionError(kwargs)
 
@@ -6537,6 +6564,39 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
         _read_json(tmp_path / "wam-live" / "vast_isaac_smoke_result.json")["status"]
         == "not_required"
     )
+
+    monkeypatch.setattr(
+        vpa,
+        "record_terminal_lifecycle",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("journal write failed")),
+    )
+    delete_count_before = mutation_order.count("provider_delete")
+    lifecycle_failed = run_vast_provider_adapter(
+        job_dir=tmp_path / "wam-lifecycle-failed",
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        provider_bundle=wam_bundle,
+        provider_bundle_url="https://example.invalid/wam.zip",
+        provider_output_put_url="https://example.invalid/out.zip",
+        enable_isaac_smoke=False,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="wam",
+        retain_instance_on_runtime_failure=True,
+        pre_provider_mutation_hook=consume_authorization,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=10,
+        session_max_live_minutes=None,
+    )
+    assert lifecycle_failed["status"] == "failed"
+    assert lifecycle_failed["reason"] == "retained_gpu_lifecycle_record_failed"
+    assert mutation_order.count("provider_delete") == delete_count_before + 1
+    lifecycle_teardown = _read_json(
+        tmp_path / "wam-lifecycle-failed" / "vast_teardown_manifest.json"
+    )
+    assert lifecycle_teardown["continuing_spend_from_this_run"] is False
+    assert lifecycle_teardown["runner_gpu_teardown_completed"] is True
 
     monkeypatch.setenv("NGC_API_KEY_FILE", str(tmp_path / "missing-ngc-key"))
     ngc_missing = run_vast_provider_adapter(

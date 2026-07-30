@@ -1,0 +1,80 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v15",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-30T05:20:14-0500",
+  "supersedes_amendment_sha256": "2b56a87b445c34728834a682ed0da0c42163c52e9c0b72e858a6b7e9521b1931",
+  "phase": "phase_4_ctrl_world_exact_torch_and_output_isolation_correction",
+  "trigger": "Allocation 11 passed CUDA, exact packaged-source validation, and installation of all frozen Python dependencies. Its exact uploaded output was initially hidden by a stale local allocation-10 output path; recovered allocation-11 evidence then showed only an exact Torch distribution-version mismatch before model download or execution.",
+  "allocation_11_result": {
+    "provider_instance_id": 46275218,
+    "gpu_model": "RTX PRO 6000 S",
+    "cuda_runtime_probe_passed": true,
+    "packaged_source_validation_passed": true,
+    "dependency_install_returncode": 0,
+    "frozen_python_dependencies_installed": true,
+    "observed_torch_version": "2.7.1+cu128",
+    "expected_torch_version_in_bundle_v4": "2.7.1",
+    "runtime_blocker": "ctrl_world_torch_version_mismatch",
+    "model_download_started": false,
+    "model_load_started": false,
+    "learned_world_model_ran": false,
+    "scientific_outputs_produced": 0,
+    "authorization_consumed": true,
+    "automatic_teardown_completed": true,
+    "provider_zero_proven": true,
+    "runtime_seconds": 276.270596,
+    "gpu_cost_usd": 0.133247,
+    "recovered_provider_runtime_output_sha256": "d8396572a092dbd5a69959e9be273142aa592f5228a63da870eaed7c61ffe599",
+    "recovered_runtime_result_sha256": "236a88b0427d0b0a90f707c78af0e4958613fdd2f67b7a5c53fd63d484221f56",
+    "output_recovery_manifest_sha256": "245cd46ff255b348e7b5ea886d2b5293d28b74eb556474889239f7796bf9c99c",
+    "session_budget_ledger_sha256": "e433a6aac0dee869ce6fb1ad5f410f72bcc1d57e52078392dd147ea6f2c6a79e",
+    "teardown_manifest_sha256": "76ed9ba64d4c124619a6883090baab7ed1655239f1203d130c480ce3be5ed382"
+  },
+  "demonstrable_implementation_defects": {
+    "per_attempt_output_isolation": {
+      "before": "a current provider upload was not downloaded when the configured local output path already held a prior attempt artifact",
+      "after": "direct object-store output is refreshed whenever the current provider upload marker and GET channel are present; prior output is preserved before refresh and stale extracted media is removed",
+      "generic_future_applicability": true
+    },
+    "exact_torch_binding": {
+      "before": "the manifest shortened the immutable image's Torch distribution version to 2.7.1",
+      "after": "the manifest requires the exact observed distribution version 2.7.1+cu128",
+      "runtime_image_changed": false,
+      "generic_future_applicability": true
+    }
+  },
+  "focused_regressions": {
+    "slow_vast_adapter_tests": "97 passed",
+    "vast_async_runner_tests": "18 passed",
+    "ctrl_world_bundle_tests": "6 passed",
+    "stale_output_is_preserved_and_refreshed": true,
+    "ruff_check_and_format": "passed"
+  },
+  "corrected_source_and_bundle": {
+    "source_freeze_version": 10,
+    "source_freeze_manifest_sha256": "e43a961e0cafe6fd8129ab552a64e9da4fff00ca57797b7087b2f502b3063f81",
+    "bundle_version": 5,
+    "bundle_sha256": "9d1133f481c5ba75386d8dfa35b1a70d4eca8f382242422cf263c9ed5df36070",
+    "bundle_size_bytes": 2579230,
+    "bundle_receipt_sha256": "e92a9c864f67640581a3ad312a5da78f8a865f2bc342afdfd65ad98f0a923400",
+    "runtime_manifest_file_sha256": "9efb0badcc347b76b445a352623d125dbbd5bc74d8dbb1e644a097840adbbe50",
+    "deterministic_rebuild_verified": true
+  },
+  "budget_after_allocation_11": {
+    "ctrl_world_stage_cost_usd": 0.251785,
+    "campaign_gpu_cost_usd": 3.792455,
+    "campaign_api_plus_gpu_cost_usd": 12.210967,
+    "live_provider_count": 0,
+    "projected_ctrl_world_cost_after_one_max_ttl_retry_usd": 2.985118,
+    "next_request_still_within_ctrl_world_target_and_campaign_caps": true
+  },
+  "unchanged_scientific_inputs": {
+    "base_image_digest": "sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "ctrl_world_source_checkpoint_data_views_actions_sampling_and_dependencies": "unchanged",
+    "labels_accessed": false
+  },
+  "rerun_rule": "One final allocation may rerun the exact corrected canary only after both generic corrections, recovered allocation-11 evidence, source freeze v10, bundle v5, and focused regressions are committed and pushed under a new single-use authorization. No additional Ctrl-World allocation is admitted under the registered USD 3 target after that attempt without a new prospective budget amendment.",
+  "claim_boundary": "The corrections and any transport or runtime canary pass earn no WAM causal, ranking, transfer, economics, physical-success, or thesis credit.",
+  "provider_called_for_this_amendment": false,
+  "manifest_sha256": "cd0952f97a5bc7139ce88a849fa99b7a442f5164a85b48e3f0bac752fc4304ae"
+}

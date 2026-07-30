@@ -53,8 +53,16 @@ def test_wam_registered_alternative_accepts_standard_and_reference_layouts(tmp_p
         "provider_runtime/cosmos3_droid_reference/initial_observation.png",
         "provider_runtime/cosmos3_droid_reference/action_streams.json",
     ]
+    ctrl_world = [
+        "provider_runtime/ctrl_world_replay/canary_manifest.json",
+        "provider_runtime/ctrl_world_replay/annotation.json",
+        "provider_runtime/ctrl_world_replay/view_0.mp4",
+        "provider_runtime/ctrl_world_replay/view_1.mp4",
+        "provider_runtime/ctrl_world_replay/view_2.mp4",
+    ]
     assert wam_registered_alternative_inputs_present(bundle_path=unused, zip_entries=standard)
     assert wam_registered_alternative_inputs_present(bundle_path=unused, zip_entries=reference)
+    assert wam_registered_alternative_inputs_present(bundle_path=unused, zip_entries=ctrl_world)
 
 
 def test_wam_registered_alternative_validates_powered_layout(tmp_path: Path) -> None:

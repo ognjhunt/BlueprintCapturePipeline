@@ -61,7 +61,13 @@ from .provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
     wam_registered_alternative_inputs_present,
 )
+from .wam_async_runner_common import download_url_to_file
 from .vast_independent_watchdog_control import write_started_vast_instance_id
+from .vast_attempt_preservation import (
+    VAST_LIVE_ATTEMPT_ARTIFACT_NAMES,
+    attempt_preservation_slug,
+    preserve_existing_live_attempt_artifacts,
+)
 from .vast_evaluator_probe_script import (
     EVALUATOR_REQUIRED_ENTRIES,
     evaluator_provider_probe_script,
@@ -176,30 +182,6 @@ DEFAULT_UNITREE_UNIFOLM_VIDEO_COUNT = 0
 DEFAULT_UNITREE_GROOT_N17_SONIC_VIDEO_COUNT = 0
 DEFAULT_ARGS_LOG_HOLD_SECONDS = 180
 DEFAULT_MIN_COLD_ISAAC_PULL_LIVE_MINUTES = 18
-VAST_LIVE_ATTEMPT_ARTIFACT_NAMES = (
-    "vast_runtime_phase_log.jsonl",
-    "vast_offer_selection_manifest.json",
-    "vast_budget_ledger.json",
-    "vast_all_in_cost_binding.json",
-    "vast_startup_probe_manifest.json",
-    "vast_gpu_sanity_report.json",
-    "vast_isaac_smoke_result.json",
-    "vast_provider_command_result.json",
-    "vast_video_smoke_result.json",
-    "vast_teardown_manifest.json",
-    "vast_retained_instance_decision.json",
-    "retained_gpu_session_lifecycle.jsonl",
-    "retained_gpu_session_manifest.json",
-    "vast_final_validation.json",
-    "vast_provider_adapter_result.json",
-    "vast_session_budget_guard.json",
-    "vast_blueprint_bundle_preflight.json",
-    "vast_launch_lock_manifest.json",
-    "vast_prelaunch_inventory_guard.json",
-    "provider_worker_endpoint_manifest.json",
-    "vast_provider_runtime_output.zip",
-    "vast_onstart_container.log",
-)
 VAST_DOC_SOURCES = [
     {
         "label": "Vast create instance API",
@@ -409,6 +391,29 @@ def _dedupe(values: Iterable[str]) -> list[str]:
             result.append(value)
             seen.add(value)
     return result
+
+
+def _record_lifecycle_or_block(
+    base_result: dict[str, Any],
+    *,
+    operation: str,
+    recorder: Callable[[], Any],
+) -> bool:
+    """Record lifecycle evidence without allowing evidence I/O to skip teardown."""
+
+    try:
+        recorder()
+    except Exception as exc:
+        blocker = f"retained_gpu_lifecycle_{operation}_record_failed:{type(exc).__name__}"
+        base_result.update(
+            {
+                "status": "failed",
+                "reason": "retained_gpu_lifecycle_record_failed",
+                "blockers": _dedupe([*_string_list(base_result.get("blockers")), blocker]),
+            }
+        )
+        return False
+    return True
 
 
 def _env_truthy(name: str) -> bool:
@@ -1479,8 +1484,9 @@ def _record_machine_avoidlist_entry(
 
 
 def _attempt_preservation_slug(generated_at: str) -> str:
-    slug = re.sub(r"[^0-9A-Za-z]+", "", generated_at)
-    return slug[:32] or str(int(time.time()))
+    """Compatibility wrapper for the decomposed preservation helper."""
+
+    return attempt_preservation_slug(generated_at)
 
 
 def _preserve_existing_live_attempt_artifacts(
@@ -1489,48 +1495,17 @@ def _preserve_existing_live_attempt_artifacts(
     generated_at: str,
     reason: str,
     artifact_names: Sequence[str] = VAST_LIVE_ATTEMPT_ARTIFACT_NAMES,
+    additional_artifact_paths: Sequence[Path] = (),
 ) -> dict[str, Any] | None:
-    present_paths = [job_dir / name for name in artifact_names if (job_dir / name).is_file()]
-    if not present_paths:
-        return None
-    preserve_dir = job_dir / f"attempt_preserved_{_attempt_preservation_slug(generated_at)}"
-    suffix = 1
-    while preserve_dir.exists():
-        suffix += 1
-        preserve_dir = (
-            job_dir / f"attempt_preserved_{_attempt_preservation_slug(generated_at)}_{suffix}"
-        )
-    ensure_dir(preserve_dir)
-    copied: list[str] = []
-    copy_errors: list[dict[str, Any]] = []
-    for source in present_paths:
-        target = preserve_dir / source.name
-        try:
-            shutil.copy2(source, target)
-            copied.append(source.name)
-        except Exception as exc:
-            copy_errors.append(
-                {
-                    "artifact": source.name,
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc)[:300],
-                }
-            )
-    manifest = {
-        "schema_version": "vast_live_attempt_preservation_manifest.v1",
-        "generated_at": generated_at,
-        "status": "completed" if not copy_errors else "blocked_copy_errors",
-        "reason": reason,
-        "source_job_dir": str(job_dir),
-        "preserve_dir": str(preserve_dir),
-        "copied_artifacts": copied,
-        "copy_errors": copy_errors,
-        "artifact_count": len(copied),
-        "raw_secret_values_recorded": False,
-    }
-    write_json(preserve_dir / "vast_attempt_preservation_manifest.json", manifest)
-    write_json(job_dir / "vast_latest_attempt_preservation_manifest.json", manifest)
-    return manifest
+    """Compatibility wrapper for recoverable live-attempt preservation."""
+
+    return preserve_existing_live_attempt_artifacts(
+        job_dir=job_dir,
+        generated_at=generated_at,
+        reason=reason,
+        artifact_names=artifact_names,
+        additional_artifact_paths=additional_artifact_paths,
+    )
 
 
 def _select_offer(
@@ -4162,12 +4137,28 @@ def run_vast_provider_adapter(
     create_request_image = None if use_vast_template_image else selected_container_image
     result_path = resolved_job_dir / "vast_provider_adapter_result.json"
     phase_path = resolved_job_dir / "vast_runtime_phase_log.jsonl"
+    output_zip_path = (
+        Path(provider_runtime_output_zip).expanduser().resolve()
+        if provider_runtime_output_zip
+        else resolved_job_dir / "vast_provider_runtime_output.zip"
+    )
+    attempt_preservation_blockers: list[str] = []
     if mode == "live-startup-probe":
-        _preserve_existing_live_attempt_artifacts(
+        output_refresh_expected = bool(_string(provider_output_get_url))
+        output_zip_was_present = output_refresh_expected and output_zip_path.is_file()
+        attempt_preservation = _preserve_existing_live_attempt_artifacts(
             job_dir=resolved_job_dir,
             generated_at=generated_at,
             reason="preserve_existing_live_attempt_before_new_vast_run",
+            additional_artifact_paths=(output_zip_path,) if output_refresh_expected else (),
         )
+        if attempt_preservation and attempt_preservation.get("status") != "completed":
+            attempt_preservation_blockers.append("vast_live_attempt_preservation_failed")
+        elif output_zip_was_present:
+            output_zip_path.unlink()
+        stale_video_extract_dir = resolved_job_dir / "vast_provider_runtime_output_videos"
+        if not attempt_preservation_blockers and stale_video_extract_dir.is_dir():
+            shutil.rmtree(stale_video_extract_dir)
     if phase_path.exists():
         phase_path.unlink()
     if mode == "live-startup-probe":
@@ -4203,11 +4194,6 @@ def run_vast_provider_adapter(
     hf_token, hf_token_status = _read_hf_token_file()
     previous_path = Path(previous_job_dir).expanduser().resolve() if previous_job_dir else None
     bundle_path = Path(provider_bundle).expanduser().resolve() if provider_bundle else None
-    output_zip_path = (
-        Path(provider_runtime_output_zip).expanduser().resolve()
-        if provider_runtime_output_zip
-        else resolved_job_dir / "vast_provider_runtime_output.zip"
-    )
     inline_bundle_transport = _inline_provider_bundle_payload(
         bundle_path,
         provider_bundle_kind=provider_bundle_kind,
@@ -4597,11 +4583,14 @@ def run_vast_provider_adapter(
         write_json(result_path, base_result)
         return base_result
 
-    gate_blockers = _api_gate_blockers(
-        allow_vast_api_call=allow_vast_api_call,
-        allow_instance_launch=allow_instance_launch,
-        api_key=api_key,
-    )
+    gate_blockers = [
+        *attempt_preservation_blockers,
+        *_api_gate_blockers(
+            allow_vast_api_call=allow_vast_api_call,
+            allow_instance_launch=allow_instance_launch,
+            api_key=api_key,
+        ),
+    ]
     if gate_blockers:
         offer_manifest = {
             "schema_version": VAST_OFFER_SELECTION_SCHEMA_VERSION,
@@ -5847,44 +5836,31 @@ def run_vast_provider_adapter(
                 "output_zip_path": str(output_zip_path),
                 "raw_secret_values_recorded": False,
             }
-            if (
-                provider_upload_ok
-                and _string(provider_output_get_url)
-                and not output_zip_path.is_file()
-            ):
-                try:
-                    with urllib.request.urlopen(
-                        _string(provider_output_get_url),
-                        timeout=60,
-                    ) as response:
-                        output_zip_path.write_bytes(response.read())
+            if provider_upload_ok and _string(provider_output_get_url):
+                transfer = download_url_to_file(
+                    url=_string(provider_output_get_url),
+                    output_path=output_zip_path,
+                    user_agent="BlueprintVastProviderAdapter/1.0",
+                    timeout_seconds=60,
+                )
+                if transfer["status"] == "completed":
                     output_download_manifest.update(
                         {
                             "status": "completed",
-                            "http_status_code": int(getattr(response, "status", 200)),
+                            "http_status_code": transfer.get("http_status_code"),
                             "output_zip_present_after_download": output_zip_path.is_file(),
-                            "output_zip_size_bytes": output_zip_path.stat().st_size
-                            if output_zip_path.is_file()
-                            else 0,
+                            "output_zip_size_bytes": transfer.get("downloaded_size_bytes", 0),
                         }
                     )
-                except Exception as exc:
+                else:
                     output_download_manifest.update(
                         {
                             "status": "blocked",
-                            "error_type": type(exc).__name__,
+                            "error_type": transfer.get("error_type"),
+                            "http_status_code": transfer.get("http_status_code"),
                             "blockers": ["provider_output_get_url_download_failed"],
                         }
                     )
-            elif provider_upload_ok and output_zip_path.is_file():
-                output_download_manifest.update(
-                    {
-                        "status": "skipped",
-                        "reason": "provider_runtime_output_zip_already_present",
-                        "output_zip_present_after_download": True,
-                        "output_zip_size_bytes": output_zip_path.stat().st_size,
-                    }
-                )
             elif provider_upload_ok and not _string(provider_output_get_url):
                 output_download_manifest.update(
                     {
@@ -6137,12 +6113,18 @@ def run_vast_provider_adapter(
             retention_decision,
         )
         if retain_instance_on_runtime_failure and instance_ids:
-            record_terminal_lifecycle(
-                resolved_job_dir,
-                instance_id=instance_ids[-1],
-                decision=retention_decision,
-                video_smoke_completed=video_smoke.get("status") == "completed",
+            lifecycle_recorded = _record_lifecycle_or_block(
+                base_result,
+                operation="terminal",
+                recorder=lambda: record_terminal_lifecycle(
+                    resolved_job_dir,
+                    instance_id=instance_ids[-1],
+                    decision=retention_decision,
+                    video_smoke_completed=video_smoke.get("status") == "completed",
+                ),
             )
+            if not lifecycle_recorded:
+                retention_authorized = False
         if instance_ids and not retention_authorized:
             _append_phase(
                 resolved_job_dir,
@@ -6231,14 +6213,18 @@ def run_vast_provider_adapter(
             and not retention_authorized
             and not continuing_spend
         ):
-            record_retained_gpu_state(
-                resolved_job_dir,
-                "provider_absent",
-                evidence={
-                    "provider": "vast",
-                    "provider_instance_id": instance_ids[-1],
-                    "destroy_request_completed": True,
-                },
+            _record_lifecycle_or_block(
+                base_result,
+                operation="provider_absent",
+                recorder=lambda: record_retained_gpu_state(
+                    resolved_job_dir,
+                    "provider_absent",
+                    evidence={
+                        "provider": "vast",
+                        "provider_instance_id": instance_ids[-1],
+                        "destroy_request_completed": True,
+                    },
+                ),
             )
         if retention_authorized:
             continuing_spend = True

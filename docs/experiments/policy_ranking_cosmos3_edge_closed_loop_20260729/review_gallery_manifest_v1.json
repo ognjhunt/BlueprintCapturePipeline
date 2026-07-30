@@ -1,0 +1,85 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_successor_review_gallery.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "selection_policy": "All returned canary views and frames plus the complete historical native-Cosmos control matrix are indexed; no output was selected for attractiveness.",
+  "large_media_committed_to_git": false,
+  "oscar": {
+    "root": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/oscar_public_replay_review_views_v1",
+    "generated_world_video_sha256": "68bcce578a46855b2f56f83a52fb3312ab6938b0a7ee0eda9f65ba4921cf04d4",
+    "items": [
+      {
+        "path": "skeleton_only.mp4",
+        "sha256": "5c8cae1fad8855807494a0e583283def51c7d3142eef684630310f30456c3413",
+        "role": "deterministic intended-motion baseline"
+      },
+      {
+        "path": "visible_skeleton_review.mp4",
+        "sha256": "a90d90f184e98ad9f03f1500c73ff22b8c4c6423cd2d8e192352287d05e55dad",
+        "role": "visible-skeleton review composite, not native OSCAR output"
+      },
+      {
+        "path": "skeleton_region_occluded_scene.mp4",
+        "sha256": "f2564f086eaa3d6fd735129eae9309c193ecf7be6b77b0cb75cb848824ed8c59",
+        "role": "skeleton-region occlusion diagnostic, not full robot masking or inpainting"
+      },
+      {
+        "path": "binary_occlusion_mask.mp4",
+        "sha256": "3b79a93fcf837964312a0b993aaf21665c39d8d068ad6c7e03347535a2fb73f5",
+        "role": "binary review mask"
+      }
+    ],
+    "unfavorable_findings_retained": [
+      "projection is not pixel-perfect",
+      "parts of the projected links leave frame",
+      "occlusion does not remove the complete robot"
+    ]
+  },
+  "ctrl_world": {
+    "root": "${BLUEPRINT_COSMOS3_EDGE_EVIDENCE_ROOT}/ctrl_world_replay_provider_job_allocation_12_v1",
+    "items": [
+      {
+        "path": "vast_provider_runtime_output_videos/000_ctrl_world_generated_three_view.mp4",
+        "sha256": "c98d98ce10a4e839ad5defdd5237b0c59f9e057a939af7e3a0a9b0b9aa3d9a8a",
+        "role": "generated-only three-view composite"
+      },
+      {
+        "path": "vast_provider_runtime_output_videos/001_ctrl_world_generated_view_0.mp4",
+        "sha256": "8933602a397bb4554505179192b5403de6a9451aa1382d31e9fa70b1c7216ad4",
+        "role": "generated-only exterior view 0"
+      },
+      {
+        "path": "vast_provider_runtime_output_videos/002_ctrl_world_generated_view_1.mp4",
+        "sha256": "db1cde24233511527ea130f6e0aee1e23ae08cfa492a7e5da0c4e11ec7bb15dc",
+        "role": "generated-only exterior view 1"
+      },
+      {
+        "path": "vast_provider_runtime_output_videos/003_ctrl_world_generated_view_2.mp4",
+        "sha256": "f67f1b67b8cfa9faf0b5f814ff80fea8b63c5ff197180f5b279e4af2156c646e",
+        "role": "generated-only wrist view"
+      }
+    ],
+    "all_frame_contact_sheets": [
+      "review_contact_sheets/000_ctrl_world_generated_three_view_all_frames.png",
+      "review_contact_sheets/001_ctrl_world_generated_view_0_all_frames.png",
+      "review_contact_sheets/002_ctrl_world_generated_view_1_all_frames.png",
+      "review_contact_sheets/003_ctrl_world_generated_view_2_all_frames.png"
+    ],
+    "unfavorable_findings_retained": [
+      "only five generated frames per view",
+      "limited visible change in both exterior views",
+      "task success and causal action response were not established"
+    ]
+  },
+  "native_cosmos_historical": {
+    "manifest": "docs/experiments/policy_ranking_roboarena_disjoint_reasoner_successor_20260728/phase_b_high_motion_native_cosmos_gallery_manifest_v1.json",
+    "manifest_sha256": "ff3c6beeaed859b9d977dca7fd76ee6db3e44abae40a19d012e699b52ee60a39",
+    "coverage": "recorded, zero, shuffled, reversed, policy-swapped, and shifted controls for both seeds",
+    "result": "0/51 causal windows passed in the later powered 17-session frozen configuration"
+  },
+  "non_media_arms": {
+    "policy_endpoint_canary": "Structured 32x8 action output only; no rollout video expected.",
+    "registered_cosmos3_oscar_skeleton_hybrid": "Technically blocked before execution; no fabricated media.",
+    "captured_site_transfer": "Not admitted; no media."
+  },
+  "manifest_sha256": "a1f4afaa3e000c7399d5ad412656b374e0a4cc546d0b2b9098e70b5ab8530c1f"
+}

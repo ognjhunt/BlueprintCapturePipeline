@@ -14,19 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / "src/blueprint_pipeline/paid_resource_allocator.py"
 CPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
 GPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
-MODEL_VOLUME_WATCHDOG = (
-    ROOT / "src/blueprint_pipeline/groot_oscar_runpod_volume_watchdog.py"
-)
-STORAGE_VOLUME_ADAPTER = (
-    ROOT / "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py"
-)
+MODEL_VOLUME_WATCHDOG = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_volume_watchdog.py"
+STORAGE_VOLUME_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py"
 LAMBDA_ADAPTER = ROOT / "src/blueprint_pipeline/lambda_provider_adapter.py"
 RUNPOD_PREFLIGHT = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_preflight.py"
 THIN_RELEASE_CONTRACT = ROOT / "src/blueprint_pipeline/thin_release_image_contract.py"
 RUNBOOK = ROOT / "docs/runbooks/groot-oscar-thin-release.md"
 THIN_ENTRYPOINT = (
-    ROOT
-    / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/thin_release_entrypoint.sh"
+    ROOT / "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/thin_release_entrypoint.sh"
 )
 RUNPOD_WATCHDOG = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_watchdog.py"
 LEGACY_BUILD_SCRIPTS = (
@@ -35,9 +30,7 @@ LEGACY_BUILD_SCRIPTS = (
     ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh",
 )
 RELEASE_WORKFLOW = ROOT / ".github/workflows/groot-oscar-thin-release.yml"
-MUTATION_SURFACE_MANIFEST = (
-    ROOT / "docs/architecture/paid-resource-mutation-surfaces.json"
-)
+MUTATION_SURFACE_MANIFEST = ROOT / "docs/architecture/paid-resource-mutation-surfaces.json"
 OPERATOR_DOCS = (
     ROOT / "README.md",
     ROOT / "docs/FIRST_GPU_E2E_RUNBOOK.md",
@@ -58,6 +51,8 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
     "src/blueprint_pipeline/paid_resource_allocator.py",
     "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
     "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
     "src/blueprint_pipeline/qualification_control_admission.py",
     "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
@@ -70,6 +65,8 @@ APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py",
     "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
     "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
+    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
     "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
     "src/blueprint_pipeline/qualification_control_admission.py",
 }
@@ -342,8 +339,7 @@ def _verify_mutation_surface_contract() -> list[str]:
     transport_module = "src/blueprint_pipeline/groot_oscar_runpod_s3_model_cache.py"
     for relative, source in source_by_path.items():
         if relative != transport_module and (
-            "_TRANSPORT_CAPABILITY_ISSUER" in source
-            or "_TransportExecutionCapability" in source
+            "_TRANSPORT_CAPABILITY_ISSUER" in source or "_TransportExecutionCapability" in source
         ):
             blockers.append("runpod_s3_transport_capability_private_state_imported")
     for relative in sorted(_unclassified_direct_mutators(source_by_path, set(by_path))):
@@ -526,26 +522,16 @@ def verify() -> list[str]:
     if "_SAFE_VERSIONED_IMAGE_REF" not in packet_builder or "shlex.quote" not in packet_builder:
         blockers.append("remote_build_packet_image_ref_shell_safety_missing")
     try:
-        foundation_candidate_at = packet_builder.index(
-            '-t "$foundation_candidate_ref" --push'
-        )
-        release_candidate_at = packet_builder.index(
-            '-t "$release_candidate_ref" --push'
-        )
+        foundation_candidate_at = packet_builder.index('-t "$foundation_candidate_ref" --push')
+        release_candidate_at = packet_builder.index('-t "$release_candidate_ref" --push')
         release_validation_at = packet_builder.index("validate-thin-release")
-        release_contract_at = packet_builder.index(
-            "thin_release_contract_not_passed"
-        )
+        release_contract_at = packet_builder.index("thin_release_contract_not_passed")
         release_promotion_at = packet_builder.index(
             'imagetools create --tag "$release_ref" "$release_exact"'
         )
-        packet_builder.index(
-            'imagetools create --tag "$foundation_ref" "$foundation_exact"'
-        )
+        packet_builder.index('imagetools create --tag "$foundation_ref" "$foundation_exact"')
         foundation_promotion_at = packet_builder.index("{foundation_promotion}")
-        terminal_result_at = packet_builder.index(
-            'mv "$validation_result" "$result"'
-        )
+        terminal_result_at = packet_builder.index('mv "$validation_result" "$result"')
     except ValueError:
         blockers.append("remote_build_final_tag_promotion_guard_missing")
     else:
@@ -578,9 +564,9 @@ def verify() -> list[str]:
         )
     ):
         blockers.append("gpu_canary_dry_run_mode_differs_from_execution")
-    runpod_adapter = (
-        ROOT / "src/blueprint_pipeline/runpod_provider_adapter.py"
-    ).read_text(encoding="utf-8")
+    runpod_adapter = (ROOT / "src/blueprint_pipeline/runpod_provider_adapter.py").read_text(
+        encoding="utf-8"
+    )
     if 'shape["docker_entrypoint"] = ["/opt/blueprint/thin_release_entrypoint.sh"]' not in gpu:
         blockers.append("gpu_canary_bypasses_thin_release_entrypoint")
     if "use_thin_entrypoint" not in runpod_adapter:

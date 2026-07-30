@@ -1,0 +1,37 @@
+{
+  "schema_version": "ctrl_world_public_replay_bundle_freeze.v4",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-30T05:00:28-0500",
+  "status": "local_bundle_frozen_corrected_retry_not_yet_admitted",
+  "arm_id": "ctrl_world_public_replay_reduced_canary",
+  "supersedes_bundle_sha256": "6f3b4acd71addec24251c19bba4a304268ba086ed1017007e8d06a884accc558",
+  "bundle_external_path": "$BLUEPRINT_EXTERNAL_EVIDENCE_ROOT/ctrl_world_public_replay_bundle_v4/ctrl_world_replay_provider_runtime_bundle.zip",
+  "bundle_sha256": "b616118c7ad5b54f98401fb60d3b4ec8d60acd036fc11d3a9568cc8821d4e6de",
+  "bundle_size_bytes": 2579223,
+  "bundle_receipt_sha256": "c5fee4d47106478c8c290a8d8df1c8f2868ba2b300112ecc85f457e258fd9e05",
+  "dependency_resolution_sha256": "c982d21932fdb015e09b9cc56234875130f19b0f6a69cb968a610a43f7714cd7",
+  "embedded_hashes": {
+    "runtime_manifest_file_sha256": "95fc73992ac7f92329963917b3ada6881838a4ccd155691ed3999722247195bf",
+    "rollout_manifest_file_sha256": "ed5084a914688b047a4ab798b12cd4f8b9fd49833759f9f504c564daa3c36f22",
+    "canary_manifest_sha256": "418ab0b7e6a69ec13010f32569dac469cb4b68159f72214f8bc550bcffd643ff",
+    "annotation_sha256": "cc7bf532144fa40492eae9e44e919290ea45fc57283304f0c5d58689785e700c",
+    "view_manifest_sha256": "2de9a23f04338bf391c056c835215ed3cdacb0450aa84b0079705dc074dcc8e9",
+    "source_manifest_sha256": "8379bb479232e2a5638c9b209f7f7436e5366137609afcf4f6462e177b531255",
+    "runner_sha256": "f79b63c23dd5e0ae78e8962ffa764b5aaa5d55fe02e37e564d7397a20c532655",
+    "entrypoint_sha256": "5e4c8dbf17c23af4367d96fa8edc2d032c65130e338b9119122722a112e2620f"
+  },
+  "correction": {
+    "defect": "valid zero-byte frozen source files were coerced to a missing size sentinel by boolean fallback",
+    "observed_upstream_file": "models/__init__.py",
+    "observed_upstream_size_bytes": 0,
+    "observed_upstream_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fixed_behavior": "accept exact non-negative integer sizes including zero while rejecting negative and non-integer manifest sizes",
+    "scientific_inputs_changed": false
+  },
+  "deterministic_rebuild_verified": true,
+  "model_execution_truth_independent_from_redaction_status": true,
+  "provider_called": false,
+  "gpu_allocated": false,
+  "physical_outcome_labels_accessed": false,
+  "claim_ceiling": "technical_open_loop_replay_canary_only"
+}
