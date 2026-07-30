@@ -1206,7 +1206,7 @@
             {
               "artifact_id": "DATA-02-AC-01-EV-02",
               "path": "src/blueprint_pipeline/object_index_stage.py",
-              "sha256": "sha256:fda6953c587536d0409470813ab720385be4cecbc831f16b7206c26aaabfb437",
+              "sha256": "sha256:939a55d20dc8863dd973cf77bd65560b5d78e6ee8b16a000d59db2cdc71c5c2f",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
