@@ -58,6 +58,7 @@ RUN git clone --filter=blob:none --no-checkout "${CTRL_WORLD_SOURCE_URL}" /opt/c
 
 COPY deploy/docker/policy_ranking_openpi_ctrl_world/requirements.lock /opt/ctrl-world-runtime/requirements.lock
 COPY deploy/docker/policy_ranking_openpi_ctrl_world/ctrl_world_source_manifest.json /opt/ctrl-world-runtime/ctrl_world_source_manifest.json
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_embedded_carrier_opencv.lock /opt/oscar-runtime/requirements_embedded_carrier_opencv.lock
 COPY pyproject.toml README.md LICENSE /opt/blueprint-current/
 COPY src /opt/blueprint-current/src
 
@@ -86,6 +87,14 @@ RUN uv venv --python 3.11.9 /.ctrl-world-venv \
     && /.ctrl-world-venv/bin/python -m compileall -q /opt/blueprint-current/src/blueprint_pipeline \
     && /.ctrl-world-venv/bin/python -c "import torch; assert torch.__version__ == '2.7.1+cu128'; import accelerate, decord, diffusers, einops, mediapy, swanlab, transformers, wandb" \
     && /.ctrl-world-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.ctrl_world_joint_position_reference_runtime import _validate_source_manifest; result=_validate_source_manifest(Path('/opt/ctrl-world'), Path('/opt/ctrl-world-runtime/ctrl_world_source_manifest.json')); assert result['file_count'] == 8" \
+    && oscar_site_packages="$(/opt/oscar-venv/bin/python -c 'import site; print(site.getsitepackages()[0])')" \
+    && if ! /opt/oscar-venv/bin/python -c 'import cv2'; then \
+      /opt/oscar-venv/bin/python -m pip install \
+        --no-cache-dir --no-deps --require-hashes \
+        --target "${oscar_site_packages}" \
+        -r /opt/oscar-runtime/requirements_embedded_carrier_opencv.lock; \
+      fi \
+    && /opt/oscar-venv/bin/python -c "import cv2; assert cv2.__version__ == '4.11.0'" \
     && /opt/oscar-venv/bin/python -c "import torch, cv2; from inference.inference_oscar import build_pipeline; assert callable(build_pipeline)"
 
 RUN env -u HF_TOKEN -u HUGGING_FACE_HUB_TOKEN \

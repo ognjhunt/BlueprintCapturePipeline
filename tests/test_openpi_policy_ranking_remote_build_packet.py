@@ -180,8 +180,17 @@ def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path)
     assert "--runtime-source-root /opt/OSCAR" in text
     assert "chmod 0444 /opt/blueprint/oscar_source_provenance.json" in text
     assert "rm -rf /opt/OSCAR/.git /tmp/oscar_te_shim.py" in text
+    assert "requirements_embedded_carrier_opencv.lock" in text
+    assert "if ! /opt/oscar-venv/bin/python -c 'import cv2'" in text
+    assert "--no-cache-dir --no-deps --require-hashes" in text
+    assert '--target "${oscar_site_packages}"' in text
+    assert "assert cv2.__version__ == '4.11.0'" in text
     assert "token=False" in text
     assert "offline_preflight" in text
+    assert any(
+        name.endswith("/requirements_embedded_carrier_opencv.lock")
+        for name in result["archive_members"]
+    )
 
 
 def test_openpi_packet_is_admitted_only_when_clean_source_claim_is_ready(

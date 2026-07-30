@@ -63,6 +63,10 @@ CTRL_WORLD_OSCAR_REQUIRED_CONTEXT_PATHS = (
     CTRL_WORLD_OSCAR_DOCKERFILE_RELATIVE_PATH,
     Path("deploy/docker/policy_ranking_openpi_ctrl_world/requirements.lock"),
     Path("deploy/docker/policy_ranking_openpi_ctrl_world/ctrl_world_source_manifest.json"),
+    Path(
+        "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+        "requirements_embedded_carrier_opencv.lock"
+    ),
     Path("pyproject.toml"),
     Path("README.md"),
     Path("LICENSE"),
