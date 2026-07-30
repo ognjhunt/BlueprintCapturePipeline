@@ -162,6 +162,51 @@ def test_complete_360_media_passes_qa_without_upgrading_metric_or_physical_claim
     assert report["next_cheapest_experiment"]["kind"] == "local_or_operator_measurement"
 
 
+def test_external_reconstruction_qa_accepts_local_import_without_video_claims(
+    tmp_path: Path,
+) -> None:
+    payload = (
+        b"ply\n"
+        b"format ascii 1.0\n"
+        b"element vertex 1\n"
+        b"property float x\n"
+        b"property float y\n"
+        b"property float z\n"
+        b"property uchar red\n"
+        b"property uchar green\n"
+        b"property uchar blue\n"
+        b"end_header\n"
+        b"0 0 0 255 255 255\n"
+    )
+    envelope = _envelope(
+        payload,
+        profile="precomputed_external_reconstruction",
+        streams=["external_reconstruction"],
+        filename="scene.ply",
+    )
+    envelope["source_capture_binding"] = {
+        "source_capture_digest": "sha256:" + "b" * 64,
+        "provider_identity": "fixture-provider",
+    }
+    report = build_capture_qa_report(
+        envelope,
+        upload_root=_upload(tmp_path, payload, filename="scene.ply"),
+    )
+
+    assert report["status"] == "accepted"
+    assert report["state"] == "capture_accepted"
+    assert report["required_analysis"] == []
+    assert report["recapture_plan"] == []
+    assert report["claim_ceiling"]["capture_admitted"] is True
+    assert report["claim_ceiling"]["external_reconstruction_is_raw_capture_authority"] is False
+    assert report["claim_ceiling"]["captured_observation_review"] is False
+    assert report["claim_ceiling"]["metric_geometry"] is False
+    assert report["comparative_policy_ranking_verdict"] == "thesis_not_supported"
+    assert "camera_pose_availability" in report["missing_evidence"]
+    assert "visual_overlap_fraction" in report["missing_evidence"]
+    assert report["next_cheapest_experiment"]["kind"] == "local_or_operator_measurement"
+
+
 def test_capture_qa_publication_is_exactly_bound_and_receipt_verified(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -75,6 +75,38 @@ def _submission(payload: bytes | None = None) -> dict:
     }
 
 
+def _external_reconstruction_submission(payload: bytes) -> dict:
+    submission = _submission(payload)
+    request = submission["request"]
+    request.update(
+        {
+            "intake_id": "intake-external-upload-1",
+            "idempotency_key": "org-1-external-upload-1",
+            "capture_authority_profile": "precomputed_external_reconstruction",
+            "source_type": "precomputed_external_reconstruction",
+            "original_file": {
+                "original_filename": "room.ply",
+                "size_bytes": len(payload),
+                "media_type": "application/octet-stream",
+            },
+            "timing_declaration": {"status": "not_included_in_import"},
+            "coordinate_frame_declaration": {
+                "status": "provider_declared_unverified"
+            },
+            "available_sensor_streams": [
+                {"stream_type": "external_reconstruction", "status": "available"}
+            ],
+            "source_capture_binding": {
+                "source_capture_digest": "sha256:" + "b" * 64,
+                "provider_identity": "public-fixture-provider",
+            },
+            "permitted_evidence_uses": ["appearance_review"],
+        }
+    )
+    submission["transfer"]["url"] = "https://download.example.test/file/private/room.ply"
+    return submission
+
+
 def _opener(payload: bytes, seen: dict[str, object]):
     def open_transfer(**kwargs):
         seen.update(kwargs)
@@ -269,3 +301,58 @@ def test_receipt_is_valid_json_and_contains_no_ephemeral_fields(tmp_path: Path) 
     assert persisted == receipt
     assert "transfer" not in persisted
     assert "authorization" not in json.dumps(persisted)
+
+
+def test_external_reconstruction_upload_preserves_source_binding_without_authority_upgrade(
+    tmp_path: Path,
+) -> None:
+    payload = (
+        b"ply\n"
+        b"format ascii 1.0\n"
+        b"element vertex 1\n"
+        b"property float x\n"
+        b"property float y\n"
+        b"property float z\n"
+        b"property uchar red\n"
+        b"property uchar green\n"
+        b"property uchar blue\n"
+        b"end_header\n"
+        b"0 0 0 255 255 255\n"
+    )
+    receipt = process_capture_upload_submission(
+        _external_reconstruction_submission(payload),
+        store_root=tmp_path,
+        allowed_hosts=["download.example.test"],
+        transfer_opener=_opener(payload, {}),
+        malware_scanner=lambda path: {
+            "status": "passed",
+            "scanner": "fixture-clam",
+            "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        },
+    )
+
+    assert receipt["admission_status"] == "accepted"
+    assert receipt["state"] == "capture_accepted"
+    assert receipt["capture_qa_report"]["required_analysis"] == []
+    assert receipt["capture_qa_report"]["claim_ceiling"]["metric_geometry"] is False
+    artifact_root = tmp_path / receipt["artifact_reference"]["uri"]
+    envelope = json.loads((artifact_root / "capture_intake_envelope.json").read_text())
+    assert envelope["source_capture_binding"] == {
+        "provider_identity": "public-fixture-provider",
+        "source_capture_digest": "sha256:" + "b" * 64,
+    }
+
+
+def test_external_reconstruction_upload_rejects_fake_ply_shape(tmp_path: Path) -> None:
+    payload = b"not-ply-data"
+    with pytest.raises(CaptureUploadTransferError, match="capture_media_shape_invalid"):
+        process_capture_upload_submission(
+            _external_reconstruction_submission(payload),
+            store_root=tmp_path,
+            allowed_hosts=["download.example.test"],
+            transfer_opener=_opener(payload, {}),
+            malware_scanner=lambda _path: {
+                "status": "passed",
+                "scanner": "fixture-clam",
+            },
+        )

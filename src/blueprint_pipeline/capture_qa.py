@@ -660,7 +660,11 @@ def build_capture_qa_report(
     missing_evidence = sorted(
         {row["check_id"] for row in checks if row["status"] == "not_measured"}
     )
-    required_analysis = sorted(_REQUIRED_QUALITY_MEASUREMENTS & set(missing_evidence))
+    required_analysis = sorted(
+        _REQUIRED_QUALITY_MEASUREMENTS & set(missing_evidence)
+        if profile in _VIDEO_PROFILES
+        else set()
+    )
     if admission["status"] == "rejected":
         status = "rejected"
         state = "failed"

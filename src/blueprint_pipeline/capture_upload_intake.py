@@ -37,11 +37,16 @@ _WEB_PROFILES = {
     "camera_360_equirectangular",
     "camera_360_native",
     "monocular_video",
+    "precomputed_external_reconstruction",
 }
 _MEDIA_TYPES = {
     "camera_360_equirectangular": {"video/mp4", "video/quicktime"},
     "camera_360_native": {"application/octet-stream", "video/x-insta360"},
     "monocular_video": {"video/mp4", "video/quicktime"},
+    "precomputed_external_reconstruction": {
+        "application/octet-stream",
+        "application/ply",
+    },
 }
 _MAX_BYTES = 50 * 1024 * 1024 * 1024
 _CHUNK_BYTES = 1024 * 1024
@@ -154,6 +159,8 @@ def _media_shape_valid(path: Path, *, profile: str, media_type: str) -> bool:
         return False
     with path.open("rb") as stream:
         prefix = stream.read(32)
+    if profile == "precomputed_external_reconstruction":
+        return prefix.startswith((b"ply\n", b"ply\r\n"))
     return len(prefix) >= 12 and prefix[4:8] == b"ftyp"
 
 
@@ -283,7 +290,7 @@ def _build_envelope(
         if row.get("status") in {"available", "diagnostic"}:
             row["source_relative_path"] = filename
         streams.append(row)
-    return {
+    envelope = {
         "schema_version": "capture_intake_envelope.v1",
         "intake_id": request["intake_id"],
         "idempotency_key": request["idempotency_key"],
@@ -321,6 +328,10 @@ def _build_envelope(
         },
         "malware_content_validation": dict(malware),
     }
+    source_capture_binding = _mapping(request.get("source_capture_binding"))
+    if source_capture_binding:
+        envelope["source_capture_binding"] = source_capture_binding
+    return envelope
 
 
 def process_capture_upload_submission(
