@@ -23,6 +23,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image
 
+from .arkit_depth_surface_compiler import CAMERA_CONVENTIONS
 from .arkit_reconstruction_dataset import (
     ArkitReconstructionDatasetError,
     compile_arkit_reconstruction_dataset,
@@ -845,7 +846,78 @@ def _intrinsics(value: Mapping[str, Any]) -> dict[str, Any] | None:
     return {**numbers, "width": width, "height": height}
 
 
-def _verified_depth_pairs(capture_root: Path) -> list[dict[str, Any]]:
+def _depth_surface_source_readiness(
+    depth: Mapping[str, Any], confidence: Mapping[str, Any]
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    depth_encoding = _text(depth.get("depth_encoding"))
+    scale_to_meters = _number(depth.get("scale_to_meters"))
+    camera_ray_convention = _text(depth.get("camera_ray_convention"))
+    depth_intrinsics_value = depth.get("depth_intrinsics")
+    depth_intrinsics = (
+        _intrinsics(depth_intrinsics_value)
+        if isinstance(depth_intrinsics_value, Mapping)
+        else None
+    )
+    confidence_encoding = _text(confidence.get("confidence_encoding"))
+    accepted_values = confidence.get("accepted_confidence_values")
+    accepted_values_valid = (
+        isinstance(accepted_values, list)
+        and bool(accepted_values)
+        and all(
+            not isinstance(item, bool) and isinstance(item, int) and 0 <= item <= 255
+            for item in accepted_values
+        )
+    )
+    if depth.get("schema_version") != "arkit_depth_manifest.v2":
+        blockers.append("depth_manifest_v2_required")
+    if confidence.get("schema_version") != "arkit_confidence_manifest.v2":
+        blockers.append("confidence_manifest_v2_required")
+    if depth_encoding not in {"uint16_png", "npy"}:
+        blockers.append("depth_encoding_declaration_missing_or_unsupported")
+    if scale_to_meters is None or scale_to_meters <= 0:
+        blockers.append("depth_scale_to_meters_declaration_missing")
+    if camera_ray_convention not in CAMERA_CONVENTIONS:
+        blockers.append("camera_ray_convention_declaration_missing_or_unsupported")
+    if depth_intrinsics is None:
+        blockers.append("depth_resolution_intrinsics_missing_or_invalid")
+    if depth.get("depth_registered_to_arkit_camera") is not True:
+        blockers.append("rgb_depth_camera_alignment_not_explicitly_declared")
+    if confidence_encoding not in {"uint8_png", "npy"}:
+        blockers.append("confidence_encoding_declaration_missing_or_unsupported")
+    if not accepted_values_valid or len(set(accepted_values)) != len(accepted_values):
+        blockers.append("accepted_confidence_values_missing_or_invalid")
+    if blockers:
+        return {
+            "schema_version": "arkit_depth_surface_source_readiness.v1",
+            "status": "blocked_missing_source_declarations",
+            "blockers": sorted(set(blockers)),
+            "agent_may_override": False,
+        }
+    declaration = {
+        "depth_encoding": depth_encoding,
+        "scale_to_meters": scale_to_meters,
+        "camera_ray_convention": camera_ray_convention,
+        "depth_intrinsics": depth_intrinsics,
+        "depth_registered_to_arkit_camera": True,
+        "confidence_encoding": confidence_encoding,
+        "accepted_confidence_values": sorted(accepted_values),
+    }
+    declaration["declaration_digest"] = canonical_digest(
+        declaration, digest_field="declaration_digest"
+    )
+    return {
+        "schema_version": "arkit_depth_surface_source_readiness.v1",
+        "status": "ready_for_confidence_filtered_backprojection",
+        "blockers": [],
+        "source_declaration": declaration,
+        "agent_may_override": False,
+    }
+
+
+def _verified_depth_pairs(
+    capture_root: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     depth = _load_json(capture_root / "arkit/depth_manifest.json", label="depth_manifest")
     confidence = _load_json(
         capture_root / "arkit/confidence_manifest.json", label="confidence_manifest"
@@ -888,7 +960,7 @@ def _verified_depth_pairs(capture_root: Path) -> list[dict[str, Any]]:
                 "confidence_digest": _sha256_file(confidence_path),
             }
         )
-    return pairs
+    return pairs, _depth_surface_source_readiness(depth, confidence)
 
 
 @dataclass(frozen=True)
@@ -1038,7 +1110,7 @@ class LocalArkitMetricScaffoldAdapter:
                 errors.append("metric_scaffold:first_retained_frame_not_capture_origin")
         if errors:
             raise LocalReconstructionAdapterError(errors)
-        depth_pairs = _verified_depth_pairs(root)
+        depth_pairs, depth_surface_readiness = _verified_depth_pairs(root)
         if any(pair["frame_id"] not in pose_by_id for pair in depth_pairs):
             raise LocalReconstructionAdapterError(
                 ["metric_scaffold:depth_pair_pose_binding_missing"]
@@ -1077,6 +1149,7 @@ class LocalArkitMetricScaffoldAdapter:
                 for row in sync_rows
             ],
             "depth_confidence_pairs": depth_pairs,
+            "depth_surface_source_readiness": depth_surface_readiness,
             "source_artifact_digests": {
                 relative: _sha256_file(_safe_child(root, relative))
                 for relative in (
@@ -1208,6 +1281,9 @@ class LocalArkitMetricScaffoldAdapter:
                     "unobserved_surfaces_remain_unsupported": True,
                     "depth_confidence_is_raw_sensor_evidence": True,
                     "confidence_filtering_status": "not_executed",
+                    "depth_surface_source_declaration_blockers": list(
+                        depth_surface_readiness["blockers"]
+                    ),
                     "rgb_depth_alignment_status": "not_independently_validated",
                     "metric_scale_validation_status": "not_executed",
                 },
@@ -1216,6 +1292,10 @@ class LocalArkitMetricScaffoldAdapter:
                     "decoded_pts_verified": True,
                     "retained_sync_pose_count": len(sync_rows),
                     "depth_confidence_pair_count": len(depth_pairs),
+                    "depth_surface_compilation_ready": (
+                        depth_surface_readiness["status"]
+                        == "ready_for_confidence_filtered_backprojection"
+                    ),
                     "tracking_reset_count": 0,
                     "sensor_declared_units": "meters",
                     "independent_metric_scale_validation_passed": False,

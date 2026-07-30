@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 from PIL import Image
 
 from blueprint_pipeline import local_reconstruction_adapters as adapters
@@ -333,6 +334,10 @@ def test_arkit_metric_scaffold_requires_exact_v32_bindings(
     assert result["claim_ceiling"]["metric_reference_layer"] is False
     assert result["validation_metrics"]["independent_metric_scale_validation_passed"] is False
     assert result["validation_metrics"]["pose_refinement_executed"] is False
+    assert result["validation_metrics"]["depth_surface_compilation_ready"] is False
+    assert "depth_manifest_v2_required" in result["uncertainty_map"][
+        "depth_surface_source_declaration_blockers"
+    ]
     assert result["asset_references"]["arkit_reconstruction_dataset_export"][
         "digest"
     ].startswith("sha256:")
@@ -352,6 +357,80 @@ def test_arkit_metric_scaffold_requires_exact_v32_bindings(
             output_root=tmp_path / "derived-unsafe",
             rights_and_retention={"external_processing": False},
         )
+
+
+def test_arkit_metric_scaffold_records_explicit_depth_surface_readiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_media_tools(monkeypatch)
+    capture_root = tmp_path / "capture"
+    _arkit_bundle(capture_root)
+    depth_path = capture_root / "arkit/depth_manifest.json"
+    confidence_path = capture_root / "arkit/confidence_manifest.json"
+    depth = json.loads(depth_path.read_text(encoding="utf-8"))
+    confidence = json.loads(confidence_path.read_text(encoding="utf-8"))
+    depth.update(
+        {
+            "schema_version": "arkit_depth_manifest.v2",
+            "depth_encoding": "uint16_png",
+            "scale_to_meters": 0.001,
+            "camera_ray_convention": "arkit_x_right_y_up_z_backward",
+            "depth_registered_to_arkit_camera": True,
+            "depth_intrinsics": {
+                "fx": 50,
+                "fy": 50,
+                "cx": 32,
+                "cy": 24,
+                "width": 64,
+                "height": 48,
+            },
+        }
+    )
+    confidence.update(
+        {
+            "schema_version": "arkit_confidence_manifest.v2",
+            "confidence_encoding": "uint8_png",
+            "accepted_confidence_values": [2],
+        }
+    )
+    _write_json(depth_path, depth)
+    _write_json(confidence_path, confidence)
+
+    result = LocalArkitMetricScaffoldAdapter().execute(
+        intake_id="intake-1",
+        capture_digest=CAPTURE_DIGEST,
+        capture_root=capture_root,
+        output_root=tmp_path / "derived",
+        rights_and_retention={"external_processing": False},
+        maximum_frames=2,
+    )
+
+    assert result["validation_metrics"]["depth_surface_compilation_ready"] is True
+    assert result["uncertainty_map"][
+        "depth_surface_source_declaration_blockers"
+    ] == []
+    scaffold_path = next((tmp_path / "derived").glob("**/arkit_metric_scaffold.json"))
+    readiness = json.loads(scaffold_path.read_text(encoding="utf-8"))[
+        "depth_surface_source_readiness"
+    ]
+    assert readiness["status"] == "ready_for_confidence_filtered_backprojection"
+    assert readiness["agent_may_override"] is False
+    assert readiness["source_declaration"]["declaration_digest"].startswith(
+        "sha256:"
+    )
+    schema_root = Path(__file__).parents[1] / "docs" / "schemas"
+    depth_schema = json.loads(
+        (schema_root / "arkit_depth_manifest.v2.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    confidence_schema = json.loads(
+        (schema_root / "arkit_confidence_manifest.v2.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    Draft202012Validator(depth_schema).validate(depth)
+    Draft202012Validator(confidence_schema).validate(confidence)
 
 
 def test_local_reconstruction_registry_is_empty_by_default() -> None:
