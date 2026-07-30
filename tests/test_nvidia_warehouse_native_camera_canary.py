@@ -13,6 +13,7 @@ from PIL import Image
 from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _apply_and_measure_render_only_joint_pose,
     _apply_runtime_asset_relocations,
+    _backend_array_to_numpy,
     _camera_quaternion_wxyz,
     _load_materialization_manifest,
     _project_required_external_entities,
@@ -137,32 +138,80 @@ def test_external_projection_fails_closed_without_franka_link_origins() -> None:
         )
 
 
-def test_zero_time_scene_update_uses_step_sim_false_and_preserves_step_index() -> None:
+def test_zero_time_scene_update_uses_cuda_world_render_and_preserves_step_index() -> None:
     class World:
         current_time_step_index = 7
+        device = "cuda:0"
+        physics_sim_view = object()
 
         def __init__(self):
             self.calls = []
 
-        def step(self, **kwargs):
-            self.calls.append(kwargs)
+        def is_playing(self):
+            return True
+
+        def render(self):
+            self.calls.append("render")
 
     world = World()
     _render_world_without_physics_advance(world)
 
-    assert world.calls == [{"render": True, "step_sim": False, "update_fabric": True}]
+    assert world.calls == ["render"]
     assert world.current_time_step_index == 7
+
+
+def test_zero_time_scene_update_rejects_cpu_world_that_cannot_refresh_kinematics() -> None:
+    class World:
+        current_time_step_index = 7
+        device = "cpu"
+        physics_sim_view = object()
+
+        def is_playing(self):
+            return True
+
+        def render(self):
+            raise AssertionError("must fail before rendering")
+
+    with pytest.raises(
+        ValueError, match="native_franka_zero_time_scene_update_cuda_backend_required"
+    ):
+        _render_world_without_physics_advance(World())
 
 
 def test_zero_time_scene_update_fails_if_world_advances_physics() -> None:
     class World:
         current_time_step_index = 7
+        device = "cuda:0"
+        physics_sim_view = object()
 
-        def step(self, **_kwargs):
+        def is_playing(self):
+            return True
+
+        def render(self):
             self.current_time_step_index += 1
 
     with pytest.raises(ValueError, match="native_franka_zero_time_scene_update_advanced_physics"):
         _render_world_without_physics_advance(World())
+
+
+def test_backend_array_to_numpy_moves_tensor_like_value_to_cpu() -> None:
+    calls: list[str] = []
+
+    class TensorLike:
+        def detach(self):
+            calls.append("detach")
+            return self
+
+        def cpu(self):
+            calls.append("cpu")
+            return self
+
+        def numpy(self):
+            calls.append("numpy")
+            return np.asarray([1.0, 2.0])
+
+    assert np.array_equal(_backend_array_to_numpy(TensorLike()), np.asarray([1.0, 2.0]))
+    assert calls == ["detach", "cpu", "numpy"]
 
 
 def test_wrist_mount_is_calibrated_once_in_parent_coordinates_toward_task_centroid() -> None:

@@ -166,15 +166,40 @@ def _matrix_array(matrix: Any) -> np.ndarray:
     return np.asarray([[float(matrix[row][column]) for column in range(4)] for row in range(4)])
 
 
+def _backend_array_to_numpy(value: Any) -> np.ndarray:
+    """Copy a NumPy/Torch backend value to a CPU NumPy array."""
+
+    detach = getattr(value, "detach", None)
+    if callable(detach):
+        value = detach()
+    cpu = getattr(value, "cpu", None)
+    if callable(cpu):
+        value = cpu()
+    to_numpy = getattr(value, "numpy", None)
+    if callable(to_numpy):
+        value = to_numpy()
+    return np.asarray(value)
+
+
 def _render_world_without_physics_advance(world: Any) -> None:
     """Update articulation/Fabric transforms and render without stepping physics."""
 
-    step = getattr(world, "step", None)
-    if not callable(step):
+    render = getattr(world, "render", None)
+    if not callable(render):
         raise ValueError("native_franka_zero_time_scene_update_api_missing")
+    device = str(getattr(world, "device", "") or "").lower()
+    if "cuda" not in device:
+        raise ValueError("native_franka_zero_time_scene_update_cuda_backend_required")
+    if getattr(world, "physics_sim_view", None) is None:
+        raise ValueError("native_franka_zero_time_scene_update_physics_view_missing")
+    is_playing = getattr(world, "is_playing", None)
+    if not callable(is_playing) or not bool(is_playing()):
+        raise ValueError("native_franka_zero_time_scene_update_simulation_not_playing")
     before = int(world.current_time_step_index)
     try:
-        step(render=True, step_sim=False, update_fabric=True)
+        # Isaac Sim 6.0 World.render() calls the CUDA physics view's
+        # update_articulations_kinematic() before its zero-time app update.
+        render()
     except Exception as exc:
         raise ValueError(
             "native_franka_zero_time_scene_update_failed:" + type(exc).__name__
@@ -212,7 +237,7 @@ def _apply_and_measure_render_only_joint_pose(
         raise ValueError(
             "native_franka_render_only_joint_state_failed:" + type(exc).__name__
         ) from exc
-    measured = np.asarray(required["get_joint_positions"](), dtype=float).reshape(-1)
+    measured = _backend_array_to_numpy(required["get_joint_positions"]()).astype(float).reshape(-1)
     if measured.shape != requested.shape or not np.isfinite(measured).all():
         raise ValueError("native_franka_render_only_joint_measurement_invalid")
     return {
@@ -406,7 +431,9 @@ def isaac_sim_6_backend(
         relocation_evidence = _apply_runtime_asset_relocations(
             assets_root=assets_root, manifest=manifest
         )
-        world = World(stage_units_in_meters=1.0)
+        # World.render() only refreshes articulation kinematics from the physics
+        # view for CUDA-backed worlds in Isaac Sim 6.0.
+        world = World(stage_units_in_meters=1.0, backend="torch", device="cuda:0")
         stage = world.stage
         scene = spec["scene"]
         placements = scene["placements"]
