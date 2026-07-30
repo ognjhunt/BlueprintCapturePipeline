@@ -26,10 +26,12 @@ from .contracts import (
     ToolDescriptor,
 )
 from .capture_ingress import CaptureBuildIngressError, validate_capture_build_ingress
+from .capabilities import SupervisorContext
 from .ledger import AppendOnlyEventLedger
 from .inference_reservations import InferenceReservationAudit
 from .phase2_artifacts import (
     Phase2ArtifactError,
+    deterministic_customer_report,
     recapture_reinspection as build_recapture_reinspection,
     validate_clarification_receipt,
     validate_clarification_request,
@@ -206,6 +208,7 @@ def replay_supervisor_run(
         raise SupervisorReplayError("customer_report_contract_mismatch")
 
     capability_digests: list[str] = []
+    capability_values: list[dict[str, Any]] = []
     capability_digest_by_kind: dict[str, str] = {}
     structured_observations_by_capability: dict[str, list[dict[str, Any]]] = {}
     for row in report_value.get("capability_results") or []:
@@ -217,6 +220,7 @@ def replay_supervisor_run(
             raise SupervisorReplayError("capability_artifact_digest_mismatch")
         capability_digests.append(capability.digest)
         capability_value = capability.to_mapping()
+        capability_values.append(capability_value)
         capability_id = str(capability_value["capability"])
         capability_digest_by_kind[capability_id] = capability.digest
         embedded_observations = capability_value.get("structured_observations") or []
@@ -360,9 +364,12 @@ def replay_supervisor_run(
         raise SupervisorReplayError("manager_refusal_event_sequence_mismatch")
 
     invocation_digests: list[str] = []
+    invocation_values: list[dict[str, Any]] = []
     tool_observation_digests: list[str] = []
+    tool_observation_values: list[dict[str, Any]] = []
     referenced_tool_observation_paths: set[Path] = set()
     generated_artifact_digests: list[str] = []
+    generated_artifact_references: list[dict[str, Any]] = []
     replayed_tool_cost_usd = 0.0
     for row in report_value.get("invocation_manifests") or []:
         path = (root / str(row["artifact_path"])).resolve()
@@ -378,6 +385,7 @@ def replay_supervisor_run(
         ):
             raise SupervisorReplayError("invocation_artifact_digest_mismatch")
         invocation_digests.append(specialist_invocation.digest)
+        invocation_values.append(specialist_invocation_value)
         invocation_observation_summaries: list[dict[str, Any]] = []
         for observation_ref in specialist_invocation_value.get("tool_observation_references") or []:
             if not isinstance(observation_ref, Mapping):
@@ -414,6 +422,7 @@ def replay_supervisor_run(
                 raise SupervisorReplayError("preauthorized_tool_wrong_mode")
             replayed_tool_cost_usd += observation_cost
             tool_observation_digests.append(digest)
+            tool_observation_values.append(dict(observation))
             invocation_observation_summaries.append(
                 {
                     "tool_id": observation.get("tool_id"),
@@ -451,6 +460,7 @@ def replay_supervisor_run(
                 if generated_ref.get("artifact_digest") != generated_digest:
                     raise SupervisorReplayError("generated_artifact_digest_mismatch")
                 generated_artifact_digests.append(generated_digest)
+                generated_artifact_references.append(dict(generated_ref))
         invocation_capability = str(specialist_invocation.to_mapping().get("capability") or "")
         if invocation_observation_summaries != structured_observations_by_capability.get(
             invocation_capability,
@@ -557,6 +567,43 @@ def replay_supervisor_run(
             "overall_outcome": validated["overall_outcome"],
             "claim_ceiling": validated["claim_ceiling"],
         }
+
+    def numbered_inputs(prefix: str) -> tuple[Mapping[str, Any], ...]:
+        rows = [
+            (int(name.removeprefix(prefix)), value)
+            for name, value in kernel_inputs.items()
+            if name.startswith(prefix) and name.removeprefix(prefix).isdigit()
+        ]
+        return tuple(value for _index, value in sorted(rows))
+
+    replay_context = SupervisorContext(
+        run_id=str(run_value["run_id"]),
+        customer_question=str(run_value["customer_question"]),
+        capture_build=kernel_inputs.get("capture_build"),
+        decision_request=kernel_inputs.get("decision_request"),
+        testbed=kernel_inputs.get("site_task_testbed"),
+        method_profiles=numbered_inputs("method_profile_"),
+        qualifications=numbered_inputs("qualification_"),
+        evidence_plan=kernel_inputs.get("evidence_plan"),
+        evidence_results=numbered_inputs("evidence_result_"),
+        decision_envelope=kernel_inputs.get("decision_envelope"),
+        clarification_request=kernel_inputs.get("clarification_request"),
+        clarification_receipt=kernel_inputs.get("clarification_receipt"),
+        authorization_request=kernel_inputs.get("authorization_request"),
+        authorization_receipt=kernel_inputs.get("authorization_receipt"),
+        targeted_recapture_request=kernel_inputs.get("targeted_recapture_request"),
+        targeted_recapture_receipt=kernel_inputs.get("targeted_recapture_receipt"),
+        recapture_reinspection=kernel_inputs.get("recapture_reinspection"),
+    )
+    rebuilt_customer_report = deterministic_customer_report(
+        context=replay_context,
+        capability_results=capability_values,
+        invocation_manifests=invocation_values,
+        generated_artifact_references=generated_artifact_references,
+        tool_observations=tool_observation_values,
+    )
+    if rebuilt_customer_report != customer_report:
+        raise SupervisorReplayError("customer_report_rebuild_mismatch")
     replay_value: dict[str, Any] = {
         "schema_version": REPLAY_REPORT_SCHEMA_VERSION,
         "run_id": run_value["run_id"],
@@ -574,6 +621,7 @@ def replay_supervisor_run(
         "tool_observation_digests": tool_observation_digests,
         "generated_artifact_digests": generated_artifact_digests,
         "customer_report_digest": customer_report_digest,
+        "customer_report_rebuilt": True,
         "replayed_tool_cost_usd": replayed_tool_cost_usd,
         "event_count": len(events),
         "last_event_digest": events[-1].digest,

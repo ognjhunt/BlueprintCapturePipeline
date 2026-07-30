@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import hashlib
 import json
+import shutil
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -3050,6 +3051,7 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     assert customer_report["agent_output_authoritative"] is False
     assert customer_report["proof_state_mutated_by_report"] is False
     assert replay["customer_report_digest"] == customer_report["customer_report_digest"]
+    assert replay["customer_report_rebuilt"] is True
     assert validate_customer_report(customer_report) == customer_report
 
     promoted_report = dict(customer_report)
@@ -3073,6 +3075,27 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     )
     with pytest.raises(Phase2ArtifactError, match="customer_report_contract_invalid"):
         validate_customer_report(suppressed_boundary)
+
+    rewritten_run = tmp_path / "rewritten-customer-report"
+    shutil.copytree(execution.output_dir, rewritten_run)
+    rewritten_report_path = rewritten_run / "customer_decision_report.json"
+    rewritten_report = json.loads(rewritten_report_path.read_text(encoding="utf-8"))
+    rewritten_report["customer_original_question"] = "A rewritten but schema-valid question"
+    rewritten_report["customer_report_digest"] = canonical_digest(
+        rewritten_report,
+        digest_field="customer_report_digest",
+    )
+    rewritten_report_path.write_text(json.dumps(rewritten_report), encoding="utf-8")
+    rewritten_terminal_path = rewritten_run / "terminal_supervisor_report.json"
+    rewritten_terminal = json.loads(rewritten_terminal_path.read_text(encoding="utf-8"))
+    rewritten_terminal["customer_report_digest"] = rewritten_report["customer_report_digest"]
+    rewritten_terminal["terminal_report_digest"] = canonical_digest(
+        rewritten_terminal,
+        digest_field="terminal_report_digest",
+    )
+    rewritten_terminal_path.write_text(json.dumps(rewritten_terminal), encoding="utf-8")
+    with pytest.raises(SupervisorReplayError, match="customer_report_rebuild_mismatch"):
+        replay_supervisor_run(rewritten_run)
 
     authority = json.loads(
         (execution.output_dir / "authority_envelope.json").read_text(encoding="utf-8")

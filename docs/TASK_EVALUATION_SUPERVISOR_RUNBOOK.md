@@ -287,6 +287,10 @@ It rejects unknown fields, non-finite or negative spend, inconsistent
 decision/partial/abstention flags, agent-authoritative output, proof mutation,
 or removal of the mandatory physical-success and deployment claim boundaries,
 even if all report digests are recomputed.
+Replay also rebuilds the complete report from the recorded run question, kernel
+inputs, capability results, invocation manifests, tool observations, and
+generated-artifact references. A schema-valid rewritten report and matching
+rewritten terminal digest still fail this equality check.
 
 Blueprint durably records a trusted observation inside the run from the
 registered tool binding before control returns to the SDK adapter. If the
