@@ -60,10 +60,14 @@ from .g1_microwave_finetune_provider_job import (
     run_finetune_job as run_g1_microwave_finetune_job,
 )
 from .openai_candidate_paid_admission import (
-    admit_openai_api_candidate as _admit_openai_api_candidate,
-    admit_pigey_candidate_runtime as _admit_pigey_candidate_runtime,
+    OPENAI_API_CANDIDATE_ADMISSION_SCHEMA_VERSION,
+    OPENAI_API_CANDIDATE_RESOURCE_CLASS,
+    prepare_openai_api_candidate_admission,
+    prepare_pigey_candidate_runtime_admission,
 )
 from .paid_resource_admission import (
+    PaidResourceAdmissionBlocked,
+    PaidResourceAdmissionGrant,
     require_paid_resource_admission,
 )
 from .openpi_policy_ranking_gpu_admission import (
@@ -106,26 +110,46 @@ FUTURE_CAMPAIGN_ALLOWANCE_SECONDS = 3_500
 COMBINED_GPU_PLAN_SECONDS = GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
 PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS = 36_000
 DETACHED_MODEL_VOLUME_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
+AdmissionResult = tuple[dict[str, Any], PaidResourceAdmissionGrant | None]
 
 
-def admit_openai_api_candidate(**kwargs: Any) -> Any:
-    """Canonical source-bound entry for paid OpenAI candidate admission."""
-
-    return _admit_openai_api_candidate(
+def admit_openai_api_candidate(**kwargs: Any) -> AdmissionResult:
+    """Canonical source-bound issuer for one paid OpenAI candidate capability."""
+    admission = prepare_openai_api_candidate_admission(
         source_checkout_validator=_source_checkout_blockers,
         checkout_state_reader=_current_checkout_source_state,
         **kwargs,
     )
-
-
-def admit_pigey_candidate_runtime(**kwargs: Any) -> Any:
-    """Canonical source-bound entry for the concrete Pigey runtime."""
-
-    return _admit_pigey_candidate_runtime(
-        source_checkout_validator=_source_checkout_blockers,
-        checkout_state_reader=_current_checkout_source_state,
-        **kwargs,
+    if kwargs.get("execute") is not True:
+        return admission, None
+    grant = require_paid_resource_admission(
+        admission,
+        resource_class=OPENAI_API_CANDIDATE_RESOURCE_CLASS,
+        expected_schema_version=OPENAI_API_CANDIDATE_ADMISSION_SCHEMA_VERSION,
     )
+    return admission, grant
+
+
+def admit_pigey_candidate_runtime(*, runtime: Any, **kwargs: Any) -> AdmissionResult:
+    try:
+        admission = prepare_pigey_candidate_runtime_admission(
+            runtime=runtime,
+            source_checkout_validator=_source_checkout_blockers,
+            checkout_state_reader=_current_checkout_source_state,
+            **kwargs,
+        )
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        blockers = ["openai_candidate_runtime_execution_profile_invalid"]
+        raise PaidResourceAdmissionBlocked(blockers) from exc
+    if kwargs.get("execute") is not True:
+        return admission, None
+    grant = require_paid_resource_admission(
+        admission,
+        resource_class=OPENAI_API_CANDIDATE_RESOURCE_CLASS,
+        expected_schema_version=OPENAI_API_CANDIDATE_ADMISSION_SCHEMA_VERSION,
+    )
+    runtime.paid_resource_admission_grant = grant
+    return admission, grant
 
 
 def _current_checkout_source_state() -> tuple[str, bool]:

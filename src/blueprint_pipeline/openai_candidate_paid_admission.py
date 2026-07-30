@@ -15,11 +15,6 @@ from typing import Any, Callable, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
-from .paid_resource_admission import (
-    PaidResourceAdmissionBlocked,
-    PaidResourceAdmissionGrant,
-    require_paid_resource_admission,
-)
 from .task_evaluation_supervisor.candidate_policy import (
     CANDIDATE_EVALUATION_SUITE_SCHEMA_VERSION,
 )
@@ -257,7 +252,7 @@ def build_openai_api_candidate_admission(
     return value
 
 
-def admit_openai_api_candidate(
+def prepare_openai_api_candidate_admission(
     *,
     suite: Mapping[str, Any],
     execution_authorization: Mapping[str, Any],
@@ -276,8 +271,8 @@ def admit_openai_api_candidate(
     execute: bool = False,
     experimental_branch_diagnostic: bool = False,
     admitted_at: str | None = None,
-) -> tuple[dict[str, Any], PaidResourceAdmissionGrant | None]:
-    """Issue a bound capability using allocator-owned source validators."""
+) -> dict[str, Any]:
+    """Build and persist a proposal; this helper cannot issue execution authority."""
 
     source_blockers, checkout_commit = source_checkout_validator(
         expected_source_commit,
@@ -303,65 +298,35 @@ def admit_openai_api_candidate(
         admitted_at=admitted_at,
     )
     write_json(Path(admission_out).expanduser().resolve(), admission)
-    if not execute:
-        return admission, None
-    grant = require_paid_resource_admission(
-        admission,
-        resource_class=OPENAI_API_CANDIDATE_RESOURCE_CLASS,
-        expected_schema_version=OPENAI_API_CANDIDATE_ADMISSION_SCHEMA_VERSION,
-    )
-    return admission, grant
+    return admission
 
 
-def admit_pigey_candidate_runtime(
+def prepare_pigey_candidate_runtime_admission(
     *,
-    suite: Mapping[str, Any],
-    execution_authorization: Mapping[str, Any],
     runtime: Any,
-    expected_source_commit: str,
-    admission_out: str | Path,
-    source_checkout_validator: Callable[..., tuple[list[str], str]],
-    checkout_state_reader: Callable[[], tuple[str, bool]],
-    execute: bool = False,
-    experimental_branch_diagnostic: bool = False,
-    admitted_at: str | None = None,
-) -> tuple[dict[str, Any], PaidResourceAdmissionGrant | None]:
-    """Bind the concrete Pigey runtime to the canonical OpenAI admission."""
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Build a Pigey admission proposal without granting execution authority."""
 
-    try:
-        license_digest = str(runtime.license_attestation["license_attestation_digest"])
-        admission, grant = admit_openai_api_candidate(
-            suite=suite,
-            execution_authorization=execution_authorization,
-            candidate_id=str(runtime.candidate_id),
-            provider_id=str(runtime.provider_id),
-            runtime_configuration_digest=str(runtime.runtime_configuration_digest),
-            cost_authority_binding_digest=str(runtime.cost_authority_binding_digest),
-            license_attestation_digest=license_digest,
-            expected_source_commit=expected_source_commit,
-            maximum_execution_seconds=float(runtime.maximum_execution_seconds),
-            runtime_watchdog_enforced=runtime.runtime_watchdog_enforced is True,
-            teardown_enforced=runtime.teardown_enforced is True,
-            admission_out=admission_out,
-            source_checkout_validator=source_checkout_validator,
-            checkout_state_reader=checkout_state_reader,
-            execute=execute,
-            experimental_branch_diagnostic=experimental_branch_diagnostic,
-            admitted_at=admitted_at,
-        )
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:
-        raise PaidResourceAdmissionBlocked(
-            ["openai_candidate_runtime_execution_profile_invalid"]
-        ) from exc
-    if grant is not None:
-        runtime.paid_resource_admission_grant = grant
-    return admission, grant
+    return prepare_openai_api_candidate_admission(
+        candidate_id=str(runtime.candidate_id),
+        provider_id=str(runtime.provider_id),
+        runtime_configuration_digest=str(runtime.runtime_configuration_digest),
+        cost_authority_binding_digest=str(runtime.cost_authority_binding_digest),
+        license_attestation_digest=str(
+            runtime.license_attestation["license_attestation_digest"]
+        ),
+        maximum_execution_seconds=float(runtime.maximum_execution_seconds),
+        runtime_watchdog_enforced=runtime.runtime_watchdog_enforced is True,
+        teardown_enforced=runtime.teardown_enforced is True,
+        **kwargs,
+    )
 
 
 __all__ = [
     "OPENAI_API_CANDIDATE_ADMISSION_SCHEMA_VERSION",
     "OPENAI_API_CANDIDATE_RESOURCE_CLASS",
-    "admit_openai_api_candidate",
-    "admit_pigey_candidate_runtime",
     "build_openai_api_candidate_admission",
+    "prepare_openai_api_candidate_admission",
+    "prepare_pigey_candidate_runtime_admission",
 ]
