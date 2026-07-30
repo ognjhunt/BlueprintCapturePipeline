@@ -54,14 +54,26 @@ that does not make the candidate geometry canonical capture truth.
   vertical limits independently, and emits eight ordered corners. Gaussian-center
   fits carry an explicitly weaker approximate ceiling. Every output remains a
   candidate pending separate collision/occupancy validation.
+- A separate collision-consistency stage now consumes the exact terminal OBB
+  result plus an exact-digest, metric Z-up collision scene produced by a method
+  that is explicitly qualified for target overlap, support contact, non-target
+  penetration, verified-free-space conflict, coverage, and generated-region
+  checks. The collision-scene producer and validator must differ, target
+  identity is separately evidence-bound, and generated geometry cannot supply
+  the check. The deterministic baseline computes oriented-box versus AABB volume
+  overlap, support-plane contact/overlap under declared spatial uncertainty,
+  penetration/conflict fractions, corner coverage, and generated-region
+  intersections. It returns a precise next experiment on disagreement. A pass
+  remains an independently cross-checked semantic candidate; it never sets
+  `collision_ready` or `physics_ready`.
 
 Still missing is a real renderer adapter that emits those exact contribution
 artifacts from a production analysis splat. The checked-in stage consumes and
 qualifies contribution rows but does not synthesize them or claim a render ran.
 Large-scene production also needs a bounded chunked/binary transport rather than
 one JSON view artifact, followed by graph cleanup, a production surface-point
-adapter, support-plane reasoning, collision validation, and a measured
-ground-truth evaluation set.
+adapter, production collision-scene/support evidence, testbed projection, and a
+measured ground-truth evaluation set.
 
 ## Primary-source audit
 
@@ -135,8 +147,11 @@ still contains only the release timeline and no runnable implementation/models.
 4. `instance_fusion`: track-aware, multi-view, disconnected-component cleanup.
 5. `oriented_box_fitter`: implemented baseline for robust outlier removal,
    horizontal minimum-area fitting, independent vertical bounds, and eight Z-up
-   corners; production support-plane evidence remains incomplete.
-6. `collision_validator`: separate collision/occupancy consistency checks.
+   corners; production surface-point evidence remains incomplete.
+6. `collision_validator`: implemented deterministic consistency baseline for
+   independently qualified target volumes, support planes, occupied/free-space
+   volumes, coverage, and generated regions; production collision-scene and
+   support-plane adapters remain incomplete.
 7. `confidence_scorer`: view count/diversity, ambiguity, coverage, reprojection,
    scale, support, and held-out validation.
 
