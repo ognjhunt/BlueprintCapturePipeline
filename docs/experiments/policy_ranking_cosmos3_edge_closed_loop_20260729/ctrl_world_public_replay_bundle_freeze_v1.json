@@ -1,0 +1,27 @@
+{
+  "schema_version": "ctrl_world_public_replay_bundle_freeze.v1",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-30T03:44:37-0500",
+  "status": "superseded_before_paid_execution",
+  "superseded_by": "ctrl_world_public_replay_bundle_freeze_v2.json",
+  "supersession_reason": "complete transitive Python dependency resolution frozen prospectively",
+  "arm_id": "ctrl_world_public_replay_reduced_canary",
+  "bundle_external_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/ctrl_world_public_replay_bundle_v1/ctrl_world_replay_provider_runtime_bundle.zip",
+  "bundle_sha256": "8e6037c5324d47235d8131088f8f083d08f0950fef89df78ba617b8e1eecae41",
+  "bundle_size_bytes": 2578447,
+  "embedded_hashes": {
+    "runtime_manifest_file_sha256": "ce4a17c8ca25452bcdbd7aba5c137f7164be4982587490696b9dfc584fe12304",
+    "rollout_manifest_file_sha256": "ed5084a914688b047a4ab798b12cd4f8b9fd49833759f9f504c564daa3c36f22",
+    "canary_manifest_sha256": "418ab0b7e6a69ec13010f32569dac469cb4b68159f72214f8bc550bcffd643ff",
+    "annotation_sha256": "cc7bf532144fa40492eae9e44e919290ea45fc57283304f0c5d58689785e700c",
+    "view_manifest_sha256": "2de9a23f04338bf391c056c835215ed3cdacb0450aa84b0079705dc074dcc8e9",
+    "source_manifest_sha256": "8379bb479232e2a5638c9b209f7f7436e5366137609afcf4f6462e177b531255",
+    "runner_sha256": "a18fc9b6376f4e9d8fedcb302c5a1264aa292218df80dad6c730d2c732c6199e",
+    "entrypoint_sha256": "5e4c8dbf17c23af4367d96fa8edc2d032c65130e338b9119122722a112e2620f"
+  },
+  "deterministic_rebuild_verified": true,
+  "provider_called": false,
+  "gpu_allocated": false,
+  "physical_outcome_labels_accessed": false,
+  "claim_ceiling": "technical_open_loop_replay_canary_only"
+}

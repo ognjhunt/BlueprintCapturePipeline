@@ -25,6 +25,14 @@ from pathlib import Path
 from typing import Any
 
 from .common import utc_now_iso, write_json
+from .ctrl_world_provider_bundle import (
+    CLIP_REVISION,
+    CTRL_WORLD_CHECKPOINT_REPOSITORY,
+    CTRL_WORLD_CHECKPOINT_REVISION,
+    CTRL_WORLD_PUBLIC_IMAGE,
+    CTRL_WORLD_SOURCE_REVISION,
+    SVD_REVISION,
+)
 from .oscar_official_release import (
     OFFICIAL_OSCAR_HF_REPO,
     OFFICIAL_OSCAR_HF_REVISION,
@@ -105,6 +113,7 @@ class SuccessorGPUProfile:
     powered_bundle: bool = False
     edge_policy_canary_bundle: bool = False
     oscar_replay_bundle: bool = False
+    ctrl_world_replay_bundle: bool = False
     provider_bundle_kind: str = "wam"
     bundle_schema: str = BUNDLE_SCHEMA
     checkpoint_repository: str = CHECKPOINT_REPOSITORY
@@ -399,18 +408,12 @@ OSCAR_PUBLIC_REPLAY_PROFILE = SuccessorGPUProfile(
         "rollout_manifest_file_sha256": (
             "2b50a0abf072ba691e68f612ab95d8d5e3856688c90be0e81741785d4929d823"
         ),
-        "first_frame_sha256": (
-            "2efae31ef115800a18f04302b668241a5891d36f3ad29734b22a46c791307a35"
-        ),
+        "first_frame_sha256": ("2efae31ef115800a18f04302b668241a5891d36f3ad29734b22a46c791307a35"),
         "skeleton_video_sha256": (
             "4ad9dd1c6cf2acd2bd62fd51a4e5c0744ee0a077b8ea06b7a0a35af24418d08c"
         ),
-        "runner_sha256": (
-            "4b1367be37fc49b319b602c5cedbd40c66c5fe5d16afcf10697cccc8f0fa60e4"
-        ),
-        "entrypoint_sha256": (
-            "194f4809624cc82e1f3a88f64e12304451708986dad5880695af0518a0efb19c"
-        ),
+        "runner_sha256": ("4b1367be37fc49b319b602c5cedbd40c66c5fe5d16afcf10697cccc8f0fa60e4"),
+        "entrypoint_sha256": ("194f4809624cc82e1f3a88f64e12304451708986dad5880695af0518a0efb19c"),
     },
     qualification_canary_request_count=1,
     scientific_matrix_request_count=0,
@@ -429,6 +432,61 @@ OSCAR_PUBLIC_REPLAY_PROFILE = SuccessorGPUProfile(
     min_gpu_ram_mb=80_000,
     cosmos_revision=None,
     cosmos_framework_revision=OFFICIAL_OSCAR_SOURCE_COMMIT,
+    vllm_omni_revision=None,
+    allowed_providers=("vast",),
+    compatible_gpu_keywords=("RTX PRO 6000", "H100"),
+)
+CTRL_WORLD_REPLAY_PROFILE = SuccessorGPUProfile(
+    experiment_id="policy_ranking_cosmos3_edge_closed_loop_20260729",
+    admission_schema="policy_ranking_ctrl_world_replay_gpu_admission.v1",
+    authorization_schema=("policy_ranking_cosmos3_edge_closed_loop_compute_authorization.v1"),
+    preflight_schema="policy_ranking_ctrl_world_replay_vast_preflight.v1",
+    receipt_schema="ctrl_world_replay_bundle_receipt.v1",
+    authorization_ids_by_allocation_index={
+        8: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-8",
+    },
+    cost_authorization_binding_sha256=(
+        "4b7e126dd677b3a79317a7d51738428951efc1019189a766251e1ed39bb98400"
+    ),
+    expected_bundle_sha256="6f3b4acd71addec24251c19bba4a304268ba086ed1017007e8d06a884accc558",
+    expected_bundle_size_bytes=2_579_190,
+    expected_embedded_input_hashes={
+        "runtime_manifest_file_sha256": (
+            "95fc73992ac7f92329963917b3ada6881838a4ccd155691ed3999722247195bf"
+        ),
+        "rollout_manifest_file_sha256": (
+            "ed5084a914688b047a4ab798b12cd4f8b9fd49833759f9f504c564daa3c36f22"
+        ),
+        "canary_manifest_sha256": (
+            "418ab0b7e6a69ec13010f32569dac469cb4b68159f72214f8bc550bcffd643ff"
+        ),
+        "annotation_sha256": ("cc7bf532144fa40492eae9e44e919290ea45fc57283304f0c5d58689785e700c"),
+        "view_manifest_sha256": (
+            "2de9a23f04338bf391c056c835215ed3cdacb0450aa84b0079705dc074dcc8e9"
+        ),
+        "source_manifest_sha256": (
+            "8379bb479232e2a5638c9b209f7f7436e5366137609afcf4f6462e177b531255"
+        ),
+        "runner_sha256": ("8725813df86b54626a33cc6c4d46cd3c275cc40cfa129ad63a082965f40c26fb"),
+        "entrypoint_sha256": ("5e4c8dbf17c23af4367d96fa8edc2d032c65130e338b9119122722a112e2620f"),
+    },
+    qualification_canary_request_count=1,
+    scientific_matrix_request_count=0,
+    total_initial_generation_request_count=1,
+    request_budget_amendment_sha256=None,
+    max_compute_cap_usd=5.0,
+    max_hourly_rate_usd=2.05,
+    target_spend_usd=3.0,
+    hard_ttl_seconds=7_200,
+    ctrl_world_replay_bundle=True,
+    provider_bundle_kind="wam",
+    bundle_schema="wam_provider_runtime_manifest.v1",
+    checkpoint_repository=CTRL_WORLD_CHECKPOINT_REPOSITORY,
+    checkpoint_revision=CTRL_WORLD_CHECKPOINT_REVISION,
+    public_image=CTRL_WORLD_PUBLIC_IMAGE,
+    min_gpu_ram_mb=80_000,
+    cosmos_revision=None,
+    cosmos_framework_revision=CTRL_WORLD_SOURCE_REVISION,
     vllm_omni_revision=None,
     allowed_providers=("vast",),
     compatible_gpu_keywords=("RTX PRO 6000", "H100"),
@@ -506,6 +564,21 @@ OSCAR_PUBLIC_REPLAY_BUNDLE_ENTRIES = frozenset(
         "provider_runtime/wam_rollout_input_manifest.json",
         "provider_runtime/oscar_input/first_frame.png",
         "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
+    }
+)
+CTRL_WORLD_REPLAY_BUNDLE_ENTRIES = frozenset(
+    {
+        "provider_runtime/wam_provider_runtime_runner.py",
+        "provider_runtime/run_wam_provider_runtime.sh",
+        "provider_runtime/successor_retained_control.py",
+        "provider_runtime/wam_provider_runtime_manifest.json",
+        "provider_runtime/wam_rollout_input_manifest.json",
+        "provider_runtime/ctrl_world_replay/canary_manifest.json",
+        "provider_runtime/ctrl_world_replay/annotation.json",
+        "provider_runtime/ctrl_world_replay/view_0.mp4",
+        "provider_runtime/ctrl_world_replay/view_1.mp4",
+        "provider_runtime/ctrl_world_replay/view_2.mp4",
+        "provider_runtime/ctrl_world_source/scripts/rollout_replay_traj.py",
     }
 )
 
@@ -756,6 +829,58 @@ def inspect_successor_bundle(
                             archive.read("provider_runtime/run_wam_provider_runtime.sh")
                         ).hexdigest(),
                     }
+                elif profile.ctrl_world_replay_bundle:
+                    canary_manifest = json.loads(
+                        archive.read(
+                            "provider_runtime/ctrl_world_replay/canary_manifest.json"
+                        ).decode("utf-8")
+                    )
+                    computed_canary_sha256 = canonical_sha256(
+                        {
+                            key: value
+                            for key, value in canary_manifest.items()
+                            if key != "manifest_sha256"
+                        }
+                    )
+                    if canary_manifest.get("manifest_sha256") != computed_canary_sha256:
+                        blockers.append("successor_ctrl_world_canary_manifest_hash_invalid")
+                    view_manifest = canary_manifest.get("views")
+                    if not isinstance(view_manifest, list):
+                        view_manifest = []
+                    source_manifest = manifest.get("source_files")
+                    if not isinstance(source_manifest, list):
+                        source_manifest = []
+                    for row in source_manifest:
+                        if not isinstance(row, Mapping):
+                            blockers.append("successor_ctrl_world_source_manifest_invalid")
+                            continue
+                        relative = str(row.get("relative_path") or "")
+                        entry = f"provider_runtime/ctrl_world_source/{relative}"
+                        if entry not in names:
+                            blockers.append("successor_ctrl_world_source_file_missing")
+                            continue
+                        if hashlib.sha256(archive.read(entry)).hexdigest() != row.get("sha256"):
+                            blockers.append("successor_ctrl_world_source_file_hash_invalid")
+                    embedded_hashes = {
+                        "runtime_manifest_file_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_provider_runtime_manifest.json")
+                        ).hexdigest(),
+                        "rollout_manifest_file_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_rollout_input_manifest.json")
+                        ).hexdigest(),
+                        "canary_manifest_sha256": computed_canary_sha256,
+                        "annotation_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/ctrl_world_replay/annotation.json")
+                        ).hexdigest(),
+                        "view_manifest_sha256": canonical_sha256(view_manifest),
+                        "source_manifest_sha256": canonical_sha256(source_manifest),
+                        "runner_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/wam_provider_runtime_runner.py")
+                        ).hexdigest(),
+                        "entrypoint_sha256": hashlib.sha256(
+                            archive.read("provider_runtime/run_wam_provider_runtime.sh")
+                        ).hexdigest(),
+                    }
                 elif profile.oscar_replay_bundle:
                     embedded_hashes = {
                         "runtime_manifest_file_sha256": hashlib.sha256(
@@ -917,6 +1042,8 @@ def inspect_successor_bundle(
     required_entries = (
         EDGE_POLICY_CANARY_BUNDLE_ENTRIES
         if profile.edge_policy_canary_bundle
+        else CTRL_WORLD_REPLAY_BUNDLE_ENTRIES
+        if profile.ctrl_world_replay_bundle
         else OSCAR_PUBLIC_REPLAY_BUNDLE_ENTRIES
         if profile.oscar_replay_bundle
         else POWERED_BUNDLE_ENTRIES
@@ -961,6 +1088,44 @@ def inspect_successor_bundle(
             blockers.append("successor_cosmos_provider_bundle_checkpoint_mismatch")
         if framework.get("revision") != profile.cosmos_framework_revision:
             blockers.append("successor_cosmos_provider_bundle_framework_mismatch")
+    elif profile.ctrl_world_replay_bundle:
+        if manifest.get("runtime") != "ctrl_world_public_replay_runtime":
+            blockers.append("successor_ctrl_world_bundle_runtime_mismatch")
+        if manifest.get("model_name") != "Ctrl-World":
+            blockers.append("successor_ctrl_world_bundle_attribution_mismatch")
+        if manifest.get("ctrl_world_source_revision") != profile.cosmos_framework_revision:
+            blockers.append("successor_ctrl_world_bundle_source_mismatch")
+        if manifest.get("checkpoint_repository") != profile.checkpoint_repository:
+            blockers.append("successor_ctrl_world_bundle_checkpoint_repository_mismatch")
+        if manifest.get("checkpoint_revision") != profile.checkpoint_revision:
+            blockers.append("successor_ctrl_world_bundle_checkpoint_mismatch")
+        models = {
+            str(row.get("name") or ""): row
+            for row in manifest.get("models", [])
+            if isinstance(row, Mapping)
+        }
+        if _mapping(models.get("stable_video_diffusion")).get("revision") != SVD_REVISION:
+            blockers.append("successor_ctrl_world_bundle_svd_revision_mismatch")
+        if _mapping(models.get("clip")).get("revision") != CLIP_REVISION:
+            blockers.append("successor_ctrl_world_bundle_clip_revision_mismatch")
+        if rollout_manifest.get("arm_id") != "ctrl_world_public_replay_reduced_canary":
+            blockers.append("successor_ctrl_world_bundle_arm_mismatch")
+        if rollout_manifest.get("physical_future_rgb_provided_to_model") is not False:
+            blockers.append("successor_ctrl_world_bundle_future_rgb_boundary_invalid")
+        if rollout_manifest.get("physical_outcome_labels_accessed") is not False:
+            blockers.append("successor_ctrl_world_bundle_label_boundary_invalid")
+        if rollout_manifest.get("closed_loop") is not False:
+            blockers.append("successor_ctrl_world_bundle_closed_loop_boundary_invalid")
+        canary_settings = _mapping(manifest.get("canary_settings"))
+        if any(
+            canary_settings.get(key) != value
+            for key, value in {
+                "trajectory_id": "899",
+                "start_index": 8,
+                "interaction_count": 1,
+            }.items()
+        ):
+            blockers.append("successor_ctrl_world_bundle_canary_settings_mismatch")
     elif profile.oscar_replay_bundle:
         if manifest.get("oscar_hf_repo") != profile.checkpoint_repository:
             blockers.append("successor_oscar_bundle_checkpoint_repository_mismatch")
@@ -1043,6 +1208,7 @@ def inspect_successor_bundle(
             blockers.append(f"successor_cosmos_provider_bundle_receipt_{key}_mismatch")
     if (
         not profile.edge_policy_canary_bundle
+        and not profile.ctrl_world_replay_bundle
         and not profile.oscar_replay_bundle
         and not profile.reference_bundle
         and not profile.powered_bundle
@@ -1082,14 +1248,21 @@ def build_successor_gpu_admission(
     cosmos = _mapping(upstream.get("cosmos"))
     framework = _mapping(upstream.get("cosmos_framework"))
     oscar = _mapping(upstream.get("oscar"))
+    ctrl_world = _mapping(upstream.get("ctrl_world"))
     vllm = _mapping(upstream.get("vllm_omni"))
     if environment.get("experiment_id") != profile.experiment_id:
         blockers.append("successor_environment_experiment_mismatch")
-    if profile.oscar_replay_bundle:
+    if profile.ctrl_world_replay_bundle:
+        if ctrl_world.get("revision") != profile.cosmos_framework_revision:
+            blockers.append("successor_ctrl_world_source_revision_mismatch")
+    elif profile.oscar_replay_bundle:
         if oscar.get("revision") != profile.cosmos_framework_revision:
             blockers.append("successor_oscar_source_revision_mismatch")
     else:
-        if profile.cosmos_revision is not None and cosmos.get("revision") != profile.cosmos_revision:
+        if (
+            profile.cosmos_revision is not None
+            and cosmos.get("revision") != profile.cosmos_revision
+        ):
             blockers.append("successor_cosmos_revision_mismatch")
         if framework.get("revision") != profile.cosmos_framework_revision:
             blockers.append("successor_framework_revision_mismatch")
@@ -1111,6 +1284,7 @@ def build_successor_gpu_admission(
 
     if (
         profile.edge_policy_canary_bundle
+        or profile.ctrl_world_replay_bundle
         or profile.oscar_replay_bundle
         or profile.reference_bundle
         or profile.powered_bundle
@@ -1120,6 +1294,8 @@ def build_successor_gpu_admission(
             "reason": (
                 "edge_policy_canary_inputs_are_frozen_inside_the_bundle"
                 if profile.edge_policy_canary_bundle
+                else "ctrl_world_public_replay_inputs_are_frozen_inside_the_bundle"
+                if profile.ctrl_world_replay_bundle
                 else "official_oscar_replay_inputs_are_frozen_inside_the_bundle"
                 if profile.oscar_replay_bundle
                 else "powered_droid_inputs_are_frozen_inside_the_bundle"
@@ -1703,7 +1879,9 @@ def run_successor_gpu_lane(
     provider_preflight = load_input("provider_preflight", provider_preflight_path)
     bundle_receipt = load_input("bundle_receipt", provider_bundle_receipt_path)
     receipt_schema = bundle_receipt.get("schema_version")
-    if receipt_schema == OSCAR_PUBLIC_REPLAY_PROFILE.receipt_schema:
+    if receipt_schema == CTRL_WORLD_REPLAY_PROFILE.receipt_schema:
+        profile = CTRL_WORLD_REPLAY_PROFILE
+    elif receipt_schema == OSCAR_PUBLIC_REPLAY_PROFILE.receipt_schema:
         profile = OSCAR_PUBLIC_REPLAY_PROFILE
     elif receipt_schema == EDGE_CLOSED_LOOP_PROFILE.receipt_schema:
         profile = EDGE_CLOSED_LOOP_PROFILE
@@ -2037,6 +2215,7 @@ __all__ = [
     "MAX_COMPUTE_CAP_USD",
     "PREFLIGHT_SCHEMA",
     "DROID_REFERENCE_PROFILE",
+    "CTRL_WORLD_REPLAY_PROFILE",
     "EDGE_CLOSED_LOOP_PROFILE",
     "OSCAR_PUBLIC_REPLAY_PROFILE",
     "POWERED_DROID_PROFILE",
