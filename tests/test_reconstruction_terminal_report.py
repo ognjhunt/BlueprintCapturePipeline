@@ -6,12 +6,14 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_terminal_report import (
     RECONSTRUCTION_REPORT_REQUEST_SCHEMA_VERSION,
     ReconstructionTerminalReportError,
     build_reconstruction_terminal_report_request,
     generate_reconstruction_terminal_report,
 )
+
 from blueprint_pipeline.task_evaluation_supervisor import (
     AutonomyMode,
     SupervisorContext,
@@ -19,6 +21,12 @@ from blueprint_pipeline.task_evaluation_supervisor import (
 )
 from blueprint_pipeline.task_evaluation_supervisor.supervisor import default_authority_envelope
 from blueprint_pipeline.task_evaluation_supervisor.tools import non_spend_tool_bindings
+
+
+RECORDED_ARKITSCENES_TERMINAL_REPORT = (
+    Path(__file__).parents[1]
+    / "docs/evidence/arkitscenes_reconstruction_terminal_report_40958756_27faf763.json"
+)
 
 
 def _ceilings(**overrides: bool) -> dict[str, bool]:
@@ -220,3 +228,42 @@ def test_registered_terminal_report_tool_accepts_only_request_digest(tmp_path: P
     assert observation["typed_result"]["failed_method_count"] == 1
     assert observation["typed_result"]["agent_output_authoritative"] is False
     assert observation["proof_effect"] == "none"
+
+
+def test_recorded_arkitscenes_terminal_report_abstains_at_exact_missing_gates() -> None:
+    report = json.loads(
+        RECORDED_ARKITSCENES_TERMINAL_REPORT.read_text(encoding="utf-8")
+    )
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/reconstruction_terminal_report.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    jsonschema.Draft202012Validator(
+        schema, format_checker=jsonschema.FormatChecker()
+    ).validate(report)
+    assert report["reconstruction_terminal_report_digest"] == canonical_digest(
+        report, digest_field="reconstruction_terminal_report_digest"
+    )
+    assert report["decision"] == "abstention"
+    assert len(report["selected_frames"]) == 40
+    assert report["evidence_ceilings"]["decoded_observation_availability"] is True
+    assert report["evidence_ceilings"]["calibrated_camera_trajectory"] is True
+    for ceiling in (
+        "appearance_reconstruction",
+        "metric_scale",
+        "metric_reference_geometry",
+        "collision_geometry",
+        "physics_readiness",
+        "isaac_load_render_compatibility",
+        "simulator_task_evidence",
+        "physical_task_success",
+        "deployment_readiness",
+    ):
+        assert report["evidence_ceilings"][ceiling] is False
+    assert report["runtime_and_spend"]["total_spend_usd"] == 0.0
+    assert report["teardown_and_provider_zero"]["live_provider_inventory"] == 0
+    assert report["agent_output_authoritative"] is False
+    assert report["proof_state_mutated_by_report"] is False

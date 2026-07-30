@@ -215,6 +215,14 @@ exact compact receipt is committed at
 `docs/evidence/arkitscenes_raw_proxy_40958756_b2d7297f.json`; public dataset
 bytes remain outside Git. The downloaded Apple license text had SHA-256
 `1b6a8700127de50c9d56f8f33eb202a64f6f212fd4b133435f7c8b6bccd3db59`.
+The subsequent deterministic terminal report at commit
+`27faf76309b94103cbe778aece6b549cb973d615` abstains at the first unavailable
+appearance-worker gate and records terminal digest
+`sha256:241b32ca74ea4b2723378052bf3c5e73dbad578a0f98ea5fe980a5ff588ac898`.
+It preserves decoded-observation and dataset-proxy calibrated-trajectory
+ceilings only; every metric-qualification, collision, Isaac, simulation,
+physical, and deployment ceiling remains false. The exact report is
+`docs/evidence/arkitscenes_reconstruction_terminal_report_40958756_27faf763.json`.
 
 This is iPad public-dataset proxy evidence only. ARKitScenes lacks Blueprint's
 encoder-attempt and retained-frame ledger and does not provide the required
