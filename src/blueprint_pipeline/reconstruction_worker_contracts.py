@@ -204,6 +204,7 @@ FAILURE_CODES = {
     "scale_anchor_rejection",
     "invalid_depth_alignment",
     "training_divergence",
+    "training_timeout",
     "nan_output",
     "gpu_out_of_memory",
     "provider_capacity",

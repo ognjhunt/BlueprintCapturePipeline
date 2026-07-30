@@ -71,6 +71,9 @@ def test_reconstruction_worker_recipe_is_digest_and_revision_pinned():
     assert 'python -c "import threedgrut"' in dockerfile
     assert "sha256sum --check --strict" in dockerfile
     assert ":latest" not in dockerfile
+    readme = (IMAGE_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "blueprint_pipeline.reconstruction_gaussian_trainer" in readme
+    assert "independent evaluator" in readme
     requirements = (IMAGE_ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines()
     assert requirements
     assert all("==" in line for line in requirements)

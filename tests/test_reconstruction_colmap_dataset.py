@@ -141,6 +141,8 @@ def test_export_is_candidate_only_idempotent_and_converts_pose(tmp_path: Path) -
 
     assert first == second
     assert first["image_count"] == 2
+    assert first["observation_ids"] == ["frame-1", "frame-2"]
+    assert first["rejected_observation_ids"] == []
     assert first["initialization_point_count"] == 2
     assert first["hidden_heldout_pixels_included"] is False
     assert first["raw_input_poses_modified"] is False

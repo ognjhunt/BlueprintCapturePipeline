@@ -5,6 +5,12 @@ gsplat/3DGRUT appearance training. It preserves hidden-held-out isolation: the
 image healthcheck does not accept a dataset path and scientific evaluation runs
 in the independent evaluator.
 
+The runtime trainer is invoked explicitly with `python -m
+blueprint_pipeline.reconstruction_gaussian_trainer`. It consumes a typed,
+digest-bound request plus a candidate-only COLMAP export. The launcher disables
+3DGRUT test rendering and extra metrics; hidden held-out views remain outside
+the worker input and are scored only by the independent evaluator.
+
 The Dockerfile is a build recipe, not a build receipt. Until a native Linux GPU
 build resolves the image digest and passes the runtime healthcheck, its status is
 `candidate_unbuilt`. Paid builds and GPU canaries must enter through

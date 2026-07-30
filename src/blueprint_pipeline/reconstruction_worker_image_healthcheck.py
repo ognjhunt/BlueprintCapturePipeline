@@ -123,6 +123,7 @@ def run_reconstruction_worker_healthcheck(
         "cv2",
         "trimesh",
         "pxr",
+        "blueprint_pipeline.reconstruction_gaussian_trainer",
     ):
         try:
             import_name(module)

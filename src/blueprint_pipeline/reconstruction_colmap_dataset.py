@@ -226,6 +226,7 @@ def export_colmap_training_dataset(
     )
     root = Path(output_root).resolve() / f"colmap_dataset_{configuration_digest[7:23]}"
     image_digests: list[dict[str, str]] = []
+    observation_ids: list[str] = []
     camera_lines = ["# Camera list with one line of data per camera:"]
     image_lines = ["# Image list with two lines of data per image:"]
     source_root = Path(artifact_root).resolve()
@@ -233,6 +234,8 @@ def export_colmap_training_dataset(
         if not isinstance(observation, Mapping):
             raise ColmapTrainingDatasetError(["colmap_export_observation_invalid"])
         frame_id = str(observation.get("observation_id") or "")
+        if not frame_id or frame_id in observation_ids:
+            raise ColmapTrainingDatasetError(["colmap_export_observation_id_invalid_or_duplicate"])
         candidate_row = candidate_rows.get(frame_id)
         split = observation.get("split")
         if not isinstance(candidate_row, Mapping) or split not in {"training", "validation"}:
@@ -250,6 +253,7 @@ def export_colmap_training_dataset(
         name = f"{image_id:06d}_{frame_id}{suffix}"
         digest = _write_immutable(root / "images" / name, source.read_bytes())
         image_digests.append({"artifact_id": name, "digest": digest})
+        observation_ids.append(frame_id)
         camera_row, pose = _camera_line(observation, image_id)
         camera_lines.append(camera_row)
         image_lines.extend([f"{image_id} {pose} {image_id} {name}", ""])
@@ -332,6 +336,8 @@ def export_colmap_training_dataset(
         "authority_used": dict(request["authority_used"]),
         "relative_path": root.relative_to(Path(output_root).resolve()).as_posix(),
         "image_count": len(image_digests),
+        "observation_ids": observation_ids,
+        "rejected_observation_ids": [],
         "initialization_point_count": len(point_lines) - 1,
         "hidden_heldout_pixels_included": False,
         "raw_input_poses_modified": False,
