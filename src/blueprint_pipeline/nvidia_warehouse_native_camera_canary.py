@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import posixpath
@@ -24,6 +25,38 @@ MIN_WRIST_WORLD_DISPLACEMENT_M = 0.001
 MAX_WRIST_LOCAL_TRANSFORM_DELTA = 1e-9
 MAX_KINEMATIC_JOINT_POSITION_ERROR_RAD = 0.02
 REQUIRED_VIEWS = ("external", "wrist")
+SUPPORTED_OPTIONAL_VIEWS = ("external_2",)
+
+
+def _required_views_from_spec(spec: Mapping[str, Any]) -> tuple[str, ...]:
+    """Resolve a prospectively declared camera set without changing v1 defaults."""
+
+    declared = spec.get("required_views")
+    if declared is None:
+        return REQUIRED_VIEWS
+    if not isinstance(declared, list) or not all(isinstance(view, str) for view in declared):
+        raise ValueError("native_camera_required_views_invalid")
+    views = tuple(declared)
+    if len(views) != len(set(views)):
+        raise ValueError("native_camera_required_views_duplicate")
+    if not all(view in views for view in REQUIRED_VIEWS):
+        raise ValueError("native_camera_required_views_baseline_missing")
+    allowed = set(REQUIRED_VIEWS + SUPPORTED_OPTIONAL_VIEWS)
+    if any(view not in allowed for view in views):
+        raise ValueError("native_camera_required_views_unsupported")
+    cameras = spec.get("cameras")
+    if not isinstance(cameras, Mapping) or any(view not in cameras for view in views):
+        raise ValueError("native_camera_required_view_spec_missing")
+    if "external_2" in views:
+        external = cameras.get("external")
+        external_2 = cameras.get("external_2")
+        if not isinstance(external, Mapping) or not isinstance(external_2, Mapping):
+            raise ValueError("native_camera_external_pair_spec_invalid")
+        first_pose = (external.get("position_m"), external.get("look_at_m"))
+        second_pose = (external_2.get("position_m"), external_2.get("look_at_m"))
+        if first_pose == second_pose:
+            raise ValueError("native_camera_external_pair_pose_not_distinct")
+    return views
 
 
 def _simulation_app_launch_config() -> dict[str, Any]:
@@ -660,19 +693,24 @@ def isaac_sim_6_backend(
         distant = UsdLux.DistantLight.Define(stage, "/World/Lights/Key")
         distant.CreateIntensityAttr(2500.0)
 
+        required_views = _required_views_from_spec(spec)
         camera_objects: dict[str, Camera] = {}
-        external = spec["cameras"]["external"]
-        external_eye = np.asarray(external["position_m"], dtype=float)
-        external_forward = np.asarray(external["look_at_m"], dtype=float) - external_eye
-        external_quaternion = _camera_quaternion_wxyz(external_forward, (0.0, 0.0, 1.0))
-        external_path = "/World/Cameras/External"
-        external_prim = UsdGeom.Camera.Define(stage, external_path)
-        external_prim.CreateVerticalApertureAttr(15.2908)
-        external_prim.CreateHorizontalApertureAttr(15.2908 * 640.0 / 480.0)
-        external_prim.CreateFocalLengthAttr(
-            15.2908 / (2.0 * math.tan(math.radians(float(external["vertical_fov_deg"])) / 2.0))
-        )
-        set_pose(external_path, external_eye, external_quaternion)
+        camera_paths: dict[str, str] = {}
+        for view_id in (view for view in required_views if view != "wrist"):
+            camera_spec = spec["cameras"][view_id]
+            eye = np.asarray(camera_spec["position_m"], dtype=float)
+            forward = np.asarray(camera_spec["look_at_m"], dtype=float) - eye
+            quaternion = _camera_quaternion_wxyz(forward, (0.0, 0.0, 1.0))
+            camera_path = f"/World/Cameras/{''.join(part.title() for part in view_id.split('_'))}"
+            camera_paths[view_id] = camera_path
+            camera_prim = UsdGeom.Camera.Define(stage, camera_path)
+            camera_prim.CreateVerticalApertureAttr(15.2908)
+            camera_prim.CreateHorizontalApertureAttr(15.2908 * 640.0 / 480.0)
+            camera_prim.CreateFocalLengthAttr(
+                15.2908
+                / (2.0 * math.tan(math.radians(float(camera_spec["vertical_fov_deg"])) / 2.0))
+            )
+            set_pose(camera_path, eye, quaternion)
 
         # Define the wrist render sensor before World.reset(), but keep it outside
         # the articulation hierarchy. Isaac's render-only joint teleport updates
@@ -682,6 +720,7 @@ def isaac_sim_6_backend(
         wrist = spec["cameras"]["wrist"]
         calibration = wrist["rigid_mount_orientation"]
         wrist_path = "/World/Cameras/Wrist"
+        camera_paths["wrist"] = wrist_path
         wrist_prim = UsdGeom.Camera.Define(stage, wrist_path)
         wrist_prim.CreateVerticalApertureAttr(15.2908)
         wrist_prim.CreateHorizontalApertureAttr(15.2908 * 640.0 / 480.0)
@@ -731,7 +770,8 @@ def isaac_sim_6_backend(
             },
             world_up=calibration["world_up"],
         )
-        camera_objects["external"] = Camera(prim_path=external_path, resolution=(640, 480))
+        for view_id in (view for view in required_views if view != "wrist"):
+            camera_objects[view_id] = Camera(prim_path=camera_paths[view_id], resolution=(640, 480))
         camera_objects["wrist"] = Camera(prim_path=wrist_path, resolution=(640, 480))
         for camera in camera_objects.values():
             camera.initialize()
@@ -798,7 +838,7 @@ def isaac_sim_6_backend(
         if not franka_link_points:
             raise ValueError("native_warehouse_franka_link_projection_points_missing")
 
-        frames: dict[str, dict[str, Any]] = {view: {} for view in REQUIRED_VIEWS}
+        frames: dict[str, dict[str, Any]] = {view: {} for view in required_views}
 
         def save_frames(phase: str) -> int:
             step = int(world.current_time_step_index)
@@ -813,13 +853,14 @@ def isaac_sim_6_backend(
             return step
 
         def record_entity_projections(phase: str) -> None:
-            for view_id, path in (("external", external_path), ("wrist", wrist_path)):
+            for view_id in required_views:
+                path = camera_paths[view_id]
                 camera_to_world = (
                     usd_camera_matrix(path)
-                    if view_id == "external"
+                    if view_id != "wrist"
                     else _fabric_world_pose_matrix(camera_objects["wrist"])
                 )
-                if view_id == "external":
+                if view_id != "wrist":
                     required, projection_evidence = _project_required_external_entities(
                         camera_to_world=camera_to_world,
                         task_points=entity_points,
@@ -844,7 +885,7 @@ def isaac_sim_6_backend(
                 ] = required
 
         def finalize_entity_projections() -> None:
-            for view_id in REQUIRED_VIEWS:
+            for view_id in required_views:
                 phase_values = frames[view_id]["required_entities_projected_in_frame_by_phase"]
                 names = sorted(
                     {str(name) for projection in phase_values.values() for name in projection}
@@ -937,6 +978,10 @@ def isaac_sim_6_backend(
                 == frames["wrist"][f"{phase}_physics_step"]
                 for phase in ("initial", "commanded")
             ),
+            "camera_timestamps_exact": all(
+                len({frames[view_id][f"{phase}_physics_step"] for view_id in required_views}) == 1
+                for phase in ("initial", "commanded")
+            ),
             "initial_physics_step": initial_step,
             "commanded_physics_step": commanded_step,
             "rankings_or_policy_outcomes_accessed": False,
@@ -968,6 +1013,7 @@ def _image_evidence(path_value: Any, expected_resolution: list[int]) -> dict[str
     return {
         "path": str(path),
         "sha256": file_sha256(path),
+        "rgb_sha256": hashlib.sha256(rgb.tobytes()).hexdigest(),
         "resolution": [width, height],
         "spatial_std": float(np.std(rgb)),
         "nonblank": bool(float(np.std(rgb)) >= MIN_NONBLANK_SPATIAL_STD),
@@ -1001,6 +1047,15 @@ def assess_native_camera_backend_result(
     *, spec: Mapping[str, Any], backend_result: Mapping[str, Any]
 ) -> dict[str, Any]:
     blockers: list[str] = []
+    try:
+        required_views = _required_views_from_spec(spec)
+    except ValueError as exc:
+        return {
+            "status": "failed",
+            "blockers": [str(exc)],
+            "views": {},
+            "camera_motion_and_mount_checks_passed": False,
+        }
     if backend_result.get("isaac_sim_major_version") != 6:
         blockers.append("isaac_sim_major_version_not_6")
     if backend_result.get("scene_loaded") is not True:
@@ -1017,7 +1072,7 @@ def assess_native_camera_backend_result(
     views_value = backend_result.get("views")
     views = views_value if isinstance(views_value, Mapping) else {}
     view_evidence: dict[str, Any] = {}
-    for view_id in REQUIRED_VIEWS:
+    for view_id in required_views:
         view = views.get(view_id)
         if not isinstance(view, Mapping):
             blockers.append(f"native_camera_view_missing:{view_id}")
@@ -1042,6 +1097,13 @@ def assess_native_camera_backend_result(
             "frames": frames,
             "required_entities_projected_in_frame": dict(projected or {}),
         }
+
+    if "external_2" in required_views:
+        for phase in ("initial", "commanded"):
+            first = view_evidence.get("external", {}).get("frames", {}).get(phase, {})
+            second = view_evidence.get("external_2", {}).get("frames", {}).get(phase, {})
+            if first.get("rgb_sha256") and first.get("rgb_sha256") == second.get("rgb_sha256"):
+                blockers.append(f"native_camera_external_pair_frame_not_distinct:{phase}")
 
     wrist_world_delta = _finite_float(backend_result.get("wrist_camera_world_displacement_m"))
     wrist_local_delta = _finite_float(backend_result.get("wrist_camera_local_transform_delta"))
@@ -1085,13 +1147,19 @@ def assess_native_camera_backend_result(
             blockers.append(f"native_franka_joint_state_error_exceeded:{phase}")
         if phase_state.get("zero_time_scene_update_requested") is not True:
             blockers.append(f"native_franka_zero_time_scene_update_not_proven:{phase}")
-    if backend_result.get("external_wrist_timestamp_pairs_exact") is not True:
+    timestamp_key = (
+        "camera_timestamps_exact"
+        if len(required_views) > len(REQUIRED_VIEWS)
+        else "external_wrist_timestamp_pairs_exact"
+    )
+    if backend_result.get(timestamp_key) is not True:
         blockers.append("native_camera_timestamps_not_synchronized")
 
     return {
         "status": "passed" if not blockers else "failed",
         "blockers": blockers,
         "views": view_evidence,
+        "required_views": list(required_views),
         "wrist_camera_world_displacement_m": wrist_world_delta,
         "wrist_camera_world_displacement_min_m": MIN_WRIST_WORLD_DISPLACEMENT_M,
         "wrist_camera_local_transform_delta": wrist_local_delta,

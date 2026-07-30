@@ -35,7 +35,7 @@ from blueprint_pipeline.nvidia_warehouse_workcell import CANARY_SPEC_SCHEMA_VERS
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
 
 
-def _spec(path: Path) -> None:
+def _spec(path: Path, *, three_views: bool = False) -> None:
     value = {
         "schema_version": CANARY_SPEC_SCHEMA_VERSION,
         "cameras": {
@@ -43,18 +43,30 @@ def _spec(path: Path) -> None:
             "wrist": {"resolution": [640, 480]},
         },
     }
+    if three_views:
+        value["cameras"]["external"].update(
+            {"position_m": [1.0, 0.0, 1.0], "look_at_m": [0.0, 0.0, 0.0]}
+        )
+        value["cameras"]["external_2"] = {
+            "resolution": [640, 480],
+            "position_m": [-1.0, 0.0, 1.0],
+            "look_at_m": [0.0, 0.0, 0.0],
+        }
+        value["required_views"] = ["external", "external_2", "wrist"]
     value["spec_sha256"] = canonical_sha256(value)
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def _backend(*, output_dir: Path, **_kwargs):
+def _backend(*, output_dir: Path, spec=None, **_kwargs):
     output_dir.mkdir(parents=True)
     views = {}
-    for view_id in ("external", "wrist"):
+    required_views = spec.get("required_views", ["external", "wrist"])
+    for view_index, view_id in enumerate(required_views):
         paths = {}
         for phase, color in (("initial", (30, 60, 90)), ("commanded", (90, 60, 30))):
             path = output_dir / f"{view_id}_{phase}.png"
-            image = Image.new("RGB", (640, 480), color=color)
+            shifted = tuple(min(255, channel + view_index * 7) for channel in color)
+            image = Image.new("RGB", (640, 480), color=shifted)
             for x in range(0, 640, 20):
                 image.putpixel((x, x % 480), (255, 255, 255))
             image.save(path)
@@ -97,6 +109,7 @@ def _backend(*, output_dir: Path, **_kwargs):
         "wrist_camera_world_displacement_m": 0.02,
         "wrist_camera_local_transform_delta": 0.0,
         "external_wrist_timestamp_pairs_exact": True,
+        "camera_timestamps_exact": True,
     }
 
 
@@ -670,6 +683,44 @@ def test_native_camera_canary_requires_scene_robot_rigid_object_and_two_synced_v
     )
     assert result["paid_policy_or_wam_model_invoked"] is False
     assert result["claim_boundary"]["policy_wam_loop_proven"] is False
+
+
+def test_native_camera_canary_accepts_three_distinct_synchronized_views(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.json"
+    _spec(spec_path, three_views=True)
+
+    result = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "three-view-canary",
+        backend=_backend,
+    )
+
+    assert result["status"] == "passed"
+    assert result["assessment"]["required_views"] == ["external", "external_2", "wrist"]
+
+
+def test_native_camera_canary_rejects_duplicated_second_external_frame(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.json"
+    _spec(spec_path, three_views=True)
+
+    def duplicated_backend(**kwargs):
+        result = _backend(**kwargs)
+        for phase in ("initial", "commanded"):
+            source = Path(result["views"]["external"][f"{phase}_frame_path"])
+            target = Path(result["views"]["external_2"][f"{phase}_frame_path"])
+            target.write_bytes(source.read_bytes())
+        return result
+
+    result = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "duplicate-view-canary",
+        backend=duplicated_backend,
+    )
+
+    assert result["status"] == "failed"
+    assert "native_camera_external_pair_frame_not_distinct:initial" in result["blockers"]
 
 
 def test_native_camera_canary_fails_static_or_slipping_wrist_mount(tmp_path: Path) -> None:

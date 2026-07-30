@@ -151,6 +151,25 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
     )
     assert spec_path.is_file()
 
+    three_view_spec = build_native_camera_canary_spec(
+        materialization_manifest_path=tmp_path / "assets" / "materialization_manifest.json",
+        output_path=tmp_path / "native_camera_canary_three_view_spec.json",
+        include_ctrl_world_external_2=True,
+    )
+    assert three_view_spec["required_views"] == ["external", "external_2", "wrist"]
+    assert (
+        three_view_spec["cameras"]["external_2"]["position_m"]
+        != spec["cameras"]["external"]["position_m"]
+    )
+    assert (
+        "external_external_2_and_wrist_timestamps_match_physics_steps"
+        in three_view_spec["required_checks"]
+    )
+    assert (
+        "external_and_wrist_timestamps_match_physics_steps"
+        not in three_view_spec["required_checks"]
+    )
+
 
 def test_materialization_rejects_pinned_asset_mutation(tmp_path: Path) -> None:
     material, dependencies = _fixture_material()

@@ -361,7 +361,10 @@ def materialize_pinned_workcell(
 
 
 def build_native_camera_canary_spec(
-    *, materialization_manifest_path: str | Path, output_path: str | Path
+    *,
+    materialization_manifest_path: str | Path,
+    output_path: str | Path,
+    include_ctrl_world_external_2: bool = False,
 ) -> dict[str, Any]:
     """Freeze the native scene/camera checks before inspecting policy rankings."""
 
@@ -454,6 +457,23 @@ def build_native_camera_canary_spec(
             "phase_b_confirmation": False,
         },
     }
+    if include_ctrl_world_external_2:
+        spec["cameras"]["external_2"] = {
+            "resolution": [640, 480],
+            "position_m": [-0.85, -0.65, 1.95],
+            "look_at_m": [-0.05, 0.18, 1.14],
+            "vertical_fov_deg": 52.0,
+            "fixed_in_world": True,
+        }
+        spec["required_views"] = ["external", "external_2", "wrist"]
+        spec["required_checks"].remove("external_and_wrist_timestamps_match_physics_steps")
+        spec["required_checks"].extend(
+            [
+                "external_2_rgb_nonblank_and_franka_spraycan_tray_visible",
+                "external_and_external_2_frames_are_distinct",
+                "external_external_2_and_wrist_timestamps_match_physics_steps",
+            ]
+        )
     spec["spec_sha256"] = canonical_sha256(spec)
     destination.parent.mkdir(parents=True, exist_ok=True)
     write_json(destination, spec)
