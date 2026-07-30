@@ -17,15 +17,26 @@ def _capture_root(tmp_path: Path) -> Path:
     return root
 
 
-def test_run_end_to_end_materializes_raw_and_threads_optional_lanes(monkeypatch, tmp_path: Path) -> None:
+def test_run_end_to_end_materializes_raw_and_threads_optional_lanes(
+    monkeypatch, tmp_path: Path
+) -> None:
     capture_root = _capture_root(tmp_path)
     raw_root = capture_root / "raw"
     raw_root.mkdir()
     (raw_root / "capture_upload_complete.json").write_text("{}", encoding="utf-8")
 
     calls: dict[str, object] = {}
-    monkeypatch.setattr(run_e2e, "build_capture_preflight_report", lambda root: {"status": "ready", "root": str(root)})
-    monkeypatch.setattr(run_e2e, "materialize_capture_bundle", lambda **kwargs: calls.setdefault("materialize", kwargs))
+    monkeypatch.setattr(
+        run_e2e,
+        "build_capture_preflight_report",
+        lambda root: {"status": "ready", "root": str(root)},
+    )
+
+    def fake_materialize(**kwargs):
+        (capture_root / "capture_descriptor.json").write_text("{}", encoding="utf-8")
+        return calls.setdefault("materialize", kwargs)
+
+    monkeypatch.setattr(run_e2e, "materialize_capture_bundle", fake_materialize)
     evaluation_prep_result = {
         "manifest_path": "eval/manifest.json",
         "webapp_sync_result": {"status": "skipped"},
@@ -87,6 +98,8 @@ def test_run_end_to_end_materializes_raw_and_threads_optional_lanes(monkeypatch,
     assert result["preflight_status"] == "ready"
     assert result["pipeline_status"] == "completed"
     assert result["pipeline_lanes"] == ["all"]
+    assert result["task_evaluation_supervisor"]["agent_harness"] == "openai_agents_sdk"
+    assert result["task_evaluation_supervisor"]["capture_build_alone_can_start_run"] is True
     assert result["pipeline_summary"] == "ready.md"
     assert result["final_memo_path"] == "memo.md"
     assert result["webapp_sync_result"] == {"status": "skipped"}
@@ -99,15 +112,14 @@ def test_run_end_to_end_materializes_raw_and_threads_optional_lanes(monkeypatch,
         "result": {"status": "completed"},
     }
     assert calls["materialize"]["raw_prefix_uri"] == "gs://bucket/scenes/site-1/captures/cap-1/raw"
-    stage_ledger = json.loads(
-        Path(result["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8")
-    )
+    stage_ledger = json.loads(Path(result["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8"))
     assert stage_ledger["schema_version"] == "run_e2e_stage_ledger.v1"
     assert stage_ledger["status"] == "completed"
     assert stage_ledger["last_completed_stage"] == "support_validation"
     assert stage_ledger["stages"]["preflight"]["status"] == "completed"
     assert stage_ledger["stages"]["materialization"]["status"] == "completed"
     assert stage_ledger["stages"]["capture_pipeline"]["detail"] == "completed"
+    assert stage_ledger["stages"]["task_evaluation_supervisor"]["status"] == "completed"
     assert stage_ledger["stages"]["agent_review"]["status"] == "completed"
     assert stage_ledger["stages"]["evaluation_prep"]["status"] == "completed"
     assert stage_ledger["stages"]["support_validation"]["detail"] == "completed"
@@ -122,9 +134,15 @@ def test_run_end_to_end_materializes_raw_and_threads_optional_lanes(monkeypatch,
     assert run_summary["spend"]["live_provider_calls_performed"] is False
 
 
-def test_run_end_to_end_blocks_preflight_and_missing_descriptor(monkeypatch, tmp_path: Path) -> None:
+def test_run_end_to_end_blocks_preflight_and_missing_descriptor(
+    monkeypatch, tmp_path: Path
+) -> None:
     capture_root = _capture_root(tmp_path)
-    monkeypatch.setattr(run_e2e, "build_capture_preflight_report", lambda _root: {"missing_required_inputs": ["raw/manifest.json", "raw/video.mov"]})
+    monkeypatch.setattr(
+        run_e2e,
+        "build_capture_preflight_report",
+        lambda _root: {"missing_required_inputs": ["raw/manifest.json", "raw/video.mov"]},
+    )
     with pytest.raises(PipelineError, match="raw/manifest.json,raw/video.mov"):
         run_e2e.run_end_to_end(capture_root=str(capture_root), provider="claude")
     stage_ledger = json.loads(
@@ -139,7 +157,9 @@ def test_run_end_to_end_blocks_preflight_and_missing_descriptor(monkeypatch, tmp
     assert failed_summary["status"] == "failed"
     assert failed_summary["failed_stage"] == "preflight"
 
-    monkeypatch.setattr(run_e2e, "build_capture_preflight_report", lambda _root: {"status": "ready"})
+    monkeypatch.setattr(
+        run_e2e, "build_capture_preflight_report", lambda _root: {"status": "ready"}
+    )
     with pytest.raises(PipelineError, match="Descriptor is missing"):
         run_e2e.run_end_to_end(capture_root=str(capture_root), provider="claude")
     stage_ledger = json.loads(
@@ -151,12 +171,24 @@ def test_run_end_to_end_blocks_preflight_and_missing_descriptor(monkeypatch, tmp
     assert stage_ledger["stages"]["materialization"]["error_type"] == "PipelineError"
 
 
-def test_run_end_to_end_uses_existing_descriptor_without_optional_lanes(monkeypatch, tmp_path: Path) -> None:
+def test_run_end_to_end_uses_existing_descriptor_without_optional_lanes(
+    monkeypatch, tmp_path: Path
+) -> None:
     capture_root = _capture_root(tmp_path)
     (capture_root / "capture_descriptor.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(run_e2e, "build_capture_preflight_report", lambda _root: {"status": "ready"})
-    monkeypatch.setattr(run_e2e, "materialize_capture_bundle", lambda **_kwargs: pytest.fail("materialize should not run"))
-    monkeypatch.setattr(run_e2e, "run_capture_pipeline", lambda **_kwargs: {"status": "completed", "lanes": ["current"]})
+    monkeypatch.setattr(
+        run_e2e, "build_capture_preflight_report", lambda _root: {"status": "ready"}
+    )
+    monkeypatch.setattr(
+        run_e2e,
+        "materialize_capture_bundle",
+        lambda **_kwargs: pytest.fail("materialize should not run"),
+    )
+    monkeypatch.setattr(
+        run_e2e,
+        "run_capture_pipeline",
+        lambda **_kwargs: {"status": "completed", "lanes": ["current"]},
+    )
     monkeypatch.setattr(
         run_e2e,
         "run_agent_review",
@@ -236,17 +268,15 @@ def test_run_end_to_end_resumes_completed_stage_snapshots(monkeypatch, tmp_path:
     assert second["pipeline_lanes"] == ["current"]
     assert second["pipeline_summary"] == "ready.md"
     assert second["final_memo_path"] == "memo.md"
-    stage_ledger = json.loads(
-        Path(second["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8")
-    )
+    stage_ledger = json.loads(Path(second["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8"))
     assert stage_ledger["resume_completed_stages_requested"] is True
-    assert stage_ledger["resume_used_count"] == 3
+    assert stage_ledger["resume_used_count"] == 4
     assert stage_ledger["stages"]["preflight"]["resume_used"] is True
     assert stage_ledger["stages"]["capture_pipeline"]["resume_used"] is True
+    assert stage_ledger["stages"]["task_evaluation_supervisor"]["resume_used"] is True
     assert stage_ledger["stages"]["agent_review"]["resume_used"] is True
     assert (
-        stage_ledger["stages"]["agent_review"]["result_snapshot"]["provider_token"]
-        == "<redacted>"
+        stage_ledger["stages"]["agent_review"]["result_snapshot"]["provider_token"] == "<redacted>"
     )
 
 
@@ -289,9 +319,7 @@ def test_run_end_to_end_invalidates_resume_when_capture_inputs_change(
         provider="openai",
         run_agent_review_stage=True,
     )
-    first_ledger = json.loads(
-        Path(first["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8")
-    )
+    first_ledger = json.loads(Path(first["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8"))
     first_fingerprint = first_ledger["capture_input_fingerprint"]["fingerprint_sha256"]
 
     (raw_root / "manifest.json").write_text('{"input": 2}', encoding="utf-8")
@@ -306,16 +334,11 @@ def test_run_end_to_end_invalidates_resume_when_capture_inputs_change(
     assert second["preflight_status"] == "ready"
     assert second["pipeline_status"] == "completed"
     assert second["pipeline_summary"] == "ready-2.md"
-    stage_ledger = json.loads(
-        Path(second["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8")
-    )
+    stage_ledger = json.loads(Path(second["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8"))
     assert stage_ledger["resume_completed_stages_requested"] is True
     assert stage_ledger["resume_status"] == "no_compatible_completed_stage_ledger"
     assert stage_ledger.get("resume_used_count", 0) == 0
-    assert (
-        stage_ledger["capture_input_fingerprint"]["fingerprint_sha256"]
-        != first_fingerprint
-    )
+    assert stage_ledger["capture_input_fingerprint"]["fingerprint_sha256"] != first_fingerprint
 
 
 def test_run_end_to_end_threads_robot_eval_job_and_provider_race_summary(
@@ -431,9 +454,7 @@ def test_run_end_to_end_threads_robot_eval_job_and_provider_race_summary(
     assert calls["allow_gpu_provisioning"] is False
     assert calls["allow_simulator_execution"] is False
     assert result["robot_eval_job"]["job_id"] == "live-provider-job"
-    stage_ledger = json.loads(
-        Path(result["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8")
-    )
+    stage_ledger = json.loads(Path(result["run_e2e_stage_ledger_path"]).read_text(encoding="utf-8"))
     assert stage_ledger["stages"]["robot_eval"]["status"] == "completed"
     assert stage_ledger["stages"]["robot_eval"]["artifacts"]["mode"] == "job_request"
     assert stage_ledger["stages"]["robot_eval"]["artifacts"]["job_id"] == "live-provider-job"
@@ -451,9 +472,10 @@ def test_run_end_to_end_threads_robot_eval_job_and_provider_race_summary(
     assert provider_runtime["serial_provider_launch_blocked_unless_override"] is True
     assert provider_runtime["live_provider_calls_performed"] is False
     assert provider_runtime["remote_cloud_execution_proven"] is False
-    assert provider_runtime["claim_boundary"][
-        "run_e2e_robot_eval_handoff_is_not_provider_execution"
-    ] is True
+    assert (
+        provider_runtime["claim_boundary"]["run_e2e_robot_eval_handoff_is_not_provider_execution"]
+        is True
+    )
 
 
 def test_robot_eval_provider_runtime_summary_reads_provider_race_launcher_result(
@@ -476,9 +498,7 @@ def test_robot_eval_provider_runtime_summary_reads_provider_race_launcher_result
                         "race_required_for_customer_path": True,
                         "customer_path_provider_failover_wired": False,
                         "customer_path_provider_failover_runtime_wired": False,
-                        "provider_race_handoff_path": (
-                            "gpu_provider_race_handoff.json"
-                        ),
+                        "provider_race_handoff_path": ("gpu_provider_race_handoff.json"),
                     },
                 },
             }
@@ -526,12 +546,8 @@ def test_robot_eval_provider_runtime_summary_reads_provider_race_launcher_result
     )
 
     assert summary is not None
-    assert summary["provider_race_handoff_status"] == (
-        "ready_for_customer_provider_race_runtime"
-    )
-    assert summary["provider_race_launcher_result_status"] == (
-        "ready_for_live_provider_race"
-    )
+    assert summary["provider_race_handoff_status"] == ("ready_for_customer_provider_race_runtime")
+    assert summary["provider_race_launcher_result_status"] == ("ready_for_live_provider_race")
     assert summary["customer_path_provider_failover_wired"] is True
     assert summary["customer_path_provider_failover_runtime_wired"] is True
     assert summary["provider_race_launcher_ready"] is True
@@ -539,9 +555,9 @@ def test_robot_eval_provider_runtime_summary_reads_provider_race_launcher_result
     assert summary["live_provider_calls_performed"] is False
     assert summary["remote_cloud_execution_proven"] is False
     assert summary["serial_provider_launch_blocked_unless_override"] is True
-    assert summary["claim_boundary"][
-        "provider_race_launcher_result_is_not_provider_execution"
-    ] is True
+    assert (
+        summary["claim_boundary"]["provider_race_launcher_result_is_not_provider_execution"] is True
+    )
 
 
 def test_run_end_to_end_blocks_ambiguous_robot_eval_sources(tmp_path: Path) -> None:
@@ -595,52 +611,57 @@ def test_run_e2e_main_success_and_failure(monkeypatch, tmp_path: Path, capsys) -
         }
 
     monkeypatch.setattr(run_e2e, "run_end_to_end", fake_run_end_to_end)
-    assert run_e2e.main(
-        [
-            "--capture-root",
-            str(capture_root),
-            "--provider",
-            "openai",
-            "--pipeline-lane",
-            "all",
-            "--openai-phase2-mode",
-            "codex_cli",
-            "--openai-phase2-model",
-            "gpt-test",
-            "--openai-phase2-codex-bin",
-            "codex-test",
-            "--openai-phase2-timeout-seconds",
-            "3",
-            "--openai-phase2-reasoning-effort",
-            "low",
-            "--run-evaluation-prep",
-            "--run-agent-review",
-            "--run-cosmos-validation",
-            "--allow-legacy-pipeline-lanes",
-            "--robot-eval-job-request",
-            "robot-request.json",
-            "--robot-eval-job-id",
-            "robot-job",
-            "--robot-eval-provisioner",
-            "runpod",
-            "--robot-eval-simulator",
-            "mujoco",
-            "--robot-eval-evaluation-substrate",
-            "wam",
-            "--robot-eval-budget-usd",
-            "3.5",
-            "--allow-robot-eval-gpu-provisioning",
-            "--allow-robot-eval-simulator-execution",
-            "--resume-completed-stages",
-        ]
-    ) == 0
+    assert (
+        run_e2e.main(
+            [
+                "--capture-root",
+                str(capture_root),
+                "--provider",
+                "openai",
+                "--pipeline-lane",
+                "all",
+                "--openai-phase2-mode",
+                "codex_cli",
+                "--openai-phase2-model",
+                "gpt-test",
+                "--openai-phase2-codex-bin",
+                "codex-test",
+                "--openai-phase2-timeout-seconds",
+                "3",
+                "--openai-phase2-reasoning-effort",
+                "low",
+                "--run-evaluation-prep",
+                "--run-agent-review",
+                "--run-cosmos-validation",
+                "--allow-legacy-pipeline-lanes",
+                "--robot-eval-job-request",
+                "robot-request.json",
+                "--robot-eval-job-id",
+                "robot-job",
+                "--robot-eval-provisioner",
+                "runpod",
+                "--robot-eval-simulator",
+                "mujoco",
+                "--robot-eval-evaluation-substrate",
+                "wam",
+                "--robot-eval-budget-usd",
+                "3.5",
+                "--allow-robot-eval-gpu-provisioning",
+                "--allow-robot-eval-simulator-execution",
+                "--resume-completed-stages",
+            ]
+        )
+        == 0
+    )
     output = capsys.readouterr().out
     assert "preflight_status=ready" in output
     assert "evaluation_prep=eval.json" in output
     assert "support_validation=completed" in output
     assert "robot_eval_job=robot-job.json" in output
 
-    monkeypatch.setattr(run_e2e, "run_end_to_end", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        run_e2e, "run_end_to_end", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     assert run_e2e.main(["--capture-root", str(capture_root), "--provider", "claude"]) == 1
     assert "[run-e2e] FAILED: boom" in capsys.readouterr().out
 
@@ -663,21 +684,22 @@ def test_run_e2e_main_fails_before_work_on_invalid_or_missing_admission(
     monkeypatch.setattr(run_e2e, "run_end_to_end", lambda **kwargs: calls.append(kwargs))
     monkeypatch.delenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", raising=False)
 
-    assert run_e2e.main(
-        [
-            "--capture-root",
-            str(capture_root),
-            "--provider",
-            "local",
-            "--allow-robot-eval-gpu-provisioning",
-        ]
-    ) == 1
+    assert (
+        run_e2e.main(
+            [
+                "--capture-root",
+                str(capture_root),
+                "--provider",
+                "local",
+                "--allow-robot-eval-gpu-provisioning",
+            ]
+        )
+        == 1
+    )
     assert calls == []
     assert "cli_admission_missing_environment_approval" in capsys.readouterr().out
 
     monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVISIONING", "sometimes")
-    assert run_e2e.main(
-        ["--capture-root", str(capture_root), "--provider", "local"]
-    ) == 1
+    assert run_e2e.main(["--capture-root", str(capture_root), "--provider", "local"]) == 1
     assert calls == []
     assert "invalid_boolean_environment_value" in capsys.readouterr().out
