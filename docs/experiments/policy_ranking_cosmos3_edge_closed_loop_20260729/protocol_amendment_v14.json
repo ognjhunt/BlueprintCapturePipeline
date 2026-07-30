@@ -1,0 +1,65 @@
+{
+  "schema_version": "policy_ranking_cosmos3_edge_closed_loop_protocol_amendment.v14",
+  "experiment_id": "policy_ranking_cosmos3_edge_closed_loop_20260729",
+  "frozen_at": "2026-07-30T05:00:28-0500",
+  "supersedes_amendment_sha256": "5052b7000a861d1e644106b6673c12fbabdc424f8f4b293951ac904903ee07f9",
+  "phase": "phase_4_ctrl_world_packaged_source_validation_correction",
+  "trigger": "Allocation 10 reached the exact provider runtime after a successful CUDA probe, then rejected the legitimate zero-byte upstream file models/__init__.py before dependency installation, model download, or model execution.",
+  "allocation_10_result": {
+    "provider_instance_id": 46274400,
+    "gpu_model": "RTX PRO 6000 S",
+    "cuda_runtime_probe_passed": true,
+    "provider_runtime_output_received": true,
+    "failure": "ctrl_world_source_file_size_mismatch:models/__init__.py",
+    "dependency_install_started": false,
+    "model_download_started": false,
+    "model_load_started": false,
+    "learned_world_model_ran": false,
+    "scientific_outputs_produced": 0,
+    "authorization_consumed": true,
+    "automatic_teardown_completed": true,
+    "provider_zero_proven": true,
+    "runtime_seconds": 132.991939,
+    "gpu_cost_usd": 0.064143,
+    "provider_runtime_output_sha256": "9d13f04c56f7a457e2565d7c05caa3c2fa753250b6772da1cf0eb791d196bb63",
+    "provider_adapter_result_sha256": "33e05a62c4139f2df3e4bb03c850d8207f62f4c539b232850fad42610142b5bb",
+    "teardown_manifest_sha256": "3b8324a0b710426450c829a971bfc42a44e514bd50c6e5d26b8b49891d8c3faa",
+    "session_budget_ledger_sha256": "83eb79a58839e374e28f625f1bc69466019e548cc81747916a887bf81890e613"
+  },
+  "demonstrable_implementation_defect": {
+    "before": "int(row.get('size_bytes') or -1) converted a valid numeric zero into -1 and fabricated a size mismatch",
+    "after": "the validator accepts only exact non-negative integer sizes, including zero, and compares the packaged file against that exact value",
+    "upstream_file_size_and_hash_verified": true,
+    "generic_future_applicability": true
+  },
+  "focused_regression": {
+    "zero_byte_source_file_with_exact_sha256_is_accepted": true,
+    "ctrl_world_bundle_tests": "6 passed",
+    "ruff_check_and_format": "passed"
+  },
+  "corrected_bundle": {
+    "version": 4,
+    "bundle_sha256": "b616118c7ad5b54f98401fb60d3b4ec8d60acd036fc11d3a9568cc8821d4e6de",
+    "bundle_size_bytes": 2579223,
+    "bundle_receipt_sha256": "c5fee4d47106478c8c290a8d8df1c8f2868ba2b300112ecc85f457e258fd9e05",
+    "runner_sha256": "f79b63c23dd5e0ae78e8962ffa764b5aaa5d55fe02e37e564d7397a20c532655",
+    "deterministic_rebuild_verified": true,
+    "bundle_rebuild_required": true
+  },
+  "budget_after_allocation_10": {
+    "ctrl_world_stage_cost_usd": 0.118538,
+    "campaign_gpu_cost_usd": 3.659208,
+    "campaign_api_plus_gpu_cost_usd": 12.07772,
+    "live_provider_count": 0,
+    "next_request_still_within_ctrl_world_target_and_campaign_caps": true
+  },
+  "unchanged_scientific_inputs": {
+    "base_image_digest": "sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "ctrl_world_source_checkpoint_data_views_actions_sampling_and_dependencies": "unchanged",
+    "labels_accessed": false
+  },
+  "rerun_rule": "One new allocation may rerun the exact corrected canary only after the generic validator correction, bundle v4 freeze, allocation-10 result, and focused regression are committed and pushed under a new single-use authorization. Any subsequent failure must be retained and classified before another paid mutation.",
+  "claim_boundary": "The validator correction and any transport or runtime canary pass earn no WAM causal, ranking, transfer, economics, physical-success, or thesis credit.",
+  "provider_called_for_this_amendment": false,
+  "manifest_sha256": "2b56a87b445c34728834a682ed0da0c42163c52e9c0b72e858a6b7e9521b1931"
+}

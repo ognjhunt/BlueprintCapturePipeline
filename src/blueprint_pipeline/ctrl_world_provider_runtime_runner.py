@@ -80,7 +80,10 @@ def _validate_packaged_inputs(*, bundle_dir: Path, manifest: dict[str, Any]) -> 
         if not relative_path or not path.is_file():
             blockers.append(f"ctrl_world_source_file_missing:{relative_path}")
             continue
-        if path.stat().st_size != int(row.get("size_bytes") or -1):
+        expected_size = row.get("size_bytes")
+        if type(expected_size) is not int or expected_size < 0:
+            blockers.append(f"ctrl_world_source_file_size_invalid:{relative_path}")
+        elif path.stat().st_size != expected_size:
             blockers.append(f"ctrl_world_source_file_size_mismatch:{relative_path}")
         if _sha256_file(path) != str(row.get("sha256") or ""):
             blockers.append(f"ctrl_world_source_file_hash_mismatch:{relative_path}")

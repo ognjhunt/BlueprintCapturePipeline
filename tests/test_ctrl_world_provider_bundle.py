@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -82,19 +83,23 @@ def test_ctrl_world_bundle_is_deterministic_and_passes_frozen_inspection(
     assert rollout["physical_outcome_labels_accessed"] is False
 
 
-def test_ctrl_world_profile_binds_exact_v3_bundle() -> None:
+def test_ctrl_world_profile_binds_exact_v4_bundle() -> None:
     profile = admission.CTRL_WORLD_REPLAY_PROFILE
     assert profile.authorization_ids_by_allocation_index == {
         8: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-8",
         9: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-9",
         10: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-10",
+        11: "policy-ranking-cosmos3-edge-closed-loop-20260729-allocation-11",
     }
     assert profile.expected_bundle_sha256 == (
-        "6f3b4acd71addec24251c19bba4a304268ba086ed1017007e8d06a884accc558"
+        "b616118c7ad5b54f98401fb60d3b4ec8d60acd036fc11d3a9568cc8821d4e6de"
     )
-    assert profile.expected_bundle_size_bytes == 2_579_190
+    assert profile.expected_bundle_size_bytes == 2_579_223
     assert profile.expected_embedded_input_hashes["runtime_manifest_file_sha256"] == (
         "95fc73992ac7f92329963917b3ada6881838a4ccd155691ed3999722247195bf"
+    )
+    assert profile.expected_embedded_input_hashes["runner_sha256"] == (
+        "f79b63c23dd5e0ae78e8962ffa764b5aaa5d55fe02e37e564d7397a20c532655"
     )
     assert profile.ctrl_world_replay_bundle is True
     assert profile.qualification_canary_request_count == 1
@@ -131,6 +136,59 @@ def test_generated_only_redaction_removes_public_physical_comparison(tmp_path: P
     assert ok
     assert frame.shape[:2] == (32, 96)
     assert float(frame[:, :, 2].mean()) < 100.0
+
+
+def test_runtime_input_validation_accepts_frozen_zero_byte_source(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    source_file = bundle_dir / "provider_runtime" / "ctrl_world_source" / "models" / "__init__.py"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_bytes(b"")
+    manifest = {
+        "source_files": [
+            {
+                "relative_path": "models/__init__.py",
+                "size_bytes": 0,
+                "sha256": hashlib.sha256(b"").hexdigest(),
+            }
+        ]
+    }
+
+    assert runtime._validate_packaged_inputs(bundle_dir=bundle_dir, manifest=manifest) == []
+
+
+def test_runtime_input_validation_rejects_invalid_or_mismatched_sizes(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    source_file = bundle_dir / "provider_runtime" / "ctrl_world_source" / "models" / "__init__.py"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_bytes(b"")
+    empty_sha256 = hashlib.sha256(b"").hexdigest()
+
+    for invalid_size in (-1, "0", False, None):
+        manifest = {
+            "source_files": [
+                {
+                    "relative_path": "models/__init__.py",
+                    "size_bytes": invalid_size,
+                    "sha256": empty_sha256,
+                }
+            ]
+        }
+        assert runtime._validate_packaged_inputs(bundle_dir=bundle_dir, manifest=manifest) == [
+            "ctrl_world_source_file_size_invalid:models/__init__.py"
+        ]
+
+    mismatch_manifest = {
+        "source_files": [
+            {
+                "relative_path": "models/__init__.py",
+                "size_bytes": 1,
+                "sha256": empty_sha256,
+            }
+        ]
+    }
+    assert runtime._validate_packaged_inputs(bundle_dir=bundle_dir, manifest=mismatch_manifest) == [
+        "ctrl_world_source_file_size_mismatch:models/__init__.py"
+    ]
 
 
 def test_runtime_result_contract_names_ctrl_world_and_preserves_claim_ceiling() -> None:
