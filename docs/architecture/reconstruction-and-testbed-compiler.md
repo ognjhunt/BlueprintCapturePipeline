@@ -1,8 +1,8 @@
 # Reconstruction Capability and Testbed Compiler
 
 Status: implemented local contract boundary, deterministic frame/split kernel,
-ARKitScenes raw proxy compiler, and native dual-fisheye normalization, version 1
-(2026-07-30)
+ARKitScenes raw proxy compiler, native dual-fisheye normalization, and strict
+Isaac reconstruction qualification runner, version 1 (2026-07-30)
 
 ## Decision
 
@@ -289,13 +289,17 @@ result proves only Isaac load/render/physics-presence compatibility—not simula
 task success, physical success, or deployment readiness.
 
 `isaac_reconstruction_verification.py` is the normalization boundary for the
-headless runtime result. It intentionally rejects the existing visual-only
-`isaac_splat_nurec_render_result.v1`. A v2 runtime receipt must bind the exact
-package digest and report meters/Z-up, transforms, missing assets, ParticleField
-and active collision prim counts, a stepped test-body probe with observed
-contact and no floor fall-through, plus digest-bound nonblank fixed-camera
-renders. This makes the outstanding Isaac runner upgrade explicit and prevents
-historical render success from satisfying the physics-presence gate.
+headless runtime result. It intentionally rejects visual-only
+`isaac_splat_nurec_render_result.v1`. The existing ParticleField runner now has
+an explicit qualification mode that emits
+`isaac_splat_nurec_render_result.v2`, binds and re-hashes the exact package, and
+reports meters/Z-up, transforms, unresolved dependencies, ParticleField and
+active collision prim counts, a stepped live-PhysX test-body probe against an
+existing static package collider, conservative obvious-scale bounds, and
+digest-bound nonblank fixed-camera renders. It does not create a helper floor.
+Legacy callers remain on v1 and cannot satisfy
+the physics-presence gate. The v2 code path is hermetically contract-tested but
+remains real-Isaac unverified until executed on the pinned GPU worker.
 
 ## Normalized results and layers
 

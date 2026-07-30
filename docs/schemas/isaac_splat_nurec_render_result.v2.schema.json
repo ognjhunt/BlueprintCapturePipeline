@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/isaac_splat_nurec_render_result.v2.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "package_digest",
+    "raw_secret_values_recorded"
+  ],
+  "properties": {
+    "schema_version": {"const": "isaac_splat_nurec_render_result.v2"},
+    "status": {"enum": ["running", "completed", "blocked"]},
+    "package_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "raw_secret_values_recorded": {"const": false},
+    "stage": {
+      "type": "object",
+      "required": [
+        "meters_per_unit",
+        "up_axis",
+        "transforms_valid",
+        "dependency_inspection_available",
+        "missing_asset_count",
+        "particlefield_prim_count",
+        "active_collision_prim_count",
+        "obvious_scale_mismatch_detected"
+      ],
+      "properties": {
+        "meters_per_unit": {"const": 1.0},
+        "up_axis": {"const": "Z"},
+        "transforms_valid": {"const": true},
+        "dependency_inspection_available": {"const": true},
+        "missing_asset_count": {"const": 0},
+        "particlefield_prim_count": {"type": "integer", "minimum": 1},
+        "active_collision_prim_count": {"type": "integer", "minimum": 1},
+        "obvious_scale_mismatch_detected": {"const": false}
+      },
+      "additionalProperties": true
+    },
+    "physics_probe": {
+      "type": "object",
+      "required": [
+        "ground_contact_surface_present",
+        "steps_executed",
+        "live_rigid_body_pose_observed",
+        "test_body_fell_through_floor",
+        "contact_event_count"
+      ],
+      "properties": {
+        "ground_contact_surface_present": {"const": true},
+        "steps_executed": {"type": "integer", "minimum": 2},
+        "live_rigid_body_pose_observed": {"const": true},
+        "test_body_fell_through_floor": {"const": false},
+        "contact_event_count": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "cameras": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "digest", "pixel_std", "nonblank"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+          "pixel_std": {"type": "number", "exclusiveMinimum": 3.0},
+          "nonblank": {"const": true}
+        },
+        "additionalProperties": true
+      }
+    },
+    "proof_boundary": {
+      "type": "object",
+      "required": [
+        "isaac_load_render_physics_presence_compatibility",
+        "simulator_task_success_proven",
+        "physics_navigation_control_proven",
+        "physical_success_proven",
+        "physical_robot_readiness_proven",
+        "deployment_readiness_proven"
+      ],
+      "properties": {
+        "isaac_load_render_physics_presence_compatibility": {"type": "boolean"},
+        "simulator_task_success_proven": {"const": false},
+        "physics_navigation_control_proven": {"const": false},
+        "physical_success_proven": {"const": false},
+        "physical_robot_readiness_proven": {"const": false},
+        "deployment_readiness_proven": {"const": false}
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "completed"}}},
+      "then": {
+        "required": ["stage", "physics_probe", "cameras", "proof_boundary"],
+        "properties": {
+          "proof_boundary": {
+            "properties": {
+              "isaac_load_render_physics_presence_compatibility": {"const": true}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+}

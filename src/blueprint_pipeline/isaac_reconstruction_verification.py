@@ -16,6 +16,16 @@ class IsaacReconstructionVerificationError(ValueError):
     pass
 
 
+def _is_sha256_digest(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) != 71 or not value.startswith("sha256:"):
+        return False
+    try:
+        int(value[7:], 16)
+    except ValueError:
+        return False
+    return True
+
+
 def normalize_isaac_reconstruction_verification(
     *,
     packaging_result: Mapping[str, Any],
@@ -33,6 +43,8 @@ def normalize_isaac_reconstruction_verification(
         blockers.append("isaac_runtime_result_v2_required")
     if runtime_result.get("status") != "completed":
         blockers.append("isaac_runtime_not_completed")
+    if runtime_result.get("raw_secret_values_recorded") is not False:
+        blockers.append("isaac_runtime_secret_recording_state_invalid")
     if runtime_result.get("package_digest") != package["package_digest"]:
         blockers.append("isaac_exact_package_digest_mismatch")
     stage = runtime_result.get("stage")
@@ -41,6 +53,8 @@ def normalize_isaac_reconstruction_verification(
         blockers.append("isaac_stage_units_invalid")
     if stage.get("transforms_valid") is not True:
         blockers.append("isaac_stage_transforms_invalid")
+    if stage.get("dependency_inspection_available") is not True:
+        blockers.append("isaac_dependency_inspection_unavailable")
     missing_asset_count = stage.get("missing_asset_count")
     if isinstance(missing_asset_count, bool) or not isinstance(missing_asset_count, int) or missing_asset_count != 0:
         blockers.append("isaac_missing_assets")
@@ -48,12 +62,16 @@ def normalize_isaac_reconstruction_verification(
         blockers.append("isaac_particlefield_not_loaded")
     if int(stage.get("active_collision_prim_count") or 0) < 1:
         blockers.append("isaac_collision_geometry_inactive")
+    if stage.get("obvious_scale_mismatch_detected") is not False:
+        blockers.append("isaac_obvious_scale_mismatch")
     physics = runtime_result.get("physics_probe")
     physics = physics if isinstance(physics, Mapping) else {}
     if physics.get("ground_contact_surface_present") is not True:
         blockers.append("isaac_ground_contact_surface_missing")
     if int(physics.get("steps_executed") or 0) < 2:
         blockers.append("isaac_physics_probe_not_executed")
+    if physics.get("live_rigid_body_pose_observed") is not True:
+        blockers.append("isaac_test_body_pose_unavailable")
     if physics.get("test_body_fell_through_floor") is not False:
         blockers.append("isaac_test_body_fell_through_floor")
     if int(physics.get("contact_event_count") or 0) < 1:
@@ -71,13 +89,26 @@ def normalize_isaac_reconstruction_verification(
             or not isinstance(pixel_std, (int, float))
             or not math.isfinite(float(pixel_std))
             or float(pixel_std) <= 3.0
-            or not isinstance(digest, str)
+            or not _is_sha256_digest(digest)
         ):
             blockers.append(f"isaac_fixed_render_invalid:{index}")
         else:
             render_refs.append({"artifact_id": str(row.get("id") or index), "digest": digest})
     if not render_refs:
         blockers.append("isaac_fixed_camera_renders_missing")
+    proof = runtime_result.get("proof_boundary")
+    proof = proof if isinstance(proof, Mapping) else {}
+    if proof.get("isaac_load_render_physics_presence_compatibility") is not True:
+        blockers.append("isaac_runtime_compatibility_claim_missing")
+    for key in (
+        "simulator_task_success_proven",
+        "physics_navigation_control_proven",
+        "physical_success_proven",
+        "physical_robot_readiness_proven",
+        "deployment_readiness_proven",
+    ):
+        if proof.get(key) is not False:
+            blockers.append(f"isaac_forbidden_claim_promotion:{key}")
     if blockers:
         raise IsaacReconstructionVerificationError("; ".join(sorted(set(blockers))))
     value = dict(lineage)

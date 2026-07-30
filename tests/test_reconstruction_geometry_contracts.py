@@ -323,23 +323,35 @@ def _isaac_runtime_v2():
         "schema_version": "isaac_splat_nurec_render_result.v2",
         "status": "completed",
         "package_digest": D[5],
+        "raw_secret_values_recorded": False,
         "stage": {
             "meters_per_unit": 1.0,
             "up_axis": "Z",
             "transforms_valid": True,
+            "dependency_inspection_available": True,
             "missing_asset_count": 0,
             "particlefield_prim_count": 1,
             "active_collision_prim_count": 2,
+            "obvious_scale_mismatch_detected": False,
         },
         "physics_probe": {
             "ground_contact_surface_present": True,
             "steps_executed": 120,
+            "live_rigid_body_pose_observed": True,
             "test_body_fell_through_floor": False,
             "contact_event_count": 3,
         },
         "cameras": [
             {"id": "fixed-1", "digest": D[1], "pixel_std": 12.0, "nonblank": True}
         ],
+        "proof_boundary": {
+            "isaac_load_render_physics_presence_compatibility": True,
+            "simulator_task_success_proven": False,
+            "physics_navigation_control_proven": False,
+            "physical_success_proven": False,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+        },
     }
 
 
@@ -374,3 +386,24 @@ def test_falling_through_floor_and_missing_contact_fail_closed():
         )
     assert "isaac_test_body_fell_through_floor" in str(error.value)
     assert "isaac_test_body_contact_not_observed" in str(error.value)
+
+
+def test_forged_v2_label_cannot_bypass_runtime_evidence_or_claim_boundary():
+    runtime = _isaac_runtime_v2()
+    runtime["raw_secret_values_recorded"] = True
+    runtime["stage"]["dependency_inspection_available"] = False
+    runtime["stage"]["obvious_scale_mismatch_detected"] = True
+    runtime["physics_probe"]["live_rigid_body_pose_observed"] = False
+    runtime["cameras"][0]["digest"] = "not-a-digest"
+    runtime["proof_boundary"]["physical_success_proven"] = True
+    with pytest.raises(IsaacReconstructionVerificationError) as error:
+        normalize_isaac_reconstruction_verification(
+            packaging_result=_package(), runtime_result=runtime, lineage=_base()
+        )
+    message = str(error.value)
+    assert "isaac_runtime_secret_recording_state_invalid" in message
+    assert "isaac_dependency_inspection_unavailable" in message
+    assert "isaac_obvious_scale_mismatch" in message
+    assert "isaac_test_body_pose_unavailable" in message
+    assert "isaac_fixed_render_invalid:0" in message
+    assert "isaac_forbidden_claim_promotion:physical_success_proven" in message

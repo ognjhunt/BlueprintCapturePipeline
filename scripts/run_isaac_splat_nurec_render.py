@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import math
 import os
@@ -35,7 +36,8 @@ import sys
 import zipfile
 from pathlib import Path
 
-RESULT_SCHEMA = "isaac_splat_nurec_render_result.v1"
+LEGACY_RESULT_SCHEMA = "isaac_splat_nurec_render_result.v1"
+QUALIFICATION_RESULT_SCHEMA = "isaac_splat_nurec_render_result.v2"
 PARTICLEFIELD_TYPE = "ParticleField3DGaussianSplat"
 
 
@@ -196,12 +198,372 @@ def _pixel_std(png_path: Path) -> float:
             return 0.0
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _is_sha256_digest(value) -> bool:
+    if not isinstance(value, str) or not value.startswith("sha256:") or len(value) != 71:
+        return False
+    try:
+        int(value[7:], 16)
+    except ValueError:
+        return False
+    return True
+
+
+def _select_ground_surface(collision_prims, *, requested_path="", declared_height=None):
+    """Choose an existing package collider without manufacturing a ground plane.
+
+    Automatic selection is intentionally conservative: a collider must either
+    be named like a floor/ground surface or have a broad, thin horizontal world
+    bound. A caller may bind an exact collider path, but a combined room mesh
+    must also declare the measured probe height because its bounding-box top is
+    not necessarily the floor.
+    """
+    requested = str(requested_path or "").strip()
+    candidates = [
+        item
+        for item in collision_prims
+        if item.get("active") is True and item.get("static") is True
+    ]
+    if requested:
+        candidates = [item for item in candidates if item.get("prim_path") == requested]
+        if not candidates:
+            return None, "declared_ground_collider_not_active"
+    ranked = []
+    for item in candidates:
+        bounds = item.get("world_bounds") or {}
+        low = bounds.get("min")
+        high = bounds.get("max")
+        if not isinstance(low, list) or not isinstance(high, list) or len(low) != 3 or len(high) != 3:
+            continue
+        values = [*low, *high]
+        if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in values):
+            continue
+        dx, dy, dz = (float(high[index]) - float(low[index]) for index in range(3))
+        name = str(item.get("prim_path") or "").lower()
+        semantic_floor = "floor" in name or "ground" in name
+        broad_thin_surface = dx >= 0.25 and dy >= 0.25 and dz <= max(0.25, 0.25 * min(dx, dy))
+        if not requested and not semantic_floor and not broad_thin_surface:
+            continue
+        if requested and declared_height is None and not semantic_floor and not broad_thin_surface:
+            return None, "combined_ground_collider_requires_declared_height"
+        surface = dict(item)
+        surface["probe_height_m"] = (
+            float(declared_height) if declared_height is not None else float(high[2])
+        )
+        surface["selection_reason"] = (
+            "declared_active_collider" if requested else
+            "floor_semantic" if semantic_floor else "broad_thin_horizontal_bound"
+        )
+        ranked.append((dx * dy, surface))
+    if not ranked:
+        return None, "ground_contact_surface_not_identified"
+    ranked.sort(key=lambda row: (-row[0], str(row[1].get("prim_path") or "")))
+    return ranked[0][1], None
+
+
+def _classify_physics_probe(
+    *, ground_surface, requested_steps, executed_steps, initial_position,
+    final_position, contact_event_count, errors,
+):
+    ground_height = ground_surface.get("probe_height_m") if isinstance(ground_surface, dict) else None
+    positions_valid = (
+        isinstance(initial_position, list) and len(initial_position) == 3
+        and isinstance(final_position, list) and len(final_position) == 3
+        and all(
+            isinstance(value, (int, float)) and math.isfinite(float(value))
+            for value in [*initial_position, *final_position]
+        )
+    )
+    fell_through = None
+    if positions_valid and isinstance(ground_height, (int, float)) and math.isfinite(float(ground_height)):
+        fell_through = float(final_position[2]) < float(ground_height) - 0.1
+    return {
+        "ground_contact_surface_present": bool(ground_surface),
+        "ground_surface": ground_surface,
+        "requested_steps": int(requested_steps),
+        "steps_executed": int(executed_steps),
+        "initial_position_xyz": initial_position,
+        "final_position_xyz": final_position,
+        "live_rigid_body_pose_observed": positions_valid,
+        "test_body_fell_through_floor": fell_through,
+        "contact_event_count": int(contact_event_count),
+        "errors": list(errors),
+        "claim_boundary": (
+            "One bounded test-body contact probe verifies physics presence only; it does not prove "
+            "navigation, manipulation, task success, physical transfer, or deployment readiness."
+        ),
+    }
+
+
+def _qualification_blockers(*, package_digest, stage, physics_probe, cameras):
+    blockers = []
+    if not _is_sha256_digest(package_digest):
+        blockers.append("isaac_package_digest_invalid")
+    if stage.get("meters_per_unit") != 1.0 or stage.get("up_axis") != "Z":
+        blockers.append("isaac_stage_units_invalid")
+    if stage.get("transforms_valid") is not True:
+        blockers.append("isaac_stage_transforms_invalid")
+    if stage.get("dependency_inspection_available") is not True:
+        blockers.append("isaac_dependency_inspection_unavailable")
+    if stage.get("missing_asset_count") != 0:
+        blockers.append("isaac_missing_assets")
+    if int(stage.get("particlefield_prim_count") or 0) < 1:
+        blockers.append("isaac_particlefield_not_loaded")
+    if int(stage.get("active_collision_prim_count") or 0) < 1:
+        blockers.append("isaac_collision_geometry_inactive")
+    if stage.get("obvious_scale_mismatch_detected") is not False:
+        blockers.append("isaac_obvious_scale_mismatch")
+    if physics_probe.get("ground_contact_surface_present") is not True:
+        blockers.append("isaac_ground_contact_surface_missing")
+    if int(physics_probe.get("steps_executed") or 0) < 2:
+        blockers.append("isaac_physics_probe_not_executed")
+    if physics_probe.get("live_rigid_body_pose_observed") is not True:
+        blockers.append("isaac_test_body_pose_unavailable")
+    if physics_probe.get("test_body_fell_through_floor") is not False:
+        blockers.append("isaac_test_body_fell_through_floor")
+    if int(physics_probe.get("contact_event_count") or 0) < 1:
+        blockers.append("isaac_test_body_contact_not_observed")
+    if not cameras:
+        blockers.append("isaac_fixed_camera_renders_missing")
+    for index, camera in enumerate(cameras):
+        pixel_std = camera.get("pixel_std")
+        if (
+            camera.get("nonblank") is not True
+            or isinstance(pixel_std, bool)
+            or not isinstance(pixel_std, (int, float))
+            or not math.isfinite(float(pixel_std))
+            or float(pixel_std) <= 3.0
+            or not _is_sha256_digest(camera.get("digest"))
+        ):
+            blockers.append(f"isaac_fixed_render_invalid:{index}")
+    return sorted(set(blockers))
+
+
+def _inspect_qualification_stage(stage, stage_path, particlefields, *, Usd, UsdGeom, UsdPhysics, UsdUtils):
+    invalid_transforms = []
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    for prim in stage.Traverse():
+        try:
+            if not prim.IsA(UsdGeom.Xformable):
+                continue
+            matrix = xform_cache.GetLocalToWorldTransform(prim)
+            values = [float(matrix[row][column]) for row in range(4) for column in range(4)]
+            if not all(math.isfinite(value) for value in values):
+                invalid_transforms.append(str(prim.GetPath()))
+        except Exception:  # noqa: BLE001
+            invalid_transforms.append(str(prim.GetPath()))
+
+    dependency_inspection_available = False
+    unresolved_assets = []
+    dependency_error = None
+    try:
+        _layers, _assets, unresolved = UsdUtils.ComputeAllDependencies(str(stage_path))
+        unresolved_assets = sorted(str(value) for value in unresolved)
+        dependency_inspection_available = True
+    except Exception as exc:  # noqa: BLE001
+        dependency_error = repr(exc)[:400]
+
+    bbox_cache = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+        useExtentsHint=True,
+    )
+    collision_prims = []
+    for prim in stage.Traverse():
+        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        enabled = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get()
+        ancestor = prim
+        rigid_body_ancestor = False
+        while ancestor and ancestor.IsValid() and not ancestor.IsPseudoRoot():
+            if ancestor.HasAPI(UsdPhysics.RigidBodyAPI):
+                rigid_body_ancestor = True
+                break
+            ancestor = ancestor.GetParent()
+        record = {
+            "prim_path": str(prim.GetPath()),
+            "active": enabled is not False,
+            "static": not rigid_body_ancestor,
+        }
+        try:
+            aligned = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
+            if not aligned.IsEmpty():
+                low = [float(aligned.GetMin()[index]) for index in range(3)]
+                high = [float(aligned.GetMax()[index]) for index in range(3)]
+                if all(math.isfinite(value) for value in [*low, *high]):
+                    record["world_bounds"] = {"min": low, "max": high}
+                else:
+                    record["bounds_error"] = "nonfinite_world_bounds"
+        except Exception as exc:  # noqa: BLE001
+            record["bounds_error"] = repr(exc)[:240]
+        collision_prims.append(record)
+    active = [item for item in collision_prims if item["active"]]
+    bounded = [item["world_bounds"] for item in active if "world_bounds" in item]
+    stage_bounds = None
+    obvious_scale_mismatch = None
+    if bounded:
+        low = [min(float(bounds["min"][index]) for bounds in bounded) for index in range(3)]
+        high = [max(float(bounds["max"][index]) for bounds in bounded) for index in range(3)]
+        extents = [high[index] - low[index] for index in range(3)]
+        stage_bounds = {"min": low, "max": high, "extents_m": extents}
+        maximum_extent = max(extents)
+        obvious_scale_mismatch = maximum_extent < 0.25 or maximum_extent > 1000.0
+    return {
+        "meters_per_unit": float(UsdGeom.GetStageMetersPerUnit(stage)),
+        "up_axis": str(UsdGeom.GetStageUpAxis(stage)),
+        "transforms_valid": not invalid_transforms,
+        "invalid_transform_prim_paths": invalid_transforms[:40],
+        "dependency_inspection_available": dependency_inspection_available,
+        "missing_asset_count": len(unresolved_assets) if dependency_inspection_available else None,
+        "unresolved_assets": unresolved_assets[:40],
+        "dependency_inspection_error": dependency_error,
+        "particlefield_prim_count": len(particlefields),
+        "active_collision_prim_count": len(active),
+        "active_collision_world_bounds": stage_bounds,
+        "obvious_scale_mismatch_detected": obvious_scale_mismatch,
+        "collision_prims": collision_prims,
+    }
+
+
+def _live_rigid_body_position(prim_path):
+    import omni.physx  # type: ignore
+
+    state = omni.physx.get_physx_interface().get_rigidbody_transformation(prim_path)
+    if not hasattr(state, "get") or state.get("ret_val") is not True:
+        raise RuntimeError("physx_live_rigid_body_pose_unavailable")
+    position = state.get("position")
+    values = [float(position[index]) for index in range(3)]
+    if not all(math.isfinite(value) for value in values):
+        raise RuntimeError("physx_live_rigid_body_position_nonfinite")
+    return values
+
+
+def _contact_event_count(prim_path, ground_prim_path):
+    try:
+        import omni.physx  # type: ignore
+        from pxr import PhysicsSchemaTools  # type: ignore
+
+        report = omni.physx.get_physx_simulation_interface().get_contact_report()
+        headers = report[0] if report else []
+        count = 0
+        for header in headers:
+            encoded = [
+                getattr(header, name, "")
+                for name in ("actor0", "actor1", "collider0", "collider1")
+            ]
+            paths = []
+            for value in encoded:
+                try:
+                    paths.append(str(PhysicsSchemaTools.intToSdfPath(int(value))))
+                except Exception:  # noqa: BLE001
+                    paths.append(str(value))
+            probe_seen = prim_path in paths or any(path.startswith(prim_path + "/") for path in paths)
+            ground_seen = ground_prim_path in paths or any(
+                path.startswith(ground_prim_path + "/") for path in paths
+            )
+            if probe_seen and ground_seen:
+                count += 1
+        return count
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _run_qualification_physics_probe(
+    stage, ground_surface, *, steps, probe_xy, Gf, UsdGeom, Sdf,
+):
+    requested_steps = max(0, int(steps))
+    errors = []
+    executed_steps = 0
+    contacts = 0
+    initial_position = None
+    final_position = None
+    if not ground_surface:
+        return _classify_physics_probe(
+            ground_surface=None,
+            requested_steps=requested_steps,
+            executed_steps=0,
+            initial_position=None,
+            final_position=None,
+            contact_event_count=0,
+            errors=["ground_contact_surface_not_identified"],
+        )
+    probe_path = "/World/BlueprintReconstructionQualificationProbe"
+    try:
+        from isaacsim.core.api import SimulationContext  # type: ignore
+        from pxr import PhysxSchema, UsdPhysics  # type: ignore
+
+        bounds = ground_surface["world_bounds"]
+        low, high = bounds["min"], bounds["max"]
+        if probe_xy is None:
+            x = (float(low[0]) + float(high[0])) * 0.5
+            y = (float(low[1]) + float(high[1])) * 0.5
+        else:
+            x, y = (float(probe_xy[0]), float(probe_xy[1]))
+        ground_height = float(ground_surface["probe_height_m"])
+        cube = UsdGeom.Cube.Define(stage, Sdf.Path(probe_path))
+        cube.CreateSizeAttr(0.1)
+        xformable = UsdGeom.Xformable(cube.GetPrim())
+        xformable.ClearXformOpOrder()
+        xformable.AddTranslateOp().Set(Gf.Vec3d(x, y, ground_height + 0.5))
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.MassAPI.Apply(cube.GetPrim()).CreateMassAttr().Set(1.0)
+        contact_api = PhysxSchema.PhysxContactReportAPI.Apply(cube.GetPrim())
+        contact_api.CreateThresholdAttr().Set(0.0)
+
+        context = SimulationContext(
+            physics_dt=1.0 / 60.0,
+            rendering_dt=1.0 / 60.0,
+            stage_units_in_meters=1.0,
+        )
+        context.initialize_physics()
+        context.get_physics_context().set_gravity(-9.81)
+        context.play()
+        initial_position = _live_rigid_body_position(probe_path)
+        for _ in range(requested_steps):
+            try:
+                context.step(render=False)
+            except TypeError:
+                context.step()
+            executed_steps += 1
+            contacts += _contact_event_count(probe_path, ground_surface["prim_path"])
+        final_position = _live_rigid_body_position(probe_path)
+        context.stop()
+    except Exception as exc:  # noqa: BLE001
+        errors.append(repr(exc)[:600])
+    return _classify_physics_probe(
+        ground_surface=ground_surface,
+        requested_steps=requested_steps,
+        executed_steps=executed_steps,
+        initial_position=initial_position,
+        final_position=final_position,
+        contact_event_count=contacts,
+        errors=errors,
+    )
+
+
 def _render(args) -> int:
     out_dir = Path(args.out_dir).expanduser().resolve()
     frames_dir = out_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
     result_path = out_dir / "isaac_runtime_result.json"
-    base = {"schema_version": RESULT_SCHEMA, "renderer": "isaac_rtx_particlefield", "raw_secret_values_recorded": False}
+    qualification_mode = bool(args.qualification_mode)
+    base = {
+        "schema_version": (
+            QUALIFICATION_RESULT_SCHEMA if qualification_mode else LEGACY_RESULT_SCHEMA
+        ),
+        "renderer": "isaac_rtx_particlefield",
+        "raw_secret_values_recorded": False,
+    }
+    if qualification_mode:
+        base["package_digest"] = args.package_digest
     _phase(result_path, base, "runner_started")
 
     python = args.python or sys.executable or "python3"
@@ -231,6 +593,20 @@ def _render(args) -> int:
                                       "blockers": transcode.get("blockers", ["transcode_failed"])})
             return 2
 
+    if qualification_mode:
+        observed_package_digest = _sha256_file(stage_path)
+        if observed_package_digest != args.package_digest:
+            _write_json(
+                result_path,
+                {
+                    **base,
+                    "status": "blocked",
+                    "observed_package_digest": observed_package_digest,
+                    "blockers": ["isaac_exact_package_digest_mismatch"],
+                },
+            )
+            return 2
+
     cameras = json.loads(Path(args.cameras).read_text(encoding="utf-8")) if args.cameras else []
     _phase(result_path, base, "runner_importing_isaacsim", camera_count=len(cameras), stage_path=str(stage_path))
 
@@ -247,7 +623,7 @@ def _render(args) -> int:
         _phase(result_path, base, "runner_simulation_app_started")
         import omni.usd  # type: ignore
         import omni.replicator.core as rep  # type: ignore
-        from pxr import Gf, UsdGeom, Sdf  # type: ignore
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdUtils  # type: ignore
 
         try:
             import carb  # type: ignore
@@ -284,6 +660,39 @@ def _render(args) -> int:
             _write_json(result_path, {**base, "status": "blocked",
                                       "blockers": ["no_particlefield_prim_in_stage"], "prim_types": prim_types})
             return 2
+
+        stage_evidence = {}
+        ground_surface = None
+        ground_surface_error = None
+        if qualification_mode:
+            try:
+                stage.Load()
+            except Exception:  # noqa: BLE001
+                pass
+            for _ in range(10):
+                simulation_app.update()
+            stage_evidence = _inspect_qualification_stage(
+                stage,
+                stage_path,
+                pf,
+                Usd=Usd,
+                UsdGeom=UsdGeom,
+                UsdPhysics=UsdPhysics,
+                UsdUtils=UsdUtils,
+            )
+            ground_surface, ground_surface_error = _select_ground_surface(
+                stage_evidence.get("collision_prims") or [],
+                requested_path=args.ground_collider_prim,
+                declared_height=args.ground_height,
+            )
+            _phase(
+                result_path,
+                base,
+                "runner_qualification_stage_inspected",
+                stage=stage_evidence,
+                ground_surface=ground_surface,
+                ground_surface_error=ground_surface_error,
+            )
 
         # Optional robot compositing at the validated stance (bundle-driven).
         render_options = _load_render_options(Path(args.cameras)) if args.cameras else {}
@@ -414,8 +823,14 @@ def _render(args) -> int:
                 src = Path(pngs[-1])
                 canonical.write_bytes(src.read_bytes())
                 std = _pixel_std(canonical)
-            rendered.append({"id": cid, "png": str(canonical), "pixel_std": round(std, 3),
-                             "nonblank": std > 3.0, "frame_count": len(pngs)})
+            rendered.append({
+                "id": cid,
+                "png": str(canonical),
+                "digest": _sha256_file(canonical) if canonical.is_file() else None,
+                "pixel_std": round(std, 3),
+                "nonblank": std > 3.0 and math.isfinite(std),
+                "frame_count": len(pngs),
+            })
             _phase(result_path, base, "runner_camera_rendered", camera_id=cid, pixel_std=round(std, 3),
                    rendered_count=len(rendered))
             try:
@@ -496,31 +911,64 @@ def _render(args) -> int:
 
         nonblank = sum(1 for r in rendered if r["nonblank"])
         threshold = max(1, round(0.6 * len(rendered))) if rendered else 1
-        ok = nonblank >= threshold
+        visual_ok = nonblank >= threshold
         mp4 = _encode_mp4([Path(r["png"]) for r in rendered if r["nonblank"]], out_dir / "scene_render.mp4")
-        _bundle_and_upload(out_dir, result_path)
-        _write_json(result_path, {
+        physics_probe = {}
+        blockers = []
+        if qualification_mode:
+            physics_probe = _run_qualification_physics_probe(
+                stage,
+                ground_surface,
+                steps=args.physics_probe_steps,
+                probe_xy=args.probe_xy,
+                Gf=Gf,
+                UsdGeom=UsdGeom,
+                Sdf=Sdf,
+            )
+            if ground_surface_error:
+                physics_probe.setdefault("errors", []).append(ground_surface_error)
+            blockers = _qualification_blockers(
+                package_digest=args.package_digest,
+                stage=stage_evidence,
+                physics_probe=physics_probe,
+                cameras=rendered,
+            )
+            ok = not blockers
+        else:
+            ok = visual_ok
+            blockers = [] if ok else ["isaac_particlefield_render_produced_blank_or_few_frames"]
+        final_result = {
             **base,
             "status": "completed" if ok else "blocked",
             "isaac_runtime_executed": True,
-            "isaac_particlefield_rendered": bool(ok),
+            "isaac_particlefield_rendered": bool(visual_ok),
             "rendered_by_isaac_rtx": True,
             "stage_path": str(stage_path),
             "particlefield_prim_count": len(pf),
+            "stage": stage_evidence if qualification_mode else None,
+            "physics_probe": physics_probe if qualification_mode else None,
             "transcode": transcode,
             "cameras": rendered,
             "nonblank_camera_count": nonblank,
             "nonblank_threshold": threshold,
             "mp4": mp4,
             "robot": robot_report,
-            "blockers": [] if ok else ["isaac_particlefield_render_produced_blank_or_few_frames"],
+            "blockers": blockers,
             "proof_boundary": {
-                "captured_scene_displayed_in_isaac_rtx": bool(ok),
+                "captured_scene_displayed_in_isaac_rtx": bool(visual_ok),
                 "robot_visual_composited_at_stance": bool(robot_report.get("composited")),
+                "isaac_load_render_physics_presence_compatibility": bool(
+                    qualification_mode and ok
+                ),
+                "simulator_task_success_proven": False,
                 "physics_navigation_control_proven": False,
+                "physical_success_proven": False,
                 "physical_robot_readiness_proven": False,
+                "deployment_readiness_proven": False,
             },
-        })
+        }
+        _write_json(result_path, final_result)
+        _bundle_and_upload(out_dir, result_path)
         return 0 if ok else 2
     except Exception as exc:  # noqa: BLE001
         _write_json(result_path, {**base, "status": "blocked", "blockers": ["isaac_render_exception"],
@@ -595,11 +1043,50 @@ def main(argv=None) -> int:
     ap.add_argument("--warmup-frames", type=int, default=30)
     ap.add_argument("--subframes", type=int, default=8)
     ap.add_argument("--rt-subframes", type=int, default=64)
+    ap.add_argument(
+        "--qualification-mode",
+        action="store_true",
+        help="emit strict v2 load/render/physics-presence evidence for an exact packaged asset",
+    )
+    ap.add_argument(
+        "--package-digest",
+        help="sha256 digest of the exact --usdc/--usdz bytes; required in qualification mode",
+    )
+    ap.add_argument(
+        "--ground-collider-prim",
+        default="",
+        help="optional exact active package collider prim used as the contact surface",
+    )
+    ap.add_argument(
+        "--ground-height",
+        type=float,
+        default=None,
+        help="measured floor Z in stage meters; required when the declared collider is a combined room mesh",
+    )
+    ap.add_argument(
+        "--probe-xy",
+        type=float,
+        nargs=2,
+        default=None,
+        metavar=("X", "Y"),
+        help="optional measured collision-probe XY in stage meters",
+    )
+    ap.add_argument("--physics-probe-steps", type=int, default=240)
     ap.add_argument("--allow-any-stage", action="store_true",
                     help="skip the ParticleField prim assertion (e.g. rendering a textured USD de-risk scene)")
     args = ap.parse_args(argv)
     if not args.usdc and not args.usdz and not args.ply:
         ap.error("one of --usdc, --usdz, or --ply is required")
+    if args.qualification_mode and not _is_sha256_digest(args.package_digest):
+        ap.error("--qualification-mode requires --package-digest sha256:<64 lowercase or uppercase hex>")
+    if args.package_digest:
+        args.package_digest = args.package_digest.lower()
+    if args.qualification_mode and args.ply:
+        ap.error("--qualification-mode requires an exact packaged --usdc or --usdz, not --ply transcode")
+    if args.qualification_mode and args.allow_any_stage:
+        ap.error("--qualification-mode cannot be combined with --allow-any-stage")
+    if args.physics_probe_steps < 2:
+        ap.error("--physics-probe-steps must be at least 2")
     return _render(args)
 
 
