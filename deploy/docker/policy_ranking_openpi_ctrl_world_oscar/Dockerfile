@@ -60,7 +60,7 @@ RUN git clone --filter=blob:none --no-checkout "${CTRL_WORLD_SOURCE_URL}" /opt/c
 
 COPY deploy/docker/policy_ranking_openpi_ctrl_world/requirements.lock /opt/ctrl-world-runtime/requirements.lock
 COPY deploy/docker/policy_ranking_openpi_ctrl_world/ctrl_world_source_manifest.json /opt/ctrl-world-runtime/ctrl_world_source_manifest.json
-COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_embedded_carrier_opencv.lock /opt/oscar-runtime/requirements_embedded_carrier_opencv.lock
+COPY deploy/docker/robot_eval_worker/groot_oscar_closed_loop/requirements_oscar_foundation.lock /opt/oscar-runtime/requirements_oscar_foundation.lock
 COPY pyproject.toml README.md LICENSE /opt/blueprint-current/
 COPY src /opt/blueprint-current/src
 
@@ -73,6 +73,12 @@ RUN export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 \
       --requirement /opt/ctrl-world-runtime/requirements.lock \
     && VIRTUAL_ENV=/.venv uv pip install --no-deps -e /opt/blueprint-current \
     && VIRTUAL_ENV=/.ctrl-world-venv uv pip install --no-deps -e /opt/blueprint-current \
+    && uv pip install --python /opt/oscar-venv/bin/python \
+      --require-hashes \
+      --index-url https://download.pytorch.org/whl/cu128 \
+      --extra-index-url https://pypi.org/simple \
+      --index-strategy unsafe-best-match \
+      -r /opt/oscar-runtime/requirements_oscar_foundation.lock \
     && uv pip install --python /opt/oscar-venv/bin/python --no-deps -e /opt/blueprint-current \
     && /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import transformer_engine_shim_script_text; Path('/tmp/oscar_te_shim.py').write_text(transformer_engine_shim_script_text(), encoding='utf-8')" \
     && /opt/oscar-venv/bin/python /tmp/oscar_te_shim.py /opt/OSCAR \
@@ -90,13 +96,8 @@ RUN export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 \
     && /.ctrl-world-venv/bin/python -m compileall -q /opt/blueprint-current/src/blueprint_pipeline \
     && /.ctrl-world-venv/bin/python -c "import torch; assert torch.__version__ == '2.7.1+cu128'; import accelerate, decord, diffusers, einops, mediapy, swanlab, transformers, wandb" \
     && /.ctrl-world-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.ctrl_world_joint_position_reference_runtime import _validate_source_manifest; result=_validate_source_manifest(Path('/opt/ctrl-world'), Path('/opt/ctrl-world-runtime/ctrl_world_source_manifest.json')); assert result['file_count'] == 8" \
-    && if ! /opt/oscar-venv/bin/python -c 'import cv2'; then \
-      uv pip install --python /opt/oscar-venv/bin/python \
-        --no-cache --no-deps --require-hashes \
-        -r /opt/oscar-runtime/requirements_embedded_carrier_opencv.lock; \
-      fi \
-    && /opt/oscar-venv/bin/python -c "import cv2; assert cv2.__version__ == '4.11.0'" \
-    && /opt/oscar-venv/bin/python -c "import torch, cv2; from inference.inference_oscar import build_pipeline; assert callable(build_pipeline)"
+    && /opt/oscar-venv/bin/python -m pip check \
+    && /opt/oscar-venv/bin/python -c "import torch, cv2, loguru; from inference.inference_oscar import build_pipeline; assert callable(build_pipeline)"
 
 RUN env -u HF_TOKEN -u HUGGING_FACE_HUB_TOKEN \
       HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 \

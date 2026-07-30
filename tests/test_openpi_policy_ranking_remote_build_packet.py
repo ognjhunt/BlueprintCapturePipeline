@@ -158,6 +158,13 @@ def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path)
         )
         assert dockerfile is not None
         text = dockerfile.read().decode("utf-8")
+        oscar_lock = archive.extractfile(
+            "openpi_policy_ranking_remote_build/context/"
+            "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/"
+            "requirements_oscar_foundation.lock"
+        )
+        assert oscar_lock is not None
+        oscar_lock_text = oscar_lock.read().decode("utf-8")
     assert "blueprint-groot-oscar-eval@sha256:ab8fbccb" in text
     assert (
         "COPY --from=oscar_runtime /opt/blueprint/oscar_source_provenance.json"
@@ -180,21 +187,24 @@ def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path)
     assert "--runtime-source-root /opt/OSCAR" in text
     assert "chmod 0444 /opt/blueprint/oscar_source_provenance.json" in text
     assert "rm -rf /opt/OSCAR/.git /tmp/oscar_te_shim.py" in text
-    assert "requirements_embedded_carrier_opencv.lock" in text
+    assert "requirements_oscar_foundation.lock" in text
+    assert "loguru==0.7.3" in oscar_lock_text
+    assert "opencv-python==5.0.0.93" in oscar_lock_text
+    assert "torch==2.10.0+cu128" in oscar_lock_text
     assert "export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5" in text
     assert text.index("export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5") < text.index(
         "uv pip install --python /.ctrl-world-venv/bin/python"
     )
-    assert "if ! /opt/oscar-venv/bin/python -c 'import cv2'" in text
     assert "uv pip install --python /opt/oscar-venv/bin/python" in text
-    assert "--no-cache --no-deps --require-hashes" in text
-    assert "/opt/oscar-venv/bin/python -m pip" not in text
+    assert "--require-hashes" in text
+    assert "--index-strategy unsafe-best-match" in text
+    assert "/opt/oscar-venv/bin/python -m pip check" in text
     assert "oscar_site_packages" not in text
-    assert "assert cv2.__version__ == '4.11.0'" in text
+    assert "import torch, cv2, loguru" in text
     assert "token=False" in text
     assert "offline_preflight" in text
     assert any(
-        name.endswith("/requirements_embedded_carrier_opencv.lock")
+        name.endswith("/requirements_oscar_foundation.lock")
         for name in result["archive_members"]
     )
 
