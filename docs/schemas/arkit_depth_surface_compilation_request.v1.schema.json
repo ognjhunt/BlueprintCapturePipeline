@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/arkit_depth_surface_compilation_request.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "stable_run_identity",
+    "source_capture_identity",
+    "source_capture_digest",
+    "original_file_references",
+    "source_commit_sha",
+    "deterministic_configuration_digest",
+    "train_heldout_split_digest",
+    "camera_calibration_binding",
+    "coordinate_frame_declaration",
+    "authority_used",
+    "timestamp",
+    "capture_profile",
+    "camera_ray_convention",
+    "metric_scale_status",
+    "pixel_stride",
+    "accepted_confidence_values",
+    "maximum_edge_length_m",
+    "maximum_depth_discontinuity_m",
+    "declared_region_ids",
+    "unsupported_region_ids",
+    "generated_fill_used",
+    "candidate_may_read_hidden_heldout",
+    "frames",
+    "arkit_depth_surface_compilation_request_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "arkit_depth_surface_compilation_request.v1"},
+    "source_capture_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "deterministic_configuration_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "train_heldout_split_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "capture_profile": {"const": "iphone_arkit_lidar"},
+    "camera_ray_convention": {
+      "enum": [
+        "arkit_x_right_y_up_z_backward",
+        "opencv_x_right_y_down_z_forward"
+      ]
+    },
+    "metric_scale_status": {"enum": ["sensor_metric_unvalidated", "validated"]},
+    "pixel_stride": {"type": "integer", "minimum": 1, "maximum": 64},
+    "accepted_confidence_values": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 0, "maximum": 255}
+    },
+    "maximum_edge_length_m": {"type": "number", "exclusiveMinimum": 0},
+    "maximum_depth_discontinuity_m": {"type": "number", "minimum": 0},
+    "generated_fill_used": {"const": false},
+    "candidate_may_read_hidden_heldout": {"const": false},
+    "frames": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {"$ref": "#/$defs/frame"}
+    },
+    "arkit_depth_surface_compilation_request_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "$defs": {
+    "asset": {
+      "type": "object",
+      "required": ["relative_path", "digest", "encoding"],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+        "encoding": {"enum": ["uint16_png", "uint8_png", "npy"]},
+        "scale_to_meters": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "intrinsics": {
+      "type": "object",
+      "required": ["width", "height", "fx", "fy", "cx", "cy"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "fx": {"type": "number", "exclusiveMinimum": 0},
+        "fy": {"type": "number", "exclusiveMinimum": 0},
+        "cx": {"type": "number", "minimum": 0},
+        "cy": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "frame": {
+      "type": "object",
+      "required": [
+        "frame_id",
+        "split",
+        "region_id",
+        "depth_asset",
+        "confidence_asset",
+        "depth_intrinsics",
+        "T_world_camera"
+      ],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "split": {"enum": ["training", "validation"]},
+        "region_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "depth_asset": {"$ref": "#/$defs/asset"},
+        "confidence_asset": {"$ref": "#/$defs/asset"},
+        "depth_intrinsics": {"$ref": "#/$defs/intrinsics"},
+        "T_world_camera": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {"type": "number"}
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}
