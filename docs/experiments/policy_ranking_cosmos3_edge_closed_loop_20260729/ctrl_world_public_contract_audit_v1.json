@@ -1,7 +1,7 @@
 {
   "schema_version": "blueprint_ctrl_world_public_contract_audit.v1",
   "audited_on": "2026-07-29",
-  "status": "contract_qualified_source_bytes_not_yet_fully_frozen",
+  "status": "source_bytes_frozen_dependency_and_execution_gates_open",
   "claim_class": "prospective_distinct_WAM_reference_arm",
   "attribution": "Ctrl-World_not_Cosmos_not_OSCAR",
   "primary_sources": {
@@ -14,9 +14,24 @@
     "code": {
       "url": "https://github.com/Robert-gyj/Ctrl-World",
       "revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+      "tree_sha1": "11375dd0003ec9052023a1f09c8f2885a56606d3",
+      "git_archive_sha256": "b3efc8846f0c43d4334db48afb106468b76d77b1a77b9ca9aaba15d5591b2b9b",
+      "local_freeze_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/sources/ctrl-world-99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
       "license": "MIT",
       "public_root_inspected": true,
-      "raw_archive_downloaded_and_hashed_this_phase": false
+      "raw_archive_downloaded_and_hashed_this_phase": true,
+      "relevant_file_sha256": {
+        "README.md": "8240c328dfa3dbf8f24b641eb933f628f0366eaca7bd3248852189f771693278",
+        "LICENSE.txt": "6f4b58b0ca0f41d51df6c24b03cb2844edc32a23b88d8afb8d0a25f629525f3e",
+        "requirements.txt": "1b0b03c8afd54c8133a00fb35476d5a2899ff1231ed2a1599d327190bf1e1e0a",
+        "config_eval.py": "de2222b16cb2ceae751d4aa6f767be4fb7bafb6c5ff0b3603cc98f87dd7fe216",
+        "scripts/rollout_interact_pi_eval.py": "130523033c1b1b79d3ae5d967ea6137c7ee33d5b3b47cb18e208b9a7aaab662a",
+        "scripts/rollout_replay_traj.py": "885540b0d7c03be82667c9eb73d7a34429155688dd48bfc06c61ece0ecdb9612",
+        "dataset/dataset_droid_exp33.py": "b413825ff40cbf76aa70faac4210019cf57e55d1c28281d3226197836a80731f",
+        "models/action_adapter/train2.py": "44e5c91d8339512c1a121b72159e77a4aa469dbb134d3f0b373a7447af8a88e2",
+        "models/action_adapter/model2_15_9.pth": "b1a232a9c0539127ca23e202fd4fbc5c4756d385c890dd4af792ade51dc72f77",
+        "dataset_meta_info/droid/stat.json": "1e6fa202c87d6295f8b988dfd2764dec88796c910846cecdf684670fb818f208"
+      }
     },
     "ctrl_world_checkpoint": {
       "model_id": "yjguo/Ctrl-World",
@@ -75,6 +90,16 @@
       -6,
       -3
     ],
+    "history_indices_scope": "closed_loop_config_eval",
+    "replay_history_indices": [
+      0,
+      0,
+      -8,
+      -6,
+      -4,
+      -2
+    ],
+    "saved_rollout_frames_per_second": 4,
     "action_dimension": 7,
     "action_semantics": "absolute_cartesian_xyz_euler_xyz_plus_gripper_pose",
     "action_normalization": "DROID_state_01_state_99_to_minus1_plus1_with_clipping",
@@ -112,9 +137,31 @@
       "claim_ceiling": "closed_loop_reference_only_until_Blueprint_executes_and_independently_judges_it"
     }
   },
+  "released_dependency_reproducibility": {
+    "ctrl_world_requirements_fully_pinned": false,
+    "pinned_packages": [
+      "diffusers==0.34.0",
+      "transformers==4.48.1",
+      "torch==2.7.1"
+    ],
+    "unpinned_packages_present": true,
+    "openpi_in_requirements_file": false,
+    "openpi_install_instruction": "clone_Physical_Intelligence_openpi_main",
+    "openpi_revision_used_for_reported_rollouts_published": false,
+    "pi0_pi0fast_pi05_checkpoint_revisions_used_for_reported_rollouts_published": false,
+    "exact_reported_closed_loop_environment_reproducible_from_release": false
+  },
+  "future_physical_rgb_boundary": {
+    "future_physical_rgb_used_as_generation_condition": false,
+    "future_physical_rgb_decoded_for_public_comparison_output": true,
+    "public_saved_video_contains_generated_and_physical_pixels": true,
+    "blueprint_evaluator_may_receive_public_comparison_output_uncropped": false,
+    "required_blueprint_treatment": "invoke_or_extract_generated_only_views_and hash a redaction audit before evaluation"
+  },
   "blueprint_compatibility": {
-    "exact_public_replay_mode": "technically_valid_pending_source_and_license_freeze_then_GPU_canary",
-    "exact_public_pi_policy_mode": "technically_valid_only_for_released_pi0_pi0fast_pi05_endpoints_and_released_adapter",
+    "exact_public_replay_mode": "technically_valid_pending_checkpoint_and_remaining_dependency_license_freeze_then_GPU_canary",
+    "exact_public_pi_policy_mode": "technically_blocked_as_exact_reproduction_because_openpi_and_policy_checkpoint_revisions_are_unpublished",
+    "prospective_current_openpi_reference_mode": "possible_only_as_a_separately_named_non_exact_Ctrl_World_reference_after_current_official_openpi_and_checkpoint_freeze",
     "policy_droid_mode": "technically_blocked",
     "policy_droid_blocker": "No published Ctrl-World adapter maps Cosmos3-Edge-Policy-DROID native action and state contract into Ctrl-World's released pi-policy joint-velocity adapter contract.",
     "fabricated_adapter_forbidden": true,
@@ -136,20 +183,19 @@
     "paid_execution_admitted": false,
     "next_valid_run": "one_label_free_exact_public_replay_canary",
     "required_before_run": [
-      "raw_code_archive_and_relevant_file_hashes_frozen",
       "CLIP_model_weight_license_disposition_recorded",
       "immutable_Blueprint_source_commit_pushed",
       "checkpoint_and_input_bundle_hashes_frozen",
       "GPU_cost_TTL_watchdog_and_teardown_admission_passed"
     ],
     "current_blockers": [
-      "GitHub_git_and_API_transport_unreachable_from_shell",
-      "Blueprint_commit_fc8bc89a_not_yet_pushed",
-      "CLIP_Hugging_Face_model_weight_license_not_explicitly_published"
+      "Ctrl_World_checkpoint_bytes_not_yet_downloaded_and_safely_loaded",
+      "CLIP_Hugging_Face_model_weight_license_not_explicitly_published",
+      "exact_reported_openpi_revision_and_policy_checkpoint_revisions_not_published"
     ]
   },
   "provider_called": false,
   "gpu_allocated": false,
   "physical_robot_used": false,
-  "audit_sha256": "073d27b51addf3fd7ec5a7262f228ecb5897b667ef8de4006996239c95db1480"
+  "audit_sha256": "65a8c9d852a5853612cb01bcbbe1868bc8a37ed109ed3e2e6feb15bec09647fb"
 }
