@@ -30,6 +30,9 @@ from .ctrl_world_replay_bundle_inspection import (
     ctrl_world_manifest_blockers,
     inspect_ctrl_world_archive_inputs,
 )
+from .ctrl_world_current_reference_provider_bundle import (
+    inspect_ctrl_world_current_reference_archive_inputs,
+)
 from .policy_ranking_specialized_gpu_profiles import (
     build_ctrl_world_replay_profile,
     build_oscar_public_replay_profile,
@@ -109,6 +112,7 @@ class SuccessorGPUProfile:
     edge_policy_canary_bundle: bool = False
     oscar_replay_bundle: bool = False
     ctrl_world_replay_bundle: bool = False
+    ctrl_world_current_reference_bundle: bool = False
     provider_bundle_kind: str = "wam"
     bundle_schema: str = BUNDLE_SCHEMA
     checkpoint_repository: str = CHECKPOINT_REPOSITORY
@@ -459,6 +463,18 @@ OSCAR_PUBLIC_REPLAY_BUNDLE_ENTRIES = frozenset(
         "provider_runtime/oscar_input/blueprint_proxy_skeleton_conditioning.mp4",
     }
 )
+CTRL_WORLD_CURRENT_REFERENCE_BUNDLE_ENTRIES = frozenset(
+    {
+        "provider_runtime/wam_provider_runtime_runner.py",
+        "provider_runtime/ctrl_world_provider_runtime_support.py",
+        "provider_runtime/run_wam_provider_runtime.sh",
+        "provider_runtime/successor_retained_control.py",
+        "provider_runtime/wam_provider_runtime_manifest.json",
+        "provider_runtime/wam_rollout_input_manifest.json",
+        "provider_runtime/ctrl_world_request/ctrl_world_current_reference_request.json",
+        "provider_runtime/ctrl_world_request/action_conditioning_11x7.npy",
+    }
+)
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -714,6 +730,16 @@ def inspect_successor_bundle(
                         names=names,
                     )
                     blockers.extend(ctrl_world_blockers)
+                elif profile.ctrl_world_current_reference_bundle:
+                    embedded_hashes, current_reference_blockers = (
+                        inspect_ctrl_world_current_reference_archive_inputs(
+                            archive,
+                            manifest=manifest,
+                            rollout_manifest=rollout_manifest,
+                            names=names,
+                        )
+                    )
+                    blockers.extend(current_reference_blockers)
                 elif profile.oscar_replay_bundle:
                     embedded_hashes = {
                         "runtime_manifest_file_sha256": hashlib.sha256(
@@ -877,6 +903,8 @@ def inspect_successor_bundle(
         if profile.edge_policy_canary_bundle
         else CTRL_WORLD_REPLAY_BUNDLE_ENTRIES
         if profile.ctrl_world_replay_bundle
+        else CTRL_WORLD_CURRENT_REFERENCE_BUNDLE_ENTRIES
+        if profile.ctrl_world_current_reference_bundle
         else OSCAR_PUBLIC_REPLAY_BUNDLE_ENTRIES
         if profile.oscar_replay_bundle
         else POWERED_BUNDLE_ENTRIES
@@ -931,6 +959,22 @@ def inspect_successor_bundle(
                 checkpoint_revision=profile.checkpoint_revision,
             )
         )
+    elif profile.ctrl_world_current_reference_bundle:
+        model_freeze = _mapping(manifest.get("model_freeze"))
+        source = _mapping(model_freeze.get("ctrl_world_source"))
+        checkpoint = _mapping(model_freeze.get("ctrl_world_checkpoint"))
+        if source.get("revision") != profile.cosmos_framework_revision:
+            blockers.append("successor_ctrl_world_current_reference_source_mismatch")
+        if checkpoint.get("repository") != profile.checkpoint_repository:
+            blockers.append("successor_ctrl_world_current_reference_checkpoint_repository_mismatch")
+        if checkpoint.get("revision") != profile.checkpoint_revision:
+            blockers.append("successor_ctrl_world_current_reference_checkpoint_mismatch")
+        if rollout_manifest.get("arm_id") != "blueprint_ctrl_world_current_reference":
+            blockers.append("successor_ctrl_world_current_reference_rollout_arm_mismatch")
+        if rollout_manifest.get("candidate_policy_loaded_by_wam_runtime") is not False:
+            blockers.append("successor_ctrl_world_current_reference_policy_boundary_invalid")
+        if rollout_manifest.get("recorded_action_trace_used") is not False:
+            blockers.append("successor_ctrl_world_current_reference_trace_boundary_invalid")
     elif profile.oscar_replay_bundle:
         if manifest.get("oscar_hf_repo") != profile.checkpoint_repository:
             blockers.append("successor_oscar_bundle_checkpoint_repository_mismatch")
@@ -980,7 +1024,7 @@ def inspect_successor_bundle(
         blockers.append("successor_cosmos_provider_bundle_checkpoint_mismatch")
     if not profile.oscar_replay_bundle and manifest.get("public_image") != profile.public_image:
         blockers.append("successor_cosmos_provider_bundle_image_mismatch")
-    expected_request_budget = {
+    expected_request_budget: dict[str, Any] = {
         "qualification_canary_request_count": profile.qualification_canary_request_count,
         "scientific_matrix_request_count": profile.scientific_matrix_request_count,
         "total_initial_generation_request_count": profile.total_initial_generation_request_count,
@@ -1014,6 +1058,7 @@ def inspect_successor_bundle(
     if (
         not profile.edge_policy_canary_bundle
         and not profile.ctrl_world_replay_bundle
+        and not profile.ctrl_world_current_reference_bundle
         and not profile.oscar_replay_bundle
         and not profile.reference_bundle
         and not profile.powered_bundle
@@ -1057,7 +1102,7 @@ def build_successor_gpu_admission(
     vllm = _mapping(upstream.get("vllm_omni"))
     if environment.get("experiment_id") != profile.experiment_id:
         blockers.append("successor_environment_experiment_mismatch")
-    if profile.ctrl_world_replay_bundle:
+    if profile.ctrl_world_replay_bundle or profile.ctrl_world_current_reference_bundle:
         if ctrl_world.get("revision") != profile.cosmos_framework_revision:
             blockers.append("successor_ctrl_world_source_revision_mismatch")
     elif profile.oscar_replay_bundle:
@@ -1090,6 +1135,7 @@ def build_successor_gpu_admission(
     if (
         profile.edge_policy_canary_bundle
         or profile.ctrl_world_replay_bundle
+        or profile.ctrl_world_current_reference_bundle
         or profile.oscar_replay_bundle
         or profile.reference_bundle
         or profile.powered_bundle
@@ -1101,6 +1147,8 @@ def build_successor_gpu_admission(
                 if profile.edge_policy_canary_bundle
                 else "ctrl_world_public_replay_inputs_are_frozen_inside_the_bundle"
                 if profile.ctrl_world_replay_bundle
+                else "ctrl_world_current_reference_inputs_are_frozen_inside_the_bundle"
+                if profile.ctrl_world_current_reference_bundle
                 else "official_oscar_replay_inputs_are_frozen_inside_the_bundle"
                 if profile.oscar_replay_bundle
                 else "powered_droid_inputs_are_frozen_inside_the_bundle"
@@ -1157,7 +1205,11 @@ def build_successor_gpu_admission(
         blockers.append("successor_runpod_secure_advisory_capacity_missing")
     observed = provider_preflight.get("observed_at_epoch")
     now = time.time() if observed_now_epoch is None else float(observed_now_epoch)
-    if type(observed) not in {int, float} or not math.isfinite(float(observed)):
+    if (
+        not isinstance(observed, (int, float))
+        or isinstance(observed, bool)
+        or not math.isfinite(float(observed))
+    ):
         blockers.append("successor_provider_preflight_timestamp_invalid")
     elif execute and not 0.0 <= now - float(observed) <= MAX_PREFLIGHT_AGE_SECONDS:
         blockers.append("successor_provider_preflight_stale_or_future")
@@ -1192,7 +1244,7 @@ def build_successor_gpu_admission(
     if authorization.get("paid_mutation_authorized") is not True:
         authorization_blockers.append("successor_compute_not_explicitly_authorized")
     try:
-        authorized_cap = float(authorization.get("authorized_compute_cap_usd"))
+        authorized_cap = float(str(authorization.get("authorized_compute_cap_usd")))
     except (TypeError, ValueError):
         authorized_cap = math.nan
     if not math.isfinite(authorized_cap) or authorized_cap != profile.max_compute_cap_usd:
@@ -1829,7 +1881,8 @@ def run_successor_gpu_lane(
             observed_preflight_epoch = provider_preflight.get("observed_at_epoch")
             mutation_now_epoch = time.time()
             if (
-                type(observed_preflight_epoch) not in {int, float}
+                not isinstance(observed_preflight_epoch, (int, float))
+                or isinstance(observed_preflight_epoch, bool)
                 or not math.isfinite(float(observed_preflight_epoch))
                 or not 0.0
                 <= mutation_now_epoch - float(observed_preflight_epoch)
@@ -1911,35 +1964,36 @@ def run_successor_gpu_lane(
         }
         write_json(Path(adapter_output), result)
         return result
-    consumption: dict[str, Any] = {
+    vast_consumption: dict[str, Any] = {
         "status": "not_consumed",
         "reason": "awaiting_verified_staging_and_selected_offer",
         "provider_mutations_performed": 0,
     }
 
     def consume_immediately_before_provider_mutation() -> Mapping[str, Any]:
-        nonlocal consumption
+        nonlocal vast_consumption
         observed_preflight_epoch = provider_preflight.get("observed_at_epoch")
         mutation_now_epoch = time.time()
         if (
-            type(observed_preflight_epoch) not in {int, float}
+            not isinstance(observed_preflight_epoch, (int, float))
+            or isinstance(observed_preflight_epoch, bool)
             or not math.isfinite(float(observed_preflight_epoch))
             or not 0.0
             <= mutation_now_epoch - float(observed_preflight_epoch)
             <= MAX_PREFLIGHT_AGE_SECONDS
         ):
-            consumption = {
+            vast_consumption = {
                 "status": "blocked",
                 "blockers": ["successor_vast_preflight_stale_or_future_at_provider_mutation"],
                 "provider_mutations_performed": 0,
             }
-            return consumption
-        consumption = _consume_authorization_once(
+            return vast_consumption
+        vast_consumption = _consume_authorization_once(
             authorization,
             expected_source_commit=expected_source_commit,
             profile=profile,
         )
-        return consumption
+        return vast_consumption
 
     result = run_vast_wam_authorized_runner(
         job_dir=job_dir,
@@ -1992,24 +2046,24 @@ def run_successor_gpu_lane(
         pre_provider_mutation_hook=consume_immediately_before_provider_mutation,
         provider_bundle_kind=profile.provider_bundle_kind,
     )
-    if consumption["status"] != "consumed":
+    if vast_consumption["status"] != "consumed":
         blockers = [str(item) for item in result.get("blockers") or []]
         if result.get("status") in {"completed", "retained_owned"}:
             blockers.append("successor_compute_authorization_not_consumed_before_provider_mutation")
             result["status"] = "blocked"
         result["blockers"] = sorted(set(blockers))
     else:
-        admission["authorization_consumption"] = consumption
+        admission["authorization_consumption"] = vast_consumption
         admission["manifest_sha256"] = canonical_sha256(
             {key: value for key, value in admission.items() if key != "manifest_sha256"}
         )
         write_json(Path(admission_out), admission)
-        bound["authorization_consumption"] = consumption
+        bound["authorization_consumption"] = vast_consumption
         bound["manifest_sha256"] = canonical_sha256(
             {key: value for key, value in bound.items() if key != "manifest_sha256"}
         )
         write_json(Path(bound_request_out), bound)
-    result["authorization_consumption"] = consumption
+    result["authorization_consumption"] = vast_consumption
     write_json(Path(adapter_output), result)
     return result
 

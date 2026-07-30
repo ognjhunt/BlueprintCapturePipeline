@@ -26,6 +26,10 @@ from blueprint_pipeline.provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
     wam_registered_alternative_inputs_present,
 )
+from blueprint_pipeline.policy_ranking_successor_gpu_admission import (
+    SuccessorGPUProfile,
+    inspect_successor_bundle,
+)
 
 
 def _source(tmp_path: Path) -> Path:
@@ -184,6 +188,65 @@ def test_archive_inspector_rejects_request_byte_drift(
             names=names,
         )
     assert "ctrl_world_current_reference_archive_request_file_hash_mismatch" in blockers
+
+
+def test_existing_paid_admission_inspects_current_reference_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source(tmp_path)
+    monkeypatch.setattr(
+        bundle, "_source_commit", lambda _: MODEL_FREEZE["ctrl_world_source"]["revision"]
+    )
+    monkeypatch.setattr(bundle, "_source_status", lambda _: "")
+    monkeypatch.setattr(
+        bundle,
+        "EXPECTED_STATE_STAT_SHA256",
+        file_sha256(source / "dataset_meta_info/droid/stat.json"),
+    )
+    built = bundle.build_ctrl_world_current_reference_provider_bundle(
+        job_dir=tmp_path / "built",
+        ctrl_world_source_dir=source,
+        staged_request_dir=_request(tmp_path),
+    )
+    receipt = json.loads(Path(built["receipt_path"]).read_text(encoding="utf-8"))
+    profile = SuccessorGPUProfile(
+        experiment_id=bundle.EXPERIMENT_ID,
+        admission_schema="fixture.admission.v1",
+        authorization_schema="fixture.authorization.v1",
+        preflight_schema="fixture.preflight.v1",
+        receipt_schema=bundle.RECEIPT_SCHEMA_VERSION,
+        authorization_ids_by_allocation_index={1: "fixture-allocation-1"},
+        cost_authorization_binding_sha256="a" * 64,
+        expected_bundle_sha256=str(built["bundle_sha256"]),
+        expected_bundle_size_bytes=int(built["bundle_size_bytes"]),
+        expected_embedded_input_hashes=built["embedded_hashes"],
+        qualification_canary_request_count=1,
+        scientific_matrix_request_count=0,
+        total_initial_generation_request_count=1,
+        request_budget_amendment_sha256=None,
+        max_compute_cap_usd=5.0,
+        max_hourly_rate_usd=2.05,
+        target_spend_usd=3.0,
+        hard_ttl_seconds=4800,
+        ctrl_world_current_reference_bundle=True,
+        provider_bundle_kind="wam",
+        bundle_schema="wam_provider_runtime_manifest.v1",
+        checkpoint_repository=MODEL_FREEZE["ctrl_world_checkpoint"]["repository"],
+        checkpoint_revision=MODEL_FREEZE["ctrl_world_checkpoint"]["revision"],
+        public_image=bundle.CTRL_WORLD_PUBLIC_IMAGE,
+        min_gpu_ram_mb=80_000,
+        cosmos_revision=None,
+        cosmos_framework_revision=MODEL_FREEZE["ctrl_world_source"]["revision"],
+        vllm_omni_revision=None,
+        allowed_providers=("vast",),
+        compatible_gpu_keywords=("RTX PRO 6000", "H100"),
+    )
+
+    inspection = inspect_successor_bundle(
+        built["bundle_path"], receipt=receipt, smoke_inventory={}, profile=profile
+    )
+
+    assert inspection["status"] == "passed", inspection["blockers"]
 
 
 def test_bundle_refuses_nonempty_output_and_wrong_source_revision(
