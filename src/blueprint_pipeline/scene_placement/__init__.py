@@ -41,7 +41,9 @@ from .perception_adapter import (
     build_perception_views,
     build_perception_views_from_frames,
     depth_provider_from_map,
+    depth_payload_digest,
     detections_from_sam3,
+    qualify_metric_depth_evidence,
 )
 from .placement import compute_stand_pose, ring_scan_stand_pose
 from .robot_profile import (
@@ -117,9 +119,11 @@ __all__ = [
     "assemble_views",
     "detections_from_sam3",
     "depth_provider_from_map",
+    "depth_payload_digest",
     "build_perception_view",
     "build_perception_views",
     "build_perception_views_from_frames",
+    "qualify_metric_depth_evidence",
     "resolve_target",
     "resolve_target_by_label",
     "compute_stand_pose",

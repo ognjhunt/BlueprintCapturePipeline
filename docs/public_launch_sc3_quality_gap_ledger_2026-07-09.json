@@ -1206,7 +1206,7 @@
             {
               "artifact_id": "DATA-02-AC-01-EV-02",
               "path": "src/blueprint_pipeline/object_index_stage.py",
-              "sha256": "sha256:a7f93b90f2b1d4a96b4bd30bf7d8d9f160d7396d7a614de83eca81d51477a779",
+              "sha256": "sha256:fda6953c587536d0409470813ab720385be4cecbc831f16b7206c26aaabfb437",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -1222,7 +1222,7 @@
             {
               "artifact_id": "DATA-02-AC-01-EV-03",
               "path": "tests/test_object_index_stage.py",
-              "sha256": "sha256:e1ea0b3cf6fe711ad84135cf381d7d52bae30550515d1f8b483acca76d9a48b2",
+              "sha256": "sha256:900d36a30e3eb4a76200e99aa19b30b798a990e56a081d9066046370a220e35d",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

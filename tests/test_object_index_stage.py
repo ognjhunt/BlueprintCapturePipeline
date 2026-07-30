@@ -801,10 +801,14 @@ def test_object_index_object_synthesis_llm_and_grounding_helpers(
                 {"name": ""},
                 "bad",
             ]
-        }
+        },
+        backend_name="legacy_fixture",
     )
     assert existing[0]["boundingBox"]["extents"][0] == oi._MIN_BOX_EXTENT
-    assert oi._normalize_existing_objects({"objects": "bad"}) == []
+    assert oi._normalize_existing_objects(
+        {"objects": "bad"},
+        backend_name="legacy_fixture",
+    ) == []
 
     assert oi._iou2d([0, 0, 10, 10], [5, 5, 15, 15]) > 0
     assert oi._iou2d([0, 0, 1, 1], [5, 5, 6, 6]) == 0.0
@@ -948,6 +952,28 @@ def test_object_index_object_synthesis_llm_and_grounding_helpers(
     assert objects[0]["bounding_box_role"] == "visualization_only_2d_proxy"
     assert objects[0]["provenance"]["canonical_truth"] is False
     assert objects[0]["provenance"]["presentation_only"] is True
+
+    normalized_splat = oi._normalize_existing_objects(
+        {
+            "objects": [
+                {
+                    "id": "spoofed",
+                    "label": "Cabinet",
+                    "boundingBox": {"center": [1, 2, 3], "extents": [1, 1, 2]},
+                    "metric_placement_ready": True,
+                    "physics_ready": True,
+                    "provenance": {"canonical_truth": True, "presentation_only": False},
+                }
+            ]
+        },
+        backend_name="splat_analyzer",
+    )
+    assert normalized_splat[0]["metric_placement_ready"] is False
+    assert normalized_splat[0]["physics_ready"] is False
+    assert normalized_splat[0]["bounding_box_role"] == "visualization_only_rough_interaction_volume"
+    assert normalized_splat[0]["provenance"]["canonical_truth"] is False
+    assert normalized_splat[0]["provenance"]["presentation_only"] is True
+    assert normalized_splat[0]["provenance"]["backend_output_does_not_self_qualify"] is True
 
     metric_evidence = oi._validated_metric_geometry_evidence(
         [
@@ -1214,6 +1240,12 @@ def test_object_index_legacy_reuse_writers_stage_and_cli(
     monkeypatch.setattr(oi, "_run_backend_command", existing_object_backend)
     existing_result = oi.run_object_index_stage(capture_root=capture_root, force_rebuild=True)
     assert existing_result["object_count"] == 1
+    existing_index = json.loads(Path(existing_result["manifest_path"]).read_text(encoding="utf-8"))
+    assert existing_index["objects"][0]["metric_placement_ready"] is False
+    assert existing_index["objects"][0]["physics_ready"] is False
+    assert existing_index["provenance"]["canonical_truth"] is False
+    assert existing_index["provenance"]["presentation_only"] is False
+    assert existing_index["provenance"]["contains_only_presentation_geometry"] is True
     existing_grounding = json.loads(
         Path(existing_result["manifest_path"]).with_name("object_grounding_hints.json").read_text(encoding="utf-8")
     )

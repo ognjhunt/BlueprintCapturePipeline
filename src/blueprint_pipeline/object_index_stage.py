@@ -866,7 +866,11 @@ def _normalize_detection_payload(
     )
 
 
-def _normalize_existing_objects(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
+def _normalize_existing_objects(
+    payload: Mapping[str, Any],
+    *,
+    backend_name: str,
+) -> List[Dict[str, Any]]:
     raw_objects = payload.get("objects")
     if not isinstance(raw_objects, list):
         return []
@@ -880,16 +884,72 @@ def _normalize_existing_objects(payload: Mapping[str, Any]) -> List[Dict[str, An
         bbox = item.get("boundingBox") if isinstance(item.get("boundingBox"), Mapping) else {}
         center = bbox.get("center") if isinstance(bbox.get("center"), list) else [float(index), 0.0, 0.0]
         extents = bbox.get("extents") if isinstance(bbox.get("extents"), list) else list(_DEFAULT_BOX_EXTENTS)
+        center_values = [
+            _safe_float(center[idx] if idx < len(center) else 0.0, 0.0)
+            for idx in range(3)
+        ]
+        extent_values = [
+            max(
+                _MIN_BOX_EXTENT,
+                _safe_float(extents[idx] if idx < len(extents) else 0.25, 0.25),
+            )
+            for idx in range(3)
+        ]
+        metric_geometry_evidence = []
+        if backend_name != "splat_analyzer":
+            metric_geometry_evidence = _validated_metric_geometry_evidence(
+                [
+                    {
+                        "frame_index": -1,
+                        "world_center": center_values,
+                        "world_extents": extent_values,
+                        "metric_geometry_evidence": item.get("metric_geometry_evidence"),
+                    }
+                ]
+            )
+        metric_placement_ready = bool(metric_geometry_evidence)
+        provenance = (
+            dict(item.get("provenance"))
+            if isinstance(item.get("provenance"), Mapping)
+            else {}
+        )
+        provenance.update(
+            {
+                "source_backend": backend_name,
+                "canonical_truth": metric_placement_ready,
+                "presentation_only": not metric_placement_ready,
+                "metric_placement_ready": metric_placement_ready,
+                "backend_output_does_not_self_qualify": True,
+            }
+        )
         objects.append(
             {
                 "id": str(item.get("id") or item.get("object_id") or f"obj_{index+1:04d}"),
                 "label": label,
                 "boundingBox": {
-                    "center": [_safe_float(center[idx] if idx < len(center) else 0.0, 0.0) for idx in range(3)],
-                    "extents": [max(_MIN_BOX_EXTENT, _safe_float(extents[idx] if idx < len(extents) else 0.25, 0.25)) for idx in range(3)],
+                    "center": center_values,
+                    "extents": extent_values,
                     "axes": bbox.get("axes") if isinstance(bbox.get("axes"), list) else [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                     "orientationQuaternion": bbox.get("orientationQuaternion") if isinstance(bbox.get("orientationQuaternion"), list) else [1.0, 0.0, 0.0, 0.0],
+                    "kind": (
+                        "rough_axis_aligned_interaction_volume_candidate"
+                        if backend_name == "splat_analyzer"
+                        else str(bbox.get("kind") or "provider_box_candidate")
+                    ),
                 },
+                "bounding_box_role": (
+                    "canonical_metric_placement"
+                    if metric_placement_ready
+                    else "visualization_only_rough_interaction_volume"
+                ),
+                "metric_placement_ready": metric_placement_ready,
+                "physics_ready": False,
+                "geometry_source_class": (
+                    "validated_metric_observation"
+                    if metric_placement_ready
+                    else "unqualified_provider_box_proxy"
+                ),
+                "metric_geometry_evidence": metric_geometry_evidence,
                 "mean_confidence": _safe_float(item.get("mean_confidence"), _safe_float(item.get("confidence"), 0.0)),
                 "n_total_detections": _safe_int(item.get("n_total_detections"), 1),
                 "n_frame_detections": _safe_int(item.get("n_frame_detections"), 1),
@@ -899,7 +959,7 @@ def _normalize_existing_objects(payload: Mapping[str, Any]) -> List[Dict[str, An
                 "articulation_hints": dict(item.get("articulation_hints")) if isinstance(item.get("articulation_hints"), Mapping) else {},
                 "evidence_frames": list(item.get("evidence_frames")) if isinstance(item.get("evidence_frames"), list) else [],
                 "source_prompts": list(item.get("source_prompts")) if isinstance(item.get("source_prompts"), list) else [],
-                "provenance": dict(item.get("provenance")) if isinstance(item.get("provenance"), Mapping) else {},
+                "provenance": provenance,
                 "mean_box_px": dict(item.get("mean_box_px")) if isinstance(item.get("mean_box_px"), Mapping) else {},
             }
         )
@@ -2090,7 +2150,10 @@ def run_object_index_stage(
         detections_per_backend[backend_name] = 0
         if not isinstance(payload, Mapping):
             continue
-        normalized_existing = _normalize_existing_objects(payload)
+        normalized_existing = _normalize_existing_objects(
+            payload,
+            backend_name=backend_name,
+        )
         existing_objects.extend(normalized_existing)
         parsed_detections, manip, artic, tasks = _normalize_detection_payload(
             backend_name=backend_name,
@@ -2196,6 +2259,14 @@ def run_object_index_stage(
     published_object_index_path = run_root / "object_index.json"
     canonical_object_index_uri = _object_index_uri(context, published_object_index_path)
     object_index_path = staging_root / "object_index.json"
+    canonical_object_count = sum(
+        1
+        for item in objects
+        if item.get("metric_placement_ready") is True
+        and isinstance(item.get("provenance"), Mapping)
+        and item.get("provenance", {}).get("canonical_truth") is True
+    )
+    all_objects_canonical = bool(objects) and canonical_object_count == len(objects)
     write_json(
         object_index_path,
         {
@@ -2209,7 +2280,15 @@ def run_object_index_stage(
                 authoritative_record=True,
             ),
             "provenance": build_provenance_record(
-                grounding_level="observed" if objects else "inferred",
+                grounding_level=(
+                    "observed_metric"
+                    if all_objects_canonical
+                    else "mixed_observed_and_candidate"
+                    if canonical_object_count
+                    else "model_derived_candidate"
+                    if objects
+                    else "inferred"
+                ),
                 evidence_sources=[str(item.get("image_path") or "") for item in keyframe_payload],
                 observation_coverage={
                     "keyframe_count": len(keyframes),
@@ -2217,8 +2296,16 @@ def run_object_index_stage(
                     "object_count": len(objects),
                 },
                 confidence=1.0 if objects else 0.0,
-                canonical_truth=True,
+                canonical_truth=all_objects_canonical,
                 presentation_only=False,
+                extra={
+                    "canonical_metric_object_count": canonical_object_count,
+                    "candidate_or_unqualified_object_count": len(objects) - canonical_object_count,
+                    "contains_only_presentation_geometry": (
+                        bool(objects) and canonical_object_count == 0
+                    ),
+                    "authoritative_catalog_record_does_not_make_candidates_capture_truth": True,
+                },
             ),
         },
     )
