@@ -22,6 +22,7 @@ from .contracts import (
     CapabilityResult,
     SupervisorContractError,
     SupervisorRun,
+    SupervisorState,
     TerminalSupervisorReport,
     ToolDescriptor,
     validate_proof_boundary,
@@ -128,8 +129,10 @@ def replay_supervisor_run(
     report = TerminalSupervisorReport.from_mapping(
         read_json(root / "terminal_supervisor_report.json")
     )
+    state = SupervisorState.from_mapping(read_json(root / "supervisor_state.json"))
     run_value = run.to_mapping()
     report_value = report.to_mapping()
+    state_value = state.to_mapping()
     authority = AuthorityEnvelope.from_mapping(read_json(root / "authority_envelope.json"))
     authority_value = authority.to_mapping()
     try:
@@ -138,6 +141,8 @@ def replay_supervisor_run(
         raise SupervisorReplayError("proof_boundary_mismatch") from exc
     if report_value["run_id"] != run_value["run_id"]:
         raise SupervisorReplayError("run_report_identity_mismatch")
+    if state_value["run_id"] != run_value["run_id"]:
+        raise SupervisorReplayError("run_state_identity_mismatch")
     if run_value["authority_digest"] != authority.digest:
         raise SupervisorReplayError("run_authority_digest_mismatch")
     if authority_value["mode"] != run_value["mode"] or report_value["mode"] != run_value["mode"]:
@@ -184,6 +189,15 @@ def replay_supervisor_run(
         raise SupervisorReplayError("event_ledger_terminal_digest_mismatch")
     if len(events) != report_value["event_count"]:
         raise SupervisorReplayError("event_ledger_count_mismatch")
+    if (
+        state_value["terminal"] is not True
+        or state_value["phase"] != "terminal"
+        or state_value["mode"] != run_value["mode"]
+        or state_value["next_sequence"] != len(events)
+        or state_value["last_event_digest"] != events[-1].digest
+        or state_value["terminal_report_digest"] != report.digest
+    ):
+        raise SupervisorReplayError("terminal_state_contract_mismatch")
 
     inference_spend = dict(report_value.get("inference_spend") or {})
     reservation_path = (
@@ -250,9 +264,12 @@ def replay_supervisor_run(
         structured_observations_by_capability[capability_id] = [
             dict(item) for item in embedded_observations
         ]
+    if state_value["completed_capabilities"] != [row["capability"] for row in capability_values]:
+        raise SupervisorReplayError("terminal_state_capabilities_mismatch")
 
     manager_decision_digests: list[str] = []
     manager_invocation_digests: list[str] = []
+    manager_invocation_values: list[dict[str, Any]] = []
     manager_refusal_digests: list[str] = []
     observed_capability_digests: list[str] = []
     manager_rows = sorted(
@@ -364,6 +381,7 @@ def replay_supervisor_run(
         ):
             raise SupervisorReplayError("manager_invocation_contract_mismatch")
         manager_invocation_digests.append(digest)
+        manager_invocation_values.append(manager_invocation_value)
 
     manager_event_digests = [
         str(event.to_mapping().get("payload_digest") or "")
@@ -528,6 +546,36 @@ def replay_supervisor_run(
         != authority_value.get("preauthorization_receipt_digest")
     ):
         raise SupervisorReplayError("terminal_action_accounting_mismatch")
+    replayed_inference_cost = sum(
+        float(row.get("cost_usd") or 0.0)
+        for row in [*manager_invocation_values, *invocation_values]
+    )
+    replayed_live_invocation_count = sum(
+        row.get("provider") == "openai" for row in manager_invocation_values
+    ) + sum(
+        row.get("provider") == "openai" and row.get("validation_status") == "accepted_as_proposal"
+        for row in invocation_values
+    )
+    replayed_inference_budget = float(authority_value.get("agent_inference_budget_usd") or 0.0)
+    replayed_reserved_inference_cost = float(replayed_reservation_manifest["reserved_max_cost_usd"])
+    if (
+        float(inference_spend["budget_usd"]) != replayed_inference_budget
+        or float(inference_spend["reported_cost_usd"]) != replayed_inference_cost
+        or float(inference_spend["remaining_unreserved_usd"])
+        != max(0.0, replayed_inference_budget - replayed_reserved_inference_cost)
+        or int(inference_spend["live_invocation_count"]) != replayed_live_invocation_count
+        or int(inference_spend["manager_invocation_count"]) != len(manager_invocation_values)
+        or bool(inference_spend["reported_cost_is_final"])
+        is not (
+            replayed_live_invocation_count == 0
+            and int(replayed_reservation_manifest["in_flight_unknown_count"]) == 0
+        )
+    ):
+        raise SupervisorReplayError("terminal_inference_accounting_mismatch")
+    if float(state_value["spent_cost_usd"]) != replayed_inference_cost or float(
+        state_value["remaining_cost_usd"]
+    ) != max(0.0, replayed_inference_budget - replayed_reserved_inference_cost):
+        raise SupervisorReplayError("terminal_state_inference_accounting_mismatch")
 
     inputs_manifest = read_json(root / "kernel_inputs_manifest.json")
     expected_manifest_digest = inputs_manifest.get("kernel_inputs_manifest_digest")

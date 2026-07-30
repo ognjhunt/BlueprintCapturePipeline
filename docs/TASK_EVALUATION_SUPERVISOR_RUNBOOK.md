@@ -294,6 +294,15 @@ inventory. Read, reversible non-spend, and preauthorized counts, the
 receipt digest must exactly match the terminal report. A rewritten but
 self-consistently hashed terminal total is refused.
 
+Terminal inference accounting is likewise reconstructed from the accepted
+manager and specialist invocation manifests plus the authority and reservation
+artifacts. Reported inference cost, live and manager invocation counts,
+remaining unreserved budget, and cost finality must match that reconstruction.
+Replay also validates the terminal supervisor state against the ledger length
+and final event, terminal-report digest, completed capabilities, mode, spent
+cost, and remaining budget. Rehashing either artifact after changing those
+values does not make the change authoritative.
+
 The customer report has its own exact-schema validator at creation and replay.
 It rejects unknown fields, non-finite or negative spend, inconsistent
 decision/partial/abstention flags, agent-authoritative output, proof mutation,

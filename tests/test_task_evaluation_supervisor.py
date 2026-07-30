@@ -3185,6 +3185,16 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     with pytest.raises(Phase2ArtifactError, match="customer_report_contract_invalid"):
         validate_customer_report(suppressed_boundary)
 
+    def rebind_terminal_state(run_root: Path, terminal_digest: str) -> None:
+        state_path = run_root / "supervisor_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["terminal_report_digest"] = terminal_digest
+        state["supervisor_state_digest"] = canonical_digest(
+            state,
+            digest_field="supervisor_state_digest",
+        )
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
     rewritten_run = tmp_path / "rewritten-customer-report"
     shutil.copytree(execution.output_dir, rewritten_run)
     rewritten_report_path = rewritten_run / "customer_decision_report.json"
@@ -3203,6 +3213,7 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
         digest_field="terminal_report_digest",
     )
     rewritten_terminal_path.write_text(json.dumps(rewritten_terminal), encoding="utf-8")
+    rebind_terminal_state(rewritten_run, rewritten_terminal["terminal_report_digest"])
     with pytest.raises(SupervisorReplayError, match="customer_report_rebuild_mismatch"):
         replay_supervisor_run(rewritten_run)
 
@@ -3216,8 +3227,45 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
         digest_field="terminal_report_digest",
     )
     rewritten_accounting_path.write_text(json.dumps(rewritten_accounting), encoding="utf-8")
+    rebind_terminal_state(
+        rewritten_accounting_run,
+        rewritten_accounting["terminal_report_digest"],
+    )
     with pytest.raises(SupervisorReplayError, match="terminal_action_accounting_mismatch"):
         replay_supervisor_run(rewritten_accounting_run)
+
+    rewritten_inference_run = tmp_path / "rewritten-inference-accounting"
+    shutil.copytree(execution.output_dir, rewritten_inference_run)
+    rewritten_inference_path = rewritten_inference_run / "terminal_supervisor_report.json"
+    rewritten_inference = json.loads(rewritten_inference_path.read_text(encoding="utf-8"))
+    rewritten_inference["inference_spend"]["manager_invocation_count"] += 1
+    rewritten_inference["terminal_report_digest"] = canonical_digest(
+        rewritten_inference,
+        digest_field="terminal_report_digest",
+    )
+    rewritten_inference_path.write_text(json.dumps(rewritten_inference), encoding="utf-8")
+    rebind_terminal_state(
+        rewritten_inference_run,
+        rewritten_inference["terminal_report_digest"],
+    )
+    with pytest.raises(SupervisorReplayError, match="terminal_inference_accounting_mismatch"):
+        replay_supervisor_run(rewritten_inference_run)
+
+    rewritten_state_run = tmp_path / "rewritten-terminal-state"
+    shutil.copytree(execution.output_dir, rewritten_state_run)
+    rewritten_state_path = rewritten_state_run / "supervisor_state.json"
+    rewritten_state = json.loads(rewritten_state_path.read_text(encoding="utf-8"))
+    rewritten_state["spent_cost_usd"] += 1
+    rewritten_state["supervisor_state_digest"] = canonical_digest(
+        rewritten_state,
+        digest_field="supervisor_state_digest",
+    )
+    rewritten_state_path.write_text(json.dumps(rewritten_state), encoding="utf-8")
+    with pytest.raises(
+        SupervisorReplayError,
+        match="terminal_state_inference_accounting_mismatch",
+    ):
+        replay_supervisor_run(rewritten_state_run)
 
     authority = json.loads(
         (execution.output_dir / "authority_envelope.json").read_text(encoding="utf-8")
