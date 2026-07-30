@@ -340,12 +340,34 @@ The service exposes:
 
 - `GET /health`
 - `POST /api/live-pipeline/capture-upload-intakes`
+- `POST /api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/lifecycle`
+- `GET /api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/lifecycle`
+- `POST /api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/provider-deletion-evidence`
+- `POST /api/live-pipeline/capture-upload-intakes/{capture_session_id}/{intake_id}/external-revocation-evidence`
+- `POST /api/live-pipeline/reconstructions/plan`
+- `POST /api/live-pipeline/reconstructions/{plan_id}/authorize`
+- `POST /api/live-pipeline/reconstructions/{plan_id}/execute`
+- `GET /api/live-pipeline/reconstructions/{plan_id}`
+- `POST /api/live-pipeline/testbeds/compile`
+- `POST /api/live-pipeline/task-evaluation-runs/plan`
+- `POST /api/live-pipeline/task-evaluation-runs/{run_id}/authorize`
+- `POST /api/live-pipeline/task-evaluation-runs/{run_id}/execute`
+- `GET /api/live-pipeline/task-evaluation-runs/{run_id}`
 - `POST /api/live-pipeline/job-requests`
 - `POST /api/live-pipeline/policy-packages`
 - `POST /api/live-pipeline/real-robot-pov`
 - `POST /api/live-pipeline/deployment-outcomes`
 - `POST /api/live-pipeline/live-closure-evidence`
 - `GET /api/live-pipeline/intake-audit`
+
+`site_task_testbed_compilation_submission.v2` must name the exact accepted
+session/intake, approved-task digest, completed reconstruction plan/result, new
+testbed ID/version, an owner-attested robot binding, and optional provider-neutral
+Decision/Evidence Request constraints. It must not contain capture/QA/
+reconstruction artifacts, SimReady or placement conclusions, evaluator/reset
+references, supported-condition claims, or a predecessor manifest. Pipeline
+loads or derives those scientific artifacts itself and currently emits an
+explicit placement abstention until qualified candidate evidence exists.
 
 The capture-upload intake endpoint is a separate Task Evaluation Run product
 seam; it does not use the legacy robot-evaluation capture-handoff converter or a
@@ -369,6 +391,28 @@ publication; it never persists or echoes the URL or grant. Capture QA may accept
 the input or request exact recapture, but neither artifact establishes
 reconstruction, task success, physical success, deployment readiness, safety
 certification, or policy-ranking support.
+
+Reconstruction planning and execution require the same configured capture
+store. The service resolves capture bytes by the accepted session/intake
+receipt and never accepts a caller-selected local path. Planning alone is not
+authorization. The authorize endpoint must name an exact planned local adapter;
+the execute endpoint cannot enable live providers, paid compute, or physical
+robot work. Testbed compilation accepts
+`site_task_testbed_compilation_submission.v2`, which references the exact
+Pipeline-owned reconstruction plan and execution-result digest. Version 2
+rejects caller-supplied intake, QA, reconstruction-plan, or reconstruction-result
+objects.
+
+Completed-capture lifecycle actions are destructive and fail closed. They
+require the exact capture and envelope digests and never accept a caller path.
+Consent revocation and operator deletion require the intake's revocation policy;
+retention expiry is computed from the immutable receipt time plus `max_days`;
+legal hold prevents deletion. A marker blocks use before deletion begins. The
+final tombstone contains digests and deletion counts, not the raw capture or
+customer identifiers. Shared content-addressed objects are preserved until the
+last active reference is removed. Provider deletion and WebApp/signed-download
+revocation remain separate, inspectable obligations rather than being inferred
+from local file deletion.
 
 Signed intake headers are required by default. Temporary legacy bearer support
 exists only when `BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER=true` is

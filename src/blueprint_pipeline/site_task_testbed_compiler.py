@@ -18,7 +18,9 @@ from .decision_evidence_contracts import (
 )
 from .reconstruction_capability import (
     ReconstructionContractError,
+    decide_simready_assets,
     normalize_reconstruction_result,
+    score_robot_placements,
 )
 
 
@@ -116,6 +118,118 @@ def _card(value: Mapping[str, Any]) -> dict[str, Any]:
     artifact = _clone(dict(value))
     artifact["card_digest"] = canonical_digest(artifact, digest_field="card_digest")
     return artifact
+
+
+def build_pipeline_owned_compilation_support(
+    *,
+    testbed_id: str,
+    version: str,
+    approved_task_definition: Mapping[str, Any],
+    capture_qa_report: Mapping[str, Any],
+    reconstruction_plan: Mapping[str, Any],
+    robot_binding: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Derive conservative testbed support artifacts inside Pipeline authority.
+
+    The service caller supplies a robot configuration as owner-attested
+    operational input. It does not supply SimReady conclusions, placement
+    scores, evaluator artifacts, reset artifacts, or validated condition ranges.
+    Until a qualified Pipeline method produces placement candidates or validated
+    assets, those scientific decisions remain explicit abstentions/missing gates.
+    """
+
+    approved = _validate_approved_task(approved_task_definition)
+    qa = _verified_digest(
+        capture_qa_report,
+        field="qa_report_digest",
+        label="capture_qa_report",
+    )
+    plan = _verified_digest(
+        reconstruction_plan,
+        field="reconstruction_plan_digest",
+        label="reconstruction_plan",
+    )
+    task = approved["task"]
+    task_objects = [
+        dict(row) for row in task.get("task_objects", []) if isinstance(row, Mapping)
+    ]
+    target_regions = [
+        dict(row) for row in task.get("target_regions", []) if isinstance(row, Mapping)
+    ]
+    if not task_objects or not _text(task_objects[0].get("object_id")):
+        raise SiteTaskTestbedCompilerError(["approved_task_definition.task_objects:missing"])
+    if not target_regions or not _text(target_regions[0].get("region_id")):
+        raise SiteTaskTestbedCompilerError(["approved_task_definition.target_regions:missing"])
+    capture_digest = _text(approved["source_capture"].get("capture_digest"))
+    claims = sorted(
+        {_text(row) for row in plan.get("requested_claim_types", []) if _text(row)}
+    )
+    try:
+        simready = decide_simready_assets(
+            approved_task_digest=approved["approved_task_digest"],
+            capture_digest=capture_digest,
+            requested_claim_types=claims,
+            task_objects=task_objects,
+            asset_candidates=[],
+        )
+        placement = score_robot_placements(
+            robot_binding=robot_binding,
+            approved_task_digest=approved["approved_task_digest"],
+            capture_digest=capture_digest,
+            task_object_id=_text(task_objects[0].get("object_id")),
+            target_region_id=_text(target_regions[0].get("region_id")),
+            candidates=[],
+        )
+    except ReconstructionContractError as exc:
+        raise SiteTaskTestbedCompilerError(
+            [f"pipeline_owned_support:{item}" for item in exc.errors]
+        ) from exc
+
+    support_artifacts: dict[str, dict[str, Any]] = {
+        "evaluator": {
+            "schema_version": "testbed_evaluator_assignment.v1",
+            "approved_task_digest": approved["approved_task_digest"],
+            "requested_claim_types": claims,
+            "status": "unassigned_until_evidence_planning",
+            "proof_boundary": {
+                "evaluation_definition_is_evidence_result": False,
+                "provider_or_model_self_grading_allowed": False,
+            },
+        },
+        "reset": {
+            "schema_version": "testbed_reset_contract.v1",
+            "approved_task_digest": approved["approved_task_digest"],
+            "reset_contract": _clone(task.get("reset_contract", {})),
+            "status": "owner_approved_definition_not_physical_verification",
+        },
+    }
+    for artifact in support_artifacts.values():
+        artifact["artifact_digest"] = canonical_digest(
+            artifact, digest_field="artifact_digest"
+        )
+    artifact_references = {
+        key: {
+            "uri": f"testbed://{testbed_id}/{version}/{key}.json",
+            "digest": artifact["artifact_digest"],
+        }
+        for key, artifact in support_artifacts.items()
+    }
+    supported_condition_ranges = {
+        "accepted_capture_observation_scope": {
+            "capture_digest": capture_digest,
+            "qa_report_digest": qa["qa_report_digest"],
+            "capture_authority_profile": approved["source_capture"].get(
+                "capture_authority_profile"
+            ),
+        }
+    }
+    return {
+        "simready_decision": simready,
+        "robot_placement_result": placement,
+        "artifact_references": artifact_references,
+        "pipeline_owned_support_artifacts": support_artifacts,
+        "supported_condition_ranges": supported_condition_ranges,
+    }
 
 
 def _build_cards(
@@ -219,6 +333,7 @@ def compile_site_task_testbed(
     artifact_references: Mapping[str, Any],
     supported_condition_ranges: Mapping[str, Any],
     previous_testbed: Mapping[str, Any] | None = None,
+    pipeline_owned_support_artifacts: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compile one immutable router-compatible testbed from exact input digests."""
 
@@ -339,6 +454,23 @@ def compile_site_task_testbed(
             references[key] = _artifact_reference(artifact_references[key], field=key)
         except SiteTaskTestbedCompilerError as exc:
             errors.extend(exc.errors)
+    support_artifacts = _clone(dict(pipeline_owned_support_artifacts or {}))
+    if support_artifacts:
+        for key in sorted(required_refs):
+            artifact = support_artifacts.get(key)
+            reference = references.get(key)
+            if not isinstance(artifact, Mapping):
+                errors.append(f"pipeline_owned_support_artifacts.{key}:missing")
+                continue
+            supplied_digest = artifact.get("artifact_digest")
+            if not _is_digest(supplied_digest) or supplied_digest != canonical_digest(
+                artifact, digest_field="artifact_digest"
+            ):
+                errors.append(
+                    f"pipeline_owned_support_artifacts.{key}.artifact_digest:mismatch"
+                )
+            if not isinstance(reference, Mapping) or reference.get("digest") != supplied_digest:
+                errors.append(f"pipeline_owned_support_artifacts.{key}:reference_mismatch")
     if not isinstance(supported_condition_ranges, Mapping) or not supported_condition_ranges:
         errors.append("supported_condition_ranges:missing")
 
@@ -468,6 +600,7 @@ def compile_site_task_testbed(
                 }
             ],
             "artifact_references": references,
+            "pipeline_owned_support_artifacts": support_artifacts,
             "compiled_cards": compiled_cards,
             "approved_task_definition": {
                 "approved_task_id": approved["approved_task_id"],
@@ -657,6 +790,13 @@ def write_testbed_version(
             for index, row in enumerate(rows, start=1):
                 card_payload = (canonical_json(row) + "\n").encode("utf-8")
                 write_once(path.parent / f"{prefix}_{index}.json", card_payload)
+        support_artifacts = verified.get("pipeline_owned_support_artifacts", {})
+        if isinstance(support_artifacts, Mapping):
+            for key in ("evaluator", "reset"):
+                artifact = support_artifacts.get(key)
+                if isinstance(artifact, Mapping):
+                    artifact_payload = (canonical_json(artifact) + "\n").encode("utf-8")
+                    write_once(path.parent / f"{key}.json", artifact_payload)
     result = {
         "schema_version": COMPILATION_RESULT_SCHEMA_VERSION,
         "status": "testbed_ready",
@@ -724,6 +864,7 @@ def write_testbed_decision_evidence_request(
 __all__ = [
     "SiteTaskTestbedCompilerError",
     "compile_site_task_testbed",
+    "build_pipeline_owned_compilation_support",
     "write_testbed_version",
     "write_testbed_decision_evidence_request",
 ]

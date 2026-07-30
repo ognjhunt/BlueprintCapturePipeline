@@ -1,0 +1,871 @@
+"""Explicitly authorized local reconstruction adapters with strict claim ceilings.
+
+The decoded-observation lane indexes frames that actually exist in a retained
+video.  It does not infer calibration, scale, geometry, or physics.  The ARKit
+metric-scaffold lane is deliberately narrower: it accepts only Capture Raw
+Contract V3.2 LiDAR bundles whose decoded PTS, encoder-retention map, AR poses,
+intrinsics, coordinate semantics, and depth/confidence pairs agree.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import shutil
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Any, Mapping, Sequence
+
+from .decision_evidence_contracts import canonical_digest
+from .reconstruction_capability import (
+    ReconstructionContractError,
+    build_reconstruction_method_profile,
+    normalize_reconstruction_result,
+)
+
+
+LOCAL_DECODED_OBSERVATION_ADAPTER = "local://decoded-observation-index-v1"
+LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER = "local://arkit-metric-scaffold-v1"
+_PTS_TOLERANCE_SECONDS = 0.0001
+_VIDEO_PROFILES = {
+    "iphone_arkit_lidar",
+    "iphone_arkit_non_lidar",
+    "camera_360_equirectangular",
+    "camera_360_native",
+    "monocular_video",
+}
+
+
+class LocalReconstructionAdapterError(ReconstructionContractError):
+    """Stable fail-closed errors for local reconstruction execution."""
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _is_digest(value: Any) -> bool:
+    text = _text(value)
+    return len(text) == 71 and text.startswith("sha256:") and all(
+        character in "0123456789abcdef" for character in text[7:]
+    )
+
+
+def _canonical_bytes(value: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    ).encode("utf-8")
+
+
+def _safe_child(root: Path, relative_path: str) -> Path:
+    relative = PurePosixPath(relative_path.replace("\\", "/"))
+    if (
+        not relative_path
+        or relative.is_absolute()
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise LocalReconstructionAdapterError(["artifact_relative_path:unsafe"])
+    resolved_root = root.expanduser().resolve()
+    candidate = (resolved_root / Path(*relative.parts)).resolve()
+    if candidate != resolved_root and resolved_root not in candidate.parents:
+        raise LocalReconstructionAdapterError(["artifact_relative_path:escapes_capture_root"])
+    return candidate
+
+
+def _load_json(path: Path, *, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LocalReconstructionAdapterError([f"{label}:missing_or_invalid_json"]) from exc
+    if not isinstance(value, Mapping):
+        raise LocalReconstructionAdapterError([f"{label}:not_object"])
+    return dict(value)
+
+
+def _load_jsonl(path: Path, *, label: str) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise LocalReconstructionAdapterError([f"{label}:missing_or_unreadable"]) from exc
+    rows: list[dict[str, Any]] = []
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise LocalReconstructionAdapterError([f"{label}:invalid_jsonl:{index}"]) from exc
+        if not isinstance(value, Mapping):
+            raise LocalReconstructionAdapterError([f"{label}:row_not_object:{index}"])
+        rows.append(dict(value))
+    return rows
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _integer(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> str:
+    payload = _canonical_bytes(value)
+    digest = _sha256_bytes(payload)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if path.read_bytes() != payload:
+            raise LocalReconstructionAdapterError(["derived_artifact:immutable_conflict"])
+        return digest
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return digest
+
+
+def _implementation_digest() -> str:
+    return _sha256_file(Path(__file__).resolve())
+
+
+def _tool_identity() -> tuple[str, str, str, str]:
+    ffprobe = shutil.which("ffprobe")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffprobe or not ffmpeg:
+        raise LocalReconstructionAdapterError(["local_media_tools:ffprobe_or_ffmpeg_missing"])
+    versions: dict[str, str] = {}
+    for name, command in (("ffprobe", ffprobe), ("ffmpeg", ffmpeg)):
+        try:
+            completed = subprocess.run(
+                [command, "-version"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise LocalReconstructionAdapterError([f"local_media_tools:{name}_version_failed"]) from exc
+        if completed.returncode != 0 or not completed.stdout.strip():
+            raise LocalReconstructionAdapterError([f"local_media_tools:{name}_version_failed"])
+        versions[name] = completed.stdout.splitlines()[0].strip()
+    runtime = {"ffmpeg": versions["ffmpeg"], "ffprobe": versions["ffprobe"]}
+    return ffprobe, ffmpeg, "ffmpeg_ffprobe_local", canonical_digest(runtime)
+
+
+def _probe_video(video_path: Path, ffprobe: str) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=index,codec_name,width,height,avg_frame_rate,time_base:frame=best_effort_timestamp,best_effort_timestamp_time,pkt_duration_time,key_frame",
+                "-show_streams",
+                "-show_frames",
+                "-of",
+                "json",
+                str(video_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise LocalReconstructionAdapterError(["decoded_observation:ffprobe_failed"]) from exc
+    if completed.returncode != 0:
+        raise LocalReconstructionAdapterError(["decoded_observation:media_not_decodable"])
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise LocalReconstructionAdapterError(["decoded_observation:ffprobe_output_invalid"]) from exc
+    frames = payload.get("frames") if isinstance(payload, Mapping) else None
+    streams = payload.get("streams") if isinstance(payload, Mapping) else None
+    if not isinstance(frames, list) or not frames or not isinstance(streams, list) or not streams:
+        raise LocalReconstructionAdapterError(["decoded_observation:no_decoded_video_frames"])
+    presentation_times: list[float] = []
+    for index, frame in enumerate(frames):
+        if not isinstance(frame, Mapping):
+            raise LocalReconstructionAdapterError([f"decoded_observation:frame_invalid:{index}"])
+        pts = _number(frame.get("best_effort_timestamp_time"))
+        if pts is None:
+            raise LocalReconstructionAdapterError([f"decoded_observation:pts_missing:{index}"])
+        if presentation_times and pts < presentation_times[-1]:
+            raise LocalReconstructionAdapterError(["decoded_observation:pts_not_monotonic"])
+        presentation_times.append(pts)
+    first = presentation_times[0]
+    normalized = [round(value - first, 9) for value in presentation_times]
+    return {
+        "stream": dict(streams[0]) if isinstance(streams[0], Mapping) else {},
+        "frame_count": len(frames),
+        "presentation_times_seconds": normalized,
+        "first_source_pts_seconds": first,
+    }
+
+
+def _sample_indexes(frame_count: int, maximum_frames: int) -> list[int]:
+    if maximum_frames <= 0:
+        raise LocalReconstructionAdapterError(["decoded_observation:maximum_frames_invalid"])
+    if frame_count <= maximum_frames:
+        return list(range(frame_count))
+    if maximum_frames == 1:
+        return [0]
+    return sorted({index * (frame_count - 1) // (maximum_frames - 1) for index in range(maximum_frames)})
+
+
+def _extract_frames(
+    *,
+    video_path: Path,
+    ffmpeg: str,
+    indexes: Sequence[int],
+    presentation_times: Sequence[float],
+    frame_root: Path,
+) -> list[dict[str, Any]]:
+    frame_root.mkdir(parents=True, exist_ok=True)
+    frames: list[dict[str, Any]] = []
+    for index in indexes:
+        frame_id = f"decoded-{index:09d}"
+        target = frame_root / f"{frame_id}.png"
+        descriptor, temporary_name = tempfile.mkstemp(suffix=".png", dir=frame_root)
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            completed = subprocess.run(
+                [
+                    ffmpeg,
+                    "-v",
+                    "error",
+                    "-i",
+                    str(video_path),
+                    "-vf",
+                    f"select=eq(n\\,{index})",
+                    "-frames:v",
+                    "1",
+                    "-vsync",
+                    "0",
+                    "-y",
+                    str(temporary),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if completed.returncode != 0 or not temporary.is_file() or temporary.stat().st_size == 0:
+                raise LocalReconstructionAdapterError([f"decoded_observation:frame_extract_failed:{index}"])
+            digest = _sha256_file(temporary)
+            if target.exists():
+                if _sha256_file(target) != digest:
+                    raise LocalReconstructionAdapterError(["derived_artifact:immutable_conflict"])
+            else:
+                temporary.replace(target)
+            frames.append(
+                {
+                    "frame_id": frame_id,
+                    "decoded_frame_index": index,
+                    "t_video_sec": presentation_times[index],
+                    "uri": f"local-reconstruction-frame://{digest[7:]}",
+                    "digest": digest,
+                }
+            )
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    return frames
+
+
+def decoded_observation_method_profile(*, execution_authorized: bool = False) -> dict[str, Any]:
+    return build_reconstruction_method_profile(
+        {
+            "method_id": "local_decoded_observation_index",
+            "version": "1",
+            "implementation_digest": _implementation_digest(),
+            "method_kind": "decoded_observation_index",
+            "provider_identity": "local",
+            "execution_mode": "hermetic_local",
+            "adapter_reference": LOCAL_DECODED_OBSERVATION_ADAPTER,
+            "outputs": ["decoded_observation_frames"],
+            "required_capture_authority_profiles": sorted(_VIDEO_PROFILES),
+            "required_claim_ceiling_flags": [],
+            "qualified_claim_types": ["appearance_review", "perception_visibility", "task_discovery"],
+            "execution_authorized": execution_authorized,
+            "qualification_status": "qualified",
+            "expected_cost_usd": 0.0,
+            "provider_constraints": {"external_processing": False},
+            "rights_constraints": {"requires_local_processing_allowed": True},
+            "failure_modes": ["media_not_decodable", "decoded_pts_unavailable", "frame_extract_failed"],
+        }
+    )
+
+
+def arkit_metric_scaffold_method_profile(*, execution_authorized: bool = False) -> dict[str, Any]:
+    return build_reconstruction_method_profile(
+        {
+            "method_id": "local_arkit_metric_scaffold",
+            "version": "1",
+            "implementation_digest": _implementation_digest(),
+            "method_kind": "lidar_depth_fusion",
+            "provider_identity": "local",
+            "execution_mode": "hermetic_local",
+            "adapter_reference": LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER,
+            "outputs": [
+                "calibrated_frames",
+                "decoded_observation_frames",
+                "metric_reference_layer",
+            ],
+            "required_capture_authority_profiles": ["iphone_arkit_lidar"],
+            "required_claim_ceiling_flags": [
+                "calibrated_camera_poses",
+                "decoded_video_pts",
+                "metric_geometry",
+            ],
+            "qualified_claim_types": ["perception_visibility", "reachability", "robot_placement"],
+            "execution_authorized": execution_authorized,
+            "qualification_status": "qualified",
+            "expected_cost_usd": 0.0,
+            "provider_constraints": {"external_processing": False},
+            "rights_constraints": {"requires_local_processing_allowed": True},
+            "failure_modes": [
+                "raw_contract_3_2_required",
+                "decoded_pts_mismatch",
+                "pose_or_intrinsics_mismatch",
+                "depth_confidence_pair_missing",
+            ],
+        }
+    )
+
+
+@dataclass(frozen=True)
+class LocalDecodedObservationAdapter:
+    adapter_reference: str = LOCAL_DECODED_OBSERVATION_ADAPTER
+
+    def execute(
+        self,
+        *,
+        intake_id: str,
+        capture_digest: str,
+        capture_authority_profile: str,
+        capture_root: Path,
+        video_relative_path: str,
+        output_root: Path,
+        rights_and_retention: Mapping[str, Any],
+        maximum_frames: int = 12,
+    ) -> dict[str, Any]:
+        if not _text(intake_id) or not _is_digest(capture_digest):
+            raise LocalReconstructionAdapterError(["decoded_observation:source_binding_invalid"])
+        if capture_authority_profile not in _VIDEO_PROFILES:
+            raise LocalReconstructionAdapterError(["decoded_observation:capture_profile_not_supported"])
+        video_path = _safe_child(capture_root, video_relative_path)
+        if not video_path.is_file() or video_path.stat().st_size <= 0:
+            raise LocalReconstructionAdapterError(["decoded_observation:video_missing"])
+        ffprobe, ffmpeg, runtime_identity, runtime_digest = _tool_identity()
+        probe = _probe_video(video_path, ffprobe)
+        indexes = _sample_indexes(probe["frame_count"], maximum_frames)
+        method_profile = decoded_observation_method_profile(execution_authorized=True)
+        artifact_root = (
+            output_root.expanduser().resolve()
+            / capture_digest[7:]
+            / "local_decoded_observation_index_v1"
+            / f"maximum_frames_{maximum_frames}"
+        )
+        frames = _extract_frames(
+            video_path=video_path,
+            ffmpeg=ffmpeg,
+            indexes=indexes,
+            presentation_times=probe["presentation_times_seconds"],
+            frame_root=artifact_root / "frames",
+        )
+        index = {
+            "schema_version": "decoded_observation_index.v1",
+            "capture_digest": capture_digest,
+            "video_relative_path": video_relative_path,
+            "video_digest": _sha256_file(video_path),
+            "decoded_frame_count": probe["frame_count"],
+            "decoded_presentation_times_seconds": probe["presentation_times_seconds"],
+            "sampled_frames": frames,
+            "selection_method": "evenly_spaced_decoded_frame_indexes_v1",
+        }
+        index_path = artifact_root / "decoded_observation_index.json"
+        index_digest = _write_immutable_json(index_path, index)
+        result = {
+            "result_id": f"decoded-observation-{index_digest[7:23]}",
+            "intake_id": intake_id,
+            "capture_digest": capture_digest,
+            "method_id": method_profile["method_id"],
+            "method_version": method_profile["version"],
+            "method_profile_digest": method_profile["method_profile_digest"],
+            "implementation_digest": method_profile["implementation_digest"],
+            "provider_identity": "local",
+            "runtime_identity": runtime_identity,
+            "runtime_digest": runtime_digest,
+            "outputs": ["decoded_observation_frames"],
+            "source_frames": {
+                "decoded_frame_count": probe["frame_count"],
+                "sampled_frames": frames,
+            },
+            "camera_solution": {"status": "not_available", "calibrated": False},
+            "coordinate_system": {
+                "scale_status": "not_authoritative",
+                "camera_pose_status": "not_available",
+            },
+            "asset_references": {
+                "decoded_observation_index": {
+                    "uri": f"local-reconstruction://{index_digest[7:]}",
+                    "digest": index_digest,
+                }
+            },
+            "coverage_map": {
+                "timeline_sample_fraction": round(len(frames) / probe["frame_count"], 9),
+                "spatial_coverage_status": "not_established",
+            },
+            "observed_regions": [{"region_id": "retained_video_timeline"}],
+            "generated_regions": [],
+            "uncertainty_map": {"spatial_uncertainty_status": "not_estimated"},
+            "invalid_regions": [],
+            "validation_metrics": {
+                "decoded_pts_monotonic": True,
+                "decoded_frame_count": probe["frame_count"],
+                "source_video_digest": index["video_digest"],
+            },
+            "cost_usd": 0.0,
+            "duration_seconds": 0.0,
+            "provider_receipt": None,
+            "rights_and_retention": dict(rights_and_retention),
+            "deletion_evidence": None,
+            "claim_ceiling": {
+                "captured_observation": True,
+                "task_discovery": True,
+                "calibrated_camera_poses": False,
+                "metric_geometry": False,
+                "collision_geometry": False,
+                "physics": False,
+                "physical_task_success": False,
+                "deployment_readiness": False,
+                "safety_certification": False,
+            },
+        }
+        return normalize_reconstruction_result(result)
+
+
+def _matrix4(value: Any) -> list[list[float]] | None:
+    if not isinstance(value, list) or len(value) != 4:
+        return None
+    matrix: list[list[float]] = []
+    for row in value:
+        if not isinstance(row, list) or len(row) != 4:
+            return None
+        values = [_number(item) for item in row]
+        if any(item is None for item in values):
+            return None
+        matrix.append([float(item) for item in values if item is not None])
+    return matrix
+
+
+def _intrinsics(value: Mapping[str, Any]) -> dict[str, Any] | None:
+    nested = value.get("intrinsics")
+    source = nested if isinstance(nested, Mapping) else value
+    numbers = {key: _number(source.get(key)) for key in ("fx", "fy", "cx", "cy")}
+    width = _integer(source.get("width"))
+    height = _integer(source.get("height"))
+    if (
+        any(number is None for number in numbers.values())
+        or numbers["fx"] <= 0  # type: ignore[operator]
+        or numbers["fy"] <= 0  # type: ignore[operator]
+        or width is None
+        or height is None
+        or width <= 0
+        or height <= 0
+    ):
+        return None
+    return {**numbers, "width": width, "height": height}
+
+
+def _verified_depth_pairs(capture_root: Path) -> list[dict[str, Any]]:
+    depth = _load_json(capture_root / "arkit/depth_manifest.json", label="depth_manifest")
+    confidence = _load_json(
+        capture_root / "arkit/confidence_manifest.json", label="confidence_manifest"
+    )
+    depth_rows = {
+        _text(row.get("frame_id")): dict(row)
+        for row in depth.get("frames", [])
+        if isinstance(row, Mapping) and _text(row.get("frame_id"))
+    }
+    confidence_rows = {
+        _text(row.get("frame_id")): dict(row)
+        for row in confidence.get("frames", [])
+        if isinstance(row, Mapping) and _text(row.get("frame_id"))
+    }
+    if not depth_rows or set(depth_rows) != set(confidence_rows):
+        raise LocalReconstructionAdapterError(["metric_scaffold:depth_confidence_pairing_invalid"])
+    pairs: list[dict[str, Any]] = []
+    for frame_id in sorted(depth_rows):
+        depth_path_text = _text(depth_rows[frame_id].get("depth_path"))
+        confidence_path_text = _text(confidence_rows[frame_id].get("confidence_path"))
+        if (
+            _text(depth_rows[frame_id].get("paired_confidence_path")) != confidence_path_text
+            or _text(confidence_rows[frame_id].get("paired_depth_path")) != depth_path_text
+        ):
+            raise LocalReconstructionAdapterError(["metric_scaffold:depth_confidence_pairing_invalid"])
+        depth_path = _safe_child(capture_root, depth_path_text)
+        confidence_path = _safe_child(capture_root, confidence_path_text)
+        if not depth_path.is_file() or not confidence_path.is_file():
+            raise LocalReconstructionAdapterError(["metric_scaffold:depth_confidence_artifact_missing"])
+        pairs.append(
+            {
+                "frame_id": frame_id,
+                "depth_relative_path": depth_path_text,
+                "depth_digest": _sha256_file(depth_path),
+                "confidence_relative_path": confidence_path_text,
+                "confidence_digest": _sha256_file(confidence_path),
+            }
+        )
+    return pairs
+
+
+@dataclass(frozen=True)
+class LocalArkitMetricScaffoldAdapter:
+    adapter_reference: str = LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER
+
+    def execute(
+        self,
+        *,
+        intake_id: str,
+        capture_digest: str,
+        capture_root: Path,
+        output_root: Path,
+        rights_and_retention: Mapping[str, Any],
+        maximum_frames: int = 12,
+    ) -> dict[str, Any]:
+        root = capture_root.expanduser().resolve()
+        if not _text(intake_id) or not _is_digest(capture_digest):
+            raise LocalReconstructionAdapterError(["metric_scaffold:source_binding_invalid"])
+        manifest = _load_json(root / "manifest.json", label="manifest")
+        if manifest.get("capture_schema_version") != "3.2.0":
+            raise LocalReconstructionAdapterError(["metric_scaffold:raw_contract_3_2_required"])
+        if manifest.get("capture_profile_id") != "iphone_arkit_lidar":
+            raise LocalReconstructionAdapterError(["metric_scaffold:iphone_arkit_lidar_required"])
+        capabilities = manifest.get("capture_capabilities")
+        if not isinstance(capabilities, Mapping) or any(
+            capabilities.get(key) is not True
+            for key in ("camera_pose", "camera_intrinsics", "depth", "depth_confidence", "tracking_state")
+        ):
+            raise LocalReconstructionAdapterError(["metric_scaffold:required_capture_capabilities_missing"])
+        video_track = _load_json(root / "video_track.json", label="video_track")
+        video_relative_path = _text(video_track.get("video_file")) or "walkthrough.mov"
+        video_path = _safe_child(root, video_relative_path)
+        ffprobe, _, runtime_identity, runtime_digest = _tool_identity()
+        probe = _probe_video(video_path, ffprobe)
+        sync_rows = _load_jsonl(root / "sync_map.jsonl", label="sync_map")
+        retention_rows = _load_jsonl(
+            root / "video_frame_retention.jsonl", label="video_frame_retention"
+        )
+        poses = _load_jsonl(root / "arkit/poses.jsonl", label="arkit_poses")
+        ar_frames = _load_jsonl(root / "arkit/frames.jsonl", label="arkit_frames")
+        decoded_count = probe["frame_count"]
+        retained = [row for row in retention_rows if row.get("retention_status") == "retained"]
+        dropped = [row for row in retention_rows if row.get("retention_status") != "retained"]
+        errors: list[str] = []
+        if video_track.get("decoded_pts_verified") is not True or video_track.get(
+            "frame_count_source"
+        ) != "decoded_sample_presentation_timestamps":
+            errors.append("metric_scaffold:decoded_pts_not_verified")
+        declared = {
+            "frame_count": decoded_count,
+            "write_attempt_count": len(retention_rows),
+            "retained_frame_count": len(retained),
+            "dropped_frame_count": len(dropped),
+        }
+        for key, expected in declared.items():
+            if _integer(video_track.get(key)) != expected:
+                errors.append(f"metric_scaffold:video_track_count_mismatch:{key}")
+        if len(sync_rows) != decoded_count or len(retained) != decoded_count:
+            errors.append("metric_scaffold:decoded_retained_sync_count_mismatch")
+        pose_by_id = {_text(row.get("frame_id")): row for row in poses}
+        frame_ids = {_text(row.get("frame_id")) for row in ar_frames}
+        coordinate_frame_session_id = _text(manifest.get("coordinate_frame_session_id"))
+        tracking_state_rows = _integer(capabilities.get("tracking_state_rows"))
+        if tracking_state_rows is None or tracking_state_rows < len(sync_rows):
+            errors.append("metric_scaffold:tracking_state_rows_missing")
+        for index, row in enumerate(sync_rows):
+            frame_id = _text(row.get("frame_id"))
+            if (
+                row.get("sync_status") != "encoded_decoded_pts_match"
+                or _integer(row.get("encoded_frame_index")) != index
+                or _number(row.get("t_video_sec")) is None
+                or abs(float(row["t_video_sec"]) - probe["presentation_times_seconds"][index])
+                > _PTS_TOLERANCE_SECONDS
+            ):
+                errors.append(f"metric_scaffold:decoded_pts_mismatch:{index}")
+            if index >= len(retained) or _text(retained[index].get("frame_id")) != frame_id:
+                errors.append(f"metric_scaffold:retention_binding_mismatch:{index}")
+            elif _integer(row.get("write_attempt_index")) != _integer(
+                retained[index].get("write_attempt_index")
+            ):
+                errors.append(f"metric_scaffold:retention_attempt_binding_mismatch:{index}")
+            if _text(row.get("pose_frame_id")) != frame_id:
+                errors.append(f"metric_scaffold:pose_frame_binding_mismatch:{index}")
+            pose = pose_by_id.get(frame_id)
+            if (
+                pose is None
+                or _matrix4(pose.get("T_world_camera")) is None
+                or _text(pose.get("coordinate_frame_session_id"))
+                != coordinate_frame_session_id
+                or frame_id not in frame_ids
+            ):
+                errors.append(f"metric_scaffold:pose_or_frame_binding_invalid:{frame_id or index}")
+        for index, row in enumerate(retention_rows):
+            if _integer(row.get("write_attempt_index")) != index:
+                errors.append("metric_scaffold:retention_attempt_order_invalid")
+                break
+            if row.get("retention_status") == "retained":
+                if _integer(row.get("encoded_frame_index")) is None or _number(row.get("t_video_sec")) is None:
+                    errors.append(f"metric_scaffold:retained_binding_missing:{index}")
+            elif (
+                row.get("retention_status") != "dropped_backpressure"
+                or not _text(row.get("drop_reason"))
+                or row.get("encoded_frame_index") is not None
+                or row.get("t_video_sec") is not None
+            ):
+                errors.append(f"metric_scaffold:dropped_attempt_invalid:{index}")
+        recording = _load_json(root / "recording_session.json", label="recording_session")
+        if (
+            _text(recording.get("coordinate_frame_session_id")) != coordinate_frame_session_id
+            or recording.get("units") != "meters"
+            or recording.get("handedness") != "right_handed"
+            or recording.get("gravity_aligned") is not True
+            or _integer(recording.get("session_reset_count")) != 0
+        ):
+            errors.append("metric_scaffold:coordinate_frame_semantics_not_supported")
+        intrinsics_document = _load_json(
+            root / "arkit/session_intrinsics.json", label="arkit_session_intrinsics"
+        )
+        normalized_intrinsics = _intrinsics(intrinsics_document)
+        if (
+            normalized_intrinsics is None
+            or _text(intrinsics_document.get("coordinate_frame_session_id"))
+            != coordinate_frame_session_id
+        ):
+            errors.append("metric_scaffold:intrinsics_invalid")
+        if sync_rows:
+            first_video_time = _number(sync_rows[0].get("t_video_sec"))
+            first_capture_time = _number(sync_rows[0].get("t_capture_sec"))
+            if (
+                first_video_time is None
+                or first_capture_time is None
+                or abs(first_video_time) > _PTS_TOLERANCE_SECONDS
+                or abs(first_capture_time) > _PTS_TOLERANCE_SECONDS
+            ):
+                errors.append("metric_scaffold:first_retained_frame_not_capture_origin")
+        if errors:
+            raise LocalReconstructionAdapterError(errors)
+        depth_pairs = _verified_depth_pairs(root)
+        if any(pair["frame_id"] not in pose_by_id for pair in depth_pairs):
+            raise LocalReconstructionAdapterError(
+                ["metric_scaffold:depth_pair_pose_binding_missing"]
+            )
+        decoded_result = LocalDecodedObservationAdapter().execute(
+            intake_id=intake_id,
+            capture_digest=capture_digest,
+            capture_authority_profile="iphone_arkit_lidar",
+            capture_root=root,
+            video_relative_path=video_relative_path,
+            output_root=output_root,
+            rights_and_retention=rights_and_retention,
+            maximum_frames=maximum_frames,
+        )
+        method_profile = arkit_metric_scaffold_method_profile(execution_authorized=True)
+        scaffold = {
+            "schema_version": "arkit_metric_scaffold.v1",
+            "capture_digest": capture_digest,
+            "capture_schema_version": "3.2.0",
+            "coordinate_frame_session_id": coordinate_frame_session_id,
+            "coordinate_system": {
+                "world_frame_definition": recording.get("world_frame_definition"),
+                "units": "meters",
+                "handedness": "right_handed",
+                "gravity_aligned": True,
+            },
+            "intrinsics": normalized_intrinsics,
+            "camera_frames": [
+                {
+                    "frame_id": _text(row.get("frame_id")),
+                    "encoded_frame_index": _integer(row.get("encoded_frame_index")),
+                    "t_video_sec": _number(row.get("t_video_sec")),
+                    "t_capture_sec": _number(row.get("t_capture_sec")),
+                    "T_world_camera": pose_by_id[_text(row.get("frame_id"))]["T_world_camera"],
+                }
+                for row in sync_rows
+            ],
+            "depth_confidence_pairs": depth_pairs,
+            "source_artifact_digests": {
+                relative: _sha256_file(_safe_child(root, relative))
+                for relative in (
+                    video_relative_path,
+                    "manifest.json",
+                    "video_track.json",
+                    "video_frame_retention.jsonl",
+                    "sync_map.jsonl",
+                    "arkit/poses.jsonl",
+                    "arkit/frames.jsonl",
+                    "arkit/session_intrinsics.json",
+                    "arkit/depth_manifest.json",
+                    "arkit/confidence_manifest.json",
+                    "recording_session.json",
+                )
+            },
+        }
+        artifact_root = (
+            output_root.expanduser().resolve()
+            / capture_digest[7:]
+            / "local_arkit_metric_scaffold_v1"
+        )
+        scaffold_digest = _write_immutable_json(
+            artifact_root / "arkit_metric_scaffold.json", scaffold
+        )
+        coverage = round(len(depth_pairs) / len(sync_rows), 9)
+        result_binding_digest = canonical_digest(
+            {
+                "metric_scaffold_digest": scaffold_digest,
+                "decoded_observation_digest": decoded_result["asset_references"][
+                    "decoded_observation_index"
+                ]["digest"],
+            }
+        )
+        return normalize_reconstruction_result(
+            {
+                "result_id": f"arkit-metric-scaffold-{result_binding_digest[7:23]}",
+                "intake_id": intake_id,
+                "capture_digest": capture_digest,
+                "method_id": method_profile["method_id"],
+                "method_version": method_profile["version"],
+                "method_profile_digest": method_profile["method_profile_digest"],
+                "implementation_digest": method_profile["implementation_digest"],
+                "provider_identity": "local",
+                "runtime_identity": runtime_identity,
+                "runtime_digest": runtime_digest,
+                "outputs": [
+                    "calibrated_frames",
+                    "decoded_observation_frames",
+                    "metric_reference_layer",
+                ],
+                "source_frames": decoded_result["source_frames"],
+                "camera_solution": {
+                    "status": "raw_contract_3_2_verified",
+                    "calibrated": True,
+                    "pose_count": len(sync_rows),
+                },
+                "coordinate_system": scaffold["coordinate_system"],
+                "asset_references": {
+                    "decoded_observation_index": decoded_result["asset_references"][
+                        "decoded_observation_index"
+                    ],
+                    "metric_scaffold": {
+                        "uri": f"local-reconstruction://{scaffold_digest[7:]}",
+                        "digest": scaffold_digest,
+                    },
+                },
+                "coverage_map": {
+                    "calibrated_frame_fraction": 1.0,
+                    "depth_confidence_frame_fraction": coverage,
+                },
+                "observed_regions": [{"region_id": "arkit_observed_frusta"}],
+                "generated_regions": [],
+                "uncertainty_map": {
+                    "unobserved_surfaces_remain_unsupported": True,
+                    "depth_confidence_is_raw_sensor_evidence": True,
+                },
+                "invalid_regions": [],
+                "validation_metrics": {
+                    "decoded_pts_verified": True,
+                    "retained_sync_pose_count": len(sync_rows),
+                    "depth_confidence_pair_count": len(depth_pairs),
+                    "tracking_reset_count": 0,
+                },
+                "cost_usd": 0.0,
+                "duration_seconds": 0.0,
+                "provider_receipt": None,
+                "rights_and_retention": dict(rights_and_retention),
+                "deletion_evidence": None,
+                "claim_ceiling": {
+                    "captured_observation": True,
+                    "calibrated_camera_poses": True,
+                    "metric_scale": True,
+                    "metric_reference_layer": True,
+                    "complete_geometry": False,
+                    "collision_geometry": False,
+                    "physics": False,
+                    "physical_task_success": False,
+                    "deployment_readiness": False,
+                    "safety_certification": False,
+                },
+            }
+        )
+
+
+def authorized_local_reconstruction_adapter_registry(
+    authorized_references: Sequence[str],
+) -> dict[str, LocalDecodedObservationAdapter | LocalArkitMetricScaffoldAdapter]:
+    available: dict[
+        str, LocalDecodedObservationAdapter | LocalArkitMetricScaffoldAdapter
+    ] = {
+        LOCAL_DECODED_OBSERVATION_ADAPTER: LocalDecodedObservationAdapter(),
+        LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER: LocalArkitMetricScaffoldAdapter(),
+    }
+    requested = sorted({_text(item) for item in authorized_references if _text(item)})
+    unknown = sorted(set(requested) - set(available))
+    if unknown:
+        raise LocalReconstructionAdapterError(
+            [f"local_reconstruction_adapter_not_registered:{','.join(unknown)}"]
+        )
+    return {reference: available[reference] for reference in requested}
+
+
+__all__ = [
+    "LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER",
+    "LOCAL_DECODED_OBSERVATION_ADAPTER",
+    "LocalArkitMetricScaffoldAdapter",
+    "LocalDecodedObservationAdapter",
+    "LocalReconstructionAdapterError",
+    "arkit_metric_scaffold_method_profile",
+    "authorized_local_reconstruction_adapter_registry",
+    "decoded_observation_method_profile",
+]
