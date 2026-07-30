@@ -15,12 +15,16 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .common import write_json
+from .ctrl_world_joint_position_reference_runtime import (
+    CtrlWorldJointPositionSubprocessRuntime,
+)
 from .new_site_diagnostic_canary_gpu import (
     INPUT_RECEIPT_SCHEMA_VERSION as CANARY_INPUT_RECEIPT_SCHEMA_VERSION,
     MAX_INPUT_BYTES as CANARY_MAX_INPUT_BYTES,
     build_canary_input_bundle,
     extract_canary_input_bundle,
     materialize_canary_background,
+    run_ctrl_world_canary,
     run_skeleton_only_canary,
 )
 from .openpi_policy_ranking_gpu_job import run_openpi_policy_ranking_gpu_campaign
@@ -294,21 +298,32 @@ def run_signed_gpu_bootstrap(*, workspace: str | Path = "/workspace") -> dict[st
                 expected_bundle_sha256=input_sha,
                 output_dir=extracted,
             )
-            if (extracted_input.get("manifest") or {}).get("arm_id") != "skeleton_only":
-                raise ValueError("signed_gpu_bootstrap_canary_arm_runtime_not_connected")
-            campaign = run_skeleton_only_canary(
-                protocol_path=extracted_input["protocol_path"],
-                background_path=extracted_input["background_path"],
-                cohort_path=(
+            canary_manifest = extracted_input.get("manifest") or {}
+            arm_id = canary_manifest.get("arm_id")
+            shared = {
+                "protocol_path": extracted_input["protocol_path"],
+                "background_path": extracted_input["background_path"],
+                "cohort_path": (
                     "/opt/blueprint/frozen/warehouse_policy_cohort_v2_joint_position.json"
                 ),
-                checkpoint_inventory_path=(
+                "checkpoint_inventory_path": (
                     "/opt/blueprint/frozen/openpi_polaris_checkpoint_inventory.json"
                 ),
-                menagerie_root="/opt/mujoco-menagerie/franka_emika_panda",
-                output_dir=campaign_output,
-                initial_camera_paths=extracted_input.get("initial_camera_paths") or None,
-            )
+                "menagerie_root": "/opt/mujoco-menagerie/franka_emika_panda",
+                "output_dir": campaign_output,
+                "initial_camera_paths": extracted_input.get("initial_camera_paths") or None,
+            }
+            if arm_id == "skeleton_only":
+                campaign = run_skeleton_only_canary(**shared)
+            elif arm_id == "ctrl_world":
+                runner = CtrlWorldJointPositionSubprocessRuntime.from_environment()
+                campaign = run_ctrl_world_canary(
+                    **shared,
+                    ctrl_world_runner=runner,
+                    seed=canary_manifest.get("wam_seed"),
+                )
+            else:
+                raise ValueError("signed_gpu_bootstrap_canary_arm_runtime_not_connected")
         else:
             extracted_input = extract_private_input_bundle(
                 bundle_path=bundle,
@@ -443,7 +458,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     canary.add_argument("--protocol", required=True)
     canary.add_argument("--background", required=True)
     canary.add_argument("--output", required=True)
-    canary.add_argument("--arm", choices=("skeleton_only",), required=True)
+    canary.add_argument("--arm", choices=("skeleton_only", "ctrl_world"), required=True)
     canary.add_argument("--native-camera-canary-result")
     background = subparsers.add_parser("materialize-canary-background")
     background.add_argument("--source", required=True)

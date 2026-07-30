@@ -277,6 +277,8 @@ def test_ctrl_world_input_roundtrip_requires_and_carries_three_native_views(
         DROID_EXTERIOR_VIEW_2,
         WRIST_VIEW,
     }
+    assert receipt["manifest"]["wam_seed"] == 23
+    assert extracted["manifest"]["wam_seed"] == 23
 
 
 def test_ctrl_world_input_rejects_missing_native_three_view_result(tmp_path: Path) -> None:

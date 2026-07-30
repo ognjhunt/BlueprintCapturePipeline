@@ -203,7 +203,7 @@ def test_bootstrap_routes_canary_bundle_to_one_arm_worker(
     assert "new_site_diagnostic_canary_gpu.json" in archive_names
 
 
-def test_bootstrap_fails_closed_before_routing_unconnected_ctrl_world_runtime(
+def test_bootstrap_fails_closed_before_routing_unconfigured_ctrl_world_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(
@@ -223,7 +223,20 @@ def test_bootstrap_fails_closed_before_routing_unconnected_ctrl_world_runtime(
     monkeypatch.setattr(
         bootstrap_module,
         "extract_canary_input_bundle",
-        lambda **_kwargs: {"manifest": {"arm_id": "ctrl_world", "protocol_sha256": "b" * 64}},
+        lambda **_kwargs: {
+            "manifest": {
+                "arm_id": "ctrl_world",
+                "protocol_sha256": "b" * 64,
+                "wam_seed": 23,
+            },
+            "protocol_path": str(tmp_path / "protocol.json"),
+            "background_path": str(tmp_path / "background.png"),
+            "initial_camera_paths": {
+                "image": str(tmp_path / "external.png"),
+                "image2": str(tmp_path / "external-2.png"),
+                "wrist_image": str(tmp_path / "wrist.png"),
+            },
+        },
     )
     monkeypatch.setattr(
         bootstrap_module,
@@ -239,3 +252,74 @@ def test_bootstrap_fails_closed_before_routing_unconnected_ctrl_world_runtime(
     assert result["status"] == "blocked"
     assert result["failure_type"] == "ValueError"
     assert result["input_manifest"]["arm_id"] == "ctrl_world"
+
+
+def test_bootstrap_routes_ctrl_world_to_isolated_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL", "https://storage.example/input"
+    )
+    monkeypatch.setenv("BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SHA256", "a" * 64)
+    monkeypatch.setenv(
+        "BLUEPRINT_OPENPI_POLICY_RANKING_OUTPUT_SECRET_PUT_URL",
+        "https://storage.example/output",
+    )
+    monkeypatch.setenv("BLUEPRINT_OPENPI_EXECUTION_MODE", EXECUTION_MODE_NEW_SITE_CANARY)
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_download_signed_input",
+        lambda _url, destination, **_kwargs: destination.write_bytes(b"placeholder"),
+    )
+    cameras = {
+        "image": str(tmp_path / "external.png"),
+        "image2": str(tmp_path / "external-2.png"),
+        "wrist_image": str(tmp_path / "wrist.png"),
+    }
+    monkeypatch.setattr(
+        bootstrap_module,
+        "extract_canary_input_bundle",
+        lambda **_kwargs: {
+            "manifest": {"arm_id": "ctrl_world", "wam_seed": 23},
+            "protocol_path": str(tmp_path / "protocol.json"),
+            "background_path": str(tmp_path / "background.png"),
+            "initial_camera_paths": cameras,
+        },
+    )
+    runner = object()
+
+    class FakeRuntimeFactory:
+        @classmethod
+        def from_environment(cls):
+            return runner
+
+    monkeypatch.setattr(
+        bootstrap_module, "CtrlWorldJointPositionSubprocessRuntime", FakeRuntimeFactory
+    )
+    observed: dict = {}
+
+    def run_canary(**kwargs):
+        observed.update(kwargs)
+        output = Path(kwargs["output_dir"])
+        output.mkdir(parents=True)
+        manifest = {
+            "schema_version": "new_site_diagnostic_canary_gpu.v1",
+            "status": "completed",
+            "manifest_sha256": "c" * 64,
+        }
+        (output / "new_site_diagnostic_canary_gpu.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        return manifest
+
+    monkeypatch.setattr(bootstrap_module, "run_ctrl_world_canary", run_canary)
+    monkeypatch.setattr(bootstrap_module, "_upload_output", lambda *_args: 200)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = run_signed_gpu_bootstrap(workspace=workspace)
+
+    assert result["status"] == "completed"
+    assert observed["ctrl_world_runner"] is runner
+    assert observed["seed"] == 23
+    assert observed["initial_camera_paths"] == cameras

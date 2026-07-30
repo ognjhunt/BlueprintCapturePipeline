@@ -88,6 +88,7 @@ NATIVE_CAMERA_REQUIREMENTS = {
     ),
 }
 SKELETON_WRIST_REFERENCE_DISPLACEMENT_MIN_M = 0.001
+CTRL_WORLD_CANARY_SEED = 23
 _SKELETON_WRIST_PIXEL_MOTION_FLAGS = frozenset(
     {FLAG_STATIC_UNDER_COMMAND, FLAG_MOTION_WITHOUT_COMMAND, FLAG_TIMING_DISAGREEMENT}
 )
@@ -215,6 +216,8 @@ def build_canary_input_bundle(
         "purpose": "private_internal_noncommercial_new_site_diagnostic_canary",
         "initial_observation_source": "mujoco_hybrid_camera_render",
     }
+    if arm_id == "ctrl_world":
+        manifest["wam_seed"] = CTRL_WORLD_CANARY_SEED
     native_camera_material: dict[str, Any] | None = None
     if native_camera_canary_result_path is not None:
         native_result_path = Path(native_camera_canary_result_path).expanduser().resolve()
@@ -365,6 +368,8 @@ def extract_canary_input_bundle(
     arm_id = manifest.get("arm_id")
     if arm_id not in BUNDLE_SUPPORTED_ARMS:
         raise ValueError("new_site_canary_input_arm_unsupported")
+    if arm_id == "ctrl_world" and manifest.get("wam_seed") != CTRL_WORLD_CANARY_SEED:
+        raise ValueError("new_site_ctrl_world_wam_seed_invalid")
     camera_requirements = NATIVE_CAMERA_REQUIREMENTS[str(arm_id)]
     expected_native_names = (
         base_names

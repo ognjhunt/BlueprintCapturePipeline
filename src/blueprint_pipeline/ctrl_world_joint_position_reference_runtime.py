@@ -7,10 +7,13 @@ or ranking. Heavy model imports occur only inside the single-GPU executor.
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
+import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +36,8 @@ from .policy_ranking_thesis import canonical_sha256, file_sha256
 
 
 HISTORY_FRAME_COUNT = 6
+SUBPROCESS_RESULT_NAME = "ctrl_world_joint_position_runtime_result.json"
+SUBPROCESS_TIMEOUT_SECONDS = 3600
 ENGINEERING_PROVENANCE = {
     "generic_mechanics_reference_commit": "82c3d14a519569104f6974445bfa0995810c3aed",
     "adaptation": "independent joint-position request and result contract",
@@ -617,10 +622,169 @@ class CtrlWorldJointPositionReferenceRuntime:
         return result
 
 
+@dataclass(frozen=True)
+class CtrlWorldJointPositionSubprocessRuntime:
+    """Invoke the pinned Ctrl-World environment without mixing it into OpenPI."""
+
+    python_executable: Path
+    source_root: Path
+    source_manifest_path: Path
+    world_model_checkpoint: Path
+    svd_model_root: Path
+    clip_model_root: Path
+    state_stat_path: Path
+    timeout_seconds: int = SUBPROCESS_TIMEOUT_SECONDS
+
+    @classmethod
+    def from_environment(cls) -> "CtrlWorldJointPositionSubprocessRuntime":
+        names = {
+            "python_executable": "BLUEPRINT_CTRL_WORLD_PYTHON",
+            "source_root": "BLUEPRINT_CTRL_WORLD_SOURCE_ROOT",
+            "source_manifest_path": "BLUEPRINT_CTRL_WORLD_SOURCE_MANIFEST",
+            "world_model_checkpoint": "BLUEPRINT_CTRL_WORLD_CHECKPOINT",
+            "svd_model_root": "BLUEPRINT_CTRL_WORLD_SVD_ROOT",
+            "clip_model_root": "BLUEPRINT_CTRL_WORLD_CLIP_ROOT",
+            "state_stat_path": "BLUEPRINT_CTRL_WORLD_STATE_STATS",
+        }
+        values = {field: os.getenv(name, "").strip() for field, name in names.items()}
+        if any(not value for value in values.values()):
+            raise ValueError("ctrl_world_subprocess_runtime_environment_missing")
+        timeout_text = os.getenv(
+            "BLUEPRINT_CTRL_WORLD_TIMEOUT_SECONDS", str(SUBPROCESS_TIMEOUT_SECONDS)
+        ).strip()
+        try:
+            timeout = int(timeout_text)
+        except ValueError as exc:
+            raise ValueError("ctrl_world_subprocess_runtime_timeout_invalid") from exc
+        if timeout < 60 or timeout > 7200:
+            raise ValueError("ctrl_world_subprocess_runtime_timeout_invalid")
+        return cls(
+            **{field: Path(value) for field, value in values.items()},
+            timeout_seconds=timeout,
+        )
+
+    def __call__(
+        self, *, request_manifest_path: Path, output_dir: Path, seed: int
+    ) -> dict[str, Any]:
+        python = self.python_executable.expanduser().resolve()
+        if not python.is_file() or not os.access(python, os.X_OK):
+            raise ValueError("ctrl_world_subprocess_runtime_python_invalid")
+        output = Path(output_dir).expanduser().resolve()
+        output.mkdir(parents=True, exist_ok=True)
+        result_path = output / SUBPROCESS_RESULT_NAME
+        if result_path.exists() or result_path.is_symlink():
+            raise ValueError("ctrl_world_subprocess_runtime_output_not_fresh")
+        command = [
+            str(python),
+            "-m",
+            "blueprint_pipeline.ctrl_world_joint_position_reference_runtime",
+            "run",
+            "--request-manifest",
+            str(Path(request_manifest_path).expanduser().resolve()),
+            "--output-dir",
+            str(output),
+            "--seed",
+            str(seed),
+            "--source-root",
+            str(self.source_root),
+            "--source-manifest",
+            str(self.source_manifest_path),
+            "--checkpoint",
+            str(self.world_model_checkpoint),
+            "--svd-root",
+            str(self.svd_model_root),
+            "--clip-root",
+            str(self.clip_model_root),
+            "--state-stats",
+            str(self.state_stat_path),
+        ]
+        inherited_names = (
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "LD_LIBRARY_PATH",
+            "CUDA_VISIBLE_DEVICES",
+            "NVIDIA_VISIBLE_DEVICES",
+            "NVIDIA_DRIVER_CAPABILITIES",
+            "HF_HOME",
+            "TORCH_HOME",
+        )
+        child_env = {name: os.environ[name] for name in inherited_names if name in os.environ}
+        child_env.update(
+            {
+                "HF_HUB_DISABLE_TELEMETRY": "1",
+                "TOKENIZERS_PARALLELISM": "false",
+                "WANDB_MODE": "disabled",
+                "SWANLAB_MODE": "disabled",
+            }
+        )
+        try:
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=self.timeout_seconds,
+                env=child_env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            (output / "ctrl_world_subprocess_stderr.log").write_text(
+                "Ctrl-World subprocess exceeded its frozen timeout.\n", encoding="utf-8"
+            )
+            raise RuntimeError("ctrl_world_subprocess_runtime_timeout") from exc
+        (output / "ctrl_world_subprocess_stdout.log").write_text(
+            completed.stdout or "", encoding="utf-8"
+        )
+        (output / "ctrl_world_subprocess_stderr.log").write_text(
+            completed.stderr or "", encoding="utf-8"
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("ctrl_world_subprocess_runtime_failed")
+        if not result_path.is_file() or result_path.is_symlink():
+            raise RuntimeError("ctrl_world_subprocess_runtime_result_missing")
+        return _read_object(result_path, reason="ctrl_world_subprocess_runtime_result_invalid")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    run = subparsers.add_parser("run")
+    run.add_argument("--request-manifest", required=True)
+    run.add_argument("--output-dir", required=True)
+    run.add_argument("--seed", required=True, type=int)
+    run.add_argument("--source-root", required=True)
+    run.add_argument("--source-manifest", required=True)
+    run.add_argument("--checkpoint", required=True)
+    run.add_argument("--svd-root", required=True)
+    run.add_argument("--clip-root", required=True)
+    run.add_argument("--state-stats", required=True)
+    args = parser.parse_args(argv)
+    runtime = CtrlWorldJointPositionReferenceRuntime(
+        source_root=Path(args.source_root),
+        source_manifest_path=Path(args.source_manifest),
+        world_model_checkpoint=Path(args.checkpoint),
+        svd_model_root=Path(args.svd_root),
+        clip_model_root=Path(args.clip_root),
+        state_stat_path=Path(args.state_stats),
+    )
+    result = runtime(
+        request_manifest_path=Path(args.request_manifest),
+        output_dir=Path(args.output_dir),
+        seed=args.seed,
+    )
+    print(json.dumps({"status": result["status"], "result_sha256": result["result_sha256"]}))
+    return 0
+
+
 __all__ = [
     "CtrlWorldJointPositionReferenceRuntime",
+    "CtrlWorldJointPositionSubprocessRuntime",
     "ENGINEERING_PROVENANCE",
     "execute_generated_only_ctrl_world_joint_position",
     "validate_joint_position_runtime_assets",
     "validate_staged_joint_position_request",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

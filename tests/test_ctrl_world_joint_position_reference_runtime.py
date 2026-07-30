@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,7 @@ from PIL import Image
 from blueprint_pipeline import ctrl_world_joint_position_reference_runtime as runtime_module
 from blueprint_pipeline.ctrl_world_joint_position_reference_runtime import (
     CtrlWorldJointPositionReferenceRuntime,
+    CtrlWorldJointPositionSubprocessRuntime,
     validate_staged_joint_position_request,
 )
 from blueprint_pipeline.ctrl_world_joint_position_reference_wam import (
@@ -229,3 +232,47 @@ def test_configured_runtime_emits_result_accepted_by_wam_contract(
             output_dir=tmp_path / "drifted-output",
             seed=23,
         )
+
+
+def test_subprocess_runtime_isolates_environment_and_returns_exact_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL", "secret-url")
+    observed: dict[str, Any] = {}
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        observed.update({"command": command, **kwargs})
+        output = Path(command[command.index("--output-dir") + 1])
+        (output / "ctrl_world_joint_position_runtime_result.json").write_text(
+            json.dumps({"status": "completed", "sentinel": "exact-child-result"}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "child stdout\n", "")
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+    runtime = CtrlWorldJointPositionSubprocessRuntime(
+        python_executable=Path(sys.executable),
+        source_root=tmp_path / "source",
+        source_manifest_path=tmp_path / "source.json",
+        world_model_checkpoint=tmp_path / "checkpoint.pt",
+        svd_model_root=tmp_path / "svd",
+        clip_model_root=tmp_path / "clip",
+        state_stat_path=tmp_path / "stat.json",
+        timeout_seconds=600,
+    )
+
+    result = runtime(
+        request_manifest_path=tmp_path / "request.json",
+        output_dir=tmp_path / "output",
+        seed=23,
+    )
+
+    assert result == {"status": "completed", "sentinel": "exact-child-result"}
+    assert observed["command"][:4] == [
+        str(Path(sys.executable).resolve()),
+        "-m",
+        "blueprint_pipeline.ctrl_world_joint_position_reference_runtime",
+        "run",
+    ]
+    assert "BLUEPRINT_OPENPI_POLICY_RANKING_INPUT_SECRET_URL" not in observed["env"]
+    assert (tmp_path / "output/ctrl_world_subprocess_stdout.log").read_text() == ("child stdout\n")
