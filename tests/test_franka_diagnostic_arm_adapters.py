@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import pytest
 
 from blueprint_pipeline.ctrl_world_droid_action_adapter import (
     FrankaCtrlWorldJointPositionAdapter,
@@ -166,14 +167,78 @@ def test_ctrl_world_joint_position_adapter_uses_fk_and_emits_exact_7d_shape() ->
     action[:, 0] = np.linspace(0.0, 0.9, 10)
     result = FrankaCtrlWorldJointPositionAdapter(_runtime()).adapt(
         policy_action=action,
+        current_joint_position=np.zeros(7, dtype=float),
+        current_gripper_position=np.zeros(1, dtype=float),
         history_cartesian_pose_7d=np.zeros((6, 7), dtype=float),
     )
 
-    assert result["action_conditioning_7d"].shape == (16, 7)
+    assert result["action_conditioning_7d"].shape == (11, 7)
+    assert result["action_conditioning_shape"] == [11, 7]
+    assert result["history_rows"] == 6
+    assert result["predicted_pose_rows"] == 5
+    assert result["current_state_included"] is True
+    assert result["ctrl_world_trajectory_indices"] == [0, 2, 4, 6, 8]
+    assert result["reliability_actions_10d"].shape == (5, 10)
+    assert np.allclose(result["next_joint_position"], action[7, :7])
+    assert np.allclose(result["next_gripper_position"], action[7, 7:])
+    assert np.allclose(result["next_cartesian_pose_7d"], result["action_conditioning_7d"][-1])
+    assert np.allclose(result["action_conditioning_7d"][6, :3], [0.31, 0.0, 0.59])
+    assert np.allclose(result["action_conditioning_7d"][7, :3], [0.318, 0.0, 0.59])
     assert result["official_ctrl_world_learned_action_adapter_used"] is False
     assert result["conversion"] == "deterministic_pinned_franka_forward_kinematics"
     assert result["physical_future_observation_used"] is False
     assert len(result["conditioning_sha256"]) == 64
+
+
+def test_ctrl_world_joint_position_adapter_exposes_same_current_fk_row() -> None:
+    adapter = FrankaCtrlWorldJointPositionAdapter(_runtime())
+    current = adapter.cartesian_pose_7d(
+        joint_position=np.zeros(7, dtype=float), gripper_position=0.25
+    )
+    result = adapter.adapt(
+        policy_action=np.zeros((10, 8), dtype=float),
+        current_joint_position=np.zeros(7, dtype=float),
+        current_gripper_position=0.25,
+        history_cartesian_pose_7d=np.repeat(current[None, :], 6, axis=0),
+    )
+
+    assert np.allclose(current, result["action_conditioning_7d"][6])
+
+
+def test_ctrl_world_joint_position_adapter_supports_pi05_horizon_without_shape_drift() -> None:
+    action = np.zeros((15, 8), dtype=float)
+    action[:, 1] = np.linspace(0.0, 1.4, 15)
+    result = FrankaCtrlWorldJointPositionAdapter(_runtime()).adapt(
+        policy_action=action,
+        current_joint_position=np.zeros(7, dtype=float),
+        current_gripper_position=0.25,
+        history_cartesian_pose_7d=np.zeros((6, 7), dtype=float),
+    )
+
+    assert result["policy_action_rows"] == 15
+    assert result["action_conditioning_shape"] == [11, 7]
+    assert result["action_conditioning_7d"][6, -1] == 0.25
+    assert result["action_conditioning_7d"][10, -1] == 0.0
+
+
+def test_ctrl_world_joint_position_adapter_rejects_nonexact_history_and_state() -> None:
+    adapter = FrankaCtrlWorldJointPositionAdapter(_runtime())
+    action = np.zeros((10, 8), dtype=float)
+
+    with pytest.raises(ValueError, match="finite_6x7"):
+        adapter.adapt(
+            policy_action=action,
+            current_joint_position=np.zeros(7),
+            current_gripper_position=0.0,
+            history_cartesian_pose_7d=np.zeros((5, 7)),
+        )
+    with pytest.raises(ValueError, match="current_joint_position"):
+        adapter.adapt(
+            policy_action=action,
+            current_joint_position=np.zeros(6),
+            current_gripper_position=0.0,
+            history_cartesian_pose_7d=np.zeros((6, 7)),
+        )
 
 
 def test_ctrl_world_asset_admission_distinguishes_world_model_from_adapter(tmp_path: Path) -> None:
