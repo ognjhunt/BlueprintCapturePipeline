@@ -65,6 +65,7 @@ from .manager import (
     OpenAIAgentsSDKSupervisorManager,
     SupervisorManagerDecision,
     SupervisorManagerError,
+    validate_manager_decision,
 )
 from .phase2_artifacts import (
     Phase2ArtifactError,
@@ -194,6 +195,7 @@ __all__ = [
     "SupervisorLedgerError",
     "SupervisorManagerDecision",
     "SupervisorManagerError",
+    "validate_manager_decision",
     "AgentsSDKSupervisorManagerOutput",
     "SupervisorReplayError",
     "SupervisorRun",

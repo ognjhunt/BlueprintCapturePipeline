@@ -138,15 +138,9 @@ def _eligible_terminal_reasons(
 ) -> tuple[str, ...]:
     reasons: set[str] = set()
     values = _result_values(results)
-    completed = {
-        CapabilityKind(str(result.get("capability") or ""))
-        for result in values
-    }
-    if (
-        context.decision_request is None or context.testbed is None
-    ) and (
-        context.capture_build is None
-        or CapabilityKind.CAPTURE_TESTBED_SUPERVISOR in completed
+    completed = {CapabilityKind(str(result.get("capability") or "")) for result in values}
+    if (context.decision_request is None or context.testbed is None) and (
+        context.capture_build is None or CapabilityKind.CAPTURE_TESTBED_SUPERVISOR in completed
     ):
         reasons.add("needs_clarification")
     if any(
@@ -168,6 +162,91 @@ def _eligible_terminal_reasons(
     if not available:
         reasons.add("blocked")
     return tuple(sorted(reasons))
+
+
+def validate_manager_decision(
+    value: Mapping[str, Any],
+    *,
+    context: SupervisorContext,
+    completed_results: Sequence[CapabilityResult],
+    step_index: int,
+) -> dict[str, Any]:
+    """Recompute the manager's legal menu and validate its persisted choice."""
+
+    required_fields = {
+        "schema_version",
+        "run_id",
+        "step_index",
+        "status",
+        "next_capability",
+        "terminal_reason",
+        "rationale",
+        "observed_capability_result_digests",
+        "eligible_next_capabilities",
+        "eligible_terminal_reasons",
+        "manager_controls_sequencing_only",
+        "proof_effect",
+        "uncertainty",
+        "agent_harness",
+        "supervisor_manager_decision_digest",
+    }
+    if set(value) != required_fields:
+        raise SupervisorManagerError("manager_decision_fields_invalid")
+    expected_digest = canonical_digest(
+        value,
+        digest_field="supervisor_manager_decision_digest",
+    )
+    if (
+        value.get("schema_version") != SUPERVISOR_MANAGER_DECISION_SCHEMA_VERSION
+        or value.get("supervisor_manager_decision_digest") != expected_digest
+        or value.get("run_id") != context.run_id
+        or value.get("step_index") != step_index
+        or value.get("manager_controls_sequencing_only") is not True
+        or value.get("proof_effect") != "none"
+        or value.get("agent_harness") != AGENTS_SDK_HARNESS_ID
+        or not str(value.get("rationale") or "").strip()
+        or not str(value.get("uncertainty") or "").strip()
+    ):
+        raise SupervisorManagerError("manager_decision_contract_invalid")
+    completed = {CapabilityKind(result.to_mapping()["capability"]) for result in completed_results}
+    if len(completed) != len(completed_results):
+        raise SupervisorManagerError("manager_completed_capability_duplicate")
+    available = _available_capabilities(context, completed)
+    terminal_reasons = _eligible_terminal_reasons(
+        context,
+        completed_results,
+        available,
+    )
+    result_digests = sorted(result.digest for result in completed_results)
+    if value.get("observed_capability_result_digests") != result_digests:
+        raise SupervisorManagerError("manager_observed_result_set_mismatch")
+    if value.get("eligible_next_capabilities") != [kind.value for kind in available]:
+        raise SupervisorManagerError("manager_eligible_capabilities_mismatch")
+    if value.get("eligible_terminal_reasons") != list(terminal_reasons):
+        raise SupervisorManagerError("manager_eligible_terminal_reasons_mismatch")
+    status = str(value.get("status") or "")
+    if status == "continue":
+        try:
+            next_capability = CapabilityKind(str(value.get("next_capability") or ""))
+        except ValueError as exc:
+            raise SupervisorManagerError("manager_next_capability_invalid") from exc
+        if next_capability not in available or value.get("terminal_reason") is not None:
+            raise SupervisorManagerError("manager_next_capability_not_eligible")
+    elif status == "terminal":
+        if (
+            value.get("next_capability") is not None
+            or value.get("terminal_reason") not in terminal_reasons
+        ):
+            raise SupervisorManagerError("manager_terminal_reason_not_eligible")
+    else:
+        raise SupervisorManagerError("manager_status_invalid")
+    if (
+        context.decision_envelope is not None
+        and CapabilityKind.POST_RUN_DIAGNOSTICIAN not in completed
+        and status == "terminal"
+    ):
+        raise SupervisorManagerError("manager_post_run_diagnosis_required")
+    return dict(value)
 
 
 class OpenAIAgentsSDKSupervisorManager:
@@ -197,8 +276,7 @@ class OpenAIAgentsSDKSupervisorManager:
         step_index: int,
     ) -> SupervisorManagerDecision:
         completed = {
-            CapabilityKind(result.to_mapping()["capability"])
-            for result in completed_results
+            CapabilityKind(result.to_mapping()["capability"]) for result in completed_results
         }
         if len(completed) != len(completed_results):
             raise SupervisorManagerError("manager_completed_capability_duplicate")
@@ -265,9 +343,7 @@ class OpenAIAgentsSDKSupervisorManager:
             "step_index": step_index,
             "status": output.status,
             "next_capability": (
-                output.next_capability.value
-                if output.next_capability is not None
-                else None
+                output.next_capability.value if output.next_capability is not None else None
             ),
             "terminal_reason": output.terminal_reason,
             "rationale": output.rationale,
@@ -283,7 +359,15 @@ class OpenAIAgentsSDKSupervisorManager:
             value,
             digest_field="supervisor_manager_decision_digest",
         )
-        return SupervisorManagerDecision(value=value, invocation=invocation)
+        return SupervisorManagerDecision(
+            value=validate_manager_decision(
+                value,
+                context=context,
+                completed_results=completed_results,
+                step_index=step_index,
+            ),
+            invocation=invocation,
+        )
 
     def invocation_metadata(self) -> dict[str, Any]:
         invocation = self._last_invocation
@@ -308,4 +392,5 @@ __all__ = [
     "SUPERVISOR_MANAGER_DECISION_SCHEMA_VERSION",
     "SupervisorManagerDecision",
     "SupervisorManagerError",
+    "validate_manager_decision",
 ]

@@ -33,6 +33,7 @@ from .capture_ingress import CaptureBuildIngressError, validate_capture_build_in
 from .capabilities import SupervisorContext
 from .ledger import AppendOnlyEventLedger
 from .inference_reservations import InferenceReservationAudit
+from .manager import SupervisorManagerError, validate_manager_decision
 from .phase2_artifacts import (
     Phase2ArtifactError,
     deterministic_customer_report,
@@ -284,6 +285,7 @@ def replay_supervisor_run(
         raise SupervisorReplayError("terminal_state_capabilities_mismatch")
 
     manager_decision_digests: list[str] = []
+    manager_decision_values: list[dict[str, Any]] = []
     manager_invocation_digests: list[str] = []
     manager_invocation_values: list[dict[str, Any]] = []
     manager_refusal_digests: list[str] = []
@@ -397,6 +399,7 @@ def replay_supervisor_run(
         else:
             raise SupervisorReplayError("manager_decision_status_invalid")
         manager_decision_digests.append(digest)
+        manager_decision_values.append(manager_decision_value)
     if manager_rows and (
         terminal_manager_rows + len(manager_refusal_digests) != 1
         or sorted(observed_capability_digests) != sorted(capability_digests)
@@ -963,6 +966,23 @@ def replay_supervisor_run(
         targeted_recapture_receipt=kernel_inputs.get("targeted_recapture_receipt"),
         recapture_reinspection=kernel_inputs.get("recapture_reinspection"),
     )
+    replayed_capability_results = [CapabilityResult.from_mapping(row) for row in capability_values]
+    capability_result_by_digest = {result.digest: result for result in replayed_capability_results}
+    for expected_step, manager_decision_value in enumerate(manager_decision_values):
+        observed_digests = manager_decision_value["observed_capability_result_digests"]
+        try:
+            completed_results = [capability_result_by_digest[digest] for digest in observed_digests]
+        except KeyError as exc:
+            raise SupervisorReplayError("manager_observed_result_unknown") from exc
+        try:
+            validate_manager_decision(
+                manager_decision_value,
+                context=replay_context,
+                completed_results=completed_results,
+                step_index=expected_step,
+            )
+        except SupervisorManagerError as exc:
+            raise SupervisorReplayError("manager_eligibility_mismatch") from exc
     rebuilt_customer_report = deterministic_customer_report(
         context=replay_context,
         capability_results=capability_values,

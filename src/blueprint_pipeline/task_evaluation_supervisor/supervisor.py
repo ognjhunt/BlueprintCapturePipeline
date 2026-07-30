@@ -54,6 +54,7 @@ from .ledger import AppendOnlyEventLedger
 from .inference_reservations import InferenceReservationAudit
 from .manager import (
     OpenAIAgentsSDKSupervisorManager,
+    validate_manager_decision,
 )
 from .phase2_artifacts import (
     deterministic_customer_report,
@@ -650,6 +651,12 @@ class TaskEvaluationSupervisor:
                 if not decision_path.is_file() or not manager_invocation_path.is_file():
                     raise ValueError("supervisor_resume_manager_artifact_missing")
                 decision = dict(read_json(decision_path))
+                decision = validate_manager_decision(
+                    decision,
+                    context=capability_context,
+                    completed_results=results,
+                    step_index=manager_step,
+                )
                 decision_digest = canonical_digest(
                     decision,
                     digest_field="supervisor_manager_decision_digest",
@@ -843,6 +850,12 @@ class TaskEvaluationSupervisor:
                             manager_terminal_reason = "blocked"
                             break
                         decision_value = dict(manager_decision.value)
+                        decision_value = validate_manager_decision(
+                            decision_value,
+                            context=capability_context,
+                            completed_results=results,
+                            step_index=manager_step,
+                        )
                         manager_cost = (
                             float(manager_decision.invocation.cost_usd)
                             if isinstance(

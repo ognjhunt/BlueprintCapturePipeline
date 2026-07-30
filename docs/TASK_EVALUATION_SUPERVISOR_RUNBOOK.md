@@ -328,6 +328,13 @@ authority inputs, and canonical plan inventory. Tool observations may reference
 only artifact types declared by that exact registered tool version; unknown
 agent-defined artifact types fail closed.
 
+Manager decisions pass one deterministic eligibility validator during live
+execution, interrupted-run resume, and replay. At every step Blueprint
+recomputes the observed result set, eligible next specialists, and eligible
+terminal reasons from the recorded context and completed capability artifacts.
+The manager may select from that menu, but cannot expand or rewrite it by
+returning a self-consistently hashed decision.
+
 The customer report has its own exact-schema validator at creation and replay.
 It rejects unknown fields, non-finite or negative spend, inconsistent
 decision/partial/abstention flags, agent-authoritative output, proof mutation,

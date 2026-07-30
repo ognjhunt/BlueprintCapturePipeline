@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import (
     AgentsSDKInvocationResult,
     OpenAIAgentsSDKConfig,
@@ -18,6 +19,7 @@ from blueprint_pipeline.task_evaluation_supervisor.manager import (
     OpenAIAgentsSDKSupervisorManager,
     SUPERVISOR_MANAGER_CAPABILITY_ID,
     SupervisorManagerError,
+    validate_manager_decision,
 )
 
 
@@ -115,13 +117,25 @@ def test_manager_agent_selects_first_specialist_then_replans_from_result() -> No
     assert second.value["next_capability"] == "capture_testbed_supervisor"
     assert second.value["observed_capability_result_digests"] == [claim.digest]
     assert all(
-        call["spec"].capability == SUPERVISOR_MANAGER_CAPABILITY_ID
-        for call in invoker.calls
+        call["spec"].capability == SUPERVISOR_MANAGER_CAPABILITY_ID for call in invoker.calls
     )
     assert all(
-        call["spec"].output_type is AgentsSDKSupervisorManagerOutput
-        for call in invoker.calls
+        call["spec"].output_type is AgentsSDKSupervisorManagerOutput for call in invoker.calls
     )
+
+    forged_menu = dict(first.value)
+    forged_menu["eligible_next_capabilities"] = ["post_run_diagnostician"]
+    forged_menu["supervisor_manager_decision_digest"] = canonical_digest(
+        forged_menu,
+        digest_field="supervisor_manager_decision_digest",
+    )
+    with pytest.raises(SupervisorManagerError, match="eligible_capabilities_mismatch"):
+        validate_manager_decision(
+            forged_menu,
+            context=context,
+            completed_results=[],
+            step_index=0,
+        )
 
 
 def test_manager_rejects_unavailable_or_repeated_specialist() -> None:
@@ -231,9 +245,7 @@ def test_manager_requires_post_run_diagnosis_before_terminal_decision() -> None:
                 "next_capability": None,
                 "terminal_reason": "decision_ready",
                 "rationale": "A deterministic decision exists.",
-                "observed_capability_result_digests": sorted(
-                    [claim.digest, capture.digest]
-                ),
+                "observed_capability_result_digests": sorted([claim.digest, capture.digest]),
                 "uncertainty": "not_a_proof_signal",
             }
         ]
