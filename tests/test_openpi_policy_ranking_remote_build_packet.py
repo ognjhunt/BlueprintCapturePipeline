@@ -200,6 +200,12 @@ def test_ctrl_world_oscar_variant_binds_three_runtime_dockerfile(tmp_path: Path)
     assert "--index-strategy unsafe-best-match" in text
     assert "uv pip check --python /opt/oscar-venv/bin/python" in text
     assert "/opt/oscar-venv/bin/python -m pip" not in text
+    assert "PYTHONPATH=/opt/blueprint-current/src:/opt/OSCAR" in text
+    assert (
+        "uv pip install --python /opt/oscar-venv/bin/python --no-deps "
+        "-e /opt/blueprint-current"
+        not in text
+    )
     assert "oscar_site_packages" not in text
     assert "import torch, cv2, loguru" in text
     assert "token=False" in text

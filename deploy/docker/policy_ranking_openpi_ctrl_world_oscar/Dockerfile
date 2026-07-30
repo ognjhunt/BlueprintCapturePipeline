@@ -38,7 +38,7 @@ ENV BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
     TRANSFORMERS_OFFLINE=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     TOKENIZERS_PARALLELISM=false \
-    PYTHONPATH=/opt/OSCAR \
+    PYTHONPATH=/opt/blueprint-current/src:/opt/OSCAR \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTORCH_ALLOC_CONF=expandable_segments:True \
     XLA_PYTHON_CLIENT_PREALLOCATE=false
@@ -79,7 +79,6 @@ RUN export UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 \
       --extra-index-url https://pypi.org/simple \
       --index-strategy unsafe-best-match \
       -r /opt/oscar-runtime/requirements_oscar_foundation.lock \
-    && uv pip install --python /opt/oscar-venv/bin/python --no-deps -e /opt/blueprint-current \
     && /opt/oscar-venv/bin/python -c "from pathlib import Path; from blueprint_pipeline.oscar_wam_gpu_image import transformer_engine_shim_script_text; Path('/tmp/oscar_te_shim.py').write_text(transformer_engine_shim_script_text(), encoding='utf-8')" \
     && /opt/oscar-venv/bin/python /tmp/oscar_te_shim.py /opt/OSCAR \
     && find /opt/OSCAR -type d -name __pycache__ -prune -exec rm -rf '{}' + \
