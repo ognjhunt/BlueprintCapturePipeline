@@ -7,6 +7,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+import blueprint_pipeline.decision_evidence_contracts as decision_contracts
 from blueprint_pipeline.decision_evidence_contracts import (
     DecisionEvidenceContractError,
     DecisionEvidenceRequest,
@@ -416,12 +417,19 @@ def test_legacy_pack_translation_requires_runtime_identity_and_emits_canonical_l
     assert validate_evaluation_run_spec(leaf)["status"] == "passed"
 
 
-def test_contracts_reject_secret_values_and_provider_selection() -> None:
+def test_contracts_reject_secret_values_before_digesting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     testbed = _testbed()
     request = _request(testbed)
     request.pop("request_digest")
     request["selected_provider"] = "provider-a"
     request["provenance"]["token"] = "secret-value"
+    monkeypatch.setattr(
+        decision_contracts,
+        "canonical_digest",
+        lambda *_args, **_kwargs: pytest.fail("secret-bearing artifact was digested"),
+    )
     with pytest.raises(DecisionEvidenceContractError) as excinfo:
         DecisionEvidenceRequest.from_mapping(request)
     assert "request_method_selection_forbidden:selected_provider" in excinfo.value.errors

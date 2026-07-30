@@ -145,7 +145,7 @@ def build_openai_api_candidate_admission(
         if isinstance(row, Mapping)
     ):
         blockers.append("openai_candidate_actions_not_authorized")
-    paid_provider_ids = sorted({str(provider_id) for _row in specs if str(provider_id).strip()})
+    paid_provider_ids = {provider_id} if specs and provider_id.strip() else set()
     if provider_id not in [str(row) for row in authorization.get("granted_provider_ids") or []]:
         blockers.append("openai_candidate_provider_not_authorized")
 

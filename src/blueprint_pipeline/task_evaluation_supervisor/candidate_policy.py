@@ -55,7 +55,8 @@ class CandidatePolicyRuntime(Protocol):
         *,
         evaluation_run_spec: Mapping[str, Any],
         output_dir: Path,
-    ) -> Mapping[str, Any]: ...
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError
 
 
 class CandidateCostAuthority(Protocol):
@@ -73,7 +74,8 @@ class CandidateCostAuthority(Protocol):
         candidate_evaluation_suite_digest: str,
         authorization_receipt_digest: str,
         max_cost_usd: float,
-    ) -> Mapping[str, Any]: ...
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError
 
     def settle(
         self,
@@ -81,7 +83,8 @@ class CandidateCostAuthority(Protocol):
         reservation: Mapping[str, Any],
         runtime_result: Mapping[str, Any] | None,
         runtime_exception_type: str | None,
-    ) -> Mapping[str, Any]: ...
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError
 
 
 class IndependentCandidateEvaluator(Protocol):
@@ -95,7 +98,8 @@ class IndependentCandidateEvaluator(Protocol):
         trace: Mapping[str, Any],
         hidden_evaluation_manifest: Mapping[str, Any],
         success_predicate_digest: str,
-    ) -> Mapping[str, Any]: ...
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError
 
 
 def _digest(value: Any, *, field: str) -> str:
