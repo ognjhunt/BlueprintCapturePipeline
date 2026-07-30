@@ -17,12 +17,14 @@ from blueprint_pipeline.openpi_current_reference_gpu_bundle import (
 )
 from blueprint_pipeline.openpi_policy_ranking_runpod import (
     EXECUTION_MODE_ENV,
+    EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY,
     GENERIC_OUTPUT_SECRET_URL_ENV,
     INPUT_SECRET_URL_ENV,
     INPUT_SHA256_ENV,
     OUTPUT_SECRET_PUT_URL_ENV,
     _build_vast_launch_request,
     _monitor_openpi_output_and_teardown,
+    _runtime_source_bootstrap_script,
     _validate_output_archive,
     build_openpi_policy_ranking_provider_request,
     run_openpi_policy_ranking_campaign,
@@ -364,6 +366,17 @@ def _current_reference_bundle(*, image_source_commit: str, runtime_commit: str):
         "bundle_sha256": "c" * 64,
         "manifest": manifest,
     }
+
+
+def test_current_reference_runtime_source_skips_only_frozen_gstack_symlinks() -> None:
+    script = _runtime_source_bootstrap_script(EXECUTION_MODE_CURRENT_REFERENCE_POLICY_CANARY)
+
+    assert '".agents/skills/gstack"' in script
+    assert '".claude/skills/gstack"' in script
+    assert "if member.issym():" in script
+    assert 'raise SystemExit("runtime_source_archive_symlink_not_allowlisted")' in script
+    assert "if member.islnk() or not (member.isdir() or member.isfile()):" in script
+    assert script.count("skipped_symlinks") == 2
 
 
 def test_openpi_request_shape_is_redacted_and_one_gpu(tmp_path: Path) -> None:

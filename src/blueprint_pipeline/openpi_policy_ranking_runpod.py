@@ -684,9 +684,21 @@ with tarfile.open(archive_path, "r:gz") as archive:
     roots = {pathlib.PurePosixPath(member.name).parts[0] for member in members}
     if len(roots) != 1 or not next(iter(roots)).endswith(commit):
         raise SystemExit("runtime_source_archive_root_invalid")
+    root_name = next(iter(roots))
+    skipped_symlinks = {
+        ".agents/skills/gstack",
+        ".claude/skills/gstack",
+    }
     for member in members:
         path = pathlib.PurePosixPath(member.name)
-        if path.is_absolute() or ".." in path.parts or not (member.isdir() or member.isfile()):
+        if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != root_name:
+            raise SystemExit("runtime_source_archive_member_unsafe")
+        relative = pathlib.PurePosixPath(*path.parts[1:]).as_posix()
+        if member.issym():
+            if relative not in skipped_symlinks:
+                raise SystemExit("runtime_source_archive_symlink_not_allowlisted")
+            continue
+        if member.islnk() or not (member.isdir() or member.isfile()):
             raise SystemExit("runtime_source_archive_member_unsafe")
         target = destination.joinpath(*path.parts)
         if member.isdir():

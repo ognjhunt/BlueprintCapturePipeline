@@ -18,6 +18,10 @@ code-only source overlay with the existing pinned OpenPI image. This is offline
 engineering admission, not live policy evidence. The observed launch race and
 private-image authentication gap are now encoded generically and frozen in
 Protocol Amendment 2; the failed evidence is preserved without overwrite.
+An offline audit of the replacement codeload archive then exposed two frozen
+repo-local gstack symlinks outside the runtime tree. Protocol Amendment 3 admits
+skipping only those exact members without extraction; every other link or
+special member remains terminal.
 
 The scientific admission state is:
 
@@ -100,6 +104,8 @@ used as blind confirmation.
 - `protocol_amendment_2_vast_stale_offer_and_private_image_v1.md` — observed
   no-allocation 410 race, private-image login repair, regression gates, and
   mandatory new immutable retry identity;
+- `protocol_amendment_3_runtime_source_symlink_handling_v1.md` — exact codeload
+  symlink audit and fail-closed, two-path skip rule without link extraction;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
