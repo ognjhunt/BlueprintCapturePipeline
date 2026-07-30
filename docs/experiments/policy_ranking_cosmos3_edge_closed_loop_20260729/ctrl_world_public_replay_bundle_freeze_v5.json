@@ -5,7 +5,7 @@
   "status": "local_bundle_frozen_exact_torch_retry_not_yet_admitted",
   "arm_id": "ctrl_world_public_replay_reduced_canary",
   "supersedes_bundle_sha256": "b616118c7ad5b54f98401fb60d3b4ec8d60acd036fc11d3a9568cc8821d4e6de",
-  "bundle_external_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/ctrl_world_public_replay_bundle_v5/ctrl_world_replay_provider_runtime_bundle.zip",
+  "bundle_external_path": "$BLUEPRINT_EXTERNAL_EVIDENCE_ROOT/ctrl_world_public_replay_bundle_v5/ctrl_world_replay_provider_runtime_bundle.zip",
   "bundle_sha256": "9d1133f481c5ba75386d8dfa35b1a70d4eca8f382242422cf263c9ed5df36070",
   "bundle_size_bytes": 2579230,
   "bundle_receipt_sha256": "e92a9c864f67640581a3ad312a5da78f8a865f2bc342afdfd65ad98f0a923400",

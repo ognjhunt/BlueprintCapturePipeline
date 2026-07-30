@@ -7,7 +7,7 @@
   "supersession_reason": "runtime result now preserves model execution truth independently from generated-only redaction success",
   "arm_id": "ctrl_world_public_replay_reduced_canary",
   "supersedes_bundle_sha256": "8e6037c5324d47235d8131088f8f083d08f0950fef89df78ba617b8e1eecae41",
-  "bundle_external_path": "/Users/nijelhunt_1/workspace/policy-ranking-cosmos3-edge-closed-loop-evidence-20260729/ctrl_world_public_replay_bundle_v2/ctrl_world_replay_provider_runtime_bundle.zip",
+  "bundle_external_path": "$BLUEPRINT_EXTERNAL_EVIDENCE_ROOT/ctrl_world_public_replay_bundle_v2/ctrl_world_replay_provider_runtime_bundle.zip",
   "bundle_sha256": "e7119d0f0916b48dbf60b2f81b71bc1927fedadcbf6c1754022043a40bbec733",
   "bundle_size_bytes": 2579178,
   "dependency_resolution_sha256": "c982d21932fdb015e09b9cc56234875130f19b0f6a69cb968a610a43f7714cd7",
