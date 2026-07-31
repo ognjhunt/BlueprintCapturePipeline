@@ -2,6 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/scripts/artifact_storage.sh"
+artifact_cache_root="$(blueprint_artifact_cache_root)"
 docker_dir="$repo_root/deploy/docker/robot_eval_worker/unitree_groot_sonic_wam"
 dockerfile="$docker_dir/Dockerfile"
 image_ref="${BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_WAM_IMAGE_REF:-}"
@@ -11,7 +13,7 @@ base_image="${BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_WAM_BASE_IMAGE:-docker.io/nij
 groot_ref="${BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_GROOT_SOURCE_REF:-e5749287857afd97b78f1147166137de29746392}"
 prefetch_checkpoint="${BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_PREFETCH_CHECKPOINT:-true}"
 hf_token_file="${BLUEPRINT_UNITREE_GROOT_N17_SONIC_HF_TOKEN_FILE:-${HF_TOKEN_FILE:-$HOME/.blueprint-secrets/hf_token}}"
-manifest_output="${BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_WAM_IMAGE_MANIFEST_OUTPUT:-$repo_root/output/unitree_groot_sonic_wam_image_manifest.json}"
+manifest_output="${BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_WAM_IMAGE_MANIFEST_OUTPUT:-$artifact_cache_root/unitree_groot_sonic_wam_image_manifest.json}"
 min_free_gib="${BLUEPRINT_RUNPOD_UNITREE_GROOT_SONIC_MIN_FREE_GIB:-80}"
 disk_check_enabled="true"
 disk_check_free_kib=""

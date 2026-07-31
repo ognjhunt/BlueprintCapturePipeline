@@ -1838,11 +1838,14 @@ def build_json_report(
 
 
 def default_output_roots() -> list[Path]:
-    repo_root = Path(__file__).resolve().parents[1]
-    roots: list[Path] = []
-    for candidate in (repo_root / "output", Path.cwd() / "output"):
-        if candidate not in roots:
-            roots.append(candidate)
+    from blueprint_pipeline.artifact_storage import default_artifact_cache_root, repo_output_root
+
+    roots: list[Path] = [default_artifact_cache_root()]
+    if os.environ.get("BLUEPRINT_ALLOW_REPO_OUTPUT", "").strip().lower() in {"1", "true", "yes"}:
+        repo_root = Path(__file__).resolve().parents[1]
+        for candidate in (repo_output_root(repo_root), Path.cwd() / "output"):
+            if candidate not in roots:
+                roots.append(candidate)
     return roots
 
 

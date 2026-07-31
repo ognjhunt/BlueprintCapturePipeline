@@ -15,6 +15,7 @@ from defusedxml import ElementTree as ET
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .artifact_storage import default_artifact_cache_root
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .object_index_artifacts import resolve_current_object_index_artifacts
 
@@ -660,7 +661,10 @@ def _resolve_g1_model_root(
         explicit_root,
         os.environ.get("BLUEPRINT_MUJOCO_G1_MODEL_ROOT"),
         Path("/opt/blueprint/assets/mujoco_menagerie/unitree_g1"),
-        repo_root / "output" / "external_assets" / "mujoco_menagerie" / "unitree_g1",
+        default_artifact_cache_root()
+        / "external_assets"
+        / "mujoco_menagerie"
+        / "unitree_g1",
         Path.cwd() / "output" / "external_assets" / "mujoco_menagerie" / "unitree_g1",
         capture_root
         / "pipeline"

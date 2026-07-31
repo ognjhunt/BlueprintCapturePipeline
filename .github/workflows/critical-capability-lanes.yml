@@ -71,7 +71,7 @@ jobs:
           PUBSUB_EMULATOR_HOST: ${{ vars.BLUEPRINT_PUBSUB_EMULATOR_HOST }}
         run: |
           uv run python scripts/run_pubsub_emulator_integration.py \
-            --output output/ci/critical-lanes/pubsub_emulator_integration.json
+            --output "${{ runner.temp }}/blueprint-ci/critical-lanes/pubsub_emulator_integration.json"
 
       - name: Upload emulator evidence
         if: always()
@@ -79,8 +79,8 @@ jobs:
         with:
           name: pubsub-emulator-integration-${{ github.sha }}
           path: |
-            output/ci/critical-lanes/pubsub_emulator_integration.json
-            output/ci/critical-lanes/pubsub_emulator_round_trip_source.json
+            ${{ runner.temp }}/blueprint-ci/critical-lanes/pubsub_emulator_integration.json
+            ${{ runner.temp }}/blueprint-ci/critical-lanes/pubsub_emulator_round_trip_source.json
           if-no-files-found: error
           retention-days: 90
 
@@ -111,7 +111,7 @@ jobs:
           test -n "${NATIVE_LEROBOT_EXPORT_DIR}"
           uv run python scripts/run_native_lerobot_export_probe.py \
             --export-dir "${NATIVE_LEROBOT_EXPORT_DIR}" \
-            --output output/ci/critical-lanes/native_lerobot_export.json
+            --output "${{ runner.temp }}/blueprint-ci/critical-lanes/native_lerobot_export.json"
 
       - name: Upload native LeRobot evidence
         if: always()
@@ -119,8 +119,8 @@ jobs:
         with:
           name: native-lerobot-export-${{ github.sha }}
           path: |
-            output/ci/critical-lanes/native_lerobot_export.json
-            output/ci/critical-lanes/native_lerobot_export_source_manifest.json
+            ${{ runner.temp }}/blueprint-ci/critical-lanes/native_lerobot_export.json
+            ${{ runner.temp }}/blueprint-ci/critical-lanes/native_lerobot_export_source_manifest.json
           if-no-files-found: error
           retention-days: 90
 
@@ -163,7 +163,7 @@ jobs:
             --hard-cap-usd "${GPU_HARD_CAP_USD}" \
             --max-live-minutes "${GPU_MAX_LIVE_MINUTES}" \
             --startup-timeout-seconds "${GPU_STARTUP_TIMEOUT_SECONDS}" \
-            --output output/ci/critical-lanes/gpu-provider-canary-preflight.json
+            --output "${{ runner.temp }}/blueprint-ci/critical-lanes/gpu-provider-canary-preflight.json"
 
       - name: Execute bounded Unitree GR00T SONIC Vast image canary
         env:
@@ -177,7 +177,7 @@ jobs:
           GPU_STARTUP_TIMEOUT_SECONDS: ${{ inputs.gpu_startup_timeout_seconds }}
         run: |
           uv run python -m blueprint_pipeline.unitree_groot_n17_sonic_vast_image_canary \
-            --job-dir output/ci/critical-lanes/gpu-canary-run \
+            --job-dir "${{ runner.temp }}/blueprint-ci/critical-lanes/gpu-canary-run" \
             --public-image "${GPU_IMAGE_URI}" \
             --min-gpu-ram-mb 48000 \
             --max-hourly-rate "${GPU_MAX_HOURLY_RATE}" \
@@ -200,9 +200,9 @@ jobs:
           GPU_STARTUP_TIMEOUT_SECONDS: ${{ inputs.gpu_startup_timeout_seconds }}
         run: |
           uv run python scripts/build_gpu_provider_canary_evidence.py convert \
-            --result output/ci/critical-lanes/gpu-canary-run/vast_unitree_groot_sonic_image_canary_result.json \
-            --job-dir output/ci/critical-lanes/gpu-canary-run \
-            --evidence-dir output/ci/critical-lanes/gpu-canary-evidence \
+            --result "${{ runner.temp }}/blueprint-ci/critical-lanes/gpu-canary-run/vast_unitree_groot_sonic_image_canary_result.json" \
+            --job-dir "${{ runner.temp }}/blueprint-ci/critical-lanes/gpu-canary-run" \
+            --evidence-dir "${{ runner.temp }}/blueprint-ci/critical-lanes/gpu-canary-evidence" \
             --image-uri "${GPU_IMAGE_URI}" \
             --approved-image-uri "${APPROVED_GPU_IMAGE_URI}" \
             --repository-sha '${{ github.sha }}' \
@@ -211,7 +211,7 @@ jobs:
             --hard-cap-usd "${GPU_HARD_CAP_USD}" \
             --max-live-minutes "${GPU_MAX_LIVE_MINUTES}" \
             --startup-timeout-seconds "${GPU_STARTUP_TIMEOUT_SECONDS}" \
-            --output output/ci/critical-lanes/gpu-canary-evidence/gpu_provider_canary.json
+            --output "${{ runner.temp }}/blueprint-ci/critical-lanes/gpu-canary-evidence/gpu_provider_canary.json"
 
       - name: Upload GPU-canary gate evidence
         if: always()
@@ -219,7 +219,7 @@ jobs:
         with:
           name: gpu-provider-canary-${{ github.sha }}
           path: |
-            output/ci/critical-lanes/gpu-provider-canary-preflight.json
-            output/ci/critical-lanes/gpu-canary-evidence
+            ${{ runner.temp }}/blueprint-ci/critical-lanes/gpu-provider-canary-preflight.json
+            ${{ runner.temp }}/blueprint-ci/critical-lanes/gpu-canary-evidence
           if-no-files-found: error
           retention-days: 90

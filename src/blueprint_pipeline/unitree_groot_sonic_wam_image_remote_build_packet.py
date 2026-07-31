@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .common import ensure_dir, write_json
+from .artifact_storage import default_artifact_cache_root
 
 
 SCHEMA_VERSION = "unitree_groot_sonic_wam_remote_build_packet.v1"
@@ -340,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--output-dir",
-        default="output/unitree_groot_sonic_wam_remote_build_packet",
+        default=str(default_artifact_cache_root() / "unitree_groot_sonic_wam_remote_build_packet"),
     )
     parser.add_argument("--image-ref", default=DEFAULT_IMAGE_REF)
     parser.add_argument("--source-dir", default=str(DEFAULT_SOURCE_DIR))

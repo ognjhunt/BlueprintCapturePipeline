@@ -24,6 +24,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from defusedxml import ElementTree as DefusedET
 
+from .artifact_storage import default_artifact_cache_root
 from .common import ensure_dir, read_json, utc_now_iso, write_json
 from .episode_spec import build_episode_specs
 from .local_capture import resolve_local_capture_context
@@ -1184,7 +1185,13 @@ def _resolve_unitree_g1_mjcf_path(value: str | Path | None = None) -> Path | Non
     model_root = os.environ.get("BLUEPRINT_MUJOCO_G1_MODEL_ROOT")
     if model_root:
         candidates.append(Path(model_root) / "g1.xml")
-    candidates.append(_repo_root() / "output" / "external_assets" / "mujoco_menagerie" / "unitree_g1" / "g1.xml")
+    candidates.append(
+        default_artifact_cache_root()
+        / "external_assets"
+        / "mujoco_menagerie"
+        / "unitree_g1"
+        / "g1.xml"
+    )
     for candidate in candidates:
         resolved = candidate.expanduser()
         if not resolved.is_absolute():

@@ -27,6 +27,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/scripts/artifact_storage.sh"
+artifact_cache_root="$(blueprint_artifact_cache_root)"
 
 # Hermetic dry run: emit the snapshot layer plan (from the tested module).
 if [[ "${1:-}" == "--print-plan" ]]; then
@@ -40,7 +42,7 @@ base_image="${BLUEPRINT_GROOT_OSCAR_SNAPSHOT_BASE_IMAGE:-}"
 image_ref="${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF:-}"
 docker_pat_file="${BLUEPRINT_DOCKER_PAT_FILE:-$HOME/.blueprint-secrets/docker_pat}"
 docker_user="${BLUEPRINT_DOCKER_USERNAME:-$(cat "$HOME/.blueprint-secrets/docker_username" 2>/dev/null || echo nijelhunt)}"
-manifest_output="${BLUEPRINT_GROOT_OSCAR_SNAPSHOT_MANIFEST_OUTPUT:-$repo_root/output/groot_oscar_snapshot_manifest.json}"
+manifest_output="${BLUEPRINT_GROOT_OSCAR_SNAPSHOT_MANIFEST_OUTPUT:-$artifact_cache_root/groot_oscar_snapshot_manifest.json}"
 trim_torch="${BLUEPRINT_GROOT_OSCAR_SNAPSHOT_TRIM_TORCH:-false}"
 
 die() { echo "snapshot blocked: $*" >&2; exit 2; }

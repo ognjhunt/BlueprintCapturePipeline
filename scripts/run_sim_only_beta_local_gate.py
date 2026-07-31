@@ -30,6 +30,10 @@ SRC_ROOT = ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from blueprint_pipeline.artifact_storage import (  # noqa: E402
+    default_artifact_cache_root,
+    default_evidence_root,
+)
 from blueprint_pipeline.common import ensure_dir, read_json_any, utc_now_iso, write_json  # noqa: E402
 from blueprint_pipeline.source_metadata import git_source_metadata  # noqa: E402
 
@@ -64,7 +68,7 @@ def _default_mujoco_g1_root(capture_root: Path | None = None) -> Path:
         )
         if (capture_scoped / "g1.xml").is_file():
             return capture_scoped
-    return _repo_root() / "output" / "external_assets" / "mujoco_menagerie" / "unitree_g1"
+    return default_artifact_cache_root() / "external_assets" / "mujoco_menagerie" / "unitree_g1"
 
 
 def _committed_fixture_capture_root() -> Path:
@@ -82,7 +86,7 @@ def _committed_fixture_capture_root() -> Path:
 
 
 def _default_fixture_work_root() -> Path:
-    return _repo_root() / "output" / "sim_only_beta_local_gate_fixture"
+    return default_artifact_cache_root() / "sim_only_beta_local_gate_fixture"
 
 
 def _default_fixture_work_capture_root(work_root: Path) -> Path:
@@ -899,7 +903,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as exc:
             report_path = (
                 args.output_path
-                or _repo_root() / "output" / "sim_only_beta_local_gate_report.json"
+                or default_evidence_root() / "sim_only_beta_local_gate_report.json"
             ).resolve()
             report = _blocked_gate_report(
                 capture_root=None,

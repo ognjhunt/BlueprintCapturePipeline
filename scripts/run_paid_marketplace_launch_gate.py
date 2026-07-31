@@ -19,6 +19,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from blueprint_pipeline.common import write_json, write_text  # noqa: E402
+from blueprint_pipeline.artifact_storage import default_evidence_root  # noqa: E402
 from blueprint_pipeline.release_evidence_graph import (  # noqa: E402
     evaluate_release_evidence_graph,
 )
@@ -1041,7 +1042,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     release_evidence_dir = (
         Path(args.release_evidence_dir).expanduser()
         if args.release_evidence_dir
-        else pipeline_repo / "output" / "release_evidence"
+        else default_evidence_root() / "release_evidence"
     )
     release_evidence_graph = evaluate_release_evidence_graph(
         scope="PAID",
@@ -1072,8 +1073,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     report["overall_status"] = overall_status
     report["closeout_summary"] = closeout_summary(report)
 
-    json_out = Path(args.json_out).expanduser() if args.json_out else pipeline_repo / "output" / "paid_marketplace_launch_gate.json"
-    markdown_out = Path(args.markdown_out).expanduser() if args.markdown_out else pipeline_repo / "output" / "paid_marketplace_launch_gate.md"
+    json_out = Path(args.json_out).expanduser() if args.json_out else default_evidence_root() / "paid_marketplace_launch_gate.json"
+    markdown_out = Path(args.markdown_out).expanduser() if args.markdown_out else default_evidence_root() / "paid_marketplace_launch_gate.md"
     json_out.parent.mkdir(parents=True, exist_ok=True)
     markdown_out.parent.mkdir(parents=True, exist_ok=True)
 

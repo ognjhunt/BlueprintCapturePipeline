@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 from PIL import Image, ImageDraw, ImageFont
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .artifact_storage import default_artifact_cache_root
 from .wam_derived_observation_harness import (
     run_wam_derived_observation_harness_step,
     summarize_wam_derived_observation_artifacts,
@@ -51,21 +52,22 @@ def _sequence(value: Any) -> list[Any]:
 
 def _default_output_dir() -> Path:
     stamp = utc_now_iso().replace(":", "").replace("-", "").split(".")[0]
-    return Path("robot_eval_jobs") / f"{DEFAULT_JOB_PREFIX}_{stamp}Z"
+    return default_artifact_cache_root() / "robot_eval_jobs" / f"{DEFAULT_JOB_PREFIX}_{stamp}Z"
 
 
 def _discover_generated_frame() -> Path | None:
     patterns = (
-        "robot_eval_jobs/gpt_image2*/**/generated_rollout_frame_review/frames/*.jpg",
-        "robot_eval_jobs/gpt_image2*/**/*.jpg",
-        "robot_eval_jobs/**/generated_rollout_frame_review/frames/*.jpg",
-        "robot_eval_jobs/**/generated_rollout_frame_review/frames/*.png",
-        "robot_eval_jobs/**/robot_policy_wam_closed_loop/**/*frame*.jpg",
-        "robot_eval_jobs/**/robot_policy_wam_closed_loop/**/*frame*.png",
+        "gpt_image2*/**/generated_rollout_frame_review/frames/*.jpg",
+        "gpt_image2*/**/*.jpg",
+        "**/generated_rollout_frame_review/frames/*.jpg",
+        "**/generated_rollout_frame_review/frames/*.png",
+        "**/robot_policy_wam_closed_loop/**/*frame*.jpg",
+        "**/robot_policy_wam_closed_loop/**/*frame*.png",
     )
     candidates: list[Path] = []
+    search_root = default_artifact_cache_root() / "robot_eval_jobs"
     for pattern in patterns:
-        candidates.extend(Path(".").glob(pattern))
+        candidates.extend(search_root.glob(pattern))
     existing = [path for path in candidates if path.is_file()]
     if not existing:
         return None

@@ -17,6 +17,7 @@ if str(SRC_ROOT) not in sys.path:
 from blueprint_pipeline.site_reference_fixture import (  # noqa: E402
     build_site_reference_database_v1_fixture,
 )
+from blueprint_pipeline.artifact_storage import default_artifact_cache_root  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--output-root",
-        default="output/site-reference-database-v1-fixture",
+        default=str(default_artifact_cache_root() / "site-reference-database-v1-fixture"),
         help="Directory where the fixture source bundle and local storage tree will be rebuilt.",
     )
     parser.add_argument(
