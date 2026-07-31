@@ -1,7 +1,6 @@
 {
   "schema_version": "blueprint.shared_doctrine_lock.v1",
-  "status": "unreconciled",
-  "status_note": "The tracked blocks do not currently agree across repos. Each repo is frozen at its own recorded baseline so no new variant can appear while reconciliation is pending. Flip status to 'locked' and populate canonical_sha256 once the repos are converged.",
+  "status": "locked",
   "reconciliation_reference": "BlueprintCapturePipeline docs/doctrine-shared-block-divergence-2026-07-31.md",
   "measured_at": "2026-07-31",
   "extraction": {
@@ -16,30 +15,16 @@
   "blocks": {
     "SHARED_PLATFORM_CONTEXT": {
       "file": "PLATFORM_CONTEXT.md",
-      "canonical_sha256": null,
-      "observed_sha256": {
-        "BlueprintCapture": null,
-        "BlueprintCapturePipeline": "4b698feb2981cc6c11db939724077e28616674bbc866775b40891fe87e5affa1",
-        "Blueprint-WebApp": "1a104d0898cf52a9d641b26ede65738933fdeef70fd0ab7e537d0d2d442ab7fa"
-      }
+      "canonical_sha256": "b152feafcc47e3d94feaa4c53ef330a5dadede76e9333de9c4b05cc03cf38470"
     },
     "SHARED_VISION": {
       "file": "VISION.md",
-      "canonical_sha256": null,
-      "observed_sha256": {
-        "BlueprintCapture": null,
-        "BlueprintCapturePipeline": "1352aa9a4f576245778b023686f5bad9f1ea38529a5d51009bf2e9167b69a0eb",
-        "Blueprint-WebApp": "f78264d52a3701241d0e2a6dbc1ee24f706b34adb443e82ee0c3326fb279c43a"
-      }
+      "canonical_sha256": "609e936f330d3403d5713c76ddc9d87829387bc3cb80677ef54e7e0008879474"
     },
     "SHARED_WORLD_MODEL_STRATEGY": {
       "file": "WORLD_MODEL_STRATEGY_CONTEXT.md",
-      "canonical_sha256": null,
-      "observed_sha256": {
-        "BlueprintCapture": null,
-        "BlueprintCapturePipeline": "3eee5608d9d52fe9022ad4bec48a0975fe979147158654f3185b11b5c62ed4be",
-        "Blueprint-WebApp": "582deff66c363b1195d5ef50f9dcab68413995c9d0579fb36c2b25e283033be8"
-      }
+      "canonical_sha256": "da28f40a957e6f70d48e447c7b6b7365c219f2836301e00afda0473becfa33e0"
     }
-  }
+  },
+  "canonical_source": "BlueprintCapturePipeline doctrine/"
 }

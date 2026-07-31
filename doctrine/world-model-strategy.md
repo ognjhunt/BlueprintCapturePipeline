@@ -1,6 +1,3 @@
-# World Model Strategy Context
-
-<!-- SHARED_WORLD_MODEL_STRATEGY_START -->
 ## Strategic Doctrine
 
 Blueprint should assume world models, simulators, providers, checkpoints, and
@@ -279,4 +276,3 @@ default toward reusable capture, contract, testbed, evidence, and product
 infrastructure. Adopt model-specific work only when it materially improves a
 qualified claim path or near-term user-visible value without increasing
 long-term coupling or overstating evidence.
-<!-- SHARED_WORLD_MODEL_STRATEGY_END -->

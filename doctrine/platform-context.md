@@ -1,6 +1,3 @@
-# Platform Context
-
-<!-- SHARED_PLATFORM_CONTEXT_START -->
 ## Shared Platform Doctrine
 
 ### System Framing
@@ -219,4 +216,3 @@ Do not treat qualification/readiness as the universal center of the company.
 Do not overstate world-model quality beyond what capture, privacy, and runtime
 artifacts support.
 Do not move scientific routing or scoring into WebApp.
-<!-- SHARED_PLATFORM_CONTEXT_END -->
