@@ -66,6 +66,9 @@ jobs:
       - name: Lint public scientific claims
         run: python3 scripts/lint_public_scientific_claims.py
 
+      - name: Verify shared doctrine blocks match the cross-repo lock
+        run: python3 scripts/verify_shared_doctrine.py
+
       - name: Install dependencies
         run: |
           uv lock --check
