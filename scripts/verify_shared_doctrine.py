@@ -19,6 +19,12 @@ agree byte for byte:
   * take the lines strictly between them, join with "\\n", append one "\\n"
   * hash the UTF-8 bytes of that string with SHA-256
 
+Newlines are normalized (CRLF and lone CR to LF) before splitting, so the digest
+is identical on a CRLF checkout. Splitting explicitly on LF is deliberate:
+`str.splitlines()` also breaks on vertical tab, form feed, and the Unicode line
+separators, which JavaScript's `split("\\n")` does not, so the two
+implementations could otherwise disagree on a document containing one.
+
 Exit status is 0 only when every tracked block matches.
 """
 
@@ -43,6 +49,12 @@ class DoctrineVerificationError(RuntimeError):
     """Raised when a block cannot be extracted or does not match the lock."""
 
 
+def normalize_newlines(text: str) -> str:
+    """Fold CRLF and lone CR to LF so a CRLF checkout hashes identically."""
+
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def extract_block(text: str, block: str) -> str:
     """Return the exact shared-block body between its markers.
 
@@ -52,7 +64,7 @@ def extract_block(text: str, block: str) -> str:
 
     start_marker = f"<!-- {block}_START -->"
     end_marker = f"<!-- {block}_END -->"
-    lines = text.splitlines()
+    lines = normalize_newlines(text).split("\n")
 
     start_hits = [i for i, line in enumerate(lines) if start_marker in line]
     end_hits = [i for i, line in enumerate(lines) if end_marker in line]

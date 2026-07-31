@@ -75,6 +75,34 @@ def test_malformed_markers_fail_closed(text: str) -> None:
         extract_block(text, "X")
 
 
+def test_crlf_and_cr_hash_identically_to_lf() -> None:
+    """A CRLF checkout must produce the committed LF baseline digest.
+
+    No .gitattributes rule pins these Markdown files to LF, so without folding
+    line endings a Windows checkout would fail the gate on unmodified content.
+    """
+
+    lf = "<!-- X_START -->\na\n\nb\n<!-- X_END -->\n"
+    digests = {
+        digest_block(extract_block(text, "X"))
+        for text in (lf, lf.replace("\n", "\r\n"), lf.replace("\n", "\r"))
+    }
+    assert len(digests) == 1
+
+
+@pytest.mark.parametrize("separator", ["\x0b", "\x0c", " ", " ", "\x85"])
+def test_unicode_line_boundaries_are_not_treated_as_line_breaks(separator: str) -> None:
+    """Parity guard against `str.splitlines()`.
+
+    `splitlines()` breaks on these characters but JavaScript's `split("\\n")`
+    does not, so using it here would make the Python and TypeScript verifiers
+    disagree on any document containing one.
+    """
+
+    body = extract_block(f"<!-- X_START -->\na{separator}b\n<!-- X_END -->\n", "X")
+    assert body == f"a{separator}b\n"
+
+
 def test_digest_is_stable_for_identical_bodies() -> None:
     a = extract_block("<!-- X_START -->\nsame\n<!-- X_END -->\n", "X")
     b = extract_block("head\n<!-- X_START -->\nsame\n<!-- X_END -->\ntail\n", "X")
