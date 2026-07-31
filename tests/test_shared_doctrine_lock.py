@@ -1,0 +1,121 @@
+"""Fast-lane contract tests for the cross-repo shared doctrine lock.
+
+These run in the hermetic pre-push lane so a doctrine block cannot drift from
+the committed lock without a merge-blocking failure, with no sibling checkout
+and no network required.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from scripts.verify_shared_doctrine import (  # type: ignore[import-not-found]
+    LOCK_RELATIVE_PATH,
+    LOCK_SCHEMA_VERSION,
+    REPO_NAME,
+    DoctrineVerificationError,
+    digest_block,
+    extract_block,
+    load_lock,
+    verify,
+)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_every_tracked_block_matches_the_lock() -> None:
+    results = verify(REPO_ROOT)
+    assert results, "lock declares no blocks"
+    assert all(row["matched"] for row in results)
+
+
+def test_lock_is_wellformed_and_covers_this_repo() -> None:
+    lock = load_lock(REPO_ROOT)
+    assert lock["schema_version"] == LOCK_SCHEMA_VERSION
+    for block_name, entry in lock["blocks"].items():
+        assert (REPO_ROOT / entry["file"]).is_file(), f"{block_name}: missing source"
+        if lock["status"] == "locked":
+            assert entry["canonical_sha256"], f"{block_name}: locked without canonical digest"
+        else:
+            assert entry["observed_sha256"].get(REPO_NAME), (
+                f"{block_name}: no baseline recorded for {REPO_NAME}"
+            )
+
+
+def test_lock_lists_this_repo_in_the_repo_set() -> None:
+    assert REPO_NAME in load_lock(REPO_ROOT)["repos"]
+
+
+def test_extraction_is_exclusive_of_marker_lines() -> None:
+    text = "before\n<!-- X_START -->\nbody line\n<!-- X_END -->\nafter\n"
+    assert extract_block(text, "X") == "body line\n"
+
+
+def test_extraction_preserves_interior_blank_lines() -> None:
+    text = "<!-- X_START -->\na\n\nb\n<!-- X_END -->\n"
+    assert extract_block(text, "X") == "a\n\nb\n"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "no markers at all\n",
+        "<!-- X_START -->\nbody\n",
+        "<!-- X_END -->\nbody\n",
+        "<!-- X_END -->\nbody\n<!-- X_START -->\n",
+        "<!-- X_START -->\na\n<!-- X_START -->\nb\n<!-- X_END -->\n",
+    ],
+)
+def test_malformed_markers_fail_closed(text: str) -> None:
+    with pytest.raises(DoctrineVerificationError):
+        extract_block(text, "X")
+
+
+def test_digest_is_stable_for_identical_bodies() -> None:
+    a = extract_block("<!-- X_START -->\nsame\n<!-- X_END -->\n", "X")
+    b = extract_block("head\n<!-- X_START -->\nsame\n<!-- X_END -->\ntail\n", "X")
+    assert digest_block(a) == digest_block(b)
+
+
+def test_missing_repo_baseline_fails_closed(tmp_path: Path) -> None:
+    lock = json.loads((REPO_ROOT / LOCK_RELATIVE_PATH).read_text(encoding="utf-8"))
+    for entry in lock["blocks"].values():
+        entry["observed_sha256"][REPO_NAME] = None
+    _stage_repo(tmp_path, lock)
+    with pytest.raises(DoctrineVerificationError, match="no baseline recorded"):
+        verify(tmp_path)
+
+
+def test_locked_status_without_canonical_digest_fails_closed(tmp_path: Path) -> None:
+    lock = json.loads((REPO_ROOT / LOCK_RELATIVE_PATH).read_text(encoding="utf-8"))
+    lock["status"] = "locked"
+    _stage_repo(tmp_path, lock)
+    with pytest.raises(DoctrineVerificationError, match="canonical_sha256 is absent"):
+        verify(tmp_path)
+
+
+def test_unknown_lock_schema_version_fails_closed(tmp_path: Path) -> None:
+    lock = json.loads((REPO_ROOT / LOCK_RELATIVE_PATH).read_text(encoding="utf-8"))
+    lock["schema_version"] = "blueprint.shared_doctrine_lock.v999"
+    _stage_repo(tmp_path, lock)
+    with pytest.raises(DoctrineVerificationError, match="unsupported lock schema_version"):
+        verify(tmp_path)
+
+
+def test_missing_lock_fails_closed(tmp_path: Path) -> None:
+    with pytest.raises(DoctrineVerificationError, match="missing lock file"):
+        verify(tmp_path)
+
+
+def _stage_repo(root: Path, lock: dict) -> None:
+    """Write a throwaway repo root carrying the real blocks and a mutated lock."""
+
+    (root / "contracts").mkdir(parents=True, exist_ok=True)
+    (root / LOCK_RELATIVE_PATH).write_text(json.dumps(lock, indent=2), encoding="utf-8")
+    for entry in lock["blocks"].values():
+        source = REPO_ROOT / entry["file"]
+        (root / entry["file"]).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
