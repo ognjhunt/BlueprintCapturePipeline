@@ -3,8 +3,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
+
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from blueprint_pipeline.artifact_storage import default_evidence_root  # noqa: E402
 
 
 REQUIRED_SCRIPT_SNIPPETS = [
@@ -127,7 +134,12 @@ def validate_backup_policy(
     if restore_drill_artifact is not None:
         result.update(validate_restore_drill_artifact(restore_drill_artifact))
     elif require_restore_drill:
-        default_path = repo_root / "output" / "beta_capacity" / "backup_drill" / "capture_truth_restore_drill.json"
+        default_path = (
+            default_evidence_root()
+            / "beta_capacity"
+            / "backup_drill"
+            / "capture_truth_restore_drill.json"
+        )
         result.update(validate_restore_drill_artifact(default_path))
     return result
 

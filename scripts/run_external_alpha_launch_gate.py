@@ -21,6 +21,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from blueprint_pipeline.safe_env import contract_test_env, load_env_files  # noqa: E402
+from blueprint_pipeline.artifact_storage import default_evidence_root  # noqa: E402
 from blueprint_pipeline.source_metadata import git_source_metadata  # noqa: E402
 from scripts.validate_capture_truth_backup_policy import validate_backup_policy  # noqa: E402
 from scripts.validate_beta_capacity_storage import validate_files as validate_beta_capacity_storage_files  # noqa: E402
@@ -367,12 +368,12 @@ def _write_report(
     json_path = (
         Path(json_out).expanduser()
         if json_out
-        else pipeline_repo / "output" / "external_alpha_launch_gate.json"
+        else default_evidence_root() / "external_alpha_launch_gate.json"
     )
     markdown_path = (
         Path(markdown_out).expanduser()
         if markdown_out
-        else pipeline_repo / "output" / "external_alpha_launch_gate.md"
+        else default_evidence_root() / "external_alpha_launch_gate.md"
     )
     json_path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.parent.mkdir(parents=True, exist_ok=True)

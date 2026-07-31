@@ -35,6 +35,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      # The gate's fixture and reports must not become checkout-resident state.
+      BLUEPRINT_ARTIFACT_CACHE_ROOT: ${{ runner.temp }}/blueprint-artifact-cache
+      BLUEPRINT_EVIDENCE_ROOT: ${{ runner.temp }}/blueprint-evidence
+      BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
+      BLUEPRINT_ALLOW_LARGE_ARTIFACTS: "0"
       WEBAPP_REPOSITORY: ognjhunt/Blueprint-WebApp
       # WebApp main contains the robot-eval forwarding and buyer-delivery route
       # fixes required by the local gate. workflow_dispatch can override this
@@ -133,8 +138,8 @@ jobs:
         run: |
           uv run python scripts/run_sim_only_beta_local_gate.py \
             --webapp-repo ../Blueprint-WebApp \
-            --fixture-work-root output/ci/sim_only_beta_local_gate_fixture \
-            --output-path output/ci/sim_only_beta_local_gate_report.json \
+            --fixture-work-root "${{ runner.temp }}/blueprint-ci/sim_only_beta_local_gate_fixture" \
+            --output-path "${{ runner.temp }}/blueprint-ci/sim_only_beta_local_gate_report.json" \
             --command-timeout-seconds 900 \
             --simulator-timeout-seconds 300 \
             --health-timeout-seconds 45
@@ -143,8 +148,8 @@ jobs:
         if: always()
         working-directory: BlueprintCapturePipeline
         run: |
-          mkdir -p output/ci
-          printf '%s\n' '${{ steps.checkout-webapp.outputs.resolved_ref }}' > output/ci/blueprint_webapp_ref.txt
+          mkdir -p "${{ runner.temp }}/blueprint-ci"
+          printf '%s\n' '${{ steps.checkout-webapp.outputs.resolved_ref }}' > "${{ runner.temp }}/blueprint-ci/blueprint_webapp_ref.txt"
 
       - name: Upload sim-only local gate artifact
         if: always()
@@ -154,8 +159,8 @@ jobs:
           retention-days: 90
           if-no-files-found: error
           path: |
-            BlueprintCapturePipeline/output/ci/blueprint_webapp_ref.txt
-            BlueprintCapturePipeline/output/ci/sim_only_beta_local_gate_report.json
-            BlueprintCapturePipeline/output/ci/sim_only_beta_local_gate_fixture/**/pipeline/live_pipeline_control_plane/sim_only_beta_local_gate/*.json
-            BlueprintCapturePipeline/output/ci/sim_only_beta_local_gate_fixture/**/pipeline/robot_eval_job_requests/**/*.json
-            BlueprintCapturePipeline/output/ci/sim_only_beta_local_gate_fixture/**/pipeline/robot_eval_jobs/**/*.json
+            ${{ runner.temp }}/blueprint-ci/blueprint_webapp_ref.txt
+            ${{ runner.temp }}/blueprint-ci/sim_only_beta_local_gate_report.json
+            ${{ runner.temp }}/blueprint-ci/sim_only_beta_local_gate_fixture/**/pipeline/live_pipeline_control_plane/sim_only_beta_local_gate/*.json
+            ${{ runner.temp }}/blueprint-ci/sim_only_beta_local_gate_fixture/**/pipeline/robot_eval_job_requests/**/*.json
+            ${{ runner.temp }}/blueprint-ci/sim_only_beta_local_gate_fixture/**/pipeline/robot_eval_jobs/**/*.json

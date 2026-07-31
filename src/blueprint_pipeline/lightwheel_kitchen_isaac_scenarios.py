@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .artifact_storage import default_artifact_cache_root
 from .common import ensure_dir, parse_gs_uri, utc_now_iso, write_json
 
 
@@ -284,7 +285,10 @@ def _resolve_unitree_g1_mjcf_root(
     candidates = [
         explicit_root,
         os.environ.get("BLUEPRINT_MUJOCO_G1_MODEL_ROOT"),
-        repo_root / "output" / "external_assets" / "mujoco_menagerie" / "unitree_g1",
+        default_artifact_cache_root()
+        / "external_assets"
+        / "mujoco_menagerie"
+        / "unitree_g1",
         Path.cwd() / "output" / "external_assets" / "mujoco_menagerie" / "unitree_g1",
     ]
     for value in candidates:

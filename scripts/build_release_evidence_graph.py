@@ -12,6 +12,7 @@ SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from blueprint_pipeline.artifact_storage import default_evidence_root  # noqa: E402
 from blueprint_pipeline.common import write_json  # noqa: E402
 from blueprint_pipeline.release_evidence_graph import (  # noqa: E402
     evaluate_release_evidence_graph,
@@ -29,7 +30,7 @@ def main() -> int:
     parser.add_argument(
         "--evidence-dir",
         type=Path,
-        default=root / "output" / "release_evidence",
+        default=default_evidence_root() / "release_evidence",
         help=(
             "Evidence root containing v2 envelopes and their contained sources/ artifacts. "
             "Every node also needs a trusted per-node Ed25519 verifier attestation."
@@ -41,7 +42,7 @@ def main() -> int:
         default=root / "docs" / "release_evidence_requirements.json",
     )
     parser.add_argument(
-        "--output", type=Path, default=root / "output" / "release_evidence_graph.json"
+        "--output", type=Path, default=default_evidence_root() / "release_evidence_graph.json"
     )
     args = parser.parse_args()
     graph = evaluate_release_evidence_graph(

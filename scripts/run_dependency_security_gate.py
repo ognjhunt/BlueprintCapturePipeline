@@ -16,6 +16,12 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from blueprint_pipeline.artifact_storage import default_artifact_cache_root  # noqa: E402
+
 PIP_AUDIT_VERSION = "2.10.1"
 
 
@@ -166,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "output" / "ci" / "dependency-security-gate.json",
+        default=default_artifact_cache_root() / "ci" / "dependency-security-gate.json",
     )
     args = parser.parse_args(argv)
     result = run_gate()

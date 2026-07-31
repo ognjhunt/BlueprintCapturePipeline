@@ -102,12 +102,12 @@ jobs:
             --worker-image-ref "${WORKER_IMAGE_REF}" \
             --gpu-family "${GPU_FAMILY}" \
             --samples 20 \
-            --output output/ci/production_gpu_warm_bind_probe.json
+            --output "${{ runner.temp }}/blueprint-ci/production_gpu_warm_bind_probe.json"
       - name: Upload redacted SLO evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: production-gpu-warm-bind-${{ github.sha }}-${{ github.run_id }}
-          path: output/ci/production_gpu_warm_bind_probe.json
+          path: ${{ runner.temp }}/blueprint-ci/production_gpu_warm_bind_probe.json
           if-no-files-found: error
           retention-days: 90

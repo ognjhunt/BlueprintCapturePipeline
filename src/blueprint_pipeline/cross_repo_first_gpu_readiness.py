@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
+from .artifact_storage import default_artifact_cache_root
 from .first_gpu_e2e_readiness import (
     PROVISIONERS,
     SIMULATOR_COMMAND_LOCATIONS,
@@ -2620,7 +2621,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--no-require-gpu-gates", action="store_true")
     parser.add_argument(
         "--output",
-        default="output/first_gpu_cross_repo_readiness_manifest.json",
+        default=str(default_artifact_cache_root() / "first_gpu_cross_repo_readiness_manifest.json"),
     )
     args = parser.parse_args(argv)
 

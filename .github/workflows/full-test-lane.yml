@@ -18,6 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
+      # Full-lane artifacts live only on the disposable GitHub runner and are
+      # uploaded with the workflow's explicit retention policy.
+      BLUEPRINT_ARTIFACT_CACHE_ROOT: ${{ runner.temp }}/blueprint-artifact-cache
+      BLUEPRINT_EVIDENCE_ROOT: ${{ runner.temp }}/blueprint-evidence
+      BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
+      BLUEPRINT_ALLOW_LARGE_ARTIFACTS: "0"
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
       # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
       CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
@@ -89,41 +95,41 @@ jobs:
 
       - name: Collect full lane
         env:
-          BLUEPRINT_FULL_LANE_COLLECTION_MANIFEST: output/ci/full-test-lane-planned.json
+          BLUEPRINT_FULL_LANE_COLLECTION_MANIFEST: ${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json
           BLUEPRINT_FULL_LANE_EVIDENCE_PHASE: planned
         run: |
-          mkdir -p output/ci
+          mkdir -p "${{ runner.temp }}/blueprint-ci"
           uv run python -m pytest \
             -p blueprint_pipeline.pytest_full_lane_evidence \
             -m "" --collect-only -q \
-            > output/ci/full-test-lane-collection.txt
+            > "${{ runner.temp }}/blueprint-ci/full-test-lane-collection.txt"
 
       - name: Run full lane
         env:
-          BLUEPRINT_FULL_LANE_COLLECTION_MANIFEST: output/ci/full-test-lane-executed.json
+          BLUEPRINT_FULL_LANE_COLLECTION_MANIFEST: ${{ runner.temp }}/blueprint-ci/full-test-lane-executed.json
           BLUEPRINT_FULL_LANE_EVIDENCE_PHASE: executed
         run: |
           set -euo pipefail
           uv run scripts/pytest_full.sh \
             -p blueprint_pipeline.pytest_full_lane_evidence \
-            --junitxml=output/ci/full-test-lane-junit.xml
+            --junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml"
 
       - name: Verify exact full-lane collection
         if: always()
         run: |
           uv run python scripts/verify_full_lane_collection.py \
-            --planned output/ci/full-test-lane-planned.json \
-            --executed output/ci/full-test-lane-executed.json
+            --planned "${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json" \
+            --executed "${{ runner.temp }}/blueprint-ci/full-test-lane-executed.json"
 
       - name: Build fail-closed CPU full-lane evidence
         if: always()
         run: |
           uv run python scripts/build_cpu_full_lane_evidence.py \
-            --planned output/ci/full-test-lane-planned.json \
-            --executed output/ci/full-test-lane-executed.json \
-            --junit output/ci/full-test-lane-junit.xml \
+            --planned "${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json" \
+            --executed "${{ runner.temp }}/blueprint-ci/full-test-lane-executed.json" \
+            --junit "${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml" \
             --repository-sha '${{ github.sha }}' \
-            --output output/ci/cpu_full.json
+            --output "${{ runner.temp }}/blueprint-ci/cpu_full.json"
 
       - name: Upload full lane report
         if: always()
@@ -133,8 +139,8 @@ jobs:
           retention-days: 90
           if-no-files-found: error
           path: |
-            output/ci/full-test-lane-collection.txt
-            output/ci/full-test-lane-planned.json
-            output/ci/full-test-lane-executed.json
-            output/ci/full-test-lane-junit.xml
-            output/ci/cpu_full.json
+            ${{ runner.temp }}/blueprint-ci/full-test-lane-collection.txt
+            ${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json
+            ${{ runner.temp }}/blueprint-ci/full-test-lane-executed.json
+            ${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml
+            ${{ runner.temp }}/blueprint-ci/cpu_full.json

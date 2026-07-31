@@ -15,6 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from blueprint_pipeline.artifact_storage import default_artifact_cache_root  # noqa: E402
+
 
 G1_SOURCE_URL = "https://github.com/google-deepmind/mujoco_menagerie/tree/main/unitree_g1"
 POLICY_ID = "blueprint_default_walk_to_target_smoke_policy"
@@ -167,7 +174,10 @@ def _resolve_g1_model_root(value: str | None) -> Path:
     candidate = Path(
         value
         or os.environ.get("BLUEPRINT_MUJOCO_G1_MODEL_ROOT", "")
-        or _repo_root() / "output" / "external_assets" / "mujoco_menagerie" / "unitree_g1"
+        or default_artifact_cache_root()
+        / "external_assets"
+        / "mujoco_menagerie"
+        / "unitree_g1"
     )
     if not candidate.is_absolute():
         candidate = (_repo_root() / candidate).resolve()

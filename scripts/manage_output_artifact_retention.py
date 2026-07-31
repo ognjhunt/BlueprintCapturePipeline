@@ -1,20 +1,41 @@
 #!/usr/bin/env python3
-"""Inventory, select, and optionally prune local ``output/`` artifacts."""
+"""Inventory, select, and optionally prune local generated artifacts.
+
+The default cache is outside the source checkout. Pass ``--output-root`` for a
+specific cache, or set ``BLUEPRINT_ALLOW_REPO_OUTPUT=1`` only for legacy
+repo-root ``output/`` data.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from blueprint_pipeline.artifact_storage import (  # noqa: E402
+    ALLOW_REPO_OUTPUT_ENV,
+    HARD_STOP_BYTES,
+    REVIEW_THRESHOLD_BYTES,
+    default_artifact_cache_root,
+    default_evidence_root,
+    repo_output_root,
+    storage_status,
+)
+
 
 SCHEMA_VERSION = "output_artifact_retention_manifest.v1"
-DEFAULT_OUTPUT_ROOT = "output"
-DEFAULT_MANIFEST_PATH = "output/output_artifact_retention_manifest.json"
+DEFAULT_OUTPUT_ROOT = str(default_artifact_cache_root())
+DEFAULT_MANIFEST_PATH = str(default_evidence_root() / "output_artifact_retention_manifest.json")
 EXECUTE_ACK = "delete-output-artifacts"
 
 RETENTION_CLASSES: dict[str, dict[str, Any]] = {
@@ -24,9 +45,9 @@ RETENTION_CLASSES: dict[str, dict[str, Any]] = {
         "description": "Current launch, CI, paid-gate, and operator handoff evidence.",
     },
     "external_asset_cache": {
-        "delete_after_days": None,
-        "prunable": False,
-        "description": "Reusable local assets such as MuJoCo menagerie or collected USD/mesh inputs.",
+        "delete_after_days": 30,
+        "prunable": True,
+        "description": "Reusable local assets such as MuJoCo menagerie or collected USD/mesh inputs; reacquire after expiry.",
     },
     "provider_runtime_or_paid_run": {
         "delete_after_days": 30,
@@ -244,6 +265,12 @@ def build_manifest(
         "schema_version": SCHEMA_VERSION,
         "generated_at_epoch": resolved_now,
         "output_root": str(output_root),
+        "storage_status": storage_status(output_root),
+        "storage_limits": {
+            "review_threshold_bytes": REVIEW_THRESHOLD_BYTES,
+            "hard_stop_bytes": HARD_STOP_BYTES,
+            "large_artifact_opt_in_bytes": 1 * 1024**3,
+        },
         "dry_run": dry_run,
         "status": "dry_run" if dry_run else "execute_requested",
         "retention_classes": RETENTION_CLASSES,
@@ -283,16 +310,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest-path", default=DEFAULT_MANIFEST_PATH)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--acknowledge-delete-output-artifacts")
+    parser.add_argument(
+        "--allow-repo-output",
+        action="store_true",
+        help=f"allow legacy repo-root output/ (or set {ALLOW_REPO_OUTPUT_ENV}=1)",
+    )
+    parser.add_argument(
+        "--fail-on-hard-stop",
+        action="store_true",
+        help="return non-zero when the selected root is at the 50 GiB hard stop",
+    )
     args = parser.parse_args(argv)
 
     output_root = Path(args.output_root).expanduser().resolve()
     manifest_path = Path(args.manifest_path).expanduser().resolve()
+    repo_root = Path(__file__).resolve().parents[1]
+    if output_root == repo_output_root(repo_root) or output_root.is_relative_to(repo_output_root(repo_root)):
+        if not args.allow_repo_output and not os.environ.get(ALLOW_REPO_OUTPUT_ENV):
+            raise SystemExit(
+                f"refusing repo-root output/; use the external default or pass --allow-repo-output "
+                f"or set {ALLOW_REPO_OUTPUT_ENV}=1"
+            )
     dry_run = not args.execute
     if args.execute and args.acknowledge_delete_output_artifacts != EXECUTE_ACK:
         raise SystemExit(
             f"--execute requires --acknowledge-delete-output-artifacts {EXECUTE_ACK!r}"
         )
     manifest, candidates = build_manifest(output_root=output_root, dry_run=dry_run)
+    if args.fail_on_hard_stop and manifest["storage_status"] == "hard_stop":
+        raise SystemExit(f"artifact storage hard stop reached: {output_root}")
     if args.execute:
         manifest["prune_actions"] = execute_prune(candidates)
         manifest["status"] = "completed"
