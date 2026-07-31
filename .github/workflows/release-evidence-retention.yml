@@ -77,7 +77,7 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.ci_run_id }}
           pattern: "*-${{ inputs.repository_sha }}"
-          path: output/retention/ci-artifacts
+          path: ${{ runner.temp }}/blueprint-ci/retention/ci-artifacts
 
       - name: Download exact full-test artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -85,7 +85,7 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.full_test_run_id }}
           name: full-test-lane-${{ inputs.full_test_run_id }}
-          path: output/retention/full-test
+          path: ${{ runner.temp }}/blueprint-ci/retention/full-test
 
       - name: Download exact external signature evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -93,7 +93,7 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.signature_run_id }}
           name: ${{ inputs.signature_artifact_name }}
-          path: output/retention/signature-evidence
+          path: ${{ runner.temp }}/blueprint-ci/retention/signature-evidence
 
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
@@ -110,15 +110,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p output/retention/source
-          source_archive="output/retention/source/BlueprintCapturePipeline-${RELEASE_SHA}.tar.gz"
+          mkdir -p "${{ runner.temp }}/blueprint-ci/retention/source"
+          source_archive="${{ runner.temp }}/blueprint-ci/retention/source/BlueprintCapturePipeline-${RELEASE_SHA}.tar.gz"
           git archive \
             --format=tar.gz \
             --prefix="BlueprintCapturePipeline-${RELEASE_SHA}/" \
             "${RELEASE_SHA}" \
             > "${source_archive}"
           sha256sum "${source_archive}" \
-            > output/retention/source/SHA256SUMS
+            > "${{ runner.temp }}/blueprint-ci/retention/source/SHA256SUMS"
 
       - name: Collect run metadata and verify conclusions
         shell: bash
@@ -126,36 +126,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p output/retention/run-evidence
+          mkdir -p "${{ runner.temp }}/blueprint-ci/retention/run-evidence"
           uv run python scripts/collect_github_actions_evidence.py \
             --repo "${GITHUB_REPOSITORY}" \
             --run-id "${CI_RUN_ID}" \
             --evidence-id pipeline_ci \
-            --output output/retention/run-evidence/ci.json
+            --output "${{ runner.temp }}/blueprint-ci/retention/run-evidence/ci.json"
           uv run python scripts/collect_github_actions_evidence.py \
             --repo "${GITHUB_REPOSITORY}" \
             --run-id "${FULL_TEST_RUN_ID}" \
             --evidence-id full_test_lane_ci \
-            --junit output/retention/full-test/full-test-lane-junit.xml \
-            --output output/retention/run-evidence/full-test.json
+            --junit "${{ runner.temp }}/blueprint-ci/retention/full-test/full-test-lane-junit.xml" \
+            --output "${{ runner.temp }}/blueprint-ci/retention/run-evidence/full-test.json"
           uv run python scripts/collect_github_actions_evidence.py \
             --repo "${GITHUB_REPOSITORY}" \
             --run-id "${CODEQL_RUN_ID}" \
             --evidence-id codeql_analysis \
-            --output output/retention/codeql-evidence/run.json
+            --output "${{ runner.temp }}/blueprint-ci/retention/codeql-evidence/run.json"
           uv run python scripts/collect_github_actions_evidence.py \
             --repo "${GITHUB_REPOSITORY}" \
             --run-id "${SIGNATURE_RUN_ID}" \
             --evidence-id artifact_signature \
-            --output output/retention/signature-evidence/run.json
+            --output "${{ runner.temp }}/blueprint-ci/retention/signature-evidence/run.json"
           uv run python - <<'PY'
           import json, os
           from pathlib import Path
           run_paths = {
-              "ci": Path("output/retention/run-evidence/ci.json"),
-              "full-test": Path("output/retention/run-evidence/full-test.json"),
-              "codeql": Path("output/retention/codeql-evidence/run.json"),
-              "signature": Path("output/retention/signature-evidence/run.json"),
+              "ci": Path("${{ runner.temp }}/blueprint-ci/retention/run-evidence/ci.json"),
+              "full-test": Path("${{ runner.temp }}/blueprint-ci/retention/run-evidence/full-test.json"),
+              "codeql": Path("${{ runner.temp }}/blueprint-ci/retention/codeql-evidence/run.json"),
+              "signature": Path("${{ runner.temp }}/blueprint-ci/retention/signature-evidence/run.json"),
           }
           for name, path in run_paths.items():
               payload = json.loads(path.read_text())
@@ -180,12 +180,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          subject=output/retention/signature-evidence/release-command-attestation-subject.json
-          bundle=output/retention/signature-evidence/release-command-attestation-bundle.json
+          subject="${{ runner.temp }}/blueprint-ci/retention/signature-evidence/release-command-attestation-subject.json"
+          bundle="${{ runner.temp }}/blueprint-ci/retention/signature-evidence/release-command-attestation-bundle.json"
           if [ ! -f "${bundle}" ]; then
             # actions/attest emits a JSON-serialized Sigstore bundle; accept
             # .json and legacy .jsonl, never the subject itself.
-            bundle="$(find output/retention/signature-evidence -type f \
+            bundle="$(find "${{ runner.temp }}/blueprint-ci/retention/signature-evidence" -type f \
               \( -name '*.jsonl' -o -name '*.json' \) \
               ! -name 'release-command-attestation-subject.json' -print -quit)"
           fi
@@ -214,7 +214,7 @@ jobs:
           test "${#analysis_ids[@]}" -gt 0
           for analysis_id in "${analysis_ids[@]}"; do
             [[ "${analysis_id}" =~ ^[0-9]+$ ]]
-            output="output/retention/codeql-evidence/analysis-${analysis_id}.sarif"
+            output="${{ runner.temp }}/blueprint-ci/retention/codeql-evidence/analysis-${analysis_id}.sarif"
             gh api \
               -H "Accept: application/sarif+json" \
               "/repos/${GITHUB_REPOSITORY}/code-scanning/analyses/${analysis_id}" \
@@ -228,17 +228,17 @@ jobs:
             --scope BASE \
             --repository-sha "${RELEASE_SHA}" \
             --image-digest "${RELEASE_IMAGE_DIGEST}" \
-            --evidence source=output/retention/source \
-            --evidence ci=output/retention/run-evidence/ci.json \
-            --evidence full_test=output/retention/full-test \
-            --evidence dependency=output/retention/ci-artifacts/dependency-security-${RELEASE_SHA} \
-            --evidence sast=output/retention/ci-artifacts/sast-${RELEASE_SHA} \
-            --evidence coverage=output/retention/ci-artifacts/ci-test-${RELEASE_SHA} \
-            --evidence supply_chain=output/retention/ci-artifacts/supply-chain-${RELEASE_SHA} \
-            --evidence codeql=output/retention/codeql-evidence \
-            --evidence signature=output/retention/signature-evidence \
-            --output output/retention/release-evidence.tar.gz \
-            --manifest output/retention/release-evidence-manifest.json
+            --evidence source="${{ runner.temp }}/blueprint-ci/retention/source" \
+            --evidence ci="${{ runner.temp }}/blueprint-ci/retention/run-evidence/ci.json" \
+            --evidence full_test="${{ runner.temp }}/blueprint-ci/retention/full-test" \
+            --evidence dependency="${{ runner.temp }}/blueprint-ci/retention/ci-artifacts/dependency-security-${RELEASE_SHA}" \
+            --evidence sast="${{ runner.temp }}/blueprint-ci/retention/ci-artifacts/sast-${RELEASE_SHA}" \
+            --evidence coverage="${{ runner.temp }}/blueprint-ci/retention/ci-artifacts/ci-test-${RELEASE_SHA}" \
+            --evidence supply_chain="${{ runner.temp }}/blueprint-ci/retention/ci-artifacts/supply-chain-${RELEASE_SHA}" \
+            --evidence codeql="${{ runner.temp }}/blueprint-ci/retention/codeql-evidence" \
+            --evidence signature="${{ runner.temp }}/blueprint-ci/retention/signature-evidence" \
+            --output "${{ runner.temp }}/blueprint-ci/retention/release-evidence.tar.gz" \
+            --manifest "${{ runner.temp }}/blueprint-ci/retention/release-evidence-manifest.json"
 
       - name: Archive with Object Lock COMPLIANCE and verify readback
         env:
@@ -250,11 +250,11 @@ jobs:
         run: |
           test -n "${BLUEPRINT_RELEASE_EVIDENCE_S3_URI}"
           uv run python scripts/archive_release_evidence.py \
-            --bundle output/retention/release-evidence.tar.gz \
-            --bundle-manifest output/retention/release-evidence-manifest.json \
+            --bundle "${{ runner.temp }}/blueprint-ci/retention/release-evidence.tar.gz" \
+            --bundle-manifest "${{ runner.temp }}/blueprint-ci/retention/release-evidence-manifest.json" \
             --archive-uri "${BLUEPRINT_RELEASE_EVIDENCE_S3_URI}" \
-            --output output/retention/immutable-archive-receipt.json \
-            --envelope-output output/retention/immutable_retention.json
+            --output "${{ runner.temp }}/blueprint-ci/retention/immutable-archive-receipt.json" \
+            --envelope-output "${{ runner.temp }}/blueprint-ci/retention/immutable_retention.json"
 
       - name: Upload retention receipt as transport copy
         if: always()
@@ -262,8 +262,8 @@ jobs:
         with:
           name: immutable-release-evidence-receipt-${{ inputs.repository_sha }}
           path: |
-            output/retention/release-evidence-manifest.json
-            output/retention/immutable-archive-receipt.json
-            output/retention/immutable_retention.json
+            ${{ runner.temp }}/blueprint-ci/retention/release-evidence-manifest.json
+            ${{ runner.temp }}/blueprint-ci/retention/immutable-archive-receipt.json
+            ${{ runner.temp }}/blueprint-ci/retention/immutable_retention.json
           if-no-files-found: error
           retention-days: 90

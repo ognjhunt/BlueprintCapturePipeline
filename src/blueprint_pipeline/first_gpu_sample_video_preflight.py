@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .artifact_storage import default_artifact_cache_root
 
 
 FIRST_GPU_SAMPLE_VIDEO_PREFLIGHT_SCHEMA_VERSION = "first_gpu_sample_video_preflight.v1"
@@ -293,7 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--output",
-        default="output/first_gpu_sample_video_preflight_manifest.json",
+        default=str(default_artifact_cache_root() / "first_gpu_sample_video_preflight_manifest.json"),
     )
     args = parser.parse_args(argv)
     result = build_first_gpu_sample_video_preflight(

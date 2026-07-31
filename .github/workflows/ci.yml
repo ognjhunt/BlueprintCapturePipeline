@@ -16,6 +16,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
+      # CI runners are ephemeral; never use the checkout as a durable artifact cache.
+      BLUEPRINT_ARTIFACT_CACHE_ROOT: ${{ runner.temp }}/blueprint-artifact-cache
+      BLUEPRINT_EVIDENCE_ROOT: ${{ runner.temp }}/blueprint-evidence
+      BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
+      BLUEPRINT_ALLOW_LARGE_ARTIFACTS: "0"
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
       # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
       CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
@@ -77,16 +82,16 @@ jobs:
 
       - name: Build and verify distributions
         run: |
-          uv build --out-dir output/ci/dist
+          uv build --out-dir "${{ runner.temp }}/blueprint-ci/dist"
           uv run python scripts/verify_distribution_metadata.py \
-            --dist-dir output/ci/dist
+            --dist-dir "${{ runner.temp }}/blueprint-ci/dist"
 
       - name: Run tests
         run: |
           uv run pytest -q \
             --cov=blueprint_pipeline \
             --cov-report=term:skip-covered \
-            --cov-report=json:output/ci/coverage.json \
+            --cov-report=json:"${{ runner.temp }}/blueprint-ci/coverage.json" \
             --cov-fail-under=69.5
 
       - name: Upload test and coverage evidence
@@ -94,7 +99,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ci-test-${{ github.sha }}
-          path: output/ci/coverage.json
+          path: ${{ runner.temp }}/blueprint-ci/coverage.json
           if-no-files-found: error
           retention-days: 90
 
@@ -134,14 +139,14 @@ jobs:
         run: |
           python3 scripts/verify_groot_oscar_live_prerequisites.py \
             --live \
-            --output output/ci/groot_oscar_live_prerequisites.json
+            --output "${{ runner.temp }}/blueprint-ci/groot_oscar_live_prerequisites.json"
 
       - name: Upload prerequisite evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: groot-oscar-prerequisites-${{ github.sha }}
-          path: output/ci/groot_oscar_live_prerequisites.json
+          path: ${{ runner.temp }}/blueprint-ci/groot_oscar_live_prerequisites.json
           if-no-files-found: error
           retention-days: 90
 
@@ -217,16 +222,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p output/ci
+          mkdir -p "${{ runner.temp }}/blueprint-ci"
           scan_status=0
           uv run bandit -r src/blueprint_pipeline scripts \
             --format json \
-            --output output/ci/bandit.json \
+            --output "${{ runner.temp }}/blueprint-ci/bandit.json" \
             --quiet || scan_status=$?
           test "${scan_status}" -le 1
           uv run python scripts/verify_bandit_policy.py \
-            --bandit-report output/ci/bandit.json \
-            --output output/ci/bandit-policy-gate.json
+            --bandit-report "${{ runner.temp }}/blueprint-ci/bandit.json" \
+            --output "${{ runner.temp }}/blueprint-ci/bandit-policy-gate.json"
 
       - name: Upload SAST evidence
         if: always()
@@ -234,8 +239,8 @@ jobs:
         with:
           name: sast-${{ github.sha }}
           path: |
-            output/ci/bandit.json
-            output/ci/bandit-policy-gate.json
+            ${{ runner.temp }}/blueprint-ci/bandit.json
+            ${{ runner.temp }}/blueprint-ci/bandit-policy-gate.json
           if-no-files-found: error
           retention-days: 90
 
@@ -255,10 +260,10 @@ jobs:
       - name: Enforce source and capability policy
         run: |
           uv run --no-project --python 3.12 python scripts/verify_source_governance.py \
-            --output output/ci/source-governance.json
+            --output "${{ runner.temp }}/blueprint-ci/source-governance.json"
           uv run --no-project --python 3.12 python scripts/verify_critical_capability_lanes.py \
             --policy-only \
-            --output output/ci/critical-capability-policy.json
+            --output "${{ runner.temp }}/blueprint-ci/critical-capability-policy.json"
 
   supply-chain:
     name: SBOM, license, and provenance contract
@@ -282,7 +287,7 @@ jobs:
         run: |
           uv lock --check
           uv sync --frozen --extra dev
-          uv build --out-dir output/ci/dist
+          uv build --out-dir "${{ runner.temp }}/blueprint-ci/dist"
 
       - name: Generate CycloneDX, SPDX, license, and unsigned provenance evidence
         shell: bash
@@ -293,9 +298,9 @@ jobs:
             --frozen \
             --no-dev \
             --format cyclonedx1.5 \
-            --output-file output/ci/runtime.cyclonedx.input.json
+            --output-file "${{ runner.temp }}/blueprint-ci/runtime.cyclonedx.input.json"
           mapfile -t artifacts < <(
-            find output/ci/dist -maxdepth 1 -type f \
+            find "${{ runner.temp }}/blueprint-ci/dist" -maxdepth 1 -type f \
               \( -name '*.whl' -o -name '*.tar.gz' \) -print | sort
           )
           artifact_args=()
@@ -303,8 +308,8 @@ jobs:
             artifact_args+=(--artifact "${artifact}")
           done
           uv run python scripts/build_supply_chain_evidence.py \
-            --cyclonedx output/ci/runtime.cyclonedx.input.json \
-            --output-dir output/ci/supply-chain \
+            --cyclonedx "${{ runner.temp }}/blueprint-ci/runtime.cyclonedx.input.json" \
+            --output-dir "${{ runner.temp }}/blueprint-ci/supply-chain" \
             "${artifact_args[@]}"
 
       - name: Keyless attest distribution provenance on main
@@ -313,8 +318,8 @@ jobs:
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
         with:
           subject-path: |
-            output/ci/dist/*.whl
-            output/ci/dist/*.tar.gz
+            ${{ runner.temp }}/blueprint-ci/dist/*.whl
+            ${{ runner.temp }}/blueprint-ci/dist/*.tar.gz
 
       - name: Keyless attest distribution SBOM on main
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -322,9 +327,9 @@ jobs:
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
         with:
           subject-path: |
-            output/ci/dist/*.whl
-            output/ci/dist/*.tar.gz
-          sbom-path: output/ci/supply-chain/runtime.spdx.json
+            ${{ runner.temp }}/blueprint-ci/dist/*.whl
+            ${{ runner.temp }}/blueprint-ci/dist/*.tar.gz
+          sbom-path: ${{ runner.temp }}/blueprint-ci/supply-chain/runtime.spdx.json
 
       - name: Preserve keyless attestation bundles
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -333,9 +338,9 @@ jobs:
           SBOM_BUNDLE_PATH: ${{ steps.attest-sbom.outputs.bundle-path }}
         run: |
           cp "${PROVENANCE_BUNDLE_PATH}" \
-            output/ci/supply-chain/distribution-provenance.sigstore.json
+            "${{ runner.temp }}/blueprint-ci/supply-chain/distribution-provenance.sigstore.json"
           cp "${SBOM_BUNDLE_PATH}" \
-            output/ci/supply-chain/distribution-sbom.sigstore.json
+            "${{ runner.temp }}/blueprint-ci/supply-chain/distribution-sbom.sigstore.json"
 
       - name: Upload supply-chain evidence
         if: always()
@@ -343,8 +348,8 @@ jobs:
         with:
           name: supply-chain-${{ github.sha }}
           path: |
-            output/ci/dist/*
-            output/ci/supply-chain/*.json
+            ${{ runner.temp }}/blueprint-ci/dist/*
+            ${{ runner.temp }}/blueprint-ci/supply-chain/*.json
           if-no-files-found: error
           retention-days: 90
 
@@ -363,14 +368,14 @@ jobs:
       - name: Audit frozen runtime dependencies
         run: |
           python scripts/run_dependency_security_gate.py \
-            --output output/ci/dependency-security-gate.json
+            --output "${{ runner.temp }}/blueprint-ci/dependency-security-gate.json"
 
       - name: Upload dependency evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dependency-security-${{ github.sha }}
-          path: output/ci/dependency-security-gate.json
+          path: ${{ runner.temp }}/blueprint-ci/dependency-security-gate.json
           if-no-files-found: error
           retention-days: 90
 
@@ -384,26 +389,26 @@ jobs:
       - name: Enforce systemd security baseline
         run: |
           set -euo pipefail
-          mkdir -p output/ci/container-production/container-production-sources
+          mkdir -p "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources"
           {
             systemd-analyze verify deploy/systemd/blueprint-*.service
             for unit in deploy/systemd/blueprint-*.service; do
               systemd-analyze security --offline=yes --no-pager \
                 --threshold=40 "${unit}"
             done
-          } > output/ci/container-production/container-production-sources/systemd-security.log 2>&1
+          } > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/systemd-security.log" 2>&1
           printf '%s\n' 'systemd-security-ok' \
-            > output/ci/container-production/container-production-sources/systemd-security.ok
+            > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/systemd-security.ok"
 
       - name: Validate Compose contract
         run: |
           set -euo pipefail
-          mkdir -p output/ci/container-production/container-production-sources
+          mkdir -p "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources"
           docker compose config --quiet
           docker compose config --no-interpolate \
-            > output/ci/container-production/container-production-sources/compose-config.yml
+            > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/compose-config.yml"
           printf '%s\n' 'compose-config-ok' \
-            > output/ci/container-production/container-production-sources/compose-config.ok
+            > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/compose-config.ok"
 
       - name: Build production and development targets
         run: |
@@ -414,10 +419,10 @@ jobs:
             --tag "blueprint-capture-pipeline-dev:${GITHUB_SHA}" .
           docker image inspect --format '{{.Id}}' \
             "blueprint-capture-pipeline:${GITHUB_SHA}" \
-            > output/ci/container-production/container-production-sources/production_image_id.txt
+            > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/production_image_id.txt"
           docker image inspect --format '{{.Id}}' \
             "blueprint-capture-pipeline-dev:${GITHUB_SHA}" \
-            > output/ci/container-production/container-production-sources/development_image_id.txt
+            > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/development_image_id.txt"
 
       - name: Enforce nonroot, read-only, no-network smoke
         run: |
@@ -425,12 +430,12 @@ jobs:
           production_image="blueprint-capture-pipeline:${GITHUB_SHA}"
           development_image="blueprint-capture-pipeline-dev:${GITHUB_SHA}"
           docker image inspect --format '{{.Config.User}}' "${production_image}" \
-            > output/ci/container-production/container-production-sources/production_user.txt
+            > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/production_user.txt"
           docker image inspect --format '{{.Config.User}}' "${development_image}" \
-            > output/ci/container-production/container-production-sources/development_user.txt
-          test "$(cat output/ci/container-production/container-production-sources/production_user.txt)" = \
+            > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/development_user.txt"
+          test "$(cat "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/production_user.txt")" = \
             "blueprint:blueprint"
-          test "$(cat output/ci/container-production/container-production-sources/development_user.txt)" = \
+          test "$(cat "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/development_user.txt")" = \
             "blueprint:blueprint"
           docker run --rm \
             --read-only \
@@ -441,7 +446,7 @@ jobs:
             --entrypoint python \
             "${production_image}" \
             -c "import blueprint_pipeline; print('container-smoke-ok')" \
-            > output/ci/container-production/container-production-sources/production-runtime-smoke.log
+            > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/production-runtime-smoke.log"
           docker run --rm \
             --read-only \
             --network none \
@@ -451,21 +456,21 @@ jobs:
             --entrypoint python \
             "${development_image}" \
             -c "import blueprint_pipeline; print('container-smoke-ok')" \
-            > output/ci/container-production/container-production-sources/development-runtime-smoke.log
+            > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/development-runtime-smoke.log"
 
       - name: Build strict container-production evidence
         if: always()
         run: |
           python scripts/build_container_production_evidence.py \
-            --source-dir output/ci/container-production/container-production-sources \
+            --source-dir "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources" \
             --repository-sha '${{ github.sha }}' \
-            --output output/ci/container-production/container_production.json
+            --output "${{ runner.temp }}/blueprint-ci/container-production/container_production.json"
 
       - name: Upload container-production evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: container-production-${{ github.sha }}
-          path: output/ci/container-production
+          path: ${{ runner.temp }}/blueprint-ci/container-production
           if-no-files-found: error
           retention-days: 90

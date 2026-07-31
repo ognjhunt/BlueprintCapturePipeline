@@ -15,6 +15,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
+from .artifact_storage import default_artifact_cache_root
 from .common import ensure_dir, utc_now_iso, write_json, write_text
 from .local_capture import resolve_local_capture_context
 from .scenario_variation_instantiator import (
@@ -1559,7 +1560,9 @@ def build_mujoco_scene_scenario_packet(
         base_dir = (
             Path(output_dir).resolve()
             if output_dir
-            else _repo_root() / "output" / "mujoco_scene_scenario_packets" / scene_asset_id
+            else default_artifact_cache_root()
+            / "mujoco_scene_scenario_packets"
+            / scene_asset_id
         )
         resolved_capture_root = (
             base_dir

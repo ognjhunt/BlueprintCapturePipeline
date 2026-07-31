@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline.alpha_readiness import validate_operator_launch_evidence
+from blueprint_pipeline.artifact_storage import default_artifact_cache_root, default_evidence_root
 from blueprint_pipeline.common import write_json, write_text
 from blueprint_pipeline.release_evidence_graph import (
     validate_release_evidence_graph_result,
@@ -63,6 +64,12 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _prefer_available(primary: Path, legacy: Path) -> Path:
+    """Use the external default when present, while reading legacy evidence during migration."""
+
+    return primary if primary.exists() else legacy
 
 
 def _sha256(path: Path) -> str | None:
@@ -162,22 +169,27 @@ def _ci_artifact(id_: str, path: Path, *, repo_name: str, workflow: str) -> dict
 
 
 def _latest_sim_only_report(pipeline_repo: Path) -> Path:
+    candidates: list[Path] = []
+    for root in (default_evidence_root(), default_artifact_cache_root(), pipeline_repo / "output"):
+        candidates.extend(
+            root.glob("**/sim_only_beta_local_gate_report.json")
+        )
     candidates = sorted(
-        pipeline_repo.glob(
-            "output/sim_only_beta_local_gate_fixture/**/sim_only_beta_local_gate_report.json"
-        ),
+        candidates,
         key=lambda candidate: candidate.stat().st_mtime if candidate.exists() else 0,
         reverse=True,
     )
     if candidates:
         return candidates[0]
-    return pipeline_repo / "output" / "sim_only_beta_local_gate_report.json"
+    return default_evidence_root() / "sim_only_beta_local_gate_report.json"
 
 
 def _operator_evidence_path(pipeline_repo: Path, explicit_path: Path | None) -> Path | None:
     if explicit_path is not None:
         return explicit_path
     for candidate in (
+        default_evidence_root() / "operator_launch_evidence.json",
+        default_artifact_cache_root() / "operator_launch_evidence.json",
         pipeline_repo / "output" / "operator_launch_evidence.json",
         pipeline_repo / "output" / "pipeline" / "operator_launch_evidence.json",
     ):
@@ -436,11 +448,27 @@ def build_launch_readiness_packet(
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     packet_generated_at = generated_at or _utc_now()
-    paid_gate = pipeline_repo / "output" / "paid_marketplace_launch_gate.json"
-    paid_gate_md = pipeline_repo / "output" / "paid_marketplace_launch_gate.md"
-    external_gate = pipeline_repo / "output" / "external_alpha_launch_gate.json"
-    external_gate_md = pipeline_repo / "output" / "external_alpha_launch_gate.md"
-    live_setup = pipeline_repo / "output" / "launch_audit_live_pipeline_setup_20260707.json"
+    evidence_root = default_evidence_root()
+    paid_gate = _prefer_available(
+        evidence_root / "paid_marketplace_launch_gate.json",
+        pipeline_repo / "output" / "paid_marketplace_launch_gate.json",
+    )
+    paid_gate_md = _prefer_available(
+        evidence_root / "paid_marketplace_launch_gate.md",
+        pipeline_repo / "output" / "paid_marketplace_launch_gate.md",
+    )
+    external_gate = _prefer_available(
+        evidence_root / "external_alpha_launch_gate.json",
+        pipeline_repo / "output" / "external_alpha_launch_gate.json",
+    )
+    external_gate_md = _prefer_available(
+        evidence_root / "external_alpha_launch_gate.md",
+        pipeline_repo / "output" / "external_alpha_launch_gate.md",
+    )
+    live_setup = _prefer_available(
+        evidence_root / "launch_audit_live_pipeline_setup_20260707.json",
+        pipeline_repo / "output" / "launch_audit_live_pipeline_setup_20260707.json",
+    )
     sim_only_report = _latest_sim_only_report(pipeline_repo)
     forwarding_preflight = (
         webapp_repo
@@ -449,14 +477,22 @@ def build_launch_readiness_packet(
         / "robot_eval_job_requests"
         / "forwarding_preflight.json"
     )
-    pipeline_ci_evidence = pipeline_repo / "output" / "pipeline_main_ci_evidence.json"
-    pipeline_full_lane_evidence = (
-        pipeline_repo / "output" / "pipeline_full_test_lane_ci_evidence.json"
+    pipeline_ci_evidence = _prefer_available(
+        evidence_root / "pipeline_main_ci_evidence.json",
+        pipeline_repo / "output" / "pipeline_main_ci_evidence.json",
     )
-    pipeline_sim_only_evidence = (
-        pipeline_repo / "output" / "pipeline_sim_only_local_gate_ci_evidence.json"
+    pipeline_full_lane_evidence = _prefer_available(
+        evidence_root / "pipeline_full_test_lane_ci_evidence.json",
+        pipeline_repo / "output" / "pipeline_full_test_lane_ci_evidence.json",
     )
-    webapp_ci_evidence = pipeline_repo / "output" / "webapp_main_ci_evidence.json"
+    pipeline_sim_only_evidence = _prefer_available(
+        evidence_root / "pipeline_sim_only_local_gate_ci_evidence.json",
+        pipeline_repo / "output" / "pipeline_sim_only_local_gate_ci_evidence.json",
+    )
+    webapp_ci_evidence = _prefer_available(
+        evidence_root / "webapp_main_ci_evidence.json",
+        pipeline_repo / "output" / "webapp_main_ci_evidence.json",
+    )
     beta_data_retention_policy = pipeline_repo / BETA_DATA_RETENTION_POLICY_JSON
     beta_data_retention_policy_md = pipeline_repo / BETA_DATA_RETENTION_POLICY_MD
     beta_data_residency_transfer_policy = pipeline_repo / BETA_DATA_RESIDENCY_TRANSFER_POLICY_JSON
@@ -802,12 +838,12 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--output", type=Path, default=_repo_root() / "output" / "launch_readiness_packet.json"
+        "--output", type=Path, default=default_evidence_root() / "launch_readiness_packet.json"
     )
     parser.add_argument(
         "--markdown-output",
         type=Path,
-        default=_repo_root() / "output" / "launch_readiness_packet.md",
+        default=default_evidence_root() / "launch_readiness_packet.md",
     )
     args = parser.parse_args()
 

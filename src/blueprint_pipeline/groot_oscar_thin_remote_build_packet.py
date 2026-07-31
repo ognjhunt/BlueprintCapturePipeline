@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from .common import ensure_dir, write_json
+from .artifact_storage import default_artifact_cache_root
 
 SCHEMA_VERSION = "groot_oscar_thin_remote_build_packet.v1"
 PACKET_DIRNAME = "groot_oscar_thin_remote_build"
@@ -398,7 +399,10 @@ def prepare_remote_build_packet(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", default="output/groot_oscar_thin_remote_build_packet")
+    parser.add_argument(
+        "--output-dir",
+        default=str(default_artifact_cache_root() / "groot_oscar_thin_remote_build_packet"),
+    )
     parser.add_argument("--repo-root", default=str(Path(__file__).resolve().parents[2]))
     parser.add_argument("--foundation-ref", required=True)
     parser.add_argument("--release-ref", required=True)

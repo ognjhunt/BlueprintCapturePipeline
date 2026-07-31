@@ -58,7 +58,7 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.ci_run_id }}
           pattern: "*-${{ inputs.repository_sha }}"
-          path: output/release-signature/ci
+          path: ${{ runner.temp }}/blueprint-ci/release-signature/ci
 
       - name: Download exact full-test evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -66,7 +66,7 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.full_test_run_id }}
           name: full-test-lane-${{ inputs.full_test_run_id }}
-          path: output/release-signature/full-test
+          path: ${{ runner.temp }}/blueprint-ci/release-signature/full-test
 
       - name: Verify run identity and conclusions
         env:
@@ -85,10 +85,10 @@ jobs:
             uv run python scripts/collect_github_actions_evidence.py \
               --repo "${GITHUB_REPOSITORY}" --run-id "${run_id}" \
               --evidence-id "${label}" \
-              --output "output/release-signature/${label}-run.json"
+              --output "${{ runner.temp }}/blueprint-ci/release-signature/${label}-run.json"
             jq -e --arg sha "${RELEASE_SHA}" --arg workflow "${workflow}" \
               '.head_sha == $sha and .workflow_name == $workflow and .conclusion == "success"' \
-              "output/release-signature/${label}-run.json"
+              "${{ runner.temp }}/blueprint-ci/release-signature/${label}-run.json"
           done
 
       - name: Build deterministic release command subject
@@ -101,28 +101,28 @@ jobs:
             --ci-run-id "${{ inputs.ci_run_id }}" \
             --full-test-run-id "${{ inputs.full_test_run_id }}" \
             --codeql-run-id "${{ inputs.codeql_run_id }}" \
-            --evidence-root output/release-signature \
-            --output output/release-command-attestation-subject.json
+            --evidence-root "${{ runner.temp }}/blueprint-ci/release-signature" \
+            --output "${{ runner.temp }}/blueprint-ci/release-command-attestation-subject.json"
 
       - name: Sign subject with GitHub OIDC provenance
         id: attest
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
-          subject-path: output/release-command-attestation-subject.json
+          subject-path: ${{ runner.temp }}/blueprint-ci/release-command-attestation-subject.json
 
       - name: Stage signed evidence with a flat, name-stable layout
         run: |
           set -euo pipefail
-          mkdir -p output/release-signature-artifact
-          cp output/release-command-attestation-subject.json \
-            output/release-signature-artifact/release-command-attestation-subject.json
+          mkdir -p "${{ runner.temp }}/blueprint-ci/release-signature-artifact"
+          cp "${{ runner.temp }}/blueprint-ci/release-command-attestation-subject.json" \
+            "${{ runner.temp }}/blueprint-ci/release-signature-artifact/release-command-attestation-subject.json"
           cp "${{ steps.attest.outputs.bundle-path }}" \
-            output/release-signature-artifact/release-command-attestation-bundle.json
+            "${{ runner.temp }}/blueprint-ci/release-signature-artifact/release-command-attestation-bundle.json"
 
       - name: Upload independently signed evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-signature-${{ inputs.repository_sha }}
-          path: output/release-signature-artifact
+          path: ${{ runner.temp }}/blueprint-ci/release-signature-artifact
           if-no-files-found: error
           retention-days: 90

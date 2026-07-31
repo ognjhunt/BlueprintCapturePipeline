@@ -6,10 +6,12 @@ echo "legacy build path disabled; use paid_resource_allocator cpu-build" >&2
 exit 2
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/scripts/artifact_storage.sh"
+artifact_cache_root="$(blueprint_artifact_cache_root)"
 foundation="${BLUEPRINT_GROOT_OSCAR_FOUNDATION_IMAGE_REF:-}"
 image_ref="${BLUEPRINT_GROOT_OSCAR_RELEASE_IMAGE_REF:-${BLUEPRINT_GROOT_OSCAR_CLOSED_LOOP_IMAGE_REF:-}}"
 allow_push="${BLUEPRINT_ALLOW_GROOT_OSCAR_RELEASE_IMAGE_PUSH:-false}"
-manifest="${BLUEPRINT_GROOT_OSCAR_RELEASE_MANIFEST_OUTPUT:-$repo_root/output/groot_oscar_release_image_manifest.json}"
+manifest="${BLUEPRINT_GROOT_OSCAR_RELEASE_MANIFEST_OUTPUT:-$artifact_cache_root/groot_oscar_release_image_manifest.json}"
 max_release_bytes="${BLUEPRINT_GROOT_OSCAR_RELEASE_MAX_COMPRESSED_BYTES:-2147483648}"
 
 die() { echo "$1" >&2; exit 2; }

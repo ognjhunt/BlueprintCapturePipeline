@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .artifact_storage import default_artifact_cache_root
 from .first_gpu_e2e_readiness import PROVISIONERS, build_first_gpu_e2e_readiness
 from .local_capture import resolve_local_capture_context
 from .simulation_automation import SIMULATOR_FRAMEWORKS
@@ -135,8 +136,11 @@ def build_first_gpu_candidate_audit(
     require_webapp_forwarding: bool = True,
     require_webapp_staged_request: bool = True,
     require_gpu_gates: bool = True,
-    output_path: str | Path = "output/first_gpu_candidate_audit_manifest.json",
+    output_path: str | Path | None = None,
 ) -> Dict[str, Any]:
+    resolved_output_path = output_path or (
+        default_artifact_cache_root() / "first_gpu_candidate_audit_manifest.json"
+    )
     explicit_roots = _explicit_capture_roots(capture_roots)
     discovered_roots = _discover_capture_roots(search_roots)
     candidates: List[Path] = []
@@ -190,7 +194,7 @@ def build_first_gpu_candidate_audit(
             "public_claim_upgrade_allowed": False,
         },
     }
-    output = Path(output_path).expanduser()
+    output = Path(resolved_output_path).expanduser()
     ensure_dir(output.parent)
     write_json(output, result)
     return result | {"output_path": str(output)}
@@ -209,7 +213,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--no-require-webapp-forwarding", action="store_true")
     parser.add_argument("--no-require-webapp-staged-request", action="store_true")
     parser.add_argument("--no-require-gpu-gates", action="store_true")
-    parser.add_argument("--output", default="output/first_gpu_candidate_audit_manifest.json")
+    parser.add_argument(
+        "--output",
+        default=str(default_artifact_cache_root() / "first_gpu_candidate_audit_manifest.json"),
+    )
     args = parser.parse_args(argv)
 
     result = build_first_gpu_candidate_audit(

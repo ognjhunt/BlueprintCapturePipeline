@@ -2,12 +2,14 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/scripts/artifact_storage.sh"
+artifact_cache_root="$(blueprint_artifact_cache_root)"
 dockerfile="$repo_root/deploy/docker/robot_eval_worker/isaac/Dockerfile"
 image_ref="${BLUEPRINT_ISAAC_EVAL_WORKER_IMAGE_REF:-${BLUEPRINT_ROBOT_EVAL_WORKER_IMAGE_REF:-}}"
 platform="${BLUEPRINT_ISAAC_WORKER_PLATFORM:-linux/amd64}"
 base_image="${BLUEPRINT_ISAAC_SIM_BASE_IMAGE:-nvcr.io/nvidia/isaac-sim:6.0.0@sha256:68735a60b6c15c85e0dd0098570c6d2cc79e928f2d068ce2790aa43284ac165d}"
 allow_push="${BLUEPRINT_ALLOW_ISAAC_WORKER_IMAGE_PUSH:-false}"
-manifest_output="${BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_OUTPUT:-$repo_root/output/isaac_worker_image_manifest_diagnostic.json}"
+manifest_output="${BLUEPRINT_ISAAC_WORKER_IMAGE_MANIFEST_OUTPUT:-$artifact_cache_root/isaac_worker_image_manifest_diagnostic.json}"
 camera_release_output="${BLUEPRINT_NVIDIA_WAREHOUSE_CAMERA_RELEASE_OUTPUT:-}"
 source_commit="$(git -C "$repo_root" rev-parse HEAD)"
 source_dirty_patch_sha256="$(

@@ -6,9 +6,11 @@ echo "legacy build path disabled; use paid_resource_allocator cpu-build" >&2
 exit 2
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/scripts/artifact_storage.sh"
+artifact_cache_root="$(blueprint_artifact_cache_root)"
 image_ref="${BLUEPRINT_GROOT_OSCAR_FOUNDATION_IMAGE_REF:-}"
 allow_push="${BLUEPRINT_ALLOW_GROOT_OSCAR_FOUNDATION_IMAGE_PUSH:-false}"
-manifest="${BLUEPRINT_GROOT_OSCAR_FOUNDATION_MANIFEST_OUTPUT:-$repo_root/output/groot_oscar_foundation_image_manifest.json}"
+manifest="${BLUEPRINT_GROOT_OSCAR_FOUNDATION_MANIFEST_OUTPUT:-$artifact_cache_root/groot_oscar_foundation_image_manifest.json}"
 [[ -n "$image_ref" ]] || { echo "missing BLUEPRINT_GROOT_OSCAR_FOUNDATION_IMAGE_REF" >&2; exit 2; }
 [[ "${image_ref##*/}" == *:* ]] || { echo "foundation image ref must be versioned" >&2; exit 2; }
 [[ "${image_ref##*:}" != latest ]] || { echo "foundation image refuses latest" >&2; exit 2; }
