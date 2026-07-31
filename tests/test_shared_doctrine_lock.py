@@ -110,17 +110,29 @@ def test_digest_is_stable_for_identical_bodies() -> None:
 
 
 def test_missing_repo_baseline_fails_closed(tmp_path: Path) -> None:
-    lock = json.loads((REPO_ROOT / LOCK_RELATIVE_PATH).read_text(encoding="utf-8"))
+    """An unreconciled lock with no baseline for this repo must not be skipped.
+
+    Builds the unreconciled shape explicitly rather than mutating the committed
+    lock, which is `locked` and carries no `observed_sha256` at all — deriving
+    from it would couple this test to whichever phase the lock happens to be in.
+    """
+
+    lock = _lock_template(status="unreconciled")
     for entry in lock["blocks"].values():
-        entry["observed_sha256"][REPO_NAME] = None
+        entry.pop("canonical_sha256", None)
+        entry["observed_sha256"] = {REPO_NAME: None}
     _stage_repo(tmp_path, lock)
     with pytest.raises(DoctrineVerificationError, match="no baseline recorded"):
         verify(tmp_path)
 
 
 def test_locked_status_without_canonical_digest_fails_closed(tmp_path: Path) -> None:
-    lock = json.loads((REPO_ROOT / LOCK_RELATIVE_PATH).read_text(encoding="utf-8"))
-    lock["status"] = "locked"
+    """A locked lock missing its canonical digest must fail, not pass vacuously."""
+
+    lock = _lock_template(status="locked")
+    for entry in lock["blocks"].values():
+        entry["canonical_sha256"] = None
+        entry.pop("observed_sha256", None)
     _stage_repo(tmp_path, lock)
     with pytest.raises(DoctrineVerificationError, match="canonical_sha256 is absent"):
         verify(tmp_path)
@@ -137,6 +149,18 @@ def test_unknown_lock_schema_version_fails_closed(tmp_path: Path) -> None:
 def test_missing_lock_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(DoctrineVerificationError, match="missing lock file"):
         verify(tmp_path)
+
+
+def _lock_template(*, status: str) -> dict:
+    """Committed lock with an explicit status, for tests that need a given phase.
+
+    Only `status` is forced; block names and file mappings stay real so these
+    tests keep tracking the actual set of shared blocks.
+    """
+
+    lock = json.loads((REPO_ROOT / LOCK_RELATIVE_PATH).read_text(encoding="utf-8"))
+    lock["status"] = status
+    return lock
 
 
 def _stage_repo(root: Path, lock: dict) -> None:
