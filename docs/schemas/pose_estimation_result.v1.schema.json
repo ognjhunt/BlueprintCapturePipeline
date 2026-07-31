@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/pose_estimation_result.v1.schema.json",
+  "title": "Pose Estimation Result v1",
+  "type": "object",
+  "required": ["schema_version", "pose_estimation_request_digest", "status", "failure_code", "registered_observation_ids", "rejected_observation_ids", "heldout_labels_included", "candidate_self_graded", "proof_effect", "claim_ceiling", "pose_estimation_result_digest"],
+  "properties": {
+    "schema_version": {"const": "pose_estimation_result.v1"},
+    "status": {"enum": ["succeeded", "failed", "timed_out", "interrupted"]},
+    "heldout_labels_included": {"const": false},
+    "candidate_self_graded": {"const": false},
+    "proof_effect": {"const": "calibrated_trajectory_candidate_only"},
+    "claim_ceiling": {"const": "calibrated_camera_trajectory"},
+    "pose_estimation_result_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "not": {"required": ["heldout_metrics"]},
+  "additionalProperties": true
+}

@@ -9,7 +9,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import jsonschema
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from blueprint_pipeline import live_pipeline_intake_service as service
 from blueprint_pipeline.capture_intake import validate_capture_intake_envelope
@@ -28,6 +30,9 @@ from blueprint_pipeline.reconstruction_control_plane import (
     inspect_reconstruction_plan,
     load_reconstruction_compilation_inputs,
     prepare_reconstruction_plan,
+)
+from blueprint_pipeline.task_evaluation_supervisor import (
+    validate_reconstruction_readiness_pointer,
 )
 
 
@@ -273,7 +278,7 @@ def _stub_media_tools(monkeypatch: pytest.MonkeyPatch) -> None:
                 ),
                 "",
             )
-        Path(command[-1]).write_bytes(b"frame")
+        Image.new("RGB", (8, 8), color=(40, 20, 10)).save(Path(command[-1]), format="PNG")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr("blueprint_pipeline.local_reconstruction_adapters.subprocess.run", fake_run)
@@ -496,6 +501,16 @@ def test_authenticated_service_plan_authorize_execute_and_inspect(
     assert plan_response.status_code == 200
     planned = plan_response.json()
     plan_id = planned["plan_id"]
+    planned_readiness = planned["task_evaluation_supervisor_readiness"]
+    assert planned_readiness["already_exists"] is False
+    planned_snapshot = json.loads(
+        Path(planned_readiness["snapshot_path"]).read_text(encoding="utf-8")
+    )
+    planned_stages = {row["stage_id"]: row for row in planned_snapshot["stages"]}
+    assert (
+        planned_stages["compile_frozen_frame_dataset"]["readiness_status"]
+        == "awaiting_control_plane_authority"
+    )
 
     authorization_response = client.post(
         f"/api/live-pipeline/reconstructions/{plan_id}/authorize",
@@ -511,13 +526,81 @@ def test_authenticated_service_plan_authorize_execute_and_inspect(
         },
     )
     assert authorization_response.status_code == 200
+    authorized_readiness = authorization_response.json()[
+        "task_evaluation_supervisor_readiness"
+    ]
+    assert authorized_readiness["previous_readiness_digest"] == planned_readiness[
+        "readiness_digest"
+    ]
+    authorized_snapshot = json.loads(
+        Path(authorized_readiness["snapshot_path"]).read_text(encoding="utf-8")
+    )
+    authorized_stages = {row["stage_id"]: row for row in authorized_snapshot["stages"]}
+    assert (
+        authorized_stages["compile_frozen_frame_dataset"]["readiness_status"]
+        == "ready_for_bounded_tool_call"
+    )
 
     _stub_media_tools(monkeypatch)
     execute_response = client.post(
         f"/api/live-pipeline/reconstructions/{plan_id}/execute", headers=headers
     )
-    assert execute_response.status_code == 200
-    assert execute_response.json()["state"] == "completed"
+    assert execute_response.status_code == 200, execute_response.text
+    executed = execute_response.json()
+    assert executed["state"] == "completed"
+    executed_readiness = executed["task_evaluation_supervisor_readiness"]
+    assert executed_readiness["previous_readiness_digest"] == authorized_readiness[
+        "readiness_digest"
+    ]
+    executed_snapshot = json.loads(
+        Path(executed_readiness["snapshot_path"]).read_text(encoding="utf-8")
+    )
+    executed_stages = {row["stage_id"]: row for row in executed_snapshot["stages"]}
+    assert (
+        executed_stages["compile_frozen_frame_dataset"]["readiness_status"]
+        == "recorded_support_completed"
+    )
+    latest_pointer_path = Path(executed_readiness["latest_pointer_path"])
+    latest_pointer = json.loads(latest_pointer_path.read_text(encoding="utf-8"))
+    jsonschema.validate(
+        latest_pointer,
+        json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "docs/schemas/task_evaluation_reconstruction_readiness_pointer.v1.schema.json"
+            ).read_text(encoding="utf-8")
+        ),
+    )
+    assert latest_pointer["readiness_digest"] == executed_readiness["readiness_digest"]
+    tampered_pointer = dict(latest_pointer)
+    tampered_pointer["previous_readiness_digest"] = "sha256:" + "f" * 64
+    with pytest.raises(ValueError, match="reconstruction_readiness_pointer_invalid"):
+        validate_reconstruction_readiness_pointer(tampered_pointer)
+    history = sorted(
+        latest_pointer_path.parent.glob(
+            "reconstruction_execution_readiness_history/*.json"
+        )
+    )
+    assert len(history) == 3
+
+    replay_response = client.post(
+        f"/api/live-pipeline/reconstructions/{plan_id}/execute", headers=headers
+    )
+    assert replay_response.status_code == 200
+    replayed = replay_response.json()
+    assert replayed["already_exists"] is True
+    assert replayed["task_evaluation_supervisor_readiness"]["already_exists"] is True
+    assert (
+        replayed["task_evaluation_supervisor_readiness"]["readiness_digest"]
+        == executed_readiness["readiness_digest"]
+    )
+    assert len(history) == len(
+        list(
+            latest_pointer_path.parent.glob(
+                "reconstruction_execution_readiness_history/*.json"
+            )
+        )
+    )
     inspection_response = client.get(
         f"/api/live-pipeline/reconstructions/{plan_id}", headers=headers
     )

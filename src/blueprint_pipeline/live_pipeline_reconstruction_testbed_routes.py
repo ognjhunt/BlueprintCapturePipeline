@@ -24,6 +24,7 @@ from .reconstruction_control_plane import (
     inspect_reconstruction_plan,
     load_reconstruction_compilation_inputs,
     prepare_reconstruction_plan,
+    resolve_reconstruction_capture_build,
 )
 from .site_task_testbed_compilation_contract import (
     validate_testbed_compilation_submission,
@@ -44,6 +45,10 @@ from .task_candidate_control_plane import (
     load_latest_task_candidate_decision_result,
 )
 from .task_candidate_discovery import compile_approved_task_decision_request
+from .task_evaluation_supervisor import (
+    capture_supervisor_execution_options_from_env,
+    refresh_capture_reconstruction_execution_readiness,
+)
 
 
 def _string(value: Any) -> str:
@@ -78,6 +83,34 @@ def register_reconstruction_testbed_routes(
             / "maintained_site_task_testbeds"
         )
 
+    async def refresh_reconstruction_readiness(
+        *, manifest_path: Path, capture_store_root: Path, plan_id: str
+    ) -> dict[str, Any]:
+        try:
+            options = capture_supervisor_execution_options_from_env()
+            capture_build_path = resolve_reconstruction_capture_build(
+                state_root=reconstruction_root(manifest_path),
+                capture_store_root=capture_store_root,
+                plan_id=plan_id,
+            )
+            inspection = inspect_reconstruction_plan(
+                state_root=reconstruction_root(manifest_path),
+                plan_id=plan_id,
+            )
+            return await run_in_threadpool(
+                refresh_capture_reconstruction_execution_readiness,
+                capture_root=capture_build_path,
+                control_plane_inspection=inspection,
+                **options,
+            )
+        except ReconstructionControlPlaneError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="reconstruction supervisor readiness refresh failed closed",
+            ) from exc
+
     @app.post(
         "/api/live-pipeline/reconstructions/plan",
         dependencies=[Depends(require_admission)],
@@ -108,7 +141,7 @@ def register_reconstruction_testbed_routes(
                 detail="reconstruction control plane is not configured",
             )
         try:
-            return await run_in_threadpool(
+            result = await run_in_threadpool(
                 prepare_reconstruction_plan,
                 state_root=reconstruction_root(manifest_path),
                 capture_store_root=Path(store_root_text).expanduser().resolve(),
@@ -117,6 +150,12 @@ def register_reconstruction_testbed_routes(
                 requested_claim_types=[str(row) for row in claims],
                 idempotency_key=str(payload.get("idempotency_key") or ""),
             )
+            readiness = await refresh_reconstruction_readiness(
+                manifest_path=manifest_path,
+                capture_store_root=Path(store_root_text).expanduser().resolve(),
+                plan_id=str(result["plan_id"]),
+            )
+            return result | {"task_evaluation_supervisor_readiness": readiness}
         except ReconstructionControlPlaneError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
 
@@ -144,8 +183,15 @@ def register_reconstruction_testbed_routes(
                 detail="authorization references or actor invalid",
             )
         manifest_path = manifest_path_provider().resolve()
+        store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+        if not store_root_text:
+            raise HTTPException(
+                status_code=503,
+                detail="capture intake store is not configured",
+            )
         try:
-            return authorize_reconstruction_plan(
+            result = await run_in_threadpool(
+                authorize_reconstruction_plan,
                 state_root=reconstruction_root(manifest_path),
                 plan_id=plan_id,
                 reconstruction_plan_digest=str(payload.get("reconstruction_plan_digest") or ""),
@@ -153,6 +199,12 @@ def register_reconstruction_testbed_routes(
                 actor=dict(actor),
                 idempotency_key=str(payload.get("idempotency_key") or ""),
             )
+            readiness = await refresh_reconstruction_readiness(
+                manifest_path=manifest_path,
+                capture_store_root=Path(store_root_text).expanduser().resolve(),
+                plan_id=plan_id,
+            )
+            return result | {"task_evaluation_supervisor_readiness": readiness}
         except ReconstructionControlPlaneError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
 
@@ -169,12 +221,18 @@ def register_reconstruction_testbed_routes(
                 detail="capture intake store is not configured",
             )
         try:
-            return await run_in_threadpool(
+            result = await run_in_threadpool(
                 execute_reconstruction_plan,
                 state_root=reconstruction_root(manifest_path),
                 capture_store_root=Path(store_root_text).expanduser().resolve(),
                 plan_id=plan_id,
             )
+            readiness = await refresh_reconstruction_readiness(
+                manifest_path=manifest_path,
+                capture_store_root=Path(store_root_text).expanduser().resolve(),
+                plan_id=plan_id,
+            )
+            return result | {"task_evaluation_supervisor_readiness": readiness}
         except ReconstructionControlPlaneError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
 

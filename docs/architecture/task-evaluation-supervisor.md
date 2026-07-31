@@ -40,6 +40,9 @@ agent explanation cannot set proof booleans or upgrade a claim.
 | `decision_evidence_execution.py` | Explicit adapter registry, normalized evidence, and deterministic Decision Envelope aggregation | Remains execution and verdict authority |
 | `evaluation_run_contract.py` | Stable provider-neutral leaf-run contract | Remains the compilation target |
 | `agent_runtime/orchestrator.py` | Capture-readiness review with deterministic builders and optional provider overrides | Candidate input/adapter source for the capture-testbed capability; not the durable run supervisor |
+| `reconstruction_frame_dataset.py` and `arkitscenes_raw_proxy.py` | Frozen candidate/evaluator splits plus a reduced-authority public ARKit data compiler | Typed non-spend compilation support; cannot set proof or promote the proxy to Raw Contract 3.2/iPhone evidence |
+| `native_360_normalization.py` | Source-preserving `.insv` probe, calibration, rig, and synchronization validation | Conditionally injected typed tool; the agent receives only capture/route digests and cannot alter calibration |
+| `equirectangular_virtual_rig.py` | Fixed perspective projection with explicit shared-optical-center groups | Conditionally injected typed tool; derived views remain support pixels and cannot become independent captured observations |
 | `agent_operator_runtime.py` | Gated one-shot OpenAI/Codex operator wrappers | Shared live-Agents-SDK admission gate only; not the supervisor harness |
 | `site_eval_director.py` | Deterministic site/simulation planning plus optional advisory operators | Future registered non-spend tool surface after contract qualification |
 | `stance_configuration_agent.py` | Deterministic bounded recovery/search | Candidate deterministic recovery tool, despite its historical “agent” name |
@@ -145,6 +148,61 @@ sufficient to fabricate a customer decision. The deterministic ingress reads
 only registered manifest paths, records their hashes and schema names, and
 builds an allowlisted metadata projection. It does not read raw media.
 
+The Capture and Testbed Supervisor now proposes a deterministic
+`task_evaluation_capture_reconstruction_route.v1` whenever that bounded build
+contains an explicit capture authority profile. The route is profile-specific:
+ARKit/LiDAR uses the strict metric-scaffold lane; equirectangular 360 capture
+requires spherical-to-perspective normalization before SfM/3DGS; native 360
+capture additionally requires original-container normalization; and monocular
+video requires SfM plus a separate metric-scale qualification. Conflicting or
+missing profiles fail closed. A LiDAR hint alone does not select the ARKit lane.
+
+In `execute_non_spend`, the specialist may call the registered read-only
+`plan_capture_reconstruction_route` tool using the exact capture-build digest.
+The deterministic tool, rather than agent prose, returns the profile, ordered
+method kinds, implementation status, registered adapters, missing stages, and
+proof boundary. The result is still a planning observation: it cannot authorize
+an adapter, establish reconstruction evidence, or promote a 3DGS appearance
+layer into metric, semantic, collision, physics, physical-success, or deployment
+truth.
+
+When validated Phase 4 request artifacts and trusted runtimes are injected, the
+same specialist can call `run_pose_estimation` and
+`train_gaussian_reconstruction`. The model-facing arguments contain only the
+exact request digest. Deterministic bindings reject mismatched lineage,
+incompatible feature/matcher pairs, hidden-held-out access, split mutation,
+self-grading, malformed results, and untyped failures. Pose and appearance
+results remain candidates and cannot modify proof state.
+
+Phase 5 registers `compile_metric_geometry`, `compile_collision_candidate`,
+`qualify_collision_candidate`, `package_nurec_openusd`, and
+`verify_isaac_asset` using the same digest-only execution pattern. Source and
+request artifacts plus executor callables remain trusted runtime state. The
+model cannot supply paths, thresholds, calibration, package contents, Isaac
+checks, or provider handles. Each emitted artifact is revalidated and bound to
+its predecessor before it enters the ledger; the enclosing tool observation
+retains `proof_effect=none`. `package_nurec_openusd` additionally validates the
+complete versioned packaging request before invoking the trusted packager; a
+digest-valid but scientifically unqualified collider request is refused before
+filesystem execution.
+
+Phase 6 registers `import_external_reconstruction` for the local external-export
+lane. Its only model-visible argument is the exact
+`external_reconstruction_import_request.v1` digest. The trusted importer checks
+source-capture binding, provenance and rights, path confinement, exact hashes,
+bounded sizes, and USDZ archive safety, then emits separate rights and import
+receipts. It performs no remote upload and cannot promote provider output to
+raw evidence, metric geometry, collision truth, Isaac compatibility, task
+success, physical success, or deployment readiness.
+
+The registry also contains `invoke_authorized_reconstruction_provider` as an
+external-side-effect descriptor restricted to `execute_preauthorized`. It is
+deliberately absent from capability bindings while no qualified adapter exists.
+Future binding requires the provider-neutral admission/request contracts, an
+exact non-agent authorization receipt, a canonical paid-resource route, and
+execution plus deletion receipts. Provider success remains derived support and
+cannot self-grade or mutate deterministic proof.
+
 When no Decision/Evidence Request or maintained Site-Task Testbed exists, the
 manager first triggers claim interpretation, then capture/testbed inspection,
 and stops with a typed clarification or blocker. Scenario, routing, recovery,
@@ -231,6 +289,9 @@ be replayed independently.
 | Supervisor event | `task_evaluation_supervisor_event.v1` in the hash-chained JSONL ledger | Append-only audit record |
 | Clarification request and receipt | `task_evaluation_clarification_request.v1` and `task_evaluation_clarification_receipt.v1` | Non-proof customer input; an agent cannot answer its own request |
 | Targeted recapture request, receipt, and reinspection | `targeted_recapture_request.v1`, `task_evaluation_targeted_recapture_receipt.v1`, and `task_evaluation_recapture_reinspection.v1` | Request and receipt are non-proof; the kernel derives reinspection status |
+| Capture reconstruction route | `task_evaluation_capture_reconstruction_route.v1` plus the registered `plan_capture_reconstruction_route` observation | Profile-specific planning only; no execution authorization or reconstruction proof |
+| Reconstruction execution readiness | `task_evaluation_reconstruction_execution_readiness.v1` emitted by capture-supervisor lifecycle v4 | Source-bound join of route, registry, runtime bindings, and recorded control-plane authority/execution; support only and never a proof upgrade |
+| Reconstruction readiness pointer | `task_evaluation_reconstruction_readiness_pointer.v1` updated after authenticated plan/authorize/execute mutations | Replaceable index over immutable content-addressed readiness history; predecessor-linked, non-authoritative, and replay-idempotent |
 | Evidence-method selection | `evidence_method_selection.v1` capability artifact and the existing versioned Evidence Plan | The deterministic router qualifies and selects methods |
 | Leaf-run compilation | Existing `evaluation_run_spec.v1` artifacts materialized under `generated/compiled_leaf_runs/` | Deterministic local compilation; no provider execution |
 | Typed failure diagnosis and recovery | `typed_failure_diagnosis.v1`, `task_evaluation_recovery_action.v1`, and `task_evaluation_recovery_result.v1` | Diagnosis is advisory; a bounded controller owns execution and result validation |

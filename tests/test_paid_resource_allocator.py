@@ -667,6 +667,103 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
+def _reconstruction_args(tmp_path: Path, *, execute: bool) -> Namespace:
+    return Namespace(
+        provider_launch_request=str(tmp_path / "request.json"),
+        preflight_bundle=str(tmp_path / "preflight.json"),
+        admission_out=str(tmp_path / "admission.json"),
+        bound_request_out=str(tmp_path / "bound.json"),
+        adapter_output=str(tmp_path / "adapter.json"),
+        provider="vast",
+        expected_source_commit="c" * 40,
+        reconstruction_max_spend_usd=1.0,
+        reconstruction_hard_ttl_seconds=300,
+        reconstruction_retry_cap=0,
+        reconstruction_authority_id="fixture-authority",
+        provider_output_put_url_file=str(tmp_path / "put-url.txt"),
+        provider_output_get_url_file=str(tmp_path / "get-url.txt"),
+        execute=execute,
+    )
+
+
+def test_reconstruction_gpu_execute_routes_through_shared_grant_and_vast_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _reconstruction_args(tmp_path, execute=True)
+    Path(args.preflight_bundle).write_text("{}", encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    def fake_prepare(**kwargs: object) -> dict[str, object]:
+        observed["prepare"] = kwargs
+        Path(str(kwargs["bound_request_out"])).write_text("{}", encoding="utf-8")
+        return {"status": "execute_ready", "blockers": []}
+
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", fake_prepare)
+    monkeypatch.setattr(
+        allocator,
+        "read_sensitive_url_file",
+        lambda _path, *, label: (
+            f"https://objects.example/{label}",
+            {"mode_is_0600": True},
+        ),
+    )
+    provider = object()
+    monkeypatch.setattr(allocator, "get_render_provider", lambda name: provider)
+
+    def fake_run(**kwargs: object) -> dict[str, object]:
+        observed["run"] = kwargs
+        return {
+            "status": "completed",
+            "provider_mutations_performed": 2,
+            "cost_usd": 0.01,
+            "proof_effect": "none",
+        }
+
+    monkeypatch.setattr(allocator, "run_reconstruction_vast_worker_smoke", fake_run)
+    result = allocator._run_reconstruction_gpu_canary(args, checkout_commit="c" * 40)
+
+    assert result["status"] == "completed"
+    assert observed["prepare"]["execution_adapter_qualified"] is True
+    assert observed["run"]["provider"] is provider
+    grant = observed["run"]["paid_resource_admission_grant"]
+    assert grant.resource_class == "gpu_render"
+    assert json.loads((tmp_path / "adapter.json").read_text())["status"] == "completed"
+    assert (
+        json.loads((tmp_path / "reconstruction_paid_lane_admission.json").read_text())["status"]
+        == "admitted"
+    )
+
+
+def test_reconstruction_gpu_execute_refuses_insecure_transport_before_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _reconstruction_args(tmp_path, execute=True)
+    monkeypatch.setattr(
+        allocator,
+        "prepare_reconstruction_gpu_canary",
+        lambda **_kwargs: {"status": "execute_ready", "blockers": []},
+    )
+    monkeypatch.setattr(
+        allocator,
+        "read_sensitive_url_file",
+        lambda _path, *, label: ("http://unsafe.example/value", {"mode_is_0600": True}),
+    )
+    monkeypatch.setattr(
+        allocator,
+        "get_render_provider",
+        lambda _name: (_ for _ in ()).throw(AssertionError("provider accessed")),
+    )
+
+    result = allocator._run_reconstruction_gpu_canary(args, checkout_commit="c" * 40)
+
+    assert result["status"] == "blocked"
+    assert result["provider_mutations_performed"] == 0
+    assert {
+        "reconstruction_provider_output_get_url_not_https",
+        "reconstruction_provider_output_put_url_not_https",
+    } <= set(result["blockers"])
+
+
 @pytest.mark.parametrize(
     "probe_kind",
     [
@@ -685,9 +782,7 @@ def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator
         observed.update(kwargs)
         return {"status": "dry_run_ready"}
 
-    monkeypatch.setattr(
-        allocator, "run_openpi_policy_ranking_campaign", fake_run_openpi
-    )
+    monkeypatch.setattr(allocator, "run_openpi_policy_ranking_campaign", fake_run_openpi)
     monkeypatch.setattr(
         allocator, "_source_checkout_blockers", lambda _expected, **_kwargs: ([], "c" * 40)
     )
@@ -818,8 +913,7 @@ def test_gpu_canary_rejects_missing_source_and_output_sink_before_dispatch(
     result = json.loads(admission.read_text(encoding="utf-8"))
     assert result["provider_mutations_performed"] == 0
     assert result["blockers"] == [
-        "gpu_canary_required_arguments_missing:"
-        "expected_source_commit,provider_output_put_url_file"
+        "gpu_canary_required_arguments_missing:expected_source_commit,provider_output_put_url_file"
     ]
     assert json.loads(capsys.readouterr().out) == {"success": False}
 
@@ -1280,9 +1374,10 @@ def test_gpu_canary_experimental_lane_accepts_clean_pushed_codex_branch(
         lambda _branch: "c" * 40,
     )
 
-    assert allocator._source_checkout_blockers(
-        "c" * 40, allow_pushed_branch_diagnostic=True
-    ) == ([], "c" * 40)
+    assert allocator._source_checkout_blockers("c" * 40, allow_pushed_branch_diagnostic=True) == (
+        [],
+        "c" * 40,
+    )
 
 
 def test_gpu_canary_experimental_lane_requires_matching_remote_branch_commit(
@@ -1300,9 +1395,10 @@ def test_gpu_canary_experimental_lane_requires_matching_remote_branch_commit(
         lambda _branch: "b" * 40,
     )
 
-    assert allocator._source_checkout_blockers(
-        "c" * 40, allow_pushed_branch_diagnostic=True
-    ) == (["gpu_canary_checkout_not_pushed_experimental_branch"], "c" * 40)
+    assert allocator._source_checkout_blockers("c" * 40, allow_pushed_branch_diagnostic=True) == (
+        ["gpu_canary_checkout_not_pushed_experimental_branch"],
+        "c" * 40,
+    )
 
 
 def test_gpu_canary_experimental_lane_rejects_non_codex_branch(
@@ -1320,9 +1416,7 @@ def test_gpu_canary_experimental_lane_rejects_non_codex_branch(
         lambda _branch: "",
     )
 
-    assert allocator._source_checkout_blockers(
-        "c" * 40, allow_pushed_branch_diagnostic=True
-    ) == (
+    assert allocator._source_checkout_blockers("c" * 40, allow_pushed_branch_diagnostic=True) == (
         [
             "gpu_canary_experimental_branch_not_codex_namespaced",
             "gpu_canary_remote_experimental_branch_commit_unavailable",
@@ -1334,9 +1428,7 @@ def test_gpu_canary_experimental_lane_rejects_non_codex_branch(
 def test_gpu_qualification_control_plane_identity_records_main_drift_without_blocking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        allocator, "_current_checkout_source_state", lambda: ("c" * 40, True)
-    )
+    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("c" * 40, True))
     monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "b" * 40)
     monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "a" * 40)
 
@@ -1353,9 +1445,7 @@ def test_gpu_qualification_control_plane_identity_records_main_drift_without_blo
 def test_gpu_qualification_control_plane_identity_still_requires_clean_checkout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        allocator, "_current_checkout_source_state", lambda: ("c" * 40, False)
-    )
+    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("c" * 40, False))
     monkeypatch.setattr(allocator, "_current_origin_main_commit", lambda: "b" * 40)
     monkeypatch.setattr(allocator, "_current_remote_main_commit", lambda: "a" * 40)
 
@@ -1474,22 +1564,38 @@ def test_gpu_qualification_allocate_requires_independent_source_commit(
     exit_code = allocator.main(
         [
             "gpu-canary",
-            "--provider", "vast",
-            "--probe-kind", allocator.SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
-            "--qualification-action", "allocate",
-            "--qualification-session-manifest", str(out / "session.json"),
-            "--episode-bundle", str(out / "episode.zip"),
-            "--provider-bundle-url-file", str(out / "bundle-url.txt"),
-            "--provider-output-put-url-file", str(out / "put-url.txt"),
-            "--provider-output-get-url-file", str(out / "get-url.txt"),
-            "--provider-launch-request", str(out / "request.json"),
-            "--release-evidence", str(out / "release.json"),
-            "--model-cache-evidence", str(out / "models.json"),
-            "--preflight-bundle", str(out / "preflight.json"),
-            "--admission-out", str(out / "admission.json"),
-            "--bound-request-out", str(out / "bound.json"),
-            "--adapter-output", str(out / "result.json"),
-            "--pod-name", "retained-qualification-gpu",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            allocator.SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
+            "--qualification-action",
+            "allocate",
+            "--qualification-session-manifest",
+            str(out / "session.json"),
+            "--episode-bundle",
+            str(out / "episode.zip"),
+            "--provider-bundle-url-file",
+            str(out / "bundle-url.txt"),
+            "--provider-output-put-url-file",
+            str(out / "put-url.txt"),
+            "--provider-output-get-url-file",
+            str(out / "get-url.txt"),
+            "--provider-launch-request",
+            str(out / "request.json"),
+            "--release-evidence",
+            str(out / "release.json"),
+            "--model-cache-evidence",
+            str(out / "models.json"),
+            "--preflight-bundle",
+            str(out / "preflight.json"),
+            "--admission-out",
+            str(out / "admission.json"),
+            "--bound-request-out",
+            str(out / "bound.json"),
+            "--adapter-output",
+            str(out / "result.json"),
+            "--pod-name",
+            "retained-qualification-gpu",
             "--execute",
         ]
     )
@@ -1533,23 +1639,40 @@ def test_gpu_qualification_allocate_blocks_dirty_or_unavailable_orchestrator_bef
     exit_code = allocator.main(
         [
             "gpu-canary",
-            "--provider", "vast",
-            "--probe-kind", allocator.SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
-            "--qualification-action", "allocate",
-            "--qualification-session-manifest", str(out / "session.json"),
-            "--episode-bundle", str(out / "episode.zip"),
-            "--provider-bundle-url-file", str(out / "bundle-url.txt"),
-            "--provider-output-put-url-file", str(out / "put-url.txt"),
-            "--provider-output-get-url-file", str(out / "get-url.txt"),
-            "--provider-launch-request", str(out / "request.json"),
-            "--release-evidence", str(out / "release.json"),
-            "--model-cache-evidence", str(out / "models.json"),
-            "--preflight-bundle", str(out / "preflight.json"),
-            "--admission-out", str(out / "admission.json"),
-            "--bound-request-out", str(out / "bound.json"),
-            "--adapter-output", str(out / "result.json"),
-            "--pod-name", "retained-qualification-gpu",
-            "--expected-source-commit", "b" * 40,
+            "--provider",
+            "vast",
+            "--probe-kind",
+            allocator.SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
+            "--qualification-action",
+            "allocate",
+            "--qualification-session-manifest",
+            str(out / "session.json"),
+            "--episode-bundle",
+            str(out / "episode.zip"),
+            "--provider-bundle-url-file",
+            str(out / "bundle-url.txt"),
+            "--provider-output-put-url-file",
+            str(out / "put-url.txt"),
+            "--provider-output-get-url-file",
+            str(out / "get-url.txt"),
+            "--provider-launch-request",
+            str(out / "request.json"),
+            "--release-evidence",
+            str(out / "release.json"),
+            "--model-cache-evidence",
+            str(out / "models.json"),
+            "--preflight-bundle",
+            str(out / "preflight.json"),
+            "--admission-out",
+            str(out / "admission.json"),
+            "--bound-request-out",
+            str(out / "bound.json"),
+            "--adapter-output",
+            str(out / "result.json"),
+            "--pod-name",
+            "retained-qualification-gpu",
+            "--expected-source-commit",
+            "b" * 40,
             "--execute",
         ]
     )
@@ -1565,9 +1688,7 @@ def test_gpu_qualification_allocate_blocks_dirty_or_unavailable_orchestrator_bef
         "provider_mutations_performed": 0,
     }
     for name in ("request.json", "preflight.json", "admission.json", "bound.json"):
-        assert json.loads((out / name).read_text()) == json.loads(
-            (out / "result.json").read_text()
-        )
+        assert json.loads((out / name).read_text()) == json.loads((out / "result.json").read_text())
     assert json.loads(capsys.readouterr().out) == {"success": False}
 
 
@@ -1600,23 +1721,40 @@ def test_gpu_qualification_allows_clean_orchestrator_commit_to_differ_from_image
     exit_code = allocator.main(
         [
             "gpu-canary",
-            "--provider", "vast",
-            "--probe-kind", allocator.SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
-            "--qualification-action", "allocate",
-            "--qualification-session-manifest", str(out / "session.json"),
-            "--episode-bundle", str(out / "episode.zip"),
-            "--provider-bundle-url-file", str(out / "bundle-url.txt"),
-            "--provider-output-put-url-file", str(out / "put-url.txt"),
-            "--provider-output-get-url-file", str(out / "get-url.txt"),
-            "--provider-launch-request", str(out / "request.json"),
-            "--release-evidence", str(out / "release.json"),
-            "--model-cache-evidence", str(out / "models.json"),
-            "--preflight-bundle", str(out / "preflight.json"),
-            "--admission-out", str(out / "admission.json"),
-            "--bound-request-out", str(out / "bound.json"),
-            "--adapter-output", str(out / "result.json"),
-            "--pod-name", "retained-qualification-gpu",
-            "--expected-image-source-commit", "b" * 40,
+            "--provider",
+            "vast",
+            "--probe-kind",
+            allocator.SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
+            "--qualification-action",
+            "allocate",
+            "--qualification-session-manifest",
+            str(out / "session.json"),
+            "--episode-bundle",
+            str(out / "episode.zip"),
+            "--provider-bundle-url-file",
+            str(out / "bundle-url.txt"),
+            "--provider-output-put-url-file",
+            str(out / "put-url.txt"),
+            "--provider-output-get-url-file",
+            str(out / "get-url.txt"),
+            "--provider-launch-request",
+            str(out / "request.json"),
+            "--release-evidence",
+            str(out / "release.json"),
+            "--model-cache-evidence",
+            str(out / "models.json"),
+            "--preflight-bundle",
+            str(out / "preflight.json"),
+            "--admission-out",
+            str(out / "admission.json"),
+            "--bound-request-out",
+            str(out / "bound.json"),
+            "--adapter-output",
+            str(out / "result.json"),
+            "--pod-name",
+            "retained-qualification-gpu",
+            "--expected-image-source-commit",
+            "b" * 40,
         ]
     )
 

@@ -20,6 +20,8 @@ a fail-closed ``run`` — no core change required.
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -141,6 +143,9 @@ def _isaac_nurec_run(**kwargs) -> dict:
 
 
 ARTIFIXER_INFERENCE_MODULE = "model_eval.run_inference"
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 
 
 def _artifixer_available() -> bool:
@@ -149,6 +154,14 @@ def _artifixer_available() -> bool:
         return importlib.util.find_spec("model_eval") is not None
     except (ImportError, ValueError):
         return False
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
 
 
 def _artifixer_run(
@@ -161,6 +174,14 @@ def _artifixer_run(
     python: str = "python",
     timeout_seconds: int = 7200,
     held_out_manifest=None,
+    model_id: str | None = None,
+    checkpoint_digest: str | None = None,
+    base_model_digest: str | None = None,
+    source_commit_sha: str | None = None,
+    container_image_digest: str | None = None,
+    license_receipt_digest: str | None = None,
+    baseline_reconstruction_digest: str | None = None,
+    frozen_split_digest: str | None = None,
 ) -> dict:
     """NVIDIA ArtiFixer: diffusion artifact-fix / novel-view frames from a sparse 3DGRUT
     reconstruction. Fail-closed wrapper around its documented inference CLI."""
@@ -169,6 +190,55 @@ def _artifixer_run(
             "status": "blocked",
             "blockers": ["artifixer_unavailable"],
             "remediation": "install nv-tlabs/artifixer (GPU, CUDA 12/13) and supply a checkpoint",
+        }
+    from .reconstruction_enhancement_audit import enhancement_method_audit
+
+    qualification_audit = enhancement_method_audit("artifixer")
+    pins = {
+        "checkpoint_digest": checkpoint_digest,
+        "base_model_digest": base_model_digest,
+        "license_receipt_digest": license_receipt_digest,
+        "baseline_reconstruction_digest": baseline_reconstruction_digest,
+        "frozen_split_digest": frozen_split_digest,
+    }
+    blockers = list(qualification_audit["blockers"])
+    blockers.extend(
+        [
+        f"artifixer_{key}_missing_or_invalid"
+        for key, value in pins.items()
+        if not _DIGEST.fullmatch(str(value or ""))
+        ]
+    )
+    if _COMMIT.fullmatch(str(source_commit_sha or "")) is None:
+        blockers.append("artifixer_source_commit_missing_or_invalid")
+    if _IMAGE.fullmatch(str(container_image_digest or "")) is None:
+        blockers.append("artifixer_container_image_missing_or_invalid")
+    if model_id not in {
+        "Wan-AI/Wan2.1-T2V-14B-Diffusers",
+        "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+    }:
+        blockers.append("artifixer_base_model_identity_missing_or_invalid")
+    if not held_out_manifest:
+        blockers.append("artifixer_frozen_real_heldout_manifest_required")
+    checkpoint = Path(checkpoint_pt)
+    split = Path(split_path)
+    heldout = Path(held_out_manifest) if held_out_manifest else None
+    if checkpoint.is_symlink() or not checkpoint.is_file():
+        blockers.append("artifixer_checkpoint_missing_or_symlink")
+    elif checkpoint_digest and _sha256_path(checkpoint) != checkpoint_digest:
+        blockers.append("artifixer_checkpoint_digest_mismatch")
+    if split.is_symlink() or not split.is_file():
+        blockers.append("artifixer_split_missing_or_symlink")
+    if heldout is None or heldout.is_symlink() or not heldout.is_file():
+        blockers.append("artifixer_heldout_manifest_missing_or_symlink")
+    if blockers:
+        return {
+            "status": "blocked",
+            "blockers": sorted(set(blockers)),
+            "enhancer": "artifixer",
+            "enhancement_method_audit": qualification_audit,
+            "proof_effect": "none",
+            "claim_ceiling": "generated_visual_support",
         }
     exe = shutil.which(python) or python
     cmd = [
@@ -179,6 +249,8 @@ def _artifixer_run(
         evalset,
         "--checkpoint_pt",
         str(checkpoint_pt),
+        "--model_id",
+        str(model_id),
         "--save_dir",
         str(save_dir),
         "--split_path",
@@ -196,19 +268,6 @@ def _artifixer_run(
             "blockers": ["artifixer_failed"],
             "stderr_tail": (proc.stderr or "")[-2000:],
             "command": " ".join(cmd),
-        }
-    if not held_out_manifest:
-        return {
-            "status": "generated_support_pending_heldout_evaluation",
-            "save_dir": str(save_dir),
-            "command": " ".join(cmd),
-            "enhancer": "artifixer",
-            "blockers": ["artifixer_heldout_real_view_evaluation_required"],
-            "claim_boundary": {
-                "generated_pixels_are_capture_truth": False,
-                "generated_geometry_is_collision_truth": False,
-                "rank_fidelity_result_proven": False,
-            },
         }
     from .artifixer_heldout_evaluation import evaluate_artifixer_heldout_views
 
@@ -228,6 +287,20 @@ def _artifixer_run(
         "enhancer": "artifixer",
         "heldout_evaluation": evaluation,
         "claim_boundary": evaluation["claim_boundary"],
+    }
+
+
+def _rejected_enhancer_run(method_id: str, **_kwargs) -> dict:
+    from .reconstruction_enhancement_audit import enhancement_method_audit
+
+    audit = enhancement_method_audit(method_id)
+    return {
+        "status": "blocked",
+        "blockers": list(audit["blockers"]),
+        "enhancer": method_id,
+        "enhancement_method_audit": audit,
+        "proof_effect": "none",
+        "claim_ceiling": "generated_visual_support",
     }
 
 
@@ -291,6 +364,26 @@ def _register_builtins() -> None:
             ("gpu", "artifixer", "checkpoint"),
             _artifixer_available,
             _artifixer_run,
+        )
+    )
+    register_backend(
+        SplatBackend(
+            "difix3d",
+            "enhancer",
+            "NVIDIA Difix3D+: deterministic rejection pending commercial license and runtime qualification",
+            ("commercial_license_receipt", "pinned_worker", "checkpoint"),
+            lambda: False,
+            lambda **kwargs: _rejected_enhancer_run("difix3d", **kwargs),
+        )
+    )
+    register_backend(
+        SplatBackend(
+            "harmonizer",
+            "enhancer",
+            "NVIDIA DiffusionHarmonizer: deterministic rejection pending pinned runtime qualification",
+            ("pinned_worker", "checkpoint", "cosmos_base_model"),
+            lambda: False,
+            lambda **kwargs: _rejected_enhancer_run("harmonizer", **kwargs),
         )
     )
 

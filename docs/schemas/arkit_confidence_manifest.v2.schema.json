@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/arkit_confidence_manifest.v2.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "confidence_encoding",
+    "accepted_confidence_values",
+    "frames"
+  ],
+  "properties": {
+    "schema_version": {"const": "arkit_confidence_manifest.v2"},
+    "confidence_encoding": {"enum": ["uint8_png", "npy"]},
+    "accepted_confidence_values": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 0, "maximum": 255}
+    },
+    "frames": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/frame"}
+    }
+  },
+  "$defs": {
+    "frame": {
+      "type": "object",
+      "required": ["frame_id", "confidence_path", "paired_depth_path"],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "confidence_path": {"type": "string", "minLength": 1},
+        "paired_depth_path": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

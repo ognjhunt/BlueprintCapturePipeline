@@ -187,10 +187,30 @@ Do not calibrate thresholds on held-out views.
 
 ### P1: raw iPhone/video contract test
 
-Use one qualifying ARKitScenes scene only after organizational license
-eligibility is recorded, or wait for the user's BlueprintCapture bundle. Test
-video decode, monotonic PTS, depth/pose joins, and reduced authority. Only an
-actual Raw Contract 3.2 bundle can test retained-frame/encoder-attempt truth.
+The user explicitly accepted the ARKitScenes license for local evaluation and
+authorized scene `40958756`. The accepted exact-commit proxy run decoded the
+MOV, bound original video PTS to timed ARKit timestamps and intrinsics, joined
+all 163 official trajectory samples to RGB/depth/confidence/intrinsics, froze
+40 observations into disjoint 32-candidate/8-held-out partitions, filtered
+depth to confidence 2 plus positive samples, and replayed identically. Its
+terminal digest is
+`sha256:4c1d69c959ce1df03be4196b4dc2cf6c762c73fd4f474bc2c95d6cf94f64b0f6`.
+This remains local public-dataset proxy evidence. Only an actual Raw Contract
+3.2 bundle can test retained-frame/encoder-attempt truth, and separate legal
+review is still required before any broader organizational/commercial use.
+
+The same Apple-hosted source bytes were replayed again at clean commit
+`b2d7297fc3b28d2bb0a7b02ff3901137d70f51d3`. The aggregate source digest and
+stage counts matched the prior run; the current configuration-bound split and
+terminal digests are respectively
+`sha256:8d12da972bc99eabddd6061476121bcfff9d266435ae088ed32247f83a0f058c`
+and
+`sha256:0a37ab5a1a7b52c8917c58c840d6a8110e6e981463ffd89c1466c44c5991b22e`.
+The 40 observations froze as 28 training, 4 validation, and 8 hidden held-out
+frames; exact-current replay and JSON Schema validation passed. See
+`docs/evidence/arkitscenes_raw_proxy_40958756_b2d7297f.json` for the compact
+source- and output-digest receipt. This second execution does not change the
+claim ceiling stated above.
 
 ### P1: 360 projection tests
 

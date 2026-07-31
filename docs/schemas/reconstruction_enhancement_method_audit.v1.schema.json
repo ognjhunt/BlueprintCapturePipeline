@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_enhancement_method_audit.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "method_id", "source_repository", "source_commit", "source_license", "model_repository", "model_license", "modes", "runtime", "status", "blockers", "candidate_registered", "baseline_reconstruction_required", "frozen_real_heldout_views_required", "hidden_heldout_available_to_candidate", "independent_evaluator_required", "unenhanced_baseline_preserved", "generated_output_provenance_required", "statistical_and_operational_improvement_required", "generated_pixels_are_captured_evidence", "metric_or_collision_proof_effect", "physical_or_deployment_proof_effect", "proof_effect", "claim_ceiling", "legal_next_actions", "enhancement_method_audit_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_enhancement_method_audit.v1"},
+    "method_id": {"enum": ["artifixer", "difix3d", "harmonizer"]},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "status": {"type": "string", "pattern": "^rejected_"},
+    "blockers": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "candidate_registered": {"const": true},
+    "baseline_reconstruction_required": {"const": true},
+    "frozen_real_heldout_views_required": {"const": true},
+    "hidden_heldout_available_to_candidate": {"const": false},
+    "independent_evaluator_required": {"const": true},
+    "unenhanced_baseline_preserved": {"const": true},
+    "generated_output_provenance_required": {"const": true},
+    "statistical_and_operational_improvement_required": {"const": true},
+    "generated_pixels_are_captured_evidence": {"const": false},
+    "metric_or_collision_proof_effect": {"const": false},
+    "physical_or_deployment_proof_effect": {"const": false},
+    "proof_effect": {"const": "deterministic_enhancement_rejection_only"},
+    "claim_ceiling": {"const": "generated_visual_support"},
+    "enhancement_method_audit_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

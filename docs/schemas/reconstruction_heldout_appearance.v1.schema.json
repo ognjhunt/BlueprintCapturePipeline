@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/reconstruction_heldout_appearance.v1.schema.json",
+  "title": "Blueprint Reconstruction Held-out Appearance Contracts v1",
+  "oneOf": [
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/report"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "request": {
+      "type": "object",
+      "required": [
+        "schema_version", "stable_run_identity", "source_capture_identity",
+        "source_capture_digest", "reconstruction_dataset_digest", "frozen_split_digest",
+        "candidate_reconstruction_result_digest", "candidate_method_id",
+        "candidate_provider_identity", "evaluator_identity", "evaluator_provider_identity",
+        "evaluator_implementation_digest", "source_commit_sha", "candidate_root",
+        "evaluator_root", "coordinate_frame_declaration", "split_frozen_before_training",
+        "candidate_had_hidden_access", "candidate_selected_heldout", "candidate_self_grading",
+        "thresholds_frozen_before_evaluation", "thresholds", "pairs", "authority_used",
+        "timestamp", "heldout_appearance_evaluation_request_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "heldout_appearance_evaluation_request.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "reconstruction_dataset_digest": {"$ref": "#/$defs/sha256"},
+        "frozen_split_digest": {"$ref": "#/$defs/sha256"},
+        "candidate_reconstruction_result_digest": {"$ref": "#/$defs/sha256"},
+        "evaluator_implementation_digest": {"$ref": "#/$defs/sha256"},
+        "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "coordinate_frame_declaration": {"type": "object"},
+        "split_frozen_before_training": {"const": true},
+        "candidate_had_hidden_access": {"const": false},
+        "candidate_selected_heldout": {"const": false},
+        "candidate_self_grading": {"const": false},
+        "thresholds_frozen_before_evaluation": {"const": true},
+        "thresholds": {"type": "object"},
+        "pairs": {"type": "array", "minItems": 1},
+        "authority_used": {"type": "object"},
+        "heldout_appearance_evaluation_request_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "report": {
+      "type": "object",
+      "required": [
+        "schema_version", "source_capture_digest", "reconstruction_dataset_digest",
+        "frozen_split_digest", "candidate_reconstruction_result_digest",
+        "evaluation_request_digest", "evaluator_implementation_digest", "rows", "aggregate",
+        "status", "heldout_observation_count", "candidate_had_hidden_access",
+        "candidate_selected_heldout", "candidate_self_graded", "proof_effect", "claim_ceiling",
+        "metric_scale_proven", "metric_geometry_proven", "collision_geometry_proven",
+        "physics_readiness_proven", "physical_task_success_proven",
+        "deployment_readiness_proven", "visual_heldout_evaluation_report_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "visual_heldout_evaluation_report.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "reconstruction_dataset_digest": {"$ref": "#/$defs/sha256"},
+        "frozen_split_digest": {"$ref": "#/$defs/sha256"},
+        "candidate_reconstruction_result_digest": {"$ref": "#/$defs/sha256"},
+        "evaluation_request_digest": {"$ref": "#/$defs/sha256"},
+        "evaluator_implementation_digest": {"$ref": "#/$defs/sha256"},
+        "status": {"enum": ["passed_appearance_only", "rejected_appearance_quality"]},
+        "candidate_had_hidden_access": {"const": false},
+        "candidate_selected_heldout": {"const": false},
+        "candidate_self_graded": {"const": false},
+        "proof_effect": {"const": "independent_heldout_appearance_evaluation_only"},
+        "claim_ceiling": {"const": "appearance_reconstruction"},
+        "metric_scale_proven": {"const": false},
+        "metric_geometry_proven": {"const": false},
+        "collision_geometry_proven": {"const": false},
+        "physics_readiness_proven": {"const": false},
+        "physical_task_success_proven": {"const": false},
+        "deployment_readiness_proven": {"const": false},
+        "visual_heldout_evaluation_report_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/arkit_reconstruction_dataset.v1.schema.json",
+  "title": "Blueprint ARKit Reconstruction Dataset Contracts v1",
+  "oneOf": [
+    {"$ref": "#/$defs/export_request"},
+    {"$ref": "#/$defs/export"},
+    {"$ref": "#/$defs/calibration"},
+    {"$ref": "#/$defs/observations"},
+    {"$ref": "#/$defs/refinement_request"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "matrix4": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "array", "minItems": 4, "maxItems": 4,
+        "items": {"type": "number"}
+      }
+    },
+    "export_request": {
+      "type": "object",
+      "required": [
+        "schema_version", "intake_id", "source_capture_digest", "dataset_manifest",
+        "split_manifest", "candidate_manifest", "metric_scaffold",
+        "metric_scaffold_digest", "implementation_digest", "source_commit_sha",
+        "authority_used", "timestamp", "arkit_export_request_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "arkit_reconstruction_dataset_export_request.v1"},
+        "intake_id": {"type": "string", "minLength": 1},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "dataset_manifest": {"type": "object"},
+        "split_manifest": {"type": "object"},
+        "candidate_manifest": {
+          "type": "object",
+          "required": ["heldout_pixels_included"],
+          "properties": {"heldout_pixels_included": {"const": false}}
+        },
+        "metric_scaffold": {"type": "object"},
+        "metric_scaffold_digest": {"$ref": "#/$defs/sha256"},
+        "implementation_digest": {"$ref": "#/$defs/sha256"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "authority_used": {"type": "object"},
+        "timestamp": {"type": "string", "minLength": 1},
+        "arkit_export_request_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "calibration": {
+      "type": "object",
+      "required": [
+        "schema_version", "capture_digest", "coordinate_frame_session_id", "camera_model",
+        "intrinsics", "distortion", "rolling_shutter", "pixel_orientation",
+        "coordinate_system", "source_metric_scaffold_digest", "calibration_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "camera_calibration_manifest.v1"},
+        "capture_digest": {"$ref": "#/$defs/sha256"},
+        "coordinate_frame_session_id": {"type": "string", "minLength": 1},
+        "camera_model": {"const": "PINHOLE"},
+        "intrinsics": {
+          "type": "object",
+          "required": ["fx", "fy", "cx", "cy", "width", "height"]
+        },
+        "distortion": {
+          "type": "object",
+          "required": ["status", "training_use_allowed"],
+          "properties": {
+            "status": {"const": "not_declared"},
+            "training_use_allowed": {"const": false}
+          }
+        },
+        "rolling_shutter": {
+          "type": "object",
+          "required": ["status", "training_use_allowed"],
+          "properties": {
+            "status": {"const": "not_declared"},
+            "training_use_allowed": {"const": false}
+          }
+        },
+        "pixel_orientation": {"const": "encoded_source_no_autorotate"},
+        "coordinate_system": {"type": "object"},
+        "source_metric_scaffold_digest": {"$ref": "#/$defs/sha256"},
+        "calibration_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "observation": {
+      "type": "object",
+      "required": [
+        "observation_id", "capture_frame_id", "decoded_frame_index", "t_video_sec",
+        "t_capture_sec", "split", "image_relative_path", "image_digest",
+        "T_world_camera", "calibration_digest", "depth_confidence_binding"
+      ],
+      "properties": {
+        "observation_id": {"type": "string", "minLength": 1},
+        "capture_frame_id": {"type": "string", "minLength": 1},
+        "decoded_frame_index": {"type": "integer", "minimum": 0},
+        "t_video_sec": {"type": "number", "minimum": 0},
+        "t_capture_sec": {"type": "number", "minimum": 0},
+        "split": {"enum": ["training", "validation"]},
+        "image_relative_path": {"type": "string", "minLength": 1},
+        "image_digest": {"$ref": "#/$defs/sha256"},
+        "T_world_camera": {"$ref": "#/$defs/matrix4"},
+        "calibration_digest": {"$ref": "#/$defs/sha256"},
+        "depth_confidence_binding": {"type": ["object", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "observations": {
+      "type": "object",
+      "required": [
+        "schema_version", "capture_digest", "dataset_manifest_digest", "split_digest",
+        "calibration_digest", "candidate_splits_only", "hidden_heldout_pixels_included",
+        "observations", "camera_observation_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "camera_observation_manifest.v1"},
+        "capture_digest": {"$ref": "#/$defs/sha256"},
+        "dataset_manifest_digest": {"$ref": "#/$defs/sha256"},
+        "split_digest": {"$ref": "#/$defs/sha256"},
+        "calibration_digest": {"$ref": "#/$defs/sha256"},
+        "candidate_splits_only": {"const": true},
+        "hidden_heldout_pixels_included": {"const": false},
+        "observations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/observation"}},
+        "camera_observation_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "refinement_request": {
+      "type": "object",
+      "required": [
+        "schema_version", "capture_digest", "camera_observation_digest", "calibration_digest",
+        "split_digest", "initial_pose_source", "refinement_policy",
+        "maximum_pose_drift_threshold", "status", "candidate_may_change_input_poses",
+        "candidate_may_access_hidden_heldout", "pose_refinement_request_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "pose_refinement_request.v1"},
+        "capture_digest": {"$ref": "#/$defs/sha256"},
+        "camera_observation_digest": {"$ref": "#/$defs/sha256"},
+        "calibration_digest": {"$ref": "#/$defs/sha256"},
+        "split_digest": {"$ref": "#/$defs/sha256"},
+        "initial_pose_source": {"const": "verified_arkit_raw_contract_3_2"},
+        "refinement_policy": {"const": "arkit_anchored_bounded_bundle_adjustment_required"},
+        "maximum_pose_drift_threshold": {"type": "null"},
+        "status": {"const": "blocked_qa_threshold_not_registered"},
+        "candidate_may_change_input_poses": {"const": false},
+        "candidate_may_access_hidden_heldout": {"const": false},
+        "pose_refinement_request_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "export": {
+      "type": "object",
+      "required": [
+        "schema_version", "stable_run_identity", "source_capture_identity",
+        "source_capture_digest", "source_commit_sha", "implementation_version",
+        "deterministic_configuration_digest", "reconstruction_dataset_digest",
+        "frozen_split_digest", "camera_calibration_digest", "camera_observation_digest",
+        "pose_refinement_request_digest", "metric_scaffold_digest",
+        "candidate_observation_count", "hidden_heldout_pixels_included",
+        "raw_arkit_poses_modified", "depth_confidence_filtering_status",
+        "metric_scale_validation_status", "colmap_gsplat_export_status", "authority_used",
+        "cost_usd", "duration_seconds", "warnings", "blockers", "proof_effect",
+        "claim_ceiling", "parent_artifact_or_event", "timestamp",
+        "arkit_reconstruction_dataset_export_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "arkit_reconstruction_dataset_export.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "implementation_version": {"$ref": "#/$defs/sha256"},
+        "hidden_heldout_pixels_included": {"const": false},
+        "raw_arkit_poses_modified": {"const": false},
+        "depth_confidence_filtering_status": {"const": "not_executed"},
+        "metric_scale_validation_status": {"const": "not_executed"},
+        "colmap_gsplat_export_status": {"const": "blocked_pose_refinement_and_qa_not_registered"},
+        "cost_usd": {"const": 0.0},
+        "proof_effect": {"const": "calibrated_reconstruction_request_only"},
+        "claim_ceiling": {"const": "calibrated_camera_trajectory"},
+        "arkit_reconstruction_dataset_export_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

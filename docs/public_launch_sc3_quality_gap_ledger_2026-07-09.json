@@ -2,7 +2,7 @@
   "schema_version": "blueprint.public_launch_sc3_quality_gap_ledger.v3",
   "ledger_id": "public-launch-sc3-quality-2026-07-09",
   "generated_at": "2026-07-10T13:01:59+00:00",
-  "updated_at": "2026-07-30T12:32:00+00:00",
+  "updated_at": "2026-07-30T13:53:31+00:00",
   "source_audit": "docs/PUBLIC_LAUNCH_SC3_QUALITY_GAP_AUDIT_2026-07-09.md",
   "source_audit_sha256": "sha256:0d700a385fb77c36b60b24321f2354b6177fe5886ba7cf768d321cf43c22a864",
   "evidence_mapping_sha256": "sha256:5edb2016c1c26f094901b6a1abd87d1e181b462a23040e74a04c69a1b0f42ad7",
@@ -900,7 +900,7 @@
             {
               "artifact_id": "REL-05-AC-01-EV-02",
               "path": "uv.lock",
-              "sha256": "sha256:6fbb3e78136a4ad106318a314b6afceb4a029fb80a7fa17cda38bd6dbcfd123c",
+              "sha256": "sha256:9efd7bd4e9478a6c9dc8a61b3453dd86a04d1469d6a93d337218d85dd0000984",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5989,7 +5989,7 @@
             {
               "artifact_id": "REL-06-AC-01-EV-01",
               "path": "uv.lock",
-              "sha256": "sha256:6fbb3e78136a4ad106318a314b6afceb4a029fb80a7fa17cda38bd6dbcfd123c",
+              "sha256": "sha256:9efd7bd4e9478a6c9dc8a61b3453dd86a04d1469d6a93d337218d85dd0000984",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13050,7 +13050,7 @@
             {
               "artifact_id": "P2-01-AC-01-EV-02",
               "path": "requirements.txt",
-              "sha256": "sha256:a9f609e1e29bd48f498d727804cff93f74aa9c12c13979e98d3b4f9ffa4ea6e5",
+              "sha256": "sha256:b85cd71b456446fa60cde6aa66565a7a0ba9eb9c8da502ccdc4b4aeb8f7f141f",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13066,7 +13066,7 @@
             {
               "artifact_id": "P2-01-AC-01-EV-03",
               "path": "requirements-geometry.txt",
-              "sha256": "sha256:6d365002e32202db4d467bebdaadb39ca24c7d49485f153af11a9dcbf73505f6",
+              "sha256": "sha256:4f144ddbb02576e1918564caea594bac9e5a5e42333faa533fffb025f3a21161",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13214,7 +13214,7 @@
             {
               "artifact_id": "P2-02-AC-01-EV-02",
               "path": "uv.lock",
-              "sha256": "sha256:6fbb3e78136a4ad106318a314b6afceb4a029fb80a7fa17cda38bd6dbcfd123c",
+              "sha256": "sha256:9efd7bd4e9478a6c9dc8a61b3453dd86a04d1469d6a93d337218d85dd0000984",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -13345,7 +13345,7 @@
             {
               "artifact_id": "P2-03-AC-01-EV-01",
               "path": "pyproject.toml",
-              "sha256": "sha256:5cf1c8ff330b943fb487c8ae00bec5e30eeb88efe426c8d11dd15fa24cf3c756",
+              "sha256": "sha256:5d1285cc4a20c9bd2dfa09379646e71eb8804046db5f3c071a28ed8cffb36dae",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",

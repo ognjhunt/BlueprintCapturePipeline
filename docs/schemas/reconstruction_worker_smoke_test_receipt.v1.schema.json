@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_worker_smoke_test_receipt.v1.schema.json",
+  "title": "Reconstruction Worker Smoke Test Receipt v1",
+  "type": "object",
+  "required": ["schema_version", "build_receipt_digest", "resolved_image_digest", "status", "checks", "display_attached", "scientific_qualification_inferred", "smoke_test_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_worker_smoke_test_receipt.v1"},
+    "status": {"enum": ["passed", "failed"]},
+    "display_attached": {"const": false},
+    "scientific_qualification_inferred": {"const": false},
+    "smoke_test_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

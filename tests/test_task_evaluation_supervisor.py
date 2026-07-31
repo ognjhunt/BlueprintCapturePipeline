@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+import jsonschema
 import pytest
 
 from blueprint_pipeline import decision_evidence_cli
@@ -72,6 +73,7 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     RecoveryControlError,
     authorization_receipt,
     authorization_request,
+    capture_build_source_binding,
     compare_supervisor_to_baseline,
     compile_neutral_candidate_policy_suite,
     execute_neutral_candidate_policy_suite,
@@ -100,6 +102,7 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     validate_frozen_scenario_manifest,
     validate_recapture_reinspection,
     validate_recovery_result,
+    validate_reconstruction_execution_readiness,
     validate_scenario_proposal_set,
     validate_targeted_recapture_receipt,
     validate_tool_observation_binding,
@@ -1590,6 +1593,97 @@ def test_capture_build_alone_triggers_claim_and_capture_agents_then_stops_blocke
     assert execution.report.to_mapping()["proof_state_mutated_by_agent"] is False
 
 
+def test_capture_build_projection_retains_non_secret_source_binding_digests(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "capture_intake_envelope.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "capture_intake_envelope.v1",
+                "capture_session_id": "session-1",
+                "intake_id": "intake-1",
+                "capture_digest": "sha256:" + "1" * 64,
+                "envelope_digest": "sha256:" + "2" * 64,
+                "qa_report_digest": "sha256:" + "3" * 64,
+                "object_manifest_digest": "sha256:" + "4" * 64,
+                "provider_token": "must-not-enter-projection",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    capture_build = load_capture_build_ingress(manifest)
+    binding = capture_build_source_binding(capture_build)
+
+    assert binding["capture_session_id"] == "session-1"
+    assert binding["intake_id"] == "intake-1"
+    assert binding["capture_digest"] == "sha256:" + "1" * 64
+    assert binding["envelope_digest"] == "sha256:" + "2" * 64
+    assert binding["qa_report_digest"] == "sha256:" + "3" * 64
+    assert binding["object_manifest_digest"] == "sha256:" + "4" * 64
+    assert binding["raw_media_included"] is False
+    assert binding["source_binding_is_proof_upgrade"] is False
+    assert "provider_token" not in capture_build["artifacts"][0]["approved_projection"]
+    assert "must-not-enter-projection" not in json.dumps(capture_build)
+    jsonschema.validate(
+        binding,
+        json.loads(
+            (
+                Path(__file__).parents[1]
+                / "docs/schemas/task_evaluation_capture_source_binding.v1.schema.json"
+            ).read_text(encoding="utf-8")
+        ),
+    )
+
+
+def test_capture_build_source_binding_conflicts_and_malformed_digests_fail_closed(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    (capture_root / "raw").mkdir(parents=True)
+    (capture_root / "capture_descriptor.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "capture_descriptor.v1",
+                "capture_digest": "sha256:" + "1" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (capture_root / "raw" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "blueprint_raw_capture_manifest.v1",
+                "capture_digest": "sha256:" + "2" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="capture_build_source_binding_conflict:capture_digest",
+    ):
+        capture_build_source_binding(load_capture_build_ingress(capture_root))
+
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text(
+        json.dumps(
+            {
+                "schema_version": "capture_intake_envelope.v1",
+                "capture_digest": "not-a-digest",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match="capture_build_source_binding_invalid:capture_digest",
+    ):
+        capture_build_source_binding(load_capture_build_ingress(malformed))
+
+
 def test_bound_clarification_receipt_reenters_interpreter_as_untrusted_non_proof_input(
     tmp_path: Path,
 ) -> None:
@@ -3000,6 +3094,9 @@ def test_capture_build_alone_enters_required_supervisor_idempotently(
     second = run_capture_build_supervisor(capture_root=capture_alias)
 
     assert first == second
+    assert first["schema_version"] == "task_evaluation_capture_supervisor_lifecycle.v4"
+    assert len(first["source_commit_sha"]) == 40
+    assert all(character in "0123456789abcdef" for character in first["source_commit_sha"])
     assert first["capture_build_alone_can_start_run"] is True
     assert first["agent_harness"] == "openai_agents_sdk"
     assert first["autonomy_mode"] == "execute_non_spend"
@@ -3013,6 +3110,17 @@ def test_capture_build_alone_enters_required_supervisor_idempotently(
     assert first["registered_non_spend_actions_executed"] == 0
     assert first["proof_state_mutated_by_agent"] is False
     assert first["status"] == "blocked"
+    assert first["reconstruction_execution_readiness_status"] == "route_unresolved"
+    readiness_path = Path(first["reconstruction_execution_readiness_path"])
+    assert readiness_path.is_file()
+    readiness = validate_reconstruction_execution_readiness(
+        json.loads(readiness_path.read_text(encoding="utf-8"))
+    )
+    assert (
+        readiness["reconstruction_execution_readiness_digest"]
+        == first["reconstruction_execution_readiness_digest"]
+    )
+    assert readiness["proof_boundary"]["readiness_is_execution_authority"] is False
     assert Path(first["output_dir"]).is_relative_to(capture_root.resolve())
     events = AppendOnlyEventLedger(first["event_ledger_path"]).read()
     assert len(events) == 3
@@ -3056,6 +3164,23 @@ def test_capture_supervisor_service_execution_options_are_strict_and_bounded() -
     for environment in invalid_environments:
         with pytest.raises(ValueError):
             supervisor_lifecycle.capture_supervisor_execution_options_from_env(environment)
+
+    first_profile = supervisor_lifecycle.capture_supervisor_execution_profile(
+        source_commit_sha="a" * 40
+    )
+    second_profile = supervisor_lifecycle.capture_supervisor_execution_profile(
+        source_commit_sha="b" * 40
+    )
+    assert first_profile["source_commit_sha"] == "a" * 40
+    assert first_profile["execution_profile_digest"] != second_profile["execution_profile_digest"]
+    with pytest.raises(ValueError, match="capture_supervisor_source_commit_invalid"):
+        supervisor_lifecycle.capture_supervisor_execution_profile(source_commit_sha="not-a-commit")
+    assert (
+        supervisor_lifecycle.capture_supervisor_health_status(
+            {"BLUEPRINT_SOURCE_COMMIT": "not-a-commit"}
+        )["configuration_status"]
+        == "invalid"
+    )
 
 
 def test_standalone_capture_intake_manifest_enters_supervisor_next_to_manifest(
@@ -3178,6 +3303,27 @@ def test_capture_build_lifecycle_creates_new_run_when_inference_authority_change
     assert Path(initial["output_dir"]).is_dir()
     assert authorized["registered_non_spend_actions_executed"] == 1
     assert replay_supervisor_run(authorized["output_dir"])["status"] == "replay_verified"
+
+
+def test_non_spend_tool_ttl_is_explicit_bounded_and_recorded(tmp_path: Path) -> None:
+    execution = TaskEvaluationSupervisor(
+        agents_sdk_invoker=_FixtureAgentsSDKInvoker(),
+        non_spend_action_ttl_seconds=3_600,
+    ).run(
+        _context(),
+        output_dir=tmp_path / "bounded-local-ttl",
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        generated_at="2026-07-30T12:00:00+00:00",
+    )
+    authority = json.loads(
+        (execution.output_dir / "authority_envelope.json").read_text(encoding="utf-8")
+    )
+    assert authority["max_duration_seconds"] == 3_600
+    assert authority["action_spend_allowed"] is False
+
+    for invalid in (0, 14_401, True):
+        with pytest.raises(ValueError, match="supervisor_non_spend_action_ttl_invalid"):
+            TaskEvaluationSupervisor(non_spend_action_ttl_seconds=invalid)
 
 
 def test_execute_non_spend_exposes_only_registered_scoped_tools(
@@ -3646,7 +3792,9 @@ def test_execute_non_spend_exposes_only_registered_scoped_tools(
     }
     assert set(bindings) == {
         "compile_deterministic_evidence_plan",
+        "inspect_capture_build",
         "inspect_site_task_testbed",
+        "plan_capture_reconstruction_route",
         "materialize_clarification_request",
         "materialize_compiled_leaf_runs",
         "propose_adversarial_scenarios",
@@ -3888,9 +4036,9 @@ def test_identical_evidence_produces_identical_kernel_decision_despite_agent_pro
     assert spending["reported_action_duration_seconds"] >= 0.0
 
     forged_authority = json.loads(json.dumps(customer_report))
-    forged_authority["claim_evidence"][0]["evidence_sources"][0][
-        "agent_selected_authority"
-    ] = "physical_proof"
+    forged_authority["claim_evidence"][0]["evidence_sources"][0]["agent_selected_authority"] = (
+        "physical_proof"
+    )
     forged_authority["customer_report_digest"] = canonical_digest(
         forged_authority,
         digest_field="customer_report_digest",

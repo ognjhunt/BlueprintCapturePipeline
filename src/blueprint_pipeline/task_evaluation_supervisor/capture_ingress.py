@@ -31,6 +31,8 @@ _SAFE_FIELDS = {
     "schema_version",
     "scene_id",
     "capture_id",
+    "capture_session_id",
+    "intake_id",
     "site_submission_id",
     "buyer_request_id",
     "capture_job_id",
@@ -40,6 +42,13 @@ _SAFE_FIELDS = {
     "intended_space_type",
     "capture_source",
     "capture_mode",
+    "capture_modality",
+    "capture_authority_profile",
+    "capture_tier",
+    "capture_digest",
+    "envelope_digest",
+    "qa_report_digest",
+    "object_manifest_digest",
     "has_lidar",
     "scale_hint_m_per_unit",
     "requested_outputs",
@@ -66,6 +75,70 @@ _SAFE_FIELDS = {
 
 class CaptureBuildIngressError(ValueError):
     """Raised when a capture build cannot be safely projected."""
+
+
+def capture_build_source_binding(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the unique non-secret source identity declared by known manifests.
+
+    The capture-build digest binds the bounded projection itself.  This helper
+    additionally exposes raw-capture and intake digests so downstream control
+    artifacts can prove that they refer to the same admitted source.  Missing
+    values remain missing and conflicting declarations fail closed.
+    """
+
+    capture_build = validate_capture_build_ingress(value)
+    fields = (
+        "capture_session_id",
+        "intake_id",
+        "capture_digest",
+        "envelope_digest",
+        "qa_report_digest",
+        "object_manifest_digest",
+    )
+    candidates: dict[str, set[str]] = {field: set() for field in fields}
+    for artifact in capture_build["artifacts"]:
+        projection = artifact["approved_projection"]
+        for field in fields:
+            candidate = str(projection.get(field) or "").strip()
+            if candidate:
+                candidates[field].add(candidate)
+    conflicts = sorted(field for field, values in candidates.items() if len(values) > 1)
+    if conflicts:
+        raise CaptureBuildIngressError(
+            f"capture_build_source_binding_conflict:{','.join(conflicts)}"
+        )
+    invalid_digests = sorted(
+        field
+        for field in (
+            "capture_digest",
+            "envelope_digest",
+            "qa_report_digest",
+            "object_manifest_digest",
+        )
+        for candidate in candidates[field]
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", candidate) is None
+    )
+    invalid_identifiers = sorted(
+        field
+        for field in ("capture_session_id", "intake_id")
+        for candidate in candidates[field]
+        if len(candidate) > 192 or any(ord(character) < 32 for character in candidate)
+    )
+    if invalid_digests or invalid_identifiers:
+        invalid = sorted(set(invalid_digests + invalid_identifiers))
+        raise CaptureBuildIngressError(f"capture_build_source_binding_invalid:{','.join(invalid)}")
+    binding = {
+        "schema_version": "task_evaluation_capture_source_binding.v1",
+        "capture_build_digest": capture_build["capture_build_digest"],
+        **{field: next(iter(values)) if values else None for field, values in candidates.items()},
+        "raw_media_included": False,
+        "source_binding_is_proof_upgrade": False,
+    }
+    binding["source_binding_digest"] = canonical_digest(
+        binding,
+        digest_field="source_binding_digest",
+    )
+    return binding
 
 
 def validate_capture_build_ingress(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -239,6 +312,7 @@ def load_capture_build_ingress(path: str | Path) -> dict[str, Any]:
 __all__ = [
     "CAPTURE_BUILD_INGRESS_SCHEMA_VERSION",
     "CaptureBuildIngressError",
+    "capture_build_source_binding",
     "load_capture_build_ingress",
     "validate_capture_build_ingress",
 ]

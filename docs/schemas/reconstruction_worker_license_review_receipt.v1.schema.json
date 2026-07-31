@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_worker_license_review_receipt.v1.schema.json",
+  "title": "Reconstruction Worker License Review Receipt v1",
+  "type": "object",
+  "required": ["schema_version", "status", "source_commit_sha", "registry_visibility", "redistribution_authorized", "commercial_distribution_authorized", "reviewer_authority_id", "warnings", "license_review_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_worker_license_review_receipt.v1"},
+    "status": {"const": "accepted_internal_build_only"},
+    "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "registry_visibility": {"const": "private"},
+    "redistribution_authorized": {"const": false},
+    "commercial_distribution_authorized": {"const": false},
+    "reviewer_authority_id": {"type": "string", "minLength": 1},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "license_review_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

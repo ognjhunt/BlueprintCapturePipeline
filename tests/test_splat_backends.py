@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import blueprint_pipeline.splat_backends as splat_backends
 from blueprint_pipeline.splat_backends import (
     BACKEND_KINDS,
     SplatBackend,
@@ -40,7 +41,11 @@ def test_list_by_kind() -> None:
     renderers = {backend["name"] for backend in list_backends("renderer")}
     assert {"spark", "isaac_nurec"} <= renderers
     assert "splat_transform" not in renderers  # it is a decoder
-    assert {backend["name"] for backend in list_backends("enhancer")} == {"artifixer"}
+    assert {backend["name"] for backend in list_backends("enhancer")} == {
+        "artifixer",
+        "difix3d",
+        "harmonizer",
+    }
 
 
 def test_get_unknown_raises() -> None:
@@ -66,6 +71,43 @@ def test_artifixer_fail_closed() -> None:
     assert result["status"] == "blocked"
     assert "artifixer_unavailable" in result["blockers"]
     assert "remediation" in result
+
+
+def test_artifixer_installed_runtime_still_requires_exact_pins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(splat_backends, "_artifixer_available", lambda: True)
+    result = get_backend("artifixer").run(
+        checkpoint_pt="/x.pt",
+        save_dir="/out",
+        split_path="/s.json",
+    )
+    assert result["status"] == "blocked"
+    assert "artifixer_checkpoint_digest_missing_or_invalid" in result["blockers"]
+    assert "artifixer_frozen_real_heldout_manifest_required" in result["blockers"]
+    assert "commercial_model_use_not_qualified" in result["blockers"]
+    assert result["enhancement_method_audit"]["status"].startswith("rejected_")
+    assert result["claim_ceiling"] == "generated_visual_support"
+
+
+@pytest.mark.parametrize(
+    ("backend_name", "expected_blocker"),
+    [
+        ("difix3d", "source_and_model_license_noncommercial"),
+        ("harmonizer", "checkpoint_digest_not_pinned_in_worker"),
+    ],
+)
+def test_unqualified_enhancement_candidates_emit_deterministic_rejection(
+    backend_name: str, expected_blocker: str
+) -> None:
+    backend = get_backend(backend_name)
+    assert backend.kind == "enhancer"
+    assert backend.available() is False
+    result = backend.run()
+    assert result["status"] == "blocked"
+    assert expected_blocker in result["blockers"]
+    assert result["enhancement_method_audit"]["independent_evaluator_required"] is True
+    assert result["enhancement_method_audit"]["metric_or_collision_proof_effect"] is False
 
 
 def test_isaac_nurec_is_gpu_worker_only() -> None:

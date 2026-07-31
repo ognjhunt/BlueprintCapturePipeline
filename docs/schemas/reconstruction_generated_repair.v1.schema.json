@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/reconstruction_generated_repair.v1.schema.json",
+  "title": "Blueprint Generated Reconstruction Repair Contracts v1",
+  "oneOf": [{"$ref": "#/$defs/request"}, {"$ref": "#/$defs/result"}],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "request": {
+      "type": "object",
+      "required": ["schema_version", "stable_run_identity", "source_capture_digest", "method_id", "enhancement_method_audit", "baseline_reconstruction_digest", "frozen_split_digest", "heldout_evaluation_contract_digest", "baseline_preserved", "candidate_may_read_hidden_heldout", "generated_pixels_may_be_promoted_to_capture", "authority_used", "timestamp", "generated_repair_candidate_request_digest"],
+      "properties": {
+        "schema_version": {"const": "generated_repair_candidate_request.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "method_id": {"enum": ["artifixer", "difix3d", "harmonizer"]},
+        "baseline_reconstruction_digest": {"$ref": "#/$defs/sha256"},
+        "frozen_split_digest": {"$ref": "#/$defs/sha256"},
+        "heldout_evaluation_contract_digest": {"$ref": "#/$defs/sha256"},
+        "baseline_preserved": {"const": true},
+        "candidate_may_read_hidden_heldout": {"const": false},
+        "generated_pixels_may_be_promoted_to_capture": {"const": false},
+        "generated_repair_candidate_request_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "result": {
+      "type": "object",
+      "required": ["schema_version", "stable_run_identity", "source_capture_digest", "generated_repair_candidate_request_digest", "method_id", "enhancement_method_audit_digest", "baseline_reconstruction_digest", "frozen_split_digest", "status", "execution_started", "generated_artifact_references", "blockers", "baseline_preserved", "hidden_heldout_available_to_candidate", "independent_heldout_evaluation_executed", "generated_pixels_are_captured_evidence", "metric_or_collision_proof_effect", "physical_or_deployment_proof_effect", "proof_effect", "claim_ceiling", "generated_repair_candidate_result_digest"],
+      "properties": {
+        "schema_version": {"const": "generated_repair_candidate_result.v1"},
+        "status": {"const": "blocked_not_qualified"},
+        "execution_started": {"const": false},
+        "generated_artifact_references": {"type": "array", "maxItems": 0},
+        "baseline_preserved": {"const": true},
+        "hidden_heldout_available_to_candidate": {"const": false},
+        "independent_heldout_evaluation_executed": {"const": false},
+        "generated_pixels_are_captured_evidence": {"const": false},
+        "metric_or_collision_proof_effect": {"const": false},
+        "physical_or_deployment_proof_effect": {"const": false},
+        "proof_effect": {"const": "deterministic_enhancement_rejection_only"},
+        "claim_ceiling": {"const": "generated_visual_support"},
+        "generated_repair_candidate_result_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

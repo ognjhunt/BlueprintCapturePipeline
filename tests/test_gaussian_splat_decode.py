@@ -137,6 +137,7 @@ def test_splat_data_contract_fields_and_dtypes() -> None:
         "scales",
         "quats",
         "properties",
+        "sh_rest",
     )
 
     count = 6
@@ -150,6 +151,16 @@ def test_splat_data_contract_fields_and_dtypes() -> None:
     assert splat.quats.dtype == np.float32 and splat.quats.shape == (count, 4)
     assert splat.opacity.dtype == np.float32 and splat.opacity.shape == (count,)
     assert isinstance(splat.properties, tuple)
+    assert splat.sh_rest is None
+
+
+def test_standard_ply_round_trip_preserves_higher_order_sh(tmp_path: Path) -> None:
+    splat = _make_splat(3)
+    splat.sh_rest = np.arange(3 * 45, dtype=np.float32).reshape(3, 45)
+    output = write_standard_3dgs_ply(splat, tmp_path / "degree3.ply")
+    loaded = read_standard_3dgs_ply(output)
+    assert loaded.sh_rest is not None
+    np.testing.assert_array_equal(loaded.sh_rest, splat.sh_rest)
 
 
 def test_opacity_sigmoid_clip_bounds_and_aabb_shape() -> None:

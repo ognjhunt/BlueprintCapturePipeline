@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_worker_build_receipt.v1.schema.json",
+  "title": "Reconstruction Worker Build Receipt v1",
+  "type": "object",
+  "required": ["schema_version", "worker_stack_manifest_digest", "status", "source_commit_sha", "build_context_digest", "duration_seconds", "cost_usd", "logs", "blockers", "scientific_qualification_inferred", "build_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_worker_build_receipt.v1"},
+    "status": {"enum": ["built", "failed"]},
+    "resolved_image_digest": {"type": ["string", "null"]},
+    "scientific_qualification_inferred": {"const": false},
+    "build_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

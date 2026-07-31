@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_vast_worker_smoke.v1.schema.json",
+  "title": "Reconstruction Vast Worker Smoke Receipts v1",
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "image": {"type": "string", "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["schema_version", "status", "request_digest", "worker_image_digest", "healthcheck", "hidden_heldout_observations_accessed", "scientific_qualification_inferred", "proof_effect", "claim_ceiling", "runtime_result_digest"],
+      "properties": {
+        "schema_version": {"const": "reconstruction_vast_worker_smoke_result.v1"},
+        "status": {"enum": ["passed", "failed"]},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "worker_image_digest": {"$ref": "#/$defs/image"},
+        "healthcheck": {"type": "object"},
+        "hidden_heldout_observations_accessed": {"const": false},
+        "scientific_qualification_inferred": {"const": false},
+        "proof_effect": {"const": "none"},
+        "claim_ceiling": {"const": "worker_image_compatibility_only"},
+        "runtime_result_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["schema_version", "status", "request_digest", "bound_request_digest", "worker_image_digest", "source_commit_sha", "provider", "provider_mutations_performed", "provider_mutation_outcome_ambiguous", "blockers", "teardown_receipt_digest", "provider_zero_digest", "provider_zero_verified", "scientific_qualification_inferred", "proof_effect", "claim_ceiling", "execution_result_digest"],
+      "properties": {
+        "schema_version": {"const": "reconstruction_vast_worker_smoke_execution.v1"},
+        "status": {"enum": ["completed", "failed"]},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "bound_request_digest": {"$ref": "#/$defs/digest"},
+        "worker_image_digest": {"$ref": "#/$defs/image"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "provider": {"const": "vast"},
+        "provider_mutations_performed": {"type": "integer", "minimum": 0},
+        "provider_mutation_outcome_ambiguous": {"type": "boolean"},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+        "teardown_receipt_digest": {"$ref": "#/$defs/digest"},
+        "provider_zero_digest": {"$ref": "#/$defs/digest"},
+        "provider_zero_verified": {"type": "boolean"},
+        "scientific_qualification_inferred": {"const": false},
+        "proof_effect": {"const": "none"},
+        "claim_ceiling": {"const": "worker_image_compatibility_only"},
+        "execution_result_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["schema_version", "status", "provider", "request_digest", "bound_request_digest", "worker_image_digest", "provider_zero_verified", "teardown_receipt_digest"],
+      "properties": {
+        "schema_version": {"const": "reconstruction_vast_teardown_receipt.v1"},
+        "status": {"enum": ["PASS", "FAIL"]},
+        "provider": {"const": "vast"},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "bound_request_digest": {"$ref": "#/$defs/digest"},
+        "worker_image_digest": {"$ref": "#/$defs/image"},
+        "provider_zero_verified": {"type": "boolean"},
+        "teardown_receipt_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["schema_version", "status", "provider", "request_digest", "bound_request_digest", "scoped_live_resource_count", "global_live_resource_count", "api_confirmed", "provider_zero_digest"],
+      "properties": {
+        "schema_version": {"const": "reconstruction_vast_provider_zero_verification.v1"},
+        "status": {"enum": ["PASS", "FAIL"]},
+        "provider": {"const": "vast"},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "bound_request_digest": {"$ref": "#/$defs/digest"},
+        "scoped_live_resource_count": {"type": "integer", "minimum": 0},
+        "global_live_resource_count": {"type": "integer", "minimum": 0},
+        "api_confirmed": {"type": "boolean"},
+        "provider_zero_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["schema_version", "status", "request_digest", "bound_request_digest", "blockers", "live_provider_accessed", "scientific_qualification_inferred", "proof_effect", "claim_ceiling", "replay_digest"],
+      "properties": {
+        "schema_version": {"const": "reconstruction_vast_worker_smoke_replay.v1"},
+        "status": {"enum": ["replay_verified", "replay_rejected"]},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "bound_request_digest": {"$ref": "#/$defs/digest"},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+        "live_provider_accessed": {"const": false},
+        "scientific_qualification_inferred": {"const": false},
+        "proof_effect": {"const": "none"},
+        "claim_ceiling": {"const": "recorded_worker_image_compatibility_only"},
+        "replay_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  ]
+}

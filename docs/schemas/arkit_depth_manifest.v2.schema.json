@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/arkit_depth_manifest.v2.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "depth_encoding",
+    "scale_to_meters",
+    "camera_ray_convention",
+    "depth_registered_to_arkit_camera",
+    "depth_intrinsics",
+    "frames"
+  ],
+  "properties": {
+    "schema_version": {"const": "arkit_depth_manifest.v2"},
+    "depth_encoding": {"enum": ["uint16_png", "npy"]},
+    "scale_to_meters": {"type": "number", "exclusiveMinimum": 0},
+    "camera_ray_convention": {
+      "enum": [
+        "arkit_x_right_y_up_z_backward",
+        "opencv_x_right_y_down_z_forward"
+      ]
+    },
+    "depth_registered_to_arkit_camera": {"const": true},
+    "depth_intrinsics": {"$ref": "#/$defs/intrinsics"},
+    "frames": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/frame"}
+    }
+  },
+  "$defs": {
+    "intrinsics": {
+      "type": "object",
+      "required": ["fx", "fy", "cx", "cy", "width", "height"],
+      "properties": {
+        "fx": {"type": "number", "exclusiveMinimum": 0},
+        "fy": {"type": "number", "exclusiveMinimum": 0},
+        "cx": {"type": "number", "minimum": 0},
+        "cy": {"type": "number", "minimum": 0},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "frame": {
+      "type": "object",
+      "required": ["frame_id", "depth_path", "paired_confidence_path"],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "depth_path": {"type": "string", "minLength": 1},
+        "paired_confidence_path": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

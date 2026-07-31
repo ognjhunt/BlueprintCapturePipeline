@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_gpu_canary.v1.schema.json",
+  "title": "Reconstruction GPU Canary Request and Admission v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["schema_version", "operation", "capture_profile", "source_commit_sha", "worker_image_digest", "worker_stack_manifest_digest", "reconstruction_dataset_digest", "frozen_split_digest", "calibration_digest", "deterministic_configuration_digest", "candidate_may_read_hidden_heldout", "trainer_may_grade_heldout", "max_spend_usd", "hard_ttl_seconds", "retry_cap", "authority_id", "proof_effect", "request_digest"],
+      "properties": {
+        "schema_version": {"const": "reconstruction_gpu_canary_request.v1"},
+        "candidate_may_read_hidden_heldout": {"const": false},
+        "trainer_may_grade_heldout": {"const": false},
+        "proof_effect": {"const": "none"},
+        "request_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["schema_version", "status", "probe_kind", "provider", "blockers", "provider_mutations_performed", "paid_execution_started", "allocation_success_is_scientific_success", "proof_effect", "claim_ceiling", "admission_digest"],
+      "properties": {
+        "schema_version": {"const": "reconstruction_gpu_canary_admission.v1"},
+        "status": {"enum": ["dry_run_ready", "execute_ready", "blocked"]},
+        "provider": {"const": "vast"},
+        "provider_mutations_performed": {"const": 0},
+        "paid_execution_started": {"const": false},
+        "allocation_success_is_scientific_success": {"const": false},
+        "proof_effect": {"const": "none"},
+        "admission_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": true
+    }
+  ]
+}

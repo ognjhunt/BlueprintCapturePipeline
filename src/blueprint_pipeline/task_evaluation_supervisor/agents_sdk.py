@@ -363,7 +363,11 @@ _SPECIALIST_INSTRUCTIONS: dict[CapabilityKind, str] = {
     CapabilityKind.CAPTURE_TESTBED_SUPERVISOR: (
         "Inspect the redacted capture-build inventory and validated testbed facts. Distinguish "
         "capture gaps, testbed gaps, procedural ambiguity, and governance blockers. Propose only "
-        "the smallest useful recapture or clarification."
+        "the smallest useful recapture or clarification. When a capture build is present, propose "
+        "a profile-specific reconstruction route. Use plan_capture_reconstruction_route when it "
+        "is available; never guess a missing profile or treat 360, monocular video, and ARKit/LiDAR "
+        "as interchangeable inputs. A 3DGS is an appearance layer until metric, semantic, collision, "
+        "and physics layers are independently validated."
     ),
     CapabilityKind.EVALUATION_METHOD_ROUTER: (
         "Propose sequencing among registered evidence methods. Treat deterministic qualification, "

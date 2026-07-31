@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/task_evaluation_capture_reconstruction_route.v1.schema.json",
+  "title": "Task Evaluation Capture Reconstruction Route v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "capture_build_digest",
+    "status",
+    "capture_authority_profile",
+    "declared_profile_candidates",
+    "requested_claim_types",
+    "required_representations",
+    "stages",
+    "currently_registered_adapters",
+    "blockers",
+    "next_legal_action",
+    "agent_selected_capture_profile",
+    "execution_authorized_by_route",
+    "route_is_reconstruction_evidence",
+    "appearance_layer_is_metric_or_physics_truth",
+    "physical_success_established",
+    "proof_effect",
+    "capture_reconstruction_route_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "task_evaluation_capture_reconstruction_route.v1"
+    },
+    "capture_build_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "status": {
+      "enum": [
+        "route_proposed",
+        "capture_profile_required",
+        "ambiguous_capture_profile"
+      ]
+    },
+    "capture_authority_profile": {
+      "type": ["string", "null"],
+      "enum": [
+        "iphone_arkit_lidar",
+        "iphone_arkit_non_lidar",
+        "camera_360_equirectangular",
+        "camera_360_native",
+        "monocular_video",
+        "precomputed_external_reconstruction",
+        null
+      ]
+    },
+    "declared_profile_candidates": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "requested_claim_types": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "required_representations": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ordinal",
+          "stage_id",
+          "method_kind",
+          "implementation_status"
+        ],
+        "properties": {
+          "ordinal": {"type": "integer", "minimum": 0},
+          "stage_id": {"type": "string", "minLength": 1},
+          "method_kind": {"type": "string", "minLength": 1},
+          "implementation_status": {
+            "enum": [
+              "registered",
+              "registered_conditional",
+              "required_not_registered",
+              "required_deterministic_gate"
+            ]
+          }
+        }
+      }
+    },
+    "currently_registered_adapters": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "blockers": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "next_legal_action": {
+      "enum": [
+        "compile_profile_specific_reconstruction_plan",
+        "request_validated_capture_profile"
+      ]
+    },
+    "agent_selected_capture_profile": {"const": false},
+    "execution_authorized_by_route": {"const": false},
+    "route_is_reconstruction_evidence": {"const": false},
+    "appearance_layer_is_metric_or_physics_truth": {"const": false},
+    "physical_success_established": {"const": false},
+    "proof_effect": {"const": "none"},
+    "capture_reconstruction_route_digest": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

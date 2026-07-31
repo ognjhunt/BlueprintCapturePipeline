@@ -112,13 +112,93 @@ shown to an agent; task text remains visible as data because it is needed for
 interpretation. Protected output validation, the tool registry, and the
 authority envelope—not prompt obedience—must contain any injected instruction.
 
+When the bounded projection contains `capture_authority_profile` or a supported
+`capture_modality`, the Capture and Testbed Supervisor emits a digest-bound,
+profile-specific reconstruction route. Operators should expect different
+ordered stages for ARKit/LiDAR, equirectangular 360, native 360, monocular video,
+and external reconstruction imports. Missing or conflicting profiles return a
+typed route blocker; `has_lidar=true` alone is not sufficient to select the
+metric ARKit adapter.
+
+Lifecycle v4 binds the run identity to the exact source commit and retains only
+non-secret capture/intake identifiers and provenance digests from known
+manifests. It writes `reconstruction_execution_readiness.json` next to the
+supervisor ledger. That replayable support artifact joins the capture-build
+digest, source-capture digest, route, typed tool registry, currently bound
+runtimes, and any separately recorded reconstruction control-plane plan,
+authority, or execution receipt. `not_ready`, `route_unresolved`, and
+`source_binding_mismatch` are valid fail-closed outcomes. Readiness is neither
+execution authority nor reconstruction evidence.
+
+Each authenticated reconstruction plan, authorization, and execution mutation
+refreshes this join automatically. The lifecycle preserves the initial record
+and writes later records beneath
+`reconstruction_execution_readiness_history/<digest>.json`. The replaceable
+`reconstruction_execution_readiness_latest.json` pointer is validated against
+`task_evaluation_reconstruction_readiness_pointer.v1`; it links to the prior
+readiness digest and cannot grant authority or upgrade proof. An identical
+control-plane replay reuses the existing snapshot. Pointer updates are
+serialized per supervisor run. A source mismatch or an
+incomplete readiness write fails the service mutation response closed even when
+the underlying idempotent control-plane receipt already exists.
+
 ## Non-spend execution
 
 `execute_non_spend` can inspect registered artifacts, deterministically compile
 an Evidence Plan and leaf Evaluation Run specs, materialize clarification and
 authorization requests, write targeted recapture proposals, and materialize
-pre-evaluation scenario proposals. It cannot start capture, run a provider,
+pre-evaluation scenario proposals. It can also call the read-only
+`plan_capture_reconstruction_route` tool against the exact capture-build digest.
+That tool identifies registered and conditionally executable reconstruction
+stages but does not execute them. When the trusted runtime injects the corresponding bounded
+service, the same capability may invoke `compile_frozen_frame_dataset` or
+`normalize_native_360_capture`, or `compile_equirectangular_virtual_rig`.
+Those tools receive only capture-build and route digests, write under the
+supervisor-owned output root, cost zero, and
+return non-authoritative typed observations. They cannot select a profile,
+change a split or calibration, raise a claim ceiling, or access a generic
+filesystem or shell. The supervisor cannot start capture, run a provider,
 spend money, expose hidden labels, or mutate proof state.
+
+Phase 4 adds `run_pose_estimation` and `train_gaussian_reconstruction` under the
+same boundary. Each tool accepts one registered request digest and calls only an
+injected typed runtime. A local result may record a typed scientific/runtime
+failure or produce a trajectory/appearance candidate, but it cannot see hidden
+held-out pixels, grade itself, change calibration or splits, or establish
+reconstruction qualification. Paid image build or GPU execution must separately
+pass the canonical shared allocator with exact budget, TTL, retries, clean SHA,
+worker-image, watchdog, teardown, and provider-zero receipts.
+
+The registered Phase 5 sequence is `compile_metric_geometry` →
+`compile_collision_candidate` → `qualify_collision_candidate` →
+`package_nurec_openusd` → `verify_isaac_asset`. Every call accepts only the
+immutable predecessor or request digest. Missing injected executors omit the
+tool from the live SDK surface; mismatched digests, malformed results, altered
+lineage, self-issued collision validity, or inflated Isaac claims are refused
+and preserved as typed tool failures. The local OpenUSD packager may be injected
+for non-spend execution. It revalidates the frozen packaging request, source
+digests, qualified-collider binding, path confinement, self-contained USDZ
+closure, deterministic archive layout, and exact composed prims before its
+result can enter the ledger.
+
+Phase 6 adds `import_external_reconstruction` for already-exported local
+Scaniverse assets. The tool accepts only an immutable request digest. The
+trusted request binds exact source-capture and asset hashes plus the full
+provenance/rights declaration; the injected importer rejects traversal,
+symlinks, oversized inputs, unsafe USDZ archives, and altered replay bytes. It
+makes no remote call and cannot grant upload or provider authority. A successful
+receipt remains derived support with every metric, collision, Isaac, task,
+physical, and deployment proof boolean false.
+
+`invoke_authorized_reconstruction_provider` is registered as a preauthorized
+external-side-effect tool, but it is not placed on the live capability surface
+without a qualified provider adapter. Do not substitute the local import tool,
+a browser automation session, or a provider success label. Before an adapter is
+injected, require an admitted `reconstruction_provider_admission.v1`, the exact
+operator authorization receipt, canonical paid-resource routing, immutable
+inputs, budget/TTL/retry limits, and a verified deletion plan. Normalize all
+runtime output through the execution and deletion receipt contracts; neither
+receipt changes proof state or independently establishes provider-zero.
 
 Clarification responses and authorization grants are separate receipts created
 at trusted customer/operator boundaries. Agent output never satisfies its own

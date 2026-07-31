@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_provider_admission.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "stable_run_identity", "provider_identity", "provider_product", "product_tier", "terms_version", "terms_digest", "legal_review_receipt_digest", "provider_capability_review_digest", "source_capture_digest", "reviewed_at", "review_expires_at", "status", "blockers", "provider_mutations_performed", "proof_effect", "claim_ceiling", "provider_admission_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_provider_admission.v1"},
+    "terms_digest": {"$ref": "#/$defs/digest"},
+    "legal_review_receipt_digest": {"$ref": "#/$defs/digest"},
+    "provider_capability_review_digest": {"$ref": "#/$defs/digest"},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "status": {"enum": ["admitted", "blocked"]},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "legal_reviewer_is_agent": {"const": false},
+    "provider_mutations_performed": {"const": false},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "none"},
+    "provider_admission_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}

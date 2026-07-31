@@ -1,0 +1,90 @@
+{
+  "schema_version": "arkitscenes_observed_surface_execution_receipt.v1",
+  "stable_run_identity": "arkitscenes-surface-bc493651dcc0950146e49bab",
+  "status": "compiled_public_dataset_observed_surface_proxy",
+  "source_commit_sha": "ddbff2998e00fdd728cf36e3c9a1c022b378b8b0",
+  "implementation_consolidation_commit_sha": "39209a512d29060e41138044e54305a1ecaf011a",
+  "timestamp": "2026-07-30T16:51:04Z",
+  "source_capture_identity": "arkitscenes-40958756",
+  "source_capture_digest": "sha256:bc493651dcc0950146e49bab91c9303a4d5f49c319c3e0b1048de1344d568e04",
+  "capture_profile": "public_dataset_arkitscenes_proxy",
+  "runtime": {
+    "provider": "local",
+    "runtime": "python_numpy",
+    "container_image_digest": null,
+    "cost_usd": 0.0,
+    "paid_compute_authorized": false,
+    "provider_upload_authorized": false,
+    "live_provider_inventory": 0
+  },
+  "authority_used": {
+    "arkitscenes_license_accepted": true,
+    "license_acceptance_authority": "user_explicit_2026-07-30",
+    "local_processing_authorized": true,
+    "commercial_product_claim_authorized": false
+  },
+  "contract_artifacts": {
+    "parent_arkitscenes_proxy_compilation_digest": "sha256:4c1d69c959ce1df03be4196b4dc2cf6c762c73fd4f474bc2c95d6cf94f64b0f6",
+    "train_heldout_split_digest": "sha256:be386b4cd681f520fa6689b669b4efbb5b8534f991b2df815f37dfa989eed020",
+    "camera_observation_digest": "sha256:b5068ec3a8cffe128b21a1bc45476845de262a323499d067c9c61aa6bf97812d",
+    "metric_scaffold_digest": "sha256:c164f9e2389a80d34cf5ce7d42de3a90433b087eb620f9358fcddcfe5ef23676",
+    "surface_compilation_request_digest": "sha256:6c8c4593fdd74a0d67a874b0d86d688a64b189de75857f5124681be51f126cba",
+    "surface_compilation_result_digest": "sha256:2ad2b7dfad9a5a296a804c2f98e02b6c1985edfeaa694e061b3646eb4c01f2fc",
+    "observed_surface_digest": "sha256:f3085b732a4ccf4b80f7f587f8775b5b69fe64596bb280d2a8dda730c979923d"
+  },
+  "official_source_binding": {
+    "repository": "https://github.com/apple/ARKitScenes",
+    "helper_path": "threedod/benchmark_scripts/utils/tenFpsDataLoader.py",
+    "helper_commit": "7283761bf26c27570ec59a5dc0f8686fbff07726",
+    "depth_scale_to_meters": 0.001,
+    "camera_ray_convention": "opencv_x_right_y_down_z_forward"
+  },
+  "surface_measurements": {
+    "accepted_high_confidence_pixel_count": 83757,
+    "rejected_or_missing_pixel_count": 14547,
+    "emitted_vertex_count": 83757,
+    "emitted_triangle_count": 147108,
+    "discontinuity_rejected_triangle_count": 7384,
+    "units": "meters",
+    "metric_scale_status": "sensor_metric_unvalidated",
+    "raw_arkit_poses_modified": false,
+    "generated_fill_used": false,
+    "hidden_heldout_observations_accessed": false,
+    "deterministic_replay_exact": true
+  },
+  "coordinate_frame_declaration": {
+    "frame": "arkitscenes_official_loader_world",
+    "units": "meters",
+    "handedness": "not_explicitly_declared_by_dataset",
+    "up_axis": "not_independently_validated",
+    "gravity_aligned": false
+  },
+  "warnings": [
+    "public_ipad_dataset_not_blueprint_raw_contract_3_2",
+    "world_handedness_up_axis_and_gravity_not_independently_validated"
+  ],
+  "blockers": [
+    "coordinate_frame_qualification_required",
+    "metric_scale_independent_validation_required",
+    "collider_not_compiled_or_qualified",
+    "isaac_not_verified",
+    "representative_blueprint_iphone_raw_contract_3_2_bundle_missing"
+  ],
+  "proof_effect": "public_dataset_observed_depth_surface_proxy_only",
+  "claim_ceiling": {
+    "decoded_observation_availability": true,
+    "calibrated_camera_trajectory_proxy": true,
+    "observed_depth_surface_proxy": true,
+    "blueprint_raw_contract_3_2": false,
+    "iphone_route_proven": false,
+    "metric_scale": false,
+    "metric_reference_geometry": false,
+    "collision_geometry": false,
+    "physics_readiness": false,
+    "isaac_load_render_compatibility": false,
+    "simulator_task_evidence": false,
+    "physical_task_success": false,
+    "deployment_readiness": false
+  },
+  "receipt_digest": "sha256:765fbd52d24815420a32db143aafb1c9877e6382c5aab44c253024e83c5acd88"
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_provider_deletion_receipt.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "provider_execution_receipt_digest", "provider_identity", "status", "provider_evidence", "timestamp", "independently_verified", "provider_zero_proven", "proof_effect", "claim_ceiling", "provider_deletion_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_provider_deletion_receipt.v1"},
+    "provider_execution_receipt_digest": {"$ref": "#/$defs/digest"},
+    "status": {"enum": ["verified_deleted", "verified_not_retained", "failed"]},
+    "independently_verified": {"const": true},
+    "provider_zero_proven": {"const": false},
+    "proof_effect": {"const": "provider_deletion_evidence_only"},
+    "claim_ceiling": {"const": "none"},
+    "provider_deletion_receipt_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}

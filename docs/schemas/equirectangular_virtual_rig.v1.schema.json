@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/equirectangular_virtual_rig.v1.schema.json",
+  "title": "Blueprint equirectangular shared-center virtual rig contracts v1",
+  "oneOf": [
+    {"$ref": "#/$defs/rig"},
+    {"$ref": "#/$defs/result"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "source_observation": {
+      "type": "object",
+      "required": [
+        "ordinal", "observation_id", "relative_path", "digest", "size_bytes",
+        "t_video_sec", "split", "width", "height", "pixel_mode"
+      ],
+      "properties": {
+        "ordinal": {"type": "integer", "minimum": 0},
+        "observation_id": {"type": "string", "minLength": 1},
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "t_video_sec": {"type": "number", "minimum": 0},
+        "split": {"enum": ["training", "validation", "held_out"]},
+        "width": {"type": "integer", "minimum": 4},
+        "height": {"type": "integer", "minimum": 2},
+        "pixel_mode": {"type": "string"}
+      }
+    },
+    "virtual_observation": {
+      "type": "object",
+      "required": [
+        "virtual_observation_id", "source_observation_id", "source_panorama_digest",
+        "source_t_video_sec", "split", "shared_optical_center_group_id",
+        "independent_physical_camera", "yaw_degrees", "pitch_degrees", "intrinsics",
+        "T_panorama_virtual_camera", "relative_path", "digest"
+      ],
+      "properties": {
+        "virtual_observation_id": {"type": "string", "minLength": 1},
+        "source_observation_id": {"type": "string", "minLength": 1},
+        "source_panorama_digest": {"$ref": "#/$defs/sha256"},
+        "source_t_video_sec": {"type": "number", "minimum": 0},
+        "split": {"enum": ["training", "validation", "held_out"]},
+        "shared_optical_center_group_id": {"type": "string", "minLength": 1},
+        "independent_physical_camera": {"const": false},
+        "yaw_degrees": {"type": "number"},
+        "pitch_degrees": {"type": "number"},
+        "intrinsics": {"type": "object"},
+        "T_panorama_virtual_camera": {
+          "type": "array", "minItems": 4, "maxItems": 4,
+          "items": {
+            "type": "array", "minItems": 4, "maxItems": 4,
+            "items": {"type": "number"}
+          }
+        },
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "rig": {
+      "type": "object",
+      "required": [
+        "schema_version", "capture_digest", "virtual_rig_profile", "access_scope",
+        "stitched_source_metadata_digest", "stitching_provenance", "producer_identity",
+        "stitching_receipt_digest", "original_360_source_digest", "source_observations",
+        "virtual_observations", "views_per_panorama",
+        "same_optical_center_constraint_required",
+        "rig_constrained_pose_estimation_required",
+        "virtual_views_are_independent_physical_cameras",
+        "candidate_may_change_virtual_view_definitions",
+        "source_panorama_pixels_remain_authoritative", "camera_trajectory_status",
+        "metric_scale_status", "virtual_rig_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "equirectangular_virtual_camera_rig.v1"},
+        "capture_digest": {"$ref": "#/$defs/sha256"},
+        "virtual_rig_profile": {"const": "blueprint_erp_shared_center_12x100deg_v1"},
+        "access_scope": {
+          "enum": ["candidate_training_and_validation_only", "independent_evaluator_only"]
+        },
+        "stitched_source_metadata_digest": {"$ref": "#/$defs/sha256"},
+        "stitching_provenance": {
+          "enum": ["customer_provided", "official_sdk_produced", "externally_produced"]
+        },
+        "producer_identity": {"type": "string", "minLength": 1},
+        "stitching_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "original_360_source_digest": {"$ref": "#/$defs/sha256"},
+        "source_observations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/source_observation"}},
+        "virtual_observations": {"type": "array", "minItems": 12, "items": {"$ref": "#/$defs/virtual_observation"}},
+        "views_per_panorama": {"const": 12},
+        "same_optical_center_constraint_required": {"const": true},
+        "rig_constrained_pose_estimation_required": {"const": true},
+        "virtual_views_are_independent_physical_cameras": {"const": false},
+        "candidate_may_change_virtual_view_definitions": {"const": false},
+        "source_panorama_pixels_remain_authoritative": {"const": true},
+        "camera_trajectory_status": {"const": "not_established"},
+        "metric_scale_status": {"const": "not_established"},
+        "virtual_rig_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "schema_version", "stable_run_identity", "source_capture_identity",
+        "source_capture_digest", "original_file_references", "producing_method",
+        "implementation_version", "container_image_digest", "source_commit_sha",
+        "deterministic_configuration_digest", "access_scope", "input_digests", "output_digests",
+        "stitching_provenance", "stitching_producer_identity",
+        "stitching_receipt_digest", "original_360_source_digest",
+        "train_heldout_split_digest", "camera_calibration_binding",
+        "coordinate_frame_declaration", "units", "metric_scale_status",
+        "provider_runtime_identity", "cost_usd", "duration_seconds", "authority_used",
+        "warnings", "blockers", "proof_effect", "claim_ceiling",
+        "parent_artifact_or_event", "timestamp", "artifact_references",
+        "virtual_observation_count",
+        "source_panorama_pixels_remain_authoritative",
+        "virtual_views_are_captured_evidence",
+        "virtual_views_are_independent_physical_cameras", "camera_trajectory_proven",
+        "metric_scale_proven", "appearance_reconstruction_proven",
+        "collision_geometry_proven", "isaac_compatibility_proven",
+        "equirectangular_compilation_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "equirectangular_virtual_rig_compilation.v1"},
+        "stable_run_identity": {"type": "string", "minLength": 1},
+        "source_capture_identity": {"type": "string", "minLength": 1},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "original_file_references": {"type": "array", "minItems": 1},
+        "producing_method": {"const": "deterministic_equirectangular_projector.v1"},
+        "implementation_version": {"$ref": "#/$defs/sha256"},
+        "container_image_digest": {"type": "null"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "deterministic_configuration_digest": {"$ref": "#/$defs/sha256"},
+        "access_scope": {
+          "enum": ["candidate_training_and_validation_only", "independent_evaluator_only"]
+        },
+        "input_digests": {"type": "object"},
+        "output_digests": {"type": "object"},
+        "stitching_provenance": {
+          "enum": ["customer_provided", "official_sdk_produced", "externally_produced"]
+        },
+        "stitching_producer_identity": {"type": "string", "minLength": 1},
+        "stitching_receipt_digest": {"$ref": "#/$defs/sha256"},
+        "original_360_source_digest": {"$ref": "#/$defs/sha256"},
+        "train_heldout_split_digest": {"type": "null"},
+        "camera_calibration_binding": {"$ref": "#/$defs/sha256"},
+        "coordinate_frame_declaration": {"type": "object"},
+        "units": {"const": "source_pixels_virtual_camera_radians_and_seconds"},
+        "metric_scale_status": {"const": "not_established"},
+        "provider_runtime_identity": {"type": "object"},
+        "cost_usd": {"const": 0.0},
+        "duration_seconds": {"const": 0.0},
+        "authority_used": {"type": "object"},
+        "warnings": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "proof_effect": {"const": "deterministic_shared_center_projection_only"},
+        "claim_ceiling": {"const": "equirectangular_virtual_camera_rig"},
+        "parent_artifact_or_event": {"type": "object"},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "artifact_references": {"type": "object"},
+        "virtual_observation_count": {"type": "integer", "minimum": 12},
+        "source_panorama_pixels_remain_authoritative": {"const": true},
+        "virtual_views_are_captured_evidence": {"const": false},
+        "virtual_views_are_independent_physical_cameras": {"const": false},
+        "camera_trajectory_proven": {"const": false},
+        "metric_scale_proven": {"const": false},
+        "appearance_reconstruction_proven": {"const": false},
+        "collision_geometry_proven": {"const": false},
+        "isaac_compatibility_proven": {"const": false},
+        "equirectangular_compilation_digest": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

@@ -20,7 +20,19 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
+import numpy as np
+from PIL import Image
+
+from .arkit_depth_surface_compiler import CAMERA_CONVENTIONS
+from .arkit_reconstruction_dataset import (
+    ArkitReconstructionDatasetError,
+    compile_arkit_reconstruction_dataset,
+)
 from .decision_evidence_contracts import canonical_digest
+from .reconstruction_frame_dataset import (
+    ReconstructionFrameDatasetError,
+    compile_frozen_frame_dataset,
+)
 from .reconstruction_capability import (
     ReconstructionContractError,
     build_reconstruction_method_profile,
@@ -32,6 +44,7 @@ LOCAL_DECODED_OBSERVATION_ADAPTER = "local://decoded-observation-index-v1"
 LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER = "local://arkit-metric-scaffold-v1"
 LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER = "local://external-reconstruction-import-v1"
 _PTS_TOLERANCE_SECONDS = 0.0001
+_MAX_RETAINED_VIDEO_BYTES = 64 * 1024 * 1024 * 1024
 _MAX_PLY_HEADER_BYTES = 1024 * 1024
 _VIDEO_PROFILES = {
     "iphone_arkit_lidar",
@@ -164,7 +177,70 @@ def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> str:
 
 
 def _implementation_digest() -> str:
-    return _sha256_file(Path(__file__).resolve())
+    return canonical_digest(
+        {
+            "local_reconstruction_adapters": _sha256_file(Path(__file__).resolve()),
+            "reconstruction_frame_dataset": _sha256_file(
+                Path(__file__).with_name("reconstruction_frame_dataset.py").resolve()
+            ),
+            "arkit_reconstruction_dataset": _sha256_file(
+                Path(__file__).with_name("arkit_reconstruction_dataset.py").resolve()
+            ),
+        }
+    )
+
+
+def _source_commit_sha() -> str:
+    configured = _text(os.getenv("BLUEPRINT_SOURCE_COMMIT"))
+    if configured:
+        if len(configured) == 40 and all(character in "0123456789abcdef" for character in configured):
+            return configured
+        raise LocalReconstructionAdapterError(["local_source_commit_sha_invalid"])
+    repository_root = Path(__file__).resolve().parents[2]
+    git_entry = repository_root / ".git"
+    try:
+        if git_entry.is_file():
+            line = git_entry.read_text(encoding="utf-8").strip()
+            if not line.startswith("gitdir:"):
+                raise LocalReconstructionAdapterError(["local_gitdir_pointer_invalid"])
+            git_root = Path(line.split(":", 1)[1].strip())
+            if not git_root.is_absolute():
+                git_root = (repository_root / git_root).resolve()
+        else:
+            git_root = git_entry.resolve()
+        common_git_root = git_root
+        common_dir = git_root / "commondir"
+        if common_dir.is_file():
+            configured_common_dir = Path(common_dir.read_text(encoding="utf-8").strip())
+            common_git_root = (
+                configured_common_dir
+                if configured_common_dir.is_absolute()
+                else (git_root / configured_common_dir).resolve()
+            )
+        head = (git_root / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref:"):
+            reference = head.split(":", 1)[1].strip()
+            value = ""
+            for reference_root in dict.fromkeys((git_root, common_git_root)):
+                reference_path = reference_root / reference
+                if reference_path.is_file():
+                    value = reference_path.read_text(encoding="utf-8").strip()
+                    break
+                packed = reference_root / "packed-refs"
+                if packed.is_file():
+                    for packed_line in packed.read_text(encoding="utf-8").splitlines():
+                        if packed_line.endswith(f" {reference}"):
+                            value = packed_line.split(" ", 1)[0]
+                            break
+                if value:
+                    break
+        else:
+            value = head
+    except OSError as exc:
+        raise LocalReconstructionAdapterError(["local_source_commit_sha_unavailable"]) from exc
+    if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
+        raise LocalReconstructionAdapterError(["local_source_commit_sha_invalid"])
+    return value
 
 
 def _tool_identity() -> tuple[str, str, str, str]:
@@ -203,7 +279,7 @@ def _probe_video(video_path: Path, ffprobe: str) -> dict[str, Any]:
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "stream=index,codec_name,width,height,avg_frame_rate,time_base:frame=best_effort_timestamp,best_effort_timestamp_time,pkt_duration_time,key_frame",
+                "stream=index,codec_name,width,height,avg_frame_rate,time_base,pix_fmt,color_range,color_space,color_transfer,color_primaries,field_order:stream_tags=rotate:stream_side_data=rotation:frame=best_effort_timestamp,best_effort_timestamp_time,pkt_dts_time,pkt_duration_time,key_frame,pict_type,color_range,color_space,color_transfer,color_primaries:frame_tags",
                 "-show_streams",
                 "-show_frames",
                 "-of",
@@ -230,35 +306,119 @@ def _probe_video(video_path: Path, ffprobe: str) -> dict[str, Any]:
     if not isinstance(frames, list) or not frames or not isinstance(streams, list) or not streams:
         raise LocalReconstructionAdapterError(["decoded_observation:no_decoded_video_frames"])
     presentation_times: list[float] = []
+    decoded_frames: list[dict[str, Any]] = []
     for index, frame in enumerate(frames):
         if not isinstance(frame, Mapping):
             raise LocalReconstructionAdapterError([f"decoded_observation:frame_invalid:{index}"])
         pts = _number(frame.get("best_effort_timestamp_time"))
         if pts is None:
             raise LocalReconstructionAdapterError([f"decoded_observation:pts_missing:{index}"])
-        if presentation_times and pts < presentation_times[-1]:
-            raise LocalReconstructionAdapterError(["decoded_observation:pts_not_monotonic"])
+        if presentation_times and pts <= presentation_times[-1]:
+            blocker = (
+                "decoded_observation:duplicate_pts"
+                if pts == presentation_times[-1]
+                else "decoded_observation:pts_not_monotonic"
+            )
+            raise LocalReconstructionAdapterError([blocker])
         presentation_times.append(pts)
+        decoded_frames.append(
+            {
+                "decoded_frame_index": index,
+                "source_pts_seconds": pts,
+                "source_dts_seconds": _number(frame.get("pkt_dts_time")),
+                "duration_seconds": _number(frame.get("pkt_duration_time")),
+                "key_frame": bool(_integer(frame.get("key_frame"))),
+                "picture_type": _text(frame.get("pict_type")) or None,
+                "color_metadata": {
+                    key: frame.get(key)
+                    for key in ("color_range", "color_space", "color_transfer", "color_primaries")
+                    if frame.get(key) not in (None, "")
+                },
+                "exposure_metadata": dict(frame.get("tags") or {}),
+            }
+        )
     first = presentation_times[0]
     normalized = [round(value - first, 9) for value in presentation_times]
+    for index, row in enumerate(decoded_frames):
+        row["t_video_sec"] = normalized[index]
+    stream = dict(streams[0]) if isinstance(streams[0], Mapping) else {}
+    rotation = None
+    tags = stream.get("tags") if isinstance(stream.get("tags"), Mapping) else {}
+    if tags:
+        rotation = _number(tags.get("rotate"))
+    side_data = stream.get("side_data_list")
+    if rotation is None and isinstance(side_data, list):
+        for value in side_data:
+            if isinstance(value, Mapping) and _number(value.get("rotation")) is not None:
+                rotation = _number(value.get("rotation"))
+                break
     return {
-        "stream": dict(streams[0]) if isinstance(streams[0], Mapping) else {},
+        "stream": {
+            key: stream.get(key)
+            for key in (
+                "index",
+                "codec_name",
+                "width",
+                "height",
+                "avg_frame_rate",
+                "time_base",
+                "pix_fmt",
+                "color_range",
+                "color_space",
+                "color_transfer",
+                "color_primaries",
+                "field_order",
+            )
+        }
+        | {"display_rotation_degrees": rotation},
         "frame_count": len(frames),
         "presentation_times_seconds": normalized,
         "first_source_pts_seconds": first,
+        "frames": decoded_frames,
     }
 
 
-def _sample_indexes(frame_count: int, maximum_frames: int) -> list[int]:
+def _sample_indexes(presentation_times: Sequence[float], maximum_frames: int) -> list[int]:
     if maximum_frames <= 0:
         raise LocalReconstructionAdapterError(["decoded_observation:maximum_frames_invalid"])
+    frame_count = len(presentation_times)
+    if frame_count <= 0:
+        raise LocalReconstructionAdapterError(["decoded_observation:no_decoded_video_frames"])
     if frame_count <= maximum_frames:
         return list(range(frame_count))
     if maximum_frames == 1:
         return [0]
-    return sorted(
-        {index * (frame_count - 1) // (maximum_frames - 1) for index in range(maximum_frames)}
-    )
+    start = float(presentation_times[0])
+    stop = float(presentation_times[-1])
+    if stop <= start:
+        raise LocalReconstructionAdapterError(["decoded_observation:pts_not_monotonic"])
+    selected = {0, frame_count - 1}
+    for ordinal in range(1, maximum_frames - 1):
+        target = start + ((stop - start) * ordinal / (maximum_frames - 1))
+        index = min(
+            range(frame_count),
+            key=lambda candidate: (abs(float(presentation_times[candidate]) - target), candidate),
+        )
+        selected.add(index)
+    # Extremely uneven timing can map multiple targets to one frame. Fill the
+    # bounded remainder by maximizing temporal distance from selected frames.
+    while len(selected) < maximum_frames:
+        remaining = [index for index in range(frame_count) if index not in selected]
+        chosen = max(
+            remaining,
+            key=lambda candidate: (
+                min(
+                    abs(
+                        float(presentation_times[candidate])
+                        - float(presentation_times[existing])
+                    )
+                    for existing in selected
+                ),
+                -candidate,
+            ),
+        )
+        selected.add(chosen)
+    return sorted(selected)
 
 
 def _extract_frames(
@@ -267,6 +427,7 @@ def _extract_frames(
     ffmpeg: str,
     indexes: Sequence[int],
     presentation_times: Sequence[float],
+    decoded_frame_metadata: Sequence[Mapping[str, Any]],
     frame_root: Path,
 ) -> list[dict[str, Any]]:
     frame_root.mkdir(parents=True, exist_ok=True)
@@ -283,6 +444,7 @@ def _extract_frames(
                     ffmpeg,
                     "-v",
                     "error",
+                    "-noautorotate",
                     "-i",
                     str(video_path),
                     "-vf",
@@ -308,18 +470,43 @@ def _extract_frames(
                     [f"decoded_observation:frame_extract_failed:{index}"]
                 )
             digest = _sha256_file(temporary)
+            if target.is_symlink():
+                raise LocalReconstructionAdapterError(["derived_artifact:symlink_forbidden"])
             if target.exists():
                 if _sha256_file(target) != digest:
                     raise LocalReconstructionAdapterError(["derived_artifact:immutable_conflict"])
             else:
                 temporary.replace(target)
+            with Image.open(target if target.exists() else temporary) as image:
+                gray = np.asarray(image.convert("L"), dtype=np.float32)
+                image_width, image_height = image.size
+            horizontal = np.diff(gray, axis=1) if gray.shape[1] > 1 else np.zeros_like(gray)
+            vertical = np.diff(gray, axis=0) if gray.shape[0] > 1 else np.zeros_like(gray)
+            gradient_energy = float(np.mean(horizontal * horizontal) + np.mean(vertical * vertical))
+            metadata = dict(decoded_frame_metadata[index])
             frames.append(
                 {
                     "frame_id": frame_id,
                     "decoded_frame_index": index,
                     "t_video_sec": presentation_times[index],
+                    "source_pts_seconds": metadata.get("source_pts_seconds"),
+                    "source_dts_seconds": metadata.get("source_dts_seconds"),
+                    "duration_seconds": metadata.get("duration_seconds"),
+                    "key_frame": bool(metadata.get("key_frame")),
                     "uri": f"local-reconstruction-frame://{digest[7:]}",
                     "digest": digest,
+                    "artifact_relative_path": f"frames/{frame_id}.png",
+                    "image_metadata": {
+                        "width": image_width,
+                        "height": image_height,
+                        "pixel_orientation": "encoded_source_no_autorotate",
+                    },
+                    "quality_signals": {
+                        "mean_luma_0_255": round(float(np.mean(gray)), 6),
+                        "gradient_energy": round(gradient_energy, 6),
+                        "excessive_blur_deterministically_established": False,
+                        "exposure_metadata": metadata.get("exposure_metadata", {}),
+                    },
                 }
             )
         finally:
@@ -443,6 +630,7 @@ class LocalDecodedObservationAdapter:
         output_root: Path,
         rights_and_retention: Mapping[str, Any],
         maximum_frames: int = 12,
+        maximum_source_bytes: int = _MAX_RETAINED_VIDEO_BYTES,
     ) -> dict[str, Any]:
         if not _text(intake_id) or not _is_digest(capture_digest):
             raise LocalReconstructionAdapterError(["decoded_observation:source_binding_invalid"])
@@ -450,17 +638,26 @@ class LocalDecodedObservationAdapter:
             raise LocalReconstructionAdapterError(
                 ["decoded_observation:capture_profile_not_supported"]
             )
+        relative_video = PurePosixPath(video_relative_path.replace("\\", "/"))
+        lexical_video = capture_root.expanduser().resolve() / Path(*relative_video.parts)
+        if lexical_video.is_symlink():
+            raise LocalReconstructionAdapterError(["decoded_observation:video_symlink_forbidden"])
         video_path = _safe_child(capture_root, video_relative_path)
+        if video_path.is_symlink():
+            raise LocalReconstructionAdapterError(["decoded_observation:video_symlink_forbidden"])
         if not video_path.is_file() or video_path.stat().st_size <= 0:
             raise LocalReconstructionAdapterError(["decoded_observation:video_missing"])
+        if maximum_source_bytes <= 0 or video_path.stat().st_size > maximum_source_bytes:
+            raise LocalReconstructionAdapterError(["decoded_observation:video_oversized"])
         ffprobe, ffmpeg, runtime_identity, runtime_digest = _tool_identity()
         probe = _probe_video(video_path, ffprobe)
-        indexes = _sample_indexes(probe["frame_count"], maximum_frames)
+        indexes = _sample_indexes(probe["presentation_times_seconds"], maximum_frames)
         method_profile = decoded_observation_method_profile(execution_authorized=True)
         artifact_root = (
             output_root.expanduser().resolve()
             / capture_digest[7:]
             / "local_decoded_observation_index_v1"
+            / method_profile["implementation_digest"][7:23]
             / f"maximum_frames_{maximum_frames}"
         )
         frames = _extract_frames(
@@ -468,8 +665,44 @@ class LocalDecodedObservationAdapter:
             ffmpeg=ffmpeg,
             indexes=indexes,
             presentation_times=probe["presentation_times_seconds"],
+            decoded_frame_metadata=probe["frames"],
             frame_root=artifact_root / "frames",
         )
+        try:
+            dataset = compile_frozen_frame_dataset(
+                artifact_root=artifact_root,
+                intake_id=intake_id,
+                capture_digest=capture_digest,
+                capture_authority_profile=capture_authority_profile,
+                source_video_relative_path=video_relative_path,
+                source_video_digest=_sha256_file(video_path),
+                decoded_frame_count=probe["frame_count"],
+                selected_frames=frames,
+                stream_metadata=probe["stream"],
+                runtime_identity=runtime_identity,
+                runtime_digest=runtime_digest,
+                implementation_digest=method_profile["implementation_digest"],
+                source_commit_sha=_source_commit_sha(),
+                rights_and_retention=rights_and_retention,
+            )
+        except ReconstructionFrameDatasetError as exc:
+            raise LocalReconstructionAdapterError(
+                [f"frame_dataset:{code}" for code in exc.codes]
+            ) from exc
+        split_reference = dataset["artifact_references"]["frozen_split_manifest"]
+        split_manifest = _load_json(
+            artifact_root / split_reference["relative_path"], label="frozen_split_manifest"
+        )
+        heldout_ids = {
+            _text(row.get("frame_id"))
+            for row in split_manifest.get("assignments", [])
+            if isinstance(row, Mapping) and row.get("split") == "held_out"
+        }
+        candidate_visible_frames = [
+            {key: value for key, value in frame.items() if key != "artifact_relative_path"}
+            for frame in frames
+            if frame["frame_id"] not in heldout_ids
+        ]
         index = {
             "schema_version": "decoded_observation_index.v1",
             "capture_digest": capture_digest,
@@ -477,11 +710,25 @@ class LocalDecodedObservationAdapter:
             "video_digest": _sha256_file(video_path),
             "decoded_frame_count": probe["frame_count"],
             "decoded_presentation_times_seconds": probe["presentation_times_seconds"],
-            "sampled_frames": frames,
-            "selection_method": "evenly_spaced_decoded_frame_indexes_v1",
+            "sampled_frames": candidate_visible_frames,
+            "selected_frame_count": len(frames),
+            "selection_method": "evenly_spaced_actual_decoded_pts_with_endpoints_v1",
+            "stream_metadata": probe["stream"],
+            "reconstruction_dataset_manifest_digest": dataset["dataset_manifest_digest"],
+            "frozen_split_digest": dataset["train_heldout_split_digest"],
+            "hidden_heldout_frame_count": len(heldout_ids),
         }
         index_path = artifact_root / "decoded_observation_index.json"
         index_digest = _write_immutable_json(index_path, index)
+        dataset_path = (
+            artifact_root
+            / f"frozen_dataset_{dataset['deterministic_configuration_digest'][7:23]}"
+            / "reconstruction_dataset_manifest.json"
+        )
+        candidate_manifest_path = (
+            artifact_root
+            / dataset["artifact_references"]["candidate_dataset_manifest"]["relative_path"]
+        )
         result = {
             "result_id": f"decoded-observation-{index_digest[7:23]}",
             "intake_id": intake_id,
@@ -496,7 +743,9 @@ class LocalDecodedObservationAdapter:
             "outputs": ["decoded_observation_frames"],
             "source_frames": {
                 "decoded_frame_count": probe["frame_count"],
-                "sampled_frames": frames,
+                "sampled_frames": candidate_visible_frames,
+                "hidden_heldout_frame_count": len(heldout_ids),
+                "hidden_heldout_pixels_exposed_to_candidate": False,
             },
             "camera_solution": {"status": "not_available", "calibrated": False},
             "coordinate_system": {
@@ -507,11 +756,29 @@ class LocalDecodedObservationAdapter:
                 "decoded_observation_index": {
                     "uri": f"local-reconstruction://{index_digest[7:]}",
                     "digest": index_digest,
-                }
+                    "relative_path": index_path.relative_to(
+                        output_root.expanduser().resolve()
+                    ).as_posix(),
+                },
+                "reconstruction_dataset_manifest": {
+                    "uri": f"local-reconstruction://{dataset['dataset_manifest_digest'][7:]}",
+                    "digest": dataset["dataset_manifest_digest"],
+                    "relative_path": dataset_path.relative_to(
+                        output_root.expanduser().resolve()
+                    ).as_posix(),
+                },
+                "candidate_dataset_manifest": {
+                    "uri": f"local-reconstruction://{dataset['output_digests']['candidate_dataset_digest'][7:]}",
+                    "digest": dataset["output_digests"]["candidate_dataset_digest"],
+                    "relative_path": candidate_manifest_path.relative_to(
+                        output_root.expanduser().resolve()
+                    ).as_posix(),
+                },
             },
             "coverage_map": {
                 "timeline_sample_fraction": round(len(frames) / probe["frame_count"], 9),
                 "spatial_coverage_status": "not_established",
+                "hidden_heldout_frame_count": len(heldout_ids),
             },
             "observed_regions": [{"region_id": "retained_video_timeline"}],
             "generated_regions": [],
@@ -521,6 +788,10 @@ class LocalDecodedObservationAdapter:
                 "decoded_pts_monotonic": True,
                 "decoded_frame_count": probe["frame_count"],
                 "source_video_digest": index["video_digest"],
+                "frozen_split_digest": dataset["train_heldout_split_digest"],
+                "candidate_can_change_split": False,
+                "candidate_can_read_hidden_heldout_pixels": False,
+                "dataset_blockers": dataset["blockers"],
             },
             "cost_usd": 0.0,
             "duration_seconds": 0.0,
@@ -575,7 +846,78 @@ def _intrinsics(value: Mapping[str, Any]) -> dict[str, Any] | None:
     return {**numbers, "width": width, "height": height}
 
 
-def _verified_depth_pairs(capture_root: Path) -> list[dict[str, Any]]:
+def _depth_surface_source_readiness(
+    depth: Mapping[str, Any], confidence: Mapping[str, Any]
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    depth_encoding = _text(depth.get("depth_encoding"))
+    scale_to_meters = _number(depth.get("scale_to_meters"))
+    camera_ray_convention = _text(depth.get("camera_ray_convention"))
+    depth_intrinsics_value = depth.get("depth_intrinsics")
+    depth_intrinsics = (
+        _intrinsics(depth_intrinsics_value)
+        if isinstance(depth_intrinsics_value, Mapping)
+        else None
+    )
+    confidence_encoding = _text(confidence.get("confidence_encoding"))
+    accepted_values = confidence.get("accepted_confidence_values")
+    accepted_values_valid = (
+        isinstance(accepted_values, list)
+        and bool(accepted_values)
+        and all(
+            not isinstance(item, bool) and isinstance(item, int) and 0 <= item <= 255
+            for item in accepted_values
+        )
+    )
+    if depth.get("schema_version") != "arkit_depth_manifest.v2":
+        blockers.append("depth_manifest_v2_required")
+    if confidence.get("schema_version") != "arkit_confidence_manifest.v2":
+        blockers.append("confidence_manifest_v2_required")
+    if depth_encoding not in {"uint16_png", "npy"}:
+        blockers.append("depth_encoding_declaration_missing_or_unsupported")
+    if scale_to_meters is None or scale_to_meters <= 0:
+        blockers.append("depth_scale_to_meters_declaration_missing")
+    if camera_ray_convention not in CAMERA_CONVENTIONS:
+        blockers.append("camera_ray_convention_declaration_missing_or_unsupported")
+    if depth_intrinsics is None:
+        blockers.append("depth_resolution_intrinsics_missing_or_invalid")
+    if depth.get("depth_registered_to_arkit_camera") is not True:
+        blockers.append("rgb_depth_camera_alignment_not_explicitly_declared")
+    if confidence_encoding not in {"uint8_png", "npy"}:
+        blockers.append("confidence_encoding_declaration_missing_or_unsupported")
+    if not accepted_values_valid or len(set(accepted_values)) != len(accepted_values):
+        blockers.append("accepted_confidence_values_missing_or_invalid")
+    if blockers:
+        return {
+            "schema_version": "arkit_depth_surface_source_readiness.v1",
+            "status": "blocked_missing_source_declarations",
+            "blockers": sorted(set(blockers)),
+            "agent_may_override": False,
+        }
+    declaration = {
+        "depth_encoding": depth_encoding,
+        "scale_to_meters": scale_to_meters,
+        "camera_ray_convention": camera_ray_convention,
+        "depth_intrinsics": depth_intrinsics,
+        "depth_registered_to_arkit_camera": True,
+        "confidence_encoding": confidence_encoding,
+        "accepted_confidence_values": sorted(accepted_values),
+    }
+    declaration["declaration_digest"] = canonical_digest(
+        declaration, digest_field="declaration_digest"
+    )
+    return {
+        "schema_version": "arkit_depth_surface_source_readiness.v1",
+        "status": "ready_for_confidence_filtered_backprojection",
+        "blockers": [],
+        "source_declaration": declaration,
+        "agent_may_override": False,
+    }
+
+
+def _verified_depth_pairs(
+    capture_root: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     depth = _load_json(capture_root / "arkit/depth_manifest.json", label="depth_manifest")
     confidence = _load_json(
         capture_root / "arkit/confidence_manifest.json", label="confidence_manifest"
@@ -618,7 +960,7 @@ def _verified_depth_pairs(capture_root: Path) -> list[dict[str, Any]]:
                 "confidence_digest": _sha256_file(confidence_path),
             }
         )
-    return pairs
+    return pairs, _depth_surface_source_readiness(depth, confidence)
 
 
 @dataclass(frozen=True)
@@ -768,7 +1110,18 @@ class LocalArkitMetricScaffoldAdapter:
                 errors.append("metric_scaffold:first_retained_frame_not_capture_origin")
         if errors:
             raise LocalReconstructionAdapterError(errors)
-        depth_pairs = _verified_depth_pairs(root)
+        depth_pairs, depth_surface_readiness = _verified_depth_pairs(root)
+        up_axis = _text(recording.get("up_axis"))
+        if up_axis not in {"X", "Y", "Z"}:
+            depth_surface_readiness = {
+                "schema_version": "arkit_depth_surface_source_readiness.v1",
+                "status": "blocked_missing_source_declarations",
+                "blockers": sorted(
+                    set(depth_surface_readiness["blockers"])
+                    | {"coordinate_up_axis_missing_or_invalid"}
+                ),
+                "agent_may_override": False,
+            }
         if any(pair["frame_id"] not in pose_by_id for pair in depth_pairs):
             raise LocalReconstructionAdapterError(
                 ["metric_scaffold:depth_pair_pose_binding_missing"]
@@ -794,6 +1147,7 @@ class LocalArkitMetricScaffoldAdapter:
                 "units": "meters",
                 "handedness": "right_handed",
                 "gravity_aligned": True,
+                "up_axis": up_axis or None,
             },
             "intrinsics": normalized_intrinsics,
             "camera_frames": [
@@ -807,6 +1161,7 @@ class LocalArkitMetricScaffoldAdapter:
                 for row in sync_rows
             ],
             "depth_confidence_pairs": depth_pairs,
+            "depth_surface_source_readiness": depth_surface_readiness,
             "source_artifact_digests": {
                 relative: _sha256_file(_safe_child(root, relative))
                 for relative in (
@@ -832,6 +1187,51 @@ class LocalArkitMetricScaffoldAdapter:
         scaffold_digest = _write_immutable_json(
             artifact_root / "arkit_metric_scaffold.json", scaffold
         )
+        decoded_dataset_reference = decoded_result["asset_references"][
+            "reconstruction_dataset_manifest"
+        ]
+        decoded_dataset_path = _safe_child(
+            output_root.expanduser().resolve(),
+            _text(decoded_dataset_reference.get("relative_path")),
+        )
+        dataset_manifest = _load_json(decoded_dataset_path, label="reconstruction_dataset")
+        decoded_artifact_root = decoded_dataset_path.parents[1]
+        split_manifest = _load_json(
+            _safe_child(
+                decoded_artifact_root,
+                dataset_manifest["artifact_references"]["frozen_split_manifest"][
+                    "relative_path"
+                ],
+            ),
+            label="frozen_reconstruction_split",
+        )
+        candidate_manifest = _load_json(
+            _safe_child(
+                decoded_artifact_root,
+                dataset_manifest["artifact_references"]["candidate_dataset_manifest"][
+                    "relative_path"
+                ],
+            ),
+            label="candidate_reconstruction_dataset",
+        )
+        try:
+            arkit_export = compile_arkit_reconstruction_dataset(
+                output_root=artifact_root / "reconstruction_dataset_export",
+                intake_id=intake_id,
+                capture_digest=capture_digest,
+                dataset_manifest=dataset_manifest,
+                split_manifest=split_manifest,
+                candidate_manifest=candidate_manifest,
+                metric_scaffold=scaffold,
+                metric_scaffold_digest=scaffold_digest,
+                implementation_digest=method_profile["implementation_digest"],
+                source_commit_sha=_source_commit_sha(),
+                authority_used=rights_and_retention,
+            )
+        except ArkitReconstructionDatasetError as exc:
+            raise LocalReconstructionAdapterError(
+                [f"arkit_reconstruction_export:{code}" for code in exc.codes]
+            ) from exc
         coverage = round(len(depth_pairs) / len(sync_rows), 9)
         result_binding_digest = canonical_digest(
             {
@@ -873,6 +1273,15 @@ class LocalArkitMetricScaffoldAdapter:
                         "uri": f"local-reconstruction://{scaffold_digest[7:]}",
                         "digest": scaffold_digest,
                     },
+                    "arkit_reconstruction_dataset_export": {
+                        "uri": (
+                            "local-reconstruction://"
+                            f"{arkit_export['arkit_reconstruction_dataset_export_digest'][7:]}"
+                        ),
+                        "digest": arkit_export[
+                            "arkit_reconstruction_dataset_export_digest"
+                        ],
+                    },
                 },
                 "coverage_map": {
                     "calibrated_frame_fraction": 1.0,
@@ -883,13 +1292,29 @@ class LocalArkitMetricScaffoldAdapter:
                 "uncertainty_map": {
                     "unobserved_surfaces_remain_unsupported": True,
                     "depth_confidence_is_raw_sensor_evidence": True,
+                    "confidence_filtering_status": "not_executed",
+                    "depth_surface_source_declaration_blockers": list(
+                        depth_surface_readiness["blockers"]
+                    ),
+                    "rgb_depth_alignment_status": "not_independently_validated",
+                    "metric_scale_validation_status": "not_executed",
                 },
                 "invalid_regions": [],
                 "validation_metrics": {
                     "decoded_pts_verified": True,
                     "retained_sync_pose_count": len(sync_rows),
                     "depth_confidence_pair_count": len(depth_pairs),
+                    "depth_surface_compilation_ready": (
+                        depth_surface_readiness["status"]
+                        == "ready_for_confidence_filtered_backprojection"
+                    ),
                     "tracking_reset_count": 0,
+                    "sensor_declared_units": "meters",
+                    "independent_metric_scale_validation_passed": False,
+                    "arkit_reconstruction_dataset_export_digest": arkit_export[
+                        "arkit_reconstruction_dataset_export_digest"
+                    ],
+                    "pose_refinement_executed": False,
                 },
                 "cost_usd": 0.0,
                 "duration_seconds": 0.0,
@@ -899,8 +1324,9 @@ class LocalArkitMetricScaffoldAdapter:
                 "claim_ceiling": {
                     "captured_observation": True,
                     "calibrated_camera_poses": True,
-                    "metric_scale": True,
-                    "metric_reference_layer": True,
+                    "sensor_declared_metric_scale": True,
+                    "metric_scale": False,
+                    "metric_reference_layer": False,
                     "complete_geometry": False,
                     "collision_geometry": False,
                     "physics": False,

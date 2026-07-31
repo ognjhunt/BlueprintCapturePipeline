@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/reconstruction_camera_rig_and_scale_validation.v1.schema.json",
+  "title": "Blueprint Camera Rig and Metric Scale Validation Contracts v1",
+  "oneOf": [
+    {"$ref": "#/$defs/rig_request"},
+    {"$ref": "#/$defs/rig_result"},
+    {"$ref": "#/$defs/anchor"},
+    {"$ref": "#/$defs/scale_request"},
+    {"$ref": "#/$defs/scale_result"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "rig_request": {
+      "type": "object",
+      "required": ["schema_version", "source_capture_digest", "native_360_normalization_digest", "rig_declaration", "dual_fisheye_binding", "agent_may_change_calibration", "timestamp", "camera_rig_validation_request_digest"],
+      "properties": {
+        "schema_version": {"const": "camera_rig_validation_request.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "native_360_normalization_digest": {"$ref": "#/$defs/sha256"},
+        "agent_may_change_calibration": {"const": false},
+        "camera_rig_validation_request_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "rig_result": {
+      "type": "object",
+      "required": ["schema_version", "source_capture_digest", "camera_rig_validation_request_digest", "status", "agent_altered_calibration", "metric_scale_proven", "camera_trajectory_proven", "proof_effect", "claim_ceiling", "camera_rig_validation_result_digest"],
+      "properties": {
+        "schema_version": {"const": "camera_rig_validation_result.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "status": {"enum": ["validated", "rejected"]},
+        "agent_altered_calibration": {"const": false},
+        "metric_scale_proven": {"const": false},
+        "camera_trajectory_proven": {"const": false},
+        "camera_rig_validation_result_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "anchor": {
+      "type": "object",
+      "required": ["schema_version", "source_capture_digest", "anchor_id", "anchor_type", "measured_distance_m", "evidence_digest", "independently_verified", "learned_or_monocular_depth_only", "coordinate_frame_declaration", "metric_scale_anchor_digest"],
+      "properties": {
+        "schema_version": {"const": "metric_scale_anchor_declaration.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "measured_distance_m": {"type": "number", "exclusiveMinimum": 0},
+        "evidence_digest": {"$ref": "#/$defs/sha256"},
+        "independently_verified": {"const": true},
+        "learned_or_monocular_depth_only": {"const": false},
+        "metric_scale_anchor_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "scale_request": {
+      "type": "object",
+      "required": ["schema_version", "source_capture_digest", "reconstruction_result_digest", "frozen_split_digest", "anchor", "estimated_anchor_distance_units", "maximum_relative_error", "threshold_frozen_before_validation", "candidate_may_change_anchor", "timestamp", "metric_scale_validation_request_digest"],
+      "properties": {
+        "schema_version": {"const": "metric_scale_validation_request.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "threshold_frozen_before_validation": {"const": true},
+        "candidate_may_change_anchor": {"const": false},
+        "metric_scale_validation_request_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "scale_result": {
+      "type": "object",
+      "required": ["schema_version", "source_capture_digest", "metric_scale_validation_request_digest", "status", "relative_error", "learned_or_monocular_depth_established_scale", "agent_changed_anchor_or_threshold", "proof_effect", "claim_ceiling", "metric_scale_validation_result_digest"],
+      "properties": {
+        "schema_version": {"const": "metric_scale_validation_result.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "status": {"enum": ["validated", "rejected"]},
+        "learned_or_monocular_depth_established_scale": {"const": false},
+        "agent_changed_anchor_or_threshold": {"const": false},
+        "metric_scale_validation_result_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

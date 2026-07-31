@@ -38,7 +38,14 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
     Returns float32 arrays ready for USD authoring. ``sh_rest`` (N, 45) higher-order SH,
     INRIA channel-major layout, is optional; without it the field is degree-0 (DC only).
     """
+    if isinstance(splat.count, bool) or splat.count < 1:
+        raise ValueError("particlefield_splat_count_invalid")
     xyz = np.ascontiguousarray(splat.xyz, dtype=np.float32)
+    if xyz.shape != (splat.count, 3):
+        raise ValueError("particlefield_position_shape_invalid")
+    arrays = (xyz, splat.scales, splat.quats, splat.opacity, splat.f_dc)
+    if any(not np.isfinite(np.asarray(value)).all() for value in arrays):
+        raise ValueError("particlefield_nonfinite_input")
     scales = np.exp(np.asarray(splat.scales, dtype=np.float32)).astype(np.float32)
 
     q = np.asarray(splat.quats, dtype=np.float64)  # (N,4) = (w, x, y, z) INRIA order
@@ -52,12 +59,21 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
     dc = np.asarray(splat.f_dc, dtype=np.float32).reshape(n, 1, 3)  # coeff 0 (RGB)
     if sh_rest is not None and np.asarray(sh_rest).size:
         rest = np.asarray(sh_rest, dtype=np.float32)
+        if (
+            rest.ndim != 2
+            or rest.shape[0] != n
+            or rest.shape[1] % 3
+            or not np.isfinite(rest).all()
+        ):
+            raise ValueError("particlefield_sh_rest_invalid")
         n_rest = rest.shape[1] // 3
         # INRIA f_rest is channel-major: [R*n_rest, G*n_rest, B*n_rest] -> (n, n_rest, 3)
         rest = rest.reshape(n, 3, n_rest).transpose(0, 2, 1)
         coeffs = np.concatenate([dc, rest], axis=1)  # (n, 1+n_rest, 3)
         total = coeffs.shape[1]
         degree = int(round(total ** 0.5)) - 1
+        if (degree + 1) ** 2 != total:
+            raise ValueError("particlefield_sh_coefficient_count_invalid")
         sh = coeffs.reshape(n * total, 3).astype(np.float32)
     else:
         degree = 0
@@ -101,7 +117,8 @@ def write_particlefield_usd(
             "error": repr(exc),
         }
     splat = source if isinstance(source, SplatData) else read_standard_3dgs_ply(source)
-    arr = build_particlefield_arrays(splat, sh_rest=sh_rest)
+    effective_sh_rest = sh_rest if sh_rest is not None else splat.sh_rest
+    arr = build_particlefield_arrays(splat, sh_rest=effective_sh_rest)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     stage = Usd.Stage.CreateNew(str(out_path))

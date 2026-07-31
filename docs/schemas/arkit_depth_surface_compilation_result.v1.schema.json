@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/arkit_depth_surface_compilation_result.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "stable_run_identity",
+    "source_capture_identity",
+    "source_capture_digest",
+    "original_file_references",
+    "producing_method",
+    "implementation_version",
+    "container_image_digest",
+    "source_commit_sha",
+    "deterministic_configuration_digest",
+    "input_digests",
+    "output_digests",
+    "train_heldout_split_digest",
+    "camera_calibration_binding",
+    "coordinate_frame_declaration",
+    "units",
+    "metric_scale_status",
+    "provider_runtime_identity",
+    "cost_usd",
+    "duration_seconds",
+    "authority_used",
+    "warnings",
+    "blockers",
+    "parent_artifact_or_event",
+    "timestamp",
+    "capture_profile",
+    "status",
+    "surface_asset",
+    "accepted_high_confidence_pixel_count",
+    "rejected_or_missing_pixel_count",
+    "emitted_vertex_count",
+    "emitted_triangle_count",
+    "discontinuity_rejected_triangle_count",
+    "observed_region_ids",
+    "unsupported_region_ids",
+    "hidden_heldout_observations_accessed",
+    "generated_fill_used",
+    "raw_arkit_poses_modified",
+    "blueprint_raw_contract_3_2_proven",
+    "iphone_route_proven",
+    "proof_effect",
+    "claim_ceiling",
+    "arkit_depth_surface_compilation_result_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "arkit_depth_surface_compilation_result.v1"},
+    "source_capture_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "producing_method": {"const": "blueprint.arkit_depth_observed_surface_backprojection"},
+    "implementation_version": {"const": "1.0.0"},
+    "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "train_heldout_split_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "units": {"const": "meters"},
+    "metric_scale_status": {"enum": ["sensor_metric_unvalidated", "validated"]},
+    "cost_usd": {"const": 0.0},
+    "duration_seconds": {"const": 0.0},
+    "status": {"const": "compiled_observed_surface_candidate"},
+    "capture_profile": {
+      "enum": ["iphone_arkit_lidar", "public_dataset_arkitscenes_proxy"]
+    },
+    "surface_asset": {
+      "type": "object",
+      "required": ["relative_path", "digest"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1},
+        "digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "accepted_high_confidence_pixel_count": {"type": "integer", "minimum": 1},
+    "rejected_or_missing_pixel_count": {"type": "integer", "minimum": 0},
+    "emitted_vertex_count": {"type": "integer", "minimum": 1},
+    "emitted_triangle_count": {"type": "integer", "minimum": 1},
+    "discontinuity_rejected_triangle_count": {"type": "integer", "minimum": 0},
+    "hidden_heldout_observations_accessed": {"const": false},
+    "generated_fill_used": {"const": false},
+    "raw_arkit_poses_modified": {"const": false},
+    "blueprint_raw_contract_3_2_proven": {"const": false},
+    "iphone_route_proven": {"const": false},
+    "proof_effect": {
+      "enum": [
+        "metric_reference_candidate_only",
+        "public_dataset_observed_depth_surface_proxy_only"
+      ]
+    },
+    "claim_ceiling": {
+      "enum": [
+        "observed_arkit_depth_surface_candidate",
+        "public_dataset_arkit_depth_surface_proxy"
+      ]
+    },
+    "arkit_depth_surface_compilation_result_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "additionalProperties": true
+}

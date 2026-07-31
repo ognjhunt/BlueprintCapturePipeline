@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/task_evaluation_capture_source_binding.v1.schema.json",
+  "title": "Task Evaluation Capture Source Binding v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "capture_build_digest",
+    "capture_session_id",
+    "intake_id",
+    "capture_digest",
+    "envelope_digest",
+    "qa_report_digest",
+    "object_manifest_digest",
+    "raw_media_included",
+    "source_binding_is_proof_upgrade",
+    "source_binding_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "task_evaluation_capture_source_binding.v1"},
+    "capture_build_digest": {"$ref": "#/$defs/digest"},
+    "capture_session_id": {"type": ["string", "null"]},
+    "intake_id": {"type": ["string", "null"]},
+    "capture_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "envelope_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "qa_report_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "object_manifest_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "raw_media_included": {"const": false},
+    "source_binding_is_proof_upgrade": {"const": false},
+    "source_binding_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

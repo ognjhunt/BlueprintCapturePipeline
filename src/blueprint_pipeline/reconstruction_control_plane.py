@@ -599,6 +599,43 @@ def inspect_reconstruction_plan(*, state_root: str | Path, plan_id: str) -> dict
     }
 
 
+def resolve_reconstruction_capture_build(
+    *, state_root: str | Path, capture_store_root: str | Path, plan_id: str
+) -> Path:
+    """Resolve the admitted capture build for an exact control-plane plan.
+
+    The returned path is for trusted in-process orchestration only. Resolution
+    revalidates the retained source bytes and every binding also checked before
+    execution, so a stale or revoked source cannot refresh supervisor state.
+    """
+
+    try:
+        identifier = strict_identifier(plan_id, field="plan_id", max_length=192)
+    except ValueError as exc:
+        raise ReconstructionControlPlaneError(str(exc)) from exc
+    context = _read_object(
+        _run_root(state_root, identifier) / "artifacts" / "context.json",
+        code="reconstruction_context_not_found",
+    )
+    source = _source_binding(
+        capture_store_root=Path(capture_store_root).expanduser().resolve(),
+        capture_session_id=str(context.get("capture_session_id") or ""),
+        intake_id=str(context.get("intake_id") or ""),
+    )
+    if (
+        source["receipt"].get("capture_digest") != context.get("capture_digest")
+        or source["receipt"].get("envelope_digest") != context.get("envelope_digest")
+        or source["qa"].get("qa_report_digest") != context.get("qa_report_digest")
+        or source["object_manifest"].get("manifest_digest")
+        != context.get("object_manifest_digest")
+        or source["object_relative_path"] != context.get("object_relative_path")
+    ):
+        raise ReconstructionControlPlaneError(
+            "reconstruction_source_stale", status_code=409
+        )
+    return source["artifact_root"] / "capture_intake_envelope.json"
+
+
 def load_reconstruction_compilation_inputs(
     *,
     state_root: str | Path,
@@ -650,4 +687,5 @@ __all__ = [
     "inspect_reconstruction_plan",
     "load_reconstruction_compilation_inputs",
     "prepare_reconstruction_plan",
+    "resolve_reconstruction_capture_build",
 ]

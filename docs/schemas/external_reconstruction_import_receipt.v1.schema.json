@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/external_reconstruction_import_receipt.v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "source_capture_identity", "source_capture_digest", "external_import_request_digest", "provenance_rights_receipt_digest", "imported_assets", "source_capture_binding_verified", "rights_and_provenance_verified", "status", "raw_capture_truth", "metric_scale_proven", "collision_geometry_validated", "isaac_compatibility_proven", "simulator_task_success_proven", "physical_success_proven", "deployment_readiness_proven", "remote_calls_performed", "proof_effect", "claim_ceiling", "external_import_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "external_reconstruction_import_receipt.v1"},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "external_import_request_digest": {"$ref": "#/$defs/digest"},
+    "provenance_rights_receipt_digest": {"$ref": "#/$defs/digest"},
+    "imported_assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["asset_id", "format", "digest", "size_bytes", "relative_path", "metadata_treated_as_untrusted"],
+        "properties": {
+          "digest": {"$ref": "#/$defs/digest"},
+          "size_bytes": {"type": "integer", "minimum": 0},
+          "metadata_treated_as_untrusted": {"const": true}
+        },
+        "additionalProperties": true
+      }
+    },
+    "source_capture_binding_verified": {"const": true},
+    "rights_and_provenance_verified": {"const": true},
+    "status": {"const": "imported_derived_support_only"},
+    "raw_capture_truth": {"const": false},
+    "metric_scale_proven": {"const": false},
+    "collision_geometry_validated": {"const": false},
+    "isaac_compatibility_proven": {"const": false},
+    "simulator_task_success_proven": {"const": false},
+    "physical_success_proven": {"const": false},
+    "deployment_readiness_proven": {"const": false},
+    "remote_calls_performed": {"const": false},
+    "proof_effect": {"const": "external_reconstruction_derived_support_only"},
+    "claim_ceiling": {"const": "external_reconstruction_import"},
+    "external_import_receipt_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": true
+}
