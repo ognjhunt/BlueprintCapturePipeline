@@ -53,6 +53,7 @@ def collect_openpi_policy_ranking_runpod_preflight(
     container_disk_bytes: int,
     capacity_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]],
     inventory_probe: Callable[[str], Mapping[str, Any]],
+    max_existing_live_resources: int = 0,
     clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
     """Collect a mutation-free capacity and zero-inventory snapshot.
@@ -84,8 +85,12 @@ def collect_openpi_policy_ranking_runpod_preflight(
         and float(row.get("on_demand_price_usd_per_hour") or 0.0) > 0
     ]
     selected = viable[0] if viable else {}
-    inventory_zero = bool(
-        inventory.get("api_confirmed") is True and inventory.get("live_resource_count") == 0
+    live_resource_count = inventory.get("live_resource_count")
+    inventory_zero = bool(inventory.get("api_confirmed") is True and live_resource_count == 0)
+    inventory_within_concurrency = bool(
+        inventory.get("api_confirmed") is True
+        and type(live_resource_count) is int
+        and 0 <= live_resource_count <= max_existing_live_resources
     )
     provider_api_verified = bool(
         capacity.get("status") == "available"
@@ -99,8 +104,8 @@ def collect_openpi_policy_ranking_runpod_preflight(
         blockers.append("openpi_gpu_preflight_provider_api_not_verified")
     if not selected:
         blockers.append("openpi_gpu_preflight_single_gpu_unavailable")
-    if not inventory_zero:
-        blockers.append("openpi_gpu_preflight_billable_inventory_not_zero")
+    if not inventory_within_concurrency:
+        blockers.append("openpi_gpu_preflight_billable_inventory_exceeds_concurrency")
     if container_disk_bytes < MIN_CONTAINER_DISK_BYTES:
         blockers.append("openpi_gpu_preflight_container_disk_below_80_gib")
     result: dict[str, Any] = {
@@ -111,6 +116,8 @@ def collect_openpi_policy_ranking_runpod_preflight(
         "blockers": sorted(set(blockers)),
         "provider_api_verified": provider_api_verified,
         "provider_inventory_verified_zero": inventory_zero,
+        "provider_inventory_within_concurrency_limit": inventory_within_concurrency,
+        "maximum_existing_live_resources": max_existing_live_resources,
         "single_gpu_available": bool(selected),
         "gpu_type_id": selected.get("gpu_type_id"),
         "gpu_memory_bytes": int(selected.get("memory_in_gb") or 0) * 1024**3,
@@ -138,6 +145,7 @@ def collect_openpi_policy_ranking_vast_preflight(
     min_gpu_ram_mb: int = VAST_DEFAULT_MIN_GPU_RAM_MB,
     min_reliability: float = VAST_DEFAULT_MIN_RELIABILITY,
     preferred_gpu_keywords: Sequence[str] = VAST_DEFAULT_GPU_KEYWORDS,
+    max_existing_live_resources: int = 0,
     clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
     """Collect the frozen lane's mutation-free Vast offer snapshot."""
@@ -165,8 +173,12 @@ def collect_openpi_policy_ranking_vast_preflight(
         and gpu_ram_mb >= int(min_gpu_ram_mb)
         and 0 < price <= float(max_hourly_rate_usd)
     )
-    inventory_zero = bool(
-        inventory.get("api_confirmed") is True and inventory.get("live_resource_count") == 0
+    live_resource_count = inventory.get("live_resource_count")
+    inventory_zero = bool(inventory.get("api_confirmed") is True and live_resource_count == 0)
+    inventory_within_concurrency = bool(
+        inventory.get("api_confirmed") is True
+        and type(live_resource_count) is int
+        and 0 <= live_resource_count <= max_existing_live_resources
     )
     provider_api_verified = bool(
         capacity.get("status") == "available"
@@ -178,8 +190,8 @@ def collect_openpi_policy_ranking_vast_preflight(
         blockers.append("openpi_gpu_preflight_provider_api_not_verified")
     if not single_gpu:
         blockers.append("openpi_gpu_preflight_single_gpu_unavailable")
-    if not inventory_zero:
-        blockers.append("openpi_gpu_preflight_billable_inventory_not_zero")
+    if not inventory_within_concurrency:
+        blockers.append("openpi_gpu_preflight_billable_inventory_exceeds_concurrency")
     if container_disk_bytes < MIN_CONTAINER_DISK_BYTES:
         blockers.append("openpi_gpu_preflight_container_disk_below_80_gib")
     result: dict[str, Any] = {
@@ -190,6 +202,8 @@ def collect_openpi_policy_ranking_vast_preflight(
         "blockers": sorted(set(blockers)),
         "provider_api_verified": provider_api_verified,
         "provider_inventory_verified_zero": inventory_zero,
+        "provider_inventory_within_concurrency_limit": inventory_within_concurrency,
+        "maximum_existing_live_resources": max_existing_live_resources,
         "single_gpu_available": single_gpu,
         "gpu_type_id": selected.get("gpu_type_id"),
         "gpu_memory_bytes": gpu_ram_mb * 1_000_000,
@@ -333,24 +347,21 @@ def build_openpi_policy_ranking_gpu_admission(
             blockers.append("openpi_gpu_input_canary_manifest_sha256_invalid")
     elif is_current_reference:
         policy_ids = manifest.get("policy_ids")
-        policy_ids_valid = (
-            isinstance(policy_ids, list)
-            and (
-                (
-                    current_reference_requery
-                    and len(policy_ids) == 1
-                    and policy_ids[0] in {"pi05_droid", "pi0_droid", "pi0_fast_droid"}
-                    and manifest.get("same_candidate_policy_id") == policy_ids[0]
-                    and manifest.get("observation_schema")
-                    == "openpi_current_reference_generated_observation.v1"
-                )
-                or (
-                    not current_reference_requery
-                    and policy_ids == ["pi05_droid", "pi0_droid", "pi0_fast_droid"]
-                    and manifest.get("same_candidate_policy_id") is None
-                    and manifest.get("observation_schema")
-                    in {None, "ctrl_world_public_initial_observation.v1"}
-                )
+        policy_ids_valid = isinstance(policy_ids, list) and (
+            (
+                current_reference_requery
+                and len(policy_ids) == 1
+                and policy_ids[0] in {"pi05_droid", "pi0_droid", "pi0_fast_droid"}
+                and manifest.get("same_candidate_policy_id") == policy_ids[0]
+                and manifest.get("observation_schema")
+                == "openpi_current_reference_generated_observation.v1"
+            )
+            or (
+                not current_reference_requery
+                and policy_ids == ["pi05_droid", "pi0_droid", "pi0_fast_droid"]
+                and manifest.get("same_candidate_policy_id") is None
+                and manifest.get("observation_schema")
+                in {None, "ctrl_world_public_initial_observation.v1"}
             )
         )
         if (
@@ -411,7 +422,10 @@ def build_openpi_policy_ranking_gpu_admission(
         blockers.append("openpi_gpu_preflight_observed_at_invalid")
     elif not 0 <= now - float(observed) <= MAX_PREFLIGHT_AGE_SECONDS:
         blockers.append("openpi_gpu_preflight_stale_or_future")
-    if preflight.get("provider_inventory_verified_zero") is not True:
+    if (
+        preflight.get("provider_inventory_verified_zero") is not True
+        and preflight.get("provider_inventory_within_concurrency_limit") is not True
+    ):
         blockers.append("openpi_gpu_provider_inventory_not_zero")
     if preflight.get("single_gpu_available") is not True:
         blockers.append("openpi_gpu_single_gpu_not_available")

@@ -336,3 +336,60 @@ def test_openpi_vast_preflight_reserves_frozen_rate_ceiling() -> None:
     )
     assert admission["status"] == "admitted"
     assert admission["provider_resource_class"] == "gpu_render"
+
+
+def test_openpi_vast_preflight_allows_one_existing_resource_under_two_gpu_ceiling() -> None:
+    result = collect_openpi_policy_ranking_vast_preflight(
+        name_prefix="blueprint-openpi-ranking-",
+        container_disk_bytes=100 * 1024**3,
+        max_existing_live_resources=1,
+        capacity_probe=lambda _request: {
+            "status": "available",
+            "selected_offer": {
+                "ask_contract_id": 123,
+                "gpu_type_id": "A40",
+                "gpu_ram_mb": 46_068,
+                "num_gpus": 1,
+                "on_demand_price_usd_per_hour": 0.28,
+            },
+        },
+        inventory_probe=lambda prefix: {
+            "api_confirmed": True,
+            "live_resource_count": 0 if prefix else 1,
+            "resources": [],
+        },
+        clock=lambda: 1000.0,
+    )
+
+    assert result["status"] == "verified"
+    assert result["provider_inventory_verified_zero"] is False
+    assert result["provider_inventory_within_concurrency_limit"] is True
+    assert result["maximum_existing_live_resources"] == 1
+
+
+def test_openpi_vast_preflight_blocks_two_existing_resources_under_two_gpu_ceiling() -> None:
+    result = collect_openpi_policy_ranking_vast_preflight(
+        name_prefix="blueprint-openpi-ranking-",
+        container_disk_bytes=100 * 1024**3,
+        max_existing_live_resources=1,
+        capacity_probe=lambda _request: {
+            "status": "available",
+            "selected_offer": {
+                "ask_contract_id": 123,
+                "gpu_type_id": "A40",
+                "gpu_ram_mb": 46_068,
+                "num_gpus": 1,
+                "on_demand_price_usd_per_hour": 0.28,
+            },
+        },
+        inventory_probe=lambda _prefix: {
+            "api_confirmed": True,
+            "live_resource_count": 2,
+            "resources": [],
+        },
+        clock=lambda: 1000.0,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["provider_inventory_within_concurrency_limit"] is False
+    assert result["blockers"] == ["openpi_gpu_preflight_billable_inventory_exceeds_concurrency"]

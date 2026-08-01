@@ -797,6 +797,7 @@ def _current_reference_authorization(*, runtime_commit: str, bundle_sha256: str)
         "query_index": 5,
         "maximum_provider_allocations": 1,
         "maximum_policy_requests": 1,
+        "maximum_concurrent_gpus": 2,
         "single_use_consumption_required": True,
         "paid_mutation_authorized": True,
         "runtime_source_commit": runtime_commit,

@@ -134,6 +134,13 @@ def _current_reference_authorization_blockers(
         or authorization.get("maximum_policy_requests") != 1
     ):
         blockers.append("openpi_current_reference_authorization_limits_invalid")
+    maximum_concurrent_gpus = authorization.get("maximum_concurrent_gpus")
+    if (
+        isinstance(maximum_concurrent_gpus, bool)
+        or not isinstance(maximum_concurrent_gpus, int)
+        or maximum_concurrent_gpus not in {1, 2}
+    ):
+        blockers.append("openpi_current_reference_authorization_concurrency_invalid")
     if (
         authorization.get("runtime_source_commit") != expected_source_commit
         or runtime_source.get("commit") != expected_source_commit
@@ -1448,12 +1455,17 @@ def run_openpi_policy_ranking_campaign(
         return result
     provider = get_render_provider(resolved_provider) if execute else None
     if execute and provider is not None:
+        maximum_concurrent_gpus = int(
+            current_reference_authorization.get("maximum_concurrent_gpus") or 1
+        )
+        max_existing_live_resources = maximum_concurrent_gpus - 1
         preflight = (
             collect_openpi_policy_ranking_vast_preflight(
                 name_prefix=CANARY_NAME_PREFIX,
                 container_disk_bytes=int(preflight.get("container_disk_bytes") or 0),
                 capacity_probe=provider.capacity_preflight,
                 inventory_probe=lambda prefix: provider.billable_inventory(name_prefix=prefix),
+                max_existing_live_resources=max_existing_live_resources,
             )
             if resolved_provider == "vast"
             else collect_openpi_policy_ranking_runpod_preflight(
@@ -1462,6 +1474,7 @@ def run_openpi_policy_ranking_campaign(
                 container_disk_bytes=int(preflight.get("container_disk_bytes") or 0),
                 capacity_probe=provider.capacity_preflight,
                 inventory_probe=lambda prefix: provider.billable_inventory(name_prefix=prefix),
+                max_existing_live_resources=max_existing_live_resources,
             )
         )
         write_json(root / "openpi_provider_preflight_launch_refresh.json", preflight)
