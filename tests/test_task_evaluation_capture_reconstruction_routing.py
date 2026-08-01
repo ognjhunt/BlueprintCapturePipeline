@@ -216,7 +216,7 @@ def test_registered_capture_build_inspection_uses_deterministic_profile(
     )
     assert observation["typed_result"]["route_status"] == "route_proposed"
     assert observation["typed_result"]["capture_profile_validation_status"] == (
-        "not_applicable_to_profile"
+        "required_raw_contract_gate"
     )
     assert observation["typed_result"]["capture_profile_validation_digest"] is None
     assert observation["typed_result"]["raw_capture_remains_authoritative"] is True
@@ -248,6 +248,31 @@ def test_each_supported_capture_family_has_a_profile_specific_route(
         )
     assert route["agent_selected_capture_profile"] is False
     assert route["proof_effect"] == "none"
+
+
+def test_iphone_declaration_never_claims_raw_contract_validation(tmp_path: Path) -> None:
+    capture_build = _capture_build(
+        tmp_path,
+        profile="iphone_arkit_lidar",
+        has_lidar=True,
+    )
+    raw_video = tmp_path / "iphone_arkit_lidar/raw/plain-iphone-video.mp4"
+    raw_video.parent.mkdir(parents=True)
+    raw_video.write_bytes(b"plain-mp4-is-not-an-arkit-bundle")
+
+    route = build_capture_reconstruction_route(capture_build)
+
+    assert route["status"] == "route_proposed"
+    assert route["capture_profile_validation_status"] == "required_raw_contract_gate"
+    assert route["capture_profile_validation_digest"] is None
+    assert route["stages"][0] == {
+        "ordinal": 0,
+        "stage_id": "verify_arkit_raw_contract",
+        "method_kind": "capture_validation",
+        "implementation_status": "required_deterministic_gate",
+    }
+    assert route["proof_effect"] == "none"
+    assert route["route_is_reconstruction_evidence"] is False
 
 
 def test_360_route_requires_digest_bound_deterministic_profile_validation(

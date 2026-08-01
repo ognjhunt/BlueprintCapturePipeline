@@ -63,6 +63,7 @@
     "capture_profile_validation_status": {
       "enum": [
         "not_applicable_to_profile",
+        "required_raw_contract_gate",
         "required_missing",
         "validated",
         "blocked",

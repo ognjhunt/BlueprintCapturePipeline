@@ -34,6 +34,7 @@ _VIDEO_PROFILES = {
     "monocular_video",
 }
 _STRICT_360_PROFILES = {"camera_360_equirectangular", "camera_360_native"}
+_STRICT_ARKIT_PROFILES = {"iphone_arkit_lidar", "iphone_arkit_non_lidar"}
 _PROFILE_VALIDATION_PATHS = {
     "evaluation_prep/capture_profile_validation.json",
     "pipeline/evaluation_prep/capture_profile_validation.json",
@@ -393,6 +394,8 @@ def build_capture_reconstruction_route(
                     blockers.append("deterministic_capture_profile_validation_failed")
                 else:
                     profile_validation_status = "validated"
+        elif profile in _STRICT_ARKIT_PROFILES:
+            profile_validation_status = "required_raw_contract_gate"
 
     stages = [
         {
@@ -589,7 +592,11 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
                 profile not in _STRICT_360_PROFILES
                 and (
                     route.get("capture_profile_validation_status")
-                    != "not_applicable_to_profile"
+                    != (
+                        "required_raw_contract_gate"
+                        if profile in _STRICT_ARKIT_PROFILES
+                        else "not_applicable_to_profile"
+                    )
                     or route.get("capture_profile_validation_digest") is not None
                 )
             )
