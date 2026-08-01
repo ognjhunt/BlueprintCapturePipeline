@@ -54,6 +54,49 @@ def _recorded_public_proxy_receipt() -> dict:
     )
 
 
+def _recorded_omniphotos_proxy_receipt() -> dict:
+    return json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/evidence/omniphotos_nunobiki1_equirectangular_f9b38221.json"
+        ).read_text(encoding="utf-8")
+    )
+
+
+def test_recorded_real_omniphotos_proxy_preserves_projection_and_claim_boundaries() -> None:
+    receipt = _recorded_omniphotos_proxy_receipt()
+
+    assert receipt["status"] == "partial"
+    assert receipt["media_probe"]["observed_projection"] == "equirectangular"
+    assert receipt["media_probe"]["raw_dual_fisheye_stream_count"] == 0
+    assert receipt["media_probe"]["decoded_frame_count"] == 375
+    assert receipt["media_probe"]["decoded_dts_retained_count"] == 373
+    assert receipt["media_probe"]["decoded_dts_missing_count"] == 2
+    assert receipt["media_probe"]["missing_dts_synthesized"] is False
+    dataset = receipt["deterministic_frame_dataset"]
+    assert dataset["selected_frame_count"] == 16
+    assert dataset["training_frame_count"] == 11
+    assert dataset["validation_frame_count"] == 2
+    assert dataset["hidden_heldout_frame_count"] == 3
+    assert dataset["candidate_contains_hidden_heldout_pixels"] is False
+    assert dataset["exact_replay"] is True
+    rigs = receipt["virtual_rig_compilation"]
+    assert rigs["candidate_virtual_view_count"] == 156
+    assert rigs["heldout_virtual_view_count"] == 36
+    assert rigs["candidate_and_evaluator_access_scopes_separate"] is True
+    assert rigs["virtual_views_are_captured_evidence"] is False
+    assert rigs["virtual_views_are_independent_physical_cameras"] is False
+    assert rigs["exact_replay"] is True
+    assert receipt["claim_ceiling"]["equirectangular_virtual_camera_rig"] is True
+    assert receipt["claim_ceiling"]["calibrated_physical_camera_trajectory"] is False
+    assert receipt["claim_ceiling"]["metric_scale"] is False
+    assert receipt["claim_ceiling"]["appearance_reconstruction"] is False
+    assert receipt["claim_ceiling"]["isaac_load_render_compatibility"] is False
+    assert receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+
 def test_recorded_real_ricoh360_proxy_preserves_claim_boundaries() -> None:
     receipt = _recorded_public_proxy_receipt()
 
