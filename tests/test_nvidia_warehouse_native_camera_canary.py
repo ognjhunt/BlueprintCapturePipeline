@@ -24,6 +24,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _render_world_without_physics_advance,
     _rigid_wrist_mount_from_initial_task_framing,
     _simulation_app_launch_config,
+    _summarize_required_entity_projections,
     _synchronize_camera_to_rigid_link,
     _unified_world_pose_matrix,
     _world_pose_matrix_from_backend_pose,
@@ -143,6 +144,39 @@ def test_external_projection_fails_closed_without_franka_link_origins() -> None:
             height=480,
             vfov_deg=60.0,
         )
+
+
+def test_projection_summary_keeps_external_grounding_across_both_phases() -> None:
+    summary = _summarize_required_entity_projections(
+        view_id="external",
+        projections_by_phase={
+            "initial": {"franka": True, "spraycan": True, "tray": True},
+            "commanded": {"franka": True, "spraycan": False, "tray": True},
+        },
+    )
+
+    assert summary == {"franka": True, "spraycan": False, "tray": True}
+
+
+def test_projection_summary_requires_initial_task_object_but_not_commanded_reaim() -> None:
+    summary = _summarize_required_entity_projections(
+        view_id="wrist",
+        projections_by_phase={
+            "initial": {"spraycan": True, "tray": True},
+            "commanded": {"spraycan": False, "tray": True},
+        },
+    )
+
+    assert summary == {"spraycan_at_initial_pose": True}
+
+    missing_initial_object = _summarize_required_entity_projections(
+        view_id="wrist",
+        projections_by_phase={
+            "initial": {"spraycan": False, "tray": True},
+            "commanded": {"spraycan": True, "tray": True},
+        },
+    )
+    assert missing_initial_object == {"spraycan_at_initial_pose": False}
 
 
 def test_zero_time_scene_update_uses_cuda_world_render_and_preserves_step_index() -> None:
@@ -708,6 +742,40 @@ def test_native_camera_canary_fails_static_or_slipping_wrist_mount(tmp_path: Pat
     assert result["status"] == "failed"
     assert "native_wrist_camera_did_not_move_with_hand" in result["blockers"]
     assert "native_wrist_camera_mount_not_rigid" in result["blockers"]
+
+
+def test_native_camera_canary_accepts_float32_pose_roundoff_but_rejects_real_slip(
+    tmp_path: Path,
+) -> None:
+    spec_path = tmp_path / "spec.json"
+    _spec(spec_path)
+
+    def rounded_backend(**kwargs):
+        value = _backend(**kwargs)
+        value["wrist_camera_local_transform_delta"] = 5e-7
+        return value
+
+    rounded = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "rounded",
+        backend=rounded_backend,
+    )
+    assert rounded["status"] == "passed"
+
+    def slipped_backend(**kwargs):
+        value = _backend(**kwargs)
+        value["wrist_camera_local_transform_delta"] = 2e-6
+        return value
+
+    slipped = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "slipped",
+        backend=slipped_backend,
+    )
+    assert slipped["status"] == "failed"
+    assert "native_wrist_camera_mount_not_rigid" in slipped["blockers"]
 
 
 def test_native_camera_canary_fails_closed_on_missing_or_reaimed_mount_calibration(

@@ -21,7 +21,13 @@ from .policy_ranking_thesis import canonical_sha256, file_sha256
 RESULT_SCHEMA_VERSION = "nvidia_warehouse_native_camera_canary_result.v1"
 MIN_NONBLANK_SPATIAL_STD = 4.0
 MIN_WRIST_WORLD_DISPLACEMENT_M = 0.001
-MAX_WRIST_LOCAL_TRANSFORM_DELTA = 1e-9
+# Isaac Sim 6's unified pose view returns float-backed translation and
+# quaternion tensors.  Reconstructing a parent-local 4x4 transform from those
+# values can therefore differ by a few float32 ULPs even when the authored
+# rigid mount is unchanged.  One micrometre / 1e-6 matrix-element precision is
+# still far below any meaningful camera-mount slip while remaining measurable
+# through that public API.
+MAX_WRIST_LOCAL_TRANSFORM_DELTA = 1e-6
 MAX_KINEMATIC_JOINT_POSITION_ERROR_RAD = 0.02
 REQUIRED_VIEWS = ("external", "wrist")
 
@@ -483,6 +489,36 @@ def _rigid_wrist_mount_from_initial_task_framing(
     }
 
 
+def _summarize_required_entity_projections(
+    *, view_id: str, projections_by_phase: Mapping[str, Mapping[str, Any]]
+) -> dict[str, bool]:
+    """Apply the frozen per-view projection contract without over-constraining it.
+
+    The external view is the scene-grounding view, so every required entity
+    must remain projected in both observations.  The wrist contract requires
+    the manipulated task object (the spray can) in the initial observation;
+    the commanded wrist frame is separately checked for validity and rigid
+    motion, but is not re-aimed at a world-fixed object after the hand moves.
+    """
+
+    phases = {
+        str(phase): dict(values)
+        for phase, values in projections_by_phase.items()
+        if isinstance(values, Mapping)
+    }
+    if view_id == "external":
+        names = sorted({str(name) for values in phases.values() for name in values})
+        return {
+            name: all(bool(phases.get(phase, {}).get(name)) for phase in ("initial", "commanded"))
+            for name in names
+        }
+    if view_id == "wrist":
+        return {
+            "spraycan_at_initial_pose": bool(phases.get("initial", {}).get("spraycan"))
+        }
+    raise ValueError(f"native_camera_projection_view_invalid:{view_id}")
+
+
 def _relocate_layer_asset_path(
     layer_path: Path, source_asset_uri: str, replacement_authored_path: str
 ) -> int:  # pragma: no cover - exercised inside the pinned Isaac/OpenUSD image
@@ -854,15 +890,12 @@ def isaac_sim_6_backend(
         def finalize_entity_projections() -> None:
             for view_id in REQUIRED_VIEWS:
                 phase_values = frames[view_id]["required_entities_projected_in_frame_by_phase"]
-                names = sorted(
-                    {str(name) for projection in phase_values.values() for name in projection}
-                )
-                frames[view_id]["required_entities_projected_in_frame"] = {
-                    name: all(
-                        bool(phase_values[phase].get(name)) for phase in ("initial", "commanded")
+                frames[view_id]["required_entities_projected_in_frame"] = (
+                    _summarize_required_entity_projections(
+                        view_id=view_id,
+                        projections_by_phase=phase_values,
                     )
-                    for name in names
-                }
+                )
 
         initial_step = save_frames("initial")
         record_entity_projections("initial")
@@ -1049,6 +1082,9 @@ def assess_native_camera_backend_result(
         view_evidence[view_id] = {
             "frames": frames,
             "required_entities_projected_in_frame": dict(projected or {}),
+            "required_entities_projected_in_frame_by_phase": dict(
+                view.get("required_entities_projected_in_frame_by_phase") or {}
+            ),
         }
 
     wrist_world_delta = _finite_float(backend_result.get("wrist_camera_world_displacement_m"))
