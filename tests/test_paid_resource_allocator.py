@@ -764,6 +764,70 @@ def test_reconstruction_gpu_execute_refuses_insecure_transport_before_provider(
     } <= set(result["blockers"])
 
 
+def test_sam31_gpu_canary_dispatches_through_canonical_allocator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        allocator,
+        "_source_checkout_blockers",
+        lambda *_args, **_kwargs: ([], "c" * 40),
+    )
+
+    def fake_lane(args: Namespace, *, checkout_commit: str) -> dict[str, object]:
+        observed["probe_kind"] = args.probe_kind
+        observed["checkout_commit"] = checkout_commit
+        observed["max_spend"] = args.sam31_max_spend_usd
+        return {"status": "dry_run_ready"}
+
+    monkeypatch.setattr(allocator, "run_sam31_paid_resource_allocator_lane", fake_lane)
+    out = tmp_path / "sam31"
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            allocator.SAM31_SOURCE_TRACK_PROBE_KIND,
+            "--provider-launch-request",
+            str(out / "request.json"),
+            "--release-evidence",
+            str(out / "release.json"),
+            "--model-cache-evidence",
+            str(out / "models.json"),
+            "--preflight-bundle",
+            str(out / "preflight.json"),
+            "--admission-out",
+            str(out / "admission.json"),
+            "--bound-request-out",
+            str(out / "bound.json"),
+            "--adapter-output",
+            str(out / "adapter.json"),
+            "--pod-name",
+            "sam31-canary",
+            "--expected-source-commit",
+            "c" * 40,
+            "--sam31-max-spend-usd",
+            "1.0",
+            "--sam31-hard-ttl-seconds",
+            "300",
+            "--sam31-retry-cap",
+            "0",
+            "--sam31-authority-id",
+            "fixture-authority",
+        ]
+    )
+    assert exit_code == 0
+    assert observed == {
+        "probe_kind": allocator.SAM31_SOURCE_TRACK_PROBE_KIND,
+        "checkout_commit": "c" * 40,
+        "max_spend": 1.0,
+    }
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
 @pytest.mark.parametrize(
     "probe_kind",
     [

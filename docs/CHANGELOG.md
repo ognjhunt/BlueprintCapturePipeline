@@ -4,6 +4,10 @@
 
 ### User-Facing
 
+- Added a bounded, explicitly authorized GPU execution lane for the SAM 3.1
+  source-video semantic runner. It can now package exact source frames, execute
+  one digest-pinned worker, return inspectable 2D tracks or abstention, and
+  prove teardown without treating masks as metric or physical truth.
 - Added the authorized source-video semantic runner needed before 3D lifting.
   A configured SAM 3.1 Object Multiplex runtime can now turn exact retained
   frames into persistent, hash-bound 2D object-mask tracks for the existing
@@ -18,6 +22,18 @@
 
 ### Employee-Facing
 
+- Added a separate non-root SAM 3.1 source-track image recipe pinned to Meta
+  code revision `96914d24`, PyTorch 2.10/CUDA 12.8, and an immutable CUDA base.
+  The gated checkpoint stays out of the image: the Vast canary fetches it with
+  an ephemeral private-file token, verifies SHA-256 `0567debe...`, unsets the
+  token, switches model loading offline, and then runs the bounded worker.
+- Added canonical allocator admission and one-instance Vast lifecycle controls
+  for SAM 3.1: exact request/input/image/license/authorization bindings,
+  provider-zero and watchdog gates, spend/TTL/retry limits, signed input/output
+  transfer, immutable receipts, teardown reconciliation, replay-safe result
+  validation, and artifact secret-leak checks. The existing reconstruction
+  allocator sub-lane was extracted so the canonical allocator shrank below its
+  governed line budget instead of growing another monolith.
 - Published PR #282 after all hosted checks passed, including 6,345 fast-lane
   and 8,020 full-lane tests. Protected main and isolated staging now use commit
   `7063d719` with exact tested tree `0354737d`; production remains independently
@@ -41,6 +57,11 @@
 
 ### Future-Agent-Facing
 
+- Do not describe processed MuSHRoom images as encoder-retained video frames.
+  The current SAM 3.1 import contract truthfully requires retained-video,
+  decoded-PTS, sync-row, camera, and frame-retention evidence. A processed-only
+  public sequence needs a separate reduced-authority profile or must remain a
+  diagnostic runtime probe; never fabricate Raw Contract evidence.
 - The official `facebook/sam3.1` checkpoint repository has no Transformers
   integration. Preserve the pinned Meta `build_sam3_multiplex_video_predictor`
   interface and do not silently fall back to `facebook/sam3` Transformers or

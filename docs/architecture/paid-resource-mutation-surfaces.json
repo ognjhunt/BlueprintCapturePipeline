@@ -6,13 +6,14 @@
       "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
       "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
       "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py",
-      "src/blueprint_pipeline/paid_resource_allocator.py",
       "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
       "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
       "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
       "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
       "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
-      "src/blueprint_pipeline/qualification_control_admission.py"
+      "src/blueprint_pipeline/qualification_control_admission.py",
+      "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
+      "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py"
     ],
     "require_paid_resource_admission": [
       "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
@@ -29,6 +30,8 @@
       "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
       "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
       "src/blueprint_pipeline/qualification_control_admission.py",
+      "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
+      "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
       "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py"
     ]
@@ -43,6 +46,21 @@
       "path": "src/blueprint_pipeline/reconstruction_vast_worker_smoke.py",
       "classification": "canonical_adapter",
       "required_markers": ["require_paid_resource_admission_grant", "run_reconstruction_vast_worker_smoke", "provider.launch("]
+    },
+    {
+      "path": "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
+      "classification": "canonical_adapter",
+      "required_markers": ["build_paid_lane_admission", "require_paid_resource_admission", "run_reconstruction_paid_resource_allocator_lane"]
+    },
+    {
+      "path": "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
+      "classification": "canonical_adapter",
+      "required_markers": ["build_paid_lane_admission", "require_paid_resource_admission", "run_sam31_paid_resource_allocator_lane"]
+    },
+    {
+      "path": "src/blueprint_pipeline/sam31_vast_source_track_canary.py",
+      "classification": "canonical_adapter",
+      "required_markers": ["require_paid_resource_admission_grant", "run_sam31_vast_source_track_canary", "provider.launch("]
     },
     {
       "path": "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
