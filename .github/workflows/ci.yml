@@ -17,8 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # CI runners are ephemeral; never use the checkout as a durable artifact cache.
-      BLUEPRINT_ARTIFACT_CACHE_ROOT: ${{ runner.temp }}/blueprint-artifact-cache
-      BLUEPRINT_EVIDENCE_ROOT: ${{ runner.temp }}/blueprint-evidence
       BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
       BLUEPRINT_ALLOW_LARGE_ARTIFACTS: "0"
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts

@@ -31,7 +31,7 @@ REQUEST_SCHEMA_VERSION = "colmap_training_dataset_export_request.v1"
 RESULT_SCHEMA_VERSION = "colmap_training_dataset_export_result.v1"
 # Observation ids become on-disk artifact names; anything outside this set is
 # refused so a crafted id cannot traverse out of the dataset image directory.
-_SAFE_OBSERVATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$")
+_SAFE_OBSERVATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
 
 
 class ColmapTrainingDatasetError(ValueError):
@@ -623,7 +623,10 @@ def export_colmap_training_dataset(
         if _sha256_file(source) != observation.get("image_digest"):
             raise ColmapTrainingDatasetError(["colmap_export_image_digest_mismatch"])
         suffix = source.suffix.lower()
-        name = f"{image_id:06d}_{frame_id}{suffix}"
+        # Keep the manifest identity intact while avoiding platform-reserved
+        # filename characters in the materialized COLMAP image name.
+        filename_frame_id = frame_id.replace(":", "_")
+        name = f"{image_id:06d}_{filename_frame_id}{suffix}"
         digest = _write_immutable(root / "images" / name, source.read_bytes())
         image_digests.append({"artifact_id": name, "digest": digest})
         observation_ids.append(frame_id)
