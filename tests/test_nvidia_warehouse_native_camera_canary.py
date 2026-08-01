@@ -16,6 +16,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _apply_and_measure_render_only_joint_pose,
     _apply_runtime_asset_relocations,
     _articulation_link_world_pose_matrices,
+    _author_renderable_semantic_label_tree,
     _backend_array_to_numpy,
     _camera_quaternion_wxyz,
     _load_materialization_manifest,
@@ -204,6 +205,10 @@ def test_semantic_visibility_counts_only_rendered_target_pixels() -> None:
         "minimum_visible_pixel_count": 64,
         "visible": True,
         "render_derived": True,
+        "observed_id_to_labels": {
+            "0": {"class": "UNLABELLED"},
+            "7": {"class": "spraycan"},
+        },
     }
     assert evidence["tray"]["visible"] is False
 
@@ -279,6 +284,35 @@ def test_semantic_labeling_fails_closed_when_no_runtime_api_exists(monkeypatch) 
     )
     with pytest.raises(ImportError, match="native_semantics_api_unavailable"):
         _add_prim_semantic_label(object(), "franka")
+
+
+def test_semantic_labeling_authors_every_renderable_descendant() -> None:
+    class Prim:
+        def __init__(self, name: str, renderable: bool):
+            self.name = name
+            self.renderable = renderable
+
+    root = Prim("root", False)
+    mesh_a = Prim("mesh_a", True)
+    mesh_b = Prim("mesh_b", True)
+    non_renderable = Prim("joint", False)
+    calls = []
+
+    evidence = _author_renderable_semantic_label_tree(
+        root_prim=root,
+        semantic_label="franka",
+        prim_range=lambda _root: [root, mesh_a, non_renderable, mesh_b],
+        is_renderable=lambda prim: prim.renderable,
+        add_label=lambda prim, label: calls.append((prim.name, label)) or "api",
+    )
+
+    assert calls == [("mesh_a", "franka"), ("mesh_b", "franka")]
+    assert evidence == {
+        "root_label": "franka",
+        "renderable_prim_count": 2,
+        "api_names": ["api"],
+        "root_fallback_used": False,
+    }
 
 
 def test_visibility_summary_requires_rendered_pixels_not_projection() -> None:
@@ -586,6 +620,23 @@ def test_wrist_mount_calibration_handles_world_up_parallel_to_gaze() -> None:
     assert np.isfinite(quaternion).all()
     assert np.linalg.norm(quaternion) == pytest.approx(1.0)
     assert abs(np.dot(evidence["mount_forward_parent"], evidence["mount_up_parent"])) < 1e-9
+
+
+def test_wrist_mount_world_clearance_resolves_to_one_fixed_parent_mount() -> None:
+    quaternion, evidence = _rigid_wrist_mount_from_initial_task_framing(
+        parent_to_world=np.eye(4),
+        mount_translation_parent=[0.0, 0.1, 0.03],
+        target_world_points={"spraycan": [0.0, 1.0, 0.0]},
+        camera_eye_world_offset=[0.0, 0.0, 0.25],
+    )
+
+    assert evidence["base_camera_eye_world_m"] == pytest.approx([0.0, 0.1, 0.03])
+    assert evidence["camera_eye_world_m"] == pytest.approx([0.0, 0.1, 0.28])
+    assert evidence["resolved_mount_translation_parent_m"] == pytest.approx(
+        [0.0, 0.1, 0.28]
+    )
+    assert evidence["camera_eye_world_offset_m"] == [0.0, 0.0, 0.25]
+    assert np.linalg.norm(quaternion) == pytest.approx(1.0)
 
 
 def test_joint_pose_is_rendered_without_requesting_physics_steps() -> None:

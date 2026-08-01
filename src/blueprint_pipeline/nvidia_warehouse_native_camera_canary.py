@@ -34,6 +34,10 @@ MAX_KINEMATIC_JOINT_POSITION_ERROR_RAD = 0.02
 # render-derived semantic footprint before treating a task entity as visible.
 # This camera-validity threshold is frozen independently of policy rankings.
 MIN_REQUIRED_ENTITY_VISIBLE_PIXELS = 64
+# V30's returned wrist RGB proved that the initial optical ray was blocked by
+# workcell/crate geometry at the object-height mount. Raise the one-time rigid
+# mount above that obstruction; this is fixed before any policy/WAM execution.
+WRIST_CAMERA_WORLD_CLEARANCE_M = 0.25
 REQUIRED_VIEWS = ("external", "wrist")
 
 
@@ -116,6 +120,28 @@ def _add_prim_semantic_label(prim: Any, semantic_label: str) -> str:
     raise ImportError(
         "native_semantics_api_unavailable:" + ",".join(import_failures)
     )
+
+
+def _author_renderable_semantic_label_tree(
+    *,
+    root_prim: Any,
+    semantic_label: str,
+    prim_range: Callable[[Any], Any],
+    is_renderable: Callable[[Any], bool],
+    add_label: Callable[[Any, str], str] = _add_prim_semantic_label,
+) -> dict[str, Any]:
+    """Label every rendered descendant so RTX pixels inherit the entity class."""
+
+    targets = [prim for prim in prim_range(root_prim) if is_renderable(prim)]
+    if not targets:
+        targets = [root_prim]
+    apis = [add_label(prim, semantic_label) for prim in targets]
+    return {
+        "root_label": str(semantic_label),
+        "renderable_prim_count": len(targets),
+        "api_names": sorted(set(apis)),
+        "root_fallback_used": targets == [root_prim],
+    }
 
 
 def _camera_quaternion_wxyz(forward: Any, up: Any) -> np.ndarray:
@@ -242,6 +268,15 @@ def _semantic_entity_visibility(
     except (TypeError, ValueError):
         pixels = np.asarray([], dtype=np.uint32)
 
+    observed_labels = {
+        str(raw_id): {
+            str(key): str(value)
+            for key, value in raw_labels.items()
+            if isinstance(key, str)
+        }
+        for raw_id, raw_labels in list(labels.items())[:64]
+        if isinstance(raw_labels, Mapping)
+    }
     result: dict[str, dict[str, Any]] = {}
     for entity_id, expected_label in entity_labels.items():
         matching_ids: list[int] = []
@@ -263,6 +298,7 @@ def _semantic_entity_visibility(
             "minimum_visible_pixel_count": MIN_REQUIRED_ENTITY_VISIBLE_PIXELS,
             "visible": visible_pixels >= MIN_REQUIRED_ENTITY_VISIBLE_PIXELS,
             "render_derived": True,
+            "observed_id_to_labels": observed_labels,
         }
     return result
 
@@ -539,12 +575,14 @@ def _rigid_wrist_mount_from_initial_task_framing(
     mount_translation_parent: Any,
     target_world_points: Mapping[str, Any],
     world_up: Any = (0.0, 0.0, 1.0),
+    camera_eye_world_offset: Any = (0.0, 0.0, 0.0),
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Calibrate one rigid parent-local wrist gaze from initial task geometry."""
 
     matrix = np.asarray(parent_to_world, dtype=float).reshape(4, 4)
     mount = np.asarray(mount_translation_parent, dtype=float).reshape(3)
     up_world = np.asarray(world_up, dtype=float).reshape(3)
+    eye_offset_world = np.asarray(camera_eye_world_offset, dtype=float).reshape(3)
     points = {
         str(name): np.asarray(value, dtype=float).reshape(3)
         for name, value in target_world_points.items()
@@ -554,12 +592,16 @@ def _rigid_wrist_mount_from_initial_task_framing(
         or not np.isfinite(matrix).all()
         or not np.isfinite(mount).all()
         or not np.isfinite(up_world).all()
+        or not np.isfinite(eye_offset_world).all()
     ):
         raise ValueError("native_wrist_mount_calibration_input_invalid")
     target_world = np.mean(np.stack(list(points.values())), axis=0)
     world_to_parent = np.linalg.inv(matrix)
+    base_eye_world = (np.concatenate((mount, [1.0])) @ matrix)[:3]
+    eye_world = base_eye_world + eye_offset_world
+    resolved_mount = (np.concatenate((eye_world, [1.0])) @ world_to_parent)[:3]
     target_parent = np.concatenate((target_world, [1.0])) @ world_to_parent
-    forward_parent = target_parent[:3] - mount
+    forward_parent = target_parent[:3] - resolved_mount
     forward_norm = float(np.linalg.norm(forward_parent))
     if not math.isfinite(forward_norm) or forward_norm <= 1e-9:
         raise ValueError("native_wrist_mount_calibration_target_degenerate")
@@ -576,12 +618,14 @@ def _rigid_wrist_mount_from_initial_task_framing(
             key=lambda candidate: float(np.linalg.norm(np.cross(forward_parent, candidate))),
         )
     quaternion = _camera_quaternion_wxyz(forward_parent, up_parent)
-    eye_world = (np.concatenate((mount, [1.0])) @ matrix)[:3]
     return quaternion, {
         "mode": "one_time_initial_task_framing_rigid_parent_local_mount",
         "target_entity_ids": sorted(points),
         "target_centroid_world_m": target_world.tolist(),
+        "base_camera_eye_world_m": base_eye_world.tolist(),
         "camera_eye_world_m": eye_world.tolist(),
+        "camera_eye_world_offset_m": eye_offset_world.tolist(),
+        "resolved_mount_translation_parent_m": resolved_mount.tolist(),
         "mount_forward_parent": forward_parent.tolist(),
         "mount_up_parent": np.asarray(up_parent, dtype=float).tolist(),
         "per_frame_task_reaim_performed": False,
@@ -822,12 +866,17 @@ def isaac_sim_6_backend(
             "spraycan": spray_prim,
             "tray": tray.GetPrim(),
         }
-        semantic_labeling_apis: dict[str, str] = {}
+        semantic_labeling_apis: dict[str, dict[str, Any]] = {}
         for semantic_label, semantic_prim in semantic_targets.items():
             if not semantic_prim.IsValid():
                 raise ValueError(f"native_semantic_target_prim_missing:{semantic_label}")
-            semantic_labeling_apis[semantic_label] = _add_prim_semantic_label(
-                semantic_prim, semantic_label
+            semantic_labeling_apis[semantic_label] = (
+                _author_renderable_semantic_label_tree(
+                    root_prim=semantic_prim,
+                    semantic_label=semantic_label,
+                    prim_range=Usd.PrimRange,
+                    is_renderable=lambda prim: prim.IsA(UsdGeom.Gprim),
+                )
             )
 
         UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
@@ -911,7 +960,11 @@ def isaac_sim_6_backend(
                 "tray": tray_center,
             },
             world_up=calibration["world_up"],
+            camera_eye_world_offset=(0.0, 0.0, WRIST_CAMERA_WORLD_CLEARANCE_M),
         )
+        resolved_wrist_mount_translation = wrist_mount_calibration[
+            "resolved_mount_translation_parent_m"
+        ]
         camera_objects["external"] = Camera(prim_path=external_path, resolution=(640, 480))
         camera_objects["wrist"] = Camera(prim_path=wrist_path, resolution=(640, 480))
         for camera in camera_objects.values():
@@ -922,7 +975,7 @@ def isaac_sim_6_backend(
         _synchronize_camera_to_rigid_link(
             pose_view=wrist_pose_view,
             parent_to_world=hand_initial_matrix,
-            mount_translation_parent=wrist["mount_translation_m"],
+            mount_translation_parent=resolved_wrist_mount_translation,
             mount_orientation_parent_wxyz=wrist_quaternion,
         )
         for _ in range(2):
@@ -945,7 +998,7 @@ def isaac_sim_6_backend(
         _synchronize_camera_to_rigid_link(
             pose_view=wrist_pose_view,
             parent_to_world=hand_world_initial,
-            mount_translation_parent=wrist["mount_translation_m"],
+            mount_translation_parent=resolved_wrist_mount_translation,
             mount_orientation_parent_wxyz=wrist_quaternion,
         )
         for _ in range(2):
@@ -1085,7 +1138,7 @@ def isaac_sim_6_backend(
         _synchronize_camera_to_rigid_link(
             pose_view=wrist_pose_view,
             parent_to_world=hand_world_commanded,
-            mount_translation_parent=wrist["mount_translation_m"],
+            mount_translation_parent=resolved_wrist_mount_translation,
             mount_orientation_parent_wxyz=wrist_quaternion,
         )
         for _ in range(2):
