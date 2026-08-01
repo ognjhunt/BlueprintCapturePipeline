@@ -29,6 +29,7 @@ CAPTURE_PROFILES = {
     "trainer_smoke_fixture",
 }
 OPERATIONS = {"worker_smoke", "pose_canary", "trainer_canary"}
+EXECUTABLE_OPERATIONS = {"worker_smoke"}
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
@@ -279,7 +280,13 @@ def build_reconstruction_gpu_canary_admission(
     if _finite(max_spend_usd, minimum=0.000001) and worst_case_cost > float(max_spend_usd):
         blockers.append("reconstruction_gpu_budget_below_worst_case_cost")
 
-    if execute and not execution_adapter_qualified and not blockers:
+    operation = source.get("operation")
+    operation_adapter_qualified = bool(
+        execution_adapter_qualified and operation in EXECUTABLE_OPERATIONS
+    )
+    if execute and operation not in EXECUTABLE_OPERATIONS:
+        blockers.append("reconstruction_gpu_operation_execution_adapter_unavailable")
+    elif execute and not operation_adapter_qualified and not blockers:
         blockers.append("reconstruction_vast_execution_adapter_not_qualified")
     bound_request = {
         **source,
@@ -289,7 +296,7 @@ def build_reconstruction_gpu_canary_admission(
         "bound_checkout_source_commit": checkout_source_commit,
         "bound_checkout_clean": checkout_clean,
         "provider_mutation_authorized": bool(
-            execute and execution_adapter_qualified and not blockers
+            execute and operation_adapter_qualified and not blockers
         ),
     }
     bound_request["bound_request_digest"] = canonical_digest(
@@ -297,7 +304,7 @@ def build_reconstruction_gpu_canary_admission(
     )
     status = (
         "execute_ready"
-        if execute and execution_adapter_qualified and not blockers
+        if execute and operation_adapter_qualified and not blockers
         else ("dry_run_ready" if not blockers else "blocked")
     )
     admission = {
@@ -309,6 +316,7 @@ def build_reconstruction_gpu_canary_admission(
         "request_digest": expected_request_digest,
         "bound_request_digest": bound_request["bound_request_digest"],
         "source_commit_sha": checkout_source_commit,
+        "operation": operation,
         "worker_image_digest": source.get("worker_image_digest"),
         "reconstruction_dataset_digest": source.get("reconstruction_dataset_digest"),
         "frozen_split_digest": source.get("frozen_split_digest"),
@@ -320,17 +328,21 @@ def build_reconstruction_gpu_canary_admission(
         "provider_zero_verified": provider_snapshot.get("provider_inventory_verified_zero") is True,
         "provider_mutations_performed": 0,
         "paid_execution_started": False,
-        "execution_adapter_qualified": bool(execution_adapter_qualified),
+        "execution_adapter_qualified": operation_adapter_qualified,
         "allocation_success_is_scientific_success": False,
         "proof_effect": "none",
         "claim_ceiling": "paid_gpu_admission_only",
         "legal_next_actions": (
+            ["qualify_reconstruction_operation_execution_adapter"]
+            if operation not in EXECUTABLE_OPERATIONS
+            else (
             ["qualify_vast_execution_adapter"]
             if blockers == ["reconstruction_vast_execution_adapter_not_qualified"]
             else (
                 ["invoke_canonical_gpu_canary_with_explicit_execute_authority"]
                 if not blockers
                 else ["resolve_admission_blockers"]
+            )
             )
         ),
     }
@@ -389,6 +401,7 @@ def prepare_reconstruction_gpu_canary(
 
 __all__ = [
     "ADMISSION_SCHEMA_VERSION",
+    "EXECUTABLE_OPERATIONS",
     "PREFLIGHT_SCHEMA_VERSION",
     "PROBE_KIND",
     "REQUEST_SCHEMA_VERSION",

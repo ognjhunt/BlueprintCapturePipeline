@@ -690,6 +690,13 @@ explicit disk floor and hourly-rate ceiling, records both scoped and global
 inventory, and performs zero provider mutations. It does not reserve an offer
 or bypass the independent budget, TTL, retry, clean/pushed-SHA, image, transport,
 watchdog, or paid-lane gates.
+Admission recognizes worker-smoke, pose-canary, and trainer-canary request
+contracts, but executor qualification is operation-specific. Only
+`worker_smoke` currently has a qualified Vast lifecycle adapter. Pose or trainer
+execution therefore remains blocked before provider mutation even if a caller
+sets the general execute flag; dry-run admission names the missing operation
+adapter instead of implying that a healthcheck executor can run scientific
+work.
 
 ## Strict external reconstruction import
 

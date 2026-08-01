@@ -184,6 +184,31 @@ def test_execute_stays_blocked_until_vast_execution_adapter_is_qualified():
     assert bound["provider_mutation_authorized"] is False
 
 
+def test_pose_and_trainer_canaries_cannot_masquerade_as_worker_smoke_execution():
+    for operation in ("pose_canary", "trainer_canary"):
+        request = _request(operation=operation)
+        dry_run, dry_bound = _build(request=request)
+        assert dry_run["status"] == "dry_run_ready"
+        assert dry_run["operation"] == operation
+        assert dry_run["execution_adapter_qualified"] is False
+        assert dry_run["legal_next_actions"] == [
+            "qualify_reconstruction_operation_execution_adapter"
+        ]
+        assert dry_bound["provider_mutation_authorized"] is False
+
+        execute, execute_bound = _build(
+            request=request,
+            execute=True,
+            execution_adapter_qualified=True,
+        )
+        assert execute["status"] == "blocked"
+        assert execute["blockers"] == [
+            "reconstruction_gpu_operation_execution_adapter_unavailable"
+        ]
+        assert execute["execution_adapter_qualified"] is False
+        assert execute_bound["provider_mutation_authorized"] is False
+
+
 def test_reconstruction_canary_rejects_stale_preflight_and_underfunded_ttl():
     admission, _ = _build(
         preflight=_preflight(observed_at_epoch=1.0, on_demand_price_usd_per_hour=1.0),
