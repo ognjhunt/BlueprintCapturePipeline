@@ -67,8 +67,9 @@ spherical projection, SfM, 3DGS training, and independent scale validation.
 Native 360 normalization is registered conditionally: it appears as an SDK
 tool only when the trusted capture runtime injects a digest-bound normalizer.
 The subsequent `validate_camera_rig` tool independently rechecks the frozen rig
-declaration and dual-fisheye binding. It can establish fixed calibrated rig
-compatibility only; it cannot establish a trajectory or metric scale.
+declaration, dual-fisheye binding, lens synchronization, and explicit segment
+timeline. It can establish fixed calibrated rig compatibility only; it cannot
+establish a trajectory or metric scale.
 This remains a planning aid: the control plane still owns method-profile
 eligibility and separate execution authorization.
 

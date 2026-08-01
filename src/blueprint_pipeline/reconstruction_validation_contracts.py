@@ -100,6 +100,11 @@ def validate_camera_rig(value: Mapping[str, Any]) -> dict[str, Any]:
             if binding.get("all_segments_synchronized") is not True
             else set()
         )
+        | (
+            {"camera_rig_capture_timeline_invalid"}
+            if binding.get("capture_timeline_valid") is not True
+            else set()
+        )
     )
     result = {
         "source_capture_digest": request["source_capture_digest"],
@@ -114,6 +119,7 @@ def validate_camera_rig(value: Mapping[str, Any]) -> dict[str, Any]:
         "fixed_rig_extrinsics_valid": rig.get("rig_is_fixed") is True and not blockers,
         "lens_calibration_valid": rig.get("calibration_status") == "valid" and not blockers,
         "lens_streams_synchronized": binding.get("all_segments_synchronized") is True,
+        "capture_timeline_valid": binding.get("capture_timeline_valid") is True,
         "original_distorted_pixels_preserved": binding.get(
             "original_distorted_pixels_preserved"
         )

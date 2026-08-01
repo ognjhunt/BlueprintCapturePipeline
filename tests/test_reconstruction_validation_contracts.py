@@ -30,7 +30,9 @@ from blueprint_pipeline.task_evaluation_supervisor.tools import non_spend_tool_b
 CAPTURE_DIGEST = "sha256:" + "1" * 64
 
 
-def _camera_rig_request(*, synchronized: bool = True) -> dict:
+def _camera_rig_request(
+    *, synchronized: bool = True, capture_timeline_valid: bool = True
+) -> dict:
     rig = {
         "schema_version": "camera_360_rig_declaration.v1",
         "capture_digest": CAPTURE_DIGEST,
@@ -45,6 +47,7 @@ def _camera_rig_request(*, synchronized: bool = True) -> dict:
         "schema_version": "dual_fisheye_stream_binding.v1",
         "capture_digest": CAPTURE_DIGEST,
         "all_segments_synchronized": synchronized,
+        "capture_timeline_valid": capture_timeline_valid,
         "original_distorted_pixels_preserved": True,
         "blockers": [] if synchronized else ["native_360_lens_streams_unsynchronized"],
     }
@@ -98,6 +101,9 @@ def test_camera_rig_validation_accepts_only_fixed_calibrated_synchronized_rig() 
     request = _camera_rig_request()
     accepted = validate_camera_rig(request)
     rejected = validate_camera_rig(_camera_rig_request(synchronized=False))
+    invalid_timeline = validate_camera_rig(
+        _camera_rig_request(capture_timeline_valid=False)
+    )
 
     assert accepted["status"] == "validated"
     assert accepted["claim_ceiling"] == "calibrated_camera_rig"
@@ -105,6 +111,9 @@ def test_camera_rig_validation_accepts_only_fixed_calibrated_synchronized_rig() 
     assert accepted["camera_trajectory_proven"] is False
     assert rejected["status"] == "rejected"
     assert rejected["claim_ceiling"] == "decoded_native_container"
+    assert invalid_timeline["status"] == "rejected"
+    assert invalid_timeline["blockers"] == ["camera_rig_capture_timeline_invalid"]
+    assert invalid_timeline["capture_timeline_valid"] is False
     schema = json.loads(
         (
             Path(__file__).parents[1]
