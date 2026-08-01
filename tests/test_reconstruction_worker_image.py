@@ -60,7 +60,7 @@ def _command(argv):
 
 def test_reconstruction_worker_recipe_is_digest_and_revision_pinned():
     dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "FROM nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:" in dockerfile
+    assert "FROM nvidia/cuda:13.3.1-devel-ubuntu22.04@sha256:" in dockerfile
     assert f"ARG COLMAP_REVISION={COLMAP_REVISION}" in dockerfile
     assert f"ARG GSPLAT_REVISION={GSPLAT_REVISION}" in dockerfile
     assert f"ARG THREEDGRUT_REVISION={THREEDGRUT_REVISION}" in dockerfile
