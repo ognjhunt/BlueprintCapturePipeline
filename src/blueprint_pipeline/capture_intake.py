@@ -31,6 +31,7 @@ CAPTURE_AUTHORITY_PROFILES = {
     "camera_360_native",
     "monocular_video",
     "precomputed_external_reconstruction",
+    "public_processed_rgbd_pose_sequence",
 }
 
 _SHA256 = "sha256:"
@@ -74,6 +75,12 @@ _REQUIRED_STREAMS = {
     "camera_360_native": {"retained_original", "camera_metadata"},
     "monocular_video": {"retained_video"},
     "precomputed_external_reconstruction": {"external_reconstruction"},
+    "public_processed_rgbd_pose_sequence": {
+        "processed_rgb_observations",
+        "camera_poses",
+        "camera_intrinsics",
+        "depth",
+    },
 }
 
 
@@ -324,7 +331,10 @@ def _claim_ceiling(profile: str, streams: Mapping[str, str], *, admitted: bool) 
     }.issubset(available)
     if profile == "iphone_arkit_non_lidar":
         metric_scale = calibrated_pose and "verified_scale_anchor" in available
-    observed_video = bool({"retained_video", "retained_original"} & available)
+    observed_video = bool(
+        {"retained_video", "retained_original", "processed_rgb_observations"}
+        & available
+    )
     return {
         "capture_admitted": admitted,
         "task_candidate_discovery": admitted and observed_video,
@@ -372,6 +382,15 @@ def build_capture_admission(envelope_value: Mapping[str, Any]) -> dict[str, Any]
         )
     if profile == "precomputed_external_reconstruction":
         reduced_authority_reasons.append("derived_reconstruction_cannot_replace_source_capture_authority")
+    if profile == "public_processed_rgbd_pose_sequence":
+        reduced_authority_reasons.extend(
+            [
+                "public_processed_dataset_is_not_customer_capture",
+                "original_video_and_encoder_retention_truth_unavailable",
+                "dataset_camera_and_depth_calibration_not_independently_verified",
+                "physical_outcomes_not_observed",
+            ]
+        )
     admitted = status == "accepted"
     report = {
         "schema_version": CAPTURE_ADMISSION_SCHEMA_VERSION,

@@ -223,6 +223,22 @@ def test_edit_and_approve_binds_the_exact_customer_definition() -> None:
     assert approved["prohibited_evaluator_identities"] == ["provider:model-a"]
 
 
+def test_operator_approval_is_not_serialized_as_customer_intent() -> None:
+    discovery = _discovery()
+    _, approved = record_task_candidate_decision(
+        discovery,
+        task_candidate_id=discovery["task_candidates"][0]["task_candidate_id"],
+        action="approve",
+        actor={"role": "operator", "identity": "operator:17"},
+        idempotency_key="operator-approval-1",
+        rationale="Approve this bounded exploratory proxy task.",
+    )
+
+    assert approved is not None
+    assert approved["intent_source"] == "operator_approved_candidate"
+    assert approved["approval_actor"]["role"] == "operator"
+
+
 def test_stale_or_tampered_discovery_is_rejected() -> None:
     discovery = _discovery()
     discovery["task_candidates"][0]["description"] = "Changed without a successor artifact"
