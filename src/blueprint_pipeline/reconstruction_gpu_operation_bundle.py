@@ -262,6 +262,14 @@ def _validated_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
     return receipt
 
 
+def validate_reconstruction_gpu_operation_bundle_receipt(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate a receipt for transport/admission without allocating or extracting."""
+
+    return _validated_receipt(value)
+
+
 def compile_reconstruction_gpu_operation_bundle(
     *,
     operation: str,
@@ -689,6 +697,7 @@ __all__ = [
     "build_canary_request_from_operation_bundle",
     "compile_reconstruction_gpu_operation_bundle",
     "extract_reconstruction_gpu_operation_bundle",
+    "validate_reconstruction_gpu_operation_bundle_receipt",
     "main",
 ]
 

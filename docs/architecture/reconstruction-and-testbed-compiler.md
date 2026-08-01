@@ -986,8 +986,18 @@ recomputes their hashes, rejects traversal, symlinks, compression, inventory
 suppression, or result/artifact drift, and emits a replay receipt whose claim
 ceiling remains unaccepted candidate transport only. This closes local result
 packaging and replay, not remote transfer or scientific acceptance. Paid
-scientific pose/trainer execution remains unavailable until presigned streaming
-transport, the provider lifecycle, retrieval-before-teardown, and provider-zero
-reconciliation are independently qualified. Isaac remains separately unavailable
-on its own runtime image; the worker-smoke adapter cannot stand in for any of
-these scientific lanes.
+pose/trainer transport now also has a focused-tested Vast-first adapter behind
+the canonical allocator. The adapter requires separate private 0600 signed URLs
+for the exact input bundle, its canonical receipt, and output PUT/GET; validates
+all local bindings before allocation; runs the image healthcheck and typed
+bootstrap; streams the candidate output; independently validates it before
+teardown; stops on a repeated identical malformed result; preserves every
+rejected retrieval; reconciles spend; and proves scoped and global provider-zero.
+Its offline replay revalidates the exact output, runtime result, teardown, and
+provider-zero receipts without provider access. A completed adapter result says
+only that provider execution and candidate transport completed: the nested pose
+or trainer status remains separate and no scientific qualification is inferred.
+This lifecycle is hermetically tested but has not run against a built pinned
+image or live Vast instance. Isaac remains separately unavailable on its own
+runtime image; neither worker smoke nor pose/trainer completion can stand in for
+Isaac, collision, physical, or deployment evidence.

@@ -354,11 +354,11 @@ def _hash_file_capped(path: Path, *, max_bytes: int) -> tuple[int, str]:
     return size, "sha256:" + digest.hexdigest()
 
 
-def download_file(
+def _download_file(
     url: str,
     *,
     output_path: str | Path,
-    expected_sha256: str,
+    expected_sha256: str | None,
     max_bytes: int,
     timeout_seconds: object,
     policy: OutboundHttpPolicy,
@@ -367,7 +367,7 @@ def download_file(
     """Stream one exact HTTPS object to an atomically published local file."""
 
     requested = validate_outbound_url(url, policy=policy)
-    expected = _require_sha256(expected_sha256)
+    expected = _require_sha256(expected_sha256) if expected_sha256 is not None else None
     if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
         raise SafeOutboundHttpError(f"outbound_http_file_cap_invalid:{max_bytes!r}")
     timeout = _validated_timeout(timeout_seconds)
@@ -415,7 +415,7 @@ def download_file(
             output_stream.flush()
             os.fsync(output_stream.fileno())
         observed = "sha256:" + digest.hexdigest()
-        if observed != expected:
+        if expected is not None and observed != expected:
             raise SafeOutboundHttpError("outbound_http_file_digest_mismatch")
         os.replace(temporary_path, destination)
         temporary_path = None
@@ -428,6 +428,56 @@ def download_file(
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+
+def download_file(
+    url: str,
+    *,
+    output_path: str | Path,
+    expected_sha256: str,
+    max_bytes: int,
+    timeout_seconds: object,
+    policy: OutboundHttpPolicy,
+    headers: Mapping[str, str] | None = None,
+) -> SafeHttpFileTransfer:
+    """Download exact bytes whose digest was fixed before the transfer."""
+
+    return _download_file(
+        url,
+        output_path=output_path,
+        expected_sha256=expected_sha256,
+        max_bytes=max_bytes,
+        timeout_seconds=timeout_seconds,
+        policy=policy,
+        headers=headers,
+    )
+
+
+def download_file_observed(
+    url: str,
+    *,
+    output_path: str | Path,
+    max_bytes: int,
+    timeout_seconds: object,
+    policy: OutboundHttpPolicy,
+    headers: Mapping[str, str] | None = None,
+) -> SafeHttpFileTransfer:
+    """Download an output, hash it, and atomically publish the observed bytes.
+
+    This is only for newly produced outputs whose digest cannot exist before
+    execution. Callers must independently validate request/run bindings after
+    retrieval; this helper alone never accepts an output artifact.
+    """
+
+    return _download_file(
+        url,
+        output_path=output_path,
+        expected_sha256=None,
+        max_bytes=max_bytes,
+        timeout_seconds=timeout_seconds,
+        policy=policy,
+        headers=headers,
+    )
 
 
 def upload_file(

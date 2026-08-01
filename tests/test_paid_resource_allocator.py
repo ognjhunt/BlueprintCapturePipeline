@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.groot_oscar_infrastructure_admission import (
     MIN_BUILD_FREE_BYTES,
     build_live_machine_capability_evidence,
@@ -732,6 +733,105 @@ def test_reconstruction_gpu_execute_routes_through_shared_grant_and_vast_adapter
         json.loads((tmp_path / "reconstruction_paid_lane_admission.json").read_text())["status"]
         == "admitted"
     )
+
+
+def test_reconstruction_pose_routes_bundle_and_receipt_through_shared_allocator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _reconstruction_args(tmp_path, execute=True)
+    args.provider_bundle_url_file = str(tmp_path / "bundle-get-url.txt")
+    args.reconstruction_operation_receipt_url_file = str(
+        tmp_path / "receipt-get-url.txt"
+    )
+    args.reconstruction_operation_bundle_receipt = str(tmp_path / "receipt.json")
+    Path(args.preflight_bundle).write_text("{}", encoding="utf-8")
+    operation_request_digest = "sha256:" + "1" * 64
+    operation_input_bundle_digest = "sha256:" + "2" * 64
+    worker_image = "registry.example/reconstruction@sha256:" + "b" * 64
+    receipt = {
+        "schema_version": "reconstruction_gpu_operation_bundle.v1",
+        "status": "compiled",
+        "operation": "pose_canary",
+        "source_commit_sha": "c" * 40,
+        "worker_image_digest": worker_image,
+        "operation_request_digest": operation_request_digest,
+        "operation_input_bundle_digest": operation_input_bundle_digest,
+        "bundle_manifest_digest": "sha256:" + "3" * 64,
+        "artifact_members": [
+            {
+                "archive_path": "inputs/frame.png",
+                "digest": "sha256:" + "4" * 64,
+                "bytes": 1,
+            }
+        ],
+        "artifact_member_count": 1,
+        "candidate_may_read_hidden_heldout": False,
+        "trainer_may_grade_heldout": False,
+        "raw_secret_values_included": False,
+        "provider_allocation_performed": False,
+        "paid_execution_authorized_by_bundle": False,
+        "proof_effect": "none",
+        "claim_ceiling": "candidate_operation_input_only",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    Path(args.reconstruction_operation_bundle_receipt).write_text(
+        json.dumps(receipt), encoding="utf-8"
+    )
+    admission = {
+        "status": "execute_ready",
+        "blockers": [],
+        "operation": "pose_canary",
+        "operation_request_digest": operation_request_digest,
+        "operation_input_bundle_digest": operation_input_bundle_digest,
+        "worker_image_digest": worker_image,
+        "source_commit_sha": "c" * 40,
+    }
+    observed: dict[str, object] = {}
+
+    def fake_prepare(**kwargs: object) -> dict[str, object]:
+        Path(str(kwargs["bound_request_out"])).write_text("{}", encoding="utf-8")
+        return admission
+
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", fake_prepare)
+    monkeypatch.setattr(
+        allocator,
+        "read_sensitive_url_file",
+        lambda _path, *, label: (
+            f"https://objects.example/{label}?signature=secret",
+            {"mode_is_0600": True},
+        ),
+    )
+    provider = object()
+    monkeypatch.setattr(allocator, "get_render_provider", lambda _name: provider)
+    monkeypatch.setattr(
+        allocator,
+        "run_reconstruction_vast_worker_smoke",
+        lambda **_kwargs: pytest.fail("pose must not route through smoke"),
+    )
+
+    def fake_operation(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {
+            "status": "completed",
+            "provider_mutations_performed": 2,
+            "cost_usd": 0.01,
+            "scientific_qualification_inferred": False,
+            "proof_effect": "none",
+        }
+
+    monkeypatch.setattr(allocator, "run_reconstruction_vast_operation", fake_operation)
+    result = allocator._run_reconstruction_gpu_canary(
+        args, checkout_commit="c" * 40
+    )
+    assert result["status"] == "completed"
+    assert observed["provider"] is provider
+    assert observed["bundle_receipt"] == receipt
+    assert "provider_bundle_url" in str(observed["input_bundle_get_url"])
+    assert "operation_receipt_get_url" in str(observed["input_receipt_get_url"])
+    grant = observed["paid_resource_admission_grant"]
+    assert grant.resource_class == "gpu_render"
 
 
 def test_reconstruction_gpu_refreshes_read_only_vast_preflight_before_admission(

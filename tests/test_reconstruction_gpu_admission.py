@@ -221,8 +221,8 @@ def test_execute_stays_blocked_until_vast_execution_adapter_is_qualified():
     assert bound["provider_mutation_authorized"] is False
 
 
-def test_scientific_canaries_cannot_masquerade_as_worker_smoke_execution():
-    for operation in ("pose_canary", "trainer_canary", "isaac_canary"):
+def test_scientific_canaries_use_only_their_qualified_typed_adapters():
+    for operation in ("pose_canary", "trainer_canary"):
         request = _request(operation=operation)
         dry_run, dry_bound = _build(request=request)
         assert dry_run["status"] == "dry_run_ready"
@@ -233,7 +233,7 @@ def test_scientific_canaries_cannot_masquerade_as_worker_smoke_execution():
         )
         assert dry_run["execution_adapter_qualified"] is False
         assert dry_run["legal_next_actions"] == [
-            "qualify_reconstruction_operation_execution_adapter"
+            "invoke_canonical_gpu_canary_with_explicit_execute_authority"
         ]
         assert dry_bound["provider_mutation_authorized"] is False
 
@@ -242,12 +242,28 @@ def test_scientific_canaries_cannot_masquerade_as_worker_smoke_execution():
             execute=True,
             execution_adapter_qualified=True,
         )
-        assert execute["status"] == "blocked"
-        assert execute["blockers"] == [
-            "reconstruction_gpu_operation_execution_adapter_unavailable"
-        ]
-        assert execute["execution_adapter_qualified"] is False
-        assert execute_bound["provider_mutation_authorized"] is False
+        assert execute["status"] == "execute_ready"
+        assert execute["blockers"] == []
+        assert execute["execution_adapter_qualified"] is True
+        assert execute_bound["provider_mutation_authorized"] is True
+
+    request = _request(operation="isaac_canary")
+    dry_run, dry_bound = _build(request=request)
+    assert dry_run["status"] == "dry_run_ready"
+    assert dry_run["legal_next_actions"] == [
+        "qualify_reconstruction_operation_execution_adapter"
+    ]
+    assert dry_bound["provider_mutation_authorized"] is False
+    execute, execute_bound = _build(
+        request=request,
+        execute=True,
+        execution_adapter_qualified=True,
+    )
+    assert execute["status"] == "blocked"
+    assert execute["blockers"] == [
+        "reconstruction_gpu_operation_execution_adapter_unavailable"
+    ]
+    assert execute_bound["provider_mutation_authorized"] is False
 
 
 def test_operation_request_input_and_result_schema_are_immutable_admission_inputs():

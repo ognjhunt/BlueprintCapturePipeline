@@ -454,6 +454,28 @@ def test_file_download_mismatch_or_oversize_preserves_previous_complete_file(
     assert destination.read_bytes() == b"previous"
 
 
+def test_observed_output_download_hashes_without_pretending_prior_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"new-provider-output"
+    url = "https://objects.example/output.zip?signature=secret"
+    monkeypatch.setattr(
+        soh,
+        "_open_with_policy",
+        _Transport(_StreamingResponse(payload, final_url=url)),
+    )
+    destination = tmp_path / "output.zip"
+    receipt = soh.download_file_observed(
+        url,
+        output_path=destination,
+        max_bytes=1024,
+        timeout_seconds=30,
+        policy=soh.presigned_transfer_policy(url),
+    )
+    assert destination.read_bytes() == payload
+    assert receipt.sha256 == "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
 def test_digest_bound_file_upload_streams_body_and_pins_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

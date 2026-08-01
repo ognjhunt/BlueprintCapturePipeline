@@ -95,6 +95,11 @@ from .reconstruction_gpu_admission import (
     collect_reconstruction_vast_preflight,
     prepare_reconstruction_gpu_canary,
 )
+from .reconstruction_gpu_operation_bundle import (
+    ReconstructionGpuOperationBundleError,
+    validate_reconstruction_gpu_operation_bundle_receipt,
+)
+from .reconstruction_vast_operation import run_reconstruction_vast_operation
 from .reconstruction_vast_worker_smoke import run_reconstruction_vast_worker_smoke
 from .gpu_render_providers import get_render_provider
 from .single_g1_kitchen_episode_runpod import (
@@ -646,12 +651,57 @@ def _run_reconstruction_gpu_canary(
     if not args.execute or admission.get("status") != "execute_ready":
         return admission
 
+    operation = str(admission.get("operation") or "worker_smoke")
     transport_blockers: list[str] = []
     resolved_urls: dict[str, str] = {}
-    for label, path_value in (
+    url_inputs = [
         ("provider_output_put_url", args.provider_output_put_url_file),
         ("provider_output_get_url", args.provider_output_get_url_file),
-    ):
+    ]
+    operation_bundle_receipt: dict[str, Any] = {}
+    if operation in {"pose_canary", "trainer_canary"}:
+        url_inputs.extend(
+            [
+                ("provider_bundle_url", getattr(args, "provider_bundle_url_file", None)),
+                (
+                    "operation_receipt_get_url",
+                    getattr(args, "reconstruction_operation_receipt_url_file", None),
+                ),
+            ]
+        )
+        receipt_path = getattr(
+            args, "reconstruction_operation_bundle_receipt", None
+        )
+        if not receipt_path:
+            transport_blockers.append(
+                "reconstruction_operation_bundle_receipt_missing"
+            )
+        else:
+            try:
+                operation_bundle_receipt = (
+                    validate_reconstruction_gpu_operation_bundle_receipt(
+                        _load(receipt_path)
+                    )
+                )
+            except (OSError, ValueError, ReconstructionGpuOperationBundleError):
+                transport_blockers.append(
+                    "reconstruction_operation_bundle_receipt_invalid"
+                )
+            else:
+                for request_key, receipt_key in (
+                    ("operation", "operation"),
+                    ("operation_request_digest", "operation_request_digest"),
+                    ("operation_input_bundle_digest", "operation_input_bundle_digest"),
+                    ("worker_image_digest", "worker_image_digest"),
+                    ("source_commit_sha", "source_commit_sha"),
+                ):
+                    if admission.get(request_key) != operation_bundle_receipt.get(
+                        receipt_key
+                    ):
+                        transport_blockers.append(
+                            f"reconstruction_operation_bundle_{request_key}_mismatch"
+                        )
+    for label, path_value in url_inputs:
         value, metadata = read_sensitive_url_file(str(path_value or ""), label=label)
         if not value:
             transport_blockers.append(f"reconstruction_{label}_missing")
@@ -688,15 +738,29 @@ def _run_reconstruction_gpu_canary(
         write_json(adapter_path, result)
         return result
 
-    result = run_reconstruction_vast_worker_smoke(
-        bound_request=_load(args.bound_request_out),
-        preflight=_load(args.preflight_bundle),
-        job_dir=adapter_path.parent / "reconstruction_vast_worker_smoke",
-        output_put_url=resolved_urls["provider_output_put_url"],
-        output_get_url=resolved_urls["provider_output_get_url"],
-        provider=get_render_provider(args.provider),
-        paid_resource_admission_grant=grant,
-    )
+    if operation == "worker_smoke":
+        result = run_reconstruction_vast_worker_smoke(
+            bound_request=_load(args.bound_request_out),
+            preflight=_load(args.preflight_bundle),
+            job_dir=adapter_path.parent / "reconstruction_vast_worker_smoke",
+            output_put_url=resolved_urls["provider_output_put_url"],
+            output_get_url=resolved_urls["provider_output_get_url"],
+            provider=get_render_provider(args.provider),
+            paid_resource_admission_grant=grant,
+        )
+    else:
+        result = run_reconstruction_vast_operation(
+            bound_request=_load(args.bound_request_out),
+            bundle_receipt=operation_bundle_receipt,
+            preflight=_load(args.preflight_bundle),
+            job_dir=adapter_path.parent / "reconstruction_vast_operation",
+            input_bundle_get_url=resolved_urls["provider_bundle_url"],
+            input_receipt_get_url=resolved_urls["operation_receipt_get_url"],
+            output_bundle_put_url=resolved_urls["provider_output_put_url"],
+            output_bundle_get_url=resolved_urls["provider_output_get_url"],
+            provider=get_render_provider(args.provider),
+            paid_resource_admission_grant=grant,
+        )
     write_json(adapter_path, result)
     return result
 
@@ -777,6 +841,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--provider-bundle-url-file")
     gpu.add_argument("--provider-output-put-url-file")
     gpu.add_argument("--provider-output-get-url-file")
+    gpu.add_argument("--reconstruction-operation-bundle-receipt")
+    gpu.add_argument("--reconstruction-operation-receipt-url-file")
     gpu.add_argument("--provider-bootstrap-url-file")
     gpu.add_argument("--finetune-provider-bundle")
     gpu.add_argument("--openpi-input-bundle-receipt")
