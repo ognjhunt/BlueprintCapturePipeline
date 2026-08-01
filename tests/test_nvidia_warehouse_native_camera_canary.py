@@ -18,6 +18,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _articulation_link_world_pose_matrices,
     _author_renderable_semantic_label_tree,
     _backend_array_to_numpy,
+    _camera_sensor_annotator_frame,
     _camera_quaternion_wxyz,
     _load_materialization_manifest,
     _project_required_external_entities,
@@ -412,6 +413,38 @@ def test_backend_array_to_numpy_moves_tensor_like_value_to_cpu() -> None:
     assert calls == ["detach", "cpu", "numpy"]
 
 
+def test_camera_sensor_annotator_frame_normalizes_data_and_info() -> None:
+    class WarpLike:
+        def numpy(self) -> np.ndarray:
+            return np.asarray([[[7]]], dtype=np.uint32)
+
+    class Sensor:
+        def get_data(self, annotator: str):
+            assert annotator == "semantic_segmentation"
+            return WarpLike(), {"idToLabels": {"7": {"class": "spraycan"}}}
+
+    frame = _camera_sensor_annotator_frame(
+        sensor=Sensor(), annotator="semantic_segmentation"
+    )
+
+    assert np.array_equal(frame["data"], np.asarray([[[7]]], dtype=np.uint32))
+    assert frame["info"] == {"idToLabels": {"7": {"class": "spraycan"}}}
+
+
+def test_camera_sensor_annotator_frame_fails_closed_when_data_is_not_ready() -> None:
+    class Sensor:
+        def get_data(self, _annotator: str):
+            return None, {}
+
+    with pytest.raises(
+        ValueError,
+        match="native_camera_annotator_data_unavailable:semantic_segmentation",
+    ):
+        _camera_sensor_annotator_frame(
+            sensor=Sensor(), annotator="semantic_segmentation"
+        )
+
+
 def test_backend_pose_matrix_uses_usd_row_vector_convention() -> None:
     half_turn = math.radians(90.0) / 2.0
     matrix = _world_pose_matrix_from_backend_pose(
@@ -453,6 +486,16 @@ def test_wrist_camera_prim_exists_before_reset_and_syncs_from_live_link_afterwar
     assert "from isaacsim.core.prims import SingleArticulation" in source
     assert "get_link_transforms_after_update_articulations_kinematic" in source
     assert "._xform_prim_view" not in source
+
+
+def test_backend_uses_isaac_6_experimental_rtx_camera_sensor_for_shared_annotators() -> None:
+    source = inspect.getsource(isaac_sim_6_backend)
+
+    assert "from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera" in source
+    assert 'annotators=["rgba", "semantic_segmentation"]' in source
+    assert "resolution=(480, 640)" in source
+    assert "camera.get_current_frame()" not in source
+    assert "camera.add_semantic_segmentation_to_frame" not in source
 
 
 def test_articulation_link_pose_uses_explicit_kinematic_update_and_xyzw_tensor_order() -> None:

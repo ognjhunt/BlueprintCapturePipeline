@@ -322,6 +322,19 @@ def _backend_array_to_numpy(value: Any) -> np.ndarray:
     return np.asarray(value)
 
 
+def _camera_sensor_annotator_frame(*, sensor: Any, annotator: str) -> dict[str, Any]:
+    """Normalize Isaac 6's experimental RTX sensor output for assessment."""
+
+    data, info_value = sensor.get_data(annotator)
+    if data is None:
+        raise ValueError(f"native_camera_annotator_data_unavailable:{annotator}")
+    info = dict(info_value) if isinstance(info_value, Mapping) else {}
+    return {
+        "data": _backend_array_to_numpy(data),
+        "info": info,
+    }
+
+
 def _world_pose_matrix_from_backend_pose(position: Any, orientation_wxyz: Any) -> np.ndarray:
     """Build the row-vector local-to-world matrix used by USD projection helpers."""
 
@@ -801,7 +814,7 @@ def isaac_sim_6_backend(
         from isaacsim.core.experimental.prims import XformPrim
         from isaacsim.core.prims import SingleArticulation
         from isaacsim.core.utils.stage import add_reference_to_stage
-        from isaacsim.sensors.camera import Camera
+        from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera
         from isaacsim.storage.native import get_assets_root_path
         from pxr import Gf, Usd, UsdGeom, UsdLux, UsdPhysics
 
@@ -885,7 +898,7 @@ def isaac_sim_6_backend(
         distant = UsdLux.DistantLight.Define(stage, "/World/Lights/Key")
         distant.CreateIntensityAttr(2500.0)
 
-        camera_objects: dict[str, Camera] = {}
+        camera_objects: dict[str, CameraSensor] = {}
         external = spec["cameras"]["external"]
         external_eye = np.asarray(external["position_m"], dtype=float)
         external_forward = np.asarray(external["look_at_m"], dtype=float) - external_eye
@@ -965,13 +978,19 @@ def isaac_sim_6_backend(
         resolved_wrist_mount_translation = wrist_mount_calibration[
             "resolved_mount_translation_parent_m"
         ]
-        camera_objects["external"] = Camera(prim_path=external_path, resolution=(640, 480))
-        camera_objects["wrist"] = Camera(prim_path=wrist_path, resolution=(640, 480))
-        for camera in camera_objects.values():
-            camera.initialize()
-            camera.add_semantic_segmentation_to_frame(
-                init_params={"semanticTypes": ["class"], "colorize": False}
-            )
+        # Isaac Sim 6 deprecates the legacy Camera frame-dict path in favor of
+        # CameraSensor.  Bind both RGB and semantic segmentation to the same
+        # render product so visibility evidence comes from the exact RGB view.
+        camera_objects["external"] = CameraSensor(
+            RtxCamera(external_path),
+            resolution=(480, 640),
+            annotators=["rgba", "semantic_segmentation"],
+        )
+        camera_objects["wrist"] = CameraSensor(
+            RtxCamera(wrist_path),
+            resolution=(480, 640),
+            annotators=["rgba", "semantic_segmentation"],
+        )
         _synchronize_camera_to_rigid_link(
             pose_view=wrist_pose_view,
             parent_to_world=hand_initial_matrix,
@@ -1040,18 +1059,17 @@ def isaac_sim_6_backend(
         def save_frames(phase: str) -> int:
             step = int(world.current_time_step_index)
             for view_id, camera in camera_objects.items():
-                rgba = np.asarray(camera.get_rgba())
+                rgba_frame = _camera_sensor_annotator_frame(sensor=camera, annotator="rgba")
+                rgba = np.asarray(rgba_frame["data"])
                 if rgba.ndim != 3 or rgba.shape[0:2] != (480, 640):
                     raise ValueError(f"native_camera_frame_shape_invalid:{view_id}:{rgba.shape}")
                 path = output_dir / f"{view_id}_{phase}.png"
                 Image.fromarray(np.asarray(rgba[:, :, :3], dtype=np.uint8)).save(path)
                 frames[view_id][f"{phase}_frame_path"] = str(path)
                 frames[view_id][f"{phase}_physics_step"] = step
-                current_frame = camera.get_current_frame()
-                semantic_frame = (
-                    current_frame.get("semantic_segmentation")
-                    if isinstance(current_frame, Mapping)
-                    else None
+                semantic_frame = _camera_sensor_annotator_frame(
+                    sensor=camera,
+                    annotator="semantic_segmentation",
                 )
                 frames[view_id].setdefault("required_entities_visible_pixels_by_phase", {})[
                     phase
@@ -1168,6 +1186,14 @@ def isaac_sim_6_backend(
             "spraycan_runtime_rigid_body": spray_prim.HasAPI(UsdPhysics.RigidBodyAPI),
             "spraycan_kinematic_for_camera_canary": True,
             "semantic_labeling_apis": semantic_labeling_apis,
+            "camera_runtime_api": {
+                "module": "isaacsim.sensors.experimental.rtx",
+                "authoring_class": "RtxCamera",
+                "runtime_class": "CameraSensor",
+                "annotators": ["rgba", "semantic_segmentation"],
+                "resolution_height_width": [480, 640],
+                "shared_render_product_per_view": True,
+            },
             "views": frames,
             "wrist_mount_calibration": wrist_mount_calibration,
             "wrist_mount_implementation": {
