@@ -255,6 +255,11 @@ used as blind confirmation.
   the versioned query-5 input, and prospectively amend the global campaign
   concurrency ceiling to two GPUs while retaining a one-allocation query-5
   limit;
+- `protocol_amendment_28_policy_query5_two_gpu_admission_retry_v1.md` and
+  `compute_authorization_openpi_policy_query_5_v3.json` — preserve query 5's
+  zero-mutation launch-time concurrency block, bind the provider refresh to the
+  signed two-GPU ceiling, prove one existing resource admits while two block,
+  and freeze a new single-use query-5 request at runtime SHA `ede38013`;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
@@ -264,10 +269,10 @@ The registered three-interaction engineering gate and interaction four are
 complete. WAM4 also passed its immediate three-view reliability gate and its
 generated observation is frozen, but interaction five is not complete until the
 same frozen `pi05_droid` checkpoint returns policy query 5. The next finite gate
-is the replacement SHA-bound query-5 bundle: immutable publication, new object
-key, fresh global provider inventory, real cumulative campaign reservation,
-paid admission, transport, and canonical dry-run checks precede one live
-allocation. The prospective global ceiling is two concurrent GPUs, while this
-query remains limited to one allocation. WAM5 is neither authorized nor
-running. Judges remain forbidden until the complete 12-interaction episode and
-causal-control matrix pass.
+is the `ede38013` SHA-bound query-5 bundle: immutable publication, new object
+key, fresh global provider inventory at no more than one existing GPU, real
+cumulative campaign reservation, paid admission, transport, and canonical
+dry-run checks precede one live allocation. The prospective global ceiling is
+two concurrent GPUs, while this query remains limited to one allocation. WAM5
+is neither authorized nor running. Judges remain forbidden until the complete
+12-interaction episode and causal-control matrix pass.
