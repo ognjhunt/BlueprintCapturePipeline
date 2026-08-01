@@ -4,6 +4,11 @@
 
 ### User-Facing
 
+- Added the authorized source-video semantic runner needed before 3D lifting.
+  A configured SAM 3.1 Object Multiplex runtime can now turn exact retained
+  frames into persistent, hash-bound 2D object-mask tracks for the existing
+  semantic pipeline. This does not make the model's labels observed facts or
+  establish metric location, collision, physics, or task success.
 - Added the first executable source-frame-to-3DGS semantic bridge. Persistent
   object masks from retained frames can now be projected through exact calibrated
   cameras onto a standard 3DGS using deterministic front-to-back Gaussian
@@ -13,6 +18,17 @@
 
 ### Employee-Facing
 
+- Published PR #282 after all hosted checks passed, including 6,345 fast-lane
+  and 8,020 full-lane tests. Protected main and isolated staging now use commit
+  `7063d719` with exact tested tree `0354737d`; production remains independently
+  pinned to `3bb376e7`.
+- Added a bounded adapter for Meta's official SAM 3.1 multiplex predictor API.
+  It fails closed unless checkpoint, code revision, runtime, license terms/use,
+  privacy, trade-controls, customer-data use, and execution authorization are exact; verifies
+  every retained-frame JPEG derivative; runs offline; validates untrusted
+  object IDs, scores, and mask shapes; and emits both the existing provider
+  result and its ready-to-import request. The gated checkpoint was not
+  downloaded or executed locally.
 - Published PR #281 after all 16 hosted checks passed, including 6,336 fast-lane
   and 8,011 full-lane tests. Protected main and isolated staging now use commit
   `b3a6ce1c` with the tested tree; production remains independently pinned to
@@ -25,6 +41,10 @@
 
 ### Future-Agent-Facing
 
+- The official `facebook/sam3.1` checkpoint repository has no Transformers
+  integration. Preserve the pinned Meta `build_sam3_multiplex_video_predictor`
+  interface and do not silently fall back to `facebook/sam3` Transformers or
+  the legacy placeholder detector.
 - Preserve the source-video/3DGS authority split: source frames establish mask
   and track evidence, calibrated cameras lift it into the splat, and separate
   independently qualified collision geometry is required before physics use.

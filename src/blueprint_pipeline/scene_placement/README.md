@@ -81,10 +81,20 @@ pose   = place_robot_for_task(index, "open the drawer", probe=physx_overlap_prob
 
 ## The GPU boundary
 
-Only rendering and model inference may need a GPU; those operations are injected. The repository's
-current `scripts/sam3_detect.py` remains fail-closed until a project-specific SAM 3.1 tracker is
-enabled. A model name or numeric depth array never establishes metric scale. The USD backend needs
-only `pxr` (lazy; its one test skips when `pxr` is absent).
+Only rendering and model inference may need a GPU; those operations are injected. The legacy
+`scripts/sam3_detect.py` remains a fail-closed object-index helper. The source-track lane instead
+has an executable provider-neutral SAM 3.1 Object Multiplex adapter at
+`blueprint_pipeline.sam31_source_track_provider_stage`. It uses Meta's official stateful
+`build_sam3_multiplex_video_predictor()` API, not an assumed Transformers integration. The stage
+requires ordered hash-bound JPEG derivatives of encoder-retained frames, exact decoded PTS and
+camera records, a pinned official code revision and checkpoint digest, explicit checkpoint,
+license-terms/use, privacy, trade-controls, and execution authorization, offline inference, and
+persistent object IDs. It validates
+every untrusted mask, score, and ID tensor before emitting the existing compact provider result
+and a ready import request. Until the gated checkpoint is present in a pinned GPU runtime and a
+real run is accepted, this is implemented adapter code rather than live provider evidence. Its
+masks remain inferred 2D candidates. A model name or numeric depth array never establishes metric
+scale. The USD backend needs only `pxr` (lazy; its one test skips when `pxr` is absent).
 
 The existing Splat Analyzer adapter is a candidate generator only. Its upstream implementation
 uses small box-center depth samples, an inferred depth extent, identity orientation, and distance
