@@ -163,6 +163,24 @@ still contains only the release timeline and no runnable implementation/models.
    geometry authority. The file entrypoint rejects symlinks, input overwrite,
    oversized payloads, and provider-byte hash/size mismatches before emitting a
    terminal compact artifact.
+   The execution seam now includes an optional fail-closed SAM 3.1 Object
+   Multiplex adapter using Meta's official stateful predictor API. It requires
+   ordered hash-bound retained-frame JPEG derivatives, exact PTS/camera
+   bindings, pinned code/runtime/checkpoint identities, exact SAM license terms,
+   explicit gated-model/commercial-evidence/privacy/trade-controls authorization,
+   offline execution, and persistent object
+   IDs. It emits binary mask support whose RLE probability is explicitly the
+   object detection score; it performs no cross-prompt instance deduplication
+   and does not self-grade. The gated checkpoint has not yet run in an
+   authorized GPU runtime, so this is implemented code rather than live
+   semantic evidence.
+   The current primary-source audit pins Meta repository revision
+   `96914d2425f90a64f45ca977c2b5165418099543` and its SAM License bytes at
+   SHA-256 `4dea99bfaa016e21bc860d73f344236bd1e5c4977d1a9a8fd32f822b500ae1be`.
+   Those terms grant a limited royalty-free license but remain custom,
+   non-transferable, mutable terms with redistribution, privacy, trade-control,
+   termination, and indemnity conditions. A passing code path is therefore not
+   a substitute for an exact use authorization bound to the terms digest.
 3. `reference_contribution_renderer`: implemented bounded deterministic
    standard-3DGS renderer. It projects exact anisotropic Gaussians through
    retained-frame OpenCV cameras and emits front-to-back `transmittance * alpha`
