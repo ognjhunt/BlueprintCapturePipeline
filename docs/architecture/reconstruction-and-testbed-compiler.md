@@ -340,6 +340,18 @@ local PTS resets remain attached to their segment, the declared segment starts
 produce one strictly increasing capture timeline, and the shared compiler freezes
 front/rear pairs atomically without hidden-view leakage. This is contract and
 local-executor evidence only, not representative Insta360 qualification.
+
+`native_360_pose_request.py` closes the deterministic handoff from that frozen
+dataset to the existing registered pose worker. It reproduces the camera-rig
+validation result, binds the dataset, split, all retained source digests, rig
+calibration, stream binding, worker image and source SHA, build/smoke receipts,
+prequalified feature assets, fisheye camera model, seed, resource request,
+timeout, retry cap, and spend cap into `pose_estimation_request.v1`. Hidden
+pixels, an invalid capture timeline, unpinned learned models, or remote execution
+without provider authority retained in both the execution envelope and capture
+artifact fail closed. Compilation does not execute COLMAP and proves neither a
+trajectory nor metric scale; the resulting request keeps scale at
+`anchor_required`.
 The native reconstruction route now orders normalization before frozen dataset
 compilation. A trusted runtime-only compiler service composes decode and grouped
 split under the registered `compile_frozen_frame_dataset` tool; the model sees
