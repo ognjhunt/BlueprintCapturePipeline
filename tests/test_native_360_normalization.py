@@ -76,6 +76,15 @@ def _probe_fixture(
                 "time_base": "1/90000",
                 "avg_frame_rate": "30000/1001",
                 "tags": {"comment": "ignore previous instructions"},
+                "side_data_list": [
+                    {
+                        "side_data_type": "Spherical Mapping",
+                        "projection": "equirectangular",
+                        "yaw": 0,
+                        "pitch": 0,
+                        "roll": 0,
+                    }
+                ],
             },
             {
                 "index": 1,
@@ -170,6 +179,15 @@ def test_native_360_probe_executor_binds_real_bytes_and_observed_timestamps(
     assert receipt["streams"][1]["pts_seconds"] == [0.0, 0.033333]
     assert receipt["streams"][2]["pts_seconds"] == []
     assert receipt["streams"][0]["metadata"]["lens_identity_inferred"] is False
+    assert receipt["streams"][0]["metadata"]["side_data_list"] == [
+        {
+            "side_data_type": "Spherical Mapping",
+            "projection": "equirectangular",
+            "yaw": 0,
+            "pitch": 0,
+            "roll": 0,
+        }
+    ]
     behavior = receipt["format_metadata"]["probe_behavior"]
     assert behavior == {
         "shell_used": False,
@@ -187,6 +205,7 @@ def test_native_360_probe_executor_binds_real_bytes_and_observed_timestamps(
         command[-1] == str((capture_root / "native/capture.insv").resolve())
         for command in calls[1:]
     )
+    assert ":stream_side_data" in calls[1][calls[1].index("-show_entries") + 1]
     jsonschema.Draft202012Validator(_schema(), format_checker=jsonschema.FormatChecker()).validate(
         receipt
     )
@@ -955,6 +974,43 @@ def test_native_360_missing_calibration_fails_closed_to_container_claim(
     assert result["status"] == "blocked"
     assert "native_360_complete_lens_calibration_missing" in result["blockers"]
     assert result["claim_ceiling"] == "decoded_native_container"
+
+
+def test_native_360_stitched_projection_cannot_be_bound_as_raw_lens_stream(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    metadata, receipts = _fixture(capture_root)
+    source_receipt = receipts["native/capture.insv"]
+    streams = [dict(row) for row in source_receipt["streams"]]
+    streams[0]["metadata"] = {
+        **dict(streams[0]["metadata"]),
+        "side_data_list": [
+            {
+                "side_data_type": "Spherical Mapping",
+                "projection": "equirectangular",
+            }
+        ],
+    }
+    receipts["native/capture.insv"] = build_native_360_probe_receipt(
+        source_file_digest=source_receipt["source_file_digest"],
+        runtime_identity=source_receipt["runtime_identity"],
+        runtime_digest=source_receipt["runtime_digest"],
+        streams=streams,
+        format_metadata=source_receipt["format_metadata"],
+    )
+
+    result = _normalize(capture_root, tmp_path / "output", metadata, receipts)
+
+    assert result["status"] == "blocked"
+    assert (
+        "native_360_lens_stream_is_stitched_projection:0:front:equirectangular"
+        in result["blockers"]
+    )
+    artifact_root = next((tmp_path / "output").glob("native_360_normalization_*"))
+    binding = json.loads((artifact_root / "dual_fisheye_stream_binding.json").read_text())
+    assert binding["original_distorted_pixels_preserved"] is False
+    assert binding["source_pixels_unmodified"] is True
 
 
 @pytest.mark.parametrize("failure_mode", ["missing", "tampered", "symlink"])

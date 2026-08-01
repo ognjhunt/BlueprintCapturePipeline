@@ -482,6 +482,7 @@ def probe_native_360_source(
                 "height,pix_fmt,color_range,color_space,color_transfer,"
                 "color_primaries,time_base,start_time,duration,nb_frames,"
                 "avg_frame_rate,r_frame_rate,disposition,tags,side_data_list"
+                ":stream_side_data"
             ),
             "-of",
             "json",
@@ -680,6 +681,22 @@ def _validated_probe(value: Mapping[str, Any], *, source_digest: str) -> dict[st
     ):
         raise Native360NormalizationError(["native_360_probe_receipt_invalid"])
     return receipt
+
+
+def _stitched_projection(stream: Mapping[str, Any]) -> str | None:
+    """Return an observed non-lens projection without treating metadata as calibration."""
+
+    metadata = stream.get("metadata")
+    side_data = metadata.get("side_data_list") if isinstance(metadata, Mapping) else None
+    if not isinstance(side_data, list):
+        return None
+    for row in side_data:
+        if not isinstance(row, Mapping):
+            continue
+        projection = str(row.get("projection") or "").strip().lower()
+        if projection in {"equirectangular", "cubemap", "cylindrical"}:
+            return projection
+    return None
 
 
 def _calibrated_rig(
@@ -945,6 +962,7 @@ def normalize_native_360_capture(
     source_file_references: list[dict[str, Any]] = []
     validated_probes: dict[str, dict[str, Any]] = {}
     source_paths_seen: set[str] = set()
+    stitched_projection_seen = False
     for segment in segments:
         files = segment.get("files")
         if not isinstance(files, list) or not files:
@@ -1002,6 +1020,13 @@ def normalize_native_360_capture(
                     or stream.get("media_type") != "video"
                 ):
                     raise Native360NormalizationError(["native_360_lens_stream_binding_invalid"])
+                stitched_projection = _stitched_projection(stream)
+                if stitched_projection is not None:
+                    stitched_projection_seen = True
+                    blockers.append(
+                        "native_360_lens_stream_is_stitched_projection:"
+                        f"{segment['sequence_index']}:{lens_id}:{stitched_projection}"
+                    )
                 pts = _normalized_pts(
                     stream.get("pts_seconds"),
                     label=f"segment_{segment['sequence_index']}_{lens_id}",
@@ -1019,6 +1044,7 @@ def normalize_native_360_capture(
                     "first_pts_seconds": pts[0],
                     "last_pts_seconds": pts[-1],
                     "pts_digest": canonical_digest({"pts_seconds": pts}),
+                    "observed_source_projection": stitched_projection,
                     "_pts": pts,
                 }
             file_reference = {
@@ -1155,7 +1181,8 @@ def normalize_native_360_capture(
         "synchronization_tolerance_seconds": synchronization_tolerance_seconds,
         "all_segments_synchronized": all(row["synchronized"] for row in normalized_segments),
         "capture_timeline_valid": timeline_valid,
-        "original_distorted_pixels_preserved": True,
+        "original_distorted_pixels_preserved": not stitched_projection_seen,
+        "source_pixels_unmodified": True,
         "agent_may_rebind_lens_streams": False,
         "blockers": blockers,
     }
