@@ -1,5 +1,65 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-07-30
+
+### User-Facing
+
+- Added a controlled-beta capture-to-testbed path: capture lifecycle and
+  reconstruction requests are now versioned, digest-bound, replayable, and
+  explicitly blocked when rights, calibration, worker, or evidence prerequisites
+  are absent. The new reconstruction and semantic-geometry contracts preserve
+  raw capture authority while producing replaceable OpenUSD/testbed support
+  artifacts (`docs/architecture/reconstruction-and-testbed-compiler.md`,
+  `src/blueprint_pipeline/reconstruction_control_plane.py`).
+- Expanded the Task Evaluation Supervisor into a scoped OpenAI Agents SDK
+  harness with typed tools, candidate controls, recorded evaluation, recovery,
+  budget authority, and explicit abstention. Agent output cannot grant rights,
+  spend, proof state, or physical success
+  (`docs/architecture/task-evaluation-supervisor.md`,
+  `src/blueprint_pipeline/task_evaluation_supervisor/manager.py`).
+- Closed the specialized Cosmos/OSCAR/Ctrl-World successor experiment
+  `inconclusive`. Public runtimes and bounded canaries proved compatibility
+  slices, but no causally qualified, disjoint closed-loop multi-policy ranking
+  completed; the prior frozen stack remains `thesis_not_supported`
+  (`docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/final_report_v1.md`).
+
+### Employee-Facing
+
+- Added strict, source-bound import, frozen train/held-out splits, ARKit depth
+  surface compilation, semantic Gaussian/object geometry, collider
+  qualification, appearance binding, and OpenUSD packaging. Real public proxy
+  replays and hermetic fixtures exercise portions of that chain, but do not
+  prove representative capture quality, qualified reconstruction, Isaac task
+  success, captured-site transfer, deployment, or physical performance
+  (`src/blueprint_pipeline/reconstruction_frame_dataset.py`,
+  `src/blueprint_pipeline/reconstruction_geometry_compiler.py`,
+  `src/blueprint_pipeline/nurec_openusd_packaging.py`).
+- Hardened launch operations with immutable deployment identity, exact
+  deployment-parity checks, fail-closed paid reconstruction admission, and
+  bounded external storage for generated CI/runtime artifacts. Retention and
+  storage changes do not elevate generated outputs above raw capture and
+  provenance evidence (`src/blueprint_pipeline/live_pipeline_intake_service.py`,
+  `scripts/run_sim_only_beta_deployment_parity_proof.py`,
+  `src/blueprint_pipeline/artifact_storage.py`).
+
+### Future-Agent-Facing
+
+- The America/Chicago window contains fifteen first-parent `main` commits,
+  `7d8b5232` through `79dcd4b6` (PRs #247--#259, #261, and #262). At review,
+  `main == origin/main` at `79dcd4b6` with `0 0` divergence. The worktree is
+  clean on `codex/upgrade-openai-agents-sdk-0-19-1`; its `3638819e` tip is the
+  pre-merge counterpart of PR #262, not uncommitted work. No attributable
+  uncommitted July 30 changes are recorded.
+- Preserve the distinction between typed contracts, hermetic/proxy replay,
+  provider execution, deployment parity, and accepted scientific or physical
+  evidence. Reconstruction continuations and supervisor receipts are support
+  artifacts and must remain fail-closed at missing runtime, rights, calibration,
+  hidden-evaluator, or budget boundaries.
+- Raw capture, timestamps, poses, provenance, rights, privacy, and accepted
+  physical outcomes remain authoritative. Generated geometry, appearance,
+  simulator outputs, agent plans, provider receipts, readiness summaries, and
+  this changelog are downstream support artifacts.
+
 ## 2026-07-29
 
 ### User-Facing
