@@ -49,13 +49,14 @@ if [[ ! -d "${STAGING_REPO}/.git" ]]; then
   echo "staging checkout is missing: ${STAGING_REPO}" >&2
   exit 1
 fi
-staging_head="$(git -C "${STAGING_REPO}" rev-parse HEAD)"
-staging_origin_main="$(git -C "${STAGING_REPO}" rev-parse origin/main)"
+STAGING_GIT=(git -c "safe.directory=${STAGING_REPO}" -C "${STAGING_REPO}")
+staging_head="$("${STAGING_GIT[@]}" rev-parse HEAD)"
+staging_origin_main="$("${STAGING_GIT[@]}" rev-parse origin/main)"
 if [[ "${staging_head}" != "${staging_origin_main}" ]]; then
   echo "staging checkout HEAD must equal origin/main" >&2
   exit 1
 fi
-if [[ -n "$(git -C "${STAGING_REPO}" status --porcelain)" ]]; then
+if [[ -n "$("${STAGING_GIT[@]}" status --porcelain)" ]]; then
   echo "staging checkout must be clean" >&2
   exit 1
 fi
