@@ -11,10 +11,14 @@ import hashlib
 import json
 import math
 import os
+import selectors
+import shutil
+import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 
@@ -25,6 +29,13 @@ CAMERA_360_RIG_SCHEMA_VERSION = "camera_360_rig_declaration.v1"
 NATIVE_360_PROBE_SCHEMA_VERSION = "native_360_probe_receipt.v1"
 _LENS_IDS = {"front", "rear"}
 _MAX_NATIVE_SOURCE_BYTES = 100 * 1024 * 1024 * 1024
+_MAX_PROBE_OUTPUT_BYTES = 128 * 1024 * 1024
+_PROBE_TIMEOUT_SECONDS = 600.0
+
+ProbeRunner = Callable[
+    [Sequence[str], float, int],
+    subprocess.CompletedProcess[Any],
+]
 
 
 class Native360NormalizationError(ValueError):
@@ -41,6 +52,132 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def _bounded_probe_command(
+    argv: Sequence[str], timeout_seconds: float, maximum_output_bytes: int
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a probe without a shell while bounding time and captured bytes."""
+
+    process: subprocess.Popen[bytes] | None = None
+    selector = selectors.DefaultSelector()
+    stdout = bytearray()
+    stderr = bytearray()
+    try:
+        process = subprocess.Popen(  # noqa: S603 - exact executable is digest-bound
+            list(argv),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+        )
+        if process.stdout is None or process.stderr is None:
+            raise OSError("probe pipes unavailable")
+        selector.register(process.stdout, selectors.EVENT_READ, stdout)
+        selector.register(process.stderr, selectors.EVENT_READ, stderr)
+        deadline = time.monotonic() + timeout_seconds
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(list(argv), timeout_seconds)
+            events = selector.select(min(remaining, 0.1))
+            for key, _mask in events:
+                chunk = os.read(key.fd, 64 * 1024)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                target = key.data
+                target.extend(chunk)
+                if len(stdout) + len(stderr) > maximum_output_bytes:
+                    raise Native360NormalizationError(
+                        ["native_360_probe_output_oversized"]
+                    )
+        returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        return subprocess.CompletedProcess(
+            list(argv), returncode, bytes(stdout), bytes(stderr)
+        )
+    finally:
+        selector.close()
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+def _probe_bytes(value: Any) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    return b""
+
+
+def _run_probe(
+    runner: ProbeRunner,
+    argv: Sequence[str],
+    *,
+    timeout_seconds: float,
+    maximum_output_bytes: int,
+) -> bytes:
+    try:
+        completed = runner(argv, timeout_seconds, maximum_output_bytes)
+    except Native360NormalizationError:
+        raise
+    except subprocess.TimeoutExpired as exc:
+        raise Native360NormalizationError(["native_360_probe_timeout"]) from exc
+    except OSError as exc:
+        raise Native360NormalizationError(["native_360_probe_execution_failed"]) from exc
+    stdout = _probe_bytes(completed.stdout)
+    stderr = _probe_bytes(completed.stderr)
+    if len(stdout) + len(stderr) > maximum_output_bytes:
+        raise Native360NormalizationError(["native_360_probe_output_oversized"])
+    if completed.returncode != 0:
+        raise Native360NormalizationError(["native_360_probe_media_rejected"])
+    return stdout
+
+
+def _strict_probe_json(payload: bytes, *, label: str) -> dict[str, Any]:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise Native360NormalizationError(
+                    [f"native_360_probe_duplicate_json_key:{label}:{key}"]
+                )
+            value[key] = item
+        return value
+
+    def reject_nonfinite_constant(value: str) -> Any:
+        raise Native360NormalizationError(
+            [f"native_360_probe_json_nonfinite:{label}:{value}"]
+        )
+
+    try:
+        decoded = json.loads(
+            payload,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_nonfinite_constant,
+        )
+    except Native360NormalizationError:
+        raise
+    except (RecursionError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise Native360NormalizationError(
+            [f"native_360_probe_json_invalid:{label}"]
+        ) from exc
+    if not isinstance(decoded, Mapping):
+        raise Native360NormalizationError([f"native_360_probe_json_invalid:{label}"])
+    return dict(decoded)
+
+
+def _probe_number(value: Any, *, label: str) -> float:
+    if isinstance(value, bool):
+        raise Native360NormalizationError([label])
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise Native360NormalizationError([label]) from exc
+    if not math.isfinite(number):
+        raise Native360NormalizationError([label])
+    return number
 
 
 def _is_digest(value: Any) -> bool:
@@ -238,6 +375,283 @@ def build_native_360_probe_receipt(
         receipt, digest_field="probe_receipt_digest"
     )
     return receipt
+
+
+def probe_native_360_source(
+    *,
+    capture_root: str | Path,
+    source_relative_path: str,
+    ffprobe_executable: str | Path | None = None,
+    timeout_seconds: float = _PROBE_TIMEOUT_SECONDS,
+    maximum_source_bytes: int = _MAX_NATIVE_SOURCE_BYTES,
+    maximum_output_bytes: int = _MAX_PROBE_OUTPUT_BYTES,
+    runner: ProbeRunner | None = None,
+) -> dict[str, Any]:
+    """Probe exact native bytes into a digest-bound, claim-limited receipt.
+
+    This executor observes container streams and decoded frame timestamps only.
+    It does not assign lens identity, establish calibration, infer sensor streams,
+    stitch pixels, or establish trajectory or metric scale.
+    """
+
+    if (
+        not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+        or maximum_source_bytes <= 0
+        or maximum_output_bytes <= 0
+    ):
+        raise Native360NormalizationError(["native_360_probe_limit_invalid"])
+    root = Path(capture_root).expanduser().resolve()
+    if not root.is_dir():
+        raise Native360NormalizationError(["native_360_capture_root_missing"])
+    relative_path = _safe_relative(source_relative_path)
+    if Path(relative_path).suffix.lower() != ".insv":
+        raise Native360NormalizationError(["native_360_original_must_be_insv"])
+    source = _safe_source(root, relative_path)
+    size = source.stat().st_size
+    if size <= 0 or size > maximum_source_bytes:
+        raise Native360NormalizationError(["native_360_source_oversized"])
+    source_digest = _sha256_file(source)
+
+    executable_value = (
+        str(ffprobe_executable)
+        if ffprobe_executable is not None
+        else shutil.which("ffprobe")
+    )
+    if not executable_value:
+        raise Native360NormalizationError(["native_360_probe_runtime_unavailable"])
+    executable = Path(executable_value).expanduser().resolve()
+    if not executable.is_file():
+        raise Native360NormalizationError(["native_360_probe_runtime_unavailable"])
+    runtime_digest = _sha256_file(executable)
+    execute = runner or _bounded_probe_command
+
+    version_output = _run_probe(
+        execute,
+        [str(executable), "-version"],
+        timeout_seconds=min(timeout_seconds, 30.0),
+        maximum_output_bytes=min(maximum_output_bytes, 1024 * 1024),
+    )
+    try:
+        version_line = version_output.decode("utf-8").splitlines()[0].strip()
+    except (IndexError, UnicodeDecodeError) as exc:
+        raise Native360NormalizationError(
+            ["native_360_probe_runtime_identity_invalid"]
+        ) from exc
+    if not version_line or len(version_line) > 512:
+        raise Native360NormalizationError(
+            ["native_360_probe_runtime_identity_invalid"]
+        )
+
+    metadata_output = _run_probe(
+        execute,
+        [
+            str(executable),
+            "-v",
+            "error",
+            "-hide_banner",
+            "-show_entries",
+            (
+                "format=format_name,format_long_name,start_time,duration,size,"
+                "bit_rate,tags:stream=index,codec_type,codec_name,profile,width,"
+                "height,pix_fmt,color_range,color_space,color_transfer,"
+                "color_primaries,time_base,start_time,duration,nb_frames,"
+                "avg_frame_rate,r_frame_rate,disposition,tags,side_data_list"
+            ),
+            "-of",
+            "json",
+            str(source),
+        ],
+        timeout_seconds=timeout_seconds,
+        maximum_output_bytes=maximum_output_bytes,
+    )
+    timing_output = _run_probe(
+        execute,
+        [
+            str(executable),
+            "-v",
+            "error",
+            "-hide_banner",
+            "-threads",
+            "1",
+            "-show_frames",
+            "-show_entries",
+            "frame=stream_index,media_type,pts_time,pkt_dts_time,"
+            "best_effort_timestamp_time",
+            "-of",
+            "json",
+            str(source),
+        ],
+        timeout_seconds=timeout_seconds,
+        maximum_output_bytes=maximum_output_bytes,
+    )
+    metadata_payload = _strict_probe_json(metadata_output, label="metadata")
+    timing_payload = _strict_probe_json(timing_output, label="timing")
+    raw_streams = metadata_payload.get("streams")
+    raw_format = metadata_payload.get("format")
+    raw_frames = timing_payload.get("frames")
+    if (
+        not isinstance(raw_streams, list)
+        or not isinstance(raw_format, Mapping)
+        or not isinstance(raw_frames, list)
+    ):
+        raise Native360NormalizationError(["native_360_probe_payload_incomplete"])
+
+    streams_by_index: dict[int, Mapping[str, Any]] = {}
+    video_indexes: set[int] = set()
+    for raw_stream in raw_streams:
+        if not isinstance(raw_stream, Mapping):
+            raise Native360NormalizationError(["native_360_probe_stream_invalid"])
+        index = raw_stream.get("index")
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+            or index in streams_by_index
+        ):
+            raise Native360NormalizationError(["native_360_probe_stream_index_invalid"])
+        streams_by_index[index] = raw_stream
+        if raw_stream.get("codec_type") == "video":
+            video_indexes.add(index)
+    if not video_indexes:
+        raise Native360NormalizationError(["native_360_probe_video_stream_missing"])
+
+    timing_by_stream: dict[int, list[dict[str, Any]]] = {
+        index: [] for index in video_indexes
+    }
+    for raw_frame in raw_frames:
+        if not isinstance(raw_frame, Mapping):
+            raise Native360NormalizationError(["native_360_probe_frame_invalid"])
+        index = raw_frame.get("stream_index")
+        if index not in video_indexes:
+            continue
+        if raw_frame.get("media_type") not in {None, "video"}:
+            raise Native360NormalizationError(["native_360_probe_frame_type_invalid"])
+        if "pts_time" not in raw_frame:
+            raise Native360NormalizationError(
+                [f"native_360_probe_frame_pts_missing:stream_{index}"]
+            )
+        pts = _probe_number(
+            raw_frame["pts_time"],
+            label=f"native_360_probe_frame_pts_invalid:stream_{index}",
+        )
+        dts_raw = raw_frame.get("pkt_dts_time")
+        dts = (
+            _probe_number(
+                dts_raw,
+                label=f"native_360_probe_frame_dts_invalid:stream_{index}",
+            )
+            if dts_raw is not None
+            else None
+        )
+        timing_by_stream[index].append(
+            {
+                "pts_seconds": pts,
+                "dts_seconds": dts,
+                "best_effort_timestamp_time": raw_frame.get(
+                    "best_effort_timestamp_time"
+                ),
+            }
+        )
+
+    receipt_streams: list[dict[str, Any]] = []
+    stream_metadata_keys = (
+        "profile",
+        "pix_fmt",
+        "color_range",
+        "color_space",
+        "color_transfer",
+        "color_primaries",
+        "start_time",
+        "duration",
+        "nb_frames",
+        "avg_frame_rate",
+        "r_frame_rate",
+        "disposition",
+        "tags",
+        "side_data_list",
+    )
+    for index, raw_stream in sorted(streams_by_index.items()):
+        media_type = str(raw_stream.get("codec_type") or "unknown")
+        timing = timing_by_stream.get(index, [])
+        if media_type == "video" and not timing:
+            raise Native360NormalizationError(
+                [f"native_360_probe_video_frames_missing:stream_{index}"]
+            )
+        metadata = {
+            key: raw_stream[key] for key in stream_metadata_keys if key in raw_stream
+        }
+        if media_type == "video":
+            metadata.update(
+                {
+                    "decoded_timestamp_field": "pts_time",
+                    "decoded_frame_timing_digest": canonical_digest(
+                        {"frames": timing}
+                    ),
+                    "all_decoded_dts_observed": all(
+                        row["dts_seconds"] is not None for row in timing
+                    ),
+                    "lens_identity_inferred": False,
+                }
+            )
+        receipt_streams.append(
+            {
+                "stream_index": index,
+                "media_type": media_type,
+                "codec_name": str(raw_stream.get("codec_name") or "unknown"),
+                "width": raw_stream.get("width"),
+                "height": raw_stream.get("height"),
+                "time_base": str(raw_stream.get("time_base") or "unknown"),
+                "pts_seconds": [row["pts_seconds"] for row in timing],
+                "metadata": metadata,
+            }
+        )
+
+    format_keys = (
+        "format_name",
+        "format_long_name",
+        "start_time",
+        "duration",
+        "size",
+        "bit_rate",
+        "tags",
+    )
+    format_metadata = {
+        key: raw_format[key] for key in format_keys if key in raw_format
+    }
+    format_metadata.update(
+        {
+            "source_relative_path": relative_path,
+            "source_size_bytes": size,
+            "ffprobe_version_output_digest": "sha256:"
+            + hashlib.sha256(version_output).hexdigest(),
+            "ffprobe_metadata_output_digest": "sha256:"
+            + hashlib.sha256(metadata_output).hexdigest(),
+            "ffprobe_timing_output_digest": "sha256:"
+            + hashlib.sha256(timing_output).hexdigest(),
+            "probe_behavior": {
+                "shell_used": False,
+                "decoded_frames_observed": True,
+                "lens_identity_inferred": False,
+                "calibration_inferred": False,
+                "imu_inferred": False,
+                "gyro_inferred": False,
+                "camera_trajectory_inferred": False,
+                "metric_scale_inferred": False,
+            },
+        }
+    )
+    if source.stat().st_size != size or _sha256_file(source) != source_digest:
+        raise Native360NormalizationError(["native_360_probe_source_changed"])
+    if _sha256_file(executable) != runtime_digest:
+        raise Native360NormalizationError(["native_360_probe_runtime_changed"])
+    return build_native_360_probe_receipt(
+        source_file_digest=source_digest,
+        runtime_identity=version_line,
+        runtime_digest=runtime_digest,
+        streams=receipt_streams,
+        format_metadata=format_metadata,
+    )
 
 
 def _validated_probe(value: Mapping[str, Any], *, source_digest: str) -> dict[str, Any]:
@@ -790,4 +1204,5 @@ __all__ = [
     "Native360NormalizationError",
     "build_native_360_probe_receipt",
     "normalize_native_360_capture",
+    "probe_native_360_source",
 ]

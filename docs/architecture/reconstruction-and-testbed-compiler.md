@@ -269,9 +269,14 @@ Isaac compatibility, physical success, or deployment readiness.
 ## Native dual-fisheye normalization
 
 `native_360_normalization.py` implements the source-preserving native lane. Its
-probe receipt binds exact source bytes, runtime, streams, dimensions, time
-bases, and monotonic PTS. The normalizer requires exact `.insv` filename, size,
-and digest declarations; deterministic segment order; explicit front/rear
+bounded local ffprobe executor hashes the exact source and runtime before and
+after execution, invokes no shell, limits time and output bytes, strictly parses
+container/stream facts and decoded-frame PTS/DTS, and emits the existing typed
+probe receipt. That receipt binds exact source bytes, runtime, streams,
+dimensions, time bases, and monotonic decoded PTS. It explicitly does not infer
+lens identity, calibration, IMU, gyro, trajectory, or metric scale. The
+normalizer requires exact `.insv` filename, size, and digest declarations;
+deterministic segment order; explicit front/rear
 stream bindings; calibrated per-lens intrinsics, distortion, masks and source
 provenance; a rigid nonzero-baseline rig transform; coordinate semantics; and
 explicit local rights, consent, privacy, retention, no-upload, and no-paid-
@@ -288,6 +293,13 @@ scale, reconstruction, geometry, collision, or Isaac result. The Task
 Evaluation Supervisor exposes it only through a typed, zero-cost, digest-bound
 registered tool backed by an injected trusted runtime; the agent receives no
 filesystem path or generic execution handle.
+
+The local executor has been exercised against a generated two-stream MOV
+container carrying an `.insv` filename: ffprobe 7.1.1 observed both 64x64 video
+streams and their three decoded timestamps. This proves executable container
+probing and receipt compilation only. It is not representative Insta360 media
+and proves no native stream topology, embedded metadata, calibration, or 360
+route qualification.
 
 ## Stitched equirectangular shared-center rig
 
