@@ -706,6 +706,32 @@ def _rigid_wrist_mount_from_initial_task_framing(
     }
 
 
+def _wrist_calibration_target_world_points(
+    *, calibration: Mapping[str, Any], placements: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Resolve the prospectively specified task entities used for wrist framing."""
+
+    available = {
+        "spraycan": placements.get("spraycan_translation_m"),
+        "tray": placements.get("tray_center_translation_m"),
+    }
+    requested_value = calibration.get("target_entity_ids")
+    if not isinstance(requested_value, list) or not requested_value:
+        raise ValueError("native_wrist_mount_target_entity_ids_missing")
+    requested = [str(value).strip() for value in requested_value]
+    if any(not value for value in requested) or len(set(requested)) != len(requested):
+        raise ValueError("native_wrist_mount_target_entity_ids_invalid")
+    unsupported = sorted(set(requested) - set(available))
+    if unsupported:
+        raise ValueError(
+            "native_wrist_mount_target_entity_ids_unsupported:" + ",".join(unsupported)
+        )
+    resolved = {entity_id: available[entity_id] for entity_id in requested}
+    if any(value is None for value in resolved.values()):
+        raise ValueError("native_wrist_mount_target_placement_missing")
+    return resolved
+
+
 def _summarize_required_entity_projections(
     *, view_id: str, projections_by_phase: Mapping[str, Mapping[str, Any]]
 ) -> dict[str, bool]:
@@ -1031,10 +1057,10 @@ def isaac_sim_6_backend(
         wrist_quaternion, wrist_mount_calibration = _rigid_wrist_mount_from_initial_task_framing(
             parent_to_world=hand_initial_matrix,
             mount_translation_parent=wrist["mount_translation_m"],
-            target_world_points={
-                "spraycan": placements["spraycan_translation_m"],
-                "tray": tray_center,
-            },
+            target_world_points=_wrist_calibration_target_world_points(
+                calibration=calibration,
+                placements=placements,
+            ),
             world_up=calibration["world_up"],
             camera_eye_world_offset=(0.0, 0.0, WRIST_CAMERA_WORLD_CLEARANCE_M),
         )

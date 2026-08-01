@@ -34,6 +34,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _synchronize_camera_to_rigid_link,
     _unified_world_pose_matrix,
     _world_pose_matrix_from_backend_pose,
+    _wrist_calibration_target_world_points,
     import_simulation_app,
     isaac_sim_6_backend,
     run_native_camera_canary,
@@ -709,6 +710,41 @@ def test_wrist_mount_is_calibrated_once_in_parent_coordinates_toward_task_centro
     assert np.linalg.norm(quaternion) == pytest.approx(1.0)
     assert evidence["target_entity_ids"] == ["spraycan", "tray"]
     assert evidence["per_frame_task_reaim_performed"] is False
+
+
+def test_wrist_mount_calibration_uses_only_prospectively_specified_targets() -> None:
+    placements = {
+        "spraycan_translation_m": [0.0, 0.075, 1.085],
+        "tray_center_translation_m": [-0.05, 0.32, 1.025],
+    }
+
+    resolved = _wrist_calibration_target_world_points(
+        calibration={"target_entity_ids": ["spraycan"]},
+        placements=placements,
+    )
+
+    assert resolved == {"spraycan": placements["spraycan_translation_m"]}
+
+
+@pytest.mark.parametrize(
+    ("target_entity_ids", "error"),
+    [
+        ([], "native_wrist_mount_target_entity_ids_missing"),
+        (["spraycan", "spraycan"], "native_wrist_mount_target_entity_ids_invalid"),
+        (["unknown"], "native_wrist_mount_target_entity_ids_unsupported:unknown"),
+    ],
+)
+def test_wrist_mount_calibration_rejects_invalid_prospective_targets(
+    target_entity_ids: list[str], error: str
+) -> None:
+    with pytest.raises(ValueError, match=error):
+        _wrist_calibration_target_world_points(
+            calibration={"target_entity_ids": target_entity_ids},
+            placements={
+                "spraycan_translation_m": [0.0, 0.075, 1.085],
+                "tray_center_translation_m": [-0.05, 0.32, 1.025],
+            },
+        )
 
 
 def test_wrist_mount_calibration_handles_world_up_parallel_to_gaze() -> None:
