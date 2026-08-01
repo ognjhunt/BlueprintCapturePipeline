@@ -1661,13 +1661,13 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health() -> Dict[str, Any]:
         manifest_path = _manifest_path()
+        authentication_configured = bool(_string(os.getenv(INTAKE_TOKEN_ENV)) or _client_secrets())
         return {
             "ok": True,
             "schema_version": INTAKE_SCHEMA_VERSION,
             "control_plane_ready": manifest_path.is_file(),
-            "authentication_configured": bool(
-                _string(os.getenv(INTAKE_TOKEN_ENV)) or _client_secrets()
-            ),
+            "authentication_configured": authentication_configured,
+            "token_configured": authentication_configured,
             "signed_intake_required": not _truthy(os.getenv(INTAKE_ALLOW_LEGACY_BEARER_ENV)),
             "legacy_bearer_enabled": _truthy(os.getenv(INTAKE_ALLOW_LEGACY_BEARER_ENV)),
             "shared_nonce_store_enabled": True,
