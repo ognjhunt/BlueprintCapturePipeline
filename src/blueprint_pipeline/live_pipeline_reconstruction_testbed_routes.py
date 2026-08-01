@@ -36,6 +36,9 @@ from .site_task_testbed_compiler import (
     write_testbed_decision_evidence_request,
     write_testbed_version,
 )
+from .semantic_testbed_evidence_bundle import (
+    load_semantic_testbed_evidence_bundle,
+)
 from .site_task_testbed_webapp_sync import (
     TESTBED_WEBAPP_SYNC_REQUIRED_ENV,
     sync_site_task_testbed_to_webapp,
@@ -369,6 +372,13 @@ def register_reconstruction_testbed_routes(
                 raise SiteTaskTestbedCompilerError(
                     ["decision_request_constraints:claim_types_reconstruction_plan_mismatch"]
                 )
+            semantic_bundle = load_semantic_testbed_evidence_bundle(
+                state_root=reconstruction_root(manifest_path),
+                plan_id=str(payload.get("reconstruction_plan_id") or ""),
+                execution_result_digest=str(
+                    payload.get("reconstruction_execution_result_digest") or ""
+                ),
+            )
             support = build_pipeline_owned_compilation_support(
                 testbed_id=str(payload.get("testbed_id") or ""),
                 version=str(payload.get("version") or ""),
@@ -391,10 +401,22 @@ def register_reconstruction_testbed_routes(
                 ],
                 simready_decision=support["simready_decision"],
                 robot_placement_result=support["robot_placement_result"],
-                artifact_references=support["artifact_references"],
+                artifact_references={
+                    **support["artifact_references"],
+                    **(
+                        _mapping(semantic_bundle.get("artifact_references"))
+                        if semantic_bundle is not None
+                        else {}
+                    ),
+                },
                 supported_condition_ranges=support["supported_condition_ranges"],
                 previous_testbed=None,
                 pipeline_owned_support_artifacts=support["pipeline_owned_support_artifacts"],
+                semantic_evidence_artifacts=(
+                    _mapping(semantic_bundle.get("semantic_evidence_artifacts"))
+                    if semantic_bundle is not None
+                    else None
+                ),
             )
             compilation = write_testbed_version(
                 output_root=maintained_testbed_root(manifest_path),

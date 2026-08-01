@@ -582,6 +582,23 @@ def _validate_semantic_evidence_artifacts(
     }
 
 
+def validate_semantic_evidence_artifacts(
+    value: Mapping[str, Any] | None,
+    *,
+    capture_digest: str,
+    reconstruction_results: Sequence[Mapping[str, Any]],
+    artifact_references: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Public fail-closed validator for Pipeline-owned semantic stage chains."""
+
+    return _validate_semantic_evidence_artifacts(
+        value,
+        capture_digest=capture_digest,
+        reconstruction_results=reconstruction_results,
+        artifact_references=artifact_references,
+    )
+
+
 def _validate_approved_task(value: Mapping[str, Any]) -> dict[str, Any]:
     task = _verified_digest(
         value,
@@ -1384,6 +1401,7 @@ __all__ = [
     "SiteTaskTestbedCompilerError",
     "compile_site_task_testbed",
     "build_pipeline_owned_compilation_support",
+    "validate_semantic_evidence_artifacts",
     "write_testbed_version",
     "write_testbed_decision_evidence_request",
 ]
