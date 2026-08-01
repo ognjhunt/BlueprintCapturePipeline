@@ -9,6 +9,9 @@ import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
+    CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+)
 from blueprint_pipeline.reconstruction_gpu_admission import (
     EXPECTED_RUNTIME_RESULT_SCHEMAS,
     PREFLIGHT_SCHEMA_VERSION,
@@ -17,6 +20,9 @@ from blueprint_pipeline.reconstruction_gpu_admission import (
     build_reconstruction_gpu_canary_admission,
     build_reconstruction_gpu_canary_request,
     collect_reconstruction_vast_preflight,
+)
+from blueprint_pipeline.reconstruction_isaac_image_release import (
+    build_reconstruction_isaac_image_release,
 )
 
 
@@ -27,6 +33,28 @@ D3 = "sha256:" + "3" * 64
 D4 = "sha256:" + "4" * 64
 D5 = "sha256:" + "5" * 64
 IMAGE = "registry.example/blueprint/reconstruction@sha256:" + "b" * 64
+
+
+def _image_release(*, image=IMAGE, source_commit=SHA):
+    return build_reconstruction_isaac_image_release(
+        image_manifest={
+            "schema_version": "isaac_worker_image_manifest_diagnostic.v2",
+            "status": "completed",
+            "resolved_digest_ref": image,
+            "runnable_platform": "linux/amd64",
+            "raw_secret_values_recorded": False,
+            "worker_build_identity": {
+                "status": "verified",
+                "blockers": [],
+                "source_commit": source_commit,
+                "source_dirty_patch_sha256": CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+                "worker_image_family": "isaac-eval-worker",
+                "isaac_sim_major_version": 6,
+                "identity_source": "immutable_registry_image_config_environment",
+            },
+        },
+        expected_source_commit=source_commit,
+    )
 
 
 def _request(**overrides):
@@ -243,11 +271,48 @@ def test_scientific_canaries_use_only_their_qualified_typed_adapters():
             request=request,
             execute=True,
             execution_adapter_qualified=True,
+            image_release=_image_release() if operation == "isaac_canary" else None,
         )
         assert execute["status"] == "execute_ready"
         assert execute["blockers"] == []
         assert execute["execution_adapter_qualified"] is True
         assert execute_bound["provider_mutation_authorized"] is True
+
+
+def test_isaac_execute_requires_exact_clean_image_release_binding():
+    request = _request(operation="isaac_canary")
+    missing, missing_bound = _build(
+        request=request,
+        execute=True,
+        execution_adapter_qualified=True,
+    )
+    assert "reconstruction_isaac_image_release_missing" in missing["blockers"]
+    assert missing_bound["provider_mutation_authorized"] is False
+
+    mismatch, mismatch_bound = _build(
+        request=request,
+        execute=True,
+        execution_adapter_qualified=True,
+        image_release=_image_release(
+            image="registry.example/blueprint/isaac@sha256:" + "c" * 64
+        ),
+    )
+    assert "reconstruction_isaac_image_release_digest_mismatch" in mismatch["blockers"]
+    assert mismatch_bound["provider_mutation_authorized"] is False
+
+    passed, passed_bound = _build(
+        request=request,
+        execute=True,
+        execution_adapter_qualified=True,
+        image_release=_image_release(),
+    )
+    assert passed["status"] == "execute_ready"
+    assert passed["isaac_image_release_digest"] == _image_release()[
+        "image_release_digest"
+    ]
+    assert passed_bound["isaac_image_release_digest"] == passed[
+        "isaac_image_release_digest"
+    ]
 
 def test_operation_request_input_and_result_schema_are_immutable_admission_inputs():
     request = _request()

@@ -652,6 +652,9 @@ def _run_reconstruction_gpu_canary(
         authority_id=args.reconstruction_authority_id,
         execute=args.execute,
         execution_adapter_qualified=args.execute,
+        image_release_path=getattr(
+            args, "reconstruction_isaac_image_release", None
+        ),
     )
     if not args.execute or admission.get("status") != "execute_ready":
         return admission
@@ -886,6 +889,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--provider-output-get-url-file")
     gpu.add_argument("--reconstruction-operation-bundle-receipt")
     gpu.add_argument("--reconstruction-operation-receipt-url-file")
+    gpu.add_argument("--reconstruction-isaac-image-release")
     gpu.add_argument("--provider-bootstrap-url-file")
     gpu.add_argument("--finetune-provider-bundle")
     gpu.add_argument("--openpi-input-bundle-receipt")

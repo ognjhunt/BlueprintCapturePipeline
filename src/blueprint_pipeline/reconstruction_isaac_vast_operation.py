@@ -199,6 +199,8 @@ def _validate_bindings(
             blockers.append(f"reconstruction_isaac_vast_{request_key}_mismatch")
     if request.get("bound_checkout_source_commit") != request.get("source_commit_sha"):
         blockers.append("reconstruction_isaac_vast_checkout_sha_mismatch")
+    if _DIGEST.fullmatch(str(request.get("isaac_image_release_digest") or "")) is None:
+        blockers.append("reconstruction_isaac_vast_image_release_unbound")
     if blockers:
         raise ReconstructionIsaacVastError(blockers)
     return request, receipt

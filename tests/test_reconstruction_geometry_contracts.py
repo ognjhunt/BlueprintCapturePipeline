@@ -978,6 +978,7 @@ def _isaac_bound_paid_request(request, receipt):
         "bound_preflight_digest": D[6],
         "bound_checkout_source_commit": request["source_commit_sha"],
         "bound_checkout_clean": True,
+        "isaac_image_release_digest": D[7],
         "provider_mutation_authorized": True,
     }
     value["bound_request_digest"] = canonical_digest(

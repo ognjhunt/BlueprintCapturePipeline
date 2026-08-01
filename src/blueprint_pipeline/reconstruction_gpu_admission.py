@@ -11,6 +11,10 @@ from typing import Any, Callable, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .reconstruction_isaac_image_release import (
+    ReconstructionIsaacImageReleaseError,
+    validate_reconstruction_isaac_image_release,
+)
 
 
 REQUEST_SCHEMA_VERSION = "reconstruction_gpu_canary_request.v1"
@@ -240,6 +244,7 @@ def build_reconstruction_gpu_canary_admission(
     authority_id: str | None,
     execute: bool,
     execution_adapter_qualified: bool = False,
+    image_release: Mapping[str, Any] | None = None,
     observed_now_epoch: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Bind a canary request to immutable inputs without allocating a machine."""
@@ -291,6 +296,25 @@ def build_reconstruction_gpu_canary_admission(
         blockers.append("reconstruction_gpu_trainer_self_grading_forbidden")
     if source.get("proof_effect") != "none":
         blockers.append("reconstruction_gpu_request_proof_effect_invalid")
+
+    image_release_digest: str | None = None
+    if source.get("operation") == "isaac_canary":
+        if image_release is None:
+            if execute:
+                blockers.append("reconstruction_isaac_image_release_missing")
+        else:
+            try:
+                release = validate_reconstruction_isaac_image_release(image_release)
+            except ReconstructionIsaacImageReleaseError:
+                blockers.append("reconstruction_isaac_image_release_invalid")
+            else:
+                image_release_digest = str(release["image_release_digest"])
+                if release.get("resolved_image_digest") != source.get(
+                    "worker_image_digest"
+                ):
+                    blockers.append("reconstruction_isaac_image_release_digest_mismatch")
+                if release.get("source_commit_sha") != source.get("source_commit_sha"):
+                    blockers.append("reconstruction_isaac_image_release_source_mismatch")
 
     if provider != "vast" or provider_snapshot.get("provider") != "vast":
         blockers.append("reconstruction_gpu_vast_first_required")
@@ -379,6 +403,7 @@ def build_reconstruction_gpu_canary_admission(
         "bound_preflight_digest": canonical_digest(provider_snapshot),
         "bound_checkout_source_commit": checkout_source_commit,
         "bound_checkout_clean": checkout_clean,
+        "isaac_image_release_digest": image_release_digest,
         "provider_mutation_authorized": bool(
             execute and operation_adapter_qualified and not blockers
         ),
@@ -407,6 +432,7 @@ def build_reconstruction_gpu_canary_admission(
             "expected_runtime_result_schema"
         ),
         "worker_image_digest": source.get("worker_image_digest"),
+        "isaac_image_release_digest": image_release_digest,
         "reconstruction_dataset_digest": source.get("reconstruction_dataset_digest"),
         "frozen_split_digest": source.get("frozen_split_digest"),
         "max_spend_usd": max_spend_usd,
@@ -456,7 +482,9 @@ def prepare_reconstruction_gpu_canary(
     authority_id: str | None,
     execute: bool,
     execution_adapter_qualified: bool = False,
+    image_release_path: str | Path | None = None,
 ) -> dict[str, Any]:
+    image_release = _read(image_release_path) if image_release_path else None
     admission, bound = build_reconstruction_gpu_canary_admission(
         request=_read(request_path),
         preflight=_read(preflight_path),
@@ -470,6 +498,7 @@ def prepare_reconstruction_gpu_canary(
         authority_id=authority_id,
         execute=execute,
         execution_adapter_qualified=execution_adapter_qualified,
+        image_release=image_release,
     )
     write_json(Path(admission_out), admission)
     write_json(Path(bound_request_out), bound)
