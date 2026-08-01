@@ -1018,19 +1018,25 @@ def isaac_sim_6_backend(
             "resolved_mount_translation_parent_m"
         ]
         # Isaac Sim 6 deprecates the legacy Camera frame-dict path in favor of
-        # CameraSensor.  Bind both RGB and semantic segmentation to the same
+        # CameraSensor. Bind both RGB and semantic segmentation to the same
         # render product so visibility evidence comes from the exact RGB view.
+        # The new API spells the color annotator ``rgb`` and declares resolution
+        # as (width, height), matching the deprecated Camera API.
+        def create_camera_sensor(view_id: str, camera_path: str) -> Any:
+            try:
+                return CameraSensor(
+                    RtxCamera(camera_path),
+                    resolution=(640, 480),
+                    annotators=["rgb", "semantic_segmentation"],
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"native_camera_rtx_sensor_setup_failed:{view_id}:{type(exc).__name__}"
+                ) from exc
+
         for view_id in (view for view in required_views if view != "wrist"):
-            camera_objects[view_id] = CameraSensor(
-                RtxCamera(camera_paths[view_id]),
-                resolution=(480, 640),
-                annotators=["rgba", "semantic_segmentation"],
-            )
-        camera_objects["wrist"] = CameraSensor(
-            RtxCamera(wrist_path),
-            resolution=(480, 640),
-            annotators=["rgba", "semantic_segmentation"],
-        )
+            camera_objects[view_id] = create_camera_sensor(view_id, camera_paths[view_id])
+        camera_objects["wrist"] = create_camera_sensor("wrist", wrist_path)
         _synchronize_camera_to_rigid_link(
             pose_view=wrist_pose_view,
             parent_to_world=hand_initial_matrix,
@@ -1099,10 +1105,13 @@ def isaac_sim_6_backend(
         def save_frames(phase: str) -> int:
             step = int(world.current_time_step_index)
             for view_id, camera in camera_objects.items():
-                rgba_frame = _camera_sensor_annotator_frame(sensor=camera, annotator="rgba")
-                rgba = np.asarray(rgba_frame["data"])
+                rgb_frame = _camera_sensor_annotator_frame(sensor=camera, annotator="rgb")
+                rgba = np.asarray(rgb_frame["data"])
                 if rgba.ndim != 3 or rgba.shape[0:2] != (480, 640):
-                    raise ValueError(f"native_camera_frame_shape_invalid:{view_id}:{rgba.shape}")
+                    shape_code = "x".join(str(int(value)) for value in rgba.shape)
+                    raise ValueError(
+                        f"native_camera_frame_shape_invalid:{view_id}:{shape_code}"
+                    )
                 path = output_dir / f"{view_id}_{phase}.png"
                 Image.fromarray(np.asarray(rgba[:, :, :3], dtype=np.uint8)).save(path)
                 frames[view_id][f"{phase}_frame_path"] = str(path)
@@ -1231,8 +1240,8 @@ def isaac_sim_6_backend(
                 "module": "isaacsim.sensors.experimental.rtx",
                 "authoring_class": "RtxCamera",
                 "runtime_class": "CameraSensor",
-                "annotators": ["rgba", "semantic_segmentation"],
-                "resolution_height_width": [480, 640],
+                "annotators": ["rgb", "semantic_segmentation"],
+                "resolution_width_height": [640, 480],
                 "shared_render_product_per_view": True,
             },
             "views": frames,

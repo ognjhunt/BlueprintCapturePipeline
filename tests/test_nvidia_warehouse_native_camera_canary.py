@@ -505,8 +505,13 @@ def test_backend_uses_isaac_6_experimental_rtx_camera_sensor_for_shared_annotato
     source = inspect.getsource(isaac_sim_6_backend)
 
     assert "from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera" in source
-    assert 'annotators=["rgba", "semantic_segmentation"]' in source
-    assert "resolution=(480, 640)" in source
+    assert 'annotators=["rgb", "semantic_segmentation"]' in source
+    assert "resolution=(640, 480)" in source
+    assert 'annotator="rgb"' in source
+    assert "native_camera_rtx_sensor_setup_failed" in source
+    assert "native_camera_frame_shape_invalid" in source
+    assert 'annotators=["rgba", "semantic_segmentation"]' not in source
+    assert "resolution=(480, 640)" not in source
     assert "camera.get_current_frame()" not in source
     assert "camera.add_semantic_segmentation_to_frame" not in source
 
