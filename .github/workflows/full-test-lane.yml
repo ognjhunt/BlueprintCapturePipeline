@@ -20,8 +20,6 @@ jobs:
     env:
       # Full-lane artifacts live only on the disposable GitHub runner and are
       # uploaded with the workflow's explicit retention policy.
-      BLUEPRINT_ARTIFACT_CACHE_ROOT: ${{ runner.temp }}/blueprint-artifact-cache
-      BLUEPRINT_EVIDENCE_ROOT: ${{ runner.temp }}/blueprint-evidence
       BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
       BLUEPRINT_ALLOW_LARGE_ARTIFACTS: "0"
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
@@ -30,6 +28,13 @@ jobs:
       CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
 
     steps:
+      - name: Bind ephemeral artifact roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "BLUEPRINT_ARTIFACT_CACHE_ROOT=${RUNNER_TEMP}/blueprint-artifact-cache" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_EVIDENCE_ROOT=${RUNNER_TEMP}/blueprint-evidence" >> "${GITHUB_ENV}"
+
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
