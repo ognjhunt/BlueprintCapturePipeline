@@ -291,6 +291,11 @@ used as blind confirmation.
   and settled-cost evidence; add a generic authorization-to-offer Vast machine
   exclusion; and bind one retry to immutable runtime SHA `f5b3e99a` with failed
   machine `27268` excluded;
+- `protocol_amendment_34_policy_query6_two_gpu_lane_reconciliation_v1.md` and
+  `compute_authorization_openpi_policy_query_6_retry_2.json` — preserve
+  retry-1's zero-mutation paid-lane block, carry the frozen two-GPU allowance
+  into atomic initial lane reconciliation without weakening stale reclaim, and
+  bind one new query-6 retry to immutable runtime SHA `8b2191c1`;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
@@ -300,8 +305,10 @@ The registered three-interaction engineering gate and interactions four and
 five are complete. WAM5 passed its three-view immediate reliability screen.
 The first policy-query-6 allocation failed before inference because Vast
 machine `27268` never left provider startup; it produced no policy output and
-was torn down with global provider zero. The next finite gate is one fresh
-query-6 retry from immutable runtime SHA `f5b3e99a`, with machine `27268`
-excluded and all signed transport, spend, watchdog, dry-run, teardown, and
-provider-zero controls repeated. Judges remain forbidden until the complete
-12-interaction episode and causal-control matrix pass.
+was torn down with global provider zero. Retry 1 then stopped before provider
+mutation because paid-lane reconciliation had not inherited the registered
+two-GPU allowance. The next finite gate is one fresh query-6 retry from
+immutable runtime SHA `8b2191c1`, with machine `27268` excluded and at most one
+already-registered unrelated GPU. All signed transport, spend, watchdog,
+dry-run, teardown, and provider-zero controls repeat. Judges remain forbidden
+until the complete 12-interaction episode and causal-control matrix pass.
