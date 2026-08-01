@@ -1298,6 +1298,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ),
                         output_secret_get_url_file=(args.openpi_output_secret_get_url_file),
                         provider_name=args.openpi_provider,
+                        compute_authorization_path=args.provider_launch_request,
                     )
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))

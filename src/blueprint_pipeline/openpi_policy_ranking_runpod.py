@@ -8,10 +8,11 @@ protected-main checks cannot be bypassed.
 
 from __future__ import annotations
 
-import json
 import hashlib
 import io
+import json
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -91,6 +92,10 @@ MAX_OUTPUT_ARCHIVE_BYTES = 2 * 1024**3
 MAX_OUTPUT_ARCHIVE_MEMBERS = 50_000
 MAX_OUTPUT_UNCOMPRESSED_BYTES = 12 * 1024**3
 MAX_CONSECUTIVE_TRANSIENT_OUTPUT_ERRORS = 3
+CURRENT_REFERENCE_AUTHORIZATION_SCHEMA = (
+    "policy_ranking_openpi_current_reference_compute_authorization.v1"
+)
+AUTHORIZATION_CONSUMPTION_ROOT = Path.home() / ".blueprint-spend-authority" / "consumed"
 
 
 def _read_object(path: str | Path) -> dict[str, Any]:
@@ -98,6 +103,145 @@ def _read_object(path: str | Path) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"expected_json_object:{path}")
     return dict(value)
+
+
+def _current_reference_authorization_blockers(
+    authorization: Mapping[str, Any],
+    *,
+    input_bundle: Mapping[str, Any],
+    expected_source_commit: str,
+) -> list[str]:
+    blockers: list[str] = []
+    authorization_id = str(authorization.get("authorization_id") or "")
+    manifest = input_bundle.get("manifest")
+    manifest = manifest if isinstance(manifest, Mapping) else {}
+    runtime_source = manifest.get("runtime_source")
+    runtime_source = runtime_source if isinstance(runtime_source, Mapping) else {}
+    policy_ids = manifest.get("policy_ids")
+    policy_ids = policy_ids if isinstance(policy_ids, list) else []
+    if authorization.get("schema_version") != CURRENT_REFERENCE_AUTHORIZATION_SCHEMA:
+        blockers.append("openpi_current_reference_authorization_schema_invalid")
+    if authorization.get("experiment_id") != (
+        "policy_ranking_real_policy_closed_loop_confirmation_20260730"
+    ):
+        blockers.append("openpi_current_reference_authorization_experiment_invalid")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{15,159}", authorization_id):
+        blockers.append("openpi_current_reference_authorization_id_invalid")
+    if (
+        authorization.get("paid_mutation_authorized") is not True
+        or authorization.get("single_use_consumption_required") is not True
+        or authorization.get("maximum_provider_allocations") != 1
+        or authorization.get("maximum_policy_requests") != 1
+    ):
+        blockers.append("openpi_current_reference_authorization_limits_invalid")
+    if (
+        authorization.get("runtime_source_commit") != expected_source_commit
+        or runtime_source.get("commit") != expected_source_commit
+    ):
+        blockers.append("openpi_current_reference_authorization_runtime_mismatch")
+    if authorization.get("input_bundle_sha256") != input_bundle.get("bundle_sha256"):
+        blockers.append("openpi_current_reference_authorization_input_mismatch")
+    policy_id = str(authorization.get("policy_id") or "")
+    if len(policy_ids) == 1 and policy_id != str(policy_ids[0]):
+        blockers.append("openpi_current_reference_authorization_policy_mismatch")
+    query_index = authorization.get("query_index")
+    if isinstance(query_index, bool) or not isinstance(query_index, int) or query_index < 0:
+        blockers.append("openpi_current_reference_authorization_query_index_invalid")
+    if (
+        authorization.get("prior_allocation_closed_provider_zero") is not True
+        or authorization.get("physical_robot_endpoint_access_allowed") is not False
+        or authorization.get("evaluator_or_vlm_spend_authorized_by_this_record") is not False
+    ):
+        blockers.append("openpi_current_reference_authorization_boundary_invalid")
+    return sorted(set(blockers))
+
+
+def _consume_current_reference_authorization_once(
+    authorization: Mapping[str, Any],
+    *,
+    expected_source_commit: str,
+    input_bundle: Mapping[str, Any],
+) -> dict[str, Any]:
+    blockers = _current_reference_authorization_blockers(
+        authorization,
+        input_bundle=input_bundle,
+        expected_source_commit=expected_source_commit,
+    )
+    if blockers:
+        return {"status": "blocked", "blockers": blockers}
+    authorization_id = str(authorization["authorization_id"])
+    root = AUTHORIZATION_CONSUMPTION_ROOT
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root_mode = root.stat().st_mode
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": ["openpi_authorization_consumption_root_unavailable"],
+        }
+    if root_mode & 0o077:
+        return {
+            "status": "blocked",
+            "blockers": ["openpi_authorization_consumption_root_insecure"],
+        }
+    record_path = root / f"{authorization_id}.json"
+    record = {
+        "schema_version": "openpi_current_reference_authorization_consumption.v1",
+        "authorization_id": authorization_id,
+        "authorization_sha256": hashlib.sha256(
+            (json.dumps(dict(authorization), sort_keys=True, separators=(",", ":")) + "\n").encode(
+                "utf-8"
+            )
+        ).hexdigest(),
+        "experiment_id": authorization["experiment_id"],
+        "source_commit": expected_source_commit,
+        "input_bundle_sha256": input_bundle["bundle_sha256"],
+        "consumed_at_epoch": time.time(),
+        "maximum_provider_allocations": 1,
+        "maximum_policy_requests": 1,
+    }
+    record_bytes = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "utf-8"
+    )
+    record_sha256 = hashlib.sha256(record_bytes).hexdigest()
+    temporary_path = root / f".{authorization_id}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+    try:
+        descriptor = os.open(temporary_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": ["openpi_authorization_consumption_write_failed"],
+            "authorization_id": authorization_id,
+        }
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(record_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary_path, record_path)
+    except FileExistsError:
+        return {
+            "status": "blocked",
+            "blockers": ["openpi_current_reference_authorization_already_consumed"],
+            "authorization_id": authorization_id,
+        }
+    except OSError:
+        return {
+            "status": "blocked",
+            "blockers": ["openpi_authorization_consumption_write_failed"],
+            "authorization_id": authorization_id,
+        }
+    finally:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {
+        "status": "consumed",
+        "authorization_id": authorization_id,
+        "consumption_record_sha256": record_sha256,
+        "record_location_disclosed": False,
+    }
 
 
 def _read_private_https_url(path: str | Path, *, field: str) -> str:
@@ -284,18 +428,15 @@ def _validate_output_archive(archive_bytes: bytes) -> dict[str, Any]:
                             != hashlib.sha256(action_bytes).hexdigest()
                             or receipt.get("physical_outcome_accessed") is not False
                             or receipt.get("wam_called") is not False
-                            or receipt_manifest_sha256
-                            != canonical_sha256(receipt_digest_payload)
+                            or receipt_manifest_sha256 != canonical_sha256(receipt_digest_payload)
                             or action.shape != expected_shape
                             or action.dtype != np.float64
                             or not np.isfinite(action).all()
-                            or result_row.get("artifact_path_mode")
-                            != "result_root_relative"
+                            or result_row.get("artifact_path_mode") != "result_root_relative"
                             or result_row.get("receipt_path") != receipt_name
                             or result_row.get("receipt_file_sha256")
                             != hashlib.sha256(receipt_bytes).hexdigest()
-                            or result_row.get("receipt_manifest_sha256")
-                            != receipt_manifest_sha256
+                            or result_row.get("receipt_manifest_sha256") != receipt_manifest_sha256
                             or result_row.get("native_action_shape") != list(expected_shape)
                             or result_row.get("native_action_file_sha256")
                             != hashlib.sha256(action_bytes).hexdigest()
@@ -551,10 +692,14 @@ def _provider_runtime_inspection(provider: Any, pod_id: str) -> dict[str, Any]:
             "error_type": type(exc).__name__,
             "raw_secret_values_recorded": False,
         }
-    return dict(value) if isinstance(value, Mapping) else {
-        "status": "invalid_response",
-        "raw_secret_values_recorded": False,
-    }
+    return (
+        dict(value)
+        if isinstance(value, Mapping)
+        else {
+            "status": "invalid_response",
+            "raw_secret_values_recorded": False,
+        }
+    )
 
 
 def _close_provider_without_output(
@@ -682,9 +827,11 @@ def _monitor_openpi_output_and_teardown(
                 "raw_secret_values_recorded": False,
             }
         inspection = _provider_runtime_inspection(provider, pod_id)
-        actual_status = str(
-            inspection.get("actual_status") or inspection.get("desiredStatus") or ""
-        ).strip().lower()
+        actual_status = (
+            str(inspection.get("actual_status") or inspection.get("desiredStatus") or "")
+            .strip()
+            .lower()
+        )
         provider_absent = inspection.get("provider_absence_confirmed") is True
         terminal = provider_absent or actual_status in _PROVIDER_TERMINAL_STATES
         runtime_ready = bool(
@@ -1244,6 +1391,7 @@ def run_openpi_policy_ranking_campaign(
     campaign_wall_cap_seconds: int = 36_000,
     output_secret_get_url_file: str | Path | None = None,
     provider_name: str = "vast",
+    compute_authorization_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate or launch one frozen OpenPI ranking campaign.
 
@@ -1265,6 +1413,30 @@ def run_openpi_policy_ranking_campaign(
     release = _read_object(release_evidence)
     input_bundle = _read_object(input_bundle_receipt)
     preflight = _read_object(preflight_bundle)
+    current_reference_authorization: dict[str, Any] = {}
+    if input_bundle.get("schema_version") == CURRENT_REFERENCE_INPUT_RECEIPT_SCHEMA_VERSION:
+        if compute_authorization_path is None:
+            authorization_blockers = ["openpi_current_reference_authorization_missing"]
+        else:
+            try:
+                current_reference_authorization = _read_object(compute_authorization_path)
+            except (OSError, ValueError, json.JSONDecodeError):
+                authorization_blockers = ["openpi_current_reference_authorization_unreadable"]
+            else:
+                authorization_blockers = _current_reference_authorization_blockers(
+                    current_reference_authorization,
+                    input_bundle=input_bundle,
+                    expected_source_commit=expected_source_commit,
+                )
+        if authorization_blockers:
+            result = {
+                "status": "blocked",
+                "blockers": authorization_blockers,
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(admission_out), result)
+            write_json(Path(adapter_output), result)
+            return result
     resolved_provider = str(provider_name or "vast").strip().lower()
     if resolved_provider not in {"vast", "runpod"}:
         result = {
@@ -1556,6 +1728,46 @@ def run_openpi_policy_ranking_campaign(
         "campaign_budget": budget_context,
     }
     _write_private_json(receipt_path, receipt)
+    authorization_consumption: dict[str, Any] = {"status": "not_required"}
+    if current_reference_authorization:
+        authorization_consumption = _consume_current_reference_authorization_once(
+            current_reference_authorization,
+            expected_source_commit=expected_source_commit,
+            input_bundle=input_bundle,
+        )
+        if authorization_consumption.get("status") != "consumed":
+            cancel_pending_teardown(
+                pending["path"],
+                reason="compute_authorization_not_consumed_no_mutation",
+                evidence={"provider_mutations_performed": 0},
+            )
+            release_paid_provider_lane_lease(
+                lease,
+                reason="compute_authorization_not_consumed_no_mutation",
+                provider_mutation_started=False,
+            )
+            _stop_watchdog_after_provider_zero(watchdog)
+            budget.settle(
+                reservation_id=pod_name,
+                charged_gpu_seconds=0,
+                charged_usd=0.0,
+                outcome="compute_authorization_not_consumed_no_mutation",
+            )
+            receipt_path.unlink(missing_ok=True)
+            result = {
+                **prepared,
+                "status": "blocked",
+                "blockers": list(authorization_consumption.get("blockers") or []),
+                "authorization_consumption": authorization_consumption,
+                "provider_mutations_performed": 0,
+            }
+            write_json(Path(adapter_output), result)
+            return result
+        prepared["authorization_consumption"] = authorization_consumption
+        write_json(Path(admission_out), prepared)
+        bound_request = dict(prepared["bound_request"])
+        bound_request["authorization_consumption"] = authorization_consumption
+        write_json(Path(bound_request_out), bound_request)
     previous = {
         key: os.environ.get(key)
         for key in (
@@ -1634,6 +1846,7 @@ def run_openpi_policy_ranking_campaign(
             "cleanup_handoff": cleanup_handoff,
             "continuing_spend": cleanup_handoff["continuing_spend"],
             "raw_secret_values_recorded": False,
+            "authorization_consumption": authorization_consumption,
         }
         write_json(Path(adapter_output), result)
         return result
@@ -1673,6 +1886,7 @@ def run_openpi_policy_ranking_campaign(
             "monitor": monitor,
             "continuing_spend": monitor.get("continuing_spend") is True,
             "raw_secret_values_recorded": False,
+            "authorization_consumption": authorization_consumption,
         }
         write_json(Path(adapter_output), result)
         return result
@@ -1706,6 +1920,7 @@ def run_openpi_policy_ranking_campaign(
         "immediate_cleanup": cleanup,
         "cleanup_handoff": cleanup_handoff,
         "continuing_spend": cleanup_handoff["continuing_spend"],
+        "authorization_consumption": authorization_consumption,
     }
     write_json(Path(adapter_output), result)
     return result

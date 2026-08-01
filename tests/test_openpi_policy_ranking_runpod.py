@@ -363,8 +363,8 @@ def test_monitor_does_not_timeout_healthy_runpod_runtime(tmp_path: Path, monkeyp
     def request(*_args, **_kwargs):
         nonlocal attempts
         attempts += 1
-        return Response(status=404, body=b"") if attempts == 1 else Response(
-            status=200, body=archive
+        return (
+            Response(status=404, body=b"") if attempts == 1 else Response(status=200, body=archive)
         )
 
     monkeypatch.setattr(runpod_module, "safe_http_request", request)
@@ -621,9 +621,7 @@ def test_current_reference_terminal_output_requires_all_three_native_actions() -
                 "status": "completed",
                 "artifact_path_mode": "result_root_relative",
                 "receipt_path": receipt_name,
-                "receipt_file_sha256": runpod_module.hashlib.sha256(
-                    receipt_bytes
-                ).hexdigest(),
+                "receipt_file_sha256": runpod_module.hashlib.sha256(receipt_bytes).hexdigest(),
                 "receipt_manifest_sha256": receipt["manifest_sha256"],
                 "native_action_shape": [rows, 8],
                 "native_action_file_sha256": action_sha256,
@@ -659,9 +657,7 @@ def test_current_reference_terminal_output_requires_all_three_native_actions() -
         "frozen_policy_order": ["pi05_droid"],
         "query_mode": "same_candidate_policy_requery",
         "same_candidate_policy_id": "pi05_droid",
-        "policy_results": [
-            row for row in policy_results if row["policy_id"] == "pi05_droid"
-        ],
+        "policy_results": [row for row in policy_results if row["policy_id"] == "pi05_droid"],
     }
     requery_manifest["manifest_sha256"] = canonical_sha256(
         {key: value for key, value in requery_manifest.items() if key != "manifest_sha256"}
@@ -790,6 +786,129 @@ def test_vast_launch_request_routes_current_canary_receipt_to_canary_mode(
     )
 
     assert request["create_payload"]["env"][EXECUTION_MODE_ENV] == ("new_site_diagnostic_canary")
+
+
+def _current_reference_authorization(*, runtime_commit: str, bundle_sha256: str) -> dict:
+    return {
+        "schema_version": "policy_ranking_openpi_current_reference_compute_authorization.v1",
+        "experiment_id": "policy_ranking_real_policy_closed_loop_confirmation_20260730",
+        "authorization_id": "policy-ranking-real-policy-closed-loop-query-test-1",
+        "policy_id": "pi05_droid",
+        "query_index": 5,
+        "maximum_provider_allocations": 1,
+        "maximum_policy_requests": 1,
+        "single_use_consumption_required": True,
+        "paid_mutation_authorized": True,
+        "runtime_source_commit": runtime_commit,
+        "input_bundle_sha256": bundle_sha256,
+        "prior_allocation_closed_provider_zero": True,
+        "physical_robot_endpoint_access_allowed": False,
+        "evaluator_or_vlm_spend_authorized_by_this_record": False,
+    }
+
+
+def test_current_reference_authorization_is_atomically_single_use(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_commit = "d" * 40
+    bundle = _current_reference_bundle(
+        image_source_commit="a" * 40,
+        runtime_commit=runtime_commit,
+    )
+    bundle["bundle_sha256"] = "e" * 64
+    bundle["manifest"]["policy_ids"] = ["pi05_droid"]
+    authorization = _current_reference_authorization(
+        runtime_commit=runtime_commit,
+        bundle_sha256=str(bundle["bundle_sha256"]),
+    )
+    monkeypatch.setattr(
+        runpod_module,
+        "AUTHORIZATION_CONSUMPTION_ROOT",
+        tmp_path / "consumed",
+    )
+
+    first = runpod_module._consume_current_reference_authorization_once(
+        authorization,
+        expected_source_commit=runtime_commit,
+        input_bundle=bundle,
+    )
+    second = runpod_module._consume_current_reference_authorization_once(
+        authorization,
+        expected_source_commit=runtime_commit,
+        input_bundle=bundle,
+    )
+
+    assert first["status"] == "consumed"
+    assert first["record_location_disclosed"] is False
+    assert second["status"] == "blocked"
+    assert second["blockers"] == ["openpi_current_reference_authorization_already_consumed"]
+    record = next((tmp_path / "consumed").glob("*.json"))
+    assert oct(record.stat().st_mode & 0o777) == "0o600"
+
+
+def test_current_reference_authorization_binds_runtime_policy_and_input() -> None:
+    runtime_commit = "d" * 40
+    bundle = _current_reference_bundle(
+        image_source_commit="a" * 40,
+        runtime_commit=runtime_commit,
+    )
+    bundle["bundle_sha256"] = "e" * 64
+    bundle["manifest"]["policy_ids"] = ["pi05_droid"]
+    authorization = _current_reference_authorization(
+        runtime_commit="f" * 40,
+        bundle_sha256="0" * 64,
+    )
+    authorization["policy_id"] = "pi0_droid"
+
+    blockers = runpod_module._current_reference_authorization_blockers(
+        authorization,
+        input_bundle=bundle,
+        expected_source_commit=runtime_commit,
+    )
+
+    assert blockers == [
+        "openpi_current_reference_authorization_input_mismatch",
+        "openpi_current_reference_authorization_policy_mismatch",
+        "openpi_current_reference_authorization_runtime_mismatch",
+    ]
+
+
+def test_current_reference_campaign_blocks_before_provider_without_authorization(
+    tmp_path: Path,
+) -> None:
+    release, _bundle, preflight, _spend = _inputs()
+    runtime_commit = "d" * 40
+    bundle = _current_reference_bundle(
+        image_source_commit=str(release["source_commit"]),
+        runtime_commit=runtime_commit,
+    )
+    bundle["bundle_sha256"] = "e" * 64
+    paths = {}
+    for name, value in (("release", release), ("bundle", bundle), ("preflight", preflight)):
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        paths[name] = path
+
+    result = run_openpi_policy_ranking_campaign(
+        release_evidence=paths["release"],
+        input_bundle_receipt=paths["bundle"],
+        preflight_bundle=paths["preflight"],
+        admission_out=tmp_path / "admission.json",
+        bound_request_out=tmp_path / "bound.json",
+        adapter_output=tmp_path / "adapter.json",
+        input_secret_url_file=tmp_path / "unused-input-url",
+        output_secret_put_url_file=tmp_path / "unused-output-url",
+        pod_name="blueprint-groot-oscar-canary-openpi-ranking-auth-missing",
+        expected_source_commit=runtime_commit,
+        execute=False,
+        hard_ttl_seconds=3600,
+        max_spend_usd=1.0,
+        provider_name="runpod",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["openpi_current_reference_authorization_missing"]
+    assert result["provider_mutations_performed"] == 0
 
 
 def test_openpi_campaign_dry_run_stays_mutation_free(tmp_path: Path) -> None:
