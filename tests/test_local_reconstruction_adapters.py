@@ -341,6 +341,21 @@ def test_arkit_metric_scaffold_requires_exact_v32_bindings(
     assert result["asset_references"]["arkit_reconstruction_dataset_export"][
         "digest"
     ].startswith("sha256:")
+    receipt_path = next((tmp_path / "derived").glob("**/arkit_raw_contract_validation.json"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/arkit_raw_contract_validation.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    Draft202012Validator(schema).validate(receipt)
+    assert receipt["decoded_pts_verified"] is True
+    assert receipt["retention_mapping_verified"] is True
+    assert receipt["raw_capture_remains_authoritative"] is True
+    assert receipt["metric_scale_proven"] is False
+    assert receipt["collision_geometry_proven"] is False
+    assert receipt["isaac_compatibility_proven"] is False
     assert result["claim_ceiling"]["complete_geometry"] is False
     assert result["claim_ceiling"]["collision_geometry"] is False
     assert result["claim_ceiling"]["physical_task_success"] is False

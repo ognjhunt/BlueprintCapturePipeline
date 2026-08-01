@@ -316,6 +316,10 @@ def test_registered_arkit_scaffold_cannot_promote_sensor_scale(tmp_path: Path) -
                     "uri": "local://export",
                     "digest": "sha256:" + "3" * 64,
                 },
+                "arkit_raw_contract_validation": {
+                    "uri": "local://raw-contract-validation",
+                    "digest": "sha256:" + "4" * 64,
+                },
             },
             "coverage_map": {},
             "observed_regions": [],
@@ -326,6 +330,7 @@ def test_registered_arkit_scaffold_cannot_promote_sensor_scale(tmp_path: Path) -
                 "decoded_pts_verified": True,
                 "pose_refinement_executed": False,
                 "independent_metric_scale_validation_passed": False,
+                "arkit_raw_contract_validation_digest": "sha256:" + "5" * 64,
             },
             "cost_usd": 0.0,
             "duration_seconds": 0.0,

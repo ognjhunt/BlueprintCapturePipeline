@@ -24,6 +24,7 @@ import numpy as np
 from PIL import Image
 
 from .arkit_depth_surface_compiler import CAMERA_CONVENTIONS
+from .arkit_raw_contract_validation import build_arkit_raw_contract_validation
 from .arkit_reconstruction_dataset import (
     ArkitReconstructionDatasetError,
     compile_arkit_reconstruction_dataset,
@@ -1214,6 +1215,7 @@ class LocalArkitMetricScaffoldAdapter:
             ),
             label="candidate_reconstruction_dataset",
         )
+        source_commit_sha = _source_commit_sha()
         try:
             arkit_export = compile_arkit_reconstruction_dataset(
                 output_root=artifact_root / "reconstruction_dataset_export",
@@ -1225,13 +1227,37 @@ class LocalArkitMetricScaffoldAdapter:
                 metric_scaffold=scaffold,
                 metric_scaffold_digest=scaffold_digest,
                 implementation_digest=method_profile["implementation_digest"],
-                source_commit_sha=_source_commit_sha(),
+                source_commit_sha=source_commit_sha,
                 authority_used=rights_and_retention,
             )
         except ArkitReconstructionDatasetError as exc:
             raise LocalReconstructionAdapterError(
                 [f"arkit_reconstruction_export:{code}" for code in exc.codes]
             ) from exc
+        raw_contract_validation = build_arkit_raw_contract_validation(
+            intake_id=intake_id,
+            source_capture_digest=capture_digest,
+            source_artifact_digests=scaffold["source_artifact_digests"],
+            implementation_digest=method_profile["implementation_digest"],
+            source_commit_sha=source_commit_sha,
+            runtime_identity=runtime_identity,
+            runtime_digest=runtime_digest,
+            frozen_split_digest=arkit_export["frozen_split_digest"],
+            metric_scaffold_digest=scaffold_digest,
+            reconstruction_dataset_export_digest=arkit_export[
+                "arkit_reconstruction_dataset_export_digest"
+            ],
+            coordinate_frame_declaration=scaffold["coordinate_system"],
+            retained_frame_count=len(sync_rows),
+            dropped_attempt_count=len(dropped),
+            depth_confidence_pair_count=len(depth_pairs),
+            authority_used=rights_and_retention,
+            timestamp=arkit_export["timestamp"],
+        )
+        raw_contract_path = artifact_root / "arkit_raw_contract_validation.json"
+        raw_contract_file_digest = _write_immutable_json(
+            raw_contract_path, raw_contract_validation
+        )
         coverage = round(len(depth_pairs) / len(sync_rows), 9)
         result_binding_digest = canonical_digest(
             {
@@ -1239,6 +1265,9 @@ class LocalArkitMetricScaffoldAdapter:
                 "decoded_observation_digest": decoded_result["asset_references"][
                     "decoded_observation_index"
                 ]["digest"],
+                "arkit_raw_contract_validation_digest": raw_contract_validation[
+                    "arkit_raw_contract_validation_digest"
+                ],
             }
         )
         return normalize_reconstruction_result(
@@ -1282,6 +1311,16 @@ class LocalArkitMetricScaffoldAdapter:
                             "arkit_reconstruction_dataset_export_digest"
                         ],
                     },
+                    "arkit_raw_contract_validation": {
+                        "uri": (
+                            "local-reconstruction://"
+                            f"{raw_contract_validation['arkit_raw_contract_validation_digest'][7:]}"
+                        ),
+                        "digest": raw_contract_file_digest,
+                        "relative_path": raw_contract_path.relative_to(
+                            output_root.expanduser().resolve()
+                        ).as_posix(),
+                    },
                 },
                 "coverage_map": {
                     "calibrated_frame_fraction": 1.0,
@@ -1313,6 +1352,9 @@ class LocalArkitMetricScaffoldAdapter:
                     "independent_metric_scale_validation_passed": False,
                     "arkit_reconstruction_dataset_export_digest": arkit_export[
                         "arkit_reconstruction_dataset_export_digest"
+                    ],
+                    "arkit_raw_contract_validation_digest": raw_contract_validation[
+                        "arkit_raw_contract_validation_digest"
                     ],
                     "pose_refinement_executed": False,
                 },

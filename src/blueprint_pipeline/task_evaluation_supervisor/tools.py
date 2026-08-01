@@ -199,6 +199,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "reconstruction_result_digest": {"type": "string"},
             "metric_scaffold_digest": {"type": "string"},
             "arkit_export_digest": {"type": "string"},
+            "arkit_raw_contract_validation_digest": {"type": "string"},
             "decoded_pts_verified": {"const": True},
             "raw_arkit_poses_modified": {"const": False},
             "metric_scale_independently_validated": {"const": False},
@@ -1842,10 +1843,19 @@ def _compile_arkit_metric_scaffold(
     export_reference = (
         assets.get("arkit_reconstruction_dataset_export") if isinstance(assets, Mapping) else None
     )
+    raw_contract_reference = (
+        assets.get("arkit_raw_contract_validation") if isinstance(assets, Mapping) else None
+    )
     if (
         result.get("method_id") != "local_arkit_metric_scaffold"
         or not isinstance(metric_reference, Mapping)
         or not isinstance(export_reference, Mapping)
+        or not isinstance(raw_contract_reference, Mapping)
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(metrics.get("arkit_raw_contract_validation_digest") or ""),
+        )
+        is None
         or not isinstance(metrics, Mapping)
         or metrics.get("decoded_pts_verified") is not True
         or metrics.get("pose_refinement_executed") is not False
@@ -1871,6 +1881,9 @@ def _compile_arkit_metric_scaffold(
         "reconstruction_result_digest": result_digest,
         "metric_scaffold_digest": metric_reference["digest"],
         "arkit_export_digest": export_reference["digest"],
+        "arkit_raw_contract_validation_digest": metrics[
+            "arkit_raw_contract_validation_digest"
+        ],
         "decoded_pts_verified": True,
         "raw_arkit_poses_modified": False,
         "metric_scale_independently_validated": False,

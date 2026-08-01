@@ -223,6 +223,15 @@ implementations stay in trusted runtime state; the agent sees only the capture
 route digest or export-request digest. The tool observations cannot change
 proof state, calibration, raw poses, or split membership.
 
+After the trusted scaffold adapter validates the exact V3.2 manifest, decoded
+PTS, encoder-attempt retention ledger, synchronized ARKit frames and poses,
+intrinsics, coordinate declaration, and depth/confidence presence, it emits a
+separate `arkit_raw_contract_validation.v1` receipt. The receipt binds every
+source artifact digest, the frozen split, scaffold and export, and is surfaced
+by the registered tool. Its ceiling is calibrated camera trajectory only:
+sensor-declared meters are not independent metric-scale proof, and geometry,
+collision, Isaac, physical success, and deployment booleans remain false.
+
 The pose-refinement request remains deterministically blocked because a
 threshold must be supplied by a later frozen
 `pose_refinement_execution_request.v1`; the export itself cannot choose one.
