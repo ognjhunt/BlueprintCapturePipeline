@@ -3280,6 +3280,7 @@ def _prelaunch_inventory_guard(
     job_dir: Path,
     generated_at: str,
     api_key: str,
+    maximum_global_live_instances: int = 0,
 ) -> dict[str, Any]:
     blockers: list[str] = []
     active_instances: list[dict[str, Any]] = []
@@ -3310,8 +3311,17 @@ def _prelaunch_inventory_guard(
             query_error = f"{type(exc).__name__}:{str(exc)[:300]}"
             blockers.append("vast_prelaunch_inventory_query_failed")
             break
-    if active_instances:
-        blockers.append("active_vast_instances_detected_before_new_launch")
+    frozen_global_limit = max(0, int(maximum_global_live_instances))
+    maximum_existing_live_instances = max(frozen_global_limit - 1, 0)
+    existing_inventory_within_global_limit = (
+        not query_error and len(active_instances) <= maximum_existing_live_instances
+    )
+    if not existing_inventory_within_global_limit and not blockers:
+        blockers.append(
+            "vast_prelaunch_global_live_instance_limit_reached"
+            if frozen_global_limit > 1
+            else "active_vast_instances_detected_before_new_launch"
+        )
     manifest = {
         "schema_version": "vast_prelaunch_inventory_guard.v1",
         "generated_at": generated_at,
@@ -3321,6 +3331,9 @@ def _prelaunch_inventory_guard(
         "active_instance_count": len(active_instances),
         "active_instances": active_instances,
         "continuing_spend_detected_before_new_launch": bool(active_instances),
+        "maximum_global_live_instances": frozen_global_limit,
+        "maximum_existing_live_instances": maximum_existing_live_instances,
+        "existing_inventory_within_global_limit": existing_inventory_within_global_limit,
         "query_error": query_error,
         "query_attempt_count": query_attempt_count,
         "blockers": blockers,
@@ -4174,6 +4187,7 @@ def run_vast_provider_adapter(
     resolved_prefer_isaac_rt = (
         provider_bundle_kind == "isaac" if prefer_isaac_rt is None else bool(prefer_isaac_rt)
     )
+    resolved_max_global_live_instances = _env_int(VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV, 0)
     avoidlist = _load_machine_avoidlist(resolved_machine_avoidlist_path)
     excluded_machine_ids = _avoidlist_machine_ids(resolved_machine_avoidlist_path)
     resolved_allowed_machine_ids = _machine_id_set(allowed_machine_ids)
@@ -5023,6 +5037,7 @@ def run_vast_provider_adapter(
         job_dir=resolved_job_dir,
         generated_at=generated_at,
         api_key=api_key,
+        maximum_global_live_instances=resolved_max_global_live_instances,
     )
     prelaunch_inventory_blockers = _string_list(prelaunch_inventory_guard.get("blockers"))
     base_result.update(
@@ -5534,7 +5549,6 @@ def run_vast_provider_adapter(
             startup_timeout_seconds=startup_timeout_seconds,
             max_live_minutes=max_live_minutes,
         )
-        resolved_max_global_live_instances = _env_int(VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV, 0)
         onstart_logs = _request_logs_and_fetch(
             instance_id=instance_id,
             api_key=api_key,

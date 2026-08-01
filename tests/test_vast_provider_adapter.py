@@ -1730,6 +1730,56 @@ def test_vast_adapter_blocks_paid_launch_when_existing_instance_active(
     assert teardown["continuing_spend_from_this_run"] is False
 
 
+def test_vast_adapter_allows_second_launch_through_prelaunch_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV, "2")
+    calls: list[tuple[str, str]] = []
+
+    def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["api_key"] == secret
+        calls.append((kwargs["method"], kwargs["path"]))
+        if kwargs["method"] == "GET" and kwargs["path"] == "/instances/":
+            return 200, {
+                "instances": [
+                    {
+                        "id": 123,
+                        "actual_status": "running",
+                        "gpu_name": "RTX PRO 6000",
+                        "dph_total": 1.0,
+                    }
+                ]
+            }
+        if kwargs["method"] == "POST" and kwargs["path"] == "/bundles/":
+            return 200, {"offers": []}
+        raise AssertionError(f"unexpected Vast API call: {kwargs}")
+
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    job_dir = tmp_path / "second-launch-admitted"
+    result = run_vast_provider_adapter(
+        job_dir=job_dir,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        max_live_minutes=1,
+        session_max_live_minutes=None,
+    )
+
+    guard = _read_json(job_dir / "vast_prelaunch_inventory_guard.json")
+    assert guard["status"] == "passed"
+    assert guard["active_instance_count"] == 1
+    assert guard["maximum_global_live_instances"] == 2
+    assert guard["maximum_existing_live_instances"] == 1
+    assert guard["existing_inventory_within_global_limit"] is True
+    assert result["reason"] != "vast_prelaunch_inventory_guard_blocked"
+    assert calls[:2] == [("GET", "/instances/"), ("POST", "/bundles/")]
+    assert result["provider_create_attempted"] is False
+    assert result["vast_instance_ids"] == []
+
+
 def test_vast_adapter_blocks_blueprint_bundle_missing_staging_before_api(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4961,6 +5011,49 @@ def test_vast_adapter_small_provider_helper_edges(
 
     with pytest.raises(ValueError, match="unsupported_provider_bundle_kind"):
         run_vast_provider_adapter(job_dir=tmp_path / "bad-kind-run", provider_bundle_kind="bad")
+
+
+@pytest.mark.parametrize(
+    ("existing_count", "expected_status"),
+    [(0, "passed"), (1, "passed"), (2, "blocked")],
+)
+def test_prelaunch_inventory_guard_honors_two_gpu_global_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    existing_count: int,
+    expected_status: str,
+) -> None:
+    instances = [
+        {
+            "id": index + 1,
+            "actual_status": "running",
+            "gpu_name": "RTX PRO 6000",
+            "dph_total": 1.0,
+        }
+        for index in range(existing_count)
+    ]
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_: (200, {"instances": instances}),
+    )
+
+    result = vpa._prelaunch_inventory_guard(
+        job_dir=tmp_path / f"inventory-{existing_count}",
+        generated_at="2026-08-01T00:00:00Z",
+        api_key="secret",
+        maximum_global_live_instances=2,
+    )
+
+    assert result["status"] == expected_status
+    assert result["active_instance_count"] == existing_count
+    assert result["maximum_global_live_instances"] == 2
+    assert result["maximum_existing_live_instances"] == 1
+    assert result["existing_inventory_within_global_limit"] is (existing_count <= 1)
+    assert result["blockers"] == (
+        [] if existing_count <= 1 else ["vast_prelaunch_global_live_instance_limit_reached"]
+    )
+    assert result["raw_secret_values_recorded"] is False
 
 
 def test_vast_adapter_request_logs_container_missing_retry(
