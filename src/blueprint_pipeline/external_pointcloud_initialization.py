@@ -28,6 +28,7 @@ from .external_reconstruction_import import (
     ExternalReconstructionImportError,
     build_external_reconstruction_import_receipt,
 )
+from .rigid_alignment import SimilarityAlignmentError, estimate_similarity_transform
 
 
 REQUEST_SCHEMA_VERSION = "external_pointcloud_initialization_request.v1"
@@ -273,32 +274,10 @@ def _load_pose_centers(
 def _estimate_similarity(
     source_centers: np.ndarray, target_centers: np.ndarray
 ) -> tuple[float, np.ndarray, np.ndarray, bool]:
-    """Umeyama similarity (scale, rotation, translation) with proper rotation.
-
-    Returns (scale, rotation, translation, reflection_preferred).  The rotation
-    is always proper (determinant +1); ``reflection_preferred`` reports whether
-    an improper transform would have fit better, which callers must fail on.
-    """
-
-    source_mean = source_centers.mean(axis=0)
-    target_mean = target_centers.mean(axis=0)
-    source_centered = source_centers - source_mean
-    target_centered = target_centers - target_mean
-    source_variance = float(np.mean(np.sum(np.square(source_centered), axis=1)))
-    if source_variance <= 0.0:
-        raise ExternalPointcloudInitializationError(["alignment_source_degenerate"])
-    covariance = (target_centered.T @ source_centered) / source_centers.shape[0]
-    u, singular_values, vt = np.linalg.svd(covariance)
-    reflection_preferred = bool(np.linalg.det(u @ vt) < 0.0)
-    correction = np.ones(3)
-    if reflection_preferred:
-        correction[2] = -1.0
-    rotation = u @ np.diag(correction) @ vt
-    scale = float(np.sum(singular_values * correction) / source_variance)
-    if not math.isfinite(scale) or scale <= 0.0:
-        raise ExternalPointcloudInitializationError(["alignment_scale_invalid"])
-    translation = target_mean - scale * rotation @ source_mean
-    return scale, rotation, translation, reflection_preferred
+    try:
+        return estimate_similarity_transform(source_centers, target_centers)
+    except SimilarityAlignmentError as exc:
+        raise ExternalPointcloudInitializationError(list(exc.codes)) from exc
 
 
 def compile_external_pointcloud_initialization(

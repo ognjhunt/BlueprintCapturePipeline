@@ -139,16 +139,47 @@ async function warmup(ms = 2500) {
   }
 }
 
-// spec: { pos:[x,y,z], target:[x,y,z], fov:number, up?:[x,y,z] }
+// spec (framed form):  { pos:[x,y,z], target:[x,y,z], fov:number, up?:[x,y,z] }
+// spec (exact form):   { pose: { T_world_camera_opencv: number[4][4] },
+//                        intrinsics: { fx, fy, cx, cy, width, height, near?, far? } }
+// The exact form reproduces an OpenCV-convention pinhole camera (x right, y down,
+// z forward; principal point in COLMAP pixel coordinates) via an off-axis
+// projection matrix, for sealed held-out view evaluation.
 async function renderView(spec, settleFrames = 10, settleMs = 110) {
   const { camera, renderer, scene, canvas, bounds } = state;
-  camera.fov = spec.fov || 50;
-  camera.up.set(...(spec.up || [0, 1, 0]));
-  camera.position.set(...spec.pos);
-  camera.near = Math.max(1e-4, bounds.radius / 5000);
-  camera.far = bounds.radius * 50 + 1000;
-  camera.lookAt(new THREE.Vector3(...spec.target));
-  camera.updateProjectionMatrix();
+  if (spec.pose && spec.intrinsics) {
+    const K = spec.intrinsics;
+    if (canvas.width !== K.width || canvas.height !== K.height) {
+      throw new Error(`canvas_size_${canvas.width}x${canvas.height}_mismatch_intrinsics_${K.width}x${K.height}`);
+    }
+    const near = K.near != null ? K.near : Math.max(1e-4, bounds.radius / 5000);
+    const far = K.far != null ? K.far : bounds.radius * 50 + 1000;
+    const m = spec.pose.T_world_camera_opencv;
+    // OpenCV camera-to-world -> three.js (OpenGL) camera-to-world: flip the
+    // Y and Z basis columns.
+    const converted = new THREE.Matrix4().set(
+      m[0][0], -m[0][1], -m[0][2], m[0][3],
+      m[1][0], -m[1][1], -m[1][2], m[1][3],
+      m[2][0], -m[2][1], -m[2][2], m[2][3],
+      0, 0, 0, 1,
+    );
+    converted.decompose(camera.position, camera.quaternion, camera.scale);
+    camera.updateMatrixWorld(true);
+    const left = (-K.cx * near) / K.fx;
+    const right = ((K.width - K.cx) * near) / K.fx;
+    const top = (K.cy * near) / K.fy;
+    const bottom = (-(K.height - K.cy) * near) / K.fy;
+    camera.projectionMatrix.makePerspective(left, right, top, bottom, near, far);
+    camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  } else {
+    camera.fov = spec.fov || 50;
+    camera.up.set(...(spec.up || [0, 1, 0]));
+    camera.position.set(...spec.pos);
+    camera.near = Math.max(1e-4, bounds.radius / 5000);
+    camera.far = bounds.radius * 50 + 1000;
+    camera.lookAt(new THREE.Vector3(...spec.target));
+    camera.updateProjectionMatrix();
+  }
   camera.updateMatrixWorld(true);
   for (let k = 0; k < settleFrames; k++) {
     renderer.render(scene, camera);
