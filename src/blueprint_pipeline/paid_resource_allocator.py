@@ -906,6 +906,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     }
                     write_json(Path(args.admission_out), result)
                 else:
+                    image_source_commit = (
+                        args.expected_image_source_commit or checkout_commit
+                    )
                     result = run_native_camera_gpu_lane(
                         release_evidence=args.release_evidence,
                         input_bundle_receipt=args.native_camera_input_bundle_receipt,
@@ -914,7 +917,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         bound_request_out=args.bound_request_out,
                         adapter_output=args.adapter_output,
                         pod_name=args.pod_name,
-                        expected_source_commit=checkout_commit,
+                        expected_source_commit=image_source_commit,
+                        launcher_source_commit=checkout_commit,
                         execute=args.execute,
                         hard_ttl_seconds=args.openpi_hard_ttl_seconds,
                         max_spend_usd=args.openpi_max_spend_usd,

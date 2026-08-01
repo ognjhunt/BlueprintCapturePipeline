@@ -103,6 +103,22 @@ def _read_object(path: str | Path) -> dict[str, Any]:
     return dict(value)
 
 
+def _provider_machine_ids(values: Any) -> list[int]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+        return []
+    machine_ids = {
+        int(value)
+        for value in values[:64]
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+        )
+        or (isinstance(value, str) and value.isdigit() and int(value) > 0)
+    }
+    return sorted(machine_ids)
+
+
 def build_native_camera_gpu_release_evidence(
     *, image_manifest: Mapping[str, Any], expected_source_commit: str
 ) -> dict[str, Any]:
@@ -488,6 +504,7 @@ def _build_native_camera_vast_launch_request(
     preflight: Mapping[str, Any],
     input_secret_url: str,
     output_secret_put_url: str,
+    excluded_machine_ids: Sequence[int] = (),
 ) -> dict[str, Any]:
     capacity = preflight.get("capacity_request")
     capacity = capacity if isinstance(capacity, Mapping) else {}
@@ -528,6 +545,7 @@ def _build_native_camera_vast_launch_request(
             "require_avx": True,
             "require_known_supported_isaac_driver": True,
             "preferred_gpu_keywords": capacity.get("preferred_gpu_keywords"),
+            "excluded_machine_ids": sorted(set(excluded_machine_ids)),
         }
     )
     return request
@@ -541,6 +559,7 @@ def build_native_camera_gpu_provider_request(
     spend: Mapping[str, Any],
     expected_source_commit: str,
     job_id: str,
+    launcher_source_commit: str | None = None,
 ) -> dict[str, Any]:
     """Bind the admitted canary to its exact worker without persisting secrets."""
 
@@ -560,6 +579,9 @@ def build_native_camera_gpu_provider_request(
             "provider_mutations_performed": 0,
         }
     provider = str(preflight["provider"])
+    excluded_machine_ids = _provider_machine_ids(
+        preflight.get("excluded_machine_ids")
+    )
     ttl = int(spend["hard_ttl_seconds"])
     bundle_sha = str(input_bundle["bundle_sha256"])
     worker_command = (
@@ -575,6 +597,7 @@ def build_native_camera_gpu_provider_request(
         "provider": provider,
         "image": str(release["resolved_digest_ref"]),
         "input_bundle_sha256": bundle_sha,
+        "launcher_source_commit": launcher_source_commit,
         "provider_request_shape": {
             "api_payload_is_provider_adapter_template": True,
             "api_payload_values_are_redacted": True,
@@ -605,6 +628,7 @@ def build_native_camera_gpu_provider_request(
                 "watchdog_armed_before_allocation": True,
                 "provider_zero_required_before_and_after": True,
                 "terminal_delete_required": True,
+                "excluded_machine_ids": excluded_machine_ids,
             },
             "output_contract": {
                 "individual_external_camera_frame_required": True,
@@ -866,6 +890,7 @@ def run_native_camera_gpu_lane(
     adapter_output: str | Path,
     pod_name: str,
     expected_source_commit: str,
+    launcher_source_commit: str | None = None,
     execute: bool,
     hard_ttl_seconds: int,
     max_spend_usd: float,
@@ -883,6 +908,14 @@ def run_native_camera_gpu_lane(
 
     root = Path(adapter_output).expanduser().resolve().parent
     root.mkdir(parents=True, exist_ok=True)
+    if not _COMMIT.fullmatch(str(launcher_source_commit or "")):
+        result = {
+            "status": "blocked",
+            "blockers": ["native_camera_gpu_launcher_source_commit_invalid"],
+            "provider_mutations_performed": 0,
+        }
+        write_json(Path(admission_out), result)
+        return result
     if not pod_name.startswith(CANARY_NAME_PREFIX):
         result = {
             "status": "blocked",
@@ -894,6 +927,7 @@ def run_native_camera_gpu_lane(
     release = _read_object(release_evidence)
     bundle = _read_object(input_bundle_receipt)
     preflight = _read_object(preflight_bundle)
+    excluded_machine_ids = list(preflight.get("excluded_machine_ids") or [])
     resolved_provider = str(provider_name or "vast").strip().lower()
     if resolved_provider != "vast":
         result = {
@@ -913,6 +947,8 @@ def run_native_camera_gpu_lane(
                 name_prefix=prefix
             ),
         )
+        if excluded_machine_ids:
+            preflight["excluded_machine_ids"] = excluded_machine_ids
         write_json(root / "native_camera_provider_preflight_launch_refresh.json", preflight)
     if str(preflight.get("provider") or "") != resolved_provider:
         result = {
@@ -940,6 +976,7 @@ def run_native_camera_gpu_lane(
         spend=spend,
         expected_source_commit=expected_source_commit,
         job_id=pod_name,
+        launcher_source_commit=launcher_source_commit,
     )
     write_json(Path(admission_out), prepared)
     request = prepared.get("bound_request")
@@ -1209,6 +1246,9 @@ def run_native_camera_gpu_lane(
             preflight=preflight,
             input_secret_url=input_secret_url,
             output_secret_put_url=output_secret_put_url,
+            excluded_machine_ids=_provider_machine_ids(
+                preflight.get("excluded_machine_ids")
+            ),
         )
         launch = provider.launch(
             root,

@@ -2049,7 +2049,7 @@ class VastRenderProvider(GpuRenderProvider):
                 "allocation_created": False, "spend_occurred": False,
             }
         from .vast_provider_adapter import (
-            _api_json, _offer_id, _offers_from_response, _select_offer,
+            _api_json, _machine_id_set, _offer_id, _offers_from_response, _select_offer,
         )
         attempts: list[dict] = []
         search_payload = request.get("search_payload") or {}
@@ -2067,6 +2067,9 @@ class VastRenderProvider(GpuRenderProvider):
         )
         preferred_gpu_keywords = _string_list(
             request.get("preferred_gpu_keywords")
+        )
+        excluded_machine_ids = sorted(
+            _machine_id_set(request.get("excluded_machine_ids") or [])
         )
         if require_avx:
             search_payload = {**search_payload, "has_avx": {"eq": True}}
@@ -2100,6 +2103,7 @@ class VastRenderProvider(GpuRenderProvider):
                 min_reliability=min_reliability,
                 require_direct_port=require_direct_port,
                 preferred_gpu_keywords=preferred_gpu_keywords,
+                excluded_machine_ids=excluded_machine_ids,
             )
             if not offer:
                 break
@@ -2133,6 +2137,7 @@ class VastRenderProvider(GpuRenderProvider):
                 attempts.append({"create_http_status": e.code, "ask_id": ask_id,
                                  "create_error_body": body,
                                  "gpu_name": offer.get("gpu_name"),
+                                 "machine_id": offer.get("machine_id"),
                                  "has_avx": offer.get("has_avx")})
                 if e.code not in {400, 404, 409, 422}:
                     return {
@@ -2161,6 +2166,7 @@ class VastRenderProvider(GpuRenderProvider):
                         break
             attempts.append({"create_status": cs, "instance_id": iid,
                              "gpu_name": offer.get("gpu_name"),
+                             "machine_id": offer.get("machine_id"),
                              "has_avx": offer.get("has_avx"),
                              "hourly_rate_usd": offer.get("hourly_rate_usd")})
             if iid:
@@ -2169,6 +2175,8 @@ class VastRenderProvider(GpuRenderProvider):
                 )
                 return {"status": "launched", "instance_id": iid, "mode": "vast_on_demand",
                         "vast_launch_mode": launch_mode,
+                        "selected_machine_id": offer.get("machine_id"),
+                        "excluded_machine_ids": excluded_machine_ids,
                         "attempts": attempts, "started_id_record": started_id_record}
             if cs not in {400, 404, 409, 422}:
                 return {

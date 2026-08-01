@@ -159,6 +159,7 @@ def test_native_camera_gpu_admission_passes_exact_label_free_contract() -> None:
 
 def test_native_camera_gpu_request_binds_exact_worker_and_redacts_secrets() -> None:
     release, bundle, preflight, spend = _inputs()
+    preflight["excluded_machine_ids"] = [43326]
 
     prepared = build_native_camera_gpu_provider_request(
         release=release,
@@ -167,6 +168,7 @@ def test_native_camera_gpu_request_binds_exact_worker_and_redacts_secrets() -> N
         spend=spend,
         expected_source_commit="a" * 40,
         job_id="blueprint-native-warehouse-camera-v1",
+        launcher_source_commit="d" * 40,
     )
 
     assert prepared["status"] == "admitted"
@@ -175,6 +177,7 @@ def test_native_camera_gpu_request_binds_exact_worker_and_redacts_secrets() -> N
     assert request["schema_version"] == "nvidia_warehouse_native_camera_gpu_request.v2"
     assert request["provider"] == "vast"
     assert request["input_bundle_sha256"] == "c" * 64
+    assert request["launcher_source_commit"] == "d" * 40
     assert shape["docker_entrypoint"] == ["bash"]
     assert shape["docker_start_cmd"] == [
         "-lc",
@@ -191,6 +194,7 @@ def test_native_camera_gpu_request_binds_exact_worker_and_redacts_secrets() -> N
     assert environment["secret_values_in_artifact"] is False
     assert shape["gpu"]["gpu_count"] == 1
     assert shape["limits"]["provider_zero_required_before_and_after"] is True
+    assert shape["limits"]["excluded_machine_ids"] == [43326]
     assert shape["output_contract"] == {
         "individual_external_camera_frame_required": True,
         "individual_wrist_camera_frame_required": True,
@@ -497,6 +501,7 @@ def test_native_camera_execute_arms_guards_before_vast_launch(
         adapter_output=launch_root / "adapter.json",
         pod_name="blueprint-native-warehouse-camera-v2",
         expected_source_commit="a" * 40,
+        launcher_source_commit="d" * 40,
         execute=True,
         hard_ttl_seconds=1200,
         max_spend_usd=1.0,
