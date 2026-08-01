@@ -116,9 +116,7 @@ def test_native_camera_release_binds_registry_config_to_exact_clean_source() -> 
 
     assert result["status"] == "passed"
     assert result["source_commit"] == "a" * 40
-    assert result["source_dirty_patch_sha256"] == (
-        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
-    )
+    assert result["source_dirty_patch_sha256"] == (CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256)
     assert result["resolved_digest_ref"].endswith("b" * 64)
 
 
@@ -208,9 +206,7 @@ def test_native_camera_concurrency_preflight_blocks_at_global_ceiling() -> None:
 
     assert result["status"] == "blocked"
     assert result["provider_inventory_below_global_ceiling"] is False
-    assert "native_camera_global_paid_gpu_ceiling_reached_or_unverified" in result[
-        "blockers"
-    ]
+    assert "native_camera_global_paid_gpu_ceiling_reached_or_unverified" in result["blockers"]
 
 
 def test_native_camera_gpu_request_binds_exact_worker_and_redacts_secrets() -> None:
@@ -421,9 +417,7 @@ def test_native_camera_monitor_exits_and_tears_down_when_worker_is_terminal(
             }
 
     def missing_output(*_args, **_kwargs):
-        raise urllib.error.HTTPError(
-            "https://storage.example/output", 404, "missing", {}, None
-        )
+        raise urllib.error.HTTPError("https://storage.example/output", 404, "missing", {}, None)
 
     monkeypatch.setattr(camera_gpu, "safe_http_request", missing_output)
     monkeypatch.setattr(
@@ -476,9 +470,7 @@ def test_native_camera_execute_arms_guards_before_vast_launch(
         path.chmod(0o600)
         paths[name] = path
     monkeypatch.setenv("BLUEPRINT_PENDING_TEARDOWN_DIR", str(tmp_path / "pending"))
-    monkeypatch.setenv(
-        "BLUEPRINT_PAID_PROVIDER_LANE_LEASE_DIR", str(tmp_path / "leases")
-    )
+    monkeypatch.setenv("BLUEPRINT_PAID_PROVIDER_LANE_LEASE_DIR", str(tmp_path / "leases"))
     events: list[str] = []
     launch_root = tmp_path / "launch"
 
@@ -504,11 +496,10 @@ def test_native_camera_execute_arms_guards_before_vast_launch(
         def launch(self, _root, _request, **kwargs) -> dict:
             events.append("launch")
             assert "armed" in events
-            receipt = json.loads(
-                (launch_root / "provider_lane_handoff_receipt.json").read_text()
-            )
+            receipt = json.loads((launch_root / "provider_lane_handoff_receipt.json").read_text())
             assert receipt["status"] == "accepted"
             assert receipt["paid_lane"] == camera_gpu.PAID_LANE
+            assert receipt["maximum_concurrent_paid_gpus_global"] == 1
             assert kwargs["paid_resource_admission_grant"]
             return {"status": "launched", "instance_id": "vast-camera-1"}
 
@@ -537,14 +528,16 @@ def test_native_camera_execute_arms_guards_before_vast_launch(
     monkeypatch.setattr(
         camera_gpu,
         "_wait_for_watchdog",
-        lambda **kwargs: events.append("armed")
-        or {
-            "status": "armed",
-            "independent_process": True,
-            "pid": kwargs["process"].pid,
-            "pod_name_prefix": kwargs["prefix"],
-            "deadline_epoch": kwargs["deadline"],
-        },
+        lambda **kwargs: (
+            events.append("armed")
+            or {
+                "status": "armed",
+                "independent_process": True,
+                "pid": kwargs["process"].pid,
+                "pod_name_prefix": kwargs["prefix"],
+                "deadline_epoch": kwargs["deadline"],
+            }
+        ),
     )
     monkeypatch.setattr(
         lease_module,
@@ -586,9 +579,7 @@ def test_native_camera_execute_arms_guards_before_vast_launch(
 
     assert result["status"] == "completed"
     assert events.index("armed") < events.index("launch")
-    persisted = "\n".join(
-        path.read_text(encoding="utf-8") for path in tmp_path.rglob("*.json")
-    )
+    persisted = "\n".join(path.read_text(encoding="utf-8") for path in tmp_path.rglob("*.json"))
     assert "input-secret" not in persisted
     assert "output-put-secret" not in persisted
     assert "output-get-secret" not in persisted

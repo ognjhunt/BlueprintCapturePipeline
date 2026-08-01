@@ -650,6 +650,7 @@ def _rigid_wrist_mount_from_initial_task_framing(
     target_world_points: Mapping[str, Any],
     world_up: Any = (0.0, 0.0, 1.0),
     camera_eye_world_offset: Any = (0.0, 0.0, 0.0),
+    target_relative_camera_eye_world_offset: Any | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Calibrate one rigid parent-local wrist gaze from initial task geometry."""
 
@@ -657,6 +658,11 @@ def _rigid_wrist_mount_from_initial_task_framing(
     mount = np.asarray(mount_translation_parent, dtype=float).reshape(3)
     up_world = np.asarray(world_up, dtype=float).reshape(3)
     eye_offset_world = np.asarray(camera_eye_world_offset, dtype=float).reshape(3)
+    target_eye_offset_world = (
+        None
+        if target_relative_camera_eye_world_offset is None
+        else np.asarray(target_relative_camera_eye_world_offset, dtype=float).reshape(3)
+    )
     points = {
         str(name): np.asarray(value, dtype=float).reshape(3)
         for name, value in target_world_points.items()
@@ -667,12 +673,18 @@ def _rigid_wrist_mount_from_initial_task_framing(
         or not np.isfinite(mount).all()
         or not np.isfinite(up_world).all()
         or not np.isfinite(eye_offset_world).all()
+        or (target_eye_offset_world is not None and not np.isfinite(target_eye_offset_world).all())
     ):
         raise ValueError("native_wrist_mount_calibration_input_invalid")
     target_world = np.mean(np.stack(list(points.values())), axis=0)
     world_to_parent = np.linalg.inv(matrix)
     base_eye_world = (np.concatenate((mount, [1.0])) @ matrix)[:3]
-    eye_world = base_eye_world + eye_offset_world
+    if target_eye_offset_world is None:
+        eye_world = base_eye_world + eye_offset_world
+        eye_placement_mode = "base_mount_world_offset"
+    else:
+        eye_world = target_world + target_eye_offset_world
+        eye_placement_mode = "target_relative_world_offset"
     resolved_mount = (np.concatenate((eye_world, [1.0])) @ world_to_parent)[:3]
     target_parent = np.concatenate((target_world, [1.0])) @ world_to_parent
     forward_parent = target_parent[:3] - resolved_mount
@@ -698,7 +710,11 @@ def _rigid_wrist_mount_from_initial_task_framing(
         "target_centroid_world_m": target_world.tolist(),
         "base_camera_eye_world_m": base_eye_world.tolist(),
         "camera_eye_world_m": eye_world.tolist(),
+        "camera_eye_placement_mode": eye_placement_mode,
         "camera_eye_world_offset_m": eye_offset_world.tolist(),
+        "target_relative_camera_eye_world_offset_m": (
+            None if target_eye_offset_world is None else target_eye_offset_world.tolist()
+        ),
         "resolved_mount_translation_parent_m": resolved_mount.tolist(),
         "mount_forward_parent": forward_parent.tolist(),
         "mount_up_parent": np.asarray(up_parent, dtype=float).tolist(),
@@ -1072,6 +1088,7 @@ def isaac_sim_6_backend(
         hand_initial_matrix = precalibration_link_matrices.get("panda_hand")
         if hand_initial_matrix is None:
             raise ValueError("native_articulation_panda_hand_link_missing")
+        target_relative_eye_offset = calibration.get("target_relative_camera_eye_world_offset_m")
         wrist_quaternion, wrist_mount_calibration = _rigid_wrist_mount_from_initial_task_framing(
             parent_to_world=hand_initial_matrix,
             mount_translation_parent=wrist["mount_translation_m"],
@@ -1080,7 +1097,12 @@ def isaac_sim_6_backend(
                 entity_world_points=entity_world_points,
             ),
             world_up=calibration["world_up"],
-            camera_eye_world_offset=(0.0, 0.0, WRIST_CAMERA_WORLD_CLEARANCE_M),
+            camera_eye_world_offset=(
+                (0.0, 0.0, WRIST_CAMERA_WORLD_CLEARANCE_M)
+                if target_relative_eye_offset is None
+                else (0.0, 0.0, 0.0)
+            ),
+            target_relative_camera_eye_world_offset=target_relative_eye_offset,
         )
         resolved_wrist_mount_translation = wrist_mount_calibration[
             "resolved_mount_translation_parent_m"

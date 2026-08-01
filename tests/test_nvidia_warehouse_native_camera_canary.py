@@ -790,6 +790,20 @@ def test_wrist_mount_world_clearance_resolves_to_one_fixed_parent_mount() -> Non
     assert np.linalg.norm(quaternion) == pytest.approx(1.0)
 
 
+def test_wrist_mount_can_place_eye_at_prospective_target_relative_offset() -> None:
+    quaternion, evidence = _rigid_wrist_mount_from_initial_task_framing(
+        parent_to_world=np.eye(4),
+        mount_translation_parent=[0.2, -0.1, 0.05],
+        target_world_points={"spraycan": [0.0, 0.075, 1.14]},
+        target_relative_camera_eye_world_offset=[0.0, 0.0, 0.3],
+    )
+
+    assert np.isfinite(quaternion).all()
+    assert evidence["camera_eye_placement_mode"] == "target_relative_world_offset"
+    assert evidence["camera_eye_world_m"] == pytest.approx([0.0, 0.075, 1.44])
+    assert evidence["target_relative_camera_eye_world_offset_m"] == [0.0, 0.0, 0.3]
+
+
 def test_joint_pose_is_rendered_without_requesting_physics_steps() -> None:
     calls: list[tuple[str, np.ndarray]] = []
 
