@@ -506,12 +506,17 @@ qualification.
 canonical `paid_resource_allocator cpu-build` seam. It cannot select a provider
 or launch a build. It fails closed without a clean immutable commit, exact source
 tree, recipe and dependency-lock digests, digest-bound license inventory and v2
-human review receipt, budget, TTL, retry cap, and authority. The inventory binds
+human review receipt, budget, TTL, retry cap, and non-agent authority. The inventory binds
 all 107 hash-locked Python dependencies, source components, model assets, the
 worker stack, and the exact license-policy digest. It grants no authority. A v2
 review receipt must acknowledge every recorded inventory blocker and every
 component identity, is limited to a private internal build, and cannot be issued
-from agent prose or a legacy receipt. Allocation and image-build success are
+from agent prose or a legacy receipt. The
+`reconstruction_worker_paid_execution_envelope.v1` record then binds the exact
+source SHA, worker stack, inventory, review receipt, dollar cap, two-hour-or-less
+TTL, retry cap, and authority identity. The canonical CPU-build admission rejects
+any drift between that archived envelope and its separate spend input before a
+provider call. Allocation and image-build success are
 explicitly not scientific success. The v1 schemas remain available only for
 replay of recorded historical admissions.
 
@@ -539,7 +544,9 @@ lock files, records every member digest,
 rejects symlinks and unsafe archive members, emits a byte-deterministic archive,
 and binds the executable build script to the source commit, recipe, dependency
 lock, worker-stack manifest, license-inventory digest, v2 license-review receipt,
-and context manifest. The license receipt can authorize only a private internal build; it cannot grant
+paid-execution-envelope digest, and context manifest. All three governance
+artifacts are included as archive members and re-hashed by the remote script
+before the first registry mutation. The license receipt can authorize only a private internal build; it cannot grant
 redistribution or commercial distribution rights, and an agent cannot issue it.
 The script builds only `linux/amd64`, requests
 BuildKit provenance and SBOM attestations, resolves the pushed registry digest,

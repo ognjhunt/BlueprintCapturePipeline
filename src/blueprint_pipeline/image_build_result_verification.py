@@ -225,6 +225,10 @@ def validate_remote_reconstruction_worker_result(
         "license_review_receipt_digest"
     ):
         blockers.append("reconstruction_remote_build_license_receipt_mismatch")
+    if payload.get("paid_execution_envelope_digest") != packet.get(
+        "paid_execution_envelope_digest"
+    ):
+        blockers.append("reconstruction_remote_build_paid_envelope_mismatch")
     if payload.get("build_healthcheck_embedded") is not True:
         blockers.append("reconstruction_remote_build_healthcheck_missing")
     if payload.get("runtime_gpu_healthcheck_completed") is not False:
