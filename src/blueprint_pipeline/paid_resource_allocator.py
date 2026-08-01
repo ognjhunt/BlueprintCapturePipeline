@@ -66,8 +66,10 @@ from .openai_candidate_paid_admission import (
     prepare_pigey_candidate_runtime_admission,
 )
 from .paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
+    build_paid_lane_admission,
     require_paid_resource_admission,
 )
 from .openpi_policy_ranking_gpu_admission import (
@@ -90,14 +92,20 @@ from .policy_ranking_cosmos_reasoner_gpu_admission import (
 from .policy_ranking_successor_retained_session import refresh_retained_session
 from .reconstruction_gpu_admission import (
     PROBE_KIND as RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
+    collect_reconstruction_vast_preflight,
     prepare_reconstruction_gpu_canary,
 )
-from .reconstruction_paid_resource_allocator_lane import (
-    run_reconstruction_paid_resource_allocator_lane,
+from .reconstruction_gpu_operation_bundle import (
+    ReconstructionGpuOperationBundleError,
+    validate_reconstruction_gpu_operation_bundle_receipt,
 )
+from .reconstruction_isaac_vast_operation import run_reconstruction_isaac_vast_operation
+from .reconstruction_isaac_worker_bundle import (
+    IsaacWorkerBundleError,
+    validate_isaac_verification_worker_bundle_receipt,
+)
+from .reconstruction_vast_operation import run_reconstruction_vast_operation
 from .reconstruction_vast_worker_smoke import run_reconstruction_vast_worker_smoke
-from .sam31_gpu_admission import PROBE_KIND as SAM31_SOURCE_TRACK_PROBE_KIND
-from .sam31_paid_resource_allocator_lane import run_sam31_paid_resource_allocator_lane
 from .gpu_render_providers import get_render_provider
 from .single_g1_kitchen_episode_runpod import (
     PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
@@ -580,14 +588,227 @@ def _run_local_cpu_build(args: argparse.Namespace) -> dict:
 def _run_reconstruction_gpu_canary(
     args: argparse.Namespace, *, checkout_commit: str
 ) -> dict[str, Any]:
-    return run_reconstruction_paid_resource_allocator_lane(
-        args,
-        checkout_commit=checkout_commit,
-        prepare=prepare_reconstruction_gpu_canary,
-        read_sensitive_url=read_sensitive_url_file,
-        provider_factory=get_render_provider,
-        execute_smoke=run_reconstruction_vast_worker_smoke,
+    """Admit and optionally execute the Vast-first worker smoke."""
+
+    if getattr(args, "reconstruction_refresh_preflight", False):
+        seed = _load(args.preflight_bundle)
+        provider = get_render_provider(args.provider)
+        capacity_request = seed.get("capacity_request")
+        capacity_request = capacity_request if isinstance(capacity_request, dict) else {}
+        max_hourly_rate = getattr(args, "reconstruction_max_hourly_rate_usd", None)
+        if max_hourly_rate is None:
+            max_hourly_rate = capacity_request.get("max_hourly_rate_usd")
+        container_disk_bytes = getattr(args, "reconstruction_container_disk_bytes", None)
+        if container_disk_bytes is None:
+            container_disk_bytes = seed.get("container_disk_bytes")
+        if (
+            isinstance(max_hourly_rate, bool)
+            or not isinstance(max_hourly_rate, (int, float))
+            or float(max_hourly_rate) <= 0
+        ):
+            max_hourly_rate = 0.0
+        if (
+            isinstance(container_disk_bytes, bool)
+            or not isinstance(container_disk_bytes, int)
+            or container_disk_bytes < 0
+        ):
+            container_disk_bytes = 0
+        refreshed = collect_reconstruction_vast_preflight(
+            name_prefix=getattr(
+                args,
+                "reconstruction_name_prefix",
+                "blueprint-reconstruction-",
+            ),
+            container_disk_bytes=container_disk_bytes,
+            watchdog=(
+                seed.get("watchdog")
+                if isinstance(seed.get("watchdog"), dict)
+                else {}
+            ),
+            conflicting_owner_present=(
+                seed.get("conflicting_owner_present") is not False
+            ),
+            capacity_probe=provider.capacity_preflight,
+            inventory_probe=lambda prefix: provider.billable_inventory(
+                name_prefix=prefix
+            ),
+            max_hourly_rate_usd=float(max_hourly_rate),
+        )
+        write_json(Path(args.preflight_bundle), refreshed)
+
+    admission = prepare_reconstruction_gpu_canary(
+        request_path=args.provider_launch_request,
+        preflight_path=args.preflight_bundle,
+        admission_out=args.admission_out,
+        bound_request_out=args.bound_request_out,
+        adapter_output=args.adapter_output,
+        provider=args.provider,
+        expected_source_commit=args.expected_source_commit or "",
+        checkout_source_commit=checkout_commit,
+        checkout_clean=True,
+        max_spend_usd=args.reconstruction_max_spend_usd,
+        hard_ttl_seconds=args.reconstruction_hard_ttl_seconds,
+        retry_cap=args.reconstruction_retry_cap,
+        authority_id=args.reconstruction_authority_id,
+        execute=args.execute,
+        execution_adapter_qualified=args.execute,
+        image_release_path=getattr(
+            args, "reconstruction_isaac_image_release", None
+        ),
     )
+    if not args.execute or admission.get("status") != "execute_ready":
+        return admission
+
+    operation = str(admission.get("operation") or "worker_smoke")
+    transport_blockers: list[str] = []
+    resolved_urls: dict[str, str] = {}
+    url_inputs = [
+        ("provider_output_put_url", args.provider_output_put_url_file),
+        ("provider_output_get_url", args.provider_output_get_url_file),
+    ]
+    operation_bundle_receipt: dict[str, Any] = {}
+    if operation in {"pose_canary", "trainer_canary", "isaac_canary"}:
+        url_inputs.extend(
+            [
+                ("provider_bundle_url", getattr(args, "provider_bundle_url_file", None)),
+                (
+                    "operation_receipt_get_url",
+                    getattr(args, "reconstruction_operation_receipt_url_file", None),
+                ),
+            ]
+        )
+        receipt_path = getattr(
+            args, "reconstruction_operation_bundle_receipt", None
+        )
+        if not receipt_path:
+            transport_blockers.append(
+                "reconstruction_operation_bundle_receipt_missing"
+            )
+        else:
+            try:
+                if operation == "isaac_canary":
+                    operation_bundle_receipt = (
+                        validate_isaac_verification_worker_bundle_receipt(
+                            _load(receipt_path)
+                        )
+                    )
+                else:
+                    operation_bundle_receipt = (
+                        validate_reconstruction_gpu_operation_bundle_receipt(
+                            _load(receipt_path)
+                        )
+                    )
+            except (
+                OSError,
+                ValueError,
+                ReconstructionGpuOperationBundleError,
+                IsaacWorkerBundleError,
+            ):
+                transport_blockers.append(
+                    "reconstruction_operation_bundle_receipt_invalid"
+                )
+            else:
+                receipt_bindings = (
+                    (
+                        ("operation_request_digest", "isaac_verification_request_digest"),
+                        ("operation_input_bundle_digest", "bundle_digest"),
+                        ("worker_image_digest", "runtime_container_image_digest"),
+                        ("source_commit_sha", "source_commit_sha"),
+                    )
+                    if operation == "isaac_canary"
+                    else (
+                        ("operation", "operation"),
+                        ("operation_request_digest", "operation_request_digest"),
+                        (
+                            "operation_input_bundle_digest",
+                            "operation_input_bundle_digest",
+                        ),
+                        ("worker_image_digest", "worker_image_digest"),
+                        ("source_commit_sha", "source_commit_sha"),
+                    )
+                )
+                for request_key, receipt_key in receipt_bindings:
+                    if admission.get(request_key) != operation_bundle_receipt.get(
+                        receipt_key
+                    ):
+                        transport_blockers.append(
+                            f"reconstruction_operation_bundle_{request_key}_mismatch"
+                        )
+    for label, path_value in url_inputs:
+        value, metadata = read_sensitive_url_file(str(path_value or ""), label=label)
+        if not value:
+            transport_blockers.append(f"reconstruction_{label}_missing")
+        elif not value.startswith("https://"):
+            transport_blockers.append(f"reconstruction_{label}_not_https")
+        elif metadata.get("mode_is_0600") is not True:
+            transport_blockers.append(f"reconstruction_{label}_file_permissions_not_0600")
+        resolved_urls[label] = value
+
+    paid_admission = build_paid_lane_admission(
+        resource_class="gpu_render",
+        blockers=[*list(admission.get("blockers") or []), *transport_blockers],
+    )
+    adapter_path = Path(args.adapter_output).expanduser().resolve()
+    ensure_dir(adapter_path.parent)
+    write_json(adapter_path.parent / "reconstruction_paid_lane_admission.json", paid_admission)
+    try:
+        grant = require_paid_resource_admission(
+            paid_admission,
+            resource_class="gpu_render",
+            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+        )
+    except PaidResourceAdmissionBlocked as exc:
+        result = {
+            "schema_version": "reconstruction_gpu_canary_adapter_result.v1",
+            "status": "blocked",
+            "blockers": sorted(set(exc.blockers + transport_blockers)),
+            "provider_mutations_performed": 0,
+            "cost_usd": 0.0,
+            "scientific_qualification_inferred": False,
+            "proof_effect": "none",
+            "claim_ceiling": "no_execution_evidence",
+        }
+        write_json(adapter_path, result)
+        return result
+
+    if operation == "worker_smoke":
+        result = run_reconstruction_vast_worker_smoke(
+            bound_request=_load(args.bound_request_out),
+            preflight=_load(args.preflight_bundle),
+            job_dir=adapter_path.parent / "reconstruction_vast_worker_smoke",
+            output_put_url=resolved_urls["provider_output_put_url"],
+            output_get_url=resolved_urls["provider_output_get_url"],
+            provider=get_render_provider(args.provider),
+            paid_resource_admission_grant=grant,
+        )
+    elif operation in {"pose_canary", "trainer_canary"}:
+        result = run_reconstruction_vast_operation(
+            bound_request=_load(args.bound_request_out),
+            bundle_receipt=operation_bundle_receipt,
+            preflight=_load(args.preflight_bundle),
+            job_dir=adapter_path.parent / "reconstruction_vast_operation",
+            input_bundle_get_url=resolved_urls["provider_bundle_url"],
+            input_receipt_get_url=resolved_urls["operation_receipt_get_url"],
+            output_bundle_put_url=resolved_urls["provider_output_put_url"],
+            output_bundle_get_url=resolved_urls["provider_output_get_url"],
+            provider=get_render_provider(args.provider),
+            paid_resource_admission_grant=grant,
+        )
+    else:
+        result = run_reconstruction_isaac_vast_operation(
+            bound_request=_load(args.bound_request_out),
+            bundle_receipt=operation_bundle_receipt,
+            preflight=_load(args.preflight_bundle),
+            job_dir=adapter_path.parent / "reconstruction_isaac_vast_operation",
+            input_bundle_get_url=resolved_urls["provider_bundle_url"],
+            input_receipt_get_url=resolved_urls["operation_receipt_get_url"],
+            output_bundle_put_url=resolved_urls["provider_output_put_url"],
+            output_bundle_get_url=resolved_urls["provider_output_get_url"],
+            provider=get_render_provider(args.provider),
+            paid_resource_admission_grant=grant,
+        )
+    write_json(adapter_path, result)
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -655,7 +876,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
             POLICY_RANKING_COSMOS_REASONER_PROBE_KIND,
             RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
-            SAM31_SOURCE_TRACK_PROBE_KIND,
         ),
         default="strict-policy-smoke",
     )
@@ -667,6 +887,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--provider-bundle-url-file")
     gpu.add_argument("--provider-output-put-url-file")
     gpu.add_argument("--provider-output-get-url-file")
+    gpu.add_argument("--reconstruction-operation-bundle-receipt")
+    gpu.add_argument("--reconstruction-operation-receipt-url-file")
+    gpu.add_argument("--reconstruction-isaac-image-release")
     gpu.add_argument("--provider-bootstrap-url-file")
     gpu.add_argument("--finetune-provider-bundle")
     gpu.add_argument("--openpi-input-bundle-receipt")
@@ -717,11 +940,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--reconstruction-hard-ttl-seconds", type=int)
     gpu.add_argument("--reconstruction-retry-cap", type=int)
     gpu.add_argument("--reconstruction-authority-id")
-    gpu.add_argument("--sam31-max-spend-usd", type=float)
-    gpu.add_argument("--sam31-hard-ttl-seconds", type=int)
-    gpu.add_argument("--sam31-retry-cap", type=int)
-    gpu.add_argument("--sam31-authority-id")
-    gpu.add_argument("--sam31-hf-token-file", default="~/.blueprint-secrets/hf_token")
+    gpu.add_argument(
+        "--reconstruction-refresh-preflight",
+        action="store_true",
+        help=(
+            "Refresh mutation-free Vast capacity and provider inventory in the "
+            "preflight bundle before reconstruction admission."
+        ),
+    )
+    gpu.add_argument(
+        "--reconstruction-name-prefix",
+        default="blueprint-reconstruction-",
+    )
+    gpu.add_argument("--reconstruction-container-disk-bytes", type=int)
+    gpu.add_argument("--reconstruction-max-hourly-rate-usd", type=float)
     gpu.add_argument(
         "--qualification-action",
         choices=QUALIFICATION_SESSION_ACTIONS,
@@ -939,25 +1171,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _run_local_cpu_build(args)
         success = result.get("status") == "completed"
     elif args.command == "gpu-canary":
-        if args.probe_kind == SAM31_SOURCE_TRACK_PROBE_KIND:
-            source_blockers, checkout_commit = _source_checkout_blockers(
-                args.expected_source_commit or "",
-                allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
-            )
-            if source_blockers:
-                result = {
-                    "status": "blocked",
-                    "blockers": source_blockers,
-                    "provider_mutations_performed": 0,
-                }
-                write_json(Path(args.admission_out), result)
-            else:
-                result = run_sam31_paid_resource_allocator_lane(
-                    args, checkout_commit=checkout_commit
-                )
-            success = result.get("status") in {"dry_run_ready", "completed"}
-            print(json.dumps({"success": success}, sort_keys=True))
-            return 0 if success else 2
         if args.probe_kind == RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND:
             source_blockers, checkout_commit = _source_checkout_blockers(
                 args.expected_source_commit or "",

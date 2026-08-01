@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 from contextlib import closing
@@ -22,9 +23,11 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from .capture_intake import CaptureIntakeError, materialize_capture_intake
+from .capture_profile_validation import build_capture_profile_validation
 from .capture_qa import build_capture_qa_report
 from .capture_qa_webapp_sync import build_capture_qa_webapp_publication
 from .core.security_controls import strict_identifier
+from .native_360_normalization import probe_360_source
 
 
 CAPTURE_UPLOAD_TRANSFER_SCHEMA_VERSION = "capture_upload_transfer_submission.v1"
@@ -50,6 +53,10 @@ _MEDIA_TYPES = {
 }
 _MAX_BYTES = 50 * 1024 * 1024 * 1024
 _CHUNK_BYTES = 1024 * 1024
+_PROFILE_VALIDATION_PROFILES = {
+    "camera_360_equirectangular",
+    "camera_360_native",
+}
 
 
 class CaptureUploadTransferError(ValueError):
@@ -85,6 +92,33 @@ def _canonical(value: Mapping[str, Any]) -> str:
 
 def _digest(value: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+def _source_commit_sha(value: str | None) -> str:
+    configured = _text(value or os.getenv("BLUEPRINT_SOURCE_COMMIT")).lower()
+    if configured:
+        if re.fullmatch(r"[0-9a-f]{40}", configured) is None:
+            raise CaptureUploadTransferError(["capture_profile_source_commit_invalid"])
+        return configured
+    repository_root = Path(__file__).resolve().parents[2]
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository_root,
+            shell=False,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CaptureUploadTransferError(
+            ["capture_profile_source_commit_unavailable"]
+        ) from exc
+    commit = completed.stdout.strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise CaptureUploadTransferError(["capture_profile_source_commit_invalid"])
+    return commit
 
 
 def _write_once(path: Path, value: Mapping[str, Any]) -> None:
@@ -296,6 +330,7 @@ def _build_envelope(
         "idempotency_key": request["idempotency_key"],
         "capture_authority_profile": request["capture_authority_profile"],
         "source_type": request["source_type"],
+        "capture_digest": sha256_value,
         "original_files": [{
             "original_filename": filename,
             "relative_path": filename,
@@ -342,12 +377,15 @@ def process_capture_upload_submission(
     transfer_opener: Callable[..., ContextManager[BinaryIO]] | None = None,
     malware_scanner: Callable[[Path], Mapping[str, Any]] | None = None,
     qa_builder: Callable[..., Mapping[str, Any]] | None = None,
+    profile_probe: Callable[..., Mapping[str, Any]] | None = None,
+    source_commit_sha: str | None = None,
     timeout_seconds: float = 300.0,
 ) -> dict[str, Any]:
     """Stream, verify, scan, content-address, and admit one completed Web upload."""
 
     submission = _verified_submission(value)
     request = _mapping(submission["request"])
+    received_at = datetime.now(timezone.utc).isoformat()
     binding = {
         "capture_session_id": submission["capture_session_id"],
         "customer_id": submission["customer_id"],
@@ -461,6 +499,55 @@ def process_capture_upload_submission(
                 materialized.artifact_root / "capture_qa_report.json",
                 capture_qa_report,
             )
+            profile_validation: dict[str, Any] | None = None
+            profile = _text(request["capture_authority_profile"])
+            if profile in _PROFILE_VALIDATION_PROFILES:
+                probe = profile_probe or probe_360_source
+                try:
+                    probe_receipt = dict(
+                        probe(
+                            capture_root=upload_root,
+                            source_relative_path=filename,
+                        )
+                    )
+                    if probe_receipt.get("source_file_digest") != sha256_value:
+                        raise CaptureUploadTransferError(
+                            ["capture_profile_probe_source_digest_mismatch"]
+                        )
+                    commit = _source_commit_sha(source_commit_sha)
+                    profile_validation = build_capture_profile_validation(
+                        source_capture_digest=sha256_value,
+                        declared_capture_authority_profile=profile,
+                        probe_receipts=[probe_receipt],
+                        source_commit_sha=commit,
+                        implementation_digest=_digest(
+                            {
+                                "method": "capture_upload_360_profile_validation.v1",
+                                "source_commit_sha": commit,
+                            }
+                        ),
+                        timestamp=received_at,
+                        parent_artifact_or_event={
+                            "envelope_digest": materialized.envelope["envelope_digest"],
+                            "admission_digest": materialized.admission["admission_digest"],
+                        },
+                    )
+                except CaptureUploadTransferError:
+                    raise
+                except (TypeError, ValueError) as exc:
+                    blockers = getattr(exc, "codes", None) or getattr(
+                        exc, "errors", None
+                    )
+                    suffix = ":".join(str(item) for item in (blockers or ()))
+                    code = "capture_profile_validation_failed"
+                    raise CaptureUploadTransferError(
+                        [f"{code}:{suffix}" if suffix else code]
+                    ) from exc
+                _write_once(
+                    materialized.artifact_root
+                    / "evaluation_prep/capture_profile_validation.json",
+                    profile_validation,
+                )
     finally:
         # Do not retain the only in-process copies of the grant beyond transfer.
         url = ""
@@ -470,7 +557,7 @@ def process_capture_upload_submission(
         "schema_version": CAPTURE_UPLOAD_RECEIPT_SCHEMA_VERSION,
         "capture_session_id": submission["capture_session_id"],
         "intake_id": request["intake_id"],
-        "capture_upload_received_at": datetime.now(timezone.utc).isoformat(),
+        "capture_upload_received_at": received_at,
         "request_digest": request_digest,
         "envelope_digest": materialized.envelope["envelope_digest"],
         "capture_digest": materialized.content_objects[0]["sha256"],
@@ -484,6 +571,16 @@ def process_capture_upload_submission(
         },
         "malware_content_validation": dict(materialized.envelope["malware_content_validation"]),
         "capture_qa_report": capture_qa_report,
+        "capture_profile_validation_status": (
+            profile_validation["validation_status"]
+            if profile_validation is not None
+            else "not_applicable_to_profile"
+        ),
+        "capture_profile_validation_digest": (
+            profile_validation["capture_profile_validation_digest"]
+            if profile_validation is not None
+            else None
+        ),
         "already_exists": False,
         "proof_boundary": {
             "server_sha256_verified": True,

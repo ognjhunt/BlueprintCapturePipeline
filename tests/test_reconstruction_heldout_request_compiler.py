@@ -8,11 +8,6 @@ import jsonschema
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.processed_observation_dataset import (
-    PROCESSED_DATASET_SCHEMA_VERSION,
-    PROCESSED_HELDOUT_SCHEMA_VERSION,
-    PROCESSED_SPLIT_SCHEMA_VERSION,
-)
 from blueprint_pipeline.reconstruction_heldout_request_compiler import (
     HeldoutRequestCompilationError,
     RENDER_MANIFEST_SCHEMA_VERSION,
@@ -277,39 +272,6 @@ def test_compiler_binds_frozen_hidden_views_without_exposing_them_to_trainer() -
         "heldout_appearance_evaluation_request",
         "heldout_appearance_evaluator",
     }
-
-
-def test_compiler_accepts_explicit_processed_observation_schema_variants() -> None:
-    split = _split()
-    split["schema_version"] = PROCESSED_SPLIT_SCHEMA_VERSION
-    split["split_digest"] = canonical_digest(split, digest_field="split_digest")
-    request = _training_request(split["split_digest"])
-    result = _training_result(request)
-    dataset = _dataset(split["split_digest"])
-    dataset["schema_version"] = PROCESSED_DATASET_SCHEMA_VERSION
-    dataset["dataset_manifest_digest"] = canonical_digest(
-        dataset, digest_field="dataset_manifest_digest"
-    )
-    hidden = _hidden(split)
-    hidden["schema_version"] = PROCESSED_HELDOUT_SCHEMA_VERSION
-    hidden["hidden_heldout_digest"] = canonical_digest(
-        hidden, digest_field="hidden_heldout_digest"
-    )
-    compiled = compile_heldout_appearance_evaluation_request(
-        training_request=request,
-        training_result=result,
-        reconstruction_dataset_manifest=dataset,
-        frozen_split_manifest=split,
-        hidden_heldout_manifest=hidden,
-        candidate_render_manifest=_render(result, split),
-        evaluator_contract=_evaluator(split),
-        candidate_root="/trusted/candidate",
-        evaluator_root="/trusted/evaluator",
-        authority_used={"local_evaluation_allowed": True},
-        timestamp="2026-07-30T23:30:00Z",
-    )
-    assert compiled["frozen_split_digest"] == split["split_digest"]
-    assert compiled["candidate_had_hidden_access"] is False
 
 
 def test_compiler_rejects_training_leakage_and_render_set_drift() -> None:

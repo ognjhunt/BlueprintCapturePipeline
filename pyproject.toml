@@ -112,6 +112,13 @@ groot-libero-cpu = [
 validation = [
     "jsonschema>=4.23.0",
 ]
+# Independent held-out appearance evaluation v2: pinned LPIPS lane. The
+# evaluator fails closed with a typed blocker when this extra is absent.
+evaluation = [
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+    "lpips>=0.1.4",
+]
 dev = [
     "bandit==1.8.6",
     "httpx>=0.28.0",

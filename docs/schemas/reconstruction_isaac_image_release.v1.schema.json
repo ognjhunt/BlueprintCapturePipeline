@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_isaac_image_release.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version", "status", "blockers", "resolved_image_digest",
+    "source_commit_sha", "source_dirty_patch_sha256", "runnable_platform",
+    "worker_image_family", "isaac_sim_major_version", "image_manifest",
+    "image_manifest_digest", "build_receipt_status", "runtime_smoke_completed",
+    "provider_startup_proven", "isaac_compatibility_proven",
+    "simulator_task_success_proven", "physical_success_proven",
+    "deployment_readiness_proven", "raw_secret_values_recorded", "proof_effect",
+    "claim_ceiling", "image_release_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "reconstruction_isaac_image_release.v1"},
+    "status": {"const": "passed"},
+    "blockers": {"const": []},
+    "resolved_image_digest": {
+      "type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+    },
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source_dirty_patch_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runnable_platform": {"const": "linux/amd64"},
+    "worker_image_family": {"const": "isaac-eval-worker"},
+    "isaac_sim_major_version": {"const": 6},
+    "image_manifest": {"type": "object"},
+    "image_manifest_digest": {"$ref": "#/$defs/digest"},
+    "build_receipt_status": {"const": "registry_config_exact_source_verified"},
+    "runtime_smoke_completed": {"const": false},
+    "provider_startup_proven": {"const": false},
+    "isaac_compatibility_proven": {"const": false},
+    "simulator_task_success_proven": {"const": false},
+    "physical_success_proven": {"const": false},
+    "deployment_readiness_proven": {"const": false},
+    "raw_secret_values_recorded": {"const": false},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "immutable_isaac_image_release_engineering_only"},
+    "image_release_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

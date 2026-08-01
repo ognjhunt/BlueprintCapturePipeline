@@ -11,6 +11,7 @@ from blueprint_pipeline.reconstruction_validation_contracts import (
     CAMERA_RIG_VALIDATION_REQUEST_SCHEMA_VERSION,
     METRIC_SCALE_ANCHOR_SCHEMA_VERSION,
     METRIC_SCALE_VALIDATION_REQUEST_SCHEMA_VERSION,
+    RECONSTRUCTION_ANCHOR_MEASUREMENT_SCHEMA_VERSION,
     ReconstructionValidationContractError,
     build_camera_rig_validation_request,
     build_metric_scale_anchor,
@@ -30,7 +31,7 @@ from blueprint_pipeline.task_evaluation_supervisor.tools import non_spend_tool_b
 CAPTURE_DIGEST = "sha256:" + "1" * 64
 
 
-def _camera_rig_request(*, synchronized: bool = True) -> dict:
+def _camera_rig_request(*, synchronized: bool = True, capture_timeline_valid: bool = True) -> dict:
     rig = {
         "schema_version": "camera_360_rig_declaration.v1",
         "capture_digest": CAPTURE_DIGEST,
@@ -38,13 +39,12 @@ def _camera_rig_request(*, synchronized: bool = True) -> dict:
         "rig_is_fixed": True,
         "blockers": [],
     }
-    rig["rig_declaration_digest"] = canonical_digest(
-        rig, digest_field="rig_declaration_digest"
-    )
+    rig["rig_declaration_digest"] = canonical_digest(rig, digest_field="rig_declaration_digest")
     binding = {
         "schema_version": "dual_fisheye_stream_binding.v1",
         "capture_digest": CAPTURE_DIGEST,
         "all_segments_synchronized": synchronized,
+        "capture_timeline_valid": capture_timeline_valid,
         "original_distorted_pixels_preserved": True,
         "blockers": [] if synchronized else ["native_360_lens_streams_unsynchronized"],
     }
@@ -85,10 +85,29 @@ def _scale_request(*, estimated: float = 2.01, learned_only: bool = False) -> di
             "reconstruction_result_digest": "sha256:" + "4" * 64,
             "frozen_split_digest": "sha256:" + "5" * 64,
             "anchor": anchor,
-            "estimated_anchor_distance_units": estimated,
+            "reconstruction_anchor_measurement": {
+                "schema_version": RECONSTRUCTION_ANCHOR_MEASUREMENT_SCHEMA_VERSION,
+                "source_capture_digest": CAPTURE_DIGEST,
+                "reconstruction_result_digest": "sha256:" + "4" * 64,
+                "frozen_split_digest": "sha256:" + "5" * 64,
+                "anchor_id": "site-wall-1",
+                "endpoint_a": [0.0, 0.0, 0.0],
+                "endpoint_b": [estimated, 0.0, 0.0],
+                "coordinate_frame_declaration": {
+                    "frame": "reconstruction_world",
+                    "units": "reconstruction_units",
+                },
+                "evaluator_identity": "blueprint.independent_anchor_evaluator",
+                "evaluator_implementation_digest": "sha256:" + "6" * 64,
+                "independent_evaluator": True,
+                "measurement_frozen_before_validation": True,
+                "candidate_may_change_measurement": False,
+                "candidate_self_graded": False,
+            },
             "maximum_relative_error": 0.02,
             "threshold_frozen_before_validation": True,
             "candidate_may_change_anchor": False,
+            "anchor_selected_before_reconstruction": True,
             "timestamp": "2026-07-30T20:00:00Z",
         }
     )
@@ -98,6 +117,7 @@ def test_camera_rig_validation_accepts_only_fixed_calibrated_synchronized_rig() 
     request = _camera_rig_request()
     accepted = validate_camera_rig(request)
     rejected = validate_camera_rig(_camera_rig_request(synchronized=False))
+    invalid_timeline = validate_camera_rig(_camera_rig_request(capture_timeline_valid=False))
 
     assert accepted["status"] == "validated"
     assert accepted["claim_ceiling"] == "calibrated_camera_rig"
@@ -105,6 +125,9 @@ def test_camera_rig_validation_accepts_only_fixed_calibrated_synchronized_rig() 
     assert accepted["camera_trajectory_proven"] is False
     assert rejected["status"] == "rejected"
     assert rejected["claim_ceiling"] == "decoded_native_container"
+    assert invalid_timeline["status"] == "rejected"
+    assert invalid_timeline["blockers"] == ["camera_rig_capture_timeline_invalid"]
+    assert invalid_timeline["capture_timeline_valid"] is False
     schema = json.loads(
         (
             Path(__file__).parents[1]
@@ -123,6 +146,11 @@ def test_metric_scale_requires_independent_anchor_and_frozen_residual_threshold(
 
     assert accepted["status"] == "validated"
     assert accepted["relative_error"] == pytest.approx(0.005)
+    assert accepted["estimated_anchor_distance_units"] == pytest.approx(2.01)
+    assert (
+        accepted["reconstruction_anchor_measurement_digest"]
+        == request["reconstruction_anchor_measurement"]["reconstruction_anchor_measurement_digest"]
+    )
     assert accepted["claim_ceiling"] == "metric_scale"
     assert accepted["learned_or_monocular_depth_established_scale"] is False
     assert rejected["status"] == "rejected"
@@ -140,6 +168,24 @@ def test_metric_scale_requires_independent_anchor_and_frozen_residual_threshold(
 
     with pytest.raises(ReconstructionValidationContractError, match="independent_evidence"):
         _scale_request(learned_only=True)
+
+    self_graded = _scale_request()
+    self_graded.pop("metric_scale_validation_request_digest")
+    measurement = dict(self_graded["reconstruction_anchor_measurement"])
+    measurement.pop("reconstruction_anchor_measurement_digest")
+    measurement["candidate_self_graded"] = True
+    self_graded["reconstruction_anchor_measurement"] = measurement
+    with pytest.raises(
+        ReconstructionValidationContractError,
+        match="reconstruction_anchor_measurement_independence_invalid",
+    ):
+        build_metric_scale_validation_request(self_graded)
+
+    with pytest.raises(
+        ReconstructionValidationContractError,
+        match="reconstruction_anchor_distance_invalid",
+    ):
+        _scale_request(estimated=0.0)
 
 
 def test_registered_rig_and_scale_tools_are_digest_only_and_non_authoritative(

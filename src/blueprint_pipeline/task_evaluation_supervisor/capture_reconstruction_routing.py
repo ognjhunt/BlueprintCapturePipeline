@@ -33,6 +33,12 @@ _VIDEO_PROFILES = {
     "camera_360_native",
     "monocular_video",
 }
+_STRICT_360_PROFILES = {"camera_360_equirectangular", "camera_360_native"}
+_STRICT_ARKIT_PROFILES = {"iphone_arkit_lidar", "iphone_arkit_non_lidar"}
+_PROFILE_VALIDATION_PATHS = {
+    "evaluation_prep/capture_profile_validation.json",
+    "pipeline/evaluation_prep/capture_profile_validation.json",
+}
 
 _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
     "iphone_arkit_lidar": (
@@ -129,13 +135,13 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
     "camera_360_native": (
         ("retain_native_360_originals", "capture_validation", "required_deterministic_gate"),
         (
-            "compile_frozen_frame_dataset",
-            "capture_reconstruction_dataset_compilation",
+            "normalize_native_360_capture",
+            "native_360_normalization",
             "registered_conditional",
         ),
         (
-            "normalize_native_360_capture",
-            "native_360_normalization",
+            "compile_frozen_frame_dataset",
+            "capture_reconstruction_dataset_compilation",
             "registered_conditional",
         ),
         ("validate_camera_rig", "camera_rig_validation", "registered_conditional"),
@@ -224,6 +230,92 @@ def _declared_profiles(capture_build: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(profiles))
 
 
+def _capture_digest_candidates(capture_build: Mapping[str, Any]) -> tuple[str, ...]:
+    values: set[str] = set()
+    for artifact in capture_build.get("artifacts", []):
+        if not isinstance(artifact, Mapping):
+            continue
+        projection = artifact.get("approved_projection")
+        if not isinstance(projection, Mapping):
+            continue
+        value = str(projection.get("capture_digest") or "").strip()
+        if value:
+            values.add(value)
+    return tuple(sorted(values))
+
+
+def _profile_validation_projection(
+    capture_build: Mapping[str, Any], *, declared_profile: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    projections: list[dict[str, Any]] = []
+    for artifact in capture_build.get("artifacts", []):
+        if not isinstance(artifact, Mapping) or artifact.get("relative_path") not in (
+            _PROFILE_VALIDATION_PATHS
+        ):
+            continue
+        projection = artifact.get("approved_projection")
+        if not isinstance(projection, Mapping):
+            return None, "invalid"
+        value = dict(projection)
+        required = {
+            "schema_version",
+            "source_capture_digest",
+            "declared_capture_authority_profile",
+            "compatible_capture_authority_profile",
+            "validation_status",
+            "probe_receipt_digests",
+            "probe_source_file_digests",
+            "observed_processing_lanes",
+            "native_normalization_digest",
+            "blockers",
+            "agent_selected_capture_profile",
+            "agent_may_change_capture_profile",
+            "proof_effect",
+            "claim_ceiling",
+            "legal_next_actions",
+            "capture_profile_routing_binding_digest",
+            "capture_profile_validation_digest",
+        }
+        if not required.issubset(value):
+            return None, "invalid"
+        routing_binding = {key: value[key] for key in required if key not in {
+            "capture_profile_routing_binding_digest",
+            "capture_profile_validation_digest",
+        }}
+        if (
+            value.get("schema_version") != "capture_profile_validation.v1"
+            or value.get("capture_profile_routing_binding_digest")
+            != canonical_digest(routing_binding)
+            or re.fullmatch(
+                r"sha256:[0-9a-f]{64}",
+                str(value.get("capture_profile_validation_digest") or ""),
+            )
+            is None
+            or value.get("agent_selected_capture_profile") is not False
+            or value.get("agent_may_change_capture_profile") is not False
+            or value.get("claim_ceiling") != "capture_profile_compatibility"
+        ):
+            return None, "invalid"
+        projections.append(value)
+    if not projections:
+        return None, None
+    unique = {
+        str(value["capture_profile_routing_binding_digest"]): value
+        for value in projections
+    }
+    if len(unique) != 1:
+        return None, "invalid"
+    projection = next(iter(unique.values()))
+    capture_digests = _capture_digest_candidates(capture_build)
+    if (
+        len(capture_digests) != 1
+        or projection.get("source_capture_digest") != capture_digests[0]
+        or projection.get("declared_capture_authority_profile") != declared_profile
+    ):
+        return None, "invalid"
+    return projection, None
+
+
 def _required_representations(claim_types: Sequence[str]) -> list[str]:
     claims = {str(item).strip() for item in claim_types if str(item).strip()}
     required = {"appearance_layer"}
@@ -256,6 +348,8 @@ def build_capture_reconstruction_route(
     capture_build = validate_capture_build_ingress(capture_build_value)
     profiles = _declared_profiles(capture_build)
     blockers: list[str] = []
+    profile_validation_status = "not_applicable_to_profile"
+    profile_validation_digest: str | None = None
     if not profiles:
         status = "capture_profile_required"
         profile: str | None = None
@@ -267,6 +361,41 @@ def build_capture_reconstruction_route(
     else:
         status = "route_proposed"
         profile = profiles[0]
+        if profile in _STRICT_360_PROFILES:
+            validation, validation_error = _profile_validation_projection(
+                capture_build,
+                declared_profile=profile,
+            )
+            if validation_error is not None:
+                status = "capture_profile_validation_invalid"
+                profile = None
+                profile_validation_status = "invalid"
+                blockers.append("deterministic_capture_profile_validation_invalid")
+            elif validation is None:
+                status = "capture_profile_validation_required"
+                profile = None
+                profile_validation_status = "required_missing"
+                blockers.append("deterministic_capture_profile_validation_missing")
+            else:
+                profile_validation_digest = str(
+                    validation["capture_profile_validation_digest"]
+                )
+                if (
+                    validation.get("validation_status") != "validated"
+                    or validation.get("compatible_capture_authority_profile")
+                    != profiles[0]
+                    or validation.get("blockers") != []
+                    or validation.get("proof_effect")
+                    != "capture_profile_validation_only"
+                ):
+                    status = "capture_profile_validation_failed"
+                    profile = None
+                    profile_validation_status = "blocked"
+                    blockers.append("deterministic_capture_profile_validation_failed")
+                else:
+                    profile_validation_status = "validated"
+        elif profile in _STRICT_ARKIT_PROFILES:
+            profile_validation_status = "required_raw_contract_gate"
 
     stages = [
         {
@@ -305,6 +434,8 @@ def build_capture_reconstruction_route(
         "status": status,
         "capture_authority_profile": profile,
         "declared_profile_candidates": list(profiles),
+        "capture_profile_validation_status": profile_validation_status,
+        "capture_profile_validation_digest": profile_validation_digest,
         "requested_claim_types": _strings(list(requested_claim_types)),
         "required_representations": _required_representations(requested_claim_types),
         "stages": stages,
@@ -313,6 +444,12 @@ def build_capture_reconstruction_route(
         "next_legal_action": (
             "compile_profile_specific_reconstruction_plan"
             if status == "route_proposed"
+            else "request_deterministic_capture_profile_validation"
+            if status == "capture_profile_validation_required"
+            else "request_corrected_capture_intake"
+            if status == "capture_profile_validation_failed"
+            else "preserve_evidence_and_stop"
+            if status == "capture_profile_validation_invalid"
             else "request_validated_capture_profile"
         ),
         "agent_selected_capture_profile": False,
@@ -336,6 +473,8 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
         "status",
         "capture_authority_profile",
         "declared_profile_candidates",
+        "capture_profile_validation_status",
+        "capture_profile_validation_digest",
         "requested_claim_types",
         "required_representations",
         "stages",
@@ -373,7 +512,15 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
         route.get("schema_version") != CAPTURE_RECONSTRUCTION_ROUTE_SCHEMA_VERSION
         or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
         or route.get("capture_reconstruction_route_digest") != expected_digest
-        or status not in {"route_proposed", "capture_profile_required", "ambiguous_capture_profile"}
+        or status
+        not in {
+            "route_proposed",
+            "capture_profile_required",
+            "ambiguous_capture_profile",
+            "capture_profile_validation_required",
+            "capture_profile_validation_failed",
+            "capture_profile_validation_invalid",
+        }
         or not isinstance(stages, list)
         or not all(isinstance(row, Mapping) for row in stages)
         or route.get("declared_profile_candidates") != candidates
@@ -430,6 +577,29 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
             or adapters != sorted(expected_adapters)
             or blockers
             or route.get("next_legal_action") != "compile_profile_specific_reconstruction_plan"
+            or (
+                profile in _STRICT_360_PROFILES
+                and (
+                    route.get("capture_profile_validation_status") != "validated"
+                    or re.fullmatch(
+                        r"sha256:[0-9a-f]{64}",
+                        str(route.get("capture_profile_validation_digest") or ""),
+                    )
+                    is None
+                )
+            )
+            or (
+                profile not in _STRICT_360_PROFILES
+                and (
+                    route.get("capture_profile_validation_status")
+                    != (
+                        "required_raw_contract_gate"
+                        if profile in _STRICT_ARKIT_PROFILES
+                        else "not_applicable_to_profile"
+                    )
+                    or route.get("capture_profile_validation_digest") is not None
+                )
+            )
         ):
             raise CaptureReconstructionRouteError("capture_reconstruction_route_profile_invalid")
     else:
@@ -437,6 +607,30 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
             ["validated_capture_authority_profile_missing"]
             if status == "capture_profile_required"
             else ["conflicting_capture_authority_profiles"]
+            if status == "ambiguous_capture_profile"
+            else ["deterministic_capture_profile_validation_missing"]
+            if status == "capture_profile_validation_required"
+            else ["deterministic_capture_profile_validation_failed"]
+            if status == "capture_profile_validation_failed"
+            else ["deterministic_capture_profile_validation_invalid"]
+        )
+        expected_validation_status = (
+            "required_missing"
+            if status == "capture_profile_validation_required"
+            else "blocked"
+            if status == "capture_profile_validation_failed"
+            else "invalid"
+            if status == "capture_profile_validation_invalid"
+            else "not_applicable_to_profile"
+        )
+        expected_next_action = (
+            "request_deterministic_capture_profile_validation"
+            if status == "capture_profile_validation_required"
+            else "request_corrected_capture_intake"
+            if status == "capture_profile_validation_failed"
+            else "preserve_evidence_and_stop"
+            if status == "capture_profile_validation_invalid"
+            else "request_validated_capture_profile"
         )
         if (
             profile is not None
@@ -445,7 +639,28 @@ def validate_capture_reconstruction_route(value: Mapping[str, Any]) -> dict[str,
             or blockers != expected_blocker
             or (status == "capture_profile_required" and candidates)
             or (status == "ambiguous_capture_profile" and len(candidates) < 2)
-            or route.get("next_legal_action") != "request_validated_capture_profile"
+            or (
+                status.startswith("capture_profile_validation_")
+                and len(candidates) != 1
+            )
+            or route.get("capture_profile_validation_status")
+            != expected_validation_status
+            or (
+                status in {
+                    "capture_profile_validation_required",
+                    "capture_profile_validation_invalid",
+                }
+                and route.get("capture_profile_validation_digest") is not None
+            )
+            or (
+                status == "capture_profile_validation_failed"
+                and re.fullmatch(
+                    r"sha256:[0-9a-f]{64}",
+                    str(route.get("capture_profile_validation_digest") or ""),
+                )
+                is None
+            )
+            or route.get("next_legal_action") != expected_next_action
         ):
             raise CaptureReconstructionRouteError(
                 "capture_reconstruction_route_unresolved_shape_invalid"

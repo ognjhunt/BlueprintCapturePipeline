@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/isaac_splat_nurec_render_result.v3.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "isaac_verification_request_digest",
+    "package_digest",
+    "fixed_camera_spec_digest",
+    "runtime_container_image_digest",
+    "runtime_implementation_digest",
+    "runtime_identity",
+    "raw_secret_values_recorded",
+    "isaac_runtime_result_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "isaac_splat_nurec_render_result.v3"},
+    "status": {"enum": ["running", "completed", "blocked"]},
+    "isaac_verification_request_digest": {"$ref": "#/$defs/digest"},
+    "package_digest": {"$ref": "#/$defs/digest"},
+    "fixed_camera_spec_digest": {"$ref": "#/$defs/digest"},
+    "runtime_container_image_digest": {
+      "type": "string",
+      "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+    },
+    "runtime_implementation_digest": {"$ref": "#/$defs/digest"},
+    "runtime_identity": {
+      "type": "object",
+      "required": ["runtime", "renderer", "python_version", "headless"],
+      "properties": {
+        "runtime": {"const": "isaac_sim"},
+        "renderer": {"type": "string", "minLength": 1},
+        "python_version": {"type": "string", "minLength": 1},
+        "headless": {"const": true}
+      },
+      "additionalProperties": true
+    },
+    "raw_secret_values_recorded": {"const": false},
+    "cost_usd": {"type": "number", "minimum": 0},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "stage": {
+      "type": "object",
+      "required": [
+        "meters_per_unit",
+        "up_axis",
+        "transforms_valid",
+        "dependency_inspection_available",
+        "missing_asset_count",
+        "particlefield_prim_count",
+        "active_collision_prim_count",
+        "obvious_scale_mismatch_detected",
+        "expected_prim_paths"
+      ],
+      "properties": {
+        "meters_per_unit": {"const": 1.0},
+        "up_axis": {"const": "Z"},
+        "transforms_valid": {"const": true},
+        "dependency_inspection_available": {"const": true},
+        "missing_asset_count": {"const": 0},
+        "particlefield_prim_count": {"type": "integer", "minimum": 1},
+        "active_collision_prim_count": {"type": "integer", "minimum": 1},
+        "obvious_scale_mismatch_detected": {"const": false},
+        "expected_prim_paths": {
+          "const": {
+            "appearance": "/World/BlueprintReconstruction/Appearance",
+            "collision": "/World/BlueprintReconstruction/Collision"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "physics_probe": {
+      "type": "object",
+      "required": [
+        "ground_contact_surface_present",
+        "steps_executed",
+        "live_rigid_body_pose_observed",
+        "test_body_fell_through_floor",
+        "contact_event_count",
+        "probe_configuration"
+      ],
+      "properties": {
+        "ground_contact_surface_present": {"const": true},
+        "steps_executed": {"type": "integer", "minimum": 2},
+        "live_rigid_body_pose_observed": {"const": true},
+        "test_body_fell_through_floor": {"const": false},
+        "contact_event_count": {"type": "integer", "minimum": 1},
+        "probe_configuration": {
+          "const": {
+            "test_body": {
+              "shape": "cube",
+              "size_m": 0.1,
+              "mass_kg": 1.0,
+              "spawn_height_above_ground_m": 0.5
+            },
+            "gravity_m_s2": -9.81,
+            "physics_dt_seconds": 0.016666666666666666
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "cameras": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "artifact_reference",
+          "digest",
+          "width",
+          "height",
+          "pixel_mean",
+          "pixel_std",
+          "nonblank"
+        ],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "artifact_reference": {"type": "string", "pattern": "^[^/].*\\.png$"},
+          "digest": {"$ref": "#/$defs/digest"},
+          "width": {"type": "integer", "minimum": 1},
+          "height": {"type": "integer", "minimum": 1},
+          "pixel_mean": {"type": "number"},
+          "pixel_std": {"type": "number", "exclusiveMinimum": 3.0},
+          "nonblank": {"const": true}
+        },
+        "additionalProperties": true
+      }
+    },
+    "proof_boundary": {
+      "type": "object",
+      "required": [
+        "isaac_load_render_physics_presence_compatibility",
+        "simulator_task_success_proven",
+        "physics_navigation_control_proven",
+        "physical_success_proven",
+        "physical_robot_readiness_proven",
+        "deployment_readiness_proven"
+      ],
+      "properties": {
+        "isaac_load_render_physics_presence_compatibility": {"type": "boolean"},
+        "simulator_task_success_proven": {"const": false},
+        "physics_navigation_control_proven": {"const": false},
+        "physical_success_proven": {"const": false},
+        "physical_robot_readiness_proven": {"const": false},
+        "deployment_readiness_proven": {"const": false}
+      },
+      "additionalProperties": true
+    },
+    "isaac_runtime_result_digest": {"$ref": "#/$defs/digest"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "completed"}}},
+      "then": {
+        "required": [
+          "cost_usd",
+          "duration_seconds",
+          "stage",
+          "physics_probe",
+          "cameras",
+          "proof_boundary"
+        ],
+        "properties": {
+          "proof_boundary": {
+            "type": "object",
+            "required": [
+              "isaac_load_render_physics_presence_compatibility",
+              "simulator_task_success_proven",
+              "physics_navigation_control_proven",
+              "physical_success_proven",
+              "physical_robot_readiness_proven",
+              "deployment_readiness_proven"
+            ],
+            "properties": {
+              "isaac_load_render_physics_presence_compatibility": {"const": true},
+              "simulator_task_success_proven": {"const": false},
+              "physics_navigation_control_proven": {"const": false},
+              "physical_success_proven": {"const": false},
+              "physical_robot_readiness_proven": {"const": false},
+              "deployment_readiness_proven": {"const": false}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

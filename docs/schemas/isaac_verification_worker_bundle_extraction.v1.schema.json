@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/isaac_verification_worker_bundle_extraction.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version", "status", "bundle_digest", "bundle_manifest_digest",
+    "isaac_verification_request_digest", "extracted_members",
+    "raw_secret_values_extracted", "provider_allocation_inferred", "proof_effect",
+    "claim_ceiling", "extraction_receipt_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "isaac_verification_worker_bundle_extraction.v1"},
+    "status": {"const": "extracted"},
+    "bundle_digest": {"$ref": "#/$defs/digest"},
+    "bundle_manifest_digest": {"$ref": "#/$defs/digest"},
+    "isaac_verification_request_digest": {"$ref": "#/$defs/digest"},
+    "extracted_members": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["archive_path", "digest", "bytes"],
+        "properties": {
+          "archive_path": {
+            "enum": [
+              "bundle_manifest.json", "fixed_cameras.json",
+              "isaac_asset_verification_request.v1.json", "reconstruction.usdz",
+              "run_isaac_splat_nurec_render.py"
+            ]
+          },
+          "digest": {"$ref": "#/$defs/digest"},
+          "bytes": {"type": "integer", "minimum": 1, "maximum": 4000000000}
+        },
+        "additionalProperties": false
+      }
+    },
+    "raw_secret_values_extracted": {"const": false},
+    "provider_allocation_inferred": {"const": false},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "isaac_candidate_input_materialization_only"},
+    "extraction_receipt_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

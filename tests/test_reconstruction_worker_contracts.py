@@ -8,10 +8,16 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_worker_contracts import (
+    BUILD_REQUIREMENTS_LOCK_SHA256,
+    CONTRACT_ONLY_TRAINER_METHODS,
     FAILURE_CODES,
     PINNED_MODEL_ASSETS,
     PINNED_WORKER_COMPONENTS,
+    REQUIREMENTS_LOCK_SHA256,
+    PREFERRED_GAUSSIAN_TRAINER_METHOD_PROFILE_ID,
+    THREEDGRUT_EXECUTABLE_TRAINER_METHODS,
     ReconstructionWorkerContractError,
+    build_candidate_worker_stack_manifest,
     build_checkpoint_manifest,
     build_pose_estimation_request,
     build_pose_estimation_result,
@@ -20,6 +26,7 @@ from blueprint_pipeline.reconstruction_worker_contracts import (
     build_worker_build_receipt,
     build_worker_smoke_receipt,
     build_worker_stack_manifest,
+    main as worker_contracts_main,
 )
 from blueprint_pipeline.reconstruction_worker_build_packet import (
     ALLOCATOR_ENTRYPOINT,
@@ -166,7 +173,10 @@ def test_worker_manifest_pins_headless_cuda_onnx_colmap_and_gaussian_stacks():
     assert components["linux_base"]["linux_amd64_digest"] == (
         "sha256:5645fec64549cc35930eee9d85aafd2b0006c0c3f22632be5a1d85e2604e9749"
     )
-    assert components["colmap"]["version"] == "4.1.1"
+    assert components["colmap"]["version"] == "4.0.4"
+    assert components["colmap"]["source_revision"] == (
+        "9c23f6942fe69962e06030905e77067c8673382f"
+    )
     assert components["colmap"]["build_options"] == {
         "CUDA_ENABLED": True,
         "ONNX_ENABLED": True,
@@ -175,8 +185,18 @@ def test_worker_manifest_pins_headless_cuda_onnx_colmap_and_gaussian_stacks():
         "CMAKE_CUDA_ARCHITECTURES": [75, 80, 86, 89],
     }
     assert components["onnxruntime"]["version"] == "1.24.4"
+    assert components["ffmpeg"]["source_revision"] == (
+        "n6.1.1;source-sha256:"
+        "8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968"
+    )
     assert components["gsplat"]["version"] == "1.5.3"
     assert components["threedgrut"]["version"] == "1.1.0"
+    assert components["fused_ssim"]["source_revision"] == (
+        "1272e21a282342e89537159e4bad508b19b34157"
+    )
+    assert REQUIREMENTS_LOCK_SHA256 in components["python_ml_runtime"]["source_revision"]
+    assert BUILD_REQUIREMENTS_LOCK_SHA256 in components["python_ml_runtime"]["source_revision"]
+    assert REQUIREMENTS_LOCK_SHA256 in components["deterministic_qa"]["source_revision"]
     assert manifest["qualification_status"] == "candidate_unbuilt"
     assert manifest["hidden_heldout_access"] is False
     assert manifest["trainer_self_grading"] is False
@@ -191,9 +211,21 @@ def test_worker_manifest_pins_headless_cuda_onnx_colmap_and_gaussian_stacks():
         "python_ml_runtime",
         "openusd",
         "threedgrut",
+        "fused_ssim",
         "deterministic_qa",
     }
     assert len(PINNED_MODEL_ASSETS) == 4
+
+
+def test_worker_contract_names_one_preferred_3dgrut_profile_and_replay_alias() -> None:
+    assert PREFERRED_GAUSSIAN_TRAINER_METHOD_PROFILE_ID == (
+        "nvidia_3dgrut_3dgut_mcmc_v1"
+    )
+    assert THREEDGRUT_EXECUTABLE_TRAINER_METHODS == {
+        "nvidia_3dgrut_3dgut_mcmc_v1",
+        "gsplat_3dgut_mcmc_v1",
+    }
+    assert CONTRACT_ONLY_TRAINER_METHODS == {"gsplat_3dgs_mcmc_v1"}
 
 
 def test_worker_manifest_cannot_claim_driver_test_before_build():
@@ -206,6 +238,27 @@ def test_worker_manifest_cannot_claim_driver_test_before_build():
                 "tested_driver_range": {"minimum": "550.54"},
             }
         )
+
+
+def test_candidate_worker_manifest_cli_is_source_bound_and_replayable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "worker-stack.json"
+    assert worker_contracts_main(
+        ["--source-commit", SHA, "--output", str(output)]
+    ) == 0
+    first = json.loads(output.read_text(encoding="utf-8"))
+    second = build_candidate_worker_stack_manifest(source_commit_sha=SHA)
+    summary = json.loads(capsys.readouterr().out)
+
+    assert first == second
+    assert summary["source_commit_sha"] == SHA
+    assert summary["qualification_status"] == "candidate_unbuilt"
+    assert summary["worker_stack_manifest_digest"] == first[
+        "worker_stack_manifest_digest"
+    ]
+    assert first["components"] == list(PINNED_WORKER_COMPONENTS)
+    assert first["model_assets"] == list(PINNED_MODEL_ASSETS)
 
 
 def test_build_and_smoke_receipts_do_not_imply_scientific_qualification():
@@ -631,6 +684,7 @@ def test_worker_build_packet_fails_closed_without_clean_sha_locks_and_paid_autho
         source_worktree_dirty=True,
         build_recipe_digest=None,
         dependency_lock_digest=None,
+        license_inventory_digest=None,
         license_review_receipt_digest=None,
         max_spend_usd=None,
         ttl_seconds=None,
@@ -646,6 +700,7 @@ def test_worker_build_packet_fails_closed_without_clean_sha_locks_and_paid_autho
         "worker_build_requires_clean_immutable_commit",
         "worker_build_recipe_digest_missing",
         "worker_dependency_lock_digest_missing",
+        "worker_license_inventory_digest_missing",
         "worker_license_review_receipt_missing",
         "worker_build_explicit_budget_missing",
         "worker_build_explicit_ttl_missing",
@@ -663,6 +718,7 @@ def test_worker_build_packet_can_become_ready_but_never_launches_or_selects_prov
         source_worktree_dirty=False,
         build_recipe_digest=D2,
         dependency_lock_digest=D3,
+        license_inventory_digest=D4,
         license_review_receipt_digest=D4,
         max_spend_usd=3.0,
         ttl_seconds=3600,
@@ -679,7 +735,7 @@ def test_worker_build_packet_can_become_ready_but_never_launches_or_selects_prov
     schema = json.loads(
         (
             Path(__file__).resolve().parents[1]
-            / "docs/schemas/reconstruction_worker_build_packet.v1.schema.json"
+            / "docs/schemas/reconstruction_worker_build_packet.v2.schema.json"
         ).read_text(encoding="utf-8")
     )
     jsonschema.validate(packet, schema)
@@ -710,6 +766,12 @@ def test_recorded_proxy_cannot_enter_trainer_without_resolved_worker_image() -> 
     assert stack["worker_stack_manifest_digest"] == canonical_digest(
         stack, digest_field="worker_stack_manifest_digest"
     )
+    assert stack["worker_stack_manifest_digest"] != _worker_manifest()[
+        "worker_stack_manifest_digest"
+    ]
+    assert next(
+        row for row in stack["components"] if row["component_id"] == "colmap"
+    )["version"] == "4.1.1"
     assert admission["build_packet_digest"] == canonical_digest(
         admission, digest_field="build_packet_digest"
     )

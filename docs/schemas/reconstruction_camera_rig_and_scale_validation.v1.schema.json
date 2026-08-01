@@ -6,6 +6,7 @@
     {"$ref": "#/$defs/rig_request"},
     {"$ref": "#/$defs/rig_result"},
     {"$ref": "#/$defs/anchor"},
+    {"$ref": "#/$defs/reconstruction_anchor_measurement"},
     {"$ref": "#/$defs/scale_request"},
     {"$ref": "#/$defs/scale_result"}
   ],
@@ -51,24 +52,46 @@
       },
       "additionalProperties": true
     },
+    "reconstruction_anchor_measurement": {
+      "type": "object",
+      "required": ["schema_version", "source_capture_digest", "reconstruction_result_digest", "frozen_split_digest", "anchor_id", "endpoint_a", "endpoint_b", "coordinate_frame_declaration", "evaluator_identity", "evaluator_implementation_digest", "independent_evaluator", "measurement_frozen_before_validation", "candidate_may_change_measurement", "candidate_self_graded", "reconstruction_anchor_measurement_digest"],
+      "properties": {
+        "schema_version": {"const": "reconstruction_anchor_measurement.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "reconstruction_result_digest": {"$ref": "#/$defs/sha256"},
+        "frozen_split_digest": {"$ref": "#/$defs/sha256"},
+        "endpoint_a": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "endpoint_b": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "evaluator_implementation_digest": {"$ref": "#/$defs/sha256"},
+        "independent_evaluator": {"const": true},
+        "measurement_frozen_before_validation": {"const": true},
+        "candidate_may_change_measurement": {"const": false},
+        "candidate_self_graded": {"const": false},
+        "reconstruction_anchor_measurement_digest": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
     "scale_request": {
       "type": "object",
-      "required": ["schema_version", "source_capture_digest", "reconstruction_result_digest", "frozen_split_digest", "anchor", "estimated_anchor_distance_units", "maximum_relative_error", "threshold_frozen_before_validation", "candidate_may_change_anchor", "timestamp", "metric_scale_validation_request_digest"],
+      "required": ["schema_version", "source_capture_digest", "reconstruction_result_digest", "frozen_split_digest", "anchor", "reconstruction_anchor_measurement", "estimated_anchor_distance_units", "maximum_relative_error", "threshold_frozen_before_validation", "candidate_may_change_anchor", "anchor_selected_before_reconstruction", "timestamp", "metric_scale_validation_request_digest"],
       "properties": {
-        "schema_version": {"const": "metric_scale_validation_request.v1"},
+        "schema_version": {"const": "metric_scale_validation_request.v2"},
         "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "reconstruction_anchor_measurement": {"$ref": "#/$defs/reconstruction_anchor_measurement"},
         "threshold_frozen_before_validation": {"const": true},
         "candidate_may_change_anchor": {"const": false},
+        "anchor_selected_before_reconstruction": {"const": true},
         "metric_scale_validation_request_digest": {"$ref": "#/$defs/sha256"}
       },
       "additionalProperties": true
     },
     "scale_result": {
       "type": "object",
-      "required": ["schema_version", "source_capture_digest", "metric_scale_validation_request_digest", "status", "relative_error", "learned_or_monocular_depth_established_scale", "agent_changed_anchor_or_threshold", "proof_effect", "claim_ceiling", "metric_scale_validation_result_digest"],
+      "required": ["schema_version", "source_capture_digest", "metric_scale_validation_request_digest", "reconstruction_anchor_measurement_digest", "status", "relative_error", "learned_or_monocular_depth_established_scale", "agent_changed_anchor_or_threshold", "proof_effect", "claim_ceiling", "metric_scale_validation_result_digest"],
       "properties": {
-        "schema_version": {"const": "metric_scale_validation_result.v1"},
+        "schema_version": {"const": "metric_scale_validation_result.v2"},
         "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "reconstruction_anchor_measurement_digest": {"$ref": "#/$defs/sha256"},
         "status": {"enum": ["validated", "rejected"]},
         "learned_or_monocular_depth_established_scale": {"const": false},
         "agent_changed_anchor_or_threshold": {"const": false},

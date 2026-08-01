@@ -8,11 +8,6 @@ from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .processed_observation_dataset import (
-    PROCESSED_DATASET_SCHEMA_VERSION,
-    PROCESSED_HELDOUT_SCHEMA_VERSION,
-    PROCESSED_SPLIT_SCHEMA_VERSION,
-)
 from .reconstruction_heldout_evaluation import (
     HELDOUT_APPEARANCE_REQUEST_SCHEMA_VERSION,
     build_heldout_appearance_evaluation_request,
@@ -27,18 +22,6 @@ from .reconstruction_worker_contracts import (
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 RENDER_MANIFEST_SCHEMA_VERSION = "candidate_heldout_render_manifest.v1"
-_DATASET_SCHEMA_VERSIONS = {
-    "reconstruction_dataset_manifest.v1",
-    PROCESSED_DATASET_SCHEMA_VERSION,
-}
-_SPLIT_SCHEMA_VERSIONS = {
-    "frozen_reconstruction_split_manifest.v1",
-    PROCESSED_SPLIT_SCHEMA_VERSION,
-}
-_HELDOUT_SCHEMA_VERSIONS = {
-    "hidden_heldout_evaluator_manifest.v1",
-    PROCESSED_HELDOUT_SCHEMA_VERSION,
-}
 
 
 class HeldoutRequestCompilationError(ValueError):
@@ -155,14 +138,14 @@ def compile_heldout_appearance_evaluation_request(
     evaluator = _clone(evaluator_contract)
 
     if (
-        dataset.get("schema_version") not in _DATASET_SCHEMA_VERSIONS
+        dataset.get("schema_version") != "reconstruction_dataset_manifest.v1"
         or dataset.get("dataset_manifest_digest")
         != canonical_digest(dataset, digest_field="dataset_manifest_digest")
     ):
         errors.append("heldout_dataset_manifest_invalid")
     split_digest = split.get("split_digest")
     if (
-        split.get("schema_version") not in _SPLIT_SCHEMA_VERSIONS
+        split.get("schema_version") != "frozen_reconstruction_split_manifest.v1"
         or split.get("frozen") is not True
         or split.get("candidate_can_change_assignments") is not False
         or split.get("hidden_heldout_access") != "independent_evaluator_only"
@@ -171,7 +154,7 @@ def compile_heldout_appearance_evaluation_request(
         errors.append("heldout_frozen_split_invalid")
     hidden_digest = hidden.get("hidden_heldout_digest")
     if (
-        hidden.get("schema_version") not in _HELDOUT_SCHEMA_VERSIONS
+        hidden.get("schema_version") != "hidden_heldout_evaluator_manifest.v1"
         or hidden.get("access_scope") != "independent_evaluator_only"
         or hidden.get("candidate_method_access_allowed") is not False
         or hidden_digest != canonical_digest(hidden, digest_field="hidden_heldout_digest")

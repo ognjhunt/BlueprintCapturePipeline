@@ -156,6 +156,18 @@ requires spherical-to-perspective normalization before SfM/3DGS; native 360
 capture additionally requires original-container normalization; and monocular
 video requires SfM plus a separate metric-scale qualification. Conflicting or
 missing profiles fail closed. A LiDAR hint alone does not select the ARKit lane.
+An iPhone ARKit declaration is reported as
+`capture_profile_validation_status=required_raw_contract_gate` until the trusted
+V3.2 validator inspects the retained PTS/retention evidence and actual ARKit
+sensor files. The route can propose that deterministic gate, but it carries no
+profile-validation digest and has `proof_effect=none`; a plain iPhone MP4 is
+therefore never represented as an ARKit or LiDAR-validated capture.
+For Web-uploaded 360 captures, intake probes the verified retained bytes before
+quarantine cleanup and writes a source-bound `capture_profile_validation.v1`
+artifact. The live service passes the allowlisted capture root into ingress so
+the envelope and profile decision are observed together. A native dual-stream
+decision exposes normalization as the next gate but leaves calibration pending;
+it does not treat topology as calibrated camera evidence.
 
 In `execute_non_spend`, the specialist may call the registered read-only
 `plan_capture_reconstruction_route` tool using the exact capture-build digest.

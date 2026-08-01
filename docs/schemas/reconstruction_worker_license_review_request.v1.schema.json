@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/reconstruction_worker_license_review_request.v1.schema.json",
+  "title": "Reconstruction worker human license review request v1",
+  "type": "object",
+  "required": [
+    "schema_version", "status", "source_commit_sha", "worker_stack_manifest_digest",
+    "license_inventory_digest", "requested_scope", "inventory_status", "review_items",
+    "required_reviewer_assertions", "agent_may_complete_review",
+    "paid_execution_authorized_by_request", "proof_effect", "claim_ceiling",
+    "timestamp", "license_review_request_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "reconstruction_worker_license_review_request.v1"},
+    "status": {"const": "human_review_required"},
+    "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "worker_stack_manifest_digest": {"$ref": "#/$defs/digest"},
+    "license_inventory_digest": {"$ref": "#/$defs/digest"},
+    "inventory_status": {"type": "string", "minLength": 1},
+    "review_items": {"type": "array", "items": {"type": "string"}},
+    "required_reviewer_assertions": {
+      "type": "array",
+      "minItems": 4,
+      "uniqueItems": true,
+      "items": {"type": "string"}
+    },
+    "requested_scope": {
+      "type": "object",
+      "properties": {
+        "registry_visibility": {"const": "private"},
+        "internal_build": {"const": true},
+        "internal_evaluation": {"const": true},
+        "redistribution": {"const": false},
+        "commercial_distribution": {"const": false}
+      },
+      "required": ["registry_visibility", "internal_build", "internal_evaluation", "redistribution", "commercial_distribution"]
+    },
+    "agent_may_complete_review": {"const": false},
+    "paid_execution_authorized_by_request": {"const": false},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "human_license_review_request_only"},
+    "timestamp": {"type": "string", "minLength": 1},
+    "license_review_request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+  "additionalProperties": false
+}

@@ -28,9 +28,9 @@ def _digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _declaration() -> dict:
+def _declaration(provider: str = "scaniverse") -> dict:
     value = {
-        "provider_identity": "scaniverse",
+        "provider_identity": provider,
         "product_tier": "user_managed_export",
         "terms_version": "user-attested-2026-07-30",
         "provider_scan_or_job_identity": "scan-123",
@@ -57,7 +57,7 @@ def _declaration() -> dict:
     return value
 
 
-def _request(asset: Path, **updates) -> dict:
+def _request(asset: Path, *, provider: str = "scaniverse", **updates) -> dict:
     digest = _digest(asset)
     value = {
         "stable_run_identity": "external-import-1",
@@ -74,7 +74,7 @@ def _request(asset: Path, **updates) -> dict:
         "camera_calibration_binding": {"status": "external_unverified"},
         "coordinate_frame_declaration": {"status": "external_unverified", "up": "unknown"},
         "units": "meters",
-        "provider_runtime_identity": {"provider": "local", "source_provider": "scaniverse"},
+        "provider_runtime_identity": {"provider": "local", "source_provider": provider},
         "cost_usd": 0.0,
         "duration_seconds": 0.0,
         "authority_used": {"mode": "execute_non_spend"},
@@ -82,7 +82,7 @@ def _request(asset: Path, **updates) -> dict:
         "blockers": [],
         "parent_artifact_or_event": {"digest": D[0]},
         "timestamp": "2026-07-30T13:00:00Z",
-        "provider_identity": "scaniverse",
+        "provider_identity": provider,
         "import_lane": "local_external_import",
         "asset_bindings": [
             {
@@ -91,7 +91,7 @@ def _request(asset: Path, **updates) -> dict:
                 "digest": digest,
             }
         ],
-        "provenance_rights_declaration": _declaration(),
+        "provenance_rights_declaration": _declaration(provider),
         "remote_calls_authorized": False,
         "remote_calls_performed": False,
         "proof_effect": "external_import_request_only",
@@ -177,6 +177,60 @@ def test_external_import_rejects_rights_drift_remote_authority_and_symlinks(
             source_artifact=request,
             artifact_root=source,
             output_root=tmp_path / "out-link",
+        )
+
+
+def test_polycam_self_contained_export_uses_provider_neutral_local_receipt(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "polycam-source"
+    source.mkdir()
+    asset = source / "office.glb"
+    asset.write_bytes(b"self-contained Polycam GLB fixture")
+    request = _request(asset, provider="polycam")
+
+    receipt = import_external_reconstruction(
+        source_artifact=request,
+        artifact_root=source,
+        output_root=tmp_path / "polycam-out",
+    )
+
+    assert receipt["provider_runtime_identity"] == {
+        "provider": "local",
+        "source_provider": "polycam",
+    }
+    assert receipt["raw_capture_truth"] is False
+    assert receipt["metric_scale_proven"] is False
+    assert receipt["collision_geometry_validated"] is False
+    assert receipt["isaac_compatibility_proven"] is False
+    imported = receipt["imported_assets"][0]
+    rights_path = (
+        tmp_path
+        / "polycam-out"
+        / Path(imported["relative_path"]).parts[0]
+        / "external_reconstruction_provenance_rights_receipt.v1.json"
+    )
+    rights = json.loads(rights_path.read_text(encoding="utf-8"))
+    assert rights["provider_identity"] == "polycam"
+    assert rights["blueprint_remote_upload_performed"] is False
+    assert rights["provider_success_is_blueprint_qualification"] is False
+    schema = json.loads(
+        (
+            ROOT
+            / "docs/schemas/external_reconstruction_provenance_rights_receipt.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.validate(rights, schema)
+
+
+def test_external_import_rejects_cross_provider_rights_declaration(tmp_path: Path) -> None:
+    asset = tmp_path / "asset.glb"
+    asset.write_bytes(b"glb")
+    with pytest.raises(ExternalReconstructionImportError, match="rights_provider_identity_invalid"):
+        _request(
+            asset,
+            provider="polycam",
+            provenance_rights_declaration=_declaration("scaniverse"),
         )
 
 

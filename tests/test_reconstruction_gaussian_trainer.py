@@ -200,6 +200,22 @@ def test_trainer_rejects_hidden_tree_and_dataset_digest_drift(tmp_path: Path) ->
             command_runner=_successful_runner,
         )
 
+    case_variant_root = tmp_path / "case-variant"
+    case_variant_export = _dataset(case_variant_root)
+    case_variant_hidden = (
+        case_variant_root / "candidate_colmap/Evaluator-Hidden/HeldOut"
+    )
+    case_variant_hidden.mkdir(parents=True)
+    (case_variant_hidden / "secret.png").write_bytes(b"hidden")
+    with pytest.raises(GaussianTrainerRuntimeError, match="hidden_heldout_present"):
+        run_gaussian_reconstruction_training(
+            training_request=_request(),
+            dataset_export=case_variant_export,
+            artifact_root=case_variant_root,
+            output_root=tmp_path / "outputs-case-variant",
+            command_runner=_successful_runner,
+        )
+
     export = _dataset(tmp_path / "second")
     export["colmap_training_dataset_digest"] = D[2]
     with pytest.raises(GaussianTrainerRuntimeError, match="binding_or_isolation"):
@@ -289,3 +305,144 @@ def test_process_restart_preserves_partial_checkpoint_without_retry(tmp_path: Pa
     )
     assert replay == result
     assert calls == 0
+
+
+def test_trainer_rejects_cross_platform_traversal_and_dataset_symlinks(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "artifacts"
+    export = _dataset(root)
+    export["relative_path"] = "..\\candidate_colmap"
+    with pytest.raises(GaussianTrainerRuntimeError, match="path_unsafe_or_hidden"):
+        run_gaussian_reconstruction_training(
+            training_request=_request(),
+            dataset_export=export,
+            artifact_root=root,
+            output_root=tmp_path / "outputs-traversal",
+            command_runner=_successful_runner,
+        )
+
+    export = _dataset(tmp_path / "symlink-artifacts")
+    dataset = tmp_path / "symlink-artifacts/candidate_colmap"
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside")
+    (dataset / "images/linked.png").symlink_to(outside)
+    with pytest.raises(GaussianTrainerRuntimeError, match="dataset_symlink_present"):
+        run_gaussian_reconstruction_training(
+            training_request=_request(),
+            dataset_export=export,
+            artifact_root=tmp_path / "symlink-artifacts",
+            output_root=tmp_path / "outputs-symlink",
+            command_runner=_successful_runner,
+        )
+
+
+def test_trainer_rejects_precreated_output_run_symlink(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    dataset_export = _dataset(artifacts)
+    request = _request()
+    output_root = tmp_path / "outputs"
+    output_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    run_dir = output_root / request["reconstruction_training_request_digest"][7:23]
+    run_dir.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(GaussianTrainerRuntimeError, match="run_directory_symlink"):
+        run_gaussian_reconstruction_training(
+            training_request=request,
+            dataset_export=dataset_export,
+            artifact_root=artifacts,
+            output_root=output_root,
+            command_runner=_successful_runner,
+        )
+    assert list(outside.iterdir()) == []
+
+
+def test_malicious_runner_cannot_replace_log_or_output_with_symlinks(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    dataset_export = _dataset(artifacts)
+    outside_log = tmp_path / "outside.log"
+    outside_log.write_text("authoritative\n", encoding="utf-8")
+
+    def log_symlink_runner(command, timeout):
+        values = {
+            item.split("=", 1)[0]: item.split("=", 1)[1]
+            for item in command
+            if "=" in item
+        }
+        log_path = Path(values["out_dir"]) / "training.log"
+        log_path.unlink()
+        log_path.symlink_to(outside_log)
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="malicious")
+
+    with pytest.raises(GaussianTrainerRuntimeError, match="log_symlink_forbidden"):
+        run_gaussian_reconstruction_training(
+            training_request=_request(),
+            dataset_export=dataset_export,
+            artifact_root=artifacts,
+            output_root=tmp_path / "outputs-log",
+            command_runner=log_symlink_runner,
+        )
+    assert outside_log.read_text(encoding="utf-8") == "authoritative\n"
+
+    outside_ply = tmp_path / "outside.ply"
+    outside_ply.write_bytes(b"authoritative-ply")
+
+    def ply_symlink_runner(command, timeout):
+        values = {
+            item.split("=", 1)[0]: item.split("=", 1)[1]
+            for item in command
+            if "=" in item
+        }
+        run_dir = Path(values["out_dir"])
+        checkpoint = run_dir / "training/candidate/ckpt_last.pt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_bytes(b"checkpoint")
+        Path(values["export_ply.path"]).symlink_to(outside_ply)
+        return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
+
+    result = run_gaussian_reconstruction_training(
+        training_request=_request(),
+        dataset_export=dataset_export,
+        artifact_root=artifacts,
+        output_root=tmp_path / "outputs-ply",
+        command_runner=ply_symlink_runner,
+    )
+    assert result["status"] == "failed"
+    assert result["failure_code"] == "malformed_output"
+    assert outside_ply.read_bytes() == b"authoritative-ply"
+
+
+def test_malicious_runner_cannot_import_checkpoint_through_symlink(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    dataset_export = _dataset(artifacts)
+    outside_checkpoint = tmp_path / "outside-checkpoint.pt"
+    outside_checkpoint.write_bytes(b"untrusted-checkpoint")
+
+    def runner(command, timeout):
+        values = {
+            item.split("=", 1)[0]: item.split("=", 1)[1]
+            for item in command
+            if "=" in item
+        }
+        run_dir = Path(values["out_dir"])
+        checkpoint = run_dir / "training/candidate/ckpt_last.pt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.symlink_to(outside_checkpoint)
+        Path(values["export_ply.path"]).write_bytes(b"ply\n")
+        return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
+
+    with pytest.raises(GaussianTrainerRuntimeError, match="checkpoint_symlink_forbidden"):
+        run_gaussian_reconstruction_training(
+            training_request=_request(),
+            dataset_export=dataset_export,
+            artifact_root=artifacts,
+            output_root=tmp_path / "outputs",
+            command_runner=runner,
+        )
+    assert outside_checkpoint.read_bytes() == b"untrusted-checkpoint"

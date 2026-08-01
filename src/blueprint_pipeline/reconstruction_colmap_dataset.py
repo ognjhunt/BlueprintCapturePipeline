@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
@@ -18,25 +19,19 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .processed_observation_dataset import (
-    CAMERA_OBSERVATION_SCHEMA_VERSION as PROCESSED_CAMERA_OBSERVATION_SCHEMA_VERSION,
+from .reconstruction_pose_refinement import (
+    PoseRefinementContractError,
+    build_pose_refinement_execution_request,
+    build_pose_refinement_result,
+    build_refined_camera_pose_manifest,
 )
-from .processed_observation_dataset import PROCESSED_CANDIDATE_SCHEMA_VERSION
-from .reconstruction_frame_dataset import CANDIDATE_SCHEMA_VERSION
-
-
-_CAMERA_OBSERVATION_SCHEMA_VERSIONS = {
-    "camera_observation_manifest.v1",
-    PROCESSED_CAMERA_OBSERVATION_SCHEMA_VERSION,
-}
-_CANDIDATE_SCHEMA_VERSIONS = {
-    CANDIDATE_SCHEMA_VERSION,
-    PROCESSED_CANDIDATE_SCHEMA_VERSION,
-}
 
 
 REQUEST_SCHEMA_VERSION = "colmap_training_dataset_export_request.v1"
 RESULT_SCHEMA_VERSION = "colmap_training_dataset_export_result.v1"
+# Observation ids become on-disk artifact names; anything outside this set is
+# refused so a crafted id cannot traverse out of the dataset image directory.
+_SAFE_OBSERVATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
 
 
 class ColmapTrainingDatasetError(ValueError):
@@ -154,6 +149,11 @@ def _camera_line(observation: Mapping[str, Any], camera_id: int) -> tuple[str, s
     matrix = camera.get("T_world_camera")
     if not isinstance(intrinsics, Mapping) or not isinstance(matrix, list):
         raise ColmapTrainingDatasetError(["colmap_camera_binding_missing"])
+    blueprint_native_matrix = observation.get("T_world_camera")
+    if blueprint_native_matrix is not None and canonical_json(
+        blueprint_native_matrix
+    ) != canonical_json(matrix):
+        raise ColmapTrainingDatasetError(["colmap_camera_projection_pose_mismatch"])
     try:
         transform = np.asarray(matrix, dtype=np.float64)
         rotation_camera_world = transform[:3, :3]
@@ -177,8 +177,334 @@ def _camera_line(observation: Mapping[str, Any], camera_id: int) -> tuple[str, s
     return camera_row, pose
 
 
+def bind_colmap_initialization_surface(
+    *,
+    source_artifact: Mapping[str, Any],
+    surface_compilation_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind an accepted observed ARKit surface to a frozen COLMAP request.
+
+    The returned request keeps the same candidate pixels and poses. It changes
+    only the initialization-geometry binding and its own digest; generated fill
+    or a cross-capture/split/calibration surface is refused.
+    """
+
+    request = json.loads(canonical_json(dict(source_artifact)))
+    supplied_request_digest = request.get("colmap_training_dataset_export_request_digest")
+    if (
+        request.get("schema_version") != REQUEST_SCHEMA_VERSION
+        or supplied_request_digest
+        != canonical_digest(
+            request,
+            digest_field="colmap_training_dataset_export_request_digest",
+        )
+    ):
+        raise ColmapTrainingDatasetError(["colmap_surface_binding_request_invalid"])
+    surface_result = json.loads(canonical_json(dict(surface_compilation_result)))
+    result_digest = surface_result.get("arkit_depth_surface_compilation_result_digest")
+    if (
+        surface_result.get("schema_version")
+        != "arkit_depth_surface_compilation_result.v1"
+        or result_digest
+        != canonical_digest(
+            surface_result,
+            digest_field="arkit_depth_surface_compilation_result_digest",
+        )
+        or surface_result.get("status") != "compiled_observed_surface_candidate"
+    ):
+        raise ColmapTrainingDatasetError(["colmap_surface_binding_result_invalid"])
+    surface_asset = surface_result.get("surface_asset")
+    calibration = request.get("camera_calibration_manifest")
+    calibration_binding = surface_result.get("camera_calibration_binding")
+    surface_calibration_digest = None
+    if isinstance(calibration_binding, Mapping):
+        surface_calibration_digest = calibration_binding.get(
+            "calibration_digest"
+        ) or calibration_binding.get("digest")
+    if (
+        not isinstance(surface_asset, Mapping)
+        or not _is_digest(surface_asset.get("digest"))
+        or not str(surface_asset.get("relative_path") or "")
+        or surface_result.get("source_capture_digest") != request.get("source_capture_digest")
+        or surface_result.get("train_heldout_split_digest")
+        != request.get("frozen_split_digest")
+        or not isinstance(calibration, Mapping)
+        or surface_calibration_digest != calibration.get("calibration_digest")
+        or canonical_json(surface_result.get("coordinate_frame_declaration"))
+        != canonical_json(request.get("coordinate_frame_declaration"))
+    ):
+        raise ColmapTrainingDatasetError(["colmap_surface_binding_lineage_mismatch"])
+    if (
+        surface_result.get("hidden_heldout_observations_accessed") is not False
+        or surface_result.get("generated_fill_used") is not False
+        or surface_result.get("raw_arkit_poses_modified") is not False
+    ):
+        raise ColmapTrainingDatasetError(["colmap_surface_binding_truth_boundary_invalid"])
+    prior_request_digest = supplied_request_digest
+    request["initialization_surface"] = {
+        "relative_path": str(surface_asset["relative_path"]),
+        "digest": surface_asset["digest"],
+    }
+    request["initialization_surface_compilation_result_digest"] = result_digest
+    request["parent_colmap_training_dataset_export_request_digest"] = prior_request_digest
+    request["blockers"] = sorted(
+        blocker
+        for blocker in request.get("blockers") or []
+        if blocker != "initialization_surface_not_bound"
+    )
+    request["colmap_training_dataset_export_request_digest"] = canonical_digest(
+        request,
+        digest_field="colmap_training_dataset_export_request_digest",
+    )
+    return request
+
+
+def bind_colmap_initialization_points(
+    *,
+    source_artifact: Mapping[str, Any],
+    initialization_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind qualified external initialization points to a frozen COLMAP request.
+
+    The external-pointcloud lane has no capture-wide calibration manifest, so
+    lineage is bound through the exact candidate camera-observation digest the
+    alignment used.  Candidate pixels, poses, and hidden isolation stay fixed;
+    only the initialization-geometry binding and the request digest change.
+    """
+
+    request = json.loads(canonical_json(dict(source_artifact)))
+    supplied_request_digest = request.get("colmap_training_dataset_export_request_digest")
+    if (
+        request.get("schema_version") != REQUEST_SCHEMA_VERSION
+        or supplied_request_digest
+        != canonical_digest(
+            request,
+            digest_field="colmap_training_dataset_export_request_digest",
+        )
+    ):
+        raise ColmapTrainingDatasetError(["colmap_points_binding_request_invalid"])
+    result = json.loads(canonical_json(dict(initialization_result)))
+    result_digest = result.get("external_pointcloud_initialization_result_digest")
+    if (
+        result.get("schema_version") != "external_pointcloud_initialization_result.v1"
+        or result_digest
+        != canonical_digest(
+            result,
+            digest_field="external_pointcloud_initialization_result_digest",
+        )
+        or result.get("status") != "compiled_external_initialization_points"
+    ):
+        raise ColmapTrainingDatasetError(["colmap_points_binding_result_invalid"])
+    surface_asset = result.get("surface_asset")
+    observations = request.get("camera_observation_manifest")
+    observation_binding = result.get("camera_observation_binding")
+    bound_observation_digest = (
+        observation_binding.get("camera_observation_digest")
+        if isinstance(observation_binding, Mapping)
+        else None
+    )
+    if (
+        not isinstance(surface_asset, Mapping)
+        or not _is_digest(surface_asset.get("digest"))
+        or not str(surface_asset.get("relative_path") or "")
+        or result.get("source_capture_digest") != request.get("source_capture_digest")
+        or result.get("train_heldout_split_digest") != request.get("frozen_split_digest")
+        or not isinstance(observations, Mapping)
+        or bound_observation_digest != observations.get("camera_observation_digest")
+        or canonical_json(result.get("coordinate_frame_declaration"))
+        != canonical_json(request.get("coordinate_frame_declaration"))
+    ):
+        raise ColmapTrainingDatasetError(["colmap_points_binding_lineage_mismatch"])
+    if (
+        result.get("hidden_heldout_observations_accessed") is not False
+        or result.get("generated_fill_used") is not False
+        or result.get("raw_input_poses_modified") is not False
+        or result.get("alignment_used_candidate_frames_only") is not True
+        or result.get("reflection_preferred_by_alignment") is not False
+        or result.get("alignment_residual_gates_passed") is not True
+    ):
+        raise ColmapTrainingDatasetError(["colmap_points_binding_truth_boundary_invalid"])
+    prior_request_digest = supplied_request_digest
+    request["initialization_surface"] = {
+        "relative_path": str(surface_asset["relative_path"]),
+        "digest": surface_asset["digest"],
+    }
+    request["initialization_points_result_digest"] = result_digest
+    request["parent_colmap_training_dataset_export_request_digest"] = prior_request_digest
+    request["blockers"] = sorted(
+        blocker
+        for blocker in request.get("blockers") or []
+        if blocker not in {"initialization_surface_not_bound", "initialization_points_not_bound"}
+    )
+    request["colmap_training_dataset_export_request_digest"] = canonical_digest(
+        request,
+        digest_field="colmap_training_dataset_export_request_digest",
+    )
+    return request
+
+
+def bind_colmap_refined_poses(
+    *,
+    source_artifact: Mapping[str, Any],
+    pose_refinement_request: Mapping[str, Any],
+    pose_refinement_result: Mapping[str, Any],
+    refined_pose_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Create a derived COLMAP request using qualified bounded pose output.
+
+    The source request remains immutable. The derived observation projection is
+    bound to the raw request, refinement request/result, and refined manifest;
+    it cannot change candidate membership, calibration, or hidden-view access.
+    """
+
+    request = json.loads(canonical_json(dict(source_artifact)))
+    parent_digest = request.get("colmap_training_dataset_export_request_digest")
+    if (
+        request.get("schema_version") != REQUEST_SCHEMA_VERSION
+        or parent_digest
+        != canonical_digest(
+            request,
+            digest_field="colmap_training_dataset_export_request_digest",
+        )
+    ):
+        raise ColmapTrainingDatasetError(["colmap_pose_binding_request_invalid"])
+    try:
+        refinement_request = build_pose_refinement_execution_request(
+            pose_refinement_request
+        )
+        refinement_result = build_pose_refinement_result(pose_refinement_result)
+        pose_manifest = build_refined_camera_pose_manifest(refined_pose_manifest)
+    except PoseRefinementContractError as exc:
+        raise ColmapTrainingDatasetError(["colmap_pose_binding_contract_invalid"]) from exc
+    request_digest = refinement_request["pose_refinement_execution_request_digest"]
+    result_digest = refinement_result["pose_refinement_result_digest"]
+    manifest_digest = pose_manifest["refined_camera_pose_manifest_digest"]
+    calibration = request.get("camera_calibration_manifest")
+    observations = request.get("camera_observation_manifest")
+    if not isinstance(calibration, Mapping) or not isinstance(observations, Mapping):
+        raise ColmapTrainingDatasetError(["colmap_pose_binding_manifests_missing"])
+    initial_pose_digest = observations.get("camera_observation_digest")
+    if any(
+        value != request.get("source_capture_digest")
+        for value in (
+            refinement_request.get("source_capture_digest"),
+            refinement_result.get("source_capture_digest"),
+            pose_manifest.get("source_capture_digest"),
+        )
+    ) or any(
+        value != request.get("frozen_split_digest")
+        for value in (
+            refinement_request.get("frozen_split_digest"),
+            refinement_result.get("frozen_split_digest"),
+            pose_manifest.get("frozen_split_digest"),
+        )
+    ):
+        raise ColmapTrainingDatasetError(["colmap_pose_binding_capture_or_split_mismatch"])
+    calibration_digest = calibration.get("calibration_digest")
+    if any(
+        value != calibration_digest
+        for value in (
+            refinement_request.get("camera_calibration_digest"),
+            refinement_result.get("camera_calibration_digest"),
+            pose_manifest.get("camera_calibration_digest"),
+        )
+    ) or any(
+        value != initial_pose_digest
+        for value in (
+            refinement_request.get("camera_observation_digest"),
+            refinement_request.get("initial_pose_manifest_digest"),
+            refinement_result.get("initial_pose_manifest_digest"),
+            pose_manifest.get("initial_pose_manifest_digest"),
+        )
+    ):
+        raise ColmapTrainingDatasetError(["colmap_pose_binding_calibration_or_parent_mismatch"])
+    if (
+        refinement_result.get("status") != "succeeded"
+        or refinement_result.get("pose_refinement_execution_request_digest") != request_digest
+        or pose_manifest.get("pose_refinement_execution_request_digest") != request_digest
+        or refinement_result.get("refined_pose_manifest_digest") != manifest_digest
+        or pose_manifest.get("method_id") != refinement_request.get("method_id")
+        or pose_manifest.get("implementation_digest")
+        != refinement_request.get("implementation_digest")
+        or pose_manifest.get("container_image_digest")
+        != refinement_request.get("container_image_digest")
+        or pose_manifest.get("source_commit_sha")
+        != refinement_request.get("source_commit_sha")
+        or canonical_json(pose_manifest.get("coordinate_frame_declaration"))
+        != canonical_json(request.get("coordinate_frame_declaration"))
+    ):
+        raise ColmapTrainingDatasetError(["colmap_pose_binding_lineage_mismatch"])
+    thresholds = refinement_request["drift_thresholds"]
+    metrics = refinement_result["drift_metrics"]
+    if (
+        metrics["maximum_translation_m"] > thresholds["maximum_translation_m"]
+        or metrics["maximum_rotation_degrees"] > thresholds["maximum_rotation_degrees"]
+    ):
+        raise ColmapTrainingDatasetError(["colmap_pose_binding_drift_threshold_exceeded"])
+    source_rows = observations.get("observations")
+    if not isinstance(source_rows, list) or not source_rows:
+        raise ColmapTrainingDatasetError(["colmap_pose_binding_observations_missing"])
+    source_ids = [str(row.get("observation_id") or "") for row in source_rows]
+    refined_rows = {
+        str(row.get("observation_id") or ""): row
+        for row in pose_manifest["observations"]
+    }
+    registered_ids = refinement_result.get("registered_observation_ids")
+    if (
+        not all(source_ids)
+        or len(source_ids) != len(set(source_ids))
+        or set(refined_rows) != set(source_ids)
+        or set(registered_ids or []) != set(source_ids)
+        or refinement_result.get("rejected_observation_ids") != []
+    ):
+        raise ColmapTrainingDatasetError(["colmap_pose_binding_observation_set_mismatch"])
+    derived_rows: list[dict[str, Any]] = []
+    for source_row in source_rows:
+        row = json.loads(canonical_json(dict(source_row)))
+        camera = row.get("camera")
+        if not isinstance(camera, Mapping):
+            raise ColmapTrainingDatasetError(["colmap_pose_binding_camera_missing"])
+        refined_matrix = refined_rows[str(row["observation_id"])]["T_world_camera"]
+        row["T_world_camera"] = refined_matrix
+        row["camera"] = {**dict(camera), "T_world_camera": refined_matrix}
+        row["pose_source"] = "qualified_arkit_anchored_refinement"
+        row["raw_pose_manifest_digest"] = initial_pose_digest
+        derived_rows.append(row)
+    derived_observations = json.loads(canonical_json(dict(observations)))
+    derived_observations["observations"] = derived_rows
+    derived_observations["parent_camera_observation_digest"] = initial_pose_digest
+    derived_observations["pose_refinement_result_digest"] = result_digest
+    derived_observations["refined_camera_pose_manifest_digest"] = manifest_digest
+    derived_observations["raw_arkit_poses_modified"] = False
+    derived_observations["camera_observation_digest"] = canonical_digest(
+        derived_observations,
+        digest_field="camera_observation_digest",
+    )
+    request["camera_observation_manifest"] = derived_observations
+    request["parent_colmap_training_dataset_export_request_digest"] = parent_digest
+    request["pose_refinement_execution_request_digest"] = request_digest
+    request["pose_refinement_result_digest"] = result_digest
+    request["refined_camera_pose_manifest_digest"] = manifest_digest
+    request["pose_refinement_executed"] = True
+    request["raw_arkit_poses_modified"] = False
+    request["blockers"] = sorted(
+        blocker
+        for blocker in request.get("blockers") or []
+        if blocker != "pose_refinement_not_executed"
+    )
+    request["colmap_training_dataset_export_request_digest"] = canonical_digest(
+        request,
+        digest_field="colmap_training_dataset_export_request_digest",
+    )
+    return request
+
+
 def export_colmap_training_dataset(
-    *, source_artifact: Mapping[str, Any], artifact_root: str | Path, output_root: str | Path
+    *,
+    source_artifact: Mapping[str, Any],
+    artifact_root: str | Path,
+    output_root: str | Path,
+    initialization_artifact_root: str | Path | None = None,
 ) -> dict[str, Any]:
     request = json.loads(canonical_json(dict(source_artifact)))
     errors: list[str] = []
@@ -191,6 +517,7 @@ def export_colmap_training_dataset(
     if len(source_commit) != 40 or any(c not in "0123456789abcdef" for c in source_commit):
         errors.append("colmap_export_source_commit_invalid")
     observations = request.get("camera_observation_manifest")
+    calibration = request.get("camera_calibration_manifest")
     candidate = request.get("candidate_dataset_manifest")
     if not isinstance(observations, Mapping) or not isinstance(candidate, Mapping):
         errors.append("colmap_export_manifests_missing")
@@ -208,10 +535,21 @@ def export_colmap_training_dataset(
     if errors:
         raise ColmapTrainingDatasetError(errors)
     assert isinstance(observations, Mapping) and isinstance(candidate, Mapping)
-    if observations.get("schema_version") not in _CAMERA_OBSERVATION_SCHEMA_VERSIONS:
-        raise ColmapTrainingDatasetError(["colmap_export_observation_schema_unsupported"])
-    if candidate.get("schema_version") not in _CANDIDATE_SCHEMA_VERSIONS:
-        raise ColmapTrainingDatasetError(["colmap_export_candidate_schema_unsupported"])
+    if observations.get("camera_observation_digest") != canonical_digest(
+        observations, digest_field="camera_observation_digest"
+    ):
+        raise ColmapTrainingDatasetError(["colmap_export_observation_manifest_digest_invalid"])
+    if calibration is not None:
+        if not isinstance(calibration, Mapping) or calibration.get(
+            "calibration_digest"
+        ) != canonical_digest(calibration, digest_field="calibration_digest"):
+            raise ColmapTrainingDatasetError(["colmap_export_calibration_manifest_invalid"])
+        if (
+            calibration.get("capture_digest") != request["source_capture_digest"]
+            or calibration.get("camera_model") != "PINHOLE"
+            or not isinstance(calibration.get("intrinsics"), Mapping)
+        ):
+            raise ColmapTrainingDatasetError(["colmap_export_calibration_binding_invalid"])
     if (
         observations.get("hidden_heldout_pixels_included") is not False
         or candidate.get("heldout_pixels_included") is not False
@@ -253,7 +591,12 @@ def export_colmap_training_dataset(
         if not isinstance(observation, Mapping):
             raise ColmapTrainingDatasetError(["colmap_export_observation_invalid"])
         frame_id = str(observation.get("observation_id") or "")
-        if not frame_id or frame_id in observation_ids:
+        if (
+            not frame_id
+            or frame_id in observation_ids
+            or _SAFE_OBSERVATION_ID.fullmatch(frame_id) is None
+            or ".." in frame_id
+        ):
             raise ColmapTrainingDatasetError(["colmap_export_observation_id_invalid_or_duplicate"])
         candidate_row = candidate_rows.get(frame_id)
         split = observation.get("split")
@@ -263,13 +606,27 @@ def export_colmap_training_dataset(
             "frame_digest"
         ) != observation.get("image_digest"):
             raise ColmapTrainingDatasetError(["colmap_export_observation_manifest_mismatch"])
+        if calibration is not None:
+            camera = observation.get("camera")
+            if (
+                observation.get("calibration_digest") != calibration.get("calibration_digest")
+                or not isinstance(camera, Mapping)
+                or canonical_json(camera.get("rgb_intrinsics"))
+                != canonical_json(calibration.get("intrinsics"))
+            ):
+                raise ColmapTrainingDatasetError(
+                    ["colmap_export_observation_calibration_projection_mismatch"]
+                )
         source = _safe_file(
             source_root, str(observation.get("image_relative_path") or ""), label="image"
         )
         if _sha256_file(source) != observation.get("image_digest"):
             raise ColmapTrainingDatasetError(["colmap_export_image_digest_mismatch"])
         suffix = source.suffix.lower()
-        name = f"{image_id:06d}_{frame_id}{suffix}"
+        # Keep the manifest identity intact while avoiding platform-reserved
+        # filename characters in the materialized COLMAP image name.
+        filename_frame_id = frame_id.replace(":", "_")
+        name = f"{image_id:06d}_{filename_frame_id}{suffix}"
         digest = _write_immutable(root / "images" / name, source.read_bytes())
         image_digests.append({"artifact_id": name, "digest": digest})
         observation_ids.append(frame_id)
@@ -281,8 +638,15 @@ def export_colmap_training_dataset(
     point_lines = ["# 3D point list with one line of data per point:"]
     initialization_digest = None
     if isinstance(surface_ref, Mapping):
+        surface_root = (
+            Path(initialization_artifact_root).resolve()
+            if initialization_artifact_root is not None
+            else source_root
+        )
         surface_path = _safe_file(
-            source_root, str(surface_ref.get("relative_path") or ""), label="initialization_surface"
+            surface_root,
+            str(surface_ref.get("relative_path") or ""),
+            label="initialization_surface",
         )
         initialization_digest = _sha256_file(surface_path)
         if initialization_digest != surface_ref.get("digest"):
@@ -320,6 +684,21 @@ def export_colmap_training_dataset(
     dataset_digest = canonical_digest(
         {"images": image_digests, "sparse": artifacts, "request_digest": request_digest}
     )
+    output_artifacts = [
+        {
+            "artifact_type": "candidate_image",
+            "relative_path": f"images/{row['artifact_id']}",
+            "digest": row["digest"],
+        }
+        for row in image_digests
+    ] + [
+        {
+            "artifact_type": "colmap_sparse_text",
+            "relative_path": f"sparse/0/{name}",
+            "digest": digest,
+        }
+        for name, digest in sorted(artifacts.items())
+    ]
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "stable_run_identity": request.get("stable_run_identity"),
@@ -343,6 +722,7 @@ def export_colmap_training_dataset(
             initialization_digest,
         ],
         "output_digests": [dataset_digest, *artifacts.values()],
+        "output_artifacts": output_artifacts,
         "camera_calibration_binding": {
             "camera_observation_digest": observations.get("camera_observation_digest")
         },
@@ -360,7 +740,7 @@ def export_colmap_training_dataset(
         "initialization_point_count": len(point_lines) - 1,
         "hidden_heldout_pixels_included": False,
         "raw_input_poses_modified": False,
-        "pose_refinement_executed": False,
+        "pose_refinement_executed": request.get("pose_refinement_executed") is True,
         "trainer_self_grading_permitted": False,
         "proof_effect": "trainer_input_materialization_only",
         "claim_ceiling": "reconstruction_training_request",
@@ -383,6 +763,9 @@ def export_colmap_training_dataset(
 
 
 __all__ = [
+    "bind_colmap_initialization_points",
+    "bind_colmap_initialization_surface",
+    "bind_colmap_refined_poses",
     "ColmapTrainingDatasetError",
     "REQUEST_SCHEMA_VERSION",
     "RESULT_SCHEMA_VERSION",

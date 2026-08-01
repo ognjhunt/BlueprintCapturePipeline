@@ -1,77 +1,64 @@
 # BlueprintCapturePipeline Changelog
 
-## 2026-08-01
+## 2026-07-30
 
 ### User-Facing
 
-- Added a bounded, explicitly authorized GPU execution lane for the SAM 3.1
-  source-video semantic runner. It can now package exact source frames, execute
-  one digest-pinned worker, return inspectable 2D tracks or abstention, and
-  prove teardown without treating masks as metric or physical truth.
-- Added the authorized source-video semantic runner needed before 3D lifting.
-  A configured SAM 3.1 Object Multiplex runtime can now turn exact retained
-  frames into persistent, hash-bound 2D object-mask tracks for the existing
-  semantic pipeline. This does not make the model's labels observed facts or
-  establish metric location, collision, physics, or task success.
-- Added the first executable source-frame-to-3DGS semantic bridge. Persistent
-  object masks from retained frames can now be projected through exact calibrated
-  cameras onto a standard 3DGS using deterministic front-to-back Gaussian
-  contribution weights, then passed directly to the existing semantic lifting
-  contract. The result remains candidate semantic support, not metric object,
-  collision, physics, task-success, or physical evidence.
+- Added a controlled-beta capture-to-testbed path: capture lifecycle and
+  reconstruction requests are now versioned, digest-bound, replayable, and
+  explicitly blocked when rights, calibration, worker, or evidence prerequisites
+  are absent. The new reconstruction and semantic-geometry contracts preserve
+  raw capture authority while producing replaceable OpenUSD/testbed support
+  artifacts (`docs/architecture/reconstruction-and-testbed-compiler.md`,
+  `src/blueprint_pipeline/reconstruction_control_plane.py`).
+- Expanded the Task Evaluation Supervisor into a scoped OpenAI Agents SDK
+  harness with typed tools, candidate controls, recorded evaluation, recovery,
+  budget authority, and explicit abstention. Agent output cannot grant rights,
+  spend, proof state, or physical success
+  (`docs/architecture/task-evaluation-supervisor.md`,
+  `src/blueprint_pipeline/task_evaluation_supervisor/manager.py`).
+- Closed the specialized Cosmos/OSCAR/Ctrl-World successor experiment
+  `inconclusive`. Public runtimes and bounded canaries proved compatibility
+  slices, but no causally qualified, disjoint closed-loop multi-policy ranking
+  completed; the prior frozen stack remains `thesis_not_supported`
+  (`docs/experiments/policy_ranking_cosmos3_edge_closed_loop_20260729/final_report_v1.md`).
 
 ### Employee-Facing
 
-- Added a separate non-root SAM 3.1 source-track image recipe pinned to Meta
-  code revision `96914d24`, PyTorch 2.10/CUDA 12.8, and an immutable CUDA base.
-  The gated checkpoint stays out of the image: the Vast canary fetches it with
-  an ephemeral private-file token, verifies SHA-256 `0567debe...`, unsets the
-  token, switches model loading offline, and then runs the bounded worker.
-- Added canonical allocator admission and one-instance Vast lifecycle controls
-  for SAM 3.1: exact request/input/image/license/authorization bindings,
-  provider-zero and watchdog gates, spend/TTL/retry limits, signed input/output
-  transfer, immutable receipts, teardown reconciliation, replay-safe result
-  validation, and artifact secret-leak checks. The existing reconstruction
-  allocator sub-lane was extracted so the canonical allocator shrank below its
-  governed line budget instead of growing another monolith.
-- Published PR #282 after all hosted checks passed, including 6,345 fast-lane
-  and 8,020 full-lane tests. Protected main and isolated staging now use commit
-  `7063d719` with exact tested tree `0354737d`; production remains independently
-  pinned to `3bb376e7`.
-- Added a bounded adapter for Meta's official SAM 3.1 multiplex predictor API.
-  It fails closed unless checkpoint, code revision, runtime, license terms/use,
-  privacy, trade-controls, customer-data use, and execution authorization are exact; verifies
-  every retained-frame JPEG derivative; runs offline; validates untrusted
-  object IDs, scores, and mask shapes; and emits both the existing provider
-  result and its ready-to-import request. The gated checkpoint was not
-  downloaded or executed locally.
-- Published PR #281 after all 16 hosted checks passed, including 6,336 fast-lane
-  and 8,011 full-lane tests. Protected main and isolated staging now use commit
-  `b3a6ce1c` with the tested tree; production remains independently pinned to
-  `3bb376e7`. The Pub/Sub listener uses a dedicated least-privilege identity and
-  corrected recurring systemd cadence.
-- Added a bounded NumPy standard-3DGS contribution renderer and file stage. It
-  rejects stale source-track, frame, camera, splat, and Gaussian-mapping digests;
-  unrectified cameras; nonstandard PLY inputs; and projected-work overflows. It
-  is a small-scene/conformance path while accelerated chunked transport remains.
+- Added strict, source-bound import, frozen train/held-out splits, ARKit depth
+  surface compilation, semantic Gaussian/object geometry, collider
+  qualification, appearance binding, and OpenUSD packaging. Real public proxy
+  replays and hermetic fixtures exercise portions of that chain, but do not
+  prove representative capture quality, qualified reconstruction, Isaac task
+  success, captured-site transfer, deployment, or physical performance
+  (`src/blueprint_pipeline/reconstruction_frame_dataset.py`,
+  `src/blueprint_pipeline/reconstruction_geometry_compiler.py`,
+  `src/blueprint_pipeline/nurec_openusd_packaging.py`).
+- Hardened launch operations with immutable deployment identity, exact
+  deployment-parity checks, fail-closed paid reconstruction admission, and
+  bounded external storage for generated CI/runtime artifacts. Retention and
+  storage changes do not elevate generated outputs above raw capture and
+  provenance evidence (`src/blueprint_pipeline/live_pipeline_intake_service.py`,
+  `scripts/run_sim_only_beta_deployment_parity_proof.py`,
+  `src/blueprint_pipeline/artifact_storage.py`).
 
 ### Future-Agent-Facing
 
-- Do not describe processed MuSHRoom images as encoder-retained video frames.
-  The current SAM 3.1 import contract truthfully requires retained-video,
-  decoded-PTS, sync-row, camera, and frame-retention evidence. A processed-only
-  public sequence needs a separate reduced-authority profile or must remain a
-  diagnostic runtime probe; never fabricate Raw Contract evidence.
-- The official `facebook/sam3.1` checkpoint repository has no Transformers
-  integration. Preserve the pinned Meta `build_sam3_multiplex_video_predictor`
-  interface and do not silently fall back to `facebook/sam3` Transformers or
-  the legacy placeholder detector.
-- Preserve the source-video/3DGS authority split: source frames establish mask
-  and track evidence, calibrated cameras lift it into the splat, and separate
-  independently qualified collision geometry is required before physics use.
-- Do not reinstall the upstream Splat Analyzer locally merely to claim support.
-  Its current rough boxes remain candidate-only, and the machine does not have
-  safe disk headroom for an unbounded Torch/model installation.
+- The America/Chicago window contains fifteen first-parent `main` commits,
+  `7d8b5232` through `79dcd4b6` (PRs #247--#259, #261, and #262). At review,
+  `main == origin/main` at `79dcd4b6` with `0 0` divergence. The worktree is
+  clean on `codex/upgrade-openai-agents-sdk-0-19-1`; its `3638819e` tip is the
+  pre-merge counterpart of PR #262, not uncommitted work. No attributable
+  uncommitted July 30 changes are recorded.
+- Preserve the distinction between typed contracts, hermetic/proxy replay,
+  provider execution, deployment parity, and accepted scientific or physical
+  evidence. Reconstruction continuations and supervisor receipts are support
+  artifacts and must remain fail-closed at missing runtime, rights, calibration,
+  hidden-evaluator, or budget boundaries.
+- Raw capture, timestamps, poses, provenance, rights, privacy, and accepted
+  physical outcomes remain authoritative. Generated geometry, appearance,
+  simulator outputs, agent plans, provider receipts, readiness summaries, and
+  this changelog are downstream support artifacts.
 
 ## 2026-07-29
 

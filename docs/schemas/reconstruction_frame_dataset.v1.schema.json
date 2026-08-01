@@ -26,9 +26,25 @@
         "digest": {"$ref": "#/$defs/sha256"}
       }
     },
+    "supporting_artifact_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "digest", "artifact_type"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "artifact_type": {
+          "type": "string", "pattern": "^[a-z0-9_.-]+\\.v[0-9]+$"
+        }
+      }
+    },
     "selected_frame": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": {
+        "source_camera_identity": ["observation_group_id"],
+        "observation_group_id": ["source_camera_identity"]
+      },
       "required": [
         "frame_id", "decoded_frame_index", "t_video_sec", "source_pts_seconds",
         "source_dts_seconds", "duration_seconds", "key_frame",
@@ -41,23 +57,31 @@
         "source_pts_seconds": {"type": ["number", "null"]},
         "source_dts_seconds": {"type": ["number", "null"]},
         "duration_seconds": {"type": ["number", "null"], "minimum": 0},
-        "key_frame": {"type": "boolean"},
+        "key_frame": {"type": ["boolean", "null"]},
         "artifact_relative_path": {"$ref": "#/$defs/relative_path"},
         "digest": {"$ref": "#/$defs/sha256"},
         "image_metadata": {"type": "object"},
-        "quality_signals": {"type": "object"}
+        "quality_signals": {"type": "object"},
+        "source_camera_identity": {"type": "string", "minLength": 1},
+        "observation_group_id": {"type": "string", "minLength": 1}
       }
     },
     "split_assignment": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": {
+        "source_camera_identity": ["observation_group_id"],
+        "observation_group_id": ["source_camera_identity"]
+      },
       "required": ["frame_id", "decoded_frame_index", "t_video_sec", "frame_digest", "split"],
       "properties": {
         "frame_id": {"type": "string", "minLength": 1},
         "decoded_frame_index": {"type": "integer", "minimum": 0},
         "t_video_sec": {"type": "number", "minimum": 0},
         "frame_digest": {"$ref": "#/$defs/sha256"},
-        "split": {"enum": ["training", "validation", "held_out"]}
+        "split": {"enum": ["training", "validation", "held_out"]},
+        "source_camera_identity": {"type": "string", "minLength": 1},
+        "observation_group_id": {"type": "string", "minLength": 1}
       }
     },
     "selection": {
@@ -83,6 +107,10 @@
         },
         "complete_retained_source_preserved": {"const": true},
         "source_video_relative_path": {"$ref": "#/$defs/relative_path"},
+        "source_video_references": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/artifact_reference"}
+        },
         "frames": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/selected_frame"}},
         "selection_digest": {"$ref": "#/$defs/sha256"}
       }
@@ -110,6 +138,10 @@
     "candidate_frame": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": {
+        "source_camera_identity": ["observation_group_id"],
+        "observation_group_id": ["source_camera_identity"]
+      },
       "required": [
         "frame_id", "decoded_frame_index", "t_video_sec", "frame_digest", "split",
         "candidate_relative_path", "image_metadata", "quality_signals"
@@ -122,7 +154,9 @@
         "split": {"enum": ["training", "validation"]},
         "candidate_relative_path": {"$ref": "#/$defs/relative_path"},
         "image_metadata": {"type": "object"},
-        "quality_signals": {"type": "object"}
+        "quality_signals": {"type": "object"},
+        "source_camera_identity": {"type": "string", "minLength": 1},
+        "observation_group_id": {"type": "string", "minLength": 1}
       }
     },
     "candidate": {
@@ -145,13 +179,19 @@
     "heldout_frame": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": {
+        "source_camera_identity": ["observation_group_id"],
+        "observation_group_id": ["source_camera_identity"]
+      },
       "required": ["frame_id", "decoded_frame_index", "t_video_sec", "frame_digest", "evaluator_relative_path"],
       "properties": {
         "frame_id": {"type": "string", "minLength": 1},
         "decoded_frame_index": {"type": "integer", "minimum": 0},
         "t_video_sec": {"type": "number", "minimum": 0},
         "frame_digest": {"$ref": "#/$defs/sha256"},
-        "evaluator_relative_path": {"$ref": "#/$defs/relative_path"}
+        "evaluator_relative_path": {"$ref": "#/$defs/relative_path"},
+        "source_camera_identity": {"type": "string", "minLength": 1},
+        "observation_group_id": {"type": "string", "minLength": 1}
       }
     },
     "heldout": {
@@ -204,7 +244,12 @@
             }
           }
         },
-        "producing_method": {"const": "deterministic_retained_frame_compiler.v1"},
+        "producing_method": {
+          "enum": [
+            "deterministic_retained_frame_compiler.v1",
+            "deterministic_retained_frame_compiler.v2"
+          ]
+        },
         "implementation_version": {"$ref": "#/$defs/sha256"},
         "container_image_digest": {"type": ["string", "null"]},
         "source_commit_sha": {"$ref": "#/$defs/commit"},
@@ -242,6 +287,10 @@
             "candidate_dataset_manifest": {"$ref": "#/$defs/artifact_reference"},
             "hidden_heldout_evaluator_manifest": {"$ref": "#/$defs/artifact_reference"}
           }
+        },
+        "supporting_artifact_references": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/supporting_artifact_reference"}
         },
         "candidate_dataset_contains_hidden_heldout_pixels": {"const": false},
         "candidate_can_modify_split": {"const": false},

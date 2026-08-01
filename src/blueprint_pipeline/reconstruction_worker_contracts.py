@@ -7,12 +7,15 @@ change the frozen split, or grant any reconstruction qualification.
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -24,6 +27,8 @@ POSE_RESULT_SCHEMA_VERSION = "pose_estimation_result.v1"
 TRAINING_REQUEST_SCHEMA_VERSION = "reconstruction_training_request.v1"
 TRAINING_RESULT_SCHEMA_VERSION = "reconstruction_training_result.v1"
 CHECKPOINT_SCHEMA_VERSION = "reconstruction_checkpoint_manifest.v1"
+BUILD_REQUIREMENTS_LOCK_SHA256 = "d8a89e2d09515945f7553e12e314404b15340b128784ba3f699a64a5fb524811"
+REQUIREMENTS_LOCK_SHA256 = "3b8318ac331d0c453aa7f3e0bbff653b315ddd0ae072bfb86e4b51494ecabdff"
 
 PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
     {
@@ -59,16 +64,16 @@ PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
         "name": "FFmpeg/ffprobe",
         "version": "6.1.1",
         "source_url": "https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.xz",
-        "source_revision": "n6.1.1",
+        "source_revision": "n6.1.1;source-sha256:8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968",
         "license": "LGPL-2.1-or-later;configuration_dependent",
         "redistribution": "build_configuration_license_review_required",
     },
     {
         "component_id": "colmap",
         "name": "COLMAP",
-        "version": "4.1.1",
+        "version": "4.0.4",
         "source_url": "https://github.com/colmap/colmap",
-        "source_revision": "a0d785fba74b2664f31edc4a29026a8b27c00f67",
+        "source_revision": "9c23f6942fe69962e06030905e77067c8673382f",
         "license": "BSD-3-Clause",
         "redistribution": "dependency_license_review_required",
         "build_options": {
@@ -102,7 +107,12 @@ PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
         "name": "Python/PyTorch/NumPy/OpenCV/Trimesh",
         "version": "python-3.11.9;torch-2.4.1+cu124;numpy-1.26.4;opencv-python-headless-4.10.0.84;trimesh-4.4.9",
         "source_url": "https://www.python.org/;https://pytorch.org/;https://pypi.org/",
-        "source_revision": "candidate_lock_v1",
+        "source_revision": (
+            "python-3.11.9-source-sha256:"
+            "9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87;"
+            f"build-requirements-lock-sha256:{BUILD_REQUIREMENTS_LOCK_SHA256};"
+            f"requirements-lock-sha256:{REQUIREMENTS_LOCK_SHA256}"
+        ),
         "license": "PSF-2.0;BSD-3-Clause;BSD-3-Clause;Apache-2.0;MIT",
         "redistribution": "wheel_hash_lock_and_notice_bundle_required",
     },
@@ -125,11 +135,20 @@ PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
         "redistribution": "dependency_and_model_review_required",
     },
     {
+        "component_id": "fused_ssim",
+        "name": "fused-ssim CUDA extension",
+        "version": "upstream_commit_1272e21",
+        "source_url": "https://github.com/rahul-goel/fused-ssim",
+        "source_revision": "1272e21a282342e89537159e4bad508b19b34157",
+        "license": "MIT",
+        "redistribution": "permitted_with_notices",
+    },
+    {
         "component_id": "deterministic_qa",
         "name": "image/depth QA runtime",
         "version": "scikit-image-0.24.0;imageio-2.35.1;lpips-0.1.4",
         "source_url": "https://pypi.org/",
-        "source_revision": "candidate_lock_v1",
+        "source_revision": f"requirements-lock-sha256:{REQUIREMENTS_LOCK_SHA256}",
         "license": "BSD-3-Clause;BSD-2-Clause;BSD-2-Clause",
         "redistribution": "wheel_hash_lock_and_notice_bundle_required",
     },
@@ -185,6 +204,21 @@ TRAINER_METHODS = {
     "gsplat_3dgut_mcmc_v1",
     "nvidia_3dgrut_3dgut_mcmc_v1",
 }
+
+# New Blueprint training requests use the NVIDIA profile explicitly because the
+# pinned executable adapter launches /opt/3dgrut/train.py with the 3DGUT MCMC
+# configuration.  The older ``gsplat_3dgut_mcmc_v1`` identifier is retained for
+# deterministic replay of accepted artifacts; it does not describe a different
+# runtime.  ``gsplat_3dgs_mcmc_v1`` remains a valid provider-neutral contract ID
+# for a future gsplat adapter, but it must not reach the 3DGRUT executor.
+PREFERRED_GAUSSIAN_TRAINER_METHOD_PROFILE_ID = "nvidia_3dgrut_3dgut_mcmc_v1"
+THREEDGRUT_EXECUTABLE_TRAINER_METHODS = frozenset(
+    {
+        PREFERRED_GAUSSIAN_TRAINER_METHOD_PROFILE_ID,
+        "gsplat_3dgut_mcmc_v1",
+    }
+)
+CONTRACT_ONLY_TRAINER_METHODS = frozenset(TRAINER_METHODS) - THREEDGRUT_EXECUTABLE_TRAINER_METHODS
 
 FAILURE_CODES = {
     "invalid_capture_contract",
@@ -414,6 +448,27 @@ def build_worker_stack_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ReconstructionWorkerContractError(errors)
     return _finalize(
         artifact, schema=WORKER_STACK_SCHEMA_VERSION, digest_field="worker_stack_manifest_digest"
+    )
+
+
+def build_candidate_worker_stack_manifest(*, source_commit_sha: str) -> dict[str, Any]:
+    """Build the exact repository-pinned unbuilt worker manifest for one commit."""
+
+    return build_worker_stack_manifest(
+        {
+            "worker_family": "blueprint-reconstruction-worker",
+            "runnable_platform": "linux/amd64",
+            "headless_required": True,
+            "display_required": False,
+            "source_commit_sha": source_commit_sha,
+            "qualification_status": "candidate_unbuilt",
+            "minimum_vram_gb": 24,
+            "supported_compute_capabilities": [75, 80, 86, 89],
+            "tested_driver_range": {"status": "not_yet_tested"},
+            "model_assets": list(PINNED_MODEL_ASSETS),
+            "hidden_heldout_access": False,
+            "trainer_self_grading": False,
+        }
     )
 
 
@@ -711,6 +766,32 @@ def build_training_result(value: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Emit the source-bound candidate reconstruction worker stack manifest."
+    )
+    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args(argv)
+    manifest = build_candidate_worker_stack_manifest(
+        source_commit_sha=args.source_commit
+    )
+    write_json(args.output, manifest)
+    print(
+        json.dumps(
+            {
+                "qualification_status": manifest["qualification_status"],
+                "source_commit_sha": manifest["source_commit_sha"],
+                "worker_stack_manifest_digest": manifest[
+                    "worker_stack_manifest_digest"
+                ],
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 __all__ = [
     "CAMERA_MODELS",
     "CHECKPOINT_SCHEMA_VERSION",
@@ -719,6 +800,8 @@ __all__ = [
     "PINNED_WORKER_COMPONENTS",
     "PINNED_MODEL_ASSETS",
     "POSE_METHODS",
+    "BUILD_REQUIREMENTS_LOCK_SHA256",
+    "REQUIREMENTS_LOCK_SHA256",
     "POSE_REQUEST_SCHEMA_VERSION",
     "POSE_RESULT_SCHEMA_VERSION",
     "ReconstructionWorkerContractError",
@@ -729,6 +812,7 @@ __all__ = [
     "WORKER_SMOKE_RECEIPT_SCHEMA_VERSION",
     "WORKER_STACK_SCHEMA_VERSION",
     "build_checkpoint_manifest",
+    "build_candidate_worker_stack_manifest",
     "build_pose_estimation_request",
     "build_pose_estimation_result",
     "build_training_request",
@@ -736,4 +820,9 @@ __all__ = [
     "build_worker_build_receipt",
     "build_worker_smoke_receipt",
     "build_worker_stack_manifest",
+    "main",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

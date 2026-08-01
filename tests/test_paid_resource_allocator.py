@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.groot_oscar_infrastructure_admission import (
     MIN_BUILD_FREE_BYTES,
     build_live_machine_capability_evidence,
@@ -734,6 +735,164 @@ def test_reconstruction_gpu_execute_routes_through_shared_grant_and_vast_adapter
     )
 
 
+def test_reconstruction_pose_routes_bundle_and_receipt_through_shared_allocator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _reconstruction_args(tmp_path, execute=True)
+    args.provider_bundle_url_file = str(tmp_path / "bundle-get-url.txt")
+    args.reconstruction_operation_receipt_url_file = str(
+        tmp_path / "receipt-get-url.txt"
+    )
+    args.reconstruction_operation_bundle_receipt = str(tmp_path / "receipt.json")
+    Path(args.preflight_bundle).write_text("{}", encoding="utf-8")
+    operation_request_digest = "sha256:" + "1" * 64
+    operation_input_bundle_digest = "sha256:" + "2" * 64
+    worker_image = "registry.example/reconstruction@sha256:" + "b" * 64
+    receipt = {
+        "schema_version": "reconstruction_gpu_operation_bundle.v1",
+        "status": "compiled",
+        "operation": "pose_canary",
+        "source_commit_sha": "c" * 40,
+        "worker_image_digest": worker_image,
+        "operation_request_digest": operation_request_digest,
+        "operation_input_bundle_digest": operation_input_bundle_digest,
+        "bundle_manifest_digest": "sha256:" + "3" * 64,
+        "artifact_members": [
+            {
+                "archive_path": "inputs/frame.png",
+                "digest": "sha256:" + "4" * 64,
+                "bytes": 1,
+            }
+        ],
+        "artifact_member_count": 1,
+        "candidate_may_read_hidden_heldout": False,
+        "trainer_may_grade_heldout": False,
+        "raw_secret_values_included": False,
+        "provider_allocation_performed": False,
+        "paid_execution_authorized_by_bundle": False,
+        "proof_effect": "none",
+        "claim_ceiling": "candidate_operation_input_only",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    Path(args.reconstruction_operation_bundle_receipt).write_text(
+        json.dumps(receipt), encoding="utf-8"
+    )
+    admission = {
+        "status": "execute_ready",
+        "blockers": [],
+        "operation": "pose_canary",
+        "operation_request_digest": operation_request_digest,
+        "operation_input_bundle_digest": operation_input_bundle_digest,
+        "worker_image_digest": worker_image,
+        "source_commit_sha": "c" * 40,
+    }
+    observed: dict[str, object] = {}
+
+    def fake_prepare(**kwargs: object) -> dict[str, object]:
+        Path(str(kwargs["bound_request_out"])).write_text("{}", encoding="utf-8")
+        return admission
+
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", fake_prepare)
+    monkeypatch.setattr(
+        allocator,
+        "read_sensitive_url_file",
+        lambda _path, *, label: (
+            f"https://objects.example/{label}?signature=secret",
+            {"mode_is_0600": True},
+        ),
+    )
+    provider = object()
+    monkeypatch.setattr(allocator, "get_render_provider", lambda _name: provider)
+    monkeypatch.setattr(
+        allocator,
+        "run_reconstruction_vast_worker_smoke",
+        lambda **_kwargs: pytest.fail("pose must not route through smoke"),
+    )
+
+    def fake_operation(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {
+            "status": "completed",
+            "provider_mutations_performed": 2,
+            "cost_usd": 0.01,
+            "scientific_qualification_inferred": False,
+            "proof_effect": "none",
+        }
+
+    monkeypatch.setattr(allocator, "run_reconstruction_vast_operation", fake_operation)
+    result = allocator._run_reconstruction_gpu_canary(
+        args, checkout_commit="c" * 40
+    )
+    assert result["status"] == "completed"
+    assert observed["provider"] is provider
+    assert observed["bundle_receipt"] == receipt
+    assert "provider_bundle_url" in str(observed["input_bundle_get_url"])
+    assert "operation_receipt_get_url" in str(observed["input_receipt_get_url"])
+    grant = observed["paid_resource_admission_grant"]
+    assert grant.resource_class == "gpu_render"
+
+
+def test_reconstruction_gpu_refreshes_read_only_vast_preflight_before_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _reconstruction_args(tmp_path, execute=False)
+    args.reconstruction_refresh_preflight = True
+    args.reconstruction_name_prefix = "blueprint-reconstruction-"
+    args.reconstruction_container_disk_bytes = 120 * 1024**3
+    args.reconstruction_max_hourly_rate_usd = 0.75
+    Path(args.preflight_bundle).write_text(
+        json.dumps(
+            {
+                "watchdog": {"status": "armed", "independent_process": True},
+                "conflicting_owner_present": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed: dict[str, object] = {}
+
+    class Provider:
+        def capacity_preflight(self, request: object) -> dict[str, object]:
+            observed["capacity_request"] = request
+            return {
+                "status": "available",
+                "selected_offer": {
+                    "gpu_name": "L40",
+                    "gpu_ram_mb": 46_068,
+                    "on_demand_price_usd_per_hour": 0.45,
+                },
+            }
+
+        def billable_inventory(self, *, name_prefix: str) -> dict[str, object]:
+            observed.setdefault("inventory_prefixes", []).append(name_prefix)  # type: ignore[union-attr]
+            return {"api_confirmed": True, "live_resource_count": 0}
+
+    monkeypatch.setattr(allocator, "get_render_provider", lambda _name: Provider())
+
+    def fake_prepare(**kwargs: object) -> dict[str, object]:
+        observed["preflight"] = json.loads(
+            Path(str(kwargs["preflight_path"])).read_text(encoding="utf-8")
+        )
+        return {"status": "dry_run_ready", "blockers": []}
+
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", fake_prepare)
+
+    result = allocator._run_reconstruction_gpu_canary(
+        args, checkout_commit="c" * 40
+    )
+
+    assert result["status"] == "dry_run_ready"
+    preflight = observed["preflight"]
+    assert isinstance(preflight, dict)
+    assert preflight["schema_version"] == "reconstruction_gpu_provider_preflight.v1"
+    assert preflight["status"] == "verified"
+    assert preflight["provider_inventory_verified_zero"] is True
+    assert preflight["provider_mutations_performed"] == 0
+    assert observed["inventory_prefixes"] == ["blueprint-reconstruction-", ""]
+
+
 def test_reconstruction_gpu_execute_refuses_insecure_transport_before_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -762,70 +921,6 @@ def test_reconstruction_gpu_execute_refuses_insecure_transport_before_provider(
         "reconstruction_provider_output_get_url_not_https",
         "reconstruction_provider_output_put_url_not_https",
     } <= set(result["blockers"])
-
-
-def test_sam31_gpu_canary_dispatches_through_canonical_allocator(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    observed: dict[str, object] = {}
-    monkeypatch.setattr(
-        allocator,
-        "_source_checkout_blockers",
-        lambda *_args, **_kwargs: ([], "c" * 40),
-    )
-
-    def fake_lane(args: Namespace, *, checkout_commit: str) -> dict[str, object]:
-        observed["probe_kind"] = args.probe_kind
-        observed["checkout_commit"] = checkout_commit
-        observed["max_spend"] = args.sam31_max_spend_usd
-        return {"status": "dry_run_ready"}
-
-    monkeypatch.setattr(allocator, "run_sam31_paid_resource_allocator_lane", fake_lane)
-    out = tmp_path / "sam31"
-    exit_code = allocator.main(
-        [
-            "gpu-canary",
-            "--provider",
-            "vast",
-            "--probe-kind",
-            allocator.SAM31_SOURCE_TRACK_PROBE_KIND,
-            "--provider-launch-request",
-            str(out / "request.json"),
-            "--release-evidence",
-            str(out / "release.json"),
-            "--model-cache-evidence",
-            str(out / "models.json"),
-            "--preflight-bundle",
-            str(out / "preflight.json"),
-            "--admission-out",
-            str(out / "admission.json"),
-            "--bound-request-out",
-            str(out / "bound.json"),
-            "--adapter-output",
-            str(out / "adapter.json"),
-            "--pod-name",
-            "sam31-canary",
-            "--expected-source-commit",
-            "c" * 40,
-            "--sam31-max-spend-usd",
-            "1.0",
-            "--sam31-hard-ttl-seconds",
-            "300",
-            "--sam31-retry-cap",
-            "0",
-            "--sam31-authority-id",
-            "fixture-authority",
-        ]
-    )
-    assert exit_code == 0
-    assert observed == {
-        "probe_kind": allocator.SAM31_SOURCE_TRACK_PROBE_KIND,
-        "checkout_commit": "c" * 40,
-        "max_spend": 1.0,
-    }
-    assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
 @pytest.mark.parametrize(

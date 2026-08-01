@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_worker_paid_execution_envelope.v1.schema.json",
+  "title": "Reconstruction Worker Paid Execution Envelope v1",
+  "type": "object",
+  "required": ["schema_version", "authorized_action", "paid_mutation_authorized", "authority_issued_by_agent", "authority_id", "max_spend_usd", "hard_ttl_seconds", "retry_cap", "source_commit_sha", "worker_stack_manifest_digest", "license_inventory_digest", "license_review_receipt_digest", "paid_execution_envelope_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_worker_paid_execution_envelope.v1"},
+    "authorized_action": {"const": "cpu-build"},
+    "paid_mutation_authorized": {"const": true},
+    "authority_issued_by_agent": {"const": false},
+    "authority_id": {"type": "string", "minLength": 1},
+    "max_spend_usd": {"type": "number", "exclusiveMinimum": 0},
+    "hard_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 7200},
+    "retry_cap": {"type": "integer", "minimum": 0, "maximum": 1},
+    "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "worker_stack_manifest_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "license_inventory_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "license_review_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "paid_execution_envelope_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

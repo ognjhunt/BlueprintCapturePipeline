@@ -6,12 +6,14 @@ import json
 import math
 from typing import Any, Mapping, Sequence
 
+from .camera_geometry_validation import validate_se3_matrix
 from .decision_evidence_contracts import canonical_digest
 from .reconstruction_worker_contracts import FAILURE_CODES
 
 
 POSE_REFINEMENT_EXECUTION_REQUEST_SCHEMA_VERSION = "pose_refinement_execution_request.v1"
 POSE_REFINEMENT_RESULT_SCHEMA_VERSION = "pose_refinement_result.v1"
+REFINED_CAMERA_POSE_MANIFEST_SCHEMA_VERSION = "refined_camera_pose_manifest.v1"
 
 
 class PoseRefinementContractError(ValueError):
@@ -150,6 +152,15 @@ def build_pose_refinement_result(value: Mapping[str, Any]) -> dict[str, Any]:
     if result.get("status") == "succeeded":
         if failure is not None or not _digest(result.get("refined_pose_manifest_digest")):
             errors.append("pose_refinement_result_success_artifact_invalid")
+        reference = result.get("refined_pose_manifest_reference")
+        if reference is not None and (
+            not isinstance(reference, Mapping)
+            or not str(reference.get("relative_path") or "").strip()
+            or not _digest(reference.get("artifact_digest"))
+            or reference.get("manifest_digest")
+            != result.get("refined_pose_manifest_digest")
+        ):
+            errors.append("pose_refinement_result_manifest_reference_invalid")
     elif failure not in FAILURE_CODES:
         errors.append("pose_refinement_result_failure_code_invalid")
     metrics = result.get("drift_metrics")
@@ -191,10 +202,149 @@ def build_pose_refinement_result(value: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def build_refined_camera_pose_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a derived pose artifact without changing its ARKit parent.
+
+    The manifest contains candidate-only refined poses. Its lineage binds it to
+    the immutable raw-pose manifest and frozen refinement request; it cannot
+    contain evaluator-held-out observations or claim that raw ARKit data was
+    modified.
+    """
+
+    manifest = _clone(dict(value))
+    errors: list[str] = []
+    if manifest.get("schema_version") != REFINED_CAMERA_POSE_MANIFEST_SCHEMA_VERSION:
+        errors.append("refined_pose_manifest_schema_invalid")
+    for key in (
+        "source_capture_digest",
+        "frozen_split_digest",
+        "camera_calibration_digest",
+        "initial_pose_manifest_digest",
+        "pose_refinement_execution_request_digest",
+        "implementation_digest",
+        "container_image_digest",
+    ):
+        if not _digest(manifest.get(key)):
+            errors.append(f"refined_pose_manifest_{key}_invalid")
+    if any(
+        not str(manifest.get(key) or "").strip()
+        for key in (
+            "stable_run_identity",
+            "source_capture_identity",
+            "producing_method",
+            "implementation_version",
+            "timestamp",
+        )
+    ):
+        errors.append("refined_pose_manifest_identity_or_timestamp_missing")
+    commit = str(manifest.get("source_commit_sha") or "")
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        errors.append("refined_pose_manifest_source_commit_invalid")
+    if manifest.get("method_id") not in {
+        "arkit_anchored_bundle_adjustment_v1",
+        "arkit_anchored_pose_graph_refinement_v1",
+    }:
+        errors.append("refined_pose_manifest_method_invalid")
+    if not isinstance(manifest.get("coordinate_frame_declaration"), Mapping):
+        errors.append("refined_pose_manifest_coordinate_frame_invalid")
+    if manifest.get("units") != "meters" or manifest.get("metric_scale_status") not in {
+        "sensor_metric_unvalidated",
+        "independently_validated_metric",
+    }:
+        errors.append("refined_pose_manifest_units_or_scale_status_invalid")
+    if any(
+        not isinstance(manifest.get(key), expected)
+        for key, expected in (
+            ("provider_runtime_identity", Mapping),
+            ("authority_used", Mapping),
+            ("parent_artifact_or_event", Mapping),
+            ("original_file_references", list),
+            ("input_digests", list),
+            ("output_digests", list),
+            ("warnings", list),
+            ("blockers", list),
+        )
+    ):
+        errors.append("refined_pose_manifest_provenance_envelope_invalid")
+    original_files = manifest.get("original_file_references")
+    if isinstance(original_files, list) and (
+        not original_files
+        or any(
+            not isinstance(row, Mapping)
+            or not str(row.get("artifact_id") or row.get("relative_path") or "")
+            or not _digest(row.get("digest"))
+            for row in original_files
+        )
+    ):
+        errors.append("refined_pose_manifest_original_files_invalid")
+    if not _positive(manifest.get("cost_usd"), allow_zero=True) or not _positive(
+        manifest.get("duration_seconds"), allow_zero=True
+    ):
+        errors.append("refined_pose_manifest_execution_accounting_invalid")
+    if manifest.get("raw_arkit_poses_modified") is not False:
+        errors.append("refined_pose_manifest_raw_pose_mutation_forbidden")
+    if manifest.get("hidden_heldout_observations_included") is not False:
+        errors.append("refined_pose_manifest_hidden_access_forbidden")
+    if manifest.get("proof_effect") != "bounded_refined_trajectory_candidate_only" or manifest.get(
+        "claim_ceiling"
+    ) != "calibrated_camera_trajectory":
+        errors.append("refined_pose_manifest_claim_boundary_invalid")
+    observations = manifest.get("observations")
+    if not isinstance(observations, list) or not observations:
+        errors.append("refined_pose_manifest_observations_missing")
+    else:
+        identifiers: set[str] = set()
+        for row in observations:
+            if not isinstance(row, Mapping):
+                errors.append("refined_pose_manifest_observation_invalid")
+                continue
+            observation_id = str(row.get("observation_id") or "")
+            if not observation_id or observation_id in identifiers:
+                errors.append("refined_pose_manifest_observation_id_invalid_or_duplicate")
+            identifiers.add(observation_id)
+            validation = validate_se3_matrix(
+                row.get("T_world_camera"),
+                field="refined_T_world_camera",
+            )
+            if not validation["valid"]:
+                errors.append("refined_pose_manifest_transform_invalid")
+    supplied_configuration = manifest.pop("deterministic_configuration_digest", None)
+    manifest["deterministic_configuration_digest"] = canonical_digest(
+        {
+            "pose_refinement_execution_request_digest": manifest.get(
+                "pose_refinement_execution_request_digest"
+            ),
+            "initial_pose_manifest_digest": manifest.get("initial_pose_manifest_digest"),
+            "camera_calibration_digest": manifest.get("camera_calibration_digest"),
+            "method_id": manifest.get("method_id"),
+            "implementation_digest": manifest.get("implementation_digest"),
+            "container_image_digest": manifest.get("container_image_digest"),
+            "observations": manifest.get("observations"),
+        }
+    )
+    if (
+        supplied_configuration is not None
+        and supplied_configuration != manifest["deterministic_configuration_digest"]
+    ):
+        errors.append("refined_pose_manifest_configuration_digest_mismatch")
+    supplied = manifest.pop("refined_camera_pose_manifest_digest", None)
+    manifest["refined_camera_pose_manifest_digest"] = canonical_digest(
+        manifest,
+        digest_field="refined_camera_pose_manifest_digest",
+    )
+    if supplied is not None and supplied != manifest["refined_camera_pose_manifest_digest"]:
+        errors.append("refined_pose_manifest_digest_mismatch")
+    if errors:
+        raise PoseRefinementContractError(errors)
+    return manifest
+
+
 __all__ = [
     "POSE_REFINEMENT_EXECUTION_REQUEST_SCHEMA_VERSION",
     "POSE_REFINEMENT_RESULT_SCHEMA_VERSION",
+    "REFINED_CAMERA_POSE_MANIFEST_SCHEMA_VERSION",
     "PoseRefinementContractError",
+    "build_refined_camera_pose_manifest",
     "build_pose_refinement_execution_request",
     "build_pose_refinement_result",
 ]

@@ -57,7 +57,43 @@ def _frames(root: Path, count: int = 10) -> list[dict]:
     return rows
 
 
-def _compile(root: Path, frames: list[dict], *, timestamp: str = "2026-07-30T12:00:00Z") -> dict:
+def _grouped_lens_frames(root: Path, pair_count: int = 5) -> list[dict]:
+    rows: list[dict] = []
+    for pair_index in range(pair_count):
+        for lens_id in ("front", "rear"):
+            path = root / "lens-frames" / lens_id / f"pair-{pair_index:04d}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"{lens_id}-pair-{pair_index}".encode())
+            rows.append(
+                {
+                    "frame_id": f"{lens_id}-pair-{pair_index:04d}",
+                    "decoded_frame_index": pair_index,
+                    "t_video_sec": pair_index * 0.033333,
+                    "source_pts_seconds": pair_index * 0.033333,
+                    "source_dts_seconds": pair_index * 0.033333,
+                    "duration_seconds": 0.033333,
+                    "key_frame": pair_index == 0,
+                    "artifact_relative_path": path.relative_to(root).as_posix(),
+                    "digest": _digest(path),
+                    "image_metadata": {"width": 8, "height": 8},
+                    "quality_signals": {"gradient_energy": 1.0},
+                    "source_camera_identity": lens_id,
+                    "observation_group_id": f"pair-{pair_index:04d}",
+                }
+            )
+    return rows
+
+
+def _compile(
+    root: Path,
+    frames: list[dict],
+    *,
+    timestamp: str = "2026-07-30T12:00:00Z",
+    supporting_artifact_references: tuple[dict, ...] = (),
+    source_video_references: tuple[dict, ...] | None = None,
+    implementation_digest: str = IMPLEMENTATION_DIGEST,
+    source_commit_sha: str = SOURCE_COMMIT,
+) -> dict:
     return compile_frozen_frame_dataset(
         artifact_root=root,
         intake_id="intake-1",
@@ -75,10 +111,48 @@ def _compile(root: Path, frames: list[dict], *, timestamp: str = "2026-07-30T12:
         },
         runtime_identity="ffmpeg_ffprobe_local",
         runtime_digest=RUNTIME_DIGEST,
-        implementation_digest=IMPLEMENTATION_DIGEST,
-        source_commit_sha=SOURCE_COMMIT,
+        implementation_digest=implementation_digest,
+        source_commit_sha=source_commit_sha,
         rights_and_retention={"rights": "accepted", "external_processing_allowed": False},
         timestamp=timestamp,
+        supporting_artifact_references=supporting_artifact_references,
+        source_video_references=source_video_references,
+    )
+
+
+def _compile_grouped(root: Path, frames: list[dict]) -> dict:
+    return compile_frozen_frame_dataset(
+        artifact_root=root,
+        intake_id="native-360-intake",
+        capture_digest=CAPTURE_DIGEST,
+        capture_authority_profile="camera_360_native",
+        source_video_relative_path="native/capture.insv",
+        source_video_digest="sha256:" + "e" * 64,
+        decoded_frame_count=len(frames),
+        selected_frames=frames,
+        stream_metadata={
+            "camera_representation": "calibrated_dual_fisheye_rig",
+            "source_camera_identities": ["front", "rear"],
+            "shared_physical_observation_groups": True,
+        },
+        runtime_identity="ffmpeg_dual_lens_fixture",
+        runtime_digest=RUNTIME_DIGEST,
+        implementation_digest=IMPLEMENTATION_DIGEST,
+        source_commit_sha=SOURCE_COMMIT,
+        rights_and_retention={
+            "rights": "accepted",
+            "external_processing_allowed": False,
+        },
+        parent_artifact={"dual_fisheye_binding_digest": "sha256:" + "f" * 64},
+        timestamp="2026-07-30T12:00:00Z",
+        camera_calibration_binding={
+            "camera_360_rig_declaration_digest": "sha256:" + "1" * 64
+        },
+        coordinate_frame_declaration={
+            "units": "meters",
+            "handedness": "right_handed",
+            "rig_frame": "front_lens_optical_center",
+        },
     )
 
 
@@ -125,6 +199,152 @@ def test_compiler_is_idempotent_and_isolates_hidden_heldout_pixels(tmp_path: Pat
     validator = jsonschema.Draft202012Validator(_schema())
     for artifact in (first, split, candidate, heldout, _load_ref(tmp_path, first, "retained_frame_selection_manifest")):
         validator.validate(artifact)
+    legacy_dataset = dict(first)
+    legacy_dataset["producing_method"] = "deterministic_retained_frame_compiler.v1"
+    validator.validate(legacy_dataset)
+
+
+def test_compiler_preserves_complete_multisegment_source_set(tmp_path: Path) -> None:
+    references = (
+        {"relative_path": "retained/source.mov", "digest": "sha256:" + "e" * 64},
+        {"relative_path": "retained/source_001.mov", "digest": "sha256:" + "f" * 64},
+    )
+
+    dataset = _compile(
+        tmp_path,
+        _frames(tmp_path),
+        source_video_references=references,
+    )
+    selection = _load_ref(tmp_path, dataset, "retained_frame_selection_manifest")
+
+    assert dataset["original_file_references"] == list(references)
+    assert selection["source_video_references"] == list(references)
+    assert dataset["input_digests"]["source_video_reference_set_digest"] == (
+        dataset["deterministic_configuration"]["source_video_reference_set_digest"]
+    )
+    jsonschema.Draft202012Validator(_schema()).validate(dataset)
+    jsonschema.Draft202012Validator(_schema()).validate(selection)
+
+
+def test_compiler_preserves_unknown_keyframe_status_without_synthesizing_false(
+    tmp_path: Path,
+) -> None:
+    frames = _frames(tmp_path)
+    frames[0]["key_frame"] = None
+
+    dataset = _compile(tmp_path, frames)
+    selection = _load_ref(tmp_path, dataset, "retained_frame_selection_manifest")
+
+    assert selection["frames"][0]["key_frame"] is None
+    jsonschema.Draft202012Validator(_schema()).validate(selection)
+
+    invalid_root = tmp_path / "invalid-keyframe"
+    invalid = _frames(invalid_root)
+    invalid[0]["key_frame"] = 0
+    with pytest.raises(
+        ReconstructionFrameDatasetError,
+        match="selected_frame_key_frame_invalid:0",
+    ):
+        _compile(invalid_root, invalid)
+
+
+@pytest.mark.parametrize(
+    "references, expected",
+    [
+        (
+            (
+                {"relative_path": "retained/source.mov", "digest": "sha256:" + "e" * 64},
+                {"relative_path": "retained/source.mov", "digest": "sha256:" + "f" * 64},
+            ),
+            "dataset_source_video_reference_invalid:1",
+        ),
+        (
+            ({"relative_path": "../escape.mov", "digest": "sha256:" + "e" * 64},),
+            "dataset_source_video_reference_invalid:0",
+        ),
+        (
+            ({"relative_path": "retained/other.mov", "digest": "sha256:" + "f" * 64},),
+            "dataset_primary_source_video_reference_missing",
+        ),
+    ],
+)
+def test_compiler_rejects_invalid_multisegment_source_sets(
+    tmp_path: Path, references: tuple[dict, ...], expected: str
+) -> None:
+    with pytest.raises(ReconstructionFrameDatasetError, match=expected):
+        _compile(
+            tmp_path,
+            _frames(tmp_path),
+            source_video_references=references,
+        )
+
+
+def test_compiler_freezes_synchronized_camera_groups_without_counterpart_leakage(
+    tmp_path: Path,
+) -> None:
+    dataset = _compile_grouped(tmp_path, _grouped_lens_frames(tmp_path))
+    split = _load_ref(tmp_path, dataset, "frozen_split_manifest")
+    candidate = _load_ref(tmp_path, dataset, "candidate_dataset_manifest")
+    heldout = _load_ref(tmp_path, dataset, "hidden_heldout_evaluator_manifest")
+    selection = _load_ref(tmp_path, dataset, "retained_frame_selection_manifest")
+
+    splits_by_group: dict[str, set[str]] = {}
+    cameras_by_group: dict[str, set[str]] = {}
+    for row in split["assignments"]:
+        splits_by_group.setdefault(row["observation_group_id"], set()).add(
+            row["split"]
+        )
+        cameras_by_group.setdefault(row["observation_group_id"], set()).add(
+            row["source_camera_identity"]
+        )
+    assert all(values == {"front", "rear"} for values in cameras_by_group.values())
+    assert all(len(values) == 1 for values in splits_by_group.values())
+
+    candidate_groups = {row["observation_group_id"] for row in candidate["frames"]}
+    heldout_groups = {row["observation_group_id"] for row in heldout["frames"]}
+    assert heldout_groups
+    assert candidate_groups.isdisjoint(heldout_groups)
+    assert {
+        row["source_camera_identity"]
+        for row in heldout["frames"]
+        if row["observation_group_id"] in heldout_groups
+    } == {"front", "rear"}
+    assert dataset["candidate_dataset_contains_hidden_heldout_pixels"] is False
+    assert dataset["claim_ceiling"] == "decoded_observation_availability"
+    assert dataset["camera_calibration_binding"] == {
+        "camera_360_rig_declaration_digest": "sha256:" + "1" * 64
+    }
+    assert dataset["coordinate_frame_declaration"]["units"] == "meters"
+
+    validator = jsonschema.Draft202012Validator(_schema())
+    for artifact in (dataset, split, candidate, heldout, selection):
+        validator.validate(artifact)
+
+
+def test_compiler_allows_equal_pts_across_cameras_but_rejects_incomplete_groups(
+    tmp_path: Path,
+) -> None:
+    frames = _grouped_lens_frames(tmp_path)
+    dataset = _compile_grouped(tmp_path, frames)
+    assert dataset["blockers"] == []
+
+    incomplete_root = tmp_path / "incomplete"
+    incomplete = [dict(row) for row in _grouped_lens_frames(incomplete_root)]
+    incomplete[0].pop("observation_group_id")
+    with pytest.raises(
+        ReconstructionFrameDatasetError,
+        match="selected_frame_group_binding_incomplete",
+    ):
+        _compile_grouped(incomplete_root, incomplete)
+
+    duplicate_root = tmp_path / "duplicate-camera"
+    duplicate = _grouped_lens_frames(duplicate_root)
+    duplicate[1]["source_camera_identity"] = "front"
+    with pytest.raises(
+        ReconstructionFrameDatasetError,
+        match="selected_frame_group_camera_duplicate",
+    ):
+        _compile_grouped(duplicate_root, duplicate)
 
 
 def test_compiler_replays_after_manifest_write_interruption(tmp_path: Path) -> None:
@@ -140,6 +360,34 @@ def test_compiler_replays_after_manifest_write_interruption(tmp_path: Path) -> N
     assert candidate["candidate_dataset_digest"] == first["output_digests"][
         "candidate_dataset_digest"
     ]
+
+
+def test_compiler_binds_supporting_artifact_and_rejects_tamper(tmp_path: Path) -> None:
+    support = tmp_path / "support/decode.json"
+    support.parent.mkdir(parents=True)
+    support.write_text('{"schema_version":"frame_decode_receipt.v1"}\n')
+    reference = {
+        "relative_path": support.relative_to(tmp_path).as_posix(),
+        "digest": _digest(support),
+        "artifact_type": "frame_decode_receipt.v1",
+    }
+    dataset = _compile(
+        tmp_path,
+        _frames(tmp_path),
+        supporting_artifact_references=(reference,),
+    )
+    assert dataset["supporting_artifact_references"] == [reference]
+
+    support.write_text("tampered\n")
+    with pytest.raises(
+        ReconstructionFrameDatasetError,
+        match="dataset_supporting_artifact_invalid",
+    ):
+        _compile(
+            tmp_path,
+            _frames(tmp_path),
+            supporting_artifact_references=(reference,),
+        )
 
 
 def test_compiler_replay_rejects_tampered_split_artifact(tmp_path: Path) -> None:
@@ -168,6 +416,30 @@ def test_compiler_configuration_binds_pts_and_stream_metadata(tmp_path: Path) ->
         "deterministic_configuration_digest"
     ]
     assert first["dataset_manifest_digest"] != second["dataset_manifest_digest"]
+
+
+def test_split_membership_is_stable_across_compiler_provenance_changes(
+    tmp_path: Path,
+) -> None:
+    frames = _frames(tmp_path)
+    first = _compile(tmp_path, frames)
+    changed = _compile(
+        tmp_path,
+        frames,
+        implementation_digest="sha256:" + "9" * 64,
+        source_commit_sha="8" * 40,
+    )
+    first_split = _load_ref(tmp_path, first, "frozen_split_manifest")
+    changed_split = _load_ref(tmp_path, changed, "frozen_split_manifest")
+
+    assert first["deterministic_configuration_digest"] != changed[
+        "deterministic_configuration_digest"
+    ]
+    assert first["dataset_manifest_digest"] != changed["dataset_manifest_digest"]
+    assert first_split == changed_split
+    assert first["train_heldout_split_digest"] == changed[
+        "train_heldout_split_digest"
+    ]
 
 
 def test_compiler_rejects_duplicate_pts_and_frame_path_escape(tmp_path: Path) -> None:

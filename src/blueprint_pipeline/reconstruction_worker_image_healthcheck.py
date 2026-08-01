@@ -18,9 +18,14 @@ from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "reconstruction_worker_image_healthcheck.v1"
 WORKER_FAMILY = "blueprint-reconstruction-worker"
-COLMAP_REVISION = "a0d785fba74b2664f31edc4a29026a8b27c00f67"
+COLMAP_VERSION = "4.0.4"
+COLMAP_REVISION = "9c23f6942fe69962e06030905e77067c8673382f"
+GCC_VERSION = "11.4.0"
+CMAKE_VERSION = "3.28.3"
+NINJA_VERSION = "1.11.1"
 GSPLAT_REVISION = "937e29912570c372bed6747a5c9bf85fed877bae"
 THREEDGRUT_REVISION = "0a5832248698ab8456b181d6ea17fe02eda58637"
+FUSED_SSIM_REVISION = "1272e21a282342e89537159e4bad508b19b34157"
 MODEL_DIGESTS = {
     "aliked-n16rot.onnx": "39c423d0a6f03d39ec89d3d1d61853765c2fb6a8b8381376c703e5758778a547",
     "aliked-lightglue.onnx": "b9a5de7204648b18a8cf5dcac819f9d30de1a5961ef03756803c8b86c2dceb8d",
@@ -93,6 +98,10 @@ def run_reconstruction_worker_healthcheck(
             Path("/opt/3dgrut/.blueprint-source-revision"),
             THREEDGRUT_REVISION,
         ),
+        "fused_ssim_revision": (
+            Path("/opt/fused-ssim/.blueprint-source-revision"),
+            FUSED_SSIM_REVISION,
+        ),
     }
     for check_id, (path, expected) in revision_paths.items():
         present = bool(exists(path))
@@ -105,8 +114,18 @@ def run_reconstruction_worker_healthcheck(
         if not passed:
             blockers.append(f"reconstruction_worker_{check_id}_invalid")
 
-    for binary, expected_token in (("ffmpeg", "6.1.1"), ("colmap", "COLMAP")):
-        returncode, output = run_command((binary, "-version" if binary == "ffmpeg" else "-h"))
+    for binary, expected_token in (
+        ("ffmpeg", "6.1.1"),
+        ("colmap", f"COLMAP {COLMAP_VERSION}"),
+        ("gcc", GCC_VERSION),
+        ("cmake", f"cmake version {CMAKE_VERSION}"),
+        ("ninja", NINJA_VERSION),
+    ):
+        version_argument = {
+            "ffmpeg": "-version",
+            "colmap": "-h",
+        }.get(binary, "--version")
+        returncode, output = run_command((binary, version_argument))
         passed = returncode == 0 and expected_token in output
         checks.append(
             {"check_id": f"{binary}_headless", "status": "passed" if passed else "failed"}
@@ -119,6 +138,10 @@ def run_reconstruction_worker_healthcheck(
         "onnxruntime",
         "gsplat",
         "threedgrut",
+        "fused_ssim",
+        "ncore",
+        "slangtorch",
+        "hydra",
         "numpy",
         "cv2",
         "trimesh",

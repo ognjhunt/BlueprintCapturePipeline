@@ -13,6 +13,14 @@ from blueprint_pipeline.capture_upload_intake import (
     CaptureUploadTransferError,
     process_capture_upload_submission,
 )
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.native_360_normalization import build_native_360_probe_receipt
+from blueprint_pipeline.task_evaluation_supervisor.capture_ingress import (
+    load_capture_build_ingress,
+)
+from blueprint_pipeline.task_evaluation_supervisor.capture_reconstruction_routing import (
+    build_capture_reconstruction_route,
+)
 
 
 def _payload() -> bytes:
@@ -121,7 +129,7 @@ def _scanner(path: Path) -> dict:
 
 
 def _qa_builder(envelope: dict, *, upload_root: Path) -> dict:
-    assert upload_root.joinpath("capture.mp4").is_file()
+    assert upload_root.joinpath(envelope["original_files"][0]["relative_path"]).is_file()
     report = {
         "schema_version": "capture_qa_report.v1",
         "intake_id": envelope["intake_id"],
@@ -150,6 +158,62 @@ def _qa_builder(envelope: dict, *, upload_root: Path) -> dict:
     return report
 
 
+def _profile_probe(*, capture_root: Path, source_relative_path: str) -> dict:
+    source = capture_root / source_relative_path
+    return build_native_360_probe_receipt(
+        source_file_digest="sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(),
+        runtime_identity="ffprobe-upload-fixture-7.1.1",
+        runtime_digest="sha256:" + "c" * 64,
+        streams=[
+            {
+                "stream_index": 0,
+                "media_type": "video",
+                "codec_name": "h264",
+                "width": 3840,
+                "height": 1920,
+                "time_base": "1/50000",
+                "pts_seconds": [0.0, 0.02],
+                "metadata": {},
+            }
+        ],
+        format_metadata={
+            "compatible_processing_lane": "camera_360_equirectangular",
+            "processing_lane_claim_ceiling": "container_stream_topology_only",
+            "capture_profile_fully_validated": False,
+        },
+    )
+
+
+def _native_profile_probe(*, capture_root: Path, source_relative_path: str) -> dict:
+    source = capture_root / source_relative_path
+    streams = [
+        {
+            "stream_index": stream_index,
+            "media_type": "video",
+            "codec_name": "hevc",
+            "width": 3840,
+            "height": 3840,
+            "time_base": "1/90000",
+            "pts_seconds": [0.0, 0.033333],
+            "metadata": {},
+        }
+        for stream_index in (0, 1)
+    ]
+    return build_native_360_probe_receipt(
+        source_file_digest="sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(),
+        runtime_identity="ffprobe-upload-fixture-7.1.1",
+        runtime_digest="sha256:" + "d" * 64,
+        streams=streams,
+        format_metadata={
+            "compatible_processing_lane": (
+                "camera_360_native_candidate_requires_calibration"
+            ),
+            "processing_lane_claim_ceiling": "container_stream_topology_only",
+            "capture_profile_fully_validated": False,
+        },
+    )
+
+
 def test_streams_scans_hashes_and_materializes_without_persisting_transfer_grant(
     tmp_path: Path,
 ) -> None:
@@ -162,11 +226,14 @@ def test_streams_scans_hashes_and_materializes_without_persisting_transfer_grant
         transfer_opener=_opener(payload, seen),
         malware_scanner=_scanner,
         qa_builder=_qa_builder,
+        profile_probe=_profile_probe,
     )
 
     assert first["admission_status"] == "accepted"
     assert first["state"] == "capture_accepted"
     assert first["capture_digest"].startswith("sha256:")
+    assert first["capture_profile_validation_status"] == "validated"
+    assert first["capture_profile_validation_digest"].startswith("sha256:")
     assert datetime.fromisoformat(first["capture_upload_received_at"]).tzinfo is not None
     assert first["proof_boundary"] == {
         "server_sha256_verified": True,
@@ -185,6 +252,24 @@ def test_streams_scans_hashes_and_materializes_without_persisting_transfer_grant
     assert "short-lived-download-grant" not in stored_text
     assert "download.example.test" not in stored_text
 
+    artifact_root = tmp_path / first["artifact_reference"]["uri"]
+    profile_validation = json.loads(
+        (
+            artifact_root / "evaluation_prep/capture_profile_validation.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert profile_validation["source_capture_digest"] == first["capture_digest"]
+    capture_build = load_capture_build_ingress(artifact_root)
+    route = build_capture_reconstruction_route(capture_build)
+    assert route["status"] == "route_proposed"
+    assert route["capture_authority_profile"] == "camera_360_equirectangular"
+    assert route["capture_profile_validation_digest"] == first[
+        "capture_profile_validation_digest"
+    ]
+    profile_validation_bytes = (
+        artifact_root / "evaluation_prep/capture_profile_validation.json"
+    ).read_bytes()
+
     replay_seen: dict[str, object] = {}
     replay = process_capture_upload_submission(
         _submission(payload),
@@ -193,10 +278,105 @@ def test_streams_scans_hashes_and_materializes_without_persisting_transfer_grant
         transfer_opener=_opener(payload, replay_seen),
         malware_scanner=_scanner,
         qa_builder=_qa_builder,
+        profile_probe=_profile_probe,
     )
     assert replay["already_exists"] is True
     assert replay["capture_digest"] == first["capture_digest"]
     assert replay_seen == {}
+    assert (
+        artifact_root / "evaluation_prep/capture_profile_validation.json"
+    ).read_bytes() == profile_validation_bytes
+
+
+def test_native_upload_auto_routes_to_separate_rig_calibration(tmp_path: Path) -> None:
+    payload = _payload()
+    submission = _submission(payload)
+    request = submission["request"]
+    request.update(
+        {
+            "intake_id": "intake-native-upload-1",
+            "idempotency_key": "org-1-native-upload-1",
+            "capture_authority_profile": "camera_360_native",
+            "source_type": "camera_360_native",
+            "original_file": {
+                "original_filename": "capture.insv",
+                "size_bytes": len(payload),
+                "media_type": "video/x-insta360",
+            },
+            "available_sensor_streams": [
+                {"stream_type": "retained_original", "status": "available"},
+                {"stream_type": "camera_metadata", "status": "available"},
+            ],
+        }
+    )
+
+    receipt = process_capture_upload_submission(
+        submission,
+        store_root=tmp_path,
+        allowed_hosts=["download.example.test"],
+        transfer_opener=_opener(payload, {}),
+        malware_scanner=lambda _path: {
+            "status": "passed",
+            "scanner": "fixture-clam",
+        },
+        qa_builder=_qa_builder,
+        profile_probe=_native_profile_probe,
+    )
+
+    assert receipt["capture_profile_validation_status"] == "validated"
+    artifact_root = tmp_path / receipt["artifact_reference"]["uri"]
+    profile_validation = json.loads(
+        (
+            artifact_root / "evaluation_prep/capture_profile_validation.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert profile_validation["warnings"] == ["native_360_rig_calibration_pending"]
+    route = build_capture_reconstruction_route(load_capture_build_ingress(artifact_root))
+    assert route["status"] == "route_proposed"
+    assert route["capture_authority_profile"] == "camera_360_native"
+    assert route["stages"][1]["stage_id"] == "normalize_native_360_capture"
+
+
+def test_upload_rejects_rehashed_profile_probe_for_different_source(
+    tmp_path: Path,
+) -> None:
+    payload = _payload()
+
+    def stale_probe(*, capture_root: Path, source_relative_path: str) -> dict:
+        receipt = _profile_probe(
+            capture_root=capture_root,
+            source_relative_path=source_relative_path,
+        )
+        receipt["source_file_digest"] = "sha256:" + "9" * 64
+        receipt["probe_receipt_digest"] = canonical_digest(
+            receipt, digest_field="probe_receipt_digest"
+        )
+        return receipt
+
+    with pytest.raises(
+        CaptureUploadTransferError,
+        match="capture_profile_probe_source_digest_mismatch",
+    ):
+        process_capture_upload_submission(
+            _submission(payload),
+            store_root=tmp_path,
+            allowed_hosts=["download.example.test"],
+            transfer_opener=_opener(payload, {}),
+            malware_scanner=_scanner,
+            qa_builder=_qa_builder,
+            profile_probe=stale_probe,
+        )
+
+    recovered = process_capture_upload_submission(
+        _submission(payload),
+        store_root=tmp_path,
+        allowed_hosts=["download.example.test"],
+        transfer_opener=_opener(payload, {}),
+        malware_scanner=_scanner,
+        qa_builder=_qa_builder,
+        profile_probe=_profile_probe,
+    )
+    assert recovered["capture_profile_validation_status"] == "validated"
 
 
 def test_transfer_fails_closed_on_host_query_size_media_and_malware(
@@ -216,6 +396,7 @@ def test_transfer_fails_closed_on_host_query_size_media_and_malware(
             transfer_opener=_opener(_payload(), {}),
             malware_scanner=_scanner,
             qa_builder=_qa_builder,
+            profile_probe=_profile_probe,
         )
 
     short = _payload()[:-1]
@@ -227,6 +408,7 @@ def test_transfer_fails_closed_on_host_query_size_media_and_malware(
             transfer_opener=_opener(short, {}),
             malware_scanner=_scanner,
             qa_builder=_qa_builder,
+            profile_probe=_profile_probe,
         )
 
     invalid_media = b"not-an-mp4" + b"x" * (len(_payload()) - 10)
@@ -238,6 +420,7 @@ def test_transfer_fails_closed_on_host_query_size_media_and_malware(
             transfer_opener=_opener(invalid_media, {}),
             malware_scanner=lambda _path: {"status": "passed", "scanner": "fixture"},
             qa_builder=_qa_builder,
+            profile_probe=_profile_probe,
         )
 
     with pytest.raises(CaptureUploadTransferError, match="malware_detected"):
@@ -250,6 +433,7 @@ def test_transfer_fails_closed_on_host_query_size_media_and_malware(
                 CaptureUploadTransferError(["malware_detected"])
             ),
             qa_builder=_qa_builder,
+            profile_probe=_profile_probe,
         )
 
 
@@ -262,6 +446,7 @@ def test_receipt_idempotency_rejects_changed_request_binding(tmp_path: Path) -> 
         transfer_opener=_opener(payload, {}),
         malware_scanner=_scanner,
         qa_builder=_qa_builder,
+        profile_probe=_profile_probe,
     )
     changed = _submission(payload)
     changed["request"]["scene_id"] = "scene-2"
@@ -273,6 +458,7 @@ def test_receipt_idempotency_rejects_changed_request_binding(tmp_path: Path) -> 
             transfer_opener=_opener(payload, {}),
             malware_scanner=_scanner,
             qa_builder=_qa_builder,
+            profile_probe=_profile_probe,
         )
 
 
@@ -296,6 +482,7 @@ def test_receipt_is_valid_json_and_contains_no_ephemeral_fields(tmp_path: Path) 
         transfer_opener=_opener(payload, {}),
         malware_scanner=_scanner,
         qa_builder=_qa_builder,
+        profile_probe=_profile_probe,
     )
     persisted = json.loads(next((tmp_path / "transfer_receipts").glob("*.json")).read_text())
     assert persisted == receipt

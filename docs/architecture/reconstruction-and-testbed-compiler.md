@@ -67,8 +67,9 @@ spherical projection, SfM, 3DGS training, and independent scale validation.
 Native 360 normalization is registered conditionally: it appears as an SDK
 tool only when the trusted capture runtime injects a digest-bound normalizer.
 The subsequent `validate_camera_rig` tool independently rechecks the frozen rig
-declaration and dual-fisheye binding. It can establish fixed calibrated rig
-compatibility only; it cannot establish a trajectory or metric scale.
+declaration, dual-fisheye binding, lens synchronization, and explicit segment
+timeline. It can establish fixed calibrated rig compatibility only; it cannot
+establish a trajectory or metric scale.
 This remains a planning aid: the control plane still owns method-profile
 eligibility and separate execution authorization.
 
@@ -82,13 +83,21 @@ rotation, pixel/color, and locally measurable image-quality metadata when those
 values are available. Duplicate or reordered PTS, undecodable media, symlinked
 inputs, unsafe paths, digest changes, and oversized retained video fail closed.
 The original retained video remains complete and authoritative.
+The v2 compiler isolates the split protocol digest from compiler SHA, runtime,
+and implementation provenance, so unchanged selected observations and split
+rules preserve exact train/validation/hidden-held-out membership across a code
+or worker rebuild. Dataset provenance and the overall dataset digest still
+change when the producing implementation changes.
 
 Metric scale now has a separate `metric_scale_anchor_declaration.v1` and
-`metric_scale_validation_result.v1` gate. Only a positive, independently
+`metric_scale_validation_result.v2` gate. Only a positive, independently
 verified physical reference may serve as an anchor; learned or monocular depth
-is explicitly rejected as the sole source. The registered validator compares a
-frozen estimated distance against the precommitted relative-error threshold and
-cannot let the agent change either value.
+is explicitly rejected as the sole source. A
+`reconstruction_anchor_measurement.v1` binds two frozen reconstruction-space
+endpoints, the exact reconstruction and split, and an independent evaluator;
+the validator computes their distance instead of trusting a candidate-supplied
+scalar. It compares that measurement against the precommitted relative-error
+threshold and cannot let the agent change the anchor, measurement, or threshold.
 
 The kernel emits five versioned, digest-bound artifacts governed by
 `docs/schemas/reconstruction_frame_dataset.v1.schema.json`:
@@ -113,7 +122,21 @@ The Task Evaluation Supervisor registers
 `compile_frozen_frame_dataset` as a typed, zero-cost, scoped mutation tool only
 when a deterministic compiler callable is injected by the service. The tool
 cannot change the capture profile, split, proof state, or claim ceiling. The
-normal capture-build ingress intentionally projects known JSON fields without
+completed 360 capture build must also carry a deterministic
+`capture_profile_validation.v1` artifact at
+`evaluation_prep/capture_profile_validation.json` (or its pipeline-prefixed
+equivalent). It binds the immutable source digest, native probe receipts,
+observed topology, declared profile, and any already available calibrated native
+normalization. Observed dual-stream topology may validate only the native
+profile while recording that rig calibration remains pending; it does not prove
+intrinsics, distortion, lens identity, synchronization, or metric scale. Those
+remain separate fail-closed normalization and camera-rig gates.
+Supervisor routing verifies its safe-projection binding before exposing stages;
+missing, malformed, source-mismatched, or contradictory evidence yields a typed
+unresolved route with no executable adapters. The agent may request corrected
+deterministic intake but cannot switch the profile.
+
+The normal capture-build ingress intentionally projects known JSON fields without
 raw media paths, so the production lifecycle does not inject this compiler yet;
 it remains fail-closed until deterministic capture admission exposes an
 immutable retained-media binding. Agent prose cannot substitute for the tool
@@ -194,11 +217,42 @@ observation manifest contains training and validation paths only. It cannot
 change raw ARKit poses or the frozen split, cannot read held-out pixels, and
 cannot enable undeclared distortion or rolling-shutter models.
 
+The same compiler now emits a digest-bound
+`colmap_training_dataset_export_request.v1` that projects those exact candidate
+observations into the shared COLMAP text exporter without changing their raw
+ARKit poses or intrinsics. This makes the unrefined ARKit-pose baseline locally
+executable. The request remains explicitly blocked from a training claim until
+an initialization surface is bound, and it records that pose refinement has not
+run; the later bounded-refinement route remains a separate comparison method.
+`bind_colmap_initialization_surface` accepts only the separately compiled,
+confidence-filtered ARKit observed surface with the same capture, frozen split,
+calibration, and coordinate frame. It refuses generated fill, held-out access,
+or raw-pose mutation, then removes only the initialization blocker and preserves
+the explicit unrefined-pose marker.
+
+The registered exporter now returns contained, byte-hashed references for the
+camera calibration, candidate observation, pose-refinement, and COLMAP request
+artifacts rather than exposing only aggregate digests. The supervisor reopens
+each file beneath the scoped output root, rejects traversal/symlinks/digest
+drift, validates the artifact's logical digest, and rechecks capture, split,
+calibration, candidate-manifest, and hidden-view lineage. This is the immutable
+handoff needed for a later continuation to bind the observed surface and bounded
+refined poses without an operator copying paths from logs.
+
 Both `compile_arkit_metric_scaffold` and
 `export_arkit_reconstruction_dataset` are registered SDK tools. Their real
 implementations stay in trusted runtime state; the agent sees only the capture
 route digest or export-request digest. The tool observations cannot change
 proof state, calibration, raw poses, or split membership.
+
+After the trusted scaffold adapter validates the exact V3.2 manifest, decoded
+PTS, encoder-attempt retention ledger, synchronized ARKit frames and poses,
+intrinsics, coordinate declaration, and depth/confidence presence, it emits a
+separate `arkit_raw_contract_validation.v1` receipt. The receipt binds every
+source artifact digest, the frozen split, scaffold and export, and is surfaced
+by the registered tool. Its ceiling is calibrated camera trajectory only:
+sensor-declared meters are not independent metric-scale proof, and geometry,
+collision, Isaac, physical success, and deployment booleans remain false.
 
 The pose-refinement request remains deterministically blocked because a
 threshold must be supplied by a later frozen
@@ -206,10 +260,17 @@ threshold must be supplied by a later frozen
 `run_pose_refinement` is now a registered worker boundary for ARKit-anchored
 bundle adjustment or pose-graph refinement. It preserves the raw pose manifest,
 forbids hidden-view access, and rejects a nominally successful result when its
-maximum translation or rotation drift exceeds the precommitted limits. No
-qualified refiner runtime has been executed on a real bundle yet. Accordingly,
-the export alone is a calibrated reconstruction request, not a refined
-trajectory or COLMAP/gsplat dataset. The
+maximum translation or rotation drift exceeds the precommitted limits. An
+operational success must now emit a contained, byte-hashed
+`refined_camera_pose_manifest.v1`; legacy digest-only results remain replayable
+but cannot drive training. `bind_colmap_refined_poses` validates the exact raw
+parent, capture, frozen split, calibration, observation set, method, manifest,
+result, and drift thresholds before creating a new derived COLMAP request. The
+raw ARKit request is never overwritten, rejected observations cannot silently
+change the frozen candidate set, and the exporter records whether the selected
+request uses refined poses. No qualified refiner runtime has been executed on a
+real bundle yet. Accordingly, this is locally verified contract and fixture
+behavior, not a real refined trajectory or trained reconstruction. The
 ARKit scaffold records sensor-declared meter units, but its claim ceiling no
 longer says metric scale or a metric reference layer is independently proven:
 confidence filtering, RGB-depth alignment, metric-scale validation, and
@@ -269,9 +330,17 @@ Isaac compatibility, physical success, or deployment readiness.
 ## Native dual-fisheye normalization
 
 `native_360_normalization.py` implements the source-preserving native lane. Its
-probe receipt binds exact source bytes, runtime, streams, dimensions, time
-bases, and monotonic PTS. The normalizer requires exact `.insv` filename, size,
-and digest declarations; deterministic segment order; explicit front/rear
+bounded local ffprobe executor hashes the exact source and runtime before and
+after execution, invokes no shell, limits time and output bytes, strictly parses
+container/stream facts and decoded-frame PTS/DTS, and emits the existing typed
+probe receipt. That receipt binds exact source bytes, runtime, streams,
+dimensions, time bases, and monotonic decoded PTS. It explicitly does not infer
+lens identity, calibration, IMU, gyro, trajectory, or metric scale. The
+composed local entrypoint probes every declared segment before invoking the
+normalizer, checks local rights and consent before any decode, and persists each
+exact receipt under the content-addressed normalization root for replay. The
+normalizer requires exact `.insv` filename, size, and digest declarations;
+deterministic segment order; explicit front/rear
 stream bindings; calibrated per-lens intrinsics, distortion, masks and source
 provenance; a rigid nonzero-baseline rig transform; coordinate semantics; and
 explicit local rights, consent, privacy, retention, no-upload, and no-paid-
@@ -288,6 +357,125 @@ scale, reconstruction, geometry, collision, or Isaac result. The Task
 Evaluation Supervisor exposes it only through a typed, zero-cost, digest-bound
 registered tool backed by an injected trusted runtime; the agent receives no
 filesystem path or generic execution handle.
+
+The local executor has been exercised against a generated two-stream MOV
+container carrying an `.insv` filename: ffprobe 7.1.1 observed both 64x64 video
+streams and their three decoded timestamps. This proves executable container
+probing and receipt compilation only. It is not representative Insta360 media
+and proves no native stream topology, embedded metadata, calibration, or 360
+route qualification.
+
+`native_360_frame_dataset.py` binds already-decoded lens images back to the
+validated source path, source digest, declared stream index, decoded index, and
+per-lens PTS in the dual-fisheye binding. The shared frozen dataset kernel now
+supports optional physical-camera and synchronized-observation-group identities:
+front and rear pixels from one physical instant always receive the same frozen
+train, validation, or hidden-held-out assignment. It rejects missing/rebound
+lenses, duplicate camera membership, invalid images, digest/dimension mismatch,
+and hidden-counterpart leakage. Camera calibration is bound into the dataset but
+the compiler's proof effect remains decoded-observation availability only; it
+does not establish trajectory or metric scale. The hermetic native fixture now
+reaches this grouped split gate and abstains at the later pose-worker and metric-
+anchor gates. Multi-segment native decoding is supported only when every segment
+has a declared, non-overlapping capture-timeline start. Each segment retains its
+own immutable source reference and local PTS; the compiler derives the global
+observation time from that declared start plus relative front-lens PTS. Missing,
+invalid, or overlapping segment timing fails closed rather than inferring order
+from filenames or segment position.
+
+Fixed rig extrinsics are accepted only with an explicit transform direction
+(`rear_camera_from_front_rig` or its declared inverse) and translation units in
+meters. The legacy matrix label alone is intentionally insufficient: without
+those declarations the normalizer abstains, so a downstream COLMAP adapter
+cannot silently guess `cam_from_rig` semantics or manufacture calibration.
+Each per-lens valid-pixel mask is now a retained capture artifact, not a digest-
+only assertion: its capture-relative path is checked for traversal and symlink
+escape, the bytes are rehashed against the calibration declaration, and the
+accepted mask is copied immutably into the normalization artifact. Missing or
+tampered masks invalidate that lens calibration and lower the claim ceiling.
+
+The same module now provides a bounded ffmpeg lens decoder. It uses only the
+validated source path, source digest, declared physical-lens stream indices, and
+declared frame-pair ordinals; invokes no shell; applies per-frame timeout and
+output limits; disables autorotation; preserves fisheye distortion; validates
+the exact PNG dimensions and digests; and emits the replayable
+`native_360_lens_decode_manifest.v1`. Decoded pixels remain accessible only to
+the trusted dataset compiler until frozen candidate/hidden materialization.
+The grouped dataset compiler requires this exact manifest and binds its digest
+as a parent; runtime/source/frame substitutions are refused rather than silently
+accepted as equivalent decoded observations.
+
+A two-segment hermetic replay exercises the complete local front end: both
+source files are independently hash-bound, 20 paired lens observations decode,
+local PTS resets remain attached to their segment, the declared segment starts
+produce one strictly increasing capture timeline, and the shared compiler freezes
+front/rear pairs atomically without hidden-view leakage. This is contract and
+local-executor evidence only, not representative Insta360 qualification.
+
+`native_360_pose_request.py` closes the deterministic handoff from that frozen
+dataset to the existing registered pose worker. It reproduces the camera-rig
+validation result, binds the dataset, split, all retained source digests, rig
+calibration, stream binding, worker image and source SHA, build/smoke receipts,
+prequalified feature assets, fisheye camera model, seed, resource request,
+timeout, retry cap, and spend cap into `pose_estimation_request.v1`. Hidden
+pixels, an invalid capture timeline, unpinned learned models, or remote execution
+without provider authority retained in both the execution envelope and capture
+artifact fail closed. Compilation does not execute COLMAP and proves neither a
+trajectory nor metric scale; the resulting request keeps scale at
+`anchor_required`.
+
+`native_360_colmap_plan.py` compiles that admitted request into an inert,
+replayable COLMAP 4.0.4 execution plan. Candidate observations are rematerialized
+under `front/` and `rear/` with identical filenames for each synchronized rig
+frame; a trusted supervisor may rebase their manifest-relative locations under
+one safe artifact root, while hidden-held-out locations remain structurally
+forbidden. Calibration masks must reproduce the accepted normalization receipt,
+and a separate safe normalization artifact root can be applied without changing
+their recorded relative paths. The plan binds
+per-lens calibrated valid-pixel masks, exact fisheye intrinsics/distortion, and
+the declared transform direction before producing COLMAP `cam_from_rig`
+quaternion/translation values. It emits argv arrays for headless feature
+extraction, `rig_configurator`, deterministic sequential matching, and mapping
+with sensor extrinsics and intrinsics held fixed. SIFT/ALIKED and compatible
+brute-force/LightGlue pairings use one frozen protocol. Unknown camera axes,
+missing masks, malformed transforms, mismatched distortion models, incomplete
+front/rear groups, or any hidden path fail closed. The plan grants no shell or
+network access, does not execute COLMAP, and has an `execution_plan_only` claim
+ceiling; a registered trusted runtime and a typed pose result remain required.
+
+`native_360_colmap_runner.py` is that bounded trusted runtime. It independently
+rehashes every candidate image and calibrated mask, rejects symlinks and unsafe
+paths, materializes the fixed rig workspace, and invokes only the five admitted
+COLMAP subcommands as argv arrays with `shell=False`, bounded time, and bounded
+logs. The final model-converter step produces text camera/image/point records;
+the runner parses only the registered candidate image names to build the typed
+`pose_estimation_result.v1` registered/rejected inventory. Unknown returned
+images, missing or malformed model files, timeouts, startup failures, and
+nonzero commands become typed failures with retained logs. Both successes and
+failures are immutable and replay without repeating an unchanged attempt. The
+service wrapper fits the existing registered `run_pose_estimation` callable and
+accepts only the exact request digest. Its supervisor runtime identity also binds
+the plan digest, opaque input-root identity, execution bounds, and runner kind;
+the agent still receives no plan, filesystem, shell, or runtime handle. Hermetic
+tests use a fake process runner,
+so this establishes adapter behavior but not a real COLMAP trajectory.
+
+The native reconstruction route now orders normalization before frozen dataset
+compilation. A trusted runtime-only compiler service composes decode and grouped
+split under the registered `compile_frozen_frame_dataset` tool; the model sees
+only capture-build and route digests. The dataset publishes the decode manifest
+as a supporting artifact reference, which the supervisor independently resolves,
+rehashes, and records in the tool observation ledger.
+Timeout, malformed or absent output, changed source/runtime bytes, symlinked
+targets, wrong dimensions, and immutable conflicts fail closed.
+
+An installed-runtime smoke traversed a generated two-stream 64x64 MOV carrying
+an `.insv` filename through ffprobe, normalization, ffmpeg lens decoding, and
+the grouped frozen-split compiler: two streams with three frames each produced
+three synchronized pairs and six decoded lens observations. Its ceiling is
+decoded-observation availability only. The container, calibration, and rig were
+synthetic, so this is not native Insta360, real 360, metric-scale, pose,
+appearance, collision, or Isaac proof.
 
 ## Stitched equirectangular shared-center rig
 
@@ -331,10 +519,21 @@ implementation.
 ## Headless pose and appearance worker contracts
 
 The Phase 4 contract kernel pins a candidate `linux/amd64` stack to a digest-bound
-CUDA 12.4.1 Ubuntu base, COLMAP 4.1.1 with CUDA and ONNX enabled, ONNX Runtime
+CUDA 12.4.1 Ubuntu base, COLMAP 4.0.4 at official tag commit
+`9c23f6942fe69962e06030905e77067c8673382f` with CUDA and ONNX enabled, ONNX Runtime
 1.24.4, gsplat 1.5.3, and NVIDIA 3DGRUT 1.1.0. It also records candidate compiler,
 FFmpeg, Python/PyTorch, OpenCV, Trimesh, OpenUSD, QA, driver, model-asset, license,
-and redistribution constraints. The ALIKED and LightGlue ONNX assets use the
+and redistribution constraints. Python 3.11.9 and FFmpeg 6.1.1 source archives
+are SHA-256 verified. The Linux/amd64 Python environment is resolved into a
+hash-enforced 107-package runtime lock plus a separate hash-enforced build-tool
+bootstrap; only the recorded pure-Python `asciitree` and
+`antlr4-python3-runtime` source distributions may build, with build isolation
+disabled. Runtime dependencies declared by the pinned gsplat and 3DGRUT sources
+are included. The baseline's unconditionally imported fused-SSIM CUDA extension
+is built from pinned upstream commit
+`1272e21a282342e89537159e4bad508b19b34157`; the embedded healthcheck verifies
+that source revision and the fused-SSIM, NCore, SlangTorch, and Hydra imports.
+The ALIKED and LightGlue ONNX assets use the
 digests published with COLMAP 3.13.0. This is a pinned candidate manifest, not a
 built or qualified image; build and headless smoke receipts remain mandatory.
 
@@ -347,6 +546,13 @@ rejected frames and typed failures. They contain no hidden held-out labels and
 cannot self-grade. Checkpoints can resume only against the exact request and
 random-state digest.
 
+New requests compiled for the pinned executable use
+`nvidia_3dgrut_3dgut_mcmc_v1` as the canonical profile identifier. The older
+`gsplat_3dgut_mcmc_v1` identifier remains accepted only as a replay-compatible
+alias for the same 3DGRUT executor. `gsplat_3dgs_mcmc_v1` remains a valid
+provider-neutral contract identifier for a future dedicated gsplat executor,
+but the 3DGRUT-bound request compiler rejects it before paid worker startup.
+
 The Agents SDK exposes `run_pose_estimation` and
 `train_gaussian_reconstruction` using request digests only. Trusted injected
 runtimes receive the validated request and a supervisor-owned output root; the
@@ -355,40 +561,81 @@ Even successful tool output is only a calibrated-trajectory or appearance-asset
 candidate. The independent evaluators and later geometry/Isaac gates own any
 qualification.
 
-`reconstruction_worker_build_packet.v1` is provider-neutral and names only the
+`reconstruction_worker_build_packet.v2` is provider-neutral and names only the
 canonical `paid_resource_allocator cpu-build` seam. It cannot select a provider
 or launch a build. It fails closed without a clean immutable commit, exact source
-tree, recipe and dependency-lock digests, license-review receipt, budget, TTL,
-retry cap, and authority. Allocation and image-build success are explicitly not
-scientific success.
+tree, recipe and dependency-lock digests, digest-bound license inventory and v2
+human review receipt, budget, TTL, retry cap, and non-agent authority. The inventory binds
+all 107 hash-locked Python dependencies, source components, model assets, the
+worker stack, and the exact license-policy digest. It grants no authority. A v2
+review receipt must acknowledge every recorded inventory blocker and every
+component identity, is limited to a private internal build, and cannot be issued
+from agent prose or a legacy receipt. The
+`reconstruction_worker_paid_execution_envelope.v1` record then binds the exact
+source SHA, worker stack, inventory, review receipt, dollar cap, two-hour-or-less
+TTL, retry cap, and authority identity. The canonical CPU-build admission rejects
+any drift between that archived envelope and its separate spend input before a
+provider call. Allocation and image-build success are
+explicitly not scientific success. The v1 schemas remain available only for
+replay of recorded historical admissions.
 
 The current clean-SHA admission at
-`ff9deb59bd2ac96a3ffc72d2ea70abdeb6fb9912` binds the exact Git tree,
+`ff9deb59bd2ac96a3ffc72d2ea70abdeb6fb9912` binds its historical Git tree,
 Dockerfile, dependency lock, and candidate stack manifest. It is deterministically
 `blocked` only by `worker_license_review_receipt_missing`, the missing numeric
 budget, TTL, retry cap, and paid-authority identity. The recorded stack and
 admission artifacts are
 `docs/evidence/reconstruction_worker_stack_manifest_ff9deb59.json` and
 `docs/evidence/reconstruction_worker_build_admission_ff9deb59.json`. No build or
-provider launch occurred. The recorded ARKitScenes candidate dataset is also
+provider launch occurred. That historical stack named unpublished COLMAP 4.1.1
+and is now a superseded support artifact, not an executable current pin; it is
+retained so the rejected admission remains auditable. The current executable
+contract uses official COLMAP 4.0.4 and requires a new build packet and receipts.
+The recorded ARKitScenes candidate dataset is also
 regression-tested against `reconstruction_training_request.v1`: without a
 resolved digest-pinned worker image, request compilation fails closed before
 any trainer can receive candidate pixels.
 
-`reconstruction_worker_remote_build_packet.v1` materializes the corresponding
+`reconstruction_worker_remote_build_packet.v2` materializes the corresponding
 exact-source build context for that seam. It includes only tracked package
-sources and the required Docker recipe/lock files, records every member digest,
+sources and the required Docker recipe, lock inputs, lock generator, and resolved
+lock files, records every member digest,
 rejects symlinks and unsafe archive members, emits a byte-deterministic archive,
 and binds the executable build script to the source commit, recipe, dependency
-lock, worker-stack manifest, license-review receipt, and context manifest. The
-license receipt can authorize only a private internal build; it cannot grant
+lock, worker-stack manifest, license-inventory digest, v2 license-review receipt,
+paid-execution-envelope digest, and context manifest. All three governance
+artifacts are included as archive members and re-hashed by the remote script
+before the first registry mutation. The license receipt can authorize only a private internal build; it cannot grant
 redistribution or commercial distribution rights, and an agent cannot issue it.
 The script builds only `linux/amd64`, requests
 BuildKit provenance and SBOM attestations, resolves the pushed registry digest,
-and emits `reconstruction_worker_build_receipt.v1`. The shared CPU builder
+and emits `reconstruction_worker_build_receipt.v2`. The shared CPU builder
 independently validates both the archive and returned receipt and still requires
 its separate numeric spend/TTL envelope, watchdog, teardown, and provider-zero
 proof. A build receipt remains below the GPU runtime-smoke and scientific gates.
+
+`reconstruction_worker_build_receipt_normalization.py` closes the evidence seam
+between that shared CPU builder and the stable worker contract consumed by pose
+and training request compilation. It accepts only a ready, canonical, untampered
+v2 packet; a digest- and registry-repository-bound remote build receipt; the
+matching completed outer builder result; and a teardown record whose independent
+lookup confirms provider absence. Source SHA, worker stack, build context,
+license inventory, human review receipt, paid-authority envelope, image digest,
+duration, and spend must all agree and remain inside the frozen cap and TTL. The
+normalized `reconstruction_worker_build_receipt.v1` retains digests for every
+parent record and explicitly records that the GPU healthcheck has not run. It
+therefore proves only exact image construction plus CPU-builder teardown, never
+GPU compatibility, reconstruction quality, Isaac compatibility, physical
+success, or deployment readiness.
+
+After the Vast-first runtime smoke, `reconstruction_worker_smoke_receipt.py`
+normalizes the digest-bound healthcheck, execution, teardown, provider-zero, and
+paid-authority records into the canonical
+`reconstruction_worker_smoke_test_receipt.v1` consumed by the training-request
+compiler. It refuses stale image/SHA bindings, partial healthcheck ledgers,
+ambiguous mutations, nonzero provider inventory, failed teardown, authority
+drift, and cost or duration beyond the frozen envelope. The normalized receipt
+proves worker-image compatibility only and has no reconstruction-quality effect.
 
 ## Metric geometry, collision, and Isaac qualification
 
@@ -453,22 +700,52 @@ render behavior, physics contact, task success, physical success, or deployment.
 headless runtime result. It intentionally rejects visual-only
 `isaac_splat_nurec_render_result.v1`. The existing ParticleField runner now has
 an explicit qualification mode that emits
-`isaac_splat_nurec_render_result.v2`, binds and re-hashes the exact package, and
+`isaac_splat_nurec_render_result.v3`, binds and re-hashes the exact package, and
 reports meters/Z-up, transforms, unresolved dependencies, ParticleField and
 active collision prim counts, a stepped live-PhysX test-body probe against an
 existing static package collider, conservative obvious-scale bounds, and
 digest-bound nonblank fixed-camera renders. It does not create a helper floor.
-Legacy callers remain on v1 and cannot satisfy
-the physics-presence gate. The v2 code path is hermetically contract-tested but
-remains real-Isaac unverified until executed on the pinned GPU worker.
+The typed `isaac_asset_verification_request.v1` freezes the exact package,
+camera set, runner implementation, pinned runtime image, expected prim paths,
+and physics-probe configuration before execution. The independent normalizer
+then re-hashes the retrieved USDZ and every PNG, decodes the PNGs itself, and
+rejects runtime-reported dimensions or pixel statistics that do not match the
+retrieved bytes. `isaac_verification_worker_bundle.v1` packages those exact
+inputs deterministically without allocating or authorizing paid compute; any
+GPU execution must still enter through
+`python -m blueprint_pipeline.paid_resource_allocator gpu-canary`. Legacy
+callers remain on v1 and cannot satisfy the physics-presence gate. The v3 code
+path and worker bundle are hermetically contract-tested but remain real-Isaac
+unverified until executed on the pinned GPU worker.
+
+For reconstruction GPU admission, the canonical `gpu-canary` seam can refresh
+the supplied preflight bundle with mutation-free Vast marketplace and billable
+inventory calls by using `--reconstruction-refresh-preflight`. The refresh
+reuses the frozen watchdog and conflicting-owner declarations, requires an
+explicit disk floor and hourly-rate ceiling, records both scoped and global
+inventory, and performs zero provider mutations. It does not reserve an offer
+or bypass the independent budget, TTL, retry, clean/pushed-SHA, image, transport,
+watchdog, or paid-lane gates.
+Admission recognizes worker-smoke, pose-canary, trainer-canary, and isaac-canary
+request contracts, and executor qualification remains operation-specific. Each
+now has a focused-tested Vast lifecycle: worker smoke uses the image
+healthcheck, pose/trainer use registered operation bundles and candidate-output
+validation, and Isaac uses its separate exact-package runtime bundle and
+independent compatibility normalizer. None has run on a resolved image in this
+lane, so adapter qualification does not imply a built image, live provider
+execution, reconstruction quality, Isaac compatibility, task success, physical
+success, or deployment readiness.
 
 ## Strict external reconstruction import
 
 Phase 6 preserves the legacy Scaniverse staging command for operator
-compatibility while adding a separate deterministic supervisor lane. The
+compatibility while adding a separate deterministic supervisor lane for
+Scaniverse and Polycam self-contained exports. The
 `external_reconstruction_import_request.v1` contract binds local exports to the
-immutable source capture and to an exact, digest-verified Scaniverse provenance
-and rights declaration. The registered `import_external_reconstruction` tool
+immutable source capture and to an exact, digest-verified, provider-matched
+provenance and rights declaration. Scaniverse retains its Niantic-specific
+receipt; Polycam emits a provider-neutral receipt. The registered
+`import_external_reconstruction` tool
 accepts only that request digest and invokes an injected repository-owned local
 importer; the model receives no filesystem, network, provider, or authority
 handle.
@@ -482,6 +759,13 @@ physical, or deployment claim. The lane performs no remote request. A future
 remote adapter must pass provider admission and explicit confidential-upload,
 terms, spend, retention/deletion, and source-binding authority before receiving
 bytes.
+
+The strict Polycam path deliberately accepts self-contained `GLB`, `USDZ`, and
+`PLY` rather than multi-file `GLTF` or `OBJ` packages whose dependencies are not
+yet bound as one immutable set. Polycam Developer Mode raw ZIPs and the
+Enterprise Content Management API are documented upstream and are promising
+future source/provider adapters, but neither is currently treated as Blueprint
+Raw Contract 3.2 or enabled for remote execution.
 
 The provider-neutral remote contract family is now present:
 `reconstruction_provider_admission.v1`,
@@ -517,6 +801,17 @@ subprocesses. Every method requires an existing baseline, preserves that
 baseline, excludes hidden held-out observations, and remains bounded to
 generated visual support with no metric, collision, physical, or deployment
 effect.
+
+`artifixer_heldout_evaluation.v2` replaces the older absolute-path advisory
+helper with a frozen, digest-bound independent comparison. Real held-out,
+unenhanced-baseline, and generated renders live under three disjoint roots;
+manifest references must be relative, nonsymlinked, and match their recorded
+hashes. At least three real views are required. The evaluator uses a fixed
+threshold profile that candidate or agent input cannot change and accepts only
+an absolute-quality pass that also improves mean PSNR, mean absolute error, and
+the required fraction of views over the preserved baseline. Its maximum claim
+remains generated visual support quality; rendered improvement cannot alter
+metric, collision, Isaac, physical, or deployment qualification.
 
 `run_generated_repair_candidate` is a registered digest-only gate. Under the
 current audits it emits `generated_repair_candidate_result.v1` with
@@ -556,6 +851,20 @@ change the result. Its eleven boolean evidence ceilings remain distinct from
 the overall usability decision. The report is a replayable explanation: it
 cannot mutate proof, hide a supplied failed attempt, grant authority, or turn
 simulation into physical or deployment success.
+
+Strict capture profiles cannot enter that report through a profile name alone.
+Native and stitched 360 reports must embed the validated, source-bound
+`capture_profile_validation.v1` receipt; a blocked or contradictory receipt can
+only produce a rejected decision or abstention and its blockers must remain
+visible. An `iphone_arkit_lidar` report must embed the strict
+`arkit_raw_contract_validation.v1` receipt and bind its exact source, frozen
+split, source commit, metric scaffold, and coordinate declaration. Public
+dataset proxies remain explicitly outside that Raw Contract gate. The report
+also emits a deterministic qualification digest over the proof-bearing capture,
+split, typed artifacts, decision, ceilings, and blockers. Agent/customer prose
+remains in the audit report but is excluded from that qualification binding, so
+replay of the same accepted evidence produces the same qualification even when
+live explanatory wording changes.
 
 ## Normalized results and layers
 
@@ -697,10 +1006,62 @@ contract, not a built-image or live-provider result: no resolved reconstruction
 worker image has yet been built or run, and admission, allocation, or a passing
 worker smoke can never establish reconstruction quality.
 
-The current live gate therefore remains external and explicit: provide a clean
+The live gate remains external and explicit: provide a clean
 immutable source commit, a resolved `linux/amd64` image digest built from the
 pinned recipe, immutable dataset/split/calibration digests, numeric dollar
-budget, numeric TTL and retry cap, an authority identifier, and the two private
-signed URL files. Invoke it only through `python -m
+budget, numeric TTL and retry cap, an authority identifier, and the private
+signed URL files required by the selected operation. Invoke it only through `python -m
 blueprint_pipeline.paid_resource_allocator gpu-canary --probe-kind
 reconstruction-worker-smoke`; direct adapter launch has no admission capability.
+
+Pose and trainer canaries additionally require a
+`reconstruction_gpu_operation_bundle.v1` receipt. The local compiler validates
+the typed pose or training request, rejects hidden-held-out and secret-bearing
+members, binds every candidate input by digest, writes a deterministic ZIP, and
+derives the canonical canary request from that exact receipt. The bundle cannot
+authorize spending or provider mutation and has no proof effect. Isaac remains
+a separate `isaac_verification_worker_bundle.v1` and runtime-image family.
+Worker-side materialization uses a bounded member-by-member extractor that
+rejects traversal, symlinks, compression, undeclared members, digest drift, and
+tampered replay state; it never delegates trust to ZIP `extractall` behavior.
+The in-container dispatcher can invoke only the registered native-360 COLMAP
+runner or pinned 3DGRUT trainer and revalidates typed results plus every declared
+output/checkpoint digest. It then writes a deterministic
+`reconstruction_gpu_operation_output_bundle.v1` ZIP containing the typed result,
+complete declared outputs, checkpoints, and a non-authorizing manifest. ZIP
+publication is atomic; independent retrieval validation streams large members,
+recomputes their hashes, rejects traversal, symlinks, compression, inventory
+suppression, or result/artifact drift, and emits a replay receipt whose claim
+ceiling remains unaccepted candidate transport only. This closes local result
+packaging and replay, not remote transfer or scientific acceptance. Paid
+pose/trainer transport now also has a focused-tested Vast-first adapter behind
+the canonical allocator. The adapter requires separate private 0600 signed URLs
+for the exact input bundle, its canonical receipt, and output PUT/GET; validates
+all local bindings before allocation; runs the image healthcheck and typed
+bootstrap; streams the candidate output; independently validates it before
+teardown; stops on a repeated identical malformed result; preserves every
+rejected retrieval; reconciles spend; and proves scoped and global provider-zero.
+Its offline replay revalidates the exact output, runtime result, teardown, and
+provider-zero receipts without provider access. A completed adapter result says
+only that provider execution and candidate transport completed: the nested pose
+or trainer status remains separate and no scientific qualification is inferred.
+This lifecycle is hermetically tested but has not run against a built pinned
+image or live Vast instance. Neither worker smoke nor pose/trainer completion
+can stand in for Isaac, collision, physical, or deployment evidence.
+
+`isaac_canary` has a separate focused-tested Vast lifecycle behind the same
+canonical allocator. It accepts only `isaac_verification_worker_bundle.v1`,
+downloads and validates the exact bundle and canonical receipt before provider
+allocation, and uses the pinned Isaac runtime image rather than the trainer
+image. The worker bootstrap materializes only declared members, enforces the
+hard TTL and a live 16 MiB process-log ceiling, strips signed transport URLs
+from the Isaac child, and accepts only `(0, completed)` or `(2, blocked)`. Its
+deterministic output ZIP contains the typed v3 result and every declared render.
+The controller retrieves and independently re-hashes output before teardown,
+then normalizes the exact staged USDZ and render bytes. A typed runtime blocker
+is a replayable scientific abstention, not infrastructure success. Offline
+replay reproduces qualification, teardown, and provider-zero without an agent
+or provider. Spend and scoped/global provider-zero remain separate. The request
+uses one GPU; authorization for more GPUs does not bypass global-zero or paid
+lane ownership. This adapter is hermetically qualified only: no resolved Isaac
+image or live Vast Isaac run has established compatibility.

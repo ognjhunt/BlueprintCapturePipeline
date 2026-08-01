@@ -26,19 +26,31 @@ from .reconstruction_worker_contracts import (
     ReconstructionWorkerContractError,
     build_worker_stack_manifest,
 )
+from .reconstruction_worker_license_inventory import (
+    validate_reconstruction_worker_license_inventory,
+    validate_reconstruction_worker_license_review_receipt,
+)
 
 
-SCHEMA_VERSION = "reconstruction_worker_build_packet.v1"
-REMOTE_PACKET_SCHEMA_VERSION = "reconstruction_worker_remote_build_packet.v1"
+SCHEMA_VERSION = "reconstruction_worker_build_packet.v2"
+REMOTE_PACKET_SCHEMA_VERSION = "reconstruction_worker_remote_build_packet.v2"
 PACKET_KIND = "reconstruction_worker_image"
 PACKET_DIRNAME = "reconstruction_worker_remote_build"
 BUILD_SCRIPT_NAME = "remote_build_reconstruction_worker_image.sh"
 RESULT_NAME = "reconstruction_worker_build_receipt.json"
+LICENSE_INVENTORY_NAME = "reconstruction_worker_license_inventory.json"
+LICENSE_RECEIPT_NAME = "reconstruction_worker_license_review_receipt.json"
+PAID_ENVELOPE_NAME = "reconstruction_worker_paid_execution_envelope.json"
+PAID_ENVELOPE_SCHEMA_VERSION = "reconstruction_worker_paid_execution_envelope.v1"
 DEFAULT_IMAGE_REF = "docker.io/nijelhunt/blueprint-reconstruction-worker:20260730"
 DOCKERFILE_RELATIVE_PATH = Path("deploy/docker/reconstruction_worker/Dockerfile")
 REQUIRED_CONTEXT_PATHS = (
     DOCKERFILE_RELATIVE_PATH,
+    Path("deploy/docker/reconstruction_worker/build-requirements.in"),
+    Path("deploy/docker/reconstruction_worker/build-requirements.lock"),
+    Path("deploy/docker/reconstruction_worker/requirements.in"),
     Path("deploy/docker/reconstruction_worker/requirements.lock"),
+    Path("scripts/compile_reconstruction_worker_lock.py"),
     Path("pyproject.toml"),
     Path("README.md"),
     Path("LICENSE"),
@@ -53,6 +65,7 @@ ALLOCATOR_ENTRYPOINT = [
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _VERSIONED_IMAGE = re.compile(r"^[^\s@]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+_MAX_PAID_BUILD_TTL_SECONDS = 7200
 
 
 class ReconstructionWorkerBuildPacketError(ValueError):
@@ -72,6 +85,62 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _validate_paid_execution_envelope(
+    value: Mapping[str, Any],
+    *,
+    source_commit: str,
+    worker_stack_manifest_digest: str,
+    license_inventory_digest: str,
+    license_review_receipt_digest: str,
+) -> list[str]:
+    blockers: list[str] = []
+    if value.get("schema_version") != PAID_ENVELOPE_SCHEMA_VERSION:
+        blockers.append("reconstruction_worker_paid_envelope_schema_invalid")
+    if value.get("authorized_action") != "cpu-build":
+        blockers.append("reconstruction_worker_paid_envelope_action_invalid")
+    if value.get("paid_mutation_authorized") is not True:
+        blockers.append("reconstruction_worker_paid_envelope_authority_missing")
+    if value.get("authority_issued_by_agent") is not False:
+        blockers.append("reconstruction_worker_paid_envelope_agent_authority_forbidden")
+    if not str(value.get("authority_id") or "").strip():
+        blockers.append("reconstruction_worker_paid_envelope_authority_id_missing")
+    max_spend = value.get("max_spend_usd")
+    if (
+        isinstance(max_spend, bool)
+        or not isinstance(max_spend, (int, float))
+        or not math.isfinite(float(max_spend))
+        or float(max_spend) <= 0
+    ):
+        blockers.append("reconstruction_worker_paid_envelope_budget_invalid")
+    ttl = value.get("hard_ttl_seconds")
+    if (
+        isinstance(ttl, bool)
+        or not isinstance(ttl, int)
+        or not 0 < ttl <= _MAX_PAID_BUILD_TTL_SECONDS
+    ):
+        blockers.append("reconstruction_worker_paid_envelope_ttl_invalid")
+    retry_cap = value.get("retry_cap")
+    if (
+        isinstance(retry_cap, bool)
+        or not isinstance(retry_cap, int)
+        or not 0 <= retry_cap <= 1
+    ):
+        blockers.append("reconstruction_worker_paid_envelope_retry_cap_invalid")
+    for field, expected in (
+        ("source_commit_sha", source_commit),
+        ("worker_stack_manifest_digest", worker_stack_manifest_digest),
+        ("license_inventory_digest", license_inventory_digest),
+        ("license_review_receipt_digest", license_review_receipt_digest),
+    ):
+        if value.get(field) != expected:
+            blockers.append(f"reconstruction_worker_paid_envelope_{field}_mismatch")
+    if value.get("paid_execution_envelope_digest") != canonical_digest(
+        value, digest_field="paid_execution_envelope_digest"
+    ):
+        blockers.append("reconstruction_worker_paid_envelope_digest_mismatch")
+    return sorted(set(blockers))
 
 
 def _context_sources(root: Path) -> tuple[list[Path], bool]:
@@ -97,7 +166,9 @@ def render_remote_build_script(
     requirements_lock_sha256: str,
     context_manifest_sha256: str,
     worker_stack_manifest_digest: str,
+    license_inventory_digest: str,
     license_review_receipt_digest: str,
+    paid_execution_envelope_digest: str,
 ) -> str:
     """Return the only build command accepted for this exact packet."""
 
@@ -112,7 +183,12 @@ dockerfile_sha256={json.dumps(dockerfile_sha256)}
 requirements_lock_sha256={json.dumps(requirements_lock_sha256)}
 context_manifest_sha256={json.dumps(context_manifest_sha256)}
 worker_stack_manifest_digest={json.dumps(worker_stack_manifest_digest)}
+license_inventory_digest={json.dumps(license_inventory_digest)}
 license_review_receipt_digest={json.dumps(license_review_receipt_digest)}
+paid_execution_envelope_digest={json.dumps(paid_execution_envelope_digest)}
+license_inventory_file="$script_dir/{LICENSE_INVENTORY_NAME}"
+license_receipt_file="$script_dir/{LICENSE_RECEIPT_NAME}"
+paid_execution_envelope_file="$script_dir/{PAID_ENVELOPE_NAME}"
 username_file="${{BLUEPRINT_DOCKER_USERNAME_FILE:-$HOME/.blueprint-secrets/docker_username}}"
 password_file="${{BLUEPRINT_DOCKER_PASSWORD_FILE:-$HOME/.blueprint-secrets/docker_pat}}"
 metadata="$script_dir/reconstruction_worker_build_metadata.json"
@@ -126,6 +202,17 @@ trap cleanup EXIT
 
 test -f "$username_file"
 test -f "$password_file"
+python3 - "$license_inventory_file" "$license_inventory_digest" "license_inventory_digest" "$license_receipt_file" "$license_review_receipt_digest" "license_review_receipt_digest" "$paid_execution_envelope_file" "$paid_execution_envelope_digest" "paid_execution_envelope_digest" <<'PY'
+import hashlib,json,sys
+for offset in (1,4,7):
+    path,expected,digest_field=sys.argv[offset:offset+3]
+    payload=json.load(open(path,encoding="utf-8"))
+    supplied=payload.pop(digest_field,None)
+    encoded=json.dumps(payload,sort_keys=True,separators=(",", ":")).encode()
+    observed="sha256:"+hashlib.sha256(encoded).hexdigest()
+    if supplied!=expected or observed!=expected:
+        raise SystemExit("reconstruction_license_binding_mismatch:"+digest_field)
+PY
 test "$(sha256sum "$context_dir/{DOCKERFILE_RELATIVE_PATH.as_posix()}" | awk '{{print $1}}')" = "$dockerfile_sha256"
 test "$(sha256sum "$context_dir/deploy/docker/reconstruction_worker/requirements.lock" | awk '{{print $1}}')" = "$requirements_lock_sha256"
 python3 - "$context_dir" "$context_manifest_sha256" <<'PY'
@@ -171,21 +258,23 @@ print(repository+"@"+digest)
 PY
 )"
 docker buildx imagetools inspect "$resolved" >/dev/null
-python3 - "$result" "$resolved" "$source_commit" "$context_manifest_sha256" "$worker_stack_manifest_digest" "$license_review_receipt_digest" "$started_epoch" <<'PY'
+python3 - "$result" "$resolved" "$source_commit" "$context_manifest_sha256" "$worker_stack_manifest_digest" "$license_inventory_digest" "$license_review_receipt_digest" "$paid_execution_envelope_digest" "$started_epoch" <<'PY'
 import hashlib,json,sys
 import time
 from datetime import datetime,timezone
 from pathlib import Path
 payload={{
-  "schema_version":"reconstruction_worker_build_receipt.v1",
+  "schema_version":"reconstruction_worker_build_receipt.v2",
   "timestamp":datetime.now(timezone.utc).isoformat(),
   "worker_stack_manifest_digest":sys.argv[5],
-  "license_review_receipt_digest":sys.argv[6],
+  "license_inventory_digest":sys.argv[6],
+  "license_review_receipt_digest":sys.argv[7],
+  "paid_execution_envelope_digest":sys.argv[8],
   "status":"built",
   "resolved_image_digest":sys.argv[2],
   "source_commit_sha":sys.argv[3],
   "build_context_digest":"sha256:"+sys.argv[4],
-  "duration_seconds":max(0.0,time.time()-float(sys.argv[7])),
+  "duration_seconds":max(0.0,time.time()-float(sys.argv[9])),
   "cost_usd":0.0,
   "logs":["reconstruction_worker_build_metadata.json"],
   "blockers":[],
@@ -232,6 +321,9 @@ def validate_reconstruction_worker_archive(packet: Mapping[str, Any]) -> list[st
     required = {
         f"{PACKET_DIRNAME}/README.md",
         f"{PACKET_DIRNAME}/{BUILD_SCRIPT_NAME}",
+        f"{PACKET_DIRNAME}/{LICENSE_INVENTORY_NAME}",
+        f"{PACKET_DIRNAME}/{LICENSE_RECEIPT_NAME}",
+        f"{PACKET_DIRNAME}/{PAID_ENVELOPE_NAME}",
         f"{PACKET_DIRNAME}/context/reconstruction_worker_context_manifest.json",
         *(f"{PACKET_DIRNAME}/context/{path.as_posix()}" for path in REQUIRED_CONTEXT_PATHS),
     }
@@ -286,6 +378,24 @@ def validate_reconstruction_worker_archive(packet: Mapping[str, Any]) -> list[st
         for name, payload in payloads.items()
     ):
         blockers.append("builder_reconstruction_archive_member_digest_mismatch")
+    for filename, digest_field in (
+        (LICENSE_INVENTORY_NAME, "license_inventory_digest"),
+        (LICENSE_RECEIPT_NAME, "license_review_receipt_digest"),
+        (PAID_ENVELOPE_NAME, "paid_execution_envelope_digest"),
+    ):
+        try:
+            bound_payload = json.loads(
+                payloads[f"{PACKET_DIRNAME}/{filename}"].decode("utf-8")
+            )
+        except (KeyError, UnicodeDecodeError, json.JSONDecodeError):
+            blockers.append("builder_reconstruction_archive_license_artifact_invalid")
+            continue
+        if (
+            bound_payload.get(digest_field) != packet.get(digest_field)
+            or canonical_digest(bound_payload, digest_field=digest_field)
+            != packet.get(digest_field)
+        ):
+            blockers.append("builder_reconstruction_archive_license_binding_mismatch")
     expected_script = render_remote_build_script(
         image_ref=str(packet.get("image_ref") or ""),
         source_commit=str(packet.get("source_commit") or ""),
@@ -293,8 +403,12 @@ def validate_reconstruction_worker_archive(packet: Mapping[str, Any]) -> list[st
         requirements_lock_sha256=str(packet.get("requirements_lock_sha256") or ""),
         context_manifest_sha256=str(packet.get("context_manifest_sha256") or ""),
         worker_stack_manifest_digest=str(packet.get("worker_stack_manifest_digest") or ""),
+        license_inventory_digest=str(packet.get("license_inventory_digest") or ""),
         license_review_receipt_digest=str(
             packet.get("license_review_receipt_digest") or ""
+        ),
+        paid_execution_envelope_digest=str(
+            packet.get("paid_execution_envelope_digest") or ""
         ),
     ).encode()
     if payloads.get(f"{PACKET_DIRNAME}/{BUILD_SCRIPT_NAME}") != expected_script:
@@ -311,6 +425,7 @@ def prepare_reconstruction_worker_build_packet(
     source_worktree_dirty: bool,
     build_recipe_digest: str | None,
     dependency_lock_digest: str | None,
+    license_inventory_digest: str | None,
     license_review_receipt_digest: str | None,
     max_spend_usd: float | None,
     ttl_seconds: int | None,
@@ -340,6 +455,7 @@ def prepare_reconstruction_worker_build_packet(
     for value, blocker in (
         (build_recipe_digest, "worker_build_recipe_digest_missing"),
         (dependency_lock_digest, "worker_dependency_lock_digest_missing"),
+        (license_inventory_digest, "worker_license_inventory_digest_missing"),
         (license_review_receipt_digest, "worker_license_review_receipt_missing"),
     ):
         if _DIGEST.fullmatch(str(value or "")) is None:
@@ -369,6 +485,7 @@ def prepare_reconstruction_worker_build_packet(
         "source_worktree_dirty": source_worktree_dirty,
         "build_recipe_digest": build_recipe_digest,
         "dependency_lock_digest": dependency_lock_digest,
+        "license_inventory_digest": license_inventory_digest,
         "license_review_receipt_digest": license_review_receipt_digest,
         "allocator_entrypoint": ALLOCATOR_ENTRYPOINT,
         "canonical_paid_resource_seam_required": True,
@@ -379,7 +496,7 @@ def prepare_reconstruction_worker_build_packet(
         "retry_cap": retry_cap,
         "authority_id": authority_id,
         "required_outputs": [
-            "reconstruction_worker_build_receipt.v1",
+            "reconstruction_worker_build_receipt.v2",
             "reconstruction_worker_smoke_test_receipt.v1",
             "provider_teardown_receipt.v1",
             "provider_zero_verification.v1",
@@ -403,7 +520,9 @@ def prepare_reconstruction_worker_remote_build_packet(
     source_commit: str,
     source_worktree_dirty: bool,
     worker_stack_manifest: Mapping[str, Any] | None,
+    license_inventory: Mapping[str, Any] | None,
     license_review_receipt: Mapping[str, Any] | None,
+    paid_execution_envelope: Mapping[str, Any] | None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Materialize a deterministic exact-source Linux/amd64 build archive."""
@@ -423,6 +542,22 @@ def prepare_reconstruction_worker_remote_build_packet(
         blockers.append("reconstruction_worker_stack_manifest_missing")
     if normalized_stack.get("source_commit_sha") != source_commit:
         blockers.append("reconstruction_worker_stack_source_commit_mismatch")
+    normalized_inventory = (
+        json.loads(json.dumps(dict(license_inventory)))
+        if isinstance(license_inventory, Mapping)
+        else {}
+    )
+    inventory_digest = normalized_inventory.get("license_inventory_digest")
+    if not normalized_inventory:
+        blockers.append("reconstruction_worker_license_inventory_missing")
+    else:
+        blockers.extend(
+            validate_reconstruction_worker_license_inventory(
+                normalized_inventory,
+                source_commit_sha=source_commit,
+                worker_stack_manifest=normalized_stack,
+            )
+        )
     license_receipt = (
         json.loads(json.dumps(dict(license_review_receipt)))
         if isinstance(license_review_receipt, Mapping)
@@ -432,21 +567,34 @@ def prepare_reconstruction_worker_remote_build_packet(
     if not license_receipt:
         blockers.append("reconstruction_worker_license_review_receipt_missing")
     else:
-        expected_license_digest = canonical_digest(
-            license_receipt, digest_field="license_review_receipt_digest"
+        blockers.extend(
+            validate_reconstruction_worker_license_review_receipt(
+                license_receipt,
+                license_inventory=normalized_inventory,
+            )
         )
-        if (
-            license_receipt.get("schema_version")
-            != "reconstruction_worker_license_review_receipt.v1"
-            or license_receipt.get("status") != "accepted_internal_build_only"
-            or license_receipt.get("source_commit_sha") != source_commit
-            or license_receipt.get("registry_visibility") != "private"
-            or license_receipt.get("redistribution_authorized") is not False
-            or license_receipt.get("commercial_distribution_authorized") is not False
-            or not str(license_receipt.get("reviewer_authority_id") or "").strip()
-            or license_digest != expected_license_digest
-        ):
-            blockers.append("reconstruction_worker_license_review_receipt_invalid")
+    normalized_paid_envelope = (
+        json.loads(json.dumps(dict(paid_execution_envelope)))
+        if isinstance(paid_execution_envelope, Mapping)
+        else {}
+    )
+    paid_envelope_digest = normalized_paid_envelope.get(
+        "paid_execution_envelope_digest"
+    )
+    if not normalized_paid_envelope:
+        blockers.append("reconstruction_worker_paid_execution_envelope_missing")
+    else:
+        blockers.extend(
+            _validate_paid_execution_envelope(
+                normalized_paid_envelope,
+                source_commit=source_commit,
+                worker_stack_manifest_digest=str(
+                    normalized_stack.get("worker_stack_manifest_digest") or ""
+                ),
+                license_inventory_digest=str(inventory_digest or ""),
+                license_review_receipt_digest=str(license_digest or ""),
+            )
+        )
     if _VERSIONED_IMAGE.fullmatch(image_ref) is None or image_ref.rsplit(":", 1)[-1] in {
         "latest",
         "dev",
@@ -531,11 +679,19 @@ def prepare_reconstruction_worker_remote_build_packet(
             worker_stack_manifest_digest=str(
                 normalized_stack.get("worker_stack_manifest_digest") or ""
             ),
+            license_inventory_digest=str(inventory_digest or ""),
             license_review_receipt_digest=str(license_digest or ""),
+            paid_execution_envelope_digest=str(paid_envelope_digest or ""),
         ),
         encoding="utf-8",
     )
     script.chmod(0o755)
+    license_inventory_path = packet_dir / LICENSE_INVENTORY_NAME
+    write_json(license_inventory_path, normalized_inventory)
+    license_receipt_path = packet_dir / LICENSE_RECEIPT_NAME
+    write_json(license_receipt_path, license_receipt)
+    paid_envelope_path = packet_dir / PAID_ENVELOPE_NAME
+    write_json(paid_envelope_path, normalized_paid_envelope)
     readme = packet_dir / "README.md"
     readme.write_text(
         "# Reconstruction worker remote build\n\n"
@@ -544,7 +700,15 @@ def prepare_reconstruction_worker_remote_build_packet(
         "Isaac compatibility, physical success, or deployment readiness.\n",
         encoding="utf-8",
     )
-    archive_paths = [readme, script, context_manifest_path, *copied]
+    archive_paths = [
+        readme,
+        script,
+        license_inventory_path,
+        license_receipt_path,
+        paid_envelope_path,
+        context_manifest_path,
+        *copied,
+    ]
     archive_files = [
         (path, path.relative_to(output).as_posix()) for path in archive_paths
     ]
@@ -575,7 +739,10 @@ def prepare_reconstruction_worker_remote_build_packet(
         "worker_stack_manifest_digest": normalized_stack.get(
             "worker_stack_manifest_digest"
         ),
+        "license_inventory_digest": inventory_digest,
         "license_review_receipt_digest": license_digest,
+        "paid_execution_envelope_digest": paid_envelope_digest,
+        "paid_execution_envelope": normalized_paid_envelope,
         "image_ref": image_ref,
         "source_commit": source_commit,
         "source_worktree_dirty": source_worktree_dirty,
@@ -609,7 +776,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--source-worktree-dirty", action="store_true")
     parser.add_argument("--worker-stack-manifest", required=True)
+    parser.add_argument("--license-inventory", required=True)
     parser.add_argument("--license-review-receipt", required=True)
+    parser.add_argument("--paid-execution-envelope", required=True)
     args = parser.parse_args(argv)
     result = prepare_reconstruction_worker_remote_build_packet(
         output_dir=args.output_dir,
@@ -620,8 +789,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         worker_stack_manifest=json.loads(
             Path(args.worker_stack_manifest).read_text(encoding="utf-8")
         ),
+        license_inventory=json.loads(
+            Path(args.license_inventory).read_text(encoding="utf-8")
+        ),
         license_review_receipt=json.loads(
             Path(args.license_review_receipt).read_text(encoding="utf-8")
+        ),
+        paid_execution_envelope=json.loads(
+            Path(args.paid_execution_envelope).read_text(encoding="utf-8")
         ),
     )
     print(json.dumps(result, indent=2, sort_keys=True))
@@ -632,6 +807,10 @@ __all__ = [
     "ALLOCATOR_ENTRYPOINT",
     "BUILD_SCRIPT_NAME",
     "DEFAULT_IMAGE_REF",
+    "LICENSE_INVENTORY_NAME",
+    "LICENSE_RECEIPT_NAME",
+    "PAID_ENVELOPE_NAME",
+    "PAID_ENVELOPE_SCHEMA_VERSION",
     "PACKET_DIRNAME",
     "PACKET_KIND",
     "REMOTE_PACKET_SCHEMA_VERSION",

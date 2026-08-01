@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/isaac_verification_output_bundle.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version", "status", "isaac_verification_request_digest",
+    "input_bundle_digest", "package_digest", "runtime_container_image_digest",
+    "source_commit_sha", "runtime_result_schema", "runtime_result_digest",
+    "runtime_result_archive_path", "artifact_members", "artifact_member_count",
+    "artifact_total_bytes", "raw_secret_values_included",
+    "scientific_qualification_inferred", "simulator_task_success_proven",
+    "physical_success_proven", "deployment_readiness_proven", "proof_effect",
+    "claim_ceiling", "output_manifest_digest", "output_bundle_digest",
+    "output_bundle_bytes", "cost_usd", "output_bundle_receipt_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "isaac_verification_output_bundle.v1"},
+    "status": {"const": "validated"},
+    "isaac_verification_request_digest": {"$ref": "#/$defs/digest"},
+    "input_bundle_digest": {"$ref": "#/$defs/digest"},
+    "package_digest": {"$ref": "#/$defs/digest"},
+    "runtime_container_image_digest": {
+      "type": "string",
+      "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+    },
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "runtime_result_schema": {"const": "isaac_splat_nurec_render_result.v3"},
+    "runtime_result_digest": {"$ref": "#/$defs/digest"},
+    "runtime_result_archive_path": {"const": "isaac_runtime_result.json"},
+    "artifact_members": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/artifact"}
+    },
+    "artifact_member_count": {"type": "integer", "minimum": 0},
+    "artifact_total_bytes": {"type": "integer", "minimum": 0, "maximum": 5000000000},
+    "raw_secret_values_included": {"const": false},
+    "scientific_qualification_inferred": {"const": false},
+    "simulator_task_success_proven": {"const": false},
+    "physical_success_proven": {"const": false},
+    "deployment_readiness_proven": {"const": false},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "unaccepted_isaac_runtime_transport_only"},
+    "output_manifest_digest": {"$ref": "#/$defs/digest"},
+    "output_bundle_digest": {"$ref": "#/$defs/digest"},
+    "output_bundle_bytes": {"type": "integer", "minimum": 1},
+    "cost_usd": {"const": 0.0},
+    "output_bundle_receipt_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "artifact": {
+      "type": "object",
+      "required": ["artifact_id", "archive_path", "digest", "bytes"],
+      "properties": {
+        "artifact_id": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)[^\\\\]+\\.png$"},
+        "archive_path": {"type": "string", "pattern": "^artifacts/(?!.*\\.\\.)[^\\\\]+\\.png$"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 4000000000}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

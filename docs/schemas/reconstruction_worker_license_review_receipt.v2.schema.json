@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_worker_license_review_receipt.v2.schema.json",
+  "title": "Reconstruction Worker License Review Receipt v2",
+  "type": "object",
+  "required": ["schema_version", "status", "source_commit_sha", "worker_stack_manifest_digest", "requirements_lock_digest", "license_inventory_digest", "license_policy_digest", "registry_visibility", "internal_build_authorized", "redistribution_authorized", "commercial_distribution_authorized", "review_basis", "reviewer_authority_id", "reviewed_dependency_count", "reviewed_source_component_ids", "reviewed_model_asset_ids", "acknowledged_inventory_blockers", "timestamp", "warnings", "license_review_receipt_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_worker_license_review_receipt.v2"},
+    "status": {"const": "accepted_internal_build_only"},
+    "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "worker_stack_manifest_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "requirements_lock_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "license_inventory_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "license_policy_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "registry_visibility": {"const": "private"},
+    "internal_build_authorized": {"const": true},
+    "redistribution_authorized": {"const": false},
+    "commercial_distribution_authorized": {"const": false},
+    "review_basis": {"const": "human_review_of_digest_bound_inventory"},
+    "reviewer_authority_id": {"type": "string", "minLength": 1},
+    "reviewed_dependency_count": {"type": "integer", "minimum": 1},
+    "reviewed_source_component_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "reviewed_model_asset_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "acknowledged_inventory_blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "timestamp": {"format": "date-time"},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "license_review_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

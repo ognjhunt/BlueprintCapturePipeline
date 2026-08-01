@@ -642,7 +642,7 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
     assert result["task_evaluation_supervisor"]["status"] == "blocked"
     assert result["task_evaluation_supervisor"]["capture_build_alone_can_start_run"] is True
     assert result["task_evaluation_supervisor"]["capture_root"].endswith(
-        "intakes/intake-1/fixture/capture_intake_envelope.json"
+        "intakes/intake-1/fixture"
     )
     assert "ephemeral-secret" not in response.text
     assert "download.example.test" not in response.text

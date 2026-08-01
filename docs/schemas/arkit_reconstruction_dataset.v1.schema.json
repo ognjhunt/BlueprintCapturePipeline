@@ -105,7 +105,20 @@
         "image_digest": {"$ref": "#/$defs/sha256"},
         "T_world_camera": {"$ref": "#/$defs/matrix4"},
         "calibration_digest": {"$ref": "#/$defs/sha256"},
-        "depth_confidence_binding": {"type": ["object", "null"]}
+        "depth_confidence_binding": {"type": ["object", "null"]},
+        "camera": {
+          "type": "object",
+          "required": ["camera_model", "T_world_camera", "rgb_intrinsics"],
+          "properties": {
+            "camera_model": {"const": "PINHOLE"},
+            "T_world_camera": {"$ref": "#/$defs/matrix4"},
+            "rgb_intrinsics": {
+              "type": "object",
+              "required": ["fx", "fy", "cx", "cy", "width", "height"]
+            }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },
@@ -160,7 +173,8 @@
         "source_capture_digest", "source_commit_sha", "implementation_version",
         "deterministic_configuration_digest", "reconstruction_dataset_digest",
         "frozen_split_digest", "camera_calibration_digest", "camera_observation_digest",
-        "pose_refinement_request_digest", "metric_scaffold_digest",
+        "pose_refinement_request_digest", "colmap_training_dataset_export_request_digest",
+        "artifact_references", "metric_scaffold_digest",
         "candidate_observation_count", "hidden_heldout_pixels_included",
         "raw_arkit_poses_modified", "depth_confidence_filtering_status",
         "metric_scale_validation_status", "colmap_gsplat_export_status", "authority_used",
@@ -177,7 +191,36 @@
         "raw_arkit_poses_modified": {"const": false},
         "depth_confidence_filtering_status": {"const": "not_executed"},
         "metric_scale_validation_status": {"const": "not_executed"},
-        "colmap_gsplat_export_status": {"const": "blocked_pose_refinement_and_qa_not_registered"},
+        "colmap_gsplat_export_status": {
+          "enum": [
+            "blocked_pose_refinement_and_qa_not_registered",
+            "candidate_only_raw_arkit_pose_request_ready"
+          ]
+        },
+        "colmap_training_dataset_export_request_digest": {"$ref": "#/$defs/sha256"},
+        "artifact_references": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": ["artifact_type", "relative_path", "artifact_digest", "content_digest"],
+            "properties": {
+              "artifact_type": {
+                "enum": [
+                  "camera_calibration_manifest.v1",
+                  "camera_observation_manifest.v1",
+                  "pose_refinement_request.v1",
+                  "colmap_training_dataset_export_request.v1"
+                ]
+              },
+              "relative_path": {"type": "string", "minLength": 1},
+              "artifact_digest": {"$ref": "#/$defs/sha256"},
+              "content_digest": {"$ref": "#/$defs/sha256"}
+            },
+            "additionalProperties": false
+          }
+        },
         "cost_usd": {"const": 0.0},
         "proof_effect": {"const": "calibrated_reconstruction_request_only"},
         "claim_ceiling": {"const": "calibrated_camera_trajectory"},

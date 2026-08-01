@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import hashlib
+import subprocess
+import sys
 from pathlib import Path
 
+from blueprint_pipeline.reconstruction_worker_contracts import (
+    BUILD_REQUIREMENTS_LOCK_SHA256,
+    PINNED_WORKER_COMPONENTS,
+    REQUIREMENTS_LOCK_SHA256,
+)
 from blueprint_pipeline.reconstruction_worker_image_healthcheck import (
     COLMAP_REVISION,
+    COLMAP_VERSION,
+    CMAKE_VERSION,
+    FUSED_SSIM_REVISION,
+    GCC_VERSION,
     GSPLAT_REVISION,
     MODEL_DIGESTS,
+    NINJA_VERSION,
     THREEDGRUT_REVISION,
     run_reconstruction_worker_healthcheck,
 )
@@ -28,7 +41,13 @@ def _env() -> dict[str, str]:
 
 def _exists(path: Path) -> bool:
     return str(path).startswith(
-        ("/opt/colmap/", "/opt/gsplat/", "/opt/3dgrut/", "/opt/models/colmap/")
+        (
+            "/opt/colmap/",
+            "/opt/gsplat/",
+            "/opt/3dgrut/",
+            "/opt/fused-ssim/",
+            "/opt/models/colmap/",
+        )
     )
 
 
@@ -45,6 +64,7 @@ def _revision(path: Path) -> str:
         "colmap": COLMAP_REVISION,
         "gsplat": GSPLAT_REVISION,
         "3dgrut": THREEDGRUT_REVISION,
+        "fused-ssim": FUSED_SSIM_REVISION,
     }[path.parts[2]]
 
 
@@ -52,22 +72,67 @@ def _command(argv):
     if argv[0] == "ffmpeg":
         return 0, "ffmpeg version 6.1.1"
     if argv[0] == "colmap":
-        return 0, "COLMAP 4.1.1"
+        return 0, f"COLMAP {COLMAP_VERSION}"
     if argv[0] == "nvidia-smi":
         return 0, "550.90, 49140 MiB, 8.9"
+    if argv[0] == "gcc":
+        return 0, f"gcc (Ubuntu) {GCC_VERSION}"
+    if argv[0] == "cmake":
+        return 0, f"cmake version {CMAKE_VERSION}"
+    if argv[0] == "ninja":
+        return 0, NINJA_VERSION
     return 127, ""
 
 
 def test_reconstruction_worker_recipe_is_digest_and_revision_pinned():
     dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "FROM nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:" in dockerfile
+    assert "ARG PYTHON_VERSION=3.11.9" in dockerfile
+    assert (
+        "ARG PYTHON_SOURCE_SHA256="
+        "9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87"
+        in dockerfile
+    )
+    assert "python3.11 python3.11-dev" not in dockerfile
+    assert "https://www.python.org/ftp/python/${PYTHON_VERSION}/" in dockerfile
+    assert "sha256sum --check --strict" in dockerfile
+    assert "/opt/python-${PYTHON_VERSION}/bin/python3.11 -m venv /opt/venv" in dockerfile
+    stack = next(
+        row for row in PINNED_WORKER_COMPONENTS if row["component_id"] == "python_ml_runtime"
+    )
+    assert "9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87" in stack[
+        "source_revision"
+    ]
+    assert "ARG FFMPEG_VERSION=6.1.1" in dockerfile
+    assert (
+        "ARG FFMPEG_SOURCE_SHA256="
+        "8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968"
+        in dockerfile
+    )
+    assert '"https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"' in dockerfile
+    ffmpeg = next(
+        row for row in PINNED_WORKER_COMPONENTS if row["component_id"] == "ffmpeg"
+    )
+    assert "8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968" in ffmpeg[
+        "source_revision"
+    ]
+    assert (
+        f"ARG BUILD_REQUIREMENTS_LOCK_SHA256={BUILD_REQUIREMENTS_LOCK_SHA256}" in dockerfile
+    )
+    assert f"ARG REQUIREMENTS_LOCK_SHA256={REQUIREMENTS_LOCK_SHA256}" in dockerfile
+    assert '"${BUILD_REQUIREMENTS_LOCK_SHA256}" /opt/blueprint/build-requirements.lock' in dockerfile
+    assert '"${REQUIREMENTS_LOCK_SHA256}" /opt/blueprint/requirements.lock' in dockerfile
     assert f"ARG COLMAP_REVISION={COLMAP_REVISION}" in dockerfile
     assert f"ARG GSPLAT_REVISION={GSPLAT_REVISION}" in dockerfile
     assert f"ARG THREEDGRUT_REVISION={THREEDGRUT_REVISION}" in dockerfile
+    assert f"ARG FUSED_SSIM_REVISION={FUSED_SSIM_REVISION}" in dockerfile
     assert "-DGUI_ENABLED=OFF" in dockerfile
     assert "-DCUDA_ENABLED=ON" in dockerfile
     assert "-DONNX_ENABLED=ON" in dockerfile
-    assert "pip install --no-deps --editable /opt/3dgrut" in dockerfile
+    assert "cmake==3.28.3" in dockerfile
+    assert "ninja==1.11.1.1" in dockerfile
+    assert "pip install --no-build-isolation --no-deps --editable /opt/3dgrut" in dockerfile
+    assert "pip install --no-build-isolation --no-deps /opt/fused-ssim" in dockerfile
     assert 'python -c "import threedgrut"' in dockerfile
     assert "sha256sum --check --strict" in dockerfile
     assert ":latest" not in dockerfile
@@ -76,7 +141,43 @@ def test_reconstruction_worker_recipe_is_digest_and_revision_pinned():
     assert "independent evaluator" in readme
     requirements = (IMAGE_ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines()
     assert requirements
-    assert all("==" in line for line in requirements)
+    requirement_lines = [
+        line
+        for line in requirements
+        if line and not line.startswith(("#", " ", "\t", "--"))
+    ]
+    assert len(requirement_lines) == 107
+    assert all("==" in line for line in requirement_lines)
+    assert sum("--hash=sha256:" in line for line in requirements) >= len(requirement_lines)
+    assert "pip install --require-hashes --no-build-isolation" in dockerfile
+    assert (
+        hashlib.sha256((IMAGE_ROOT / "requirements.lock").read_bytes()).hexdigest()
+        == REQUIREMENTS_LOCK_SHA256
+    )
+    for component_id in ("python_ml_runtime", "deterministic_qa"):
+        component = next(
+            row for row in PINNED_WORKER_COMPONENTS if row["component_id"] == component_id
+        )
+        assert REQUIREMENTS_LOCK_SHA256 in component["source_revision"]
+    bootstrap = IMAGE_ROOT / "build-requirements.lock"
+    assert hashlib.sha256(bootstrap.read_bytes()).hexdigest() == BUILD_REQUIREMENTS_LOCK_SHA256
+    stack = next(
+        row for row in PINNED_WORKER_COMPONENTS if row["component_id"] == "python_ml_runtime"
+    )
+    assert BUILD_REQUIREMENTS_LOCK_SHA256 in stack["source_revision"]
+
+
+def test_reconstruction_worker_lock_metadata_and_hashes_validate_offline():
+    completed = subprocess.run(
+        [sys.executable, ROOT / "scripts/compile_reconstruction_worker_lock.py", "--check"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert f"build_requirements_lock_sha256={BUILD_REQUIREMENTS_LOCK_SHA256}" in completed.stdout
+    assert f"requirements_lock_sha256={REQUIREMENTS_LOCK_SHA256}" in completed.stdout
 
 
 def test_build_healthcheck_passes_without_display_or_gpu_claim():
@@ -114,3 +215,46 @@ def test_runtime_healthcheck_requires_gpu_and_fails_closed_on_model_drift():
     assert "reconstruction_worker_nvidia_runtime_unavailable" in result["blockers"]
     assert "reconstruction_worker_model_digest_invalid:aliked-n16rot.onnx" in result["blockers"]
     assert result["proof_effect"] == "none"
+
+
+def test_healthcheck_rejects_a_different_colmap_version() -> None:
+    result = run_reconstruction_worker_healthcheck(
+        build_time=True,
+        env=_env(),
+        command_runner=lambda argv: (
+            (0, "COLMAP 4.1.1") if argv[0] == "colmap" else _command(argv)
+        ),
+        importer=_importer,
+        path_exists=_exists,
+        file_digest=_digest,
+        file_text=_revision,
+    )
+
+    assert result["status"] == "failed"
+    assert "reconstruction_worker_colmap_unavailable" in result["blockers"]
+
+
+def test_healthcheck_rejects_missing_source_runtime_and_fused_ssim_revision() -> None:
+    def importer(name: str) -> object:
+        if name == "ncore":
+            raise ImportError("fixture missing ncore")
+        return object()
+
+    def revision(path: Path) -> str:
+        if path.parts[2] == "fused-ssim":
+            return "0" * 40
+        return _revision(path)
+
+    result = run_reconstruction_worker_healthcheck(
+        build_time=True,
+        env=_env(),
+        command_runner=_command,
+        importer=importer,
+        path_exists=_exists,
+        file_digest=_digest,
+        file_text=revision,
+    )
+
+    assert result["status"] == "failed"
+    assert "reconstruction_worker_import_failed:ncore" in result["blockers"]
+    assert "reconstruction_worker_fused_ssim_revision_invalid" in result["blockers"]

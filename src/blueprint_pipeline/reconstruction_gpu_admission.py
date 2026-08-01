@@ -11,6 +11,10 @@ from typing import Any, Callable, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .reconstruction_isaac_image_release import (
+    ReconstructionIsaacImageReleaseError,
+    validate_reconstruction_isaac_image_release,
+)
 
 
 REQUEST_SCHEMA_VERSION = "reconstruction_gpu_canary_request.v1"
@@ -28,10 +32,88 @@ CAPTURE_PROFILES = {
     "camera_360_equirectangular",
     "trainer_smoke_fixture",
 }
-OPERATIONS = {"worker_smoke", "pose_canary", "trainer_canary"}
+OPERATIONS = {"worker_smoke", "pose_canary", "trainer_canary", "isaac_canary"}
+EXECUTABLE_OPERATIONS = {
+    "worker_smoke",
+    "pose_canary",
+    "trainer_canary",
+    "isaac_canary",
+}
+EXPECTED_RUNTIME_RESULT_SCHEMAS = {
+    "worker_smoke": "reconstruction_vast_worker_smoke_result.v1",
+    "pose_canary": "pose_estimation_result.v1",
+    "trainer_canary": "reconstruction_training_result.v1",
+    "isaac_canary": "isaac_splat_nurec_render_result.v3",
+}
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+
+
+def build_reconstruction_gpu_canary_request(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build an immutable provider-neutral request for one registered operation."""
+
+    source = json.loads(json.dumps(dict(value)))
+    source.pop("request_digest", None)
+    operation = str(source.get("operation") or "")
+    errors: list[str] = []
+    if source.get("schema_version") != REQUEST_SCHEMA_VERSION:
+        errors.append("reconstruction_gpu_request_schema_invalid")
+    if operation not in OPERATIONS:
+        errors.append("reconstruction_gpu_operation_unsupported")
+    if source.get("capture_profile") not in CAPTURE_PROFILES:
+        errors.append("reconstruction_gpu_capture_profile_unsupported")
+    if _COMMIT.fullmatch(str(source.get("source_commit_sha") or "")) is None:
+        errors.append("reconstruction_gpu_source_commit_invalid")
+    if _IMAGE.fullmatch(str(source.get("worker_image_digest") or "")) is None:
+        errors.append("reconstruction_gpu_worker_image_digest_invalid")
+    for key in (
+        "worker_stack_manifest_digest",
+        "reconstruction_dataset_digest",
+        "frozen_split_digest",
+        "calibration_digest",
+        "deterministic_configuration_digest",
+        "operation_request_digest",
+        "operation_input_bundle_digest",
+    ):
+        if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+            errors.append(f"reconstruction_gpu_{key}_invalid")
+    if source.get("expected_runtime_result_schema") != (
+        EXPECTED_RUNTIME_RESULT_SCHEMAS.get(operation)
+    ):
+        errors.append("reconstruction_gpu_expected_runtime_result_schema_invalid")
+    if source.get("candidate_may_read_hidden_heldout") is not False:
+        errors.append("reconstruction_gpu_hidden_heldout_access_forbidden")
+    if source.get("trainer_may_grade_heldout") is not False:
+        errors.append("reconstruction_gpu_trainer_self_grading_forbidden")
+    if not _finite(source.get("max_spend_usd"), minimum=0.000001):
+        errors.append("reconstruction_gpu_explicit_budget_missing")
+    ttl = source.get("hard_ttl_seconds")
+    if (
+        not isinstance(ttl, int)
+        or isinstance(ttl, bool)
+        or not 1 <= ttl <= MAX_TTL_SECONDS
+    ):
+        errors.append("reconstruction_gpu_explicit_ttl_invalid")
+    retries = source.get("retry_cap")
+    if (
+        not isinstance(retries, int)
+        or isinstance(retries, bool)
+        or not 0 <= retries <= MAX_RETRY_CAP
+    ):
+        errors.append("reconstruction_gpu_explicit_retry_cap_invalid")
+    if not isinstance(source.get("authority_id"), str) or not str(
+        source.get("authority_id")
+    ).strip():
+        errors.append("reconstruction_gpu_paid_authority_missing")
+    if source.get("proof_effect") != "none":
+        errors.append("reconstruction_gpu_request_proof_effect_invalid")
+    if errors:
+        raise ValueError(";".join(sorted(set(errors))))
+    source["request_digest"] = canonical_digest(source, digest_field="request_digest")
+    return source
 
 
 def collect_reconstruction_vast_preflight(
@@ -162,6 +244,7 @@ def build_reconstruction_gpu_canary_admission(
     authority_id: str | None,
     execute: bool,
     execution_adapter_qualified: bool = False,
+    image_release: Mapping[str, Any] | None = None,
     observed_now_epoch: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Bind a canary request to immutable inputs without allocating a machine."""
@@ -179,6 +262,11 @@ def build_reconstruction_gpu_canary_admission(
         blockers.append("reconstruction_gpu_request_schema_invalid")
     if source.get("operation") not in OPERATIONS:
         blockers.append("reconstruction_gpu_operation_unsupported")
+    expected_result_schema = EXPECTED_RUNTIME_RESULT_SCHEMAS.get(
+        str(source.get("operation") or "")
+    )
+    if source.get("expected_runtime_result_schema") != expected_result_schema:
+        blockers.append("reconstruction_gpu_expected_runtime_result_schema_invalid")
     if source.get("capture_profile") not in CAPTURE_PROFILES:
         blockers.append("reconstruction_gpu_capture_profile_unsupported")
     if source.get("source_commit_sha") != expected_source_commit:
@@ -197,6 +285,8 @@ def build_reconstruction_gpu_canary_admission(
         "frozen_split_digest",
         "calibration_digest",
         "deterministic_configuration_digest",
+        "operation_request_digest",
+        "operation_input_bundle_digest",
     ):
         if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
             blockers.append(f"reconstruction_gpu_{key}_invalid")
@@ -206,6 +296,25 @@ def build_reconstruction_gpu_canary_admission(
         blockers.append("reconstruction_gpu_trainer_self_grading_forbidden")
     if source.get("proof_effect") != "none":
         blockers.append("reconstruction_gpu_request_proof_effect_invalid")
+
+    image_release_digest: str | None = None
+    if source.get("operation") == "isaac_canary":
+        if image_release is None:
+            if execute:
+                blockers.append("reconstruction_isaac_image_release_missing")
+        else:
+            try:
+                release = validate_reconstruction_isaac_image_release(image_release)
+            except ReconstructionIsaacImageReleaseError:
+                blockers.append("reconstruction_isaac_image_release_invalid")
+            else:
+                image_release_digest = str(release["image_release_digest"])
+                if release.get("resolved_image_digest") != source.get(
+                    "worker_image_digest"
+                ):
+                    blockers.append("reconstruction_isaac_image_release_digest_mismatch")
+                if release.get("source_commit_sha") != source.get("source_commit_sha"):
+                    blockers.append("reconstruction_isaac_image_release_source_mismatch")
 
     if provider != "vast" or provider_snapshot.get("provider") != "vast":
         blockers.append("reconstruction_gpu_vast_first_required")
@@ -279,7 +388,13 @@ def build_reconstruction_gpu_canary_admission(
     if _finite(max_spend_usd, minimum=0.000001) and worst_case_cost > float(max_spend_usd):
         blockers.append("reconstruction_gpu_budget_below_worst_case_cost")
 
-    if execute and not execution_adapter_qualified and not blockers:
+    operation = source.get("operation")
+    operation_adapter_qualified = bool(
+        execution_adapter_qualified and operation in EXECUTABLE_OPERATIONS
+    )
+    if execute and operation not in EXECUTABLE_OPERATIONS:
+        blockers.append("reconstruction_gpu_operation_execution_adapter_unavailable")
+    elif execute and not operation_adapter_qualified and not blockers:
         blockers.append("reconstruction_vast_execution_adapter_not_qualified")
     bound_request = {
         **source,
@@ -288,8 +403,9 @@ def build_reconstruction_gpu_canary_admission(
         "bound_preflight_digest": canonical_digest(provider_snapshot),
         "bound_checkout_source_commit": checkout_source_commit,
         "bound_checkout_clean": checkout_clean,
+        "isaac_image_release_digest": image_release_digest,
         "provider_mutation_authorized": bool(
-            execute and execution_adapter_qualified and not blockers
+            execute and operation_adapter_qualified and not blockers
         ),
     }
     bound_request["bound_request_digest"] = canonical_digest(
@@ -297,7 +413,7 @@ def build_reconstruction_gpu_canary_admission(
     )
     status = (
         "execute_ready"
-        if execute and execution_adapter_qualified and not blockers
+        if execute and operation_adapter_qualified and not blockers
         else ("dry_run_ready" if not blockers else "blocked")
     )
     admission = {
@@ -309,7 +425,14 @@ def build_reconstruction_gpu_canary_admission(
         "request_digest": expected_request_digest,
         "bound_request_digest": bound_request["bound_request_digest"],
         "source_commit_sha": checkout_source_commit,
+        "operation": operation,
+        "operation_request_digest": source.get("operation_request_digest"),
+        "operation_input_bundle_digest": source.get("operation_input_bundle_digest"),
+        "expected_runtime_result_schema": source.get(
+            "expected_runtime_result_schema"
+        ),
         "worker_image_digest": source.get("worker_image_digest"),
+        "isaac_image_release_digest": image_release_digest,
         "reconstruction_dataset_digest": source.get("reconstruction_dataset_digest"),
         "frozen_split_digest": source.get("frozen_split_digest"),
         "max_spend_usd": max_spend_usd,
@@ -320,17 +443,21 @@ def build_reconstruction_gpu_canary_admission(
         "provider_zero_verified": provider_snapshot.get("provider_inventory_verified_zero") is True,
         "provider_mutations_performed": 0,
         "paid_execution_started": False,
-        "execution_adapter_qualified": bool(execution_adapter_qualified),
+        "execution_adapter_qualified": operation_adapter_qualified,
         "allocation_success_is_scientific_success": False,
         "proof_effect": "none",
         "claim_ceiling": "paid_gpu_admission_only",
         "legal_next_actions": (
+            ["qualify_reconstruction_operation_execution_adapter"]
+            if operation not in EXECUTABLE_OPERATIONS
+            else (
             ["qualify_vast_execution_adapter"]
             if blockers == ["reconstruction_vast_execution_adapter_not_qualified"]
             else (
                 ["invoke_canonical_gpu_canary_with_explicit_execute_authority"]
                 if not blockers
                 else ["resolve_admission_blockers"]
+            )
             )
         ),
     }
@@ -355,7 +482,9 @@ def prepare_reconstruction_gpu_canary(
     authority_id: str | None,
     execute: bool,
     execution_adapter_qualified: bool = False,
+    image_release_path: str | Path | None = None,
 ) -> dict[str, Any]:
+    image_release = _read(image_release_path) if image_release_path else None
     admission, bound = build_reconstruction_gpu_canary_admission(
         request=_read(request_path),
         preflight=_read(preflight_path),
@@ -369,6 +498,7 @@ def prepare_reconstruction_gpu_canary(
         authority_id=authority_id,
         execute=execute,
         execution_adapter_qualified=execution_adapter_qualified,
+        image_release=image_release,
     )
     write_json(Path(admission_out), admission)
     write_json(Path(bound_request_out), bound)
@@ -389,9 +519,12 @@ def prepare_reconstruction_gpu_canary(
 
 __all__ = [
     "ADMISSION_SCHEMA_VERSION",
+    "EXECUTABLE_OPERATIONS",
+    "EXPECTED_RUNTIME_RESULT_SCHEMAS",
     "PREFLIGHT_SCHEMA_VERSION",
     "PROBE_KIND",
     "REQUEST_SCHEMA_VERSION",
+    "build_reconstruction_gpu_canary_request",
     "build_reconstruction_gpu_canary_admission",
     "collect_reconstruction_vast_preflight",
     "prepare_reconstruction_gpu_canary",

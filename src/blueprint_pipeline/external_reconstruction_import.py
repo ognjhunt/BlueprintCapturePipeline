@@ -27,8 +27,10 @@ from .nurec_openusd_packaging import (
 
 IMPORT_REQUEST_SCHEMA = "external_reconstruction_import_request.v1"
 RIGHTS_RECEIPT_SCHEMA = "niantic_scaniverse_provenance_rights_receipt.v1"
+GENERIC_RIGHTS_RECEIPT_SCHEMA = "external_reconstruction_provenance_rights_receipt.v1"
 IMPORT_RECEIPT_SCHEMA = "external_reconstruction_import_receipt.v1"
 SUPPORTED_SUFFIXES = {".usdz", ".usd", ".usda", ".usdc", ".ply", ".spz", ".glb"}
+SUPPORTED_LOCAL_PROVIDERS = {"scaniverse", "polycam"}
 MAX_ASSET_COUNT = 16
 MAX_ASSET_BYTES = 2_000_000_000
 MAX_TOTAL_BYTES = 4_000_000_000
@@ -158,7 +160,11 @@ def _finalize(value: Mapping[str, Any], schema: str, digest_field: str) -> dict[
 
 
 def _validate_rights_declaration(
-    value: Mapping[str, Any], *, source_capture_identity: str, source_capture_digest: str
+    value: Mapping[str, Any],
+    *,
+    provider_identity: str,
+    source_capture_identity: str,
+    source_capture_digest: str,
 ) -> dict[str, Any]:
     declaration = _clone(value)
     errors: list[str] = []
@@ -166,7 +172,10 @@ def _validate_rights_declaration(
     expected = canonical_digest(declaration, digest_field="declaration_digest")
     if supplied != expected:
         errors.append("rights_declaration_digest_invalid")
-    if declaration.get("provider_identity") != "scaniverse":
+    if (
+        provider_identity not in SUPPORTED_LOCAL_PROVIDERS
+        or declaration.get("provider_identity") != provider_identity
+    ):
         errors.append("rights_provider_identity_invalid")
     for key in (
         "product_tier",
@@ -213,14 +222,22 @@ def build_external_reconstruction_import_request(value: Mapping[str, Any]) -> di
     request = _clone(value)
     errors: list[str] = []
     _validate_lineage(request, errors)
-    if request.get("provider_identity") != "scaniverse" or request.get("import_lane") != (
-        "local_external_import"
-    ):
+    provider_identity = str(request.get("provider_identity") or "")
+    if provider_identity not in SUPPORTED_LOCAL_PROVIDERS or request.get(
+        "import_lane"
+    ) != "local_external_import":
         errors.append("external_import_provider_or_lane_invalid")
     if request.get("remote_calls_authorized") is not False or request.get(
         "remote_calls_performed"
     ) is not False:
         errors.append("external_import_must_be_local_only")
+    provider_runtime = request.get("provider_runtime_identity")
+    if (
+        not isinstance(provider_runtime, Mapping)
+        or provider_runtime.get("provider") != "local"
+        or provider_runtime.get("source_provider") != provider_identity
+    ):
+        errors.append("external_import_provider_runtime_binding_invalid")
     if request.get("output_digests") != []:
         errors.append("external_import_request_cannot_predeclare_outputs")
     bindings = request.get("asset_bindings")
@@ -257,6 +274,7 @@ def build_external_reconstruction_import_request(value: Mapping[str, Any]) -> di
     try:
         request["provenance_rights_declaration"] = _validate_rights_declaration(
             request.get("provenance_rights_declaration") or {},
+            provider_identity=provider_identity,
             source_capture_identity=str(request.get("source_capture_identity") or ""),
             source_capture_digest=str(request.get("source_capture_digest") or ""),
         )
@@ -272,6 +290,33 @@ def build_external_reconstruction_import_request(value: Mapping[str, Any]) -> di
 
 
 def build_scaniverse_provenance_rights_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
+    if value.get("provider_identity") != "scaniverse":
+        raise ExternalReconstructionImportError(["rights_receipt_provider_identity_invalid"])
+    return _build_external_reconstruction_provenance_rights_receipt(
+        value,
+        schema=RIGHTS_RECEIPT_SCHEMA,
+    )
+
+
+def build_external_reconstruction_provenance_rights_receipt(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a provider-neutral local-import rights receipt.
+
+    This receipt never authorizes a remote upload. Scaniverse callers retain
+    their historical provider-specific schema; Polycam uses this generic
+    schema so the import contract does not mislabel the source provider.
+    """
+
+    return _build_external_reconstruction_provenance_rights_receipt(
+        value,
+        schema=GENERIC_RIGHTS_RECEIPT_SCHEMA,
+    )
+
+
+def _build_external_reconstruction_provenance_rights_receipt(
+    value: Mapping[str, Any], *, schema: str
+) -> dict[str, Any]:
     receipt = _clone(value)
     errors: list[str] = []
     for key in (
@@ -289,6 +334,7 @@ def build_scaniverse_provenance_rights_receipt(value: Mapping[str, Any]) -> dict
     try:
         _validate_rights_declaration(
             {key: receipt.get(key) for key in _RIGHTS_DECLARATION_KEYS},
+            provider_identity=str(receipt.get("provider_identity") or ""),
             source_capture_identity=str(receipt.get("source_capture_identity") or ""),
             source_capture_digest=str(receipt.get("source_capture_digest") or ""),
         )
@@ -308,7 +354,7 @@ def build_scaniverse_provenance_rights_receipt(value: Mapping[str, Any]) -> dict
         errors.append("rights_receipt_claim_boundary_invalid")
     if errors:
         raise ExternalReconstructionImportError(errors)
-    return _finalize(receipt, RIGHTS_RECEIPT_SCHEMA, "provenance_rights_receipt_digest")
+    return _finalize(receipt, schema, "provenance_rights_receipt_digest")
 
 
 def build_external_reconstruction_import_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -318,6 +364,11 @@ def build_external_reconstruction_import_receipt(value: Mapping[str, Any]) -> di
     for key in ("external_import_request_digest", "provenance_rights_receipt_digest"):
         if not _is_digest(receipt.get(key)):
             errors.append(f"{key}_invalid")
+    if receipt.get("provenance_rights_receipt_schema_version") not in {
+        RIGHTS_RECEIPT_SCHEMA,
+        GENERIC_RIGHTS_RECEIPT_SCHEMA,
+    }:
+        errors.append("provenance_rights_receipt_schema_version_invalid")
     if receipt.get("status") != "imported_derived_support_only":
         errors.append("external_import_receipt_status_invalid")
     assets = receipt.get("imported_assets")
@@ -447,18 +498,22 @@ def import_external_reconstruction(
                 }
             )
         declaration = request["provenance_rights_declaration"]
-        rights = build_scaniverse_provenance_rights_receipt(
-            {
-                **declaration,
-                "stable_run_identity": request["stable_run_identity"],
-                "status": "accepted_for_declared_local_import_only",
-                "remote_upload_authorized_by_receipt": False,
-                "provider_success_is_blueprint_qualification": False,
-                "proof_effect": "provenance_and_rights_for_local_import_only",
-                "claim_ceiling": "external_reconstruction_import",
-            }
-        )
-        (temporary / "niantic_scaniverse_provenance_rights_receipt.v1.json").write_text(
+        rights_value = {
+            **declaration,
+            "stable_run_identity": request["stable_run_identity"],
+            "status": "accepted_for_declared_local_import_only",
+            "remote_upload_authorized_by_receipt": False,
+            "provider_success_is_blueprint_qualification": False,
+            "proof_effect": "provenance_and_rights_for_local_import_only",
+            "claim_ceiling": "external_reconstruction_import",
+        }
+        if request["provider_identity"] == "scaniverse":
+            rights = build_scaniverse_provenance_rights_receipt(rights_value)
+            rights_filename = "niantic_scaniverse_provenance_rights_receipt.v1.json"
+        else:
+            rights = build_external_reconstruction_provenance_rights_receipt(rights_value)
+            rights_filename = "external_reconstruction_provenance_rights_receipt.v1.json"
+        (temporary / rights_filename).write_text(
             json.dumps(rights, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         value = dict(request)
@@ -474,12 +529,16 @@ def import_external_reconstruction(
                     {"artifact_id": item["asset_id"], "digest": item["digest"]}
                     for item in imported_assets
                 ],
-                "provider_runtime_identity": {"provider": "local", "source_provider": "scaniverse"},
+                "provider_runtime_identity": {
+                    "provider": "local",
+                    "source_provider": request["provider_identity"],
+                },
                 "cost_usd": 0.0,
                 "duration_seconds": round(time.monotonic() - started, 6),
                 "parent_artifact_or_event": {"digest": request["external_import_request_digest"]},
                 "external_import_request_digest": request["external_import_request_digest"],
                 "provenance_rights_receipt_digest": rights["provenance_rights_receipt_digest"],
+                "provenance_rights_receipt_schema_version": rights["schema_version"],
                 "imported_assets": imported_assets,
                 "source_capture_binding_verified": True,
                 "rights_and_provenance_verified": True,
@@ -514,7 +573,10 @@ __all__ = [
     "ExternalReconstructionImportError",
     "IMPORT_RECEIPT_SCHEMA",
     "IMPORT_REQUEST_SCHEMA",
+    "GENERIC_RIGHTS_RECEIPT_SCHEMA",
     "RIGHTS_RECEIPT_SCHEMA",
+    "SUPPORTED_LOCAL_PROVIDERS",
+    "build_external_reconstruction_provenance_rights_receipt",
     "build_external_reconstruction_import_receipt",
     "build_external_reconstruction_import_request",
     "build_scaniverse_provenance_rights_receipt",

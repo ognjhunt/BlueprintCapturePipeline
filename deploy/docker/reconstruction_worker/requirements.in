@@ -1,0 +1,37 @@
+pip==24.2
+setuptools==78.1.1
+wheel==0.44.0
+torch==2.4.1
+torchvision==0.19.1
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+trimesh==4.4.9
+onnxruntime-gpu==1.24.4
+scikit-image==0.24.0
+imageio==2.35.1
+lpips==0.1.4
+usd-core==26.3
+
+# Runtime dependencies declared by pinned gsplat v1.5.3 and 3DGRUT v1.1.0.
+# opencv-python-headless intentionally satisfies cv2 without installing a GUI
+# wheel; the source projects are installed with --no-deps.
+ninja
+plyfile
+torchmetrics
+addict
+dataclasses-json
+einops
+fire
+hydra-core
+jaxtyping
+kornia
+msgpack
+omegaconf
+piexif
+rich
+scikit-learn
+tensorboard
+wandb
+simplejpeg
+nvidia-ncore>=19.0.0
+slangtorch==1.3.18

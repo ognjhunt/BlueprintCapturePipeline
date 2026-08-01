@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .common import write_json
+from .decision_evidence_contracts import canonical_digest
 from .groot_oscar_carrier_remote_build_packet import (
     PACKET_DIRNAME as CARRIER_PACKET_DIRNAME,
     render_remote_build_script,
@@ -648,11 +649,39 @@ def build_build_plane_admission(
                 "license_review_receipt_digest",
                 "builder_reconstruction_license_receipt_digest_invalid",
             ),
+            (
+                "paid_execution_envelope_digest",
+                "builder_reconstruction_paid_envelope_digest_invalid",
+            ),
         ):
             if not _SHA256.fullmatch(_string(packet.get(field))):
                 blockers.append(blocker)
         if not _COMMIT.fullmatch(_string(packet.get("source_commit"))):
             blockers.append("builder_reconstruction_source_commit_invalid")
+        paid_envelope = packet.get("paid_execution_envelope")
+        paid_envelope = paid_envelope if isinstance(paid_envelope, Mapping) else {}
+        if (
+            paid_envelope.get("schema_version")
+            != "reconstruction_worker_paid_execution_envelope.v1"
+            or paid_envelope.get("authorized_action") != "cpu-build"
+            or paid_envelope.get("paid_mutation_authorized") is not True
+            or paid_envelope.get("authority_issued_by_agent") is not False
+            or not _string(paid_envelope.get("authority_id"))
+            or paid_envelope.get("source_commit_sha") != packet.get("source_commit")
+            or paid_envelope.get("worker_stack_manifest_digest")
+            != packet.get("worker_stack_manifest_digest")
+            or paid_envelope.get("license_inventory_digest")
+            != packet.get("license_inventory_digest")
+            or paid_envelope.get("license_review_receipt_digest")
+            != packet.get("license_review_receipt_digest")
+            or paid_envelope.get("paid_execution_envelope_digest")
+            != packet.get("paid_execution_envelope_digest")
+            or paid_envelope.get("paid_execution_envelope_digest")
+            != canonical_digest(
+                paid_envelope, digest_field="paid_execution_envelope_digest"
+            )
+        ):
+            blockers.append("builder_reconstruction_paid_envelope_invalid")
         blockers.extend(validate_reconstruction_worker_archive(packet))
     if provider in {"runpod", "runpod_pod", "runpod-pod"}:
         blockers.append("runpod_pods_are_serve_plane_not_image_build_plane")
@@ -744,6 +773,21 @@ def build_build_plane_admission(
         blockers.append("builder_hard_ttl_must_be_at_most_two_hours")
     if spend.get("one_resource_limit") is not True:
         blockers.append("builder_one_resource_limit_missing")
+    if packet_kind == RECONSTRUCTION_WORKER_PACKET_KIND:
+        paid_envelope = packet.get("paid_execution_envelope")
+        paid_envelope = paid_envelope if isinstance(paid_envelope, Mapping) else {}
+        if (
+            spend.get("paid_mutation_authorized")
+            != paid_envelope.get("paid_mutation_authorized")
+            or spend.get("max_spend_usd") != paid_envelope.get("max_spend_usd")
+            or spend.get("hard_ttl_seconds")
+            != paid_envelope.get("hard_ttl_seconds")
+            or spend.get("retry_cap") != paid_envelope.get("retry_cap")
+            or spend.get("authority_id") != paid_envelope.get("authority_id")
+            or spend.get("authority_issued_by_agent")
+            != paid_envelope.get("authority_issued_by_agent")
+        ):
+            blockers.append("builder_reconstruction_spend_envelope_mismatch")
 
     checks = {
         "runpod_excluded_from_build_plane": provider not in {"runpod", "runpod_pod", "runpod-pod"},

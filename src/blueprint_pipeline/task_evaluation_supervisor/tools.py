@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import partial
 import hashlib
+import json
 import math
 from pathlib import Path, PurePosixPath
 import re
@@ -41,6 +42,9 @@ from ..reconstruction_geometry_compiler import (
     compile_metric_geometry as compile_metric_geometry_runtime,
     qualify_collision_candidate as qualify_collision_candidate_runtime,
 )
+from ..isaac_reconstruction_verification import (
+    build_isaac_asset_verification_request,
+)
 from ..reconstruction_heldout_evaluation import (
     build_heldout_appearance_evaluation_request,
     build_visual_heldout_evaluation_report,
@@ -62,6 +66,7 @@ from ..reconstruction_validation_contracts import (
 from ..reconstruction_pose_refinement import (
     build_pose_refinement_execution_request,
     build_pose_refinement_result,
+    build_refined_camera_pose_manifest,
 )
 from ..reconstruction_generated_repair import (
     build_generated_repair_candidate_request,
@@ -149,6 +154,8 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "digest_matches": {"const": True},
             "capture_authority_profile": {},
             "route_status": {"type": "string"},
+            "capture_profile_validation_status": {"type": "string"},
+            "capture_profile_validation_digest": {},
             "artifact_count": {"type": "integer"},
             "blockers": {"type": "array"},
             "raw_capture_remains_authoritative": {"const": True},
@@ -183,6 +190,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "split_digest": {"type": "string"},
             "hidden_heldout_isolated": {"const": True},
             "candidate_can_change_split": {"const": False},
+            "supporting_artifact_count": {"type": "integer"},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -193,6 +201,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "reconstruction_result_digest": {"type": "string"},
             "metric_scaffold_digest": {"type": "string"},
             "arkit_export_digest": {"type": "string"},
+            "arkit_raw_contract_validation_digest": {"type": "string"},
             "decoded_pts_verified": {"const": True},
             "raw_arkit_poses_modified": {"const": False},
             "metric_scale_independently_validated": {"const": False},
@@ -224,6 +233,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "camera_calibration_digest": {"type": "string"},
             "camera_observation_digest": {"type": "string"},
             "pose_refinement_request_digest": {"type": "string"},
+            "colmap_training_dataset_export_request_digest": {"type": "string"},
             "hidden_heldout_pixels_included": {"const": False},
             "raw_arkit_poses_modified": {"const": False},
             "claim_ceiling": {"const": "calibrated_camera_trajectory"},
@@ -238,9 +248,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "rig_declaration_digest": {"type": "string"},
             "dual_fisheye_binding_digest": {"type": "string"},
             "status": {"enum": ["normalized", "blocked"]},
-            "claim_ceiling": {
-                "enum": ["calibrated_camera_rig", "decoded_native_container"]
-            },
+            "claim_ceiling": {"enum": ["calibrated_camera_rig", "decoded_native_container"]},
             "agent_altered_calibration": {"const": False},
             "proof_state_changed": {"const": False},
         }
@@ -259,12 +267,11 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "validate_camera_rig": _output_schema(
         {
-            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
             "validation_result_digest": {"type": "string"},
             "status": {"enum": ["validated", "rejected"]},
-            "claim_ceiling": {
-                "enum": ["calibrated_camera_rig", "decoded_native_container"]
-            },
+            "claim_ceiling": {"enum": ["calibrated_camera_rig", "decoded_native_container"]},
             "metric_scale_proven": {"const": False},
             "agent_altered_calibration": {"const": False},
             "proof_state_changed": {"const": False},
@@ -272,7 +279,8 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "validate_metric_scale": _output_schema(
         {
-            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
             "validation_result_digest": {"type": "string"},
             "status": {"enum": ["validated", "rejected"]},
             "relative_error": {"type": "number"},
@@ -298,11 +306,13 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "run_pose_refinement": _output_schema(
         {
-            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
             "status": {"enum": ["succeeded", "failed", "timed_out", "interrupted"]},
             "failure_code": {},
             "pose_refinement_result_digest": {"type": "string"},
             "drift_within_frozen_thresholds": {"type": "boolean"},
+            "refined_pose_manifest_bound": {"type": "boolean"},
             "raw_arkit_poses_modified": {"const": False},
             "heldout_labels_included": {"const": False},
             "candidate_self_graded": {"const": False},
@@ -330,15 +340,14 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "digest_matches": {"const": True},
             "artifact_digest": {"type": "string"},
             "claim_ceiling": {"const": "appearance_reconstruction"},
-            "decision": {
-                "enum": ["passed_appearance_only", "rejected_appearance_quality"]
-            },
+            "decision": {"enum": ["passed_appearance_only", "rejected_appearance_quality"]},
             "proof_state_changed": {"const": False},
         }
     ),
     "run_generated_repair_candidate": _output_schema(
         {
-            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
             "result_digest": {"type": "string"},
             "status": {"const": "blocked_not_qualified"},
             "execution_started": {"const": False},
@@ -350,23 +359,28 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "compile_metric_geometry": _output_schema(
         {
-            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
             "artifact_digest": {"type": "string"},
             "claim_ceiling": {"const": "metric_reference_geometry"},
-            "decision": {}, "proof_state_changed": {"const": False},
+            "decision": {},
+            "proof_state_changed": {"const": False},
         }
     ),
     "compile_collision_candidate": _output_schema(
         {
-            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
             "artifact_digest": {"type": "string"},
             "claim_ceiling": {"const": "collision_geometry_candidate"},
-            "decision": {}, "proof_state_changed": {"const": False},
+            "decision": {},
+            "proof_state_changed": {"const": False},
         }
     ),
     "qualify_collision_candidate": _output_schema(
         {
-            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
             "artifact_digest": {"type": "string"},
             "claim_ceiling": {"const": "bounded_navigation_simulation"},
             "decision": {"enum": ["accepted_bounded_navigation", "rejected"]},
@@ -375,15 +389,18 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "package_nurec_openusd": _output_schema(
         {
-            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
             "artifact_digest": {"type": "string"},
             "claim_ceiling": {"const": "openusd_package"},
-            "decision": {}, "proof_state_changed": {"const": False},
+            "decision": {},
+            "proof_state_changed": {"const": False},
         }
     ),
     "verify_isaac_asset": _output_schema(
         {
-            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
             "artifact_digest": {"type": "string"},
             "claim_ceiling": {"const": "isaac_load_render_compatibility"},
             "decision": {"const": "verified_compatibility_only"},
@@ -392,7 +409,8 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "import_external_reconstruction": _output_schema(
         {
-            "contract_present": {"const": True}, "digest_matches": {"const": True},
+            "contract_present": {"const": True},
+            "digest_matches": {"const": True},
             "artifact_digest": {"type": "string"},
             "claim_ceiling": {"const": "external_reconstruction_import"},
             "decision": {"const": "imported_derived_support_only"},
@@ -418,9 +436,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "contract_present": {"const": True},
             "digest_matches": {"const": True},
             "report_digest": {"type": "string"},
-            "decision": {
-                "enum": ["usable", "partially_usable", "rejected", "abstention"]
-            },
+            "decision": {"enum": ["usable", "partially_usable", "rejected", "abstention"]},
             "failed_method_count": {"type": "integer"},
             "agent_output_authoritative": {"const": False},
             "proof_state_changed": {"const": False},
@@ -636,7 +652,11 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         _descriptor(
             "compile_frozen_frame_dataset",
             "capture_reconstruction_dataset_compilation",
-            expected_artifacts=["reconstruction_dataset_manifest.v1"],
+            expected_artifacts=[
+                "reconstruction_dataset_manifest.v1",
+                "frame_decode_receipt.v1",
+                "native_360_lens_decode_manifest.v1",
+            ],
             input_properties={
                 "capture_build_digest": {"type": "string"},
                 "capture_reconstruction_route_digest": {"type": "string"},
@@ -675,11 +695,7 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                 "arkit_depth_surface_compilation_result.v1",
                 "observed_surface_mesh.v1",
             ],
-            input_properties={
-                "arkit_depth_surface_compilation_request_digest": {
-                    "type": "string"
-                }
-            },
+            input_properties={"arkit_depth_surface_compilation_request_digest": {"type": "string"}},
             required_inputs=["arkit_depth_surface_compilation_request_digest"],
             mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
@@ -690,7 +706,13 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         _descriptor(
             "export_arkit_reconstruction_dataset",
             "arkit_reconstruction_dataset_export",
-            expected_artifacts=["arkit_reconstruction_dataset_export.v1"],
+            expected_artifacts=[
+                "arkit_reconstruction_dataset_export.v1",
+                "camera_calibration_manifest.v1",
+                "camera_observation_manifest.v1",
+                "pose_refinement_request.v1",
+                "colmap_training_dataset_export_request.v1",
+            ],
             input_properties={"arkit_export_request_digest": {"type": "string"}},
             required_inputs=["arkit_export_request_digest"],
             mutability="reversible_mutation",
@@ -734,22 +756,26 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             timeout_seconds=600.0,
         ),
         _descriptor(
-            "validate_camera_rig", "camera_rig_validation",
+            "validate_camera_rig",
+            "camera_rig_validation",
             expected_artifacts=["camera_rig_validation_result.v1"],
             input_properties={"camera_rig_validation_request_digest": {"type": "string"}},
             required_inputs=["camera_rig_validation_request_digest"],
             mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
-            minimum_mode="execute_non_spend", timeout_seconds=30.0,
+            minimum_mode="execute_non_spend",
+            timeout_seconds=30.0,
         ),
         _descriptor(
-            "validate_metric_scale", "metric_scale_validation",
-            expected_artifacts=["metric_scale_validation_result.v1"],
+            "validate_metric_scale",
+            "metric_scale_validation",
+            expected_artifacts=["metric_scale_validation_result.v2"],
             input_properties={"metric_scale_validation_request_digest": {"type": "string"}},
             required_inputs=["metric_scale_validation_request_digest"],
             mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
-            minimum_mode="execute_non_spend", timeout_seconds=30.0,
+            minimum_mode="execute_non_spend",
+            timeout_seconds=30.0,
         ),
         _descriptor(
             "run_pose_estimation",
@@ -763,21 +789,24 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             timeout_seconds=3_600.0,
         ),
         _descriptor(
-            "run_pose_refinement", "arkit_anchored_pose_refinement",
-            expected_artifacts=["pose_refinement_result.v1"],
+            "run_pose_refinement",
+            "arkit_anchored_pose_refinement",
+            expected_artifacts=[
+                "pose_refinement_result.v1",
+                "refined_camera_pose_manifest.v1",
+            ],
             input_properties={"pose_refinement_execution_request_digest": {"type": "string"}},
             required_inputs=["pose_refinement_execution_request_digest"],
             mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
-            minimum_mode="execute_non_spend", timeout_seconds=3_600.0,
+            minimum_mode="execute_non_spend",
+            timeout_seconds=3_600.0,
         ),
         _descriptor(
             "train_gaussian_reconstruction",
             "capture_reconstruction_training",
             expected_artifacts=["reconstruction_training_result.v1"],
-            input_properties={
-                "reconstruction_training_request_digest": {"type": "string"}
-            },
+            input_properties={"reconstruction_training_request_digest": {"type": "string"}},
             required_inputs=["reconstruction_training_request_digest"],
             mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
@@ -788,9 +817,7 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             "evaluate_heldout_appearance",
             "capture_reconstruction_independent_appearance_qa",
             expected_artifacts=["visual_heldout_evaluation_report.v1"],
-            input_properties={
-                "heldout_appearance_evaluation_request_digest": {"type": "string"}
-            },
+            input_properties={"heldout_appearance_evaluation_request_digest": {"type": "string"}},
             required_inputs=["heldout_appearance_evaluation_request_digest"],
             mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
@@ -799,58 +826,76 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             idempotency="frozen_hidden_split_independent_evaluator",
         ),
         _descriptor(
-            "run_generated_repair_candidate", "generated_reconstruction_support",
+            "run_generated_repair_candidate",
+            "generated_reconstruction_support",
             expected_artifacts=["generated_repair_candidate_result.v1"],
             input_properties={"generated_repair_candidate_request_digest": {"type": "string"}},
             required_inputs=["generated_repair_candidate_request_digest"],
             mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
-            minimum_mode="execute_non_spend", timeout_seconds=30.0,
+            minimum_mode="execute_non_spend",
+            timeout_seconds=30.0,
             idempotency="deterministic_qualification_rejection_no_execution",
         ),
         _descriptor(
-            "compile_metric_geometry", "capture_reconstruction_metric_geometry",
+            "compile_metric_geometry",
+            "capture_reconstruction_metric_geometry",
             expected_artifacts=["metric_geometry_manifest.v1"],
             input_properties={"source_artifact_digest": {"type": "string"}},
-            required_inputs=["source_artifact_digest"], mutability="reversible_mutation",
+            required_inputs=["source_artifact_digest"],
+            mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
-            minimum_mode="execute_non_spend", timeout_seconds=3_600.0,
+            minimum_mode="execute_non_spend",
+            timeout_seconds=3_600.0,
         ),
         _descriptor(
-            "compile_collision_candidate", "capture_reconstruction_collision",
+            "compile_collision_candidate",
+            "capture_reconstruction_collision",
             expected_artifacts=["mesh_collider_candidate_manifest.v1"],
             input_properties={"metric_geometry_manifest_digest": {"type": "string"}},
-            required_inputs=["metric_geometry_manifest_digest"], mutability="reversible_mutation",
+            required_inputs=["metric_geometry_manifest_digest"],
+            mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
-            minimum_mode="execute_non_spend", timeout_seconds=3_600.0,
+            minimum_mode="execute_non_spend",
+            timeout_seconds=3_600.0,
         ),
         _descriptor(
-            "qualify_collision_candidate", "capture_reconstruction_collision_qa",
+            "qualify_collision_candidate",
+            "capture_reconstruction_collision_qa",
             expected_artifacts=["collider_qualification_report.v1"],
             input_properties={"collider_candidate_manifest_digest": {"type": "string"}},
-            required_inputs=["collider_candidate_manifest_digest"], mutability="reversible_mutation",
+            required_inputs=["collider_candidate_manifest_digest"],
+            mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
-            minimum_mode="execute_non_spend", timeout_seconds=1_800.0,
+            minimum_mode="execute_non_spend",
+            timeout_seconds=1_800.0,
         ),
         _descriptor(
-            "package_nurec_openusd", "capture_reconstruction_packaging",
+            "package_nurec_openusd",
+            "capture_reconstruction_packaging",
             expected_artifacts=["nurec_openusd_packaging_result.v1"],
             input_properties={"packaging_request_digest": {"type": "string"}},
-            required_inputs=["packaging_request_digest"], mutability="reversible_mutation",
+            required_inputs=["packaging_request_digest"],
+            mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
-            minimum_mode="execute_non_spend", timeout_seconds=3_600.0,
+            minimum_mode="execute_non_spend",
+            timeout_seconds=3_600.0,
             idempotency="content_addressed_receipt_replay",
         ),
         _descriptor(
-            "verify_isaac_asset", "capture_reconstruction_isaac_verification",
+            "verify_isaac_asset",
+            "capture_reconstruction_isaac_verification",
             expected_artifacts=["isaac_asset_verification_result.v1"],
             input_properties={"isaac_verification_request_digest": {"type": "string"}},
-            required_inputs=["isaac_verification_request_digest"], mutability="reversible_mutation",
+            required_inputs=["isaac_verification_request_digest"],
+            mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
-            minimum_mode="execute_non_spend", timeout_seconds=7_200.0,
+            minimum_mode="execute_non_spend",
+            timeout_seconds=7_200.0,
         ),
         _descriptor(
-            "import_external_reconstruction", "capture_reconstruction_external_import",
+            "import_external_reconstruction",
+            "capture_reconstruction_external_import",
             expected_artifacts=["external_reconstruction_import_receipt.v1"],
             input_properties={"external_import_request_digest": {"type": "string"}},
             required_inputs=["external_import_request_digest"],
@@ -1031,9 +1076,7 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             "generate_reconstruction_report",
             "capture_reconstruction_terminal_reporting",
             expected_artifacts=["reconstruction_terminal_report.v1"],
-            input_properties={
-                "reconstruction_terminal_report_request_digest": {"type": "string"}
-            },
+            input_properties={"reconstruction_terminal_report_request_digest": {"type": "string"}},
             required_inputs=["reconstruction_terminal_report_request_digest"],
             mutability="reversible_mutation",
             allowed_modes=["execute_non_spend", "execute_preauthorized"],
@@ -1696,6 +1739,37 @@ def _compile_frozen_frame_dataset(
         "generated/reconstruction_frame_dataset/reconstruction_dataset_manifest.json",
         dataset,
     )
+    produced_artifacts = [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": dataset_digest,
+            "artifact_type": "reconstruction_dataset_manifest.v1",
+        }
+    ]
+    supporting = dataset.get("supporting_artifact_references", [])
+    if not isinstance(supporting, list) or len(supporting) > 8:
+        raise ValueError("reconstruction_dataset_supporting_artifacts_invalid")
+    supporting_keys: set[tuple[str, str]] = set()
+    for ordinal, reference in enumerate(supporting):
+        if not isinstance(reference, Mapping):
+            raise ValueError(f"reconstruction_dataset_supporting_artifact_invalid:{ordinal}")
+        artifact_type = str(reference.get("artifact_type") or "")
+        key = (str(reference.get("relative_path") or ""), artifact_type)
+        if re.fullmatch(r"[a-z0-9_.-]+\.v[0-9]+", artifact_type) is None or key in supporting_keys:
+            raise ValueError(f"reconstruction_dataset_supporting_artifact_invalid:{ordinal}")
+        supporting_keys.add(key)
+        verified = _validated_emitted_artifact(
+            root=output_root,
+            relative_path=reference.get("relative_path"),
+            expected_digest=reference.get("digest"),
+        )
+        produced_artifacts.append(
+            {
+                "artifact_path": str(verified.relative_to(Path(root_value).resolve())),
+                "artifact_digest": reference["digest"],
+                "artifact_type": artifact_type,
+            }
+        )
     return {
         "contract_present": True,
         "digest_matches": True,
@@ -1703,14 +1777,9 @@ def _compile_frozen_frame_dataset(
         "split_digest": split_digest,
         "hidden_heldout_isolated": True,
         "candidate_can_change_split": False,
+        "supporting_artifact_count": len(supporting),
         "proof_state_changed": False,
-    }, [
-        {
-            "artifact_path": str(path.relative_to(Path(root_value))),
-            "artifact_digest": dataset_digest,
-            "artifact_type": "reconstruction_dataset_manifest.v1",
-        }
-    ]
+    }, produced_artifacts
 
 
 def _capture_reconstruction_route_for_tool(
@@ -1719,9 +1788,7 @@ def _capture_reconstruction_route_for_tool(
     capture_build = context.capture_build
     expected_capture_digest = arguments.get("capture_build_digest")
     actual_capture_digest = (
-        capture_build.get("capture_build_digest")
-        if isinstance(capture_build, Mapping)
-        else None
+        capture_build.get("capture_build_digest") if isinstance(capture_build, Mapping) else None
     )
     claim_types = sorted(
         {
@@ -1735,9 +1802,7 @@ def _capture_reconstruction_route_for_tool(
         }
     )
     route = (
-        build_capture_reconstruction_route(
-            capture_build, requested_claim_types=claim_types
-        )
+        build_capture_reconstruction_route(capture_build, requested_claim_types=claim_types)
         if isinstance(capture_build, Mapping)
         and expected_capture_digest
         and expected_capture_digest == actual_capture_digest
@@ -1760,9 +1825,7 @@ def _compile_arkit_metric_scaffold(
     root_value = getattr(context, "supervisor_output_dir", None)
     compiler = getattr(context, "arkit_metric_scaffold_compiler", None)
     if not isinstance(root_value, str) or not root_value:
-        raise ValueError(
-            "registered_tool_execution_scope_missing:compile_arkit_metric_scaffold"
-        )
+        raise ValueError("registered_tool_execution_scope_missing:compile_arkit_metric_scaffold")
     if not callable(compiler):
         raise ValueError("arkit_metric_scaffold_compiler_not_injected")
     _, route = _capture_reconstruction_route_for_tool(
@@ -1774,9 +1837,7 @@ def _compile_arkit_metric_scaffold(
     emitted = compiler(
         request={
             "capture_build_digest": route["capture_build_digest"],
-            "capture_reconstruction_route_digest": route[
-                "capture_reconstruction_route_digest"
-            ],
+            "capture_reconstruction_route_digest": route["capture_reconstruction_route_digest"],
             "capture_authority_profile": "iphone_arkit_lidar",
             "requested_claim_types": route["requested_claim_types"],
         },
@@ -1793,14 +1854,21 @@ def _compile_arkit_metric_scaffold(
     claim_ceiling = result.get("claim_ceiling")
     metric_reference = assets.get("metric_scaffold") if isinstance(assets, Mapping) else None
     export_reference = (
-        assets.get("arkit_reconstruction_dataset_export")
-        if isinstance(assets, Mapping)
-        else None
+        assets.get("arkit_reconstruction_dataset_export") if isinstance(assets, Mapping) else None
+    )
+    raw_contract_reference = (
+        assets.get("arkit_raw_contract_validation") if isinstance(assets, Mapping) else None
     )
     if (
         result.get("method_id") != "local_arkit_metric_scaffold"
         or not isinstance(metric_reference, Mapping)
         or not isinstance(export_reference, Mapping)
+        or not isinstance(raw_contract_reference, Mapping)
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(metrics.get("arkit_raw_contract_validation_digest") or ""),
+        )
+        is None
         or not isinstance(metrics, Mapping)
         or metrics.get("decoded_pts_verified") is not True
         or metrics.get("pose_refinement_executed") is not False
@@ -1826,6 +1894,9 @@ def _compile_arkit_metric_scaffold(
         "reconstruction_result_digest": result_digest,
         "metric_scaffold_digest": metric_reference["digest"],
         "arkit_export_digest": export_reference["digest"],
+        "arkit_raw_contract_validation_digest": metrics[
+            "arkit_raw_contract_validation_digest"
+        ],
         "decoded_pts_verified": True,
         "raw_arkit_poses_modified": False,
         "metric_scale_independently_validated": False,
@@ -1844,14 +1915,10 @@ def _compile_arkit_observed_surface(
     *, context: Any, arguments: Mapping[str, Any]
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     root_value = getattr(context, "supervisor_output_dir", None)
-    request_value = getattr(
-        context, "arkit_depth_surface_compilation_request", None
-    )
+    request_value = getattr(context, "arkit_depth_surface_compilation_request", None)
     compiler = getattr(context, "arkit_depth_surface_compiler", None)
     if not isinstance(root_value, str) or not root_value:
-        raise ValueError(
-            "registered_tool_execution_scope_missing:compile_arkit_observed_surface"
-        )
+        raise ValueError("registered_tool_execution_scope_missing:compile_arkit_observed_surface")
     if not isinstance(request_value, Mapping):
         raise ValueError("arkit_depth_surface_compilation_request_not_injected")
     if compiler is None:
@@ -1862,8 +1929,7 @@ def _compile_arkit_observed_surface(
     digest_field = "arkit_depth_surface_compilation_request_digest"
     expected_digest = arguments.get(digest_field)
     if (
-        request.get("schema_version")
-        != "arkit_depth_surface_compilation_request.v1"
+        request.get("schema_version") != "arkit_depth_surface_compilation_request.v1"
         or request.get(digest_field) != expected_digest
         or expected_digest != canonical_digest(request, digest_field=digest_field)
     ):
@@ -1880,22 +1946,17 @@ def _compile_arkit_observed_surface(
     result_digest_field = "arkit_depth_surface_compilation_result_digest"
     surface_asset = result.get("surface_asset")
     if (
-        result.get("schema_version")
-        != "arkit_depth_surface_compilation_result.v1"
+        result.get("schema_version") != "arkit_depth_surface_compilation_result.v1"
         or result.get(result_digest_field)
         != canonical_digest(result, digest_field=result_digest_field)
-        or result.get("source_capture_digest")
-        != request.get("source_capture_digest")
-        or result.get("train_heldout_split_digest")
-        != request.get("train_heldout_split_digest")
-        or result.get("camera_calibration_binding")
-        != request.get("camera_calibration_binding")
+        or result.get("source_capture_digest") != request.get("source_capture_digest")
+        or result.get("train_heldout_split_digest") != request.get("train_heldout_split_digest")
+        or result.get("camera_calibration_binding") != request.get("camera_calibration_binding")
         or result.get("source_commit_sha") != request.get("source_commit_sha")
         or result.get("hidden_heldout_observations_accessed") is not False
         or result.get("generated_fill_used") is not False
         or result.get("raw_arkit_poses_modified") is not False
-        or result.get("claim_ceiling")
-        != "observed_arkit_depth_surface_candidate"
+        or result.get("claim_ceiling") != "observed_arkit_depth_surface_candidate"
         or not isinstance(surface_asset, Mapping)
         or not isinstance(surface_asset.get("digest"), str)
         or not isinstance(surface_asset.get("relative_path"), str)
@@ -1916,9 +1977,7 @@ def _compile_arkit_observed_surface(
         "digest_matches": True,
         result_digest_field: result[result_digest_field],
         "surface_digest": surface_asset["digest"],
-        "accepted_high_confidence_pixel_count": result[
-            "accepted_high_confidence_pixel_count"
-        ],
+        "accepted_high_confidence_pixel_count": result["accepted_high_confidence_pixel_count"],
         "emitted_vertex_count": result["emitted_vertex_count"],
         "emitted_triangle_count": result["emitted_triangle_count"],
         "hidden_heldout_observations_accessed": False,
@@ -1958,7 +2017,9 @@ def _export_arkit_reconstruction_dataset(
         raise ValueError("arkit_export_request_contract_invalid") from exc
     expected_digest = arguments.get("arkit_export_request_digest")
     if expected_digest != request["arkit_export_request_digest"]:
-        raise ValueError("registered_tool_source_digest_mismatch:export_arkit_reconstruction_dataset")
+        raise ValueError(
+            "registered_tool_source_digest_mismatch:export_arkit_reconstruction_dataset"
+        )
     output_root = Path(root_value) / "generated" / "arkit_reconstruction_dataset_export"
     emitted = exporter(source_artifact=request, output_root=output_root)
     if not isinstance(emitted, Mapping):
@@ -1968,14 +2029,11 @@ def _export_arkit_reconstruction_dataset(
     if (
         result.get("schema_version") != "arkit_reconstruction_dataset_export.v1"
         or result_digest
-        != canonical_digest(
-            result, digest_field="arkit_reconstruction_dataset_export_digest"
-        )
+        != canonical_digest(result, digest_field="arkit_reconstruction_dataset_export_digest")
         or result.get("source_capture_digest") != request["source_capture_digest"]
         or result.get("reconstruction_dataset_digest")
         != request["dataset_manifest"].get("dataset_manifest_digest")
-        or result.get("frozen_split_digest")
-        != request["split_manifest"].get("split_digest")
+        or result.get("frozen_split_digest") != request["split_manifest"].get("split_digest")
         or result.get("metric_scaffold_digest") != request["metric_scaffold_digest"]
         or result.get("hidden_heldout_pixels_included") is not False
         or result.get("raw_arkit_poses_modified") is not False
@@ -1984,6 +2042,83 @@ def _export_arkit_reconstruction_dataset(
         or result.get("claim_ceiling") != "calibrated_camera_trajectory"
     ):
         raise ValueError("arkit_reconstruction_dataset_export_result_contract_invalid")
+    references = result.get("artifact_references")
+    expected_references = {
+        "camera_calibration_manifest.v1": (
+            "calibration_digest",
+            result["camera_calibration_digest"],
+        ),
+        "camera_observation_manifest.v1": (
+            "camera_observation_digest",
+            result["camera_observation_digest"],
+        ),
+        "pose_refinement_request.v1": (
+            "pose_refinement_request_digest",
+            result["pose_refinement_request_digest"],
+        ),
+        "colmap_training_dataset_export_request.v1": (
+            "colmap_training_dataset_export_request_digest",
+            result["colmap_training_dataset_export_request_digest"],
+        ),
+    }
+    if (
+        not isinstance(references, list)
+        or len(references) != len(expected_references)
+        or {str(row.get("artifact_type") or "") for row in references if isinstance(row, Mapping)}
+        != set(expected_references)
+    ):
+        raise ValueError("arkit_reconstruction_dataset_export_references_invalid")
+    emitted_artifacts: list[dict[str, Any]] = []
+    loaded: dict[str, dict[str, Any]] = {}
+    for reference in references:
+        if not isinstance(reference, Mapping):
+            raise ValueError("arkit_reconstruction_dataset_export_reference_invalid")
+        artifact_type = str(reference.get("artifact_type") or "")
+        digest_field, expected_content_digest = expected_references[artifact_type]
+        artifact_path = _validated_emitted_artifact(
+            root=output_root,
+            relative_path=reference.get("relative_path"),
+            expected_digest=reference.get("artifact_digest"),
+        )
+        try:
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("arkit_reconstruction_dataset_export_artifact_not_json") from exc
+        if (
+            not isinstance(artifact, Mapping)
+            or artifact.get("schema_version") != artifact_type
+            or artifact.get(digest_field) != expected_content_digest
+            or artifact.get(digest_field)
+            != canonical_digest(artifact, digest_field=digest_field)
+            or reference.get("content_digest") != expected_content_digest
+        ):
+            raise ValueError("arkit_reconstruction_dataset_export_artifact_digest_invalid")
+        loaded[artifact_type] = dict(artifact)
+        emitted_artifacts.append(
+            {
+                "artifact_path": str(artifact_path.relative_to(Path(root_value))),
+                "artifact_digest": reference["artifact_digest"],
+                "artifact_type": artifact_type,
+            }
+        )
+    calibration = loaded["camera_calibration_manifest.v1"]
+    observations = loaded["camera_observation_manifest.v1"]
+    pose_request = loaded["pose_refinement_request.v1"]
+    colmap_request = loaded["colmap_training_dataset_export_request.v1"]
+    if (
+        calibration.get("capture_digest") != request["source_capture_digest"]
+        or observations.get("capture_digest") != request["source_capture_digest"]
+        or pose_request.get("capture_digest") != request["source_capture_digest"]
+        or colmap_request.get("source_capture_digest") != request["source_capture_digest"]
+        or observations.get("split_digest") != result["frozen_split_digest"]
+        or pose_request.get("split_digest") != result["frozen_split_digest"]
+        or colmap_request.get("frozen_split_digest") != result["frozen_split_digest"]
+        or colmap_request.get("camera_calibration_manifest") != calibration
+        or colmap_request.get("camera_observation_manifest") != observations
+        or colmap_request.get("candidate_dataset_manifest") != request["candidate_manifest"]
+        or observations.get("hidden_heldout_pixels_included") is not False
+    ):
+        raise ValueError("arkit_reconstruction_dataset_export_artifact_lineage_invalid")
     path = write_phase2_artifact(
         root_value,
         "generated/arkit_reconstruction_dataset_export/arkit_reconstruction_dataset_export.json",
@@ -1996,6 +2131,9 @@ def _export_arkit_reconstruction_dataset(
         "camera_calibration_digest": result["camera_calibration_digest"],
         "camera_observation_digest": result["camera_observation_digest"],
         "pose_refinement_request_digest": result["pose_refinement_request_digest"],
+        "colmap_training_dataset_export_request_digest": result[
+            "colmap_training_dataset_export_request_digest"
+        ],
         "hidden_heldout_pixels_included": False,
         "raw_arkit_poses_modified": False,
         "claim_ceiling": "calibrated_camera_trajectory",
@@ -2005,7 +2143,8 @@ def _export_arkit_reconstruction_dataset(
             "artifact_path": str(path.relative_to(Path(root_value))),
             "artifact_digest": result_digest,
             "artifact_type": "arkit_reconstruction_dataset_export.v1",
-        }
+        },
+        *emitted_artifacts,
     ]
 
 
@@ -2015,17 +2154,13 @@ def _normalize_native_360_capture(
     root_value = getattr(context, "supervisor_output_dir", None)
     normalizer = getattr(context, "native_360_normalizer", None)
     if not isinstance(root_value, str) or not root_value:
-        raise ValueError(
-            "registered_tool_execution_scope_missing:normalize_native_360_capture"
-        )
+        raise ValueError("registered_tool_execution_scope_missing:normalize_native_360_capture")
     if not callable(normalizer):
         raise ValueError("native_360_normalizer_not_injected")
     capture_build = context.capture_build
     expected_capture_digest = arguments.get("capture_build_digest")
     actual_capture_digest = (
-        capture_build.get("capture_build_digest")
-        if isinstance(capture_build, Mapping)
-        else None
+        capture_build.get("capture_build_digest") if isinstance(capture_build, Mapping) else None
     )
     claim_types = sorted(
         {
@@ -2039,9 +2174,7 @@ def _normalize_native_360_capture(
         }
     )
     route = (
-        build_capture_reconstruction_route(
-            capture_build, requested_claim_types=claim_types
-        )
+        build_capture_reconstruction_route(capture_build, requested_claim_types=claim_types)
         if isinstance(capture_build, Mapping)
         and expected_capture_digest
         and expected_capture_digest == actual_capture_digest
@@ -2094,11 +2227,8 @@ def _normalize_native_360_capture(
         or parent.get("capture_build_digest") != actual_capture_digest
         or parent.get("capture_reconstruction_route_digest") != expected_route_digest
         or re.fullmatch(r"sha256:[0-9a-f]{64}", str(result_digest or "")) is None
-        or result_digest
-        != canonical_digest(result, digest_field="native_360_normalization_digest")
-        or re.fullmatch(
-            r"sha256:[0-9a-f]{64}", str(result.get("rig_declaration_digest") or "")
-        )
+        or result_digest != canonical_digest(result, digest_field="native_360_normalization_digest")
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(result.get("rig_declaration_digest") or ""))
         is None
         or re.fullmatch(
             r"sha256:[0-9a-f]{64}",
@@ -2155,9 +2285,7 @@ def _compile_equirectangular_virtual_rig(
     capture_build = context.capture_build
     expected_capture_digest = arguments.get("capture_build_digest")
     actual_capture_digest = (
-        capture_build.get("capture_build_digest")
-        if isinstance(capture_build, Mapping)
-        else None
+        capture_build.get("capture_build_digest") if isinstance(capture_build, Mapping) else None
     )
     claim_types = sorted(
         {
@@ -2171,9 +2299,7 @@ def _compile_equirectangular_virtual_rig(
         }
     )
     route = (
-        build_capture_reconstruction_route(
-            capture_build, requested_claim_types=claim_types
-        )
+        build_capture_reconstruction_route(capture_build, requested_claim_types=claim_types)
         if isinstance(capture_build, Mapping)
         and expected_capture_digest
         and expected_capture_digest == actual_capture_digest
@@ -2207,13 +2333,11 @@ def _compile_equirectangular_virtual_rig(
     parent = result.get("parent_artifact_or_event")
     view_count = result.get("virtual_observation_count")
     if (
-        result.get("schema_version")
-        != "equirectangular_virtual_rig_compilation.v1"
+        result.get("schema_version") != "equirectangular_virtual_rig_compilation.v1"
         or not isinstance(parent, Mapping)
         or parent.get("capture_build_digest") != actual_capture_digest
         or parent.get("capture_reconstruction_route_digest") != expected_route_digest
-        or result.get("access_scope")
-        != "candidate_training_and_validation_only"
+        or result.get("access_scope") != "candidate_training_and_validation_only"
         or re.fullmatch(r"sha256:[0-9a-f]{64}", str(result_digest or "")) is None
         or result_digest
         != canonical_digest(result, digest_field="equirectangular_compilation_digest")
@@ -2222,10 +2346,8 @@ def _compile_equirectangular_virtual_rig(
         or not isinstance(view_count, int)
         or view_count < 12
         or view_count % 12 != 0
-        or result.get("proof_effect")
-        != "deterministic_shared_center_projection_only"
-        or result.get("claim_ceiling")
-        != "equirectangular_virtual_camera_rig"
+        or result.get("proof_effect") != "deterministic_shared_center_projection_only"
+        or result.get("claim_ceiling") != "equirectangular_virtual_camera_rig"
         or result.get("source_panorama_pixels_remain_authoritative") is not True
         or result.get("virtual_views_are_captured_evidence") is not False
         or result.get("virtual_views_are_independent_physical_cameras") is not False
@@ -2289,12 +2411,10 @@ def _run_pose_estimation(
     if (
         result.get("pose_estimation_request_digest") != expected_digest
         or result.get("source_capture_digest") != request.get("source_capture_digest")
-        or result.get("train_heldout_split_digest")
-        != request.get("train_heldout_split_digest")
+        or result.get("train_heldout_split_digest") != request.get("train_heldout_split_digest")
         or result.get("container_image_digest") != request.get("container_image_digest")
         or result.get("source_commit_sha") != request.get("source_commit_sha")
-        or result.get("camera_calibration_binding")
-        != request.get("camera_calibration_binding")
+        or result.get("camera_calibration_binding") != request.get("camera_calibration_binding")
     ):
         raise ValueError("pose_estimator_result_lineage_mismatch")
     result_digest = result["pose_estimation_result_digest"]
@@ -2351,27 +2471,63 @@ def _run_pose_refinement(
         result = build_pose_refinement_result(emitted)
     except ValueError as exc:
         raise ValueError("pose_refinement_result_contract_invalid") from exc
-    if any(
-        result.get(field) != request.get(field)
-        for field in (
-            "source_capture_digest",
-            "frozen_split_digest",
-            "camera_calibration_digest",
-            "initial_pose_manifest_digest",
-            "implementation_digest",
-            "container_image_digest",
+    if (
+        any(
+            result.get(field) != request.get(field)
+            for field in (
+                "source_capture_digest",
+                "frozen_split_digest",
+                "camera_calibration_digest",
+                "initial_pose_manifest_digest",
+                "implementation_digest",
+                "container_image_digest",
+            )
         )
-    ) or result.get("pose_refinement_execution_request_digest") != expected_digest:
+        or result.get("pose_refinement_execution_request_digest") != expected_digest
+    ):
         raise ValueError("pose_refinement_result_lineage_mismatch")
     metrics = result["drift_metrics"]
     thresholds = request["drift_thresholds"]
     within_thresholds = bool(
         metrics["maximum_translation_m"] <= thresholds["maximum_translation_m"]
-        and metrics["maximum_rotation_degrees"]
-        <= thresholds["maximum_rotation_degrees"]
+        and metrics["maximum_rotation_degrees"] <= thresholds["maximum_rotation_degrees"]
     )
     if result["status"] == "succeeded" and not within_thresholds:
         raise ValueError("pose_refinement_result_drift_threshold_exceeded")
+    manifest_path = None
+    manifest_reference = result.get("refined_pose_manifest_reference")
+    if result["status"] == "succeeded":
+        if not isinstance(manifest_reference, Mapping):
+            raise ValueError("pose_refinement_result_manifest_reference_missing")
+        manifest_path = _validated_emitted_artifact(
+            root=Path(root_value) / "generated" / "pose_refinement",
+            relative_path=manifest_reference.get("relative_path"),
+            expected_digest=manifest_reference.get("artifact_digest"),
+        )
+        try:
+            manifest = build_refined_camera_pose_manifest(
+                json.loads(manifest_path.read_text(encoding="utf-8"))
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("pose_refinement_result_manifest_contract_invalid") from exc
+        if (
+            manifest["refined_camera_pose_manifest_digest"]
+            != result["refined_pose_manifest_digest"]
+            or manifest["pose_refinement_execution_request_digest"]
+            != request["pose_refinement_execution_request_digest"]
+            or manifest["source_capture_digest"] != request["source_capture_digest"]
+            or manifest["frozen_split_digest"] != request["frozen_split_digest"]
+            or manifest["camera_calibration_digest"]
+            != request["camera_calibration_digest"]
+            or manifest["initial_pose_manifest_digest"]
+            != request["initial_pose_manifest_digest"]
+            or manifest["method_id"] != request["method_id"]
+            or manifest["implementation_digest"] != request["implementation_digest"]
+            or manifest["container_image_digest"] != request["container_image_digest"]
+            or manifest["source_commit_sha"] != request["source_commit_sha"]
+            or manifest["authority_used"] != request["authority_used"]
+        ):
+            raise ValueError("pose_refinement_result_manifest_lineage_mismatch")
     path = write_phase2_artifact(
         root_value,
         "generated/pose_refinement/pose_refinement_result.json",
@@ -2384,6 +2540,7 @@ def _run_pose_refinement(
         "failure_code": result.get("failure_code"),
         "pose_refinement_result_digest": result["pose_refinement_result_digest"],
         "drift_within_frozen_thresholds": within_thresholds,
+        "refined_pose_manifest_bound": manifest_path is not None,
         "raw_arkit_poses_modified": False,
         "heldout_labels_included": False,
         "candidate_self_graded": False,
@@ -2394,7 +2551,18 @@ def _run_pose_refinement(
             "artifact_path": str(path.relative_to(Path(root_value))),
             "artifact_digest": result["pose_refinement_result_digest"],
             "artifact_type": "pose_refinement_result.v1",
-        }
+        },
+        *(
+            [
+                {
+                    "artifact_path": str(manifest_path.relative_to(Path(root_value))),
+                    "artifact_digest": manifest_reference["artifact_digest"],
+                    "artifact_type": "refined_camera_pose_manifest.v1",
+                }
+            ]
+            if manifest_path is not None and isinstance(manifest_reference, Mapping)
+            else []
+        ),
     ]
 
 
@@ -2405,9 +2573,7 @@ def _train_gaussian_reconstruction(
     runtime = getattr(context, "gaussian_reconstruction_trainer", None)
     request_value = getattr(context, "reconstruction_training_request", None)
     if not isinstance(root_value, str) or not root_value:
-        raise ValueError(
-            "registered_tool_execution_scope_missing:train_gaussian_reconstruction"
-        )
+        raise ValueError("registered_tool_execution_scope_missing:train_gaussian_reconstruction")
     if not callable(runtime):
         raise ValueError("gaussian_reconstruction_trainer_not_injected")
     if not isinstance(request_value, Mapping):
@@ -2430,12 +2596,10 @@ def _train_gaussian_reconstruction(
     if (
         result.get("reconstruction_training_request_digest") != expected_digest
         or result.get("source_capture_digest") != request.get("source_capture_digest")
-        or result.get("train_heldout_split_digest")
-        != request.get("train_heldout_split_digest")
+        or result.get("train_heldout_split_digest") != request.get("train_heldout_split_digest")
         or result.get("container_image_digest") != request.get("container_image_digest")
         or result.get("source_commit_sha") != request.get("source_commit_sha")
-        or result.get("camera_calibration_binding")
-        != request.get("camera_calibration_binding")
+        or result.get("camera_calibration_binding") != request.get("camera_calibration_binding")
     ):
         raise ValueError("gaussian_reconstruction_trainer_result_lineage_mismatch")
     result_digest = result["reconstruction_training_result_digest"]
@@ -2466,45 +2630,74 @@ def _train_gaussian_reconstruction(
 
 _GEOMETRY_TOOL_CONFIG = {
     "evaluate_heldout_appearance": (
-        "heldout_appearance_evaluation_request", "heldout_appearance_evaluator",
+        "heldout_appearance_evaluation_request",
+        "heldout_appearance_evaluator",
         "heldout_appearance_evaluation_request_digest",
         build_visual_heldout_evaluation_report,
         "visual_heldout_evaluation_report_digest",
-        "visual_heldout_evaluation_report.v1", "appearance_reconstruction", "status",
+        "visual_heldout_evaluation_report.v1",
+        "appearance_reconstruction",
+        "status",
     ),
     "compile_metric_geometry": (
-        "metric_geometry_source", "metric_geometry_compiler", "source_artifact_digest",
-        build_metric_geometry_manifest, "metric_geometry_manifest_digest",
-        "metric_geometry_manifest.v1", "metric_reference_geometry", None,
+        "metric_geometry_source",
+        "metric_geometry_compiler",
+        "source_artifact_digest",
+        build_metric_geometry_manifest,
+        "metric_geometry_manifest_digest",
+        "metric_geometry_manifest.v1",
+        "metric_reference_geometry",
+        None,
     ),
     "compile_collision_candidate": (
-        "metric_geometry_manifest", "collision_candidate_compiler",
-        "metric_geometry_manifest_digest", build_collider_candidate_manifest,
-        "collider_candidate_manifest_digest", "mesh_collider_candidate_manifest.v1",
-        "collision_geometry_candidate", None,
+        "metric_geometry_manifest",
+        "collision_candidate_compiler",
+        "metric_geometry_manifest_digest",
+        build_collider_candidate_manifest,
+        "collider_candidate_manifest_digest",
+        "mesh_collider_candidate_manifest.v1",
+        "collision_geometry_candidate",
+        None,
     ),
     "qualify_collision_candidate": (
-        "collider_candidate_manifest", "collision_candidate_qualifier",
-        "collider_candidate_manifest_digest", build_collider_qualification_report,
-        "collider_qualification_digest", "collider_qualification_report.v1",
-        "bounded_navigation_simulation", "decision",
+        "collider_candidate_manifest",
+        "collision_candidate_qualifier",
+        "collider_candidate_manifest_digest",
+        build_collider_qualification_report,
+        "collider_qualification_digest",
+        "collider_qualification_report.v1",
+        "bounded_navigation_simulation",
+        "decision",
     ),
     "package_nurec_openusd": (
-        "nurec_packaging_request", "nurec_openusd_packager", "packaging_request_digest",
-        build_nurec_openusd_packaging_result, "packaging_result_digest",
-        "nurec_openusd_packaging_result.v1", "openusd_package", None,
+        "nurec_packaging_request",
+        "nurec_openusd_packager",
+        "packaging_request_digest",
+        build_nurec_openusd_packaging_result,
+        "packaging_result_digest",
+        "nurec_openusd_packaging_result.v1",
+        "openusd_package",
+        None,
     ),
     "verify_isaac_asset": (
-        "isaac_verification_request", "isaac_asset_verifier",
-        "isaac_verification_request_digest", build_isaac_asset_verification_result,
-        "isaac_verification_result_digest", "isaac_asset_verification_result.v1",
-        "isaac_load_render_compatibility", "status",
+        "isaac_verification_request",
+        "isaac_asset_verifier",
+        "isaac_verification_request_digest",
+        build_isaac_asset_verification_result,
+        "isaac_verification_result_digest",
+        "isaac_asset_verification_result.v1",
+        "isaac_load_render_compatibility",
+        "status",
     ),
     "import_external_reconstruction": (
-        "external_reconstruction_import_request", "external_reconstruction_importer",
-        "external_import_request_digest", build_external_reconstruction_import_receipt,
-        "external_import_receipt_digest", "external_reconstruction_import_receipt.v1",
-        "external_reconstruction_import", "status",
+        "external_reconstruction_import_request",
+        "external_reconstruction_importer",
+        "external_import_request_digest",
+        build_external_reconstruction_import_receipt,
+        "external_import_receipt_digest",
+        "external_reconstruction_import_receipt.v1",
+        "external_reconstruction_import",
+        "status",
     ),
 }
 
@@ -2520,7 +2713,16 @@ def _execute_geometry_contract_tool(
     root_value = getattr(context, "supervisor_output_dir", None)
     if not isinstance(root_value, str) or not root_value:
         raise ValueError(f"registered_tool_execution_scope_missing:{tool_id}")
-    source_attr, runtime_attr, digest_field, builder, result_digest_field, artifact_type, ceiling, decision_field = _GEOMETRY_TOOL_CONFIG[tool_id]
+    (
+        source_attr,
+        runtime_attr,
+        digest_field,
+        builder,
+        result_digest_field,
+        artifact_type,
+        ceiling,
+        decision_field,
+    ) = _GEOMETRY_TOOL_CONFIG[tool_id]
     source = getattr(context, source_attr, None)
     runtime = getattr(context, runtime_attr, None)
     builtin = _BUILTIN_GEOMETRY_RUNTIMES.get(tool_id)
@@ -2539,6 +2741,11 @@ def _execute_geometry_contract_tool(
     if tool_id == "package_nurec_openusd":
         try:
             source = build_nurec_openusd_packaging_request(source)
+        except ValueError as exc:
+            raise ValueError(f"registered_tool_request_contract_invalid:{tool_id}") from exc
+    if tool_id == "verify_isaac_asset":
+        try:
+            source = build_isaac_asset_verification_request(source)
         except ValueError as exc:
             raise ValueError(f"registered_tool_request_contract_invalid:{tool_id}") from exc
     if tool_id == "evaluate_heldout_appearance":
@@ -2640,9 +2847,7 @@ def _execute_geometry_contract_tool(
     ):
         raise ValueError(f"registered_tool_result_lineage_mismatch:{tool_id}")
     result_digest = result[result_digest_field]
-    path = write_phase2_artifact(
-        root_value, f"generated/{tool_id}/{artifact_type}.json", result
-    )
+    path = write_phase2_artifact(root_value, f"generated/{tool_id}/{artifact_type}.json", result)
     decision = result.get(decision_field) if decision_field else None
     return {
         "contract_present": True,
@@ -2651,11 +2856,13 @@ def _execute_geometry_contract_tool(
         "claim_ceiling": ceiling,
         "decision": decision,
         "proof_state_changed": False,
-    }, [{
-        "artifact_path": str(path.relative_to(Path(root_value))),
-        "artifact_digest": result_digest,
-        "artifact_type": artifact_type,
-    }]
+    }, [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": result_digest,
+            "artifact_type": artifact_type,
+        }
+    ]
 
 
 def _diagnose_reconstruction_failure(
@@ -2664,9 +2871,7 @@ def _diagnose_reconstruction_failure(
     root_value = getattr(context, "supervisor_output_dir", None)
     source_value = getattr(context, "reconstruction_failure_diagnosis_request", None)
     if not isinstance(root_value, str) or not root_value:
-        raise ValueError(
-            "registered_tool_execution_scope_missing:diagnose_reconstruction_failure"
-        )
+        raise ValueError("registered_tool_execution_scope_missing:diagnose_reconstruction_failure")
     if not isinstance(source_value, Mapping):
         raise ValueError("reconstruction_failure_diagnosis_request_not_injected")
     try:
@@ -2675,9 +2880,7 @@ def _diagnose_reconstruction_failure(
         raise ValueError("reconstruction_failure_diagnosis_request_contract_invalid") from exc
     expected_digest = arguments.get("reconstruction_failure_diagnosis_request_digest")
     if expected_digest != request["reconstruction_failure_diagnosis_request_digest"]:
-        raise ValueError(
-            "registered_tool_source_digest_mismatch:diagnose_reconstruction_failure"
-        )
+        raise ValueError("registered_tool_source_digest_mismatch:diagnose_reconstruction_failure")
     diagnosis = diagnose_reconstruction_failure(request)
     path = write_phase2_artifact(
         root_value,
@@ -2690,12 +2893,8 @@ def _diagnose_reconstruction_failure(
         "diagnosis_digest": diagnosis["reconstruction_failure_diagnosis_digest"],
         "diagnosed_failure_code": diagnosis["diagnosed_failure_code"],
         "identical_attempt_count": diagnosis["identical_attempt_count"],
-        "unchanged_deterministic_retry_allowed": diagnosis[
-            "unchanged_deterministic_retry_allowed"
-        ],
-        "terminal_for_current_configuration": diagnosis[
-            "terminal_for_current_configuration"
-        ],
+        "unchanged_deterministic_retry_allowed": diagnosis["unchanged_deterministic_retry_allowed"],
+        "terminal_for_current_configuration": diagnosis["terminal_for_current_configuration"],
         "legal_next_actions": diagnosis["legal_next_actions"],
         "failed_evidence_preserved": True,
         "proof_state_changed": False,
@@ -2714,9 +2913,7 @@ def _generate_reconstruction_report(
     root_value = getattr(context, "supervisor_output_dir", None)
     source_value = getattr(context, "reconstruction_terminal_report_request", None)
     if not isinstance(root_value, str) or not root_value:
-        raise ValueError(
-            "registered_tool_execution_scope_missing:generate_reconstruction_report"
-        )
+        raise ValueError("registered_tool_execution_scope_missing:generate_reconstruction_report")
     if not isinstance(source_value, Mapping):
         raise ValueError("reconstruction_terminal_report_request_not_injected")
     try:
@@ -2725,9 +2922,7 @@ def _generate_reconstruction_report(
         raise ValueError("reconstruction_terminal_report_request_contract_invalid") from exc
     expected_digest = arguments.get("reconstruction_terminal_report_request_digest")
     if expected_digest != request["reconstruction_terminal_report_request_digest"]:
-        raise ValueError(
-            "registered_tool_source_digest_mismatch:generate_reconstruction_report"
-        )
+        raise ValueError("registered_tool_source_digest_mismatch:generate_reconstruction_report")
     report = generate_reconstruction_terminal_report(request)
     path = write_phase2_artifact(
         root_value,
@@ -2769,10 +2964,17 @@ def _execute_reconstruction_validation(
             build_metric_scale_validation_request,
             validate_metric_scale,
             "metric_scale_validation_result_digest",
-            "metric_scale_validation_result.v1",
+            "metric_scale_validation_result.v2",
         ),
     }[tool_id]
-    source_attr, request_digest_field, request_builder, validator, result_digest_field, artifact_type = config
+    (
+        source_attr,
+        request_digest_field,
+        request_builder,
+        validator,
+        result_digest_field,
+        artifact_type,
+    ) = config
     root_value = getattr(context, "supervisor_output_dir", None)
     source_value = getattr(context, source_attr, None)
     if not isinstance(root_value, str) or not root_value:
@@ -2786,9 +2988,7 @@ def _execute_reconstruction_validation(
     if arguments.get(request_digest_field) != request[request_digest_field]:
         raise ValueError(f"registered_tool_source_digest_mismatch:{tool_id}")
     result = validator(request)
-    path = write_phase2_artifact(
-        root_value, f"generated/{tool_id}/{artifact_type}.json", result
-    )
+    path = write_phase2_artifact(root_value, f"generated/{tool_id}/{artifact_type}.json", result)
     typed = {
         "contract_present": True,
         "digest_matches": True,
@@ -2826,9 +3026,7 @@ def _run_generated_repair_candidate(
     root_value = getattr(context, "supervisor_output_dir", None)
     source_value = getattr(context, "generated_repair_candidate_request", None)
     if not isinstance(root_value, str) or not root_value:
-        raise ValueError(
-            "registered_tool_execution_scope_missing:run_generated_repair_candidate"
-        )
+        raise ValueError("registered_tool_execution_scope_missing:run_generated_repair_candidate")
     if not isinstance(source_value, Mapping):
         raise ValueError("generated_repair_candidate_request_not_injected")
     try:
@@ -2837,9 +3035,7 @@ def _run_generated_repair_candidate(
         raise ValueError("generated_repair_candidate_request_contract_invalid") from exc
     expected = arguments.get("generated_repair_candidate_request_digest")
     if expected != request["generated_repair_candidate_request_digest"]:
-        raise ValueError(
-            "registered_tool_source_digest_mismatch:run_generated_repair_candidate"
-        )
+        raise ValueError("registered_tool_source_digest_mismatch:run_generated_repair_candidate")
     result = run_generated_repair_candidate(request)
     path = write_phase2_artifact(
         root_value,
@@ -2929,6 +3125,12 @@ def _bound_artifact(
             "digest_matches": bool(actual and expected == actual),
             "capture_authority_profile": (route or {}).get("capture_authority_profile"),
             "route_status": str((route or {}).get("status") or "unavailable"),
+            "capture_profile_validation_status": str(
+                (route or {}).get("capture_profile_validation_status") or "unavailable"
+            ),
+            "capture_profile_validation_digest": (route or {}).get(
+                "capture_profile_validation_digest"
+            ),
             "artifact_count": len((value or {}).get("artifacts", []))
             if isinstance(value, Mapping)
             else 0,
@@ -2983,19 +3185,13 @@ def _bound_artifact(
     elif tool_id == "compile_arkit_metric_scaffold":
         return _compile_arkit_metric_scaffold(context=context, arguments=arguments)
     elif tool_id == "compile_arkit_observed_surface":
-        return _compile_arkit_observed_surface(
-            context=context, arguments=arguments
-        )
+        return _compile_arkit_observed_surface(context=context, arguments=arguments)
     elif tool_id == "export_arkit_reconstruction_dataset":
-        return _export_arkit_reconstruction_dataset(
-            context=context, arguments=arguments
-        )
+        return _export_arkit_reconstruction_dataset(context=context, arguments=arguments)
     elif tool_id == "normalize_native_360_capture":
         return _normalize_native_360_capture(context=context, arguments=arguments)
     elif tool_id == "compile_equirectangular_virtual_rig":
-        return _compile_equirectangular_virtual_rig(
-            context=context, arguments=arguments
-        )
+        return _compile_equirectangular_virtual_rig(context=context, arguments=arguments)
     elif tool_id == "run_pose_estimation":
         return _run_pose_estimation(context=context, arguments=arguments)
     elif tool_id == "run_pose_refinement":
@@ -3007,21 +3203,15 @@ def _bound_artifact(
             context=context, tool_id=tool_id, arguments=arguments
         )
     elif tool_id == "diagnose_reconstruction_failure":
-        return _diagnose_reconstruction_failure(
-            context=context, arguments=arguments
-        )
+        return _diagnose_reconstruction_failure(context=context, arguments=arguments)
     elif tool_id == "generate_reconstruction_report":
-        return _generate_reconstruction_report(
-            context=context, arguments=arguments
-        )
+        return _generate_reconstruction_report(context=context, arguments=arguments)
     elif tool_id in {"validate_camera_rig", "validate_metric_scale"}:
         return _execute_reconstruction_validation(
             context=context, tool_id=tool_id, arguments=arguments
         )
     elif tool_id == "run_generated_repair_candidate":
-        return _run_generated_repair_candidate(
-            context=context, arguments=arguments
-        )
+        return _run_generated_repair_candidate(context=context, arguments=arguments)
     elif tool_id == "compile_deterministic_evidence_plan":
         value = context.evidence_plan
         expected = arguments.get("plan_digest")
@@ -3138,9 +3328,7 @@ def non_spend_tool_bindings(
             continue
         if tool_id == "train_gaussian_reconstruction" and (
             not callable(getattr(context, "gaussian_reconstruction_trainer", None))
-            or not isinstance(
-                getattr(context, "reconstruction_training_request", None), Mapping
-            )
+            or not isinstance(getattr(context, "reconstruction_training_request", None), Mapping)
         ):
             continue
         if tool_id in _GEOMETRY_TOOL_CONFIG:
@@ -3152,7 +3340,10 @@ def non_spend_tool_bindings(
                 getattr(context, "collider_qualification_request", None), Mapping
             ):
                 runtime_available = True
-            if not isinstance(getattr(context, source_attr, None), Mapping) or not runtime_available:
+            if (
+                not isinstance(getattr(context, source_attr, None), Mapping)
+                or not runtime_available
+            ):
                 continue
         if tool_id == "diagnose_reconstruction_failure" and not isinstance(
             getattr(context, "reconstruction_failure_diagnosis_request", None), Mapping

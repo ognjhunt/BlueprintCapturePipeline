@@ -1,4 +1,4 @@
-# Scaniverse Asset Import Lane
+# Scaniverse and Polycam External Asset Import Lane
 
 Status: local, proof-bounded support-asset lanes. Remote provider execution is
 disabled.
@@ -23,7 +23,11 @@ importer; the agent receives no path, shell, network, database, or provider
 handle.
 
 The strict request requires exact source-capture identity and digest, immutable
-asset paths and hashes, and an inline Scaniverse provenance/rights declaration.
+asset paths and hashes, and an inline provider-matched provenance/rights
+declaration. Scaniverse keeps its provider-specific
+`niantic_scaniverse_provenance_rights_receipt.v1`; Polycam uses the neutral
+`external_reconstruction_provenance_rights_receipt.v1`. A declaration for one
+provider cannot be replayed against the other.
 That declaration records product tier, terms version, provider scan or job
 identity, ownership or license, commercial-use scope, consent/privacy status,
 confidentiality, retention, deletion, model-training, competitive-use, resale,
@@ -31,10 +35,13 @@ and benchmarking terms. It attests that provider processing was performed by
 the user and that Blueprint performed no remote upload.
 
 Accepted files are `.usdz`, `.usd`, `.usda`, `.usdc`, `.ply`, `.spz`, and
-`.glb`. The importer confines paths to the declared source root, rejects
-symlinks, traversal, digest mismatch, excessive size/count, and unsafe USDZ
-archives, then copies into a content-addressed local directory. Untrusted source
-filenames are sanitized and never treated as instructions. It emits separate
+`.glb`. These include the self-contained `GLB`, `USDZ`, and `PLY` exports useful
+from Polycam. Multi-file `GLTF`/`OBJ` exports remain outside this strict lane
+until dependency-set binding and reference rewriting are implemented; exporting
+`GLB` avoids that ambiguity. The importer confines paths to the declared source
+root, rejects symlinks, traversal, digest mismatch, excessive size/count, and
+unsafe USDZ archives, then copies into a content-addressed local directory.
+Untrusted source filenames are sanitized and never treated as instructions. It emits separate
 `niantic_scaniverse_provenance_rights_receipt.v1` and
 `external_reconstruction_import_receipt.v1` artifacts, and re-hashes assets on
 replay.
@@ -44,6 +51,36 @@ admitted as derived support. Raw observation, metric scale, collision validity,
 Isaac compatibility, simulator task evidence, physical success, deployment
 readiness, and remote-upload authority all remain false until their independent
 gates pass.
+
+## Polycam route
+
+Polycam can feed this pipeline in two distinct ways:
+
+- A user-managed `GLB`, `USDZ`, or `PLY` export can enter the strict local
+  external-import lane now. It is a derived appearance/mesh/point-cloud
+  candidate and must still pass Blueprint scale, geometry, collider, and Isaac
+  qualification.
+- A LiDAR capture made after enabling Polycam Developer Mode can expose a raw
+  data ZIP with cameras, confidence images, depth images, and mesh information.
+  That is materially more useful for reconstruction research, but it is still a
+  Polycam raw export, not Blueprint Raw Contract 3.2: it lacks Blueprint's
+  encoder-attempt and retained-frame evidence and must enter through a separate
+  source-profile adapter before any calibrated or metric claim.
+
+Polycam also documents an Enterprise Content Management API with capture
+listing, source `session.zip`, artifact download, export conversion jobs, and
+webhooks. The API is a viable future provider adapter, not a shortcut around
+governance. The current repository performs no Polycam network call; remote use
+still requires exact terms review, workspace/API credentials, confidential
+upload authority where applicable, immutable input/job binding, retention and
+deletion handling, and the canonical paid-resource/provider seam.
+
+Official current references (reviewed 2026-08-01):
+
+- https://poly.cam/docs/api
+- https://learn.poly.cam/hc/en-us/articles/27756102599572-What-File-Types-Can-Polycam-Export
+- https://learn.poly.cam/hc/en-us/articles/34295907278996-How-to-Access-Developer-Mode
+- https://learn.poly.cam/hc/en-us/articles/38276871185044-How-to-Extract-Raw-Data-and-What-Is-Included
 
 ## Contract
 

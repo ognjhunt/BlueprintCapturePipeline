@@ -5,9 +5,12 @@
   "oneOf": [
     {
       "type": "object",
-      "required": ["schema_version", "operation", "capture_profile", "source_commit_sha", "worker_image_digest", "worker_stack_manifest_digest", "reconstruction_dataset_digest", "frozen_split_digest", "calibration_digest", "deterministic_configuration_digest", "candidate_may_read_hidden_heldout", "trainer_may_grade_heldout", "max_spend_usd", "hard_ttl_seconds", "retry_cap", "authority_id", "proof_effect", "request_digest"],
+      "required": ["schema_version", "operation", "capture_profile", "source_commit_sha", "worker_image_digest", "worker_stack_manifest_digest", "reconstruction_dataset_digest", "frozen_split_digest", "calibration_digest", "deterministic_configuration_digest", "operation_request_digest", "operation_input_bundle_digest", "expected_runtime_result_schema", "candidate_may_read_hidden_heldout", "trainer_may_grade_heldout", "max_spend_usd", "hard_ttl_seconds", "retry_cap", "authority_id", "proof_effect", "request_digest"],
       "properties": {
         "schema_version": {"const": "reconstruction_gpu_canary_request.v1"},
+        "operation_request_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+        "operation_input_bundle_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+        "expected_runtime_result_schema": {"enum": ["reconstruction_vast_worker_smoke_result.v1", "pose_estimation_result.v1", "reconstruction_training_result.v1", "isaac_splat_nurec_render_result.v3"]},
         "candidate_may_read_hidden_heldout": {"const": false},
         "trainer_may_grade_heldout": {"const": false},
         "proof_effect": {"const": "none"},

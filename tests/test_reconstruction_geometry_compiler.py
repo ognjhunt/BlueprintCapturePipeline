@@ -26,12 +26,14 @@ from blueprint_pipeline.reconstruction_geometry_contracts import (
 from blueprint_pipeline.task_evaluation_supervisor.capabilities import SupervisorContext
 from blueprint_pipeline.task_evaluation_supervisor.contracts import AutonomyMode
 from blueprint_pipeline.task_evaluation_supervisor.supervisor import default_authority_envelope
-from blueprint_pipeline.task_evaluation_supervisor.tools import ToolRegistry, non_spend_tool_bindings
+from blueprint_pipeline.task_evaluation_supervisor.tools import (
+    ToolRegistry,
+    non_spend_tool_bindings,
+)
 
 
 RECORDED_ARKITSCENES_SURFACE = (
-    Path(__file__).parents[1]
-    / "docs/evidence/arkitscenes_observed_surface_40958756_2ad2b7df.json"
+    Path(__file__).parents[1] / "docs/evidence/arkitscenes_observed_surface_40958756_2ad2b7df.json"
 )
 
 
@@ -123,7 +125,16 @@ def _write_source(root: Path) -> tuple[Path, str]:
 
 def _request(root: Path, **updates: object) -> dict:
     _, source_digest = _write_source(root)
-    scale = {"status": "validated", "scale_error_fraction": 0.01}
+    scale = {
+        "schema_version": "metric_scale_validation_result.v2",
+        "status": "validated",
+        "scale_error_fraction": 0.01,
+        "proof_effect": "metric_scale_validated",
+        "claim_ceiling": "metric_scale",
+        "learned_or_monocular_depth_established_scale": False,
+        "agent_changed_anchor_or_threshold": False,
+        "reconstruction_anchor_measurement_digest": "sha256:" + "9" * 64,
+    }
     scale["metric_scale_validation_result_digest"] = canonical_digest(
         scale, digest_field="metric_scale_validation_result_digest"
     )
@@ -132,9 +143,7 @@ def _request(root: Path, **updates: object) -> dict:
         "stable_run_identity": "geometry-run-1",
         "source_capture_identity": "capture-1",
         "source_capture_digest": "sha256:" + "1" * 64,
-        "original_file_references": [
-            {"artifact_id": "observed_surface", "digest": source_digest}
-        ],
+        "original_file_references": [{"artifact_id": "observed_surface", "digest": source_digest}],
         "source_commit_sha": "a" * 40,
         "deterministic_configuration_digest": "sha256:" + "2" * 64,
         "train_heldout_split_digest": "sha256:" + "3" * 64,
@@ -158,9 +167,7 @@ def _request(root: Path, **updates: object) -> dict:
         "blockers": [],
     }
     value.update(updates)
-    value["source_artifact_digest"] = canonical_digest(
-        value, digest_field="source_artifact_digest"
-    )
+    value["source_artifact_digest"] = canonical_digest(value, digest_field="source_artifact_digest")
     return value
 
 
@@ -184,9 +191,7 @@ def _qualification_request(
     }
     measurement = {
         "schema_version": QUALIFICATION_MEASUREMENT_SCHEMA,
-        "collider_candidate_manifest_digest": candidate[
-            "collider_candidate_manifest_digest"
-        ],
+        "collider_candidate_manifest_digest": candidate["collider_candidate_manifest_digest"],
         "collider_asset_digest": candidate["collider_asset_digest"],
         "evaluator": evaluator,
         "measurements": measurements,
@@ -228,18 +233,14 @@ def _qualification_request(
         "coordinate_frame_declaration": candidate["coordinate_frame_declaration"],
         "authority_used": {"mode": "execute_non_spend"},
         "timestamp": "2026-07-30T22:30:00Z",
-        "collider_candidate_manifest_digest": candidate[
-            "collider_candidate_manifest_digest"
-        ],
+        "collider_candidate_manifest_digest": candidate["collider_candidate_manifest_digest"],
         "metric_scale_status": candidate["metric_scale_status"],
         "measurement_artifact": {
             "relative_path": "inputs/collider_measurements.json",
             "digest": measurement_digest,
         },
         "thresholds": thresholds,
-        "qa_thresholds_digest": canonical_digest(
-            thresholds, digest_field="qa_thresholds_digest"
-        ),
+        "qa_thresholds_digest": canonical_digest(thresholds, digest_field="qa_thresholds_digest"),
         "independent_evaluator": evaluator,
         "task_region_ids": ["floor"],
         "warnings": [],
@@ -272,9 +273,7 @@ def test_compiler_filters_low_confidence_observed_surface_without_fill(tmp_path:
     confidence = manifest["confidence_filter"]
     assert confidence["rejected_vertex_count"] == 1
     assert confidence["rejected_face_count"] == 1
-    assert confidence["rejected_faces"] == [
-        {"face_id": "f2", "reason": "low_confidence_support"}
-    ]
+    assert confidence["rejected_faces"] == [{"face_id": "f2", "reason": "low_confidence_support"}]
     emitted = tmp_path / manifest["geometry_asset_reference"]
     assert emitted.is_file()
     assert _digest_bytes(emitted.read_bytes()) == manifest["geometry_asset_digest"]
@@ -403,9 +402,7 @@ def test_collider_qualification_request_and_measurement_match_versioned_schemas(
     request = _qualification_request(tmp_path, candidate)
     schema_root = Path(__file__).parents[1] / "docs" / "schemas"
     request_schema = json.loads(
-        (schema_root / "collider_qualification_request.v1.schema.json").read_text(
-            encoding="utf-8"
-        )
+        (schema_root / "collider_qualification_request.v1.schema.json").read_text(encoding="utf-8")
     )
     measurement_schema = json.loads(
         (schema_root / "collider_qualification_measurements.v1.schema.json").read_text(
@@ -413,9 +410,7 @@ def test_collider_qualification_request_and_measurement_match_versioned_schemas(
         )
     )
     measurement = json.loads(
-        (tmp_path / request["measurement_artifact"]["relative_path"]).read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / request["measurement_artifact"]["relative_path"]).read_text(encoding="utf-8")
     )
     Draft202012Validator(request_schema).validate(request)
     Draft202012Validator(measurement_schema).validate(measurement)
@@ -476,11 +471,26 @@ def test_independent_collider_qualification_rejects_bad_clearance_and_self_gradi
 @pytest.mark.parametrize(
     "mutation, expected",
     [
-        (lambda request: request["source_asset"].update(relative_path="../surface.json"), "source_asset_relative_path_unsafe"),
-        (lambda request: request["source_asset"].update(digest="sha256:" + "f" * 64), "source_asset_digest_mismatch"),
-        (lambda request: request.update(original_file_references=[]), "source_asset_provenance_binding_missing"),
-        (lambda request: request.update(generated_fill_used=True), "generated_or_unseen_fill_forbidden"),
-        (lambda request: request.update(appearance_asset_used_as_geometry_truth=True), "appearance_cannot_be_geometry_truth"),
+        (
+            lambda request: request["source_asset"].update(relative_path="../surface.json"),
+            "source_asset_relative_path_unsafe",
+        ),
+        (
+            lambda request: request["source_asset"].update(digest="sha256:" + "f" * 64),
+            "source_asset_digest_mismatch",
+        ),
+        (
+            lambda request: request.update(original_file_references=[]),
+            "source_asset_provenance_binding_missing",
+        ),
+        (
+            lambda request: request.update(generated_fill_used=True),
+            "generated_or_unseen_fill_forbidden",
+        ),
+        (
+            lambda request: request.update(appearance_asset_used_as_geometry_truth=True),
+            "appearance_cannot_be_geometry_truth",
+        ),
     ],
 )
 def test_compiler_fails_closed_on_unsafe_or_promoted_sources(
@@ -519,7 +529,9 @@ def test_compiler_rejects_symlink_escape_and_unverified_validated_scale(tmp_path
     source.unlink()
     outside.rename(source)
     request = _request(tmp_path, metric_scale_validation={"status": "validated"})
-    with pytest.raises(ReconstructionGeometryCompilerError, match="metric_scale_validation_invalid"):
+    with pytest.raises(
+        ReconstructionGeometryCompilerError, match="metric_scale_validation_invalid"
+    ):
         compile_metric_geometry(
             source_artifact=request,
             output_root=tmp_path / "generated" / "metric",
@@ -541,7 +553,9 @@ def test_generated_source_face_is_rejected_instead_of_promoted(tmp_path: Path) -
     request["source_artifact_digest"] = canonical_digest(
         request, digest_field="source_artifact_digest"
     )
-    with pytest.raises(ReconstructionGeometryCompilerError, match="observed_surface_face_invalid:f0"):
+    with pytest.raises(
+        ReconstructionGeometryCompilerError, match="observed_surface_face_invalid:f0"
+    ):
         compile_metric_geometry(
             source_artifact=request,
             output_root=tmp_path / "generated" / "metric",
@@ -578,10 +592,7 @@ def test_registered_tools_use_repository_owned_geometry_runtimes(tmp_path: Path)
     )
     assert observation["status"] == "completed"
     manifest_path = (
-        tmp_path
-        / "generated"
-        / "compile_metric_geometry"
-        / "metric_geometry_manifest.v1.json"
+        tmp_path / "generated" / "compile_metric_geometry" / "metric_geometry_manifest.v1.json"
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
@@ -644,11 +655,7 @@ def test_registered_tools_use_repository_owned_geometry_runtimes(tmp_path: Path)
         )
     }
     qualifier_observation = qualifier_bindings["qualify_collision_candidate"].invoke(
-        {
-            "collider_candidate_manifest_digest": candidate[
-                "collider_candidate_manifest_digest"
-            ]
-        }
+        {"collider_candidate_manifest_digest": candidate["collider_candidate_manifest_digest"]}
     )
     assert qualifier_observation["status"] == "completed"
     report_path = (
@@ -666,8 +673,7 @@ def test_compiler_rejects_duplicate_json_keys_and_output_escape(tmp_path: Path) 
     request = _request(tmp_path)
     source = tmp_path / "inputs" / "surface.json"
     source.write_text(
-        '{"schema_version":"observed_surface_mesh.v1",'
-        '"schema_version":"observed_surface_mesh.v1"}',
+        '{"schema_version":"observed_surface_mesh.v1","schema_version":"observed_surface_mesh.v1"}',
         encoding="utf-8",
     )
     digest = _digest_bytes(source.read_bytes())
@@ -810,9 +816,7 @@ def test_measured_geometry_to_qualified_collider_to_openusd_package(tmp_path: Pa
         "authority_used": {"mode": "execute_non_spend"},
         "warnings": [],
         "blockers": [],
-        "parent_artifact_or_event": {
-            "digest": qualification["collider_qualification_digest"]
-        },
+        "parent_artifact_or_event": {"digest": qualification["collider_qualification_digest"]},
         "timestamp": "2026-07-30T23:00:00Z",
         "appearance_asset": {
             "relative_path": "inputs/appearance.usda",
@@ -828,9 +832,7 @@ def test_measured_geometry_to_qualified_collider_to_openusd_package(tmp_path: Pa
             "digest": candidate["collider_asset_digest"],
             "source_prim_path": candidate["collider_source_prim_path"],
         },
-        "collider_candidate_manifest_digest": candidate[
-            "collider_candidate_manifest_digest"
-        ],
+        "collider_candidate_manifest_digest": candidate["collider_candidate_manifest_digest"],
         "collider_qualification_digest": qualification["collider_qualification_digest"],
         "collider_qualification_decision": qualification["decision"],
         "stage_meters_per_unit": 1.0,

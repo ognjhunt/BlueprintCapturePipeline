@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/capture_profile_validation.v1.schema.json",
+  "title": "Blueprint Capture Profile Validation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "stable_validation_identity", "source_capture_digest",
+    "declared_capture_authority_profile", "compatible_capture_authority_profile",
+    "validation_status", "producing_method", "implementation_version",
+    "source_commit_sha", "deterministic_configuration_digest", "input_digests",
+    "probe_receipt_digests", "probe_source_file_digests",
+    "observed_processing_lanes", "native_normalization_digest", "blockers",
+    "warnings", "agent_selected_capture_profile", "agent_may_change_capture_profile",
+    "proof_effect", "claim_ceiling", "parent_artifact_or_event", "timestamp",
+    "legal_next_actions", "capture_profile_routing_binding_digest",
+    "capture_profile_validation_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "capture_profile_validation.v1"},
+    "stable_validation_identity": {"type": "string", "minLength": 1},
+    "source_capture_digest": {"$ref": "#/$defs/sha256"},
+    "declared_capture_authority_profile": {"$ref": "#/$defs/profile"},
+    "compatible_capture_authority_profile": {
+      "oneOf": [{"$ref": "#/$defs/profile"}, {"type": "null"}]
+    },
+    "validation_status": {"enum": ["validated", "blocked"]},
+    "producing_method": {"const": "deterministic_capture_profile_validator.v1"},
+    "implementation_version": {"$ref": "#/$defs/sha256"},
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "deterministic_configuration_digest": {"$ref": "#/$defs/sha256"},
+    "input_digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "probe_receipt_set_digest", "probe_source_file_set_digest",
+        "native_normalization_digest"
+      ],
+      "properties": {
+        "probe_receipt_set_digest": {"$ref": "#/$defs/sha256"},
+        "probe_source_file_set_digest": {"$ref": "#/$defs/sha256"},
+        "native_normalization_digest": {
+          "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+        }
+      }
+    },
+    "probe_receipt_digests": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/sha256"}
+    },
+    "probe_source_file_digests": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/sha256"}
+    },
+    "observed_processing_lanes": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "enum": [
+          "camera_360_equirectangular",
+          "camera_360_native_candidate_requires_calibration",
+          "unsupported_or_ambiguous_360_topology"
+        ]
+      }
+    },
+    "native_normalization_digest": {
+      "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    },
+    "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "warnings": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "agent_selected_capture_profile": {"const": false},
+    "agent_may_change_capture_profile": {"const": false},
+    "proof_effect": {"enum": ["capture_profile_validation_only", "none"]},
+    "claim_ceiling": {"const": "capture_profile_compatibility"},
+    "parent_artifact_or_event": {"type": "object"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "legal_next_actions": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "capture_profile_routing_binding_digest": {"$ref": "#/$defs/sha256"},
+    "capture_profile_validation_digest": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "profile": {
+      "type": "string",
+      "enum": ["camera_360_equirectangular", "camera_360_native"]
+    }
+  }
+}

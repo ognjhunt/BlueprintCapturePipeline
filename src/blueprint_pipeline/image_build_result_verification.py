@@ -188,7 +188,12 @@ def validate_remote_reconstruction_worker_result(
     supplied_digest = payload.get("build_receipt_digest")
     if supplied_digest != canonical_digest(payload, digest_field="build_receipt_digest"):
         blockers.append("reconstruction_remote_build_receipt_digest_mismatch")
-    if payload.get("schema_version") != "reconstruction_worker_build_receipt.v1":
+    expected_receipt_schema = (
+        "reconstruction_worker_build_receipt.v2"
+        if packet.get("schema_version") == "reconstruction_worker_remote_build_packet.v2"
+        else "reconstruction_worker_build_receipt.v1"
+    )
+    if payload.get("schema_version") != expected_receipt_schema:
         blockers.append("reconstruction_remote_build_result_schema_invalid")
     if payload.get("status") != "built" or payload.get("blockers") not in ([], ()):
         blockers.append("reconstruction_remote_build_not_completed")
@@ -212,10 +217,18 @@ def validate_remote_reconstruction_worker_result(
         "worker_stack_manifest_digest"
     ):
         blockers.append("reconstruction_remote_build_stack_manifest_mismatch")
+    if payload.get("license_inventory_digest") != packet.get(
+        "license_inventory_digest"
+    ):
+        blockers.append("reconstruction_remote_build_license_inventory_mismatch")
     if payload.get("license_review_receipt_digest") != packet.get(
         "license_review_receipt_digest"
     ):
         blockers.append("reconstruction_remote_build_license_receipt_mismatch")
+    if payload.get("paid_execution_envelope_digest") != packet.get(
+        "paid_execution_envelope_digest"
+    ):
+        blockers.append("reconstruction_remote_build_paid_envelope_mismatch")
     if payload.get("build_healthcheck_embedded") is not True:
         blockers.append("reconstruction_remote_build_healthcheck_missing")
     if payload.get("runtime_gpu_healthcheck_completed") is not False:

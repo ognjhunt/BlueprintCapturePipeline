@@ -6,13 +6,21 @@ import json
 import math
 from typing import Any, Mapping, Sequence
 
+from .arkit_raw_contract_validation import validate_arkit_raw_contract_validation
+from .capture_profile_validation import validate_capture_profile_validation
 from .decision_evidence_contracts import canonical_digest
+from .reconstruction_geometry_contracts import (
+    ReconstructionGeometryContractError,
+    build_isaac_asset_verification_result,
+)
 
 
 RECONSTRUCTION_REPORT_REQUEST_SCHEMA_VERSION = "reconstruction_terminal_report_request.v1"
 RECONSTRUCTION_TERMINAL_REPORT_SCHEMA_VERSION = "reconstruction_terminal_report.v1"
 
 _DECISIONS = {"usable", "partially_usable", "rejected", "abstention"}
+_STRICT_360_PROFILES = {"camera_360_native", "camera_360_equirectangular"}
+_STRICT_ARKIT_PROFILE = "iphone_arkit_lidar"
 _CLAIM_CEILING_KEYS = (
     "decoded_observation_availability",
     "calibrated_camera_trajectory",
@@ -46,6 +54,182 @@ def _is_digest(value: Any) -> bool:
     return len(text) == 71 and text.startswith("sha256:") and all(
         character in "0123456789abcdef" for character in text[7:]
     )
+
+
+def _validate_capture_evidence_bindings(
+    request: Mapping[str, Any], errors: list[str]
+) -> None:
+    """Bind profile/raw-contract receipts without allowing narrative substitution."""
+
+    profile = request.get("validated_capture_profile")
+    input_digests = request.get("input_digests")
+    output_digests = request.get("recorded_output_digests")
+    ceilings = request.get("evidence_ceilings")
+    blockers = request.get("blockers")
+
+    profile_evidence = request.get("capture_profile_validation")
+    if profile in _STRICT_360_PROFILES:
+        if not isinstance(profile_evidence, Mapping):
+            errors.append("reconstruction_report_request_capture_profile_validation_missing")
+        else:
+            try:
+                validated_profile = validate_capture_profile_validation(profile_evidence)
+            except ValueError:
+                errors.append("reconstruction_report_request_capture_profile_validation_invalid")
+            else:
+                digest = validated_profile["capture_profile_validation_digest"]
+                if validated_profile.get("source_capture_digest") != request.get(
+                    "source_capture_digest"
+                ):
+                    errors.append(
+                        "reconstruction_report_request_capture_profile_source_mismatch"
+                    )
+                if validated_profile.get("declared_capture_authority_profile") != profile:
+                    errors.append(
+                        "reconstruction_report_request_declared_capture_profile_mismatch"
+                    )
+                if digest not in (input_digests or []) or digest not in (
+                    output_digests or []
+                ):
+                    errors.append(
+                        "reconstruction_report_request_capture_profile_digest_unbound"
+                    )
+                if validated_profile.get("validation_status") == "validated":
+                    if (
+                        validated_profile.get("compatible_capture_authority_profile")
+                        != profile
+                    ):
+                        errors.append(
+                            "reconstruction_report_request_compatible_capture_profile_mismatch"
+                        )
+                else:
+                    if request.get("decision") not in {"rejected", "abstention"}:
+                        errors.append(
+                            "reconstruction_report_request_blocked_profile_without_abstention"
+                        )
+                    if not isinstance(blockers, list) or any(
+                        blocker not in blockers
+                        for blocker in validated_profile.get("blockers", [])
+                    ):
+                        errors.append(
+                            "reconstruction_report_request_profile_blockers_suppressed"
+                        )
+                    if isinstance(ceilings, Mapping) and any(
+                        ceilings.get(key) is True
+                        for key in _CLAIM_CEILING_KEYS
+                        if key != "decoded_observation_availability"
+                    ):
+                        errors.append(
+                            "reconstruction_report_request_blocked_profile_claim_upgrade"
+                        )
+    elif profile_evidence is not None:
+        errors.append("reconstruction_report_request_capture_profile_validation_unexpected")
+
+    raw_evidence = request.get("arkit_raw_contract_validation")
+    if profile == _STRICT_ARKIT_PROFILE:
+        if not isinstance(raw_evidence, Mapping):
+            errors.append("reconstruction_report_request_arkit_raw_contract_missing")
+        else:
+            try:
+                validated_raw = validate_arkit_raw_contract_validation(raw_evidence)
+            except ValueError:
+                errors.append("reconstruction_report_request_arkit_raw_contract_invalid")
+            else:
+                digest = validated_raw["arkit_raw_contract_validation_digest"]
+                scaffold_digest = validated_raw["camera_calibration_binding"]
+                calibration_status = request.get("calibration_and_coordinate_status")
+                if validated_raw.get("source_capture_digest") != request.get(
+                    "source_capture_digest"
+                ):
+                    errors.append("reconstruction_report_request_arkit_source_mismatch")
+                if validated_raw.get("train_heldout_split_digest") != request.get(
+                    "frozen_split_digest"
+                ):
+                    errors.append("reconstruction_report_request_arkit_split_mismatch")
+                if validated_raw.get("source_commit_sha") != request.get(
+                    "source_commit_sha"
+                ):
+                    errors.append("reconstruction_report_request_arkit_commit_mismatch")
+                if digest not in (input_digests or []) or digest not in (
+                    output_digests or []
+                ):
+                    errors.append("reconstruction_report_request_arkit_digest_unbound")
+                if (
+                    not isinstance(calibration_status, Mapping)
+                    or calibration_status.get("raw_contract_3_2") is not True
+                    or calibration_status.get("metric_scaffold_digest")
+                    != scaffold_digest
+                ):
+                    errors.append(
+                        "reconstruction_report_request_arkit_calibration_binding_mismatch"
+                    )
+                if request.get("coordinate_frame_declaration") != validated_raw.get(
+                    "coordinate_frame_declaration"
+                ):
+                    errors.append(
+                        "reconstruction_report_request_arkit_coordinate_frame_mismatch"
+                    )
+                if not isinstance(ceilings, Mapping) or ceilings.get(
+                    "calibrated_camera_trajectory"
+                ) is not True:
+                    errors.append(
+                        "reconstruction_report_request_arkit_trajectory_ceiling_missing"
+                    )
+    elif raw_evidence is not None:
+        errors.append("reconstruction_report_request_arkit_raw_contract_unexpected")
+
+
+def _deterministic_qualification_binding(request: Mapping[str, Any]) -> dict[str, Any]:
+    profile_evidence = request.get("capture_profile_validation")
+    raw_evidence = request.get("arkit_raw_contract_validation")
+    isaac = request.get("isaac_verification")
+    proof_artifacts = {
+        key: request[key]
+        for key in (
+            "calibration_and_coordinate_status",
+            "camera_calibration_binding",
+            "coordinate_frame_declaration",
+            "units_and_metric_scale_status",
+            "scale_validation",
+            "appearance_asset",
+            "metric_reference_asset",
+            "collision_candidate",
+            "independent_visual_metrics",
+            "independent_geometric_metrics",
+            "collider_qualification",
+            "nurec_openusd_package",
+            "isaac_verification",
+            "physics_collision_verification",
+        )
+    }
+    return {
+        "source_capture_digest": request["source_capture_digest"],
+        "validated_capture_profile": request["validated_capture_profile"],
+        "frozen_split_digest": request["frozen_split_digest"],
+        "source_commit_sha": request["source_commit_sha"],
+        "input_digests": sorted(request["input_digests"]),
+        "recorded_output_digests": sorted(request["recorded_output_digests"]),
+        "capture_profile_validation_digest": (
+            profile_evidence.get("capture_profile_validation_digest")
+            if isinstance(profile_evidence, Mapping)
+            else None
+        ),
+        "arkit_raw_contract_validation_digest": (
+            raw_evidence.get("arkit_raw_contract_validation_digest")
+            if isinstance(raw_evidence, Mapping)
+            else None
+        ),
+        "typed_isaac_verification_digest": (
+            isaac.get("isaac_verification_result_digest")
+            if isinstance(isaac, Mapping)
+            else None
+        ),
+        "proof_artifacts_digest": canonical_digest(proof_artifacts),
+        "rights_status": request["rights_and_permitted_use"].get("status"),
+        "decision": request["decision"],
+        "evidence_ceilings": request["evidence_ceilings"],
+        "blockers": request["blockers"],
+    }
 
 
 def build_reconstruction_terminal_report_request(
@@ -148,6 +332,49 @@ def build_reconstruction_terminal_report_request(
             "metric_reference_geometry"
         ) is not True:
             errors.append("reconstruction_report_request_collision_without_metric_geometry")
+    isaac = request.get("isaac_verification")
+    if isinstance(isaac, Mapping):
+        if isaac.get("schema_version") == "isaac_asset_verification_result.v1":
+            try:
+                verified_isaac = build_isaac_asset_verification_result(isaac)
+            except ReconstructionGeometryContractError as exc:
+                errors.extend(
+                    f"reconstruction_report_request_isaac_invalid:{code}"
+                    for code in exc.codes
+                )
+            else:
+                if not isinstance(ceilings, Mapping) or ceilings.get(
+                    "isaac_load_render_compatibility"
+                ) is not True:
+                    errors.append(
+                        "reconstruction_report_request_isaac_result_without_compatibility_ceiling"
+                    )
+                if verified_isaac["isaac_verification_result_digest"] not in request.get(
+                    "recorded_output_digests", []
+                ):
+                    errors.append(
+                        "reconstruction_report_request_isaac_result_digest_unrecorded"
+                    )
+                if request.get("fixed_camera_render_references") != verified_isaac.get(
+                    "fixed_camera_render_references"
+                ):
+                    errors.append(
+                        "reconstruction_report_request_isaac_render_references_mismatch"
+                    )
+                if request.get("physics_collision_verification") != verified_isaac.get(
+                    "physics_probe"
+                ):
+                    errors.append(
+                        "reconstruction_report_request_isaac_physics_evidence_mismatch"
+                    )
+        elif isaac.get("status") not in {"not_executed", "blocked", "failed"}:
+            errors.append("reconstruction_report_request_isaac_status_invalid")
+        elif isinstance(ceilings, Mapping) and ceilings.get(
+            "isaac_load_render_compatibility"
+        ) is True:
+            errors.append(
+                "reconstruction_report_request_isaac_compatibility_without_typed_result"
+            )
     runtime = request.get("runtime_and_spend")
     if isinstance(runtime, Mapping):
         for key in ("total_runtime_seconds", "total_spend_usd"):
@@ -184,6 +411,7 @@ def build_reconstruction_terminal_report_request(
         not _is_digest(digest) for digest in container_digests
     ):
         errors.append("reconstruction_report_request_container_digests_invalid")
+    _validate_capture_evidence_bindings(request, errors)
     supplied_digest = request.pop("reconstruction_terminal_report_request_digest", None)
     request["reconstruction_terminal_report_request_digest"] = canonical_digest(
         request, digest_field="reconstruction_terminal_report_request_digest"
@@ -222,6 +450,7 @@ def _customer_summary(request: Mapping[str, Any]) -> str:
 
 def generate_reconstruction_terminal_report(value: Mapping[str, Any]) -> dict[str, Any]:
     request = build_reconstruction_terminal_report_request(value)
+    qualification_binding = _deterministic_qualification_binding(request)
     report = {
         "schema_version": RECONSTRUCTION_TERMINAL_REPORT_SCHEMA_VERSION,
         "stable_run_identity": request["stable_run_identity"],
@@ -236,6 +465,16 @@ def generate_reconstruction_terminal_report(value: Mapping[str, Any]) -> dict[st
         "original_capture_location": request["original_capture_location"],
         "source_capture_digest": request["source_capture_digest"],
         "validated_capture_profile": request["validated_capture_profile"],
+        "capture_profile_validation": request.get("capture_profile_validation")
+        or {
+            "status": "not_applicable_for_validated_capture_profile",
+            "proof_effect": "none",
+        },
+        "arkit_raw_contract_validation": request.get("arkit_raw_contract_validation")
+        or {
+            "status": "not_applicable_for_validated_capture_profile",
+            "proof_effect": "none",
+        },
         "original_customer_request": request["original_customer_request"],
         "rights_and_permitted_use": request["rights_and_permitted_use"],
         "selected_frames": request["selected_frames"],
@@ -276,6 +515,8 @@ def generate_reconstruction_terminal_report(value: Mapping[str, Any]) -> dict[st
         "agent_output_authoritative": False,
         "deterministic_validations": request["deterministic_validations"],
         "decision": request["decision"],
+        "deterministic_qualification": qualification_binding,
+        "deterministic_qualification_digest": canonical_digest(qualification_binding),
         "customer_summary": _customer_summary(request),
         "evidence_ceilings": request["evidence_ceilings"],
         "what_could_change_result": request["what_could_change_result"],

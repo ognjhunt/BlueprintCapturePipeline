@@ -27,6 +27,16 @@
       "properties": {
         "schema_version": {"const": "pose_refinement_result.v1"},
         "status": {"enum": ["succeeded", "failed", "timed_out", "interrupted"]},
+        "refined_pose_manifest_reference": {
+          "type": "object",
+          "required": ["relative_path", "artifact_digest", "manifest_digest"],
+          "properties": {
+            "relative_path": {"type": "string", "minLength": 1},
+            "artifact_digest": {"$ref": "#/$defs/sha256"},
+            "manifest_digest": {"$ref": "#/$defs/sha256"}
+          },
+          "additionalProperties": false
+        },
         "raw_arkit_poses_modified": {"const": false},
         "heldout_labels_included": {"const": false},
         "candidate_self_graded": {"const": false},
