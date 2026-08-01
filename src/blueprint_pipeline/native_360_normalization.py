@@ -29,6 +29,7 @@ CAMERA_360_RIG_SCHEMA_VERSION = "camera_360_rig_declaration.v1"
 NATIVE_360_PROBE_SCHEMA_VERSION = "native_360_probe_receipt.v1"
 _LENS_IDS = {"front", "rear"}
 _MAX_NATIVE_SOURCE_BYTES = 100 * 1024 * 1024 * 1024
+_MAX_CALIBRATION_MASK_BYTES = 64 * 1024 * 1024
 _MAX_PROBE_OUTPUT_BYTES = 128 * 1024 * 1024
 _PROBE_TIMEOUT_SECONDS = 600.0
 _REQUIRED_LOCAL_AUTHORITY = {
@@ -106,13 +107,9 @@ def _bounded_probe_command(
                 target = key.data
                 target.extend(chunk)
                 if len(stdout) + len(stderr) > maximum_output_bytes:
-                    raise Native360NormalizationError(
-                        ["native_360_probe_output_oversized"]
-                    )
+                    raise Native360NormalizationError(["native_360_probe_output_oversized"])
         returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
-        return subprocess.CompletedProcess(
-            list(argv), returncode, bytes(stdout), bytes(stderr)
-        )
+        return subprocess.CompletedProcess(list(argv), returncode, bytes(stdout), bytes(stderr))
     finally:
         selector.close()
         if process is not None and process.poll() is None:
@@ -164,9 +161,7 @@ def _strict_probe_json(payload: bytes, *, label: str) -> dict[str, Any]:
         return value
 
     def reject_nonfinite_constant(value: str) -> Any:
-        raise Native360NormalizationError(
-            [f"native_360_probe_json_nonfinite:{label}:{value}"]
-        )
+        raise Native360NormalizationError([f"native_360_probe_json_nonfinite:{label}:{value}"])
 
     try:
         decoded = json.loads(
@@ -177,9 +172,7 @@ def _strict_probe_json(payload: bytes, *, label: str) -> dict[str, Any]:
     except Native360NormalizationError:
         raise
     except (RecursionError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise Native360NormalizationError(
-            [f"native_360_probe_json_invalid:{label}"]
-        ) from exc
+        raise Native360NormalizationError([f"native_360_probe_json_invalid:{label}"]) from exc
     if not isinstance(decoded, Mapping):
         raise Native360NormalizationError([f"native_360_probe_json_invalid:{label}"])
     return dict(decoded)
@@ -199,8 +192,10 @@ def _probe_number(value: Any, *, label: str) -> float:
 
 def _is_digest(value: Any) -> bool:
     text = str(value or "")
-    return len(text) == 71 and text.startswith("sha256:") and all(
-        character in "0123456789abcdef" for character in text[7:]
+    return (
+        len(text) == 71
+        and text.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in text[7:])
     )
 
 
@@ -232,9 +227,7 @@ def _write_immutable(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
         try:
             existing = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise Native360NormalizationError(
-                ["native_360_immutable_artifact_invalid"]
-            ) from exc
+            raise Native360NormalizationError(["native_360_immutable_artifact_invalid"]) from exc
         if canonical_json(existing) != canonical_json(normalized):
             raise Native360NormalizationError(["native_360_immutable_artifact_conflict"])
         return dict(existing)
@@ -260,6 +253,32 @@ def _write_immutable(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
     finally:
         temporary.unlink(missing_ok=True)
     return normalized
+
+
+def _copy_immutable_file(source: Path, destination: Path, expected_digest: str) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if destination.is_symlink() or _sha256_file(destination) != expected_digest:
+            raise Native360NormalizationError(["native_360_immutable_mask_artifact_conflict"])
+        return
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=destination.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with source.open("rb") as source_stream, os.fdopen(descriptor, "wb") as target:
+            shutil.copyfileobj(source_stream, target, length=1024 * 1024)
+            target.flush()
+            os.fsync(target.fileno())
+        if _sha256_file(temporary) != expected_digest:
+            raise Native360NormalizationError(["native_360_calibration_mask_digest_mismatch"])
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            if destination.is_symlink() or _sha256_file(destination) != expected_digest:
+                raise Native360NormalizationError(["native_360_immutable_mask_artifact_conflict"])
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _matrix4(value: Any) -> list[list[float]] | None:
@@ -295,12 +314,9 @@ def _rigid_transform4(value: Any) -> list[list[float]] | None:
             if not math.isclose(dot, 1.0 if left == right else 0.0, abs_tol=1e-5):
                 return None
     determinant = (
-        rotation[0][0]
-        * (rotation[1][1] * rotation[2][2] - rotation[1][2] * rotation[2][1])
-        - rotation[0][1]
-        * (rotation[1][0] * rotation[2][2] - rotation[1][2] * rotation[2][0])
-        + rotation[0][2]
-        * (rotation[1][0] * rotation[2][1] - rotation[1][1] * rotation[2][0])
+        rotation[0][0] * (rotation[1][1] * rotation[2][2] - rotation[1][2] * rotation[2][1])
+        - rotation[0][1] * (rotation[1][0] * rotation[2][2] - rotation[1][2] * rotation[2][0])
+        + rotation[0][2] * (rotation[1][0] * rotation[2][1] - rotation[1][1] * rotation[2][0])
     )
     if not math.isclose(determinant, 1.0, abs_tol=1e-5):
         return None
@@ -388,9 +404,7 @@ def build_native_360_probe_receipt(
         "format_metadata": dict(format_metadata),
         "streams": sorted(normalized_streams, key=lambda row: row["stream_index"]),
     }
-    receipt["probe_receipt_digest"] = canonical_digest(
-        receipt, digest_field="probe_receipt_digest"
-    )
+    receipt["probe_receipt_digest"] = canonical_digest(receipt, digest_field="probe_receipt_digest")
     return receipt
 
 
@@ -431,9 +445,7 @@ def probe_native_360_source(
     source_digest = _sha256_file(source)
 
     executable_value = (
-        str(ffprobe_executable)
-        if ffprobe_executable is not None
-        else shutil.which("ffprobe")
+        str(ffprobe_executable) if ffprobe_executable is not None else shutil.which("ffprobe")
     )
     if not executable_value:
         raise Native360NormalizationError(["native_360_probe_runtime_unavailable"])
@@ -452,13 +464,9 @@ def probe_native_360_source(
     try:
         version_line = version_output.decode("utf-8").splitlines()[0].strip()
     except (IndexError, UnicodeDecodeError) as exc:
-        raise Native360NormalizationError(
-            ["native_360_probe_runtime_identity_invalid"]
-        ) from exc
+        raise Native360NormalizationError(["native_360_probe_runtime_identity_invalid"]) from exc
     if not version_line or len(version_line) > 512:
-        raise Native360NormalizationError(
-            ["native_360_probe_runtime_identity_invalid"]
-        )
+        raise Native360NormalizationError(["native_360_probe_runtime_identity_invalid"])
 
     metadata_output = _run_probe(
         execute,
@@ -493,8 +501,7 @@ def probe_native_360_source(
             "1",
             "-show_frames",
             "-show_entries",
-            "frame=stream_index,media_type,pts_time,pkt_dts_time,"
-            "best_effort_timestamp_time",
+            "frame=stream_index,media_type,pts_time,pkt_dts_time,best_effort_timestamp_time",
             "-of",
             "json",
             str(source),
@@ -533,9 +540,7 @@ def probe_native_360_source(
     if not video_indexes:
         raise Native360NormalizationError(["native_360_probe_video_stream_missing"])
 
-    timing_by_stream: dict[int, list[dict[str, Any]]] = {
-        index: [] for index in video_indexes
-    }
+    timing_by_stream: dict[int, list[dict[str, Any]]] = {index: [] for index in video_indexes}
     for raw_frame in raw_frames:
         if not isinstance(raw_frame, Mapping):
             raise Native360NormalizationError(["native_360_probe_frame_invalid"])
@@ -565,9 +570,7 @@ def probe_native_360_source(
             {
                 "pts_seconds": pts,
                 "dts_seconds": dts,
-                "best_effort_timestamp_time": raw_frame.get(
-                    "best_effort_timestamp_time"
-                ),
+                "best_effort_timestamp_time": raw_frame.get("best_effort_timestamp_time"),
             }
         )
 
@@ -595,16 +598,12 @@ def probe_native_360_source(
             raise Native360NormalizationError(
                 [f"native_360_probe_video_frames_missing:stream_{index}"]
             )
-        metadata = {
-            key: raw_stream[key] for key in stream_metadata_keys if key in raw_stream
-        }
+        metadata = {key: raw_stream[key] for key in stream_metadata_keys if key in raw_stream}
         if media_type == "video":
             metadata.update(
                 {
                     "decoded_timestamp_field": "pts_time",
-                    "decoded_frame_timing_digest": canonical_digest(
-                        {"frames": timing}
-                    ),
+                    "decoded_frame_timing_digest": canonical_digest({"frames": timing}),
                     "all_decoded_dts_observed": all(
                         row["dts_seconds"] is not None for row in timing
                     ),
@@ -633,19 +632,15 @@ def probe_native_360_source(
         "bit_rate",
         "tags",
     )
-    format_metadata = {
-        key: raw_format[key] for key in format_keys if key in raw_format
-    }
+    format_metadata = {key: raw_format[key] for key in format_keys if key in raw_format}
     format_metadata.update(
         {
             "source_relative_path": relative_path,
             "source_size_bytes": size,
-            "ffprobe_version_output_digest": "sha256:"
-            + hashlib.sha256(version_output).hexdigest(),
+            "ffprobe_version_output_digest": "sha256:" + hashlib.sha256(version_output).hexdigest(),
             "ffprobe_metadata_output_digest": "sha256:"
             + hashlib.sha256(metadata_output).hexdigest(),
-            "ffprobe_timing_output_digest": "sha256:"
-            + hashlib.sha256(timing_output).hexdigest(),
+            "ffprobe_timing_output_digest": "sha256:" + hashlib.sha256(timing_output).hexdigest(),
             "probe_behavior": {
                 "shell_used": False,
                 "decoded_frames_observed": True,
@@ -688,12 +683,17 @@ def _validated_probe(value: Mapping[str, Any], *, source_digest: str) -> dict[st
 
 
 def _calibrated_rig(
-    camera_metadata: Mapping[str, Any], *, capture_digest: str
-) -> tuple[dict[str, Any], list[str]]:
+    camera_metadata: Mapping[str, Any],
+    *,
+    capture_digest: str,
+    capture_root: Path,
+    maximum_mask_bytes: int,
+) -> tuple[dict[str, Any], list[str], dict[str, Path]]:
     blockers: list[str] = []
     calibrations = camera_metadata.get("lens_calibrations")
     calibrations = calibrations if isinstance(calibrations, list) else []
     by_lens: dict[str, dict[str, Any]] = {}
+    mask_sources: dict[str, Path] = {}
     for raw in calibrations:
         if not isinstance(raw, Mapping):
             continue
@@ -706,6 +706,22 @@ def _calibrated_rig(
         }
         coefficients = distortion.get("coefficients") if isinstance(distortion, Mapping) else None
         calibration_source = str(raw.get("calibration_source") or "")
+        mask_relative_path: str | None = None
+        mask_source: Path | None = None
+        try:
+            mask_relative_path = _safe_relative(raw.get("valid_pixel_mask_relative_path"))
+            mask_source = _safe_source(capture_root, mask_relative_path)
+        except Native360NormalizationError:
+            mask_relative_path = None
+            mask_source = None
+        mask_digest = raw.get("valid_pixel_mask_digest")
+        mask_valid = bool(
+            mask_source is not None
+            and mask_source.stat().st_size > 0
+            and mask_source.stat().st_size <= maximum_mask_bytes
+            and _is_digest(mask_digest)
+            and _sha256_file(mask_source) == mask_digest
+        )
         valid_dimensions = (
             isinstance(numeric_intrinsics["width"], int)
             and not isinstance(numeric_intrinsics["width"], bool)
@@ -743,7 +759,7 @@ def _calibrated_rig(
                 or not math.isfinite(float(item))
                 for item in coefficients
             )
-            or not _is_digest(raw.get("valid_pixel_mask_digest"))
+            or not mask_valid
             or calibration_source
             not in {
                 "embedded_camera_metadata",
@@ -758,33 +774,28 @@ def _calibrated_rig(
             "lens_id": lens_id,
             "intrinsics": dict(intrinsics),
             "distortion": dict(distortion),
-            "valid_pixel_mask_digest": raw["valid_pixel_mask_digest"],
+            "valid_pixel_mask_relative_path": mask_relative_path,
+            "valid_pixel_mask_digest": mask_digest,
             "calibration_source": calibration_source,
             "calibration_source_digest": raw["calibration_source_digest"],
         }
+        assert mask_source is not None
+        mask_sources[lens_id] = mask_source
     extrinsics = camera_metadata.get("rig_extrinsics")
     transform = _rigid_transform4(
         extrinsics.get("T_front_rear") if isinstance(extrinsics, Mapping) else None
     )
     extrinsics_source = (
-        str(extrinsics.get("calibration_source") or "")
-        if isinstance(extrinsics, Mapping)
-        else ""
+        str(extrinsics.get("calibration_source") or "") if isinstance(extrinsics, Mapping) else ""
     )
     extrinsics_source_digest = (
-        extrinsics.get("calibration_source_digest")
-        if isinstance(extrinsics, Mapping)
-        else None
+        extrinsics.get("calibration_source_digest") if isinstance(extrinsics, Mapping) else None
     )
     transform_semantics = (
-        str(extrinsics.get("transform_semantics") or "")
-        if isinstance(extrinsics, Mapping)
-        else ""
+        str(extrinsics.get("transform_semantics") or "") if isinstance(extrinsics, Mapping) else ""
     )
     translation_units = (
-        str(extrinsics.get("translation_units") or "")
-        if isinstance(extrinsics, Mapping)
-        else ""
+        str(extrinsics.get("translation_units") or "") if isinstance(extrinsics, Mapping) else ""
     )
     if set(by_lens) != _LENS_IDS:
         blockers.append("native_360_complete_lens_calibration_missing")
@@ -823,10 +834,8 @@ def _calibrated_rig(
         "agent_may_alter_calibration": False,
         "blockers": sorted(set(blockers)),
     }
-    rig["rig_declaration_digest"] = canonical_digest(
-        rig, digest_field="rig_declaration_digest"
-    )
-    return rig, sorted(set(blockers))
+    rig["rig_declaration_digest"] = canonical_digest(rig, digest_field="rig_declaration_digest")
+    return rig, sorted(set(blockers)), mask_sources
 
 
 def normalize_native_360_capture(
@@ -844,6 +853,7 @@ def normalize_native_360_capture(
     parent_artifact_or_event: Mapping[str, Any] | None = None,
     synchronization_tolerance_seconds: float = 0.0005,
     maximum_source_bytes: int = _MAX_NATIVE_SOURCE_BYTES,
+    maximum_mask_bytes: int = _MAX_CALIBRATION_MASK_BYTES,
 ) -> dict[str, Any]:
     """Normalize declared native 360 segments without modifying source truth."""
 
@@ -859,6 +869,7 @@ def normalize_native_360_capture(
         not math.isfinite(synchronization_tolerance_seconds)
         or synchronization_tolerance_seconds < 0
         or maximum_source_bytes <= 0
+        or maximum_mask_bytes <= 0
     ):
         raise Native360NormalizationError(["native_360_normalization_limit_invalid"])
     _validate_local_authority(authority_used)
@@ -897,7 +908,12 @@ def normalize_native_360_capture(
     segment_ids = [str(row.get("segment_id") or "") for row in segments]
     if any(not item for item in segment_ids) or len(set(segment_ids)) != len(segment_ids):
         raise Native360NormalizationError(["native_360_segment_identity_invalid"])
-    rig, blockers = _calibrated_rig(camera_metadata, capture_digest=capture_digest)
+    rig, blockers, mask_sources = _calibrated_rig(
+        camera_metadata,
+        capture_digest=capture_digest,
+        capture_root=root,
+        maximum_mask_bytes=maximum_mask_bytes,
+    )
     segment_timeline_starts: dict[int, float | None] = {}
     segment_timeline_sources: dict[int, str] = {}
     for segment in segments:
@@ -914,9 +930,7 @@ def normalize_native_360_capture(
         ):
             segment_timeline_starts[sequence_index] = None
             segment_timeline_sources[sequence_index] = "missing_or_invalid"
-            blockers.append(
-                f"native_360_segment_capture_timeline_missing:{sequence_index}"
-            )
+            blockers.append(f"native_360_segment_capture_timeline_missing:{sequence_index}")
         else:
             segment_timeline_starts[sequence_index] = round(float(raw_start), 9)
             segment_timeline_sources[sequence_index] = "declared_capture_timeline"
@@ -970,9 +984,7 @@ def normalize_native_360_capture(
             validated_probes[relative_path] = probe
             runtime_digests.add(str(probe["runtime_digest"]))
             streams = {
-                row.get("stream_index"): row
-                for row in probe["streams"]
-                if isinstance(row, Mapping)
+                row.get("stream_index"): row for row in probe["streams"] if isinstance(row, Mapping)
             }
             bindings = raw_file.get("lens_streams")
             if not isinstance(bindings, list) or not bindings:
@@ -1039,32 +1051,36 @@ def normalize_native_360_capture(
                 else []
             )
             maximum_residual = max(residuals) if residuals else None
-            frame_pairs = [
-                {
-                    "pair_index": index,
-                    "front_pts_seconds": left,
-                    "rear_pts_seconds": right,
-                    "absolute_residual_seconds": residuals[index],
-                }
-                for index, (left, right) in enumerate(
-                    zip(front_pts, rear_pts, strict=True)
-                )
-            ] if same_shape else []
+            frame_pairs = (
+                [
+                    {
+                        "pair_index": index,
+                        "front_pts_seconds": left,
+                        "rear_pts_seconds": right,
+                        "absolute_residual_seconds": residuals[index],
+                    }
+                    for index, (left, right) in enumerate(zip(front_pts, rear_pts, strict=True))
+                ]
+                if same_shape
+                else []
+            )
             synchronized = bool(
                 same_shape
                 and maximum_residual is not None
                 and maximum_residual <= synchronization_tolerance_seconds
             )
             if not same_shape:
-                blockers.append(f"native_360_lens_dimensions_or_counts_mismatch:{segment['sequence_index']}")
+                blockers.append(
+                    f"native_360_lens_dimensions_or_counts_mismatch:{segment['sequence_index']}"
+                )
             elif not synchronized:
-                blockers.append(f"native_360_lens_streams_unsynchronized:{segment['sequence_index']}")
+                blockers.append(
+                    f"native_360_lens_streams_unsynchronized:{segment['sequence_index']}"
+                )
             for lens_id, stream in (("front", front), ("rear", rear)):
                 calibration = calibration_by_lens.get(lens_id)
                 intrinsics = (
-                    calibration.get("intrinsics")
-                    if isinstance(calibration, Mapping)
-                    else None
+                    calibration.get("intrinsics") if isinstance(calibration, Mapping) else None
                 )
                 if not isinstance(intrinsics, Mapping) or (
                     intrinsics.get("width") != stream["width"]
@@ -1079,7 +1095,9 @@ def normalize_native_360_capture(
         normalized_segments.append(
             {
                 "sequence_index": segment["sequence_index"],
-                "segment_id": str(segment.get("segment_id") or f"segment-{segment['sequence_index']:04d}"),
+                "segment_id": str(
+                    segment.get("segment_id") or f"segment-{segment['sequence_index']:04d}"
+                ),
                 "capture_timeline_start_seconds": segment_timeline_starts[
                     int(segment["sequence_index"])
                 ],
@@ -1105,9 +1123,7 @@ def normalize_native_360_capture(
             "unavailable",
         }:
             blockers.append(f"native_360_{sensor}_declaration_missing")
-        elif declaration.get("status") == "available" and not _is_digest(
-            declaration.get("digest")
-        ):
+        elif declaration.get("status") == "available" and not _is_digest(declaration.get("digest")):
             blockers.append(f"native_360_{sensor}_digest_missing")
     previous_capture_end: float | None = None
     for segment in normalized_segments:
@@ -1116,9 +1132,7 @@ def normalize_native_360_capture(
         if start is None or not pairs:
             segment["capture_timeline_end_seconds"] = None
             continue
-        duration = float(pairs[-1]["front_pts_seconds"]) - float(
-            pairs[0]["front_pts_seconds"]
-        )
+        duration = float(pairs[-1]["front_pts_seconds"]) - float(pairs[0]["front_pts_seconds"])
         end = round(float(start) + duration, 9)
         segment["capture_timeline_end_seconds"] = end
         if previous_capture_end is not None and float(start) <= previous_capture_end:
@@ -1156,13 +1170,14 @@ def normalize_native_360_capture(
             "probe_receipt_digests": sorted(
                 row["probe_receipt_digest"] for row in source_file_references
             ),
+            "valid_pixel_mask_source_digests": sorted(
+                str(row["valid_pixel_mask_digest"]) for row in rig["lens_calibrations"]
+            ),
             "rig_declaration_digest": rig["rig_declaration_digest"],
             "dual_fisheye_binding_digest": binding["dual_fisheye_binding_digest"],
             "implementation_digest": implementation_digest,
             "source_commit_sha": source_commit_sha,
-            "parent_artifact_digest": canonical_digest(
-                dict(parent_artifact_or_event or {})
-            ),
+            "parent_artifact_digest": canonical_digest(dict(parent_artifact_or_event or {})),
         }
     )
     artifact_root = (
@@ -1171,6 +1186,20 @@ def normalize_native_360_capture(
     )
     rig = _write_immutable(artifact_root / "camera_360_rig_declaration.json", rig)
     binding = _write_immutable(artifact_root / "dual_fisheye_stream_binding.json", binding)
+    valid_pixel_mask_references: dict[str, dict[str, str]] = {}
+    for lens_id in sorted(mask_sources):
+        calibration = calibration_by_lens[lens_id]
+        mask_relative_path = f"calibration_masks/{lens_id}.png"
+        mask_path = artifact_root / mask_relative_path
+        _copy_immutable_file(
+            mask_sources[lens_id],
+            mask_path,
+            str(calibration["valid_pixel_mask_digest"]),
+        )
+        valid_pixel_mask_references[lens_id] = {
+            "relative_path": mask_relative_path,
+            "digest": _sha256_file(mask_path),
+        }
     rig_reference = {
         "relative_path": "camera_360_rig_declaration.json",
         "digest": _sha256_file(artifact_root / "camera_360_rig_declaration.json"),
@@ -1198,13 +1227,9 @@ def normalize_native_360_capture(
         try:
             existing_result = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise Native360NormalizationError(
-                ["native_360_immutable_artifact_invalid"]
-            ) from exc
+            raise Native360NormalizationError(["native_360_immutable_artifact_invalid"]) from exc
         if not isinstance(existing_result, Mapping):
-            raise Native360NormalizationError(
-                ["native_360_immutable_artifact_invalid"]
-            )
+            raise Native360NormalizationError(["native_360_immutable_artifact_invalid"])
         persisted_timestamp = _declared_timestamp(existing_result.get("timestamp"))
     result = {
         "schema_version": NATIVE_360_NORMALIZATION_SCHEMA_VERSION,
@@ -1227,9 +1252,7 @@ def normalize_native_360_capture(
         "input_digests": {
             "camera_metadata_digest": canonical_digest(camera_metadata),
             "authority_digest": canonical_digest(authority_used),
-            "source_file_digests": sorted(
-                row["digest"] for row in source_file_references
-            ),
+            "source_file_digests": sorted(row["digest"] for row in source_file_references),
             "probe_receipt_digests": sorted(
                 row["probe_receipt_digest"] for row in source_file_references
             ),
@@ -1237,14 +1260,16 @@ def normalize_native_360_capture(
         "output_digests": {
             "dual_fisheye_binding_digest": binding["dual_fisheye_binding_digest"],
             "rig_declaration_digest": rig["rig_declaration_digest"],
-            "probe_receipt_artifact_digests": [
-                row["digest"] for row in probe_receipt_references
-            ],
+            "probe_receipt_artifact_digests": [row["digest"] for row in probe_receipt_references],
+            "valid_pixel_mask_artifact_digests": sorted(
+                row["digest"] for row in valid_pixel_mask_references.values()
+            ),
         },
         "artifact_references": {
             "camera_360_rig_declaration": rig_reference,
             "dual_fisheye_stream_binding": binding_reference,
         },
+        "valid_pixel_mask_references": valid_pixel_mask_references,
         "train_heldout_split_digest": None,
         "camera_calibration_binding": rig["rig_declaration_digest"],
         "coordinate_frame_declaration": dict(coordinate_frame),
@@ -1259,9 +1284,7 @@ def normalize_native_360_capture(
         "provider_runtime_identity": {
             "provider": "local",
             "runtime": "recorded_probe",
-            "runtime_digest": (
-                next(iter(runtime_digests)) if len(runtime_digests) == 1 else None
-            ),
+            "runtime_digest": (next(iter(runtime_digests)) if len(runtime_digests) == 1 else None),
         },
         "authority_used": dict(authority_used),
         "cost_usd": 0.0,
@@ -1341,9 +1364,9 @@ def probe_and_normalize_native_360_capture(
 
     total_source_bytes = 0
     for relative_path in source_paths:
-        total_source_bytes += _safe_source(
-            Path(capture_root).expanduser().resolve(), relative_path
-        ).stat().st_size
+        total_source_bytes += (
+            _safe_source(Path(capture_root).expanduser().resolve(), relative_path).stat().st_size
+        )
         if total_source_bytes > maximum_source_bytes:
             raise Native360NormalizationError(["native_360_source_oversized"])
 

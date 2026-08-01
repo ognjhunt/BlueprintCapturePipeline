@@ -328,6 +328,11 @@ Fixed rig extrinsics are accepted only with an explicit transform direction
 meters. The legacy matrix label alone is intentionally insufficient: without
 those declarations the normalizer abstains, so a downstream COLMAP adapter
 cannot silently guess `cam_from_rig` semantics or manufacture calibration.
+Each per-lens valid-pixel mask is now a retained capture artifact, not a digest-
+only assertion: its capture-relative path is checked for traversal and symlink
+escape, the bytes are rehashed against the calibration declaration, and the
+accepted mask is copied immutably into the normalization artifact. Missing or
+tampered masks invalidate that lens calibration and lower the claim ceiling.
 
 The same module now provides a bounded ffmpeg lens decoder. It uses only the
 validated source path, source digest, declared physical-lens stream indices, and

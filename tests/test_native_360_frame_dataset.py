@@ -28,7 +28,8 @@ IMPLEMENTATION_DIGEST = "sha256:" + "b" * 64
 RUNTIME_DIGEST = "sha256:" + "c" * 64
 SOURCE_COMMIT = "d" * 40
 CALIBRATION_DIGEST = "sha256:" + "e" * 64
-MASK_DIGEST = "sha256:" + "f" * 64
+MASK_BYTES = b"native-frame-valid-mask-fixture"
+MASK_DIGEST = "sha256:cbfd172a7144a6b4c4afa7972d69780a44264f7273d7651694ed30155a12f4af"
 AUTHORITY = {
     "source_capture_rights_valid": True,
     "consent_valid": True,
@@ -47,8 +48,7 @@ def _digest(path: Path) -> str:
 def _schema() -> dict:
     return json.loads(
         (
-            Path(__file__).parents[1]
-            / "docs/schemas/reconstruction_frame_dataset.v1.schema.json"
+            Path(__file__).parents[1] / "docs/schemas/reconstruction_frame_dataset.v1.schema.json"
         ).read_text(encoding="utf-8")
     )
 
@@ -56,8 +56,7 @@ def _schema() -> dict:
 def _decode_schema() -> dict:
     return json.loads(
         (
-            Path(__file__).parents[1]
-            / "docs/schemas/native_360_lens_decode.v1.schema.json"
+            Path(__file__).parents[1] / "docs/schemas/native_360_lens_decode.v1.schema.json"
         ).read_text(encoding="utf-8")
     )
 
@@ -77,6 +76,7 @@ def _lens_calibration(lens_id: str) -> dict:
             "model": "opencv_fisheye",
             "coefficients": [0.01, -0.001, 0.0001, -0.00001],
         },
+        "valid_pixel_mask_relative_path": f"calibration/{lens_id}-mask.png",
         "valid_pixel_mask_digest": MASK_DIGEST,
         "calibration_source": "official_sdk_sidecar",
         "calibration_source_digest": CALIBRATION_DIGEST,
@@ -87,6 +87,10 @@ def _normalized_artifacts(
     tmp_path: Path, pair_count: int = 5, segment_count: int = 1
 ) -> tuple[dict, dict, dict]:
     capture_root = tmp_path / "capture"
+    for lens_id in ("front", "rear"):
+        mask = capture_root / f"calibration/{lens_id}-mask.png"
+        mask.parent.mkdir(parents=True, exist_ok=True)
+        mask.write_bytes(MASK_BYTES)
     pts = [round(index * 0.033333, 6) for index in range(pair_count)]
     segments: list[dict] = []
     receipts: dict[str, dict] = {}
@@ -98,9 +102,7 @@ def _normalized_artifacts(
         )
         source = capture_root / relative_path
         source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_bytes(
-            f"immutable-native-dual-fisheye-fixture-{sequence_index}".encode()
-        )
+        source.write_bytes(f"immutable-native-dual-fisheye-fixture-{sequence_index}".encode())
         source_digest = _digest(source)
         segment = {
             "sequence_index": sequence_index,
@@ -185,15 +187,9 @@ def _normalized_artifacts(
         timestamp="2026-07-30T12:00:00Z",
         maximum_source_bytes=1024,
     )
-    artifact_root = next(
-        (tmp_path / "normalization").glob("native_360_normalization_*")
-    )
-    rig = json.loads(
-        (artifact_root / "camera_360_rig_declaration.json").read_text()
-    )
-    binding = json.loads(
-        (artifact_root / "dual_fisheye_stream_binding.json").read_text()
-    )
+    artifact_root = next((tmp_path / "normalization").glob("native_360_normalization_*"))
+    rig = json.loads((artifact_root / "camera_360_rig_declaration.json").read_text())
+    binding = json.loads((artifact_root / "dual_fisheye_stream_binding.json").read_text())
     return result, rig, binding
 
 
@@ -259,9 +255,7 @@ def _recorded_decode_manifest(result: dict, binding: dict, decoded: list[dict]) 
         "deterministic_configuration": {"fixture": True},
         "deterministic_configuration_digest": "sha256:" + "1" * 64,
         "input_digests": {},
-        "output_digests": {
-            "decoded_frame_digests": [row["digest"] for row in decoded]
-        },
+        "output_digests": {"decoded_frame_digests": [row["digest"] for row in decoded]},
         "runtime_identity": "ffmpeg-grouped-fixture",
         "runtime_digest": RUNTIME_DIGEST,
         "frames": decoded,
@@ -280,12 +274,8 @@ def _recorded_decode_manifest(result: dict, binding: dict, decoded: list[dict]) 
         "proof_effect": "decoded_native_lens_observation_availability_only",
         "claim_ceiling": "decoded_observation_availability",
         "parent_artifact_or_event": {
-            "native_360_normalization_digest": result[
-                "native_360_normalization_digest"
-            ],
-            "dual_fisheye_binding_digest": binding[
-                "dual_fisheye_binding_digest"
-            ],
+            "native_360_normalization_digest": result["native_360_normalization_digest"],
+            "dual_fisheye_binding_digest": binding["dual_fisheye_binding_digest"],
         },
         "timestamp": "2026-07-30T12:00:00Z",
     }
@@ -306,10 +296,7 @@ def _compile(
     manifest = decode_manifest or _recorded_decode_manifest(result, binding, decoded)
     manifest_path = (
         root
-        / (
-            "native_360_lens_decode_"
-            f"{manifest['deterministic_configuration_digest'][7:23]}"
-        )
+        / (f"native_360_lens_decode_{manifest['deterministic_configuration_digest'][7:23]}")
         / "native_360_lens_decode_manifest.json"
     )
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -356,13 +343,9 @@ def test_native_lens_decoder_executes_declared_streams_and_replays(
         command = list(argv)
         calls.append(command)
         if "-version" in command:
-            return subprocess.CompletedProcess(
-                command, 0, b"ffmpeg version fixture-7.1.1\n", b""
-            )
+            return subprocess.CompletedProcess(command, 0, b"ffmpeg version fixture-7.1.1\n", b"")
         stream_index = int(command[command.index("-map") + 1].split(":")[1])
-        Image.new("L", (32, 32), color=48 if stream_index == 0 else 192).save(
-            command[-1]
-        )
+        Image.new("L", (32, 32), color=48 if stream_index == 0 else 192).save(command[-1])
         return subprocess.CompletedProcess(command, 0, b"", b"")
 
     decode_root = tmp_path / "decoded-output"
@@ -462,18 +445,14 @@ def test_native_multisegment_decode_and_grouped_splits_preserve_declared_timelin
         manifest["frames"],
         decode_manifest=manifest,
     )
-    selection = _load_reference(
-        artifact_root, dataset, "retained_frame_selection_manifest"
-    )
+    selection = _load_reference(artifact_root, dataset, "retained_frame_selection_manifest")
     split = _load_reference(artifact_root, dataset, "frozen_split_manifest")
 
     assert manifest["decoded_frame_count"] == 20
     assert len(manifest["original_file_references"]) == 2
     assert len(decoded_sources) == 2
     assert len(dataset["original_file_references"]) == 2
-    assert selection["source_video_references"] == dataset[
-        "original_file_references"
-    ]
+    assert selection["source_video_references"] == dataset["original_file_references"]
     assert sorted({row["t_video_sec"] for row in selection["frames"]}) == [
         0.0,
         0.033333,
@@ -495,9 +474,7 @@ def test_native_multisegment_decode_and_grouped_splits_preserve_declared_timelin
     ) == list(range(10))
     splits_by_group: dict[str, set[str]] = {}
     for row in split["assignments"]:
-        splits_by_group.setdefault(row["observation_group_id"], set()).add(
-            row["split"]
-        )
+        splits_by_group.setdefault(row["observation_group_id"], set()).add(row["split"])
     assert all(len(values) == 1 for values in splits_by_group.values())
     jsonschema.Draft202012Validator(
         _decode_schema(), format_checker=jsonschema.FormatChecker()
@@ -542,9 +519,7 @@ def test_native_lens_decoder_maps_timeout_and_dimension_failures(
         argv: Sequence[str], timeout: float, _maximum_output: int
     ) -> subprocess.CompletedProcess[bytes]:
         if "-version" in argv:
-            return subprocess.CompletedProcess(
-                list(argv), 0, b"ffmpeg version fixture\n", b""
-            )
+            return subprocess.CompletedProcess(list(argv), 0, b"ffmpeg version fixture\n", b"")
         raise subprocess.TimeoutExpired(list(argv), timeout)
 
     with pytest.raises(Native360FrameDatasetError, match="lens_decode_timeout"):
@@ -567,9 +542,7 @@ def test_native_lens_decoder_maps_timeout_and_dimension_failures(
         argv: Sequence[str], _timeout: float, _maximum_output: int
     ) -> subprocess.CompletedProcess[bytes]:
         if "-version" in argv:
-            return subprocess.CompletedProcess(
-                list(argv), 0, b"ffmpeg version fixture\n", b""
-            )
+            return subprocess.CompletedProcess(list(argv), 0, b"ffmpeg version fixture\n", b"")
         Image.new("L", (16, 16), color=0).save(argv[-1])
         return subprocess.CompletedProcess(list(argv), 0, b"", b"")
 
@@ -602,9 +575,7 @@ def test_native_dataset_service_composes_decode_and_split_with_route_binding(
     ) -> subprocess.CompletedProcess[bytes]:
         command = list(argv)
         if "-version" in command:
-            return subprocess.CompletedProcess(
-                command, 0, b"ffmpeg version service-fixture\n", b""
-            )
+            return subprocess.CompletedProcess(command, 0, b"ffmpeg version service-fixture\n", b"")
         stream_index = int(command[command.index("-map") + 1].split(":")[1])
         Image.new("L", (32, 32), color=32 + (stream_index * 128)).save(command[-1])
         return subprocess.CompletedProcess(command, 0, b"", b"")
@@ -637,12 +608,10 @@ def test_native_dataset_service_composes_decode_and_split_with_route_binding(
         output_root=tmp_path / "service-output",
     )
 
-    assert dataset["parent_artifact_or_event"]["capture_build_digest"] == (
-        capture_build_digest
+    assert dataset["parent_artifact_or_event"]["capture_build_digest"] == (capture_build_digest)
+    assert (
+        dataset["parent_artifact_or_event"]["capture_reconstruction_route_digest"] == route_digest
     )
-    assert dataset["parent_artifact_or_event"][
-        "capture_reconstruction_route_digest"
-    ] == route_digest
     assert dataset["supporting_artifact_references"][0]["artifact_type"] == (
         "native_360_lens_decode_manifest.v1"
     )
@@ -684,9 +653,7 @@ def test_native_grouped_dataset_binds_pairs_and_isolates_both_hidden_lenses(
     )
     split = _load_reference(dataset_root, dataset, "frozen_split_manifest")
     candidate = _load_reference(dataset_root, dataset, "candidate_dataset_manifest")
-    heldout = _load_reference(
-        dataset_root, dataset, "hidden_heldout_evaluator_manifest"
-    )
+    heldout = _load_reference(dataset_root, dataset, "hidden_heldout_evaluator_manifest")
     group_splits: dict[str, set[str]] = {}
     group_cameras: dict[str, set[str]] = {}
     for row in split["assignments"]:
@@ -745,9 +712,7 @@ def test_native_grouped_dataset_rejects_tampered_parent_and_missing_authority(
             normalization_result=result,
             rig_declaration=rig,
             dual_fisheye_binding=binding,
-            lens_decode_manifest=_recorded_decode_manifest(
-                result, binding, decoded
-            ),
+            lens_decode_manifest=_recorded_decode_manifest(result, binding, decoded),
             decoded_lens_frames=decoded,
             runtime_identity="ffmpeg-grouped-fixture",
             runtime_digest=RUNTIME_DIGEST,

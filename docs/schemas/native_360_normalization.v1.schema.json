@@ -58,6 +58,52 @@
         "metadata": {"type": "object"}
       }
     },
+    "lens_calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lens_id", "intrinsics", "distortion",
+        "valid_pixel_mask_relative_path", "valid_pixel_mask_digest",
+        "calibration_source", "calibration_source_digest"
+      ],
+      "properties": {
+        "lens_id": {"enum": ["front", "rear"]},
+        "intrinsics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fx", "fy", "cx", "cy", "width", "height"],
+          "properties": {
+            "fx": {"type": "number", "exclusiveMinimum": 0},
+            "fy": {"type": "number", "exclusiveMinimum": 0},
+            "cx": {"type": "number", "minimum": 0},
+            "cy": {"type": "number", "minimum": 0},
+            "width": {"type": "integer", "minimum": 1},
+            "height": {"type": "integer", "minimum": 1}
+          }
+        },
+        "distortion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model", "coefficients"],
+          "properties": {
+            "model": {"type": "string", "minLength": 1},
+            "coefficients": {
+              "type": "array", "minItems": 1,
+              "items": {"type": "number"}
+            }
+          }
+        },
+        "valid_pixel_mask_relative_path": {"$ref": "#/$defs/relative_path"},
+        "valid_pixel_mask_digest": {"$ref": "#/$defs/sha256"},
+        "calibration_source": {
+          "enum": [
+            "embedded_camera_metadata", "official_sdk_sidecar",
+            "qualified_external_calibration"
+          ]
+        },
+        "calibration_source_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
     "probe": {
       "type": "object",
       "additionalProperties": false,
@@ -90,7 +136,10 @@
         "camera_model": {"type": "string", "minLength": 1},
         "capture_mode": {"type": "string", "minLength": 1},
         "firmware_version": {"type": "string"},
-        "lens_calibrations": {"type": "array", "maxItems": 2},
+        "lens_calibrations": {
+          "type": "array", "maxItems": 2,
+          "items": {"$ref": "#/$defs/lens_calibration"}
+        },
         "rig_extrinsics": {
           "type": "object",
           "required": [
@@ -152,6 +201,7 @@
         "deterministic_configuration_digest", "original_file_references",
         "camera_metadata_digest", "probe_runtime_digest", "input_digests",
         "output_digests", "artifact_references", "train_heldout_split_digest",
+        "valid_pixel_mask_references",
         "camera_calibration_binding", "coordinate_frame_declaration", "units", "status",
         "blockers", "warnings", "metric_scale_status", "camera_trajectory_status",
         "raw_native_bytes_remain_authoritative", "original_native_bytes_modified",
@@ -189,6 +239,14 @@
           "properties": {
             "camera_360_rig_declaration": {"$ref": "#/$defs/artifact_reference"},
             "dual_fisheye_stream_binding": {"$ref": "#/$defs/artifact_reference"}
+          }
+        },
+        "valid_pixel_mask_references": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "front": {"$ref": "#/$defs/artifact_reference"},
+            "rear": {"$ref": "#/$defs/artifact_reference"}
           }
         },
         "train_heldout_split_digest": {"type": "null"},

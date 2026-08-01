@@ -377,6 +377,7 @@ def _lens_calibration(profile: dict, lens_id: str) -> dict:
             "model": "opencv_fisheye",
             "coefficients": [0.01, -0.001, 0.0001, -0.00001],
         },
+        "valid_pixel_mask_relative_path": f"calibration/{lens_id}-mask.png",
         "valid_pixel_mask_digest": profile["valid_pixel_mask_digest"],
         "calibration_source": "official_sdk_sidecar",
         "calibration_source_digest": profile["calibration_source_digest"],
@@ -390,6 +391,10 @@ def test_native_360_hermetic_vertical_validates_rig_then_abstains(tmp_path: Path
     source = capture_root / "native/capture.insv"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"immutable-hermetic-dual-fisheye-container")
+    for lens_id in ("front", "rear"):
+        mask = capture_root / f"calibration/{lens_id}-mask.png"
+        mask.parent.mkdir(parents=True, exist_ok=True)
+        mask.write_bytes(b"hermetic-native-mask-fixture")
     source_digest = _file_digest(source)
     metadata = {
         "schema_version": "native_360_camera_metadata.v1",

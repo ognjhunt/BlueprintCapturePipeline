@@ -37,7 +37,7 @@
     "width": 3840,
     "height": 3840,
     "lens_pts_seconds": [0.0, 0.033333, 0.066667],
-    "valid_pixel_mask_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "valid_pixel_mask_digest": "sha256:92ac4f7fb9895963ac9c484e653dacb7e404349deaa38521735dccf3bdfda89b",
     "calibration_source_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
     "expected_terminal_blocker": "pose_worker_and_metric_anchor_unavailable"
   },
