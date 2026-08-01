@@ -34,6 +34,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _synchronize_camera_to_rigid_link,
     _unified_world_pose_matrix,
     _world_pose_matrix_from_backend_pose,
+    _world_bound_center_xyz,
     _wrist_calibration_target_world_points,
     import_simulation_app,
     isaac_sim_6_backend,
@@ -713,17 +714,17 @@ def test_wrist_mount_is_calibrated_once_in_parent_coordinates_toward_task_centro
 
 
 def test_wrist_mount_calibration_uses_only_prospectively_specified_targets() -> None:
-    placements = {
-        "spraycan_translation_m": [0.0, 0.075, 1.085],
-        "tray_center_translation_m": [-0.05, 0.32, 1.025],
+    entity_world_points = {
+        "spraycan": [0.0, 0.075, 1.085],
+        "tray": [-0.05, 0.32, 1.025],
     }
 
     resolved = _wrist_calibration_target_world_points(
         calibration={"target_entity_ids": ["spraycan"]},
-        placements=placements,
+        entity_world_points=entity_world_points,
     )
 
-    assert resolved == {"spraycan": placements["spraycan_translation_m"]}
+    assert resolved == {"spraycan": entity_world_points["spraycan"]}
 
 
 @pytest.mark.parametrize(
@@ -740,11 +741,26 @@ def test_wrist_mount_calibration_rejects_invalid_prospective_targets(
     with pytest.raises(ValueError, match=error):
         _wrist_calibration_target_world_points(
             calibration={"target_entity_ids": target_entity_ids},
-            placements={
-                "spraycan_translation_m": [0.0, 0.075, 1.085],
-                "tray_center_translation_m": [-0.05, 0.32, 1.025],
+            entity_world_points={
+                "spraycan": [0.0, 0.075, 1.085],
+                "tray": [-0.05, 0.32, 1.025],
             },
         )
+
+
+def test_world_bound_center_uses_renderable_extent_not_asset_origin() -> None:
+    class Aligned:
+        def GetMin(self):
+            return [-0.2, 0.1, 0.9]
+
+        def GetMax(self):
+            return [0.4, 0.5, 1.3]
+
+    class Bound:
+        def ComputeAlignedBox(self):
+            return Aligned()
+
+    assert _world_bound_center_xyz(Bound()) == pytest.approx([0.1, 0.3, 1.1])
 
 
 def test_wrist_mount_calibration_handles_world_up_parallel_to_gaze() -> None:

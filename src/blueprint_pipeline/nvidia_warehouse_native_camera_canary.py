@@ -707,14 +707,11 @@ def _rigid_wrist_mount_from_initial_task_framing(
 
 
 def _wrist_calibration_target_world_points(
-    *, calibration: Mapping[str, Any], placements: Mapping[str, Any]
+    *, calibration: Mapping[str, Any], entity_world_points: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Resolve the prospectively specified task entities used for wrist framing."""
 
-    available = {
-        "spraycan": placements.get("spraycan_translation_m"),
-        "tray": placements.get("tray_center_translation_m"),
-    }
+    available = {str(key): value for key, value in entity_world_points.items()}
     requested_value = calibration.get("target_entity_ids")
     if not isinstance(requested_value, list) or not requested_value:
         raise ValueError("native_wrist_mount_target_entity_ids_missing")
@@ -730,6 +727,18 @@ def _wrist_calibration_target_world_points(
     if any(value is None for value in resolved.values()):
         raise ValueError("native_wrist_mount_target_placement_missing")
     return resolved
+
+
+def _world_bound_center_xyz(world_bound: Any) -> np.ndarray:
+    """Return the finite center of one USD world-space aligned bound."""
+
+    aligned = world_bound.ComputeAlignedBox()
+    minimum = np.asarray(aligned.GetMin(), dtype=float).reshape(3)
+    maximum = np.asarray(aligned.GetMax(), dtype=float).reshape(3)
+    center = (minimum + maximum) / 2.0
+    if not np.isfinite(center).all() or np.any(maximum < minimum):
+        raise ValueError("native_renderable_world_bound_invalid")
+    return center
 
 
 def _summarize_required_entity_projections(
@@ -973,6 +982,15 @@ def isaac_sim_6_backend(
                 prim_range=Usd.PrimRange,
                 is_renderable=lambda prim: prim.IsA(UsdGeom.Gprim),
             )
+        bbox_cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+        )
+        entity_world_points = {
+            entity_id: _world_bound_center_xyz(bbox_cache.ComputeWorldBound(prim))
+            for entity_id, prim in semantic_targets.items()
+            if entity_id in {"spraycan", "tray"}
+        }
 
         UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
         dome = UsdLux.DomeLight.Define(stage, "/World/Lights/Dome")
@@ -1059,7 +1077,7 @@ def isaac_sim_6_backend(
             mount_translation_parent=wrist["mount_translation_m"],
             target_world_points=_wrist_calibration_target_world_points(
                 calibration=calibration,
-                placements=placements,
+                entity_world_points=entity_world_points,
             ),
             world_up=calibration["world_up"],
             camera_eye_world_offset=(0.0, 0.0, WRIST_CAMERA_WORLD_CLEARANCE_M),
@@ -1177,10 +1195,7 @@ def isaac_sim_6_backend(
                 ),
             }
         )
-        entity_points = {
-            "spraycan": placements["spraycan_translation_m"],
-            "tray": tray_center,
-        }
+        entity_points = entity_world_points
         franka_link_points = {
             link_name: matrix[3, :3]
             for link_name, matrix in initial_link_matrices.items()
@@ -1326,6 +1341,10 @@ def isaac_sim_6_backend(
             "spraycan_runtime_rigid_body": spray_prim.HasAPI(UsdPhysics.RigidBodyAPI),
             "spraycan_kinematic_for_camera_canary": True,
             "semantic_labeling_apis": semantic_labeling_apis,
+            "entity_renderable_world_centers_m": {
+                entity_id: np.asarray(point, dtype=float).tolist()
+                for entity_id, point in entity_world_points.items()
+            },
             "camera_runtime_api": {
                 "module": "isaacsim.sensors.experimental.rtx",
                 "authoring_class": "RtxCamera",
