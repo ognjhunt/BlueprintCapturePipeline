@@ -1,9 +1,10 @@
 # Systemd security baseline
 
-The live Pipeline control-plane, intake, Pub/Sub listener, and GPU spend guard
-run as the dedicated `blueprint` user and group. The installer creates writable
-state and handoff roots with mode `0750`; the environment file is `root:blueprint`
-mode `0640`. The repository and operating system remain read-only to the units.
+The live Pipeline control-plane, production and isolated-staging intake,
+Pub/Sub listener, and GPU spend guard run as the dedicated `blueprint` user and
+group. The installers create writable state and handoff roots with mode `0750`;
+environment files are `root:blueprint` mode `0640`. The repository and operating
+system remain read-only to the units.
 
 Every production unit must retain these controls:
 
@@ -22,6 +23,7 @@ sudo systemd-analyze verify \
 for unit in \
   blueprint-pipeline-control-plane.service \
   blueprint-pipeline-intake.service \
+  blueprint-pipeline-intake-staging.service \
   blueprint-pubsub-handoff-listener.service \
   blueprint-gpu-spend-guard.service
 do

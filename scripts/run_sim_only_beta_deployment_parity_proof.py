@@ -317,6 +317,7 @@ def build_deployment_parity_proof(
         "ok": False,
         "http_status": None,
         "status": None,
+        "authentication_configured": False,
         "token_configured": False,
         "error": "not_attempted",
     }
@@ -328,7 +329,15 @@ def build_deployment_parity_proof(
                 "ok": result.get("ok") is True,
                 "http_status": result.get("http_status"),
                 "status": _json_status(payload),
-                "token_configured": payload.get("token_configured") is True
+                "authentication_configured": (
+                    payload.get("authentication_configured") is True
+                    if isinstance(payload, Mapping)
+                    else False
+                ),
+                "token_configured": (
+                    payload.get("token_configured") is True
+                    or payload.get("authentication_configured") is True
+                )
                 if isinstance(payload, Mapping)
                 else False,
                 "error": result.get("error"),

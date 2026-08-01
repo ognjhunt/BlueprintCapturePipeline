@@ -1,0 +1,56 @@
+[Unit]
+Description=Blueprint isolated staging pipeline intake service
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint-staging
+TasksMax=512
+LimitNOFILE=65536
+MemoryMax=8G
+CPUQuota=200%
+Type=simple
+Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline-staging
+# Staging exercises the same fail-closed scientific/runtime posture as
+# production. Deployment environment remains a separate proof field.
+Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
+Environment=PRIVACY_PIPELINE_ENABLED=true
+Environment=PRIVACY_FAIL_CLOSED=true
+Environment=PIPELINE_SYNC_REQUIRED=true
+Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
+Environment=BLUEPRINT_LIVE_PIPELINE_INTAKE_HOST=127.0.0.1
+Environment=PORT=8766
+EnvironmentFile=-/etc/blueprint/pipeline-intake-staging.env
+WorkingDirectory=/
+ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && test -n "$${BLUEPRINT_SOURCE_COMMIT:-}" && test "$$(git rev-parse HEAD)" = "$${BLUEPRINT_SOURCE_COMMIT}" && test -z "$$(git status --porcelain)"'
+ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-live-pipeline-intake-service ]; then exec .venv/bin/blueprint-live-pipeline-intake-service; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_intake_service; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_intake_service'
+Restart=on-failure
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
