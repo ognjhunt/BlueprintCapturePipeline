@@ -222,17 +222,23 @@ used as blind confirmation.
   close the three-interaction gate, and bind WAM3 to the exact query-3 action,
   27-frame feedback history, immutable provider bundle, and one single-use
   allocation;
+- `protocol_amendment_23_wam3_result_and_policy_query4_v1.md` and
+  `compute_authorization_openpi_policy_query_4.json` — preserve allocation 7's
+  successful three-view WAM3 output, immediate reliability, cost, teardown,
+  and provider-zero evidence; bind WAM3's exact generated observation and
+  commanded-prefix state to one same-checkpoint policy query 4; and preserve
+  all existing one-GPU, spend, watchdog, TTL, and teardown controls;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-The registered three-interaction engineering gate is complete. Three
-generated-only WAM transitions passed their immediate reliability gates, and
-the same frozen `pi05_droid` checkpoint was re-queried after each using only
-the three generated views and registered commanded state. Query 3 returned a
-complete native 15x8 action. WAM3 is now frozen with the preserved 27-frame
-feedback history as interaction four of the 12-interaction horizon. The next
-finite gate is immutable publication and paid execution of WAM3, followed by
-same-policy query 4 if reliability passes. Judges remain forbidden until the
-complete 12-interaction episode and causal-control matrix pass.
+The registered three-interaction engineering gate is complete. Four
+generated-only WAM transitions have now passed their immediate reliability
+gates. The same frozen `pi05_droid` checkpoint was re-queried after each of the
+first three using only the three generated views and registered commanded
+state. WAM3's exact generated observation is frozen as the only input to policy
+query 4. The next finite gate is immutable publication and paid execution of
+that same-policy query. Interaction four is complete only if query 4 returns a
+valid, identity-bound native action. Judges remain forbidden until the complete
+12-interaction episode and causal-control matrix pass.
