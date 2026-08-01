@@ -273,6 +273,137 @@ def test_monitor_returns_watchdog_control_after_bounded_transient_url_errors(
     assert result["continuing_spend"] is True
 
 
+def test_monitor_tears_down_unbooted_provider_after_startup_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class Response:
+        status = 404
+        body = b""
+
+    class Provider:
+        def inspect(self, instance_id: str) -> dict:
+            assert instance_id == "instance-openpi"
+            return {
+                "status": "observed",
+                "actual_status": "loading",
+                "cur_state": "stopped",
+                "direct_port_ready": False,
+                "provider_absence_confirmed": False,
+                "raw_provider_response_recorded": False,
+            }
+
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            assert name_prefix == ""
+            return {"api_confirmed": True, "live_resource_count": 0, "resources": []}
+
+    monkeypatch.setattr(runpod_module, "safe_http_request", lambda *_a, **_k: Response())
+    monkeypatch.setattr(
+        runpod_module,
+        "terminate_canary_resources",
+        lambda **_kwargs: {"provider_absence_confirmed": True},
+    )
+    monkeypatch.setattr(
+        runpod_module,
+        "write_owner_teardown_cancel_request",
+        lambda **_kwargs: {"status": "requested"},
+    )
+    monkeypatch.setattr(
+        runpod_module,
+        "_wait_for_watchdog_terminal",
+        lambda _root: {
+            "control_plane_terminal": True,
+            "campaign_budget_settlement": {"status": "settled", "charged_usd": 0.2},
+        },
+    )
+
+    result = _monitor_openpi_output_and_teardown(
+        root=tmp_path,
+        output_secret_get_url="https://storage.example/output?signature=secret",
+        provider=Provider(),
+        armed={"status": "armed"},
+        pod_id="instance-openpi",
+        provider_name="vast",
+        deadline_epoch=time.time() + 120,
+        poll_interval_seconds=0.01,
+        provider_startup_timeout_seconds=0,
+    )
+
+    assert result["status"] == "provider_terminal_without_output"
+    assert result["blockers"] == ["openpi_provider_startup_timeout_without_output"]
+    assert result["provider_absence_confirmed"] is True
+    assert result["control_plane_terminal"] is True
+    assert result["continuing_spend"] is False
+    assert (tmp_path / "openpi_policy_ranking_monitor.json").is_file()
+
+
+def test_monitor_does_not_timeout_healthy_runpod_runtime(tmp_path: Path, monkeypatch) -> None:
+    archive = _completed_output_archive()
+    attempts = 0
+
+    class Response:
+        def __init__(self, *, status: int, body: bytes) -> None:
+            self.status = status
+            self.body = body
+
+    class Provider:
+        def inspect(self, instance_id: str) -> dict:
+            assert instance_id == "pod-openpi"
+            return {
+                "status": "observed",
+                "desiredStatus": "RUNNING",
+                "runtime_ready": True,
+                "provider_absence_confirmed": False,
+                "raw_provider_response_recorded": False,
+            }
+
+        def billable_inventory(self, *, name_prefix: str) -> dict:
+            assert name_prefix == ""
+            return {"api_confirmed": True, "live_resource_count": 0, "resources": []}
+
+    def request(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        return Response(status=404, body=b"") if attempts == 1 else Response(
+            status=200, body=archive
+        )
+
+    monkeypatch.setattr(runpod_module, "safe_http_request", request)
+    monkeypatch.setattr(
+        runpod_module,
+        "terminate_canary_resources",
+        lambda **_kwargs: {"provider_absence_confirmed": True},
+    )
+    monkeypatch.setattr(
+        runpod_module,
+        "write_owner_teardown_cancel_request",
+        lambda **_kwargs: {"status": "requested"},
+    )
+    monkeypatch.setattr(
+        runpod_module,
+        "_wait_for_watchdog_terminal",
+        lambda _root: {
+            "control_plane_terminal": True,
+            "campaign_budget_settlement": {"status": "settled"},
+        },
+    )
+
+    result = _monitor_openpi_output_and_teardown(
+        root=tmp_path,
+        output_secret_get_url="https://storage.example/output?signature=secret",
+        provider=Provider(),
+        armed={"status": "armed"},
+        pod_id="pod-openpi",
+        provider_name="runpod",
+        deadline_epoch=time.time() + 120,
+        poll_interval_seconds=0.01,
+        provider_startup_timeout_seconds=0,
+    )
+
+    assert attempts == 2
+    assert result["status"] == "completed"
+    assert result["continuing_spend"] is False
+
+
 def _inputs():
     release = {
         "schema_version": "openpi_policy_ranking_gpu_release.v1",

@@ -527,6 +527,102 @@ def _wait_for_watchdog_terminal(root: Path, *, timeout_seconds: float = 45.0) ->
     return observed
 
 
+DEFAULT_PROVIDER_STARTUP_TIMEOUT_SECONDS = 480.0
+_PROVIDER_TERMINAL_STATES = {
+    "cancelled",
+    "destroyed",
+    "error",
+    "exited",
+    "failed",
+    "stopped",
+    "terminated",
+}
+
+
+def _provider_runtime_inspection(provider: Any, pod_id: str) -> dict[str, Any]:
+    inspect = getattr(provider, "inspect", None)
+    if not callable(inspect):
+        return {"status": "not_supported", "raw_secret_values_recorded": False}
+    try:
+        value = inspect(pod_id)
+    except Exception as exc:  # noqa: BLE001 - the output watchdog remains authoritative
+        return {
+            "status": "inspection_failed",
+            "error_type": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    return dict(value) if isinstance(value, Mapping) else {
+        "status": "invalid_response",
+        "raw_secret_values_recorded": False,
+    }
+
+
+def _close_provider_without_output(
+    *,
+    root: Path,
+    provider: Any,
+    armed: Mapping[str, Any],
+    pod_id: str,
+    provider_name: str,
+    blocker: str,
+    inspection: Mapping[str, Any],
+) -> dict[str, Any]:
+    teardown = terminate_canary_resources(
+        provider=provider,
+        pod_name_prefix=CANARY_NAME_PREFIX,
+        armed=armed,
+        provider_name=provider_name,
+    )
+    global_inventory = provider.billable_inventory(name_prefix="")
+    global_absent = bool(
+        global_inventory.get("api_confirmed") is True
+        and global_inventory.get("live_resource_count") == 0
+    )
+    absence_proven = bool(teardown.get("provider_absence_confirmed") is True and global_absent)
+    if absence_proven:
+        write_owner_teardown_cancel_request(
+            root=root,
+            pod_name_prefix=CANARY_NAME_PREFIX,
+            provider_name=provider_name,
+            instance_id=pod_id,
+        )
+    watchdog_terminal = _wait_for_watchdog_terminal(root) if absence_proven else {}
+    settlement = watchdog_terminal.get("campaign_budget_settlement")
+    settlement = settlement if isinstance(settlement, Mapping) else {}
+    control_terminal = bool(
+        absence_proven
+        and watchdog_terminal.get("control_plane_terminal") is True
+        and settlement.get("status") == "settled"
+    )
+    result = {
+        "schema_version": "openpi_policy_ranking_monitor.v1",
+        "status": (
+            "provider_terminal_without_output"
+            if control_terminal
+            else "provider_terminal_without_output_watchdog_retained"
+        ),
+        "blockers": sorted(
+            set(
+                [
+                    blocker,
+                    *([] if absence_proven else ["openpi_provider_absence_unverified"]),
+                    *([] if control_terminal else ["openpi_control_plane_not_terminal"]),
+                ]
+            )
+        ),
+        "provider_runtime_inspection": dict(inspection),
+        "teardown": teardown,
+        "final_global_inventory": global_inventory,
+        "provider_absence_confirmed": absence_proven,
+        "control_plane_terminal": control_terminal,
+        "campaign_budget_settlement": dict(settlement),
+        "continuing_spend": not control_terminal,
+        "raw_secret_values_recorded": False,
+    }
+    write_json(root / "openpi_policy_ranking_monitor.json", result)
+    return result
+
+
 def _monitor_openpi_output_and_teardown(
     *,
     root: Path,
@@ -537,11 +633,13 @@ def _monitor_openpi_output_and_teardown(
     provider_name: str,
     deadline_epoch: float,
     poll_interval_seconds: float = 15.0,
+    provider_startup_timeout_seconds: float = DEFAULT_PROVIDER_STARTUP_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     output_path = root / "openpi_policy_ranking_provider_output.zip"
     response_bytes: bytes | None = None
     http_status: int | None = None
     consecutive_transient_errors = 0
+    monitor_started_epoch = time.time()
     while time.time() < deadline_epoch - 60:
         try:
             response = safe_http_request(
@@ -583,6 +681,37 @@ def _monitor_openpi_output_and_teardown(
                 "watchdog_deadline_epoch": deadline_epoch,
                 "raw_secret_values_recorded": False,
             }
+        inspection = _provider_runtime_inspection(provider, pod_id)
+        actual_status = str(
+            inspection.get("actual_status") or inspection.get("desiredStatus") or ""
+        ).strip().lower()
+        provider_absent = inspection.get("provider_absence_confirmed") is True
+        terminal = provider_absent or actual_status in _PROVIDER_TERMINAL_STATES
+        runtime_ready = bool(
+            inspection.get("direct_port_ready") is True
+            or inspection.get("runtime_ready") is True
+            or actual_status == "running"
+        )
+        startup_timed_out = bool(
+            provider_startup_timeout_seconds >= 0
+            and time.time() - monitor_started_epoch >= provider_startup_timeout_seconds
+            and not runtime_ready
+            and actual_status in {"", "created", "initializing", "loading", "queued", "starting"}
+        )
+        if terminal or startup_timed_out:
+            return _close_provider_without_output(
+                root=root,
+                provider=provider,
+                armed=armed,
+                pod_id=pod_id,
+                provider_name=provider_name,
+                blocker=(
+                    "openpi_provider_terminal_without_output"
+                    if terminal
+                    else "openpi_provider_startup_timeout_without_output"
+                ),
+                inspection=inspection,
+            )
         time.sleep(max(0.1, poll_interval_seconds))
     if response_bytes is None:
         return {
