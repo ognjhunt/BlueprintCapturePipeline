@@ -1757,7 +1757,7 @@ def create_app() -> FastAPI:
             )
         supervisor = await run_in_threadpool(
             run_capture_build_supervisor,
-            capture_root=artifact_root / "capture_intake_envelope.json",
+            capture_root=artifact_root,
             **supervisor_options,
         )
         return {

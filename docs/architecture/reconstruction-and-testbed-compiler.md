@@ -126,7 +126,11 @@ completed 360 capture build must also carry a deterministic
 `capture_profile_validation.v1` artifact at
 `evaluation_prep/capture_profile_validation.json` (or its pipeline-prefixed
 equivalent). It binds the immutable source digest, native probe receipts,
-observed topology, declared profile, and any calibrated native normalization.
+observed topology, declared profile, and any already available calibrated native
+normalization. Observed dual-stream topology may validate only the native
+profile while recording that rig calibration remains pending; it does not prove
+intrinsics, distortion, lens identity, synchronization, or metric scale. Those
+remain separate fail-closed normalization and camera-rig gates.
 Supervisor routing verifies its safe-projection binding before exposing stages;
 missing, malformed, source-mismatched, or contradictory evidence yields a typed
 unresolved route with no executable adapters. The agent may request corrected

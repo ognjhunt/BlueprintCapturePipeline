@@ -126,8 +126,8 @@ def test_declared_profile_conflict_blocks_without_agent_rerouting() -> None:
     ]
 
 
-def test_native_profile_requires_calibrated_normalization() -> None:
-    blocked = _build(
+def test_native_profile_is_selected_before_separate_rig_calibration() -> None:
+    pending = _build(
         declared="camera_360_native",
         lane="camera_360_native_candidate_requires_calibration",
     )
@@ -137,9 +137,13 @@ def test_native_profile_requires_calibrated_normalization() -> None:
         normalization=_native_normalization(),
     )
 
-    assert blocked["validation_status"] == "blocked"
-    assert blocked["blockers"] == ["native_360_calibrated_normalization_required"]
+    assert pending["validation_status"] == "validated"
+    assert pending["blockers"] == []
+    assert pending["warnings"] == ["native_360_rig_calibration_pending"]
+    assert pending["native_normalization_digest"] is None
+    assert pending["claim_ceiling"] == "capture_profile_compatibility"
     assert accepted["validation_status"] == "validated"
+    assert accepted["warnings"] == []
     assert accepted["native_normalization_digest"] == _native_normalization()[
         "native_360_normalization_digest"
     ]
@@ -182,6 +186,18 @@ def test_mixed_topology_abstains_and_tampered_inputs_fail_closed() -> None:
     tampered_result["blockers"] = []
     with pytest.raises(CaptureProfileValidationError, match="result_invalid"):
         validate_capture_profile_validation(tampered_result)
+
+
+def test_stitched_profile_rejects_native_normalization_input() -> None:
+    with pytest.raises(
+        CaptureProfileValidationError,
+        match="native_normalization_incompatible_with_stitched_topology",
+    ):
+        _build(
+            declared="camera_360_equirectangular",
+            lane="camera_360_equirectangular",
+            normalization=_native_normalization(),
+        )
 
 
 @pytest.mark.parametrize(

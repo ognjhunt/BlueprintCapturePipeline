@@ -152,11 +152,13 @@ def build_capture_profile_validation(
     if unique_lanes == ["camera_360_equirectangular"]:
         compatible_profile = "camera_360_equirectangular"
         if native_normalization_result is not None:
-            warnings.append("native_normalization_ignored_for_stitched_topology")
+            raise CaptureProfileValidationError(
+                ["capture_profile_native_normalization_incompatible_with_stitched_topology"]
+            )
     elif unique_lanes == ["camera_360_native_candidate_requires_calibration"]:
         compatible_profile = "camera_360_native"
         if native_normalization_result is None:
-            blockers.append("native_360_calibrated_normalization_required")
+            warnings.append("native_360_rig_calibration_pending")
         else:
             native_normalization_digest = _validated_native_normalization(
                 native_normalization_result,
@@ -317,6 +319,7 @@ def validate_capture_profile_validation(value: Mapping[str, Any]) -> dict[str, A
 
     unique_lanes = sorted(set(observed_lanes or []))
     expected_blockers: list[str] = []
+    expected_warnings: list[str] = []
     if unique_lanes == ["camera_360_equirectangular"]:
         expected_compatible: str | None = "camera_360_equirectangular"
         native_binding_valid = native_normalization_digest is None
@@ -326,7 +329,7 @@ def validate_capture_profile_validation(value: Mapping[str, Any]) -> dict[str, A
             native_normalization_digest
         )
         if native_normalization_digest is None:
-            expected_blockers.append("native_360_calibrated_normalization_required")
+            expected_warnings.append("native_360_rig_calibration_pending")
     else:
         expected_compatible = None
         native_binding_valid = native_normalization_digest is None
@@ -391,8 +394,7 @@ def validate_capture_profile_validation(value: Mapping[str, Any]) -> dict[str, A
         or not isinstance(blockers, list)
         or blockers != expected_blockers
         or not isinstance(result.get("warnings"), list)
-        or result.get("warnings")
-        != sorted(set(str(item) for item in result.get("warnings", [])))
+        or result.get("warnings") != expected_warnings
         or result.get("agent_selected_capture_profile") is not False
         or result.get("agent_may_change_capture_profile") is not False
         or result.get("claim_ceiling") != "capture_profile_compatibility"

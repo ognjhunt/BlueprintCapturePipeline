@@ -15,6 +15,9 @@ CAPTURE_BUILD_INGRESS_SCHEMA_VERSION = "task_evaluation_capture_build_ingress.v1
 _MAX_JSON_BYTES = 2_000_000
 _STANDALONE_MANIFEST_LABEL = "submitted_manifest.json"
 _KNOWN_ARTIFACTS = (
+    "capture_intake_envelope.json",
+    "capture_intake_admission.json",
+    "capture_qa_report.json",
     "pipeline_handoff.json",
     "capture_descriptor.json",
     "raw/capture_upload_complete.json",

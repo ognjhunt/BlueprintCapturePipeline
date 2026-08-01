@@ -13,6 +13,7 @@ from blueprint_pipeline.capture_intake import (
     CaptureIntakeError,
     build_capture_admission,
     materialize_capture_intake,
+    validate_capture_intake_envelope,
 )
 
 
@@ -135,6 +136,20 @@ def test_capture_intake_schema_accepts_the_runtime_contract() -> None:
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator.check_schema(schema)
     jsonschema.Draft202012Validator(schema).validate(_envelope(b"video"))
+
+
+def test_single_file_capture_digest_must_bind_the_original_bytes() -> None:
+    payload = b"video"
+    envelope = _envelope(payload)
+    envelope["capture_digest"] = "sha256:" + "9" * 64
+
+    with pytest.raises(CaptureIntakeError, match="does_not_match_single_original"):
+        validate_capture_intake_envelope(envelope)
+
+    envelope["capture_digest"] = _digest(payload)
+    assert validate_capture_intake_envelope(envelope)["capture_digest"] == _digest(
+        payload
+    )
 
 
 def test_iphone_lidar_missing_decoded_pts_and_retention_map_requests_exact_recapture() -> None:

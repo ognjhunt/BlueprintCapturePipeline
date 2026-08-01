@@ -182,6 +182,12 @@ def _validate_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
         suffix = Path(relative or filename).suffix.lower()
         if suffix not in _ALLOWED_SUFFIXES:
             errors.append(f"original_files[{index}].file_type:unsupported")
+    capture_digest = envelope.get("capture_digest")
+    if capture_digest is not None:
+        if not _is_sha256(capture_digest):
+            errors.append("capture_digest:invalid")
+        elif len(files) == 1 and capture_digest != files[0].get("sha256"):
+            errors.append("capture_digest:does_not_match_single_original")
     for key in ("capture_device", "timing_declaration", "coordinate_frame_declaration"):
         if not isinstance(envelope.get(key), Mapping) or not envelope.get(key):
             errors.append(f"{key}:missing_or_empty")

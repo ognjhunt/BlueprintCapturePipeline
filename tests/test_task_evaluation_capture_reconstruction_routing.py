@@ -80,6 +80,7 @@ def _capture_build(
     has_lidar: bool | None = None,
     include_profile_validation: bool = True,
     observed_360_lane: str | None = None,
+    include_native_normalization: bool = True,
 ) -> dict:
     capture_root = tmp_path / profile
     capture_root.mkdir(parents=True)
@@ -112,6 +113,7 @@ def _capture_build(
             native_normalization_result=(
                 _native_normalization()
                 if lane == "camera_360_native_candidate_requires_calibration"
+                and include_native_normalization
                 else None
             ),
             source_commit_sha="d" * 40,
@@ -297,6 +299,29 @@ def test_360_declared_observed_profile_conflict_blocks_without_agent_switch(
     ]
     assert route["next_legal_action"] == "request_corrected_capture_intake"
     assert route["agent_selected_capture_profile"] is False
+
+
+def test_native_360_profile_routes_to_calibration_when_rig_is_still_pending(
+    tmp_path: Path,
+) -> None:
+    capture_build = _capture_build(
+        tmp_path,
+        profile="camera_360_native",
+        include_native_normalization=False,
+    )
+
+    route = build_capture_reconstruction_route(capture_build)
+
+    assert route["status"] == "route_proposed"
+    assert route["capture_authority_profile"] == "camera_360_native"
+    assert route["capture_profile_validation_status"] == "validated"
+    assert route["capture_profile_validation_digest"].startswith("sha256:")
+    assert route["blockers"] == []
+    assert route["stages"][0]["stage_id"] == "retain_native_360_originals"
+    assert route["stages"][1]["stage_id"] == "normalize_native_360_capture"
+    assert "local://native-360-normalization-v1" in route[
+        "currently_registered_adapters"
+    ]
 
 
 def test_360_profile_validation_projection_tamper_fails_closed(tmp_path: Path) -> None:

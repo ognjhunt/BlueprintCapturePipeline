@@ -13,6 +13,7 @@ from blueprint_pipeline.native_360_normalization import (
     Native360NormalizationError,
     build_native_360_probe_receipt,
     normalize_native_360_capture,
+    probe_360_source,
     probe_and_normalize_native_360_capture,
     probe_native_360_source,
 )
@@ -1101,6 +1102,65 @@ def test_native_360_probe_routes_single_stitched_stream_to_equirectangular_lane(
         "container_stream_topology_only"
     )
     assert receipt["format_metadata"]["capture_profile_fully_validated"] is False
+
+
+def test_general_360_probe_accepts_stitched_mp4_without_weakening_native_suffix_gate(
+    tmp_path: Path,
+) -> None:
+    metadata = {
+        "streams": [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "h264",
+                "width": 3840,
+                "height": 1920,
+                "time_base": "1/50000",
+                "side_data_list": [
+                    {
+                        "side_data_type": "Spherical Mapping",
+                        "projection": "equirectangular",
+                    }
+                ],
+            }
+        ],
+        "format": {"format_name": "mov"},
+    }
+    timing = {
+        "frames": [
+            {
+                "stream_index": 0,
+                "media_type": "video",
+                "pts_time": "0.0",
+                "pkt_duration_time": "0.02",
+                "key_frame": 1,
+            }
+        ]
+    }
+    capture_root, executable, runner, _calls = _probe_fixture(
+        tmp_path,
+        filename="capture.mp4",
+        metadata_payload=metadata,
+        timing_payload=timing,
+    )
+
+    receipt = probe_360_source(
+        capture_root=capture_root,
+        source_relative_path="native/capture.mp4",
+        ffprobe_executable=executable,
+        runner=runner,
+    )
+
+    assert receipt["format_metadata"]["compatible_processing_lane"] == (
+        "camera_360_equirectangular"
+    )
+    with pytest.raises(Native360NormalizationError, match="original_must_be_insv"):
+        probe_native_360_source(
+            capture_root=capture_root,
+            source_relative_path="native/capture.mp4",
+            ffprobe_executable=executable,
+            runner=runner,
+        )
 
 
 @pytest.mark.parametrize("failure_mode", ["missing", "tampered", "symlink"])

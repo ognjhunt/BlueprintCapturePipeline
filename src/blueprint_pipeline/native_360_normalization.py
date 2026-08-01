@@ -475,10 +475,11 @@ def build_native_360_probe_receipt(
     return receipt
 
 
-def probe_native_360_source(
+def _probe_360_source(
     *,
     capture_root: str | Path,
     source_relative_path: str,
+    allowed_suffixes: frozenset[str],
     ffprobe_executable: str | Path | None = None,
     timeout_seconds: float = _PROBE_TIMEOUT_SECONDS,
     maximum_source_bytes: int = _MAX_NATIVE_SOURCE_BYTES,
@@ -503,7 +504,7 @@ def probe_native_360_source(
     if not root.is_dir():
         raise Native360NormalizationError(["native_360_capture_root_missing"])
     relative_path = _safe_relative(source_relative_path)
-    if Path(relative_path).suffix.lower() != ".insv":
+    if Path(relative_path).suffix.lower() not in allowed_suffixes:
         raise Native360NormalizationError(["native_360_original_must_be_insv"])
     source = _safe_source(root, relative_path)
     size = source.stat().st_size
@@ -780,6 +781,54 @@ def probe_native_360_source(
         runtime_digest=runtime_digest,
         streams=receipt_streams,
         format_metadata=format_metadata,
+    )
+
+
+def probe_360_source(
+    *,
+    capture_root: str | Path,
+    source_relative_path: str,
+    ffprobe_executable: str | Path | None = None,
+    timeout_seconds: float = _PROBE_TIMEOUT_SECONDS,
+    maximum_source_bytes: int = _MAX_NATIVE_SOURCE_BYTES,
+    maximum_output_bytes: int = _MAX_PROBE_OUTPUT_BYTES,
+    runner: ProbeRunner | None = None,
+) -> dict[str, Any]:
+    """Probe retained native or stitched 360 media without selecting its profile."""
+
+    return _probe_360_source(
+        capture_root=capture_root,
+        source_relative_path=source_relative_path,
+        allowed_suffixes=frozenset({".insv", ".mp4", ".mov"}),
+        ffprobe_executable=ffprobe_executable,
+        timeout_seconds=timeout_seconds,
+        maximum_source_bytes=maximum_source_bytes,
+        maximum_output_bytes=maximum_output_bytes,
+        runner=runner,
+    )
+
+
+def probe_native_360_source(
+    *,
+    capture_root: str | Path,
+    source_relative_path: str,
+    ffprobe_executable: str | Path | None = None,
+    timeout_seconds: float = _PROBE_TIMEOUT_SECONDS,
+    maximum_source_bytes: int = _MAX_NATIVE_SOURCE_BYTES,
+    maximum_output_bytes: int = _MAX_PROBE_OUTPUT_BYTES,
+    runner: ProbeRunner | None = None,
+) -> dict[str, Any]:
+    """Probe exact retained ``.insv`` bytes into a claim-limited receipt."""
+
+    return _probe_360_source(
+        capture_root=capture_root,
+        source_relative_path=source_relative_path,
+        allowed_suffixes=frozenset({".insv"}),
+        ffprobe_executable=ffprobe_executable,
+        timeout_seconds=timeout_seconds,
+        maximum_source_bytes=maximum_source_bytes,
+        maximum_output_bytes=maximum_output_bytes,
+        runner=runner,
     )
 
 
@@ -1565,6 +1614,7 @@ __all__ = [
     "NATIVE_360_PROBE_SCHEMA_VERSION",
     "Native360NormalizationError",
     "build_native_360_probe_receipt",
+    "probe_360_source",
     "normalize_native_360_capture",
     "probe_and_normalize_native_360_capture",
     "probe_native_360_source",
