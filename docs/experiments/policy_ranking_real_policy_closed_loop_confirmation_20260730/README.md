@@ -260,19 +260,25 @@ used as blind confirmation.
   zero-mutation launch-time concurrency block, bind the provider refresh to the
   signed two-GPU ceiling, prove one existing resource admits while two block,
   and freeze a new single-use query-5 request at runtime SHA `ede38013`;
+- `protocol_amendment_29_policy_query5_result_and_wam5_v1.md`,
+  `compute_authorization_ctrl_world_allocation_9.json`, and
+  `ctrl_world_current_reference_wam_5_gpu_profile_freeze_v1.json` — preserve
+  the successful same-checkpoint query 5, close interaction five, and bind
+  WAM5 to the exact query-5 action, 29-frame feedback history, immutable
+  provider bundle, one single-use allocation, and the prospectively amended
+  two-GPU global concurrency ceiling;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-The registered three-interaction engineering gate and interaction four are
-complete. WAM4 also passed its immediate three-view reliability gate and its
-generated observation is frozen, but interaction five is not complete until the
-same frozen `pi05_droid` checkpoint returns policy query 5. The next finite gate
-is the `ede38013` SHA-bound query-5 bundle: immutable publication, new object
-key, fresh global provider inventory at no more than one existing GPU, real
-cumulative campaign reservation, paid admission, transport, and canonical
-dry-run checks precede one live allocation. The prospective global ceiling is
-two concurrent GPUs, while this query remains limited to one allocation. WAM5
-is neither authorized nor running. Judges remain forbidden until the complete
-12-interaction episode and causal-control matrix pass.
+The registered three-interaction engineering gate and interactions four and
+five are complete. Policy query 5 returned from the same frozen `pi05_droid`
+checkpoint using WAM4's generated-only observation, and WAM5's exact
+29-history request is now prospectively frozen. The next finite gate is one
+allocation-9 WAM5 execution: immutable publication, new object key, fresh
+global inventory below the two-GPU ceiling, real cumulative campaign
+reservation, paid admission, signed transport, provider preflight, and
+canonical dry run all precede mutation. WAM5 itself remains limited to one GPU.
+Judges remain forbidden until the complete 12-interaction episode and
+causal-control matrix pass.
