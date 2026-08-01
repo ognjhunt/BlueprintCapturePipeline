@@ -150,9 +150,7 @@ def _add_prim_semantic_label(prim: Any, semantic_label: str) -> str:
             except TypeError:
                 function(prim, semantic_label, "class")
         return api_name
-    raise ImportError(
-        "native_semantics_api_unavailable:" + ",".join(import_failures)
-    )
+    raise ImportError("native_semantics_api_unavailable:" + ",".join(import_failures))
 
 
 def _author_renderable_semantic_label_tree(
@@ -303,9 +301,7 @@ def _semantic_entity_visibility(
 
     observed_labels = {
         str(raw_id): {
-            str(key): str(value)
-            for key, value in raw_labels.items()
-            if isinstance(key, str)
+            str(key): str(value) for key, value in raw_labels.items() if isinstance(key, str)
         }
         for raw_id, raw_labels in list(labels.items())[:64]
         if isinstance(raw_labels, Mapping)
@@ -533,6 +529,38 @@ def _unified_world_pose_matrix(pose_view: Any) -> np.ndarray:
     return _world_pose_matrix_from_backend_pose(positions_array[0], orientations_array[0])
 
 
+def _camera_pose_backend_congruence(
+    *,
+    requested_camera_to_world: Any,
+    authoring_camera_to_world: Any,
+    usd_camera_to_world: Any,
+    tolerance: float = 1e-5,
+) -> dict[str, Any]:
+    """Compare the requested camera pose with both runtime and USD truth."""
+
+    matrices = {
+        "requested": np.asarray(requested_camera_to_world, dtype=float).reshape(4, 4),
+        "authoring": np.asarray(authoring_camera_to_world, dtype=float).reshape(4, 4),
+        "usd": np.asarray(usd_camera_to_world, dtype=float).reshape(4, 4),
+    }
+    if not all(np.isfinite(matrix).all() for matrix in matrices.values()):
+        raise ValueError("native_wrist_camera_pose_backend_matrix_invalid")
+    deltas = {
+        "requested_to_authoring_max_abs": float(
+            np.max(np.abs(matrices["requested"] - matrices["authoring"]))
+        ),
+        "requested_to_usd_max_abs": float(np.max(np.abs(matrices["requested"] - matrices["usd"]))),
+        "authoring_to_usd_max_abs": float(np.max(np.abs(matrices["authoring"] - matrices["usd"]))),
+    }
+    threshold = float(tolerance)
+    congruent = all(value <= threshold for value in deltas.values())
+    return {
+        **deltas,
+        "tolerance_max_abs": threshold,
+        "congruent": congruent,
+    }
+
+
 def _render_world_without_physics_advance(world: Any) -> None:
     """Update articulation/Fabric transforms and render without stepping physics."""
 
@@ -702,9 +730,7 @@ def _summarize_required_entity_projections(
             for name in names
         }
     if view_id == "wrist":
-        return {
-            "spraycan_at_initial_pose": bool(phases.get("initial", {}).get("spraycan"))
-        }
+        return {"spraycan_at_initial_pose": bool(phases.get("initial", {}).get("spraycan"))}
     raise ValueError(f"native_camera_projection_view_invalid:{view_id}")
 
 
@@ -844,7 +870,6 @@ def isaac_sim_6_backend(
     simulation_app = SimulationApp(_simulation_app_launch_config())
     try:
         from isaacsim.core.api import World
-        from isaacsim.core.experimental.prims import XformPrim
         from isaacsim.core.prims import SingleArticulation
         from isaacsim.core.utils.stage import add_reference_to_stage
         from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera
@@ -916,13 +941,11 @@ def isaac_sim_6_backend(
         for semantic_label, semantic_prim in semantic_targets.items():
             if not semantic_prim.IsValid():
                 raise ValueError(f"native_semantic_target_prim_missing:{semantic_label}")
-            semantic_labeling_apis[semantic_label] = (
-                _author_renderable_semantic_label_tree(
-                    root_prim=semantic_prim,
-                    semantic_label=semantic_label,
-                    prim_range=Usd.PrimRange,
-                    is_renderable=lambda prim: prim.IsA(UsdGeom.Gprim),
-                )
+            semantic_labeling_apis[semantic_label] = _author_renderable_semantic_label_tree(
+                root_prim=semantic_prim,
+                semantic_label=semantic_label,
+                prim_range=Usd.PrimRange,
+                is_renderable=lambda prim: prim.IsA(UsdGeom.Gprim),
             )
 
         UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
@@ -976,11 +999,6 @@ def isaac_sim_6_backend(
         robot = SingleArticulation(prim_path="/World/Franka", name="native_warehouse_franka")
         world.scene.add(robot)
         world.reset()
-        # Wrap the existing camera only after reset has initialized the stage
-        # and runtime backends. Isaac Sim 6's experimental XformPrim is the
-        # supported unified USD/USDRT/Fabric API; the deprecated core.prims
-        # XFormPrim's ``usd=False`` path failed inside set_world_poses on V26.
-        wrist_pose_view = XformPrim(wrist_path)
         physics_sim_view = world.physics_sim_view
         if physics_sim_view is None:
             raise ValueError("native_articulation_physics_view_missing")
@@ -1023,14 +1041,15 @@ def isaac_sim_6_backend(
         resolved_wrist_mount_translation = wrist_mount_calibration[
             "resolved_mount_translation_parent_m"
         ]
+
         # Isaac Sim 6 deprecates the legacy Camera frame-dict path in favor of
         # CameraSensor. Bind both RGB and semantic segmentation to the same
         # render product so visibility evidence comes from the exact RGB view.
         # The new API spells the color annotator ``rgb`` and declares resolution
         # in OpenCV/NumPy order: (height, width).
-        def create_camera_sensor(view_id: str, camera_path: str) -> Any:
+        def create_camera_authoring(view_id: str, camera_path: str) -> Any:
             try:
-                authored_camera = RtxCamera(
+                return RtxCamera(
                     camera_path,
                     reset_xform_op_properties=False,
                 )
@@ -1038,8 +1057,10 @@ def isaac_sim_6_backend(
                 raise ValueError(
                     f"native_camera_rtx_authoring_setup_failed:{view_id}:{type(exc).__name__}"
                 ) from exc
+
+        def create_camera_sensor(view_id: str, authored_camera: Any) -> Any:
             try:
-                return CameraSensor(
+                sensor = CameraSensor(
                     authored_camera,
                     resolution=(480, 640),
                     annotators=["rgb", "semantic_segmentation"],
@@ -1048,10 +1069,28 @@ def isaac_sim_6_backend(
                 raise ValueError(
                     f"native_camera_rtx_runtime_setup_failed:{view_id}:{type(exc).__name__}"
                 ) from exc
+            if sensor.authoring_object is not authored_camera:
+                raise ValueError(f"native_camera_rtx_authoring_identity_lost:{view_id}")
+            return sensor
 
+        camera_authoring = {
+            view_id: create_camera_authoring(view_id, camera_paths[view_id])
+            for view_id in required_views
+        }
+        # Position the exact authoring object that CameraSensor will bind before
+        # creating its render product. CameraSensor lazily creates an optical
+        # Camera wrapper (which normalizes xform ops), so the same RtxCamera
+        # object is also reused for every subsequent wrist pose write and read.
+        wrist_pose_view = camera_authoring["wrist"]
+        _synchronize_camera_to_rigid_link(
+            pose_view=wrist_pose_view,
+            parent_to_world=hand_initial_matrix,
+            mount_translation_parent=resolved_wrist_mount_translation,
+            mount_orientation_parent_wxyz=wrist_quaternion,
+        )
         for view_id in (view for view in required_views if view != "wrist"):
-            camera_objects[view_id] = create_camera_sensor(view_id, camera_paths[view_id])
-        camera_objects["wrist"] = create_camera_sensor("wrist", wrist_path)
+            camera_objects[view_id] = create_camera_sensor(view_id, camera_authoring[view_id])
+        camera_objects["wrist"] = create_camera_sensor("wrist", camera_authoring["wrist"])
         _synchronize_camera_to_rigid_link(
             pose_view=wrist_pose_view,
             parent_to_world=hand_initial_matrix,
@@ -1075,7 +1114,7 @@ def isaac_sim_6_backend(
         hand_world_initial = initial_link_matrices.get("panda_hand")
         if hand_world_initial is None:
             raise ValueError("native_articulation_panda_hand_link_missing")
-        _synchronize_camera_to_rigid_link(
+        requested_wrist_world_initial = _synchronize_camera_to_rigid_link(
             pose_view=wrist_pose_view,
             parent_to_world=hand_world_initial,
             mount_translation_parent=resolved_wrist_mount_translation,
@@ -1084,6 +1123,15 @@ def isaac_sim_6_backend(
         for _ in range(2):
             _render_world_without_physics_advance(world)
         wrist_world_initial = _unified_world_pose_matrix(wrist_pose_view)
+        wrist_pose_congruence = {
+            "initial": _camera_pose_backend_congruence(
+                requested_camera_to_world=requested_wrist_world_initial,
+                authoring_camera_to_world=wrist_world_initial,
+                usd_camera_to_world=usd_camera_matrix(wrist_path),
+            )
+        }
+        if not wrist_pose_congruence["initial"]["congruent"]:
+            raise ValueError("native_wrist_camera_pose_backend_divergence:initial")
         wrist_local_initial = wrist_world_initial @ np.linalg.inv(hand_world_initial)
         actual_wrist_eye = wrist_world_initial[3, :3]
         actual_wrist_forward = (np.asarray([0.0, 0.0, -1.0, 0.0]) @ wrist_world_initial)[:3]
@@ -1124,9 +1172,7 @@ def isaac_sim_6_backend(
                 rgba = np.asarray(rgb_frame["data"])
                 if rgba.ndim != 3 or rgba.shape[0:2] != (480, 640):
                     shape_code = "x".join(str(int(value)) for value in rgba.shape)
-                    raise ValueError(
-                        f"native_camera_frame_shape_invalid:{view_id}:{shape_code}"
-                    )
+                    raise ValueError(f"native_camera_frame_shape_invalid:{view_id}:{shape_code}")
                 path = output_dir / f"{view_id}_{phase}.png"
                 Image.fromarray(np.asarray(rgba[:, :, :3], dtype=np.uint8)).save(path)
                 frames[view_id][f"{phase}_frame_path"] = str(path)
@@ -1142,9 +1188,7 @@ def isaac_sim_6_backend(
                     entity_labels={
                         entity_id: entity_id
                         for entity_id in (
-                            ("spraycan",)
-                            if view_id == "wrist"
-                            else ("franka", "spraycan", "tray")
+                            ("spraycan",) if view_id == "wrist" else ("franka", "spraycan", "tray")
                         )
                     },
                 )
@@ -1191,9 +1235,7 @@ def isaac_sim_6_backend(
                         projections_by_phase=phase_values,
                     )
                 )
-                visibility_values = frames[view_id][
-                    "required_entities_visible_pixels_by_phase"
-                ]
+                visibility_values = frames[view_id]["required_entities_visible_pixels_by_phase"]
                 frames[view_id]["required_entities_visible_pixels"] = (
                     _summarize_required_entity_visibility(
                         view_id=view_id,
@@ -1218,7 +1260,7 @@ def isaac_sim_6_backend(
         hand_world_commanded = commanded_link_matrices.get("panda_hand")
         if hand_world_commanded is None:
             raise ValueError("native_articulation_panda_hand_link_missing")
-        _synchronize_camera_to_rigid_link(
+        requested_wrist_world_commanded = _synchronize_camera_to_rigid_link(
             pose_view=wrist_pose_view,
             parent_to_world=hand_world_commanded,
             mount_translation_parent=resolved_wrist_mount_translation,
@@ -1230,6 +1272,13 @@ def isaac_sim_6_backend(
         record_entity_projections("commanded")
         finalize_entity_projections()
         wrist_world_commanded = _unified_world_pose_matrix(wrist_pose_view)
+        wrist_pose_congruence["commanded"] = _camera_pose_backend_congruence(
+            requested_camera_to_world=requested_wrist_world_commanded,
+            authoring_camera_to_world=wrist_world_commanded,
+            usd_camera_to_world=usd_camera_matrix(wrist_path),
+        )
+        if not wrist_pose_congruence["commanded"]["congruent"]:
+            raise ValueError("native_wrist_camera_pose_backend_divergence:commanded")
         wrist_local_commanded = wrist_world_commanded @ np.linalg.inv(hand_world_commanded)
 
         missing = [
@@ -1265,7 +1314,9 @@ def isaac_sim_6_backend(
                 "mode": "explicit_live_backend_world_sensor_sync_from_physics_link_tensor",
                 "parent_link": "panda_hand",
                 "physics_link_pose_source": "get_link_transforms_after_update_articulations_kinematic",
-                "camera_pose_write_backend": "experimental_xform_prim_unified_backend",
+                "camera_pose_write_backend": "bound_rtx_camera_authoring_object_world_pose_api",
+                "render_product_bound_to_same_authoring_object": True,
+                "pose_congruence_by_phase": wrist_pose_congruence,
                 "per_frame_task_reaim_performed": False,
             },
             "franka_render_only_joint_state": {

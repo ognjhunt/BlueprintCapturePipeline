@@ -18,6 +18,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _articulation_link_world_pose_matrices,
     _author_renderable_semantic_label_tree,
     _backend_array_to_numpy,
+    _camera_pose_backend_congruence,
     _camera_sensor_annotator_frame,
     _camera_quaternion_wxyz,
     _load_materialization_manifest,
@@ -85,7 +86,11 @@ def _backend(*, output_dir: Path, spec=None, **_kwargs):
                 "tray": True,
             },
             "required_entities_visible_pixels": {
-                **({"franka": True, "spraycan": True, "tray": True} if view_id == "external" else {}),
+                **(
+                    {"franka": True, "spraycan": True, "tray": True}
+                    if view_id == "external"
+                    else {}
+                ),
                 **({"spraycan_at_initial_pose": True} if view_id == "wrist" else {}),
             },
         }
@@ -228,25 +233,29 @@ def test_semantic_visibility_counts_only_rendered_target_pixels() -> None:
 
 
 def test_semantic_visibility_fails_closed_for_missing_or_colorized_payload() -> None:
-    assert _semantic_entity_visibility(
-        semantic_frame=None,
-        entity_labels={"spraycan": "spraycan"},
-    )["spraycan"]["visible"] is False
-    assert _semantic_entity_visibility(
-        semantic_frame={
-            "data": np.zeros((12, 12, 4), dtype=np.uint8),
-            "info": {"idToLabels": {"7": {"class": "spraycan"}}},
-        },
-        entity_labels={"spraycan": "spraycan"},
-    )["spraycan"]["visible"] is False
+    assert (
+        _semantic_entity_visibility(
+            semantic_frame=None,
+            entity_labels={"spraycan": "spraycan"},
+        )["spraycan"]["visible"]
+        is False
+    )
+    assert (
+        _semantic_entity_visibility(
+            semantic_frame={
+                "data": np.zeros((12, 12, 4), dtype=np.uint8),
+                "info": {"idToLabels": {"7": {"class": "spraycan"}}},
+            },
+            entity_labels={"spraycan": "spraycan"},
+        )["spraycan"]["visible"]
+        is False
+    )
 
 
 def test_semantic_labeling_prefers_isaac_6_experimental_labels_api(monkeypatch) -> None:
     calls = []
     module = types.SimpleNamespace(
-        add_labels=lambda prim, *, labels, taxonomy: calls.append(
-            (prim, labels, taxonomy)
-        )
+        add_labels=lambda prim, *, labels, taxonomy: calls.append((prim, labels, taxonomy))
     )
 
     def fake_import(name: str):
@@ -259,10 +268,7 @@ def test_semantic_labeling_prefers_isaac_6_experimental_labels_api(monkeypatch) 
         fake_import,
     )
     prim = object()
-    assert (
-        _add_prim_semantic_label(prim, "spraycan")
-        == "isaacsim_core_experimental_labels_api"
-    )
+    assert _add_prim_semantic_label(prim, "spraycan") == "isaacsim_core_experimental_labels_api"
     assert calls == [(prim, ["spraycan"], "class")]
 
 
@@ -284,10 +290,7 @@ def test_semantic_labeling_falls_back_to_isaacsim_legacy_api(monkeypatch) -> Non
         fake_import,
     )
     prim = object()
-    assert (
-        _add_prim_semantic_label(prim, "tray")
-        == "isaacsim_core_legacy_semantics_api"
-    )
+    assert _add_prim_semantic_label(prim, "tray") == "isaacsim_core_legacy_semantics_api"
     assert calls == [(prim, "tray", "class")]
 
 
@@ -436,9 +439,7 @@ def test_camera_sensor_annotator_frame_normalizes_data_and_info() -> None:
             assert annotator == "semantic_segmentation"
             return WarpLike(), {"idToLabels": {"7": {"class": "spraycan"}}}
 
-    frame = _camera_sensor_annotator_frame(
-        sensor=Sensor(), annotator="semantic_segmentation"
-    )
+    frame = _camera_sensor_annotator_frame(sensor=Sensor(), annotator="semantic_segmentation")
 
     assert np.array_equal(frame["data"], np.asarray([[[7]]], dtype=np.uint32))
     assert frame["info"] == {"idToLabels": {"7": {"class": "spraycan"}}}
@@ -453,9 +454,7 @@ def test_camera_sensor_annotator_frame_fails_closed_when_data_is_not_ready() -> 
         ValueError,
         match="native_camera_annotator_data_unavailable:semantic_segmentation",
     ):
-        _camera_sensor_annotator_frame(
-            sensor=Sensor(), annotator="semantic_segmentation"
-        )
+        _camera_sensor_annotator_frame(sensor=Sensor(), annotator="semantic_segmentation")
 
 
 def test_backend_pose_matrix_uses_usd_row_vector_convention() -> None:
@@ -483,19 +482,56 @@ def test_unified_world_pose_query_uses_supported_zero_argument_api() -> None:
     assert matrix[3, :3] == pytest.approx([0.1, 0.2, 0.3])
 
 
-def test_wrist_camera_prim_exists_before_reset_and_syncs_from_live_link_afterward() -> None:
+def test_camera_pose_backend_congruence_compares_requested_authoring_and_usd() -> None:
+    requested = np.eye(4)
+    authoring = requested.copy()
+    usd = requested.copy()
+    authoring[3, 0] = 4e-6
+    usd[3, 0] = 7e-6
+
+    evidence = _camera_pose_backend_congruence(
+        requested_camera_to_world=requested,
+        authoring_camera_to_world=authoring,
+        usd_camera_to_world=usd,
+    )
+
+    assert evidence["congruent"] is True
+    assert evidence["requested_to_authoring_max_abs"] == pytest.approx(4e-6)
+    assert evidence["requested_to_usd_max_abs"] == pytest.approx(7e-6)
+    assert evidence["authoring_to_usd_max_abs"] == pytest.approx(3e-6)
+
+
+def test_camera_pose_backend_congruence_fails_closed_on_divergence() -> None:
+    requested = np.eye(4)
+    usd = requested.copy()
+    usd[3, 2] = 0.25
+
+    evidence = _camera_pose_backend_congruence(
+        requested_camera_to_world=requested,
+        authoring_camera_to_world=requested,
+        usd_camera_to_world=usd,
+    )
+
+    assert evidence["congruent"] is False
+    assert evidence["requested_to_usd_max_abs"] == pytest.approx(0.25)
+
+
+def test_wrist_camera_render_product_binds_the_same_prepositioned_rtx_authoring_object() -> None:
     source = inspect.getsource(isaac_sim_6_backend)
 
     camera_definition = source.index("wrist_prim = UsdGeom.Camera.Define")
-    public_pose_view = source.index("wrist_pose_view = XformPrim")
     world_reset = source.index("world.reset()")
-    calibrated_world_sync = source.index("_synchronize_camera_to_rigid_link")
+    authoring_object = source.index('wrist_pose_view = camera_authoring["wrist"]')
+    calibrated_world_sync = source.index("_synchronize_camera_to_rigid_link", authoring_object)
+    render_product = source.index('camera_objects["wrist"] = create_camera_sensor')
 
-    assert camera_definition < world_reset < public_pose_view < calibrated_world_sync
+    assert (
+        camera_definition < world_reset < authoring_object < calibrated_world_sync < render_product
+    )
     assert 'wrist_path = "/World/Cameras/Wrist"' in source
-    assert "wrist_pose_view = XformPrim(wrist_path)" in source
-    assert "world.scene.add(wrist_pose_view)" not in source
-    assert "from isaacsim.core.experimental.prims import XformPrim" in source
+    assert 'wrist_pose_view = camera_authoring["wrist"]' in source
+    assert "sensor.authoring_object is not authored_camera" in source
+    assert "from isaacsim.core.experimental.prims import XformPrim" not in source
     assert "from isaacsim.core.prims import SingleArticulation" in source
     assert "get_link_transforms_after_update_articulations_kinematic" in source
     assert "._xform_prim_view" not in source
@@ -513,6 +549,8 @@ def test_backend_uses_isaac_6_experimental_rtx_camera_sensor_for_shared_annotato
     assert 'annotator="rgb"' in source
     assert "native_camera_rtx_authoring_setup_failed" in source
     assert "native_camera_rtx_runtime_setup_failed" in source
+    assert "native_camera_rtx_authoring_identity_lost" in source
+    assert "native_wrist_camera_pose_backend_divergence" in source
     assert "native_camera_frame_shape_invalid" in source
     assert 'annotators=["rgba", "semantic_segmentation"]' not in source
     assert "resolution=(640, 480)" not in source
@@ -614,9 +652,7 @@ def test_world_camera_sync_requires_public_pose_view_api() -> None:
         def set_world_pose(self, **_kwargs):
             raise AssertionError("single-pose USD writer must not be used")
 
-    with pytest.raises(
-        ValueError, match="native_wrist_camera_unified_pose_write_api_missing"
-    ):
+    with pytest.raises(ValueError, match="native_wrist_camera_unified_pose_write_api_missing"):
         _synchronize_camera_to_rigid_link(
             pose_view=Camera(),
             parent_to_world=np.eye(4),
@@ -697,9 +733,7 @@ def test_wrist_mount_world_clearance_resolves_to_one_fixed_parent_mount() -> Non
 
     assert evidence["base_camera_eye_world_m"] == pytest.approx([0.0, 0.1, 0.03])
     assert evidence["camera_eye_world_m"] == pytest.approx([0.0, 0.1, 0.28])
-    assert evidence["resolved_mount_translation_parent_m"] == pytest.approx(
-        [0.0, 0.1, 0.28]
-    )
+    assert evidence["resolved_mount_translation_parent_m"] == pytest.approx([0.0, 0.1, 0.28])
     assert evidence["camera_eye_world_offset_m"] == [0.0, 0.0, 0.25]
     assert np.linalg.norm(quaternion) == pytest.approx(1.0)
 
@@ -1030,9 +1064,10 @@ def test_native_camera_canary_rejects_projected_but_not_rendered_task_object(
     )
 
     assert result["status"] == "failed"
-    assert result["assessment"]["views"]["wrist"][
-        "required_entities_projected_in_frame"
-    ]["spraycan"] is True
+    assert (
+        result["assessment"]["views"]["wrist"]["required_entities_projected_in_frame"]["spraycan"]
+        is True
+    )
     assert "native_camera_required_entity_projection_failed:wrist" not in result["blockers"]
     assert "native_camera_required_entity_visibility_failed:wrist" in result["blockers"]
 
