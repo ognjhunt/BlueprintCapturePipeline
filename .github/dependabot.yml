@@ -41,6 +41,7 @@ updates:
       - /deploy/docker/robot_eval_worker/unitree_groot_sonic_vast
       - /deploy/docker/robot_eval_worker/unitree_groot_sonic_wam
       - /deploy/docker/sam3
+      - /deploy/docker/sam31_source_tracks
       - /deploy/docker/video_to_world
       - /deploy/docker/vip
     schedule:
