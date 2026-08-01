@@ -312,15 +312,20 @@ used as blind confirmation.
   preserves WAM6's owned-instance teardown while one unrelated GPU remains,
   admits that residual inventory only under the exact two-GPU ceiling, and
   adds byte-preserving dead-owner watchdog resume for terminal reconciliation;
+- `protocol_amendment_38_wam6_result_and_policy_query7_v1.md` and
+  `compute_authorization_openpi_policy_query_7.json` — preserve WAM6's exact
+  three-view output, immediate reliability, owned-instance terminal proof,
+  late-watchdog accounting settlement, and generated-only same-policy query-7
+  admission boundary without claiming global provider zero;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-Six interactions are complete. The next finite gate is WAM6: stage its frozen
-bundle, pass fresh authenticated provider and cumulative-budget preflight, pass
-the canonical paid-resource allocator dry run from a new immutable pushed SHA,
-then execute exactly one generated-only three-view request. WAM6 must pass the
-unchanged immediate reliability screen before policy query 7 may be built.
-Judges remain forbidden until the complete 12-interaction episode and
-causal-control matrix pass.
+Six interactions are complete. WAM6 passed the unchanged immediate reliability
+screen and policy-query-7 input is frozen. The next finite gate is one
+same-checkpoint query 7 through the canonical paid-resource allocator after
+fresh credential, source, object-transport, provider-inventory, cumulative
+budget, watchdog, preflight, and dry-run checks. Its native action must then
+condition WAM7 before interaction seven is complete. Judges remain forbidden
+until the complete 12-interaction episode and causal-control matrix pass.
