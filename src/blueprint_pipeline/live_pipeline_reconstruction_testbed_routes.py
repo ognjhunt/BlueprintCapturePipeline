@@ -276,6 +276,7 @@ def register_reconstruction_testbed_routes(
                 "robot_placement_result",
                 "artifact_references",
                 "supported_condition_ranges",
+                "semantic_evidence_artifacts",
                 "previous_testbed",
             }.intersection(payload)
         )

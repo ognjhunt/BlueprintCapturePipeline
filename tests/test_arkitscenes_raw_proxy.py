@@ -319,7 +319,7 @@ def test_proxy_depth_surface_uses_official_opencv_convention_without_claim_upgra
     )
     with pytest.raises(
         ReconstructionGeometryCompilerError,
-        match="observed_surface_metric_z_up_frame_required",
+        match="metric_geometry_coordinate_frame_unqualified",
     ):
         compile_metric_geometry(
             source_artifact=metric_request,
