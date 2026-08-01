@@ -2,8 +2,8 @@
 Description=Run Blueprint capture-bridge handoff listener repeatedly
 
 [Timer]
-OnBootSec=30s
-OnUnitActiveSec=1min
+OnActiveSec=30s
+OnUnitInactiveSec=1min
 RandomizedDelaySec=10s
 Persistent=true
 Unit=blueprint-pubsub-handoff-listener.service
