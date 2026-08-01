@@ -942,6 +942,11 @@ def isaac_sim_6_backend(
             camera_path = f"/World/Cameras/{''.join(part.title() for part in view_id.split('_'))}"
             camera_paths[view_id] = camera_path
             camera_prim = UsdGeom.Camera.Define(stage, camera_path)
+            # RtxCamera may create a missing camera and apply OmniSensorAPI, but
+            # when wrapping an existing UsdGeom.Camera Isaac Sim 6 validates
+            # that the schema is already present.  We author the USD camera
+            # ourselves so its calibrated optics and pose exist before reset.
+            camera_prim.GetPrim().ApplyAPI("OmniSensorAPI")
             camera_prim.CreateVerticalApertureAttr(15.2908)
             camera_prim.CreateHorizontalApertureAttr(15.2908 * 640.0 / 480.0)
             camera_prim.CreateFocalLengthAttr(
@@ -960,6 +965,7 @@ def isaac_sim_6_backend(
         wrist_path = "/World/Cameras/Wrist"
         camera_paths["wrist"] = wrist_path
         wrist_prim = UsdGeom.Camera.Define(stage, wrist_path)
+        wrist_prim.GetPrim().ApplyAPI("OmniSensorAPI")
         wrist_prim.CreateVerticalApertureAttr(15.2908)
         wrist_prim.CreateHorizontalApertureAttr(15.2908 * 640.0 / 480.0)
         wrist_prim.CreateFocalLengthAttr(
@@ -1021,17 +1027,26 @@ def isaac_sim_6_backend(
         # CameraSensor. Bind both RGB and semantic segmentation to the same
         # render product so visibility evidence comes from the exact RGB view.
         # The new API spells the color annotator ``rgb`` and declares resolution
-        # as (width, height), matching the deprecated Camera API.
+        # in OpenCV/NumPy order: (height, width).
         def create_camera_sensor(view_id: str, camera_path: str) -> Any:
             try:
+                authored_camera = RtxCamera(
+                    camera_path,
+                    reset_xform_op_properties=False,
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"native_camera_rtx_authoring_setup_failed:{view_id}:{type(exc).__name__}"
+                ) from exc
+            try:
                 return CameraSensor(
-                    RtxCamera(camera_path),
-                    resolution=(640, 480),
+                    authored_camera,
+                    resolution=(480, 640),
                     annotators=["rgb", "semantic_segmentation"],
                 )
             except Exception as exc:
                 raise ValueError(
-                    f"native_camera_rtx_sensor_setup_failed:{view_id}:{type(exc).__name__}"
+                    f"native_camera_rtx_runtime_setup_failed:{view_id}:{type(exc).__name__}"
                 ) from exc
 
         for view_id in (view for view in required_views if view != "wrist"):
