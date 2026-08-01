@@ -90,6 +90,7 @@ def _compile(
     *,
     timestamp: str = "2026-07-30T12:00:00Z",
     supporting_artifact_references: tuple[dict, ...] = (),
+    source_video_references: tuple[dict, ...] | None = None,
 ) -> dict:
     return compile_frozen_frame_dataset(
         artifact_root=root,
@@ -113,6 +114,7 @@ def _compile(
         rights_and_retention={"rights": "accepted", "external_processing_allowed": False},
         timestamp=timestamp,
         supporting_artifact_references=supporting_artifact_references,
+        source_video_references=source_video_references,
     )
 
 
@@ -195,6 +197,59 @@ def test_compiler_is_idempotent_and_isolates_hidden_heldout_pixels(tmp_path: Pat
     validator = jsonschema.Draft202012Validator(_schema())
     for artifact in (first, split, candidate, heldout, _load_ref(tmp_path, first, "retained_frame_selection_manifest")):
         validator.validate(artifact)
+
+
+def test_compiler_preserves_complete_multisegment_source_set(tmp_path: Path) -> None:
+    references = (
+        {"relative_path": "retained/source.mov", "digest": "sha256:" + "e" * 64},
+        {"relative_path": "retained/source_001.mov", "digest": "sha256:" + "f" * 64},
+    )
+
+    dataset = _compile(
+        tmp_path,
+        _frames(tmp_path),
+        source_video_references=references,
+    )
+    selection = _load_ref(tmp_path, dataset, "retained_frame_selection_manifest")
+
+    assert dataset["original_file_references"] == list(references)
+    assert selection["source_video_references"] == list(references)
+    assert dataset["input_digests"]["source_video_reference_set_digest"] == (
+        dataset["deterministic_configuration"]["source_video_reference_set_digest"]
+    )
+    jsonschema.Draft202012Validator(_schema()).validate(dataset)
+    jsonschema.Draft202012Validator(_schema()).validate(selection)
+
+
+@pytest.mark.parametrize(
+    "references, expected",
+    [
+        (
+            (
+                {"relative_path": "retained/source.mov", "digest": "sha256:" + "e" * 64},
+                {"relative_path": "retained/source.mov", "digest": "sha256:" + "f" * 64},
+            ),
+            "dataset_source_video_reference_invalid:1",
+        ),
+        (
+            ({"relative_path": "../escape.mov", "digest": "sha256:" + "e" * 64},),
+            "dataset_source_video_reference_invalid:0",
+        ),
+        (
+            ({"relative_path": "retained/other.mov", "digest": "sha256:" + "f" * 64},),
+            "dataset_primary_source_video_reference_missing",
+        ),
+    ],
+)
+def test_compiler_rejects_invalid_multisegment_source_sets(
+    tmp_path: Path, references: tuple[dict, ...], expected: str
+) -> None:
+    with pytest.raises(ReconstructionFrameDatasetError, match=expected):
+        _compile(
+            tmp_path,
+            _frames(tmp_path),
+            source_video_references=references,
+        )
 
 
 def test_compiler_freezes_synchronized_camera_groups_without_counterpart_leakage(

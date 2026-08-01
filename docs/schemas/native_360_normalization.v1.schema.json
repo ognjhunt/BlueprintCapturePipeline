@@ -105,6 +105,7 @@
       "required": [
         "schema_version", "capture_digest", "camera_model", "capture_mode", "segments",
         "synchronization_tolerance_seconds", "all_segments_synchronized",
+        "capture_timeline_valid",
         "original_distorted_pixels_preserved", "agent_may_rebind_lens_streams",
         "blockers", "dual_fisheye_binding_digest"
       ],
@@ -116,6 +117,7 @@
         "segments": {"type": "array", "minItems": 1},
         "synchronization_tolerance_seconds": {"type": "number", "minimum": 0},
         "all_segments_synchronized": {"type": "boolean"},
+        "capture_timeline_valid": {"type": "boolean"},
         "original_distorted_pixels_preserved": {"const": true},
         "agent_may_rebind_lens_streams": {"const": false},
         "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},

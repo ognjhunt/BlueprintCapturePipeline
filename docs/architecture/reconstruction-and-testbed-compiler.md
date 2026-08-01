@@ -315,8 +315,12 @@ and hidden-counterpart leakage. Camera calibration is bound into the dataset but
 the compiler's proof effect remains decoded-observation availability only; it
 does not establish trajectory or metric scale. The hermetic native fixture now
 reaches this grouped split gate and abstains at the later pose-worker and metric-
-anchor gates. Multi-segment native decoding remains fail-closed until an
-authoritative cross-segment capture timeline is available.
+anchor gates. Multi-segment native decoding is supported only when every segment
+has a declared, non-overlapping capture-timeline start. Each segment retains its
+own immutable source reference and local PTS; the compiler derives the global
+observation time from that declared start plus relative front-lens PTS. Missing,
+invalid, or overlapping segment timing fails closed rather than inferring order
+from filenames or segment position.
 
 The same module now provides a bounded ffmpeg lens decoder. It uses only the
 validated source path, source digest, declared physical-lens stream indices, and
@@ -328,6 +332,13 @@ the trusted dataset compiler until frozen candidate/hidden materialization.
 The grouped dataset compiler requires this exact manifest and binds its digest
 as a parent; runtime/source/frame substitutions are refused rather than silently
 accepted as equivalent decoded observations.
+
+A two-segment hermetic replay exercises the complete local front end: both
+source files are independently hash-bound, 20 paired lens observations decode,
+local PTS resets remain attached to their segment, the declared segment starts
+produce one strictly increasing capture timeline, and the shared compiler freezes
+front/rear pairs atomically without hidden-view leakage. This is contract and
+local-executor evidence only, not representative Insta360 qualification.
 The native reconstruction route now orders normalization before frozen dataset
 compilation. A trusted runtime-only compiler service composes decode and grouped
 split under the registered `compile_frozen_frame_dataset` tool; the model sees

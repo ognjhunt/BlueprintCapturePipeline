@@ -82,7 +82,7 @@
         "image_metadata", "quality_signals"
       ],
       "properties": {
-        "segment_sequence_index": {"const": 0},
+        "segment_sequence_index": {"type": "integer", "minimum": 0},
         "pair_index": {"type": "integer", "minimum": 0},
         "lens_id": {"enum": ["front", "rear"]},
         "source_relative_path": {"$ref": "#/$defs/relative_path"},

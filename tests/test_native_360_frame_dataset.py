@@ -83,13 +83,63 @@ def _lens_calibration(lens_id: str) -> dict:
     }
 
 
-def _normalized_artifacts(tmp_path: Path, pair_count: int = 5) -> tuple[dict, dict, dict]:
+def _normalized_artifacts(
+    tmp_path: Path, pair_count: int = 5, segment_count: int = 1
+) -> tuple[dict, dict, dict]:
     capture_root = tmp_path / "capture"
-    source = capture_root / "native/capture.insv"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(b"immutable-native-dual-fisheye-fixture")
-    source_digest = _digest(source)
     pts = [round(index * 0.033333, 6) for index in range(pair_count)]
+    segments: list[dict] = []
+    receipts: dict[str, dict] = {}
+    for sequence_index in range(segment_count):
+        relative_path = (
+            "native/capture.insv"
+            if sequence_index == 0
+            else f"native/capture_{sequence_index:03d}.insv"
+        )
+        source = capture_root / relative_path
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(
+            f"immutable-native-dual-fisheye-fixture-{sequence_index}".encode()
+        )
+        source_digest = _digest(source)
+        segment = {
+            "sequence_index": sequence_index,
+            "segment_id": f"segment-{sequence_index:04d}",
+            "files": [
+                {
+                    "relative_path": relative_path,
+                    "original_filename": Path(relative_path).name,
+                    "size_bytes": source.stat().st_size,
+                    "digest": source_digest,
+                    "lens_streams": [
+                        {"lens_id": "front", "stream_index": 0},
+                        {"lens_id": "rear", "stream_index": 1},
+                    ],
+                }
+            ],
+        }
+        if segment_count > 1:
+            segment["capture_timeline_start_seconds"] = float(sequence_index)
+        segments.append(segment)
+        receipts[relative_path] = build_native_360_probe_receipt(
+            source_file_digest=source_digest,
+            runtime_identity="ffprobe-grouped-fixture",
+            runtime_digest=RUNTIME_DIGEST,
+            streams=[
+                {
+                    "stream_index": index,
+                    "media_type": "video",
+                    "codec_name": "hevc",
+                    "width": 32,
+                    "height": 32,
+                    "time_base": "1/90000",
+                    "pts_seconds": pts,
+                    "metadata": {},
+                }
+                for index in range(2)
+            ],
+            format_metadata={"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+        )
     metadata = {
         "schema_version": "native_360_camera_metadata.v1",
         "source_capture_digest": CAPTURE_DIGEST,
@@ -102,24 +152,7 @@ def _normalized_artifacts(tmp_path: Path, pair_count: int = 5) -> tuple[dict, di
             "camera_axes": "+x right, +y down, +z forward",
             "rig_frame": "front_lens_optical_center",
         },
-        "segments": [
-            {
-                "sequence_index": 0,
-                "segment_id": "segment-0000",
-                "files": [
-                    {
-                        "relative_path": "native/capture.insv",
-                        "original_filename": "capture.insv",
-                        "size_bytes": source.stat().st_size,
-                        "digest": source_digest,
-                        "lens_streams": [
-                            {"lens_id": "front", "stream_index": 0},
-                            {"lens_id": "rear", "stream_index": 1},
-                        ],
-                    }
-                ],
-            }
-        ],
+        "segments": segments,
         "lens_calibrations": [
             _lens_calibration("front"),
             _lens_calibration("rear"),
@@ -137,32 +170,13 @@ def _normalized_artifacts(tmp_path: Path, pair_count: int = 5) -> tuple[dict, di
         "imu": {"status": "unavailable"},
         "gyro": {"status": "unavailable"},
     }
-    receipt = build_native_360_probe_receipt(
-        source_file_digest=source_digest,
-        runtime_identity="ffprobe-grouped-fixture",
-        runtime_digest=RUNTIME_DIGEST,
-        streams=[
-            {
-                "stream_index": index,
-                "media_type": "video",
-                "codec_name": "hevc",
-                "width": 32,
-                "height": 32,
-                "time_base": "1/90000",
-                "pts_seconds": pts,
-                "metadata": {},
-            }
-            for index in range(2)
-        ],
-        format_metadata={"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
-    )
     result = normalize_native_360_capture(
         capture_root=capture_root,
         output_root=tmp_path / "normalization",
         intake_id="native-grouped-fixture",
         capture_digest=CAPTURE_DIGEST,
         camera_metadata=metadata,
-        probe_receipts_by_path={"native/capture.insv": receipt},
+        probe_receipts_by_path=receipts,
         source_commit_sha=SOURCE_COMMIT,
         implementation_digest=IMPLEMENTATION_DIGEST,
         authority_used=AUTHORITY,
@@ -182,44 +196,51 @@ def _normalized_artifacts(tmp_path: Path, pair_count: int = 5) -> tuple[dict, di
 
 
 def _decoded_frames(root: Path, binding: dict) -> list[dict]:
-    segment = binding["segments"][0]
-    streams = {row["lens_id"]: row for row in segment["lens_streams"]}
     rows: list[dict] = []
-    for pair in segment["frame_pairs"]:
-        for lens_id in ("front", "rear"):
-            path = root / "decoded" / lens_id / f"{pair['pair_index']:09d}.png"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            Image.new(
-                "L",
-                (32, 32),
-                color=32 if lens_id == "front" else 192,
-            ).save(path)
-            stream = streams[lens_id]
-            pts = pair[f"{lens_id}_pts_seconds"]
-            rows.append(
-                {
-                    "segment_sequence_index": 0,
-                    "pair_index": pair["pair_index"],
-                    "lens_id": lens_id,
-                    "source_relative_path": stream["source_relative_path"],
-                    "source_digest": stream["source_digest"],
-                    "stream_index": stream["stream_index"],
-                    "decoded_frame_index": pair["pair_index"],
-                    "source_pts_seconds": pts,
-                    "source_dts_seconds": pts,
-                    "duration_seconds": 0.033333,
-                    "key_frame": pair["pair_index"] == 0,
-                    "artifact_relative_path": path.relative_to(root).as_posix(),
-                    "digest": _digest(path),
-                    "image_metadata": {"width": 32, "height": 32},
-                    "quality_signals": {"gradient_energy": 1.0},
-                }
-            )
+    for segment in binding["segments"]:
+        sequence_index = segment["sequence_index"]
+        streams = {row["lens_id"]: row for row in segment["lens_streams"]}
+        for pair in segment["frame_pairs"]:
+            for lens_id in ("front", "rear"):
+                path = (
+                    root
+                    / "decoded"
+                    / f"segment-{sequence_index:04d}"
+                    / lens_id
+                    / f"{pair['pair_index']:09d}.png"
+                )
+                path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new(
+                    "L",
+                    (32, 32),
+                    color=32 if lens_id == "front" else 192,
+                ).save(path)
+                stream = streams[lens_id]
+                pts = pair[f"{lens_id}_pts_seconds"]
+                rows.append(
+                    {
+                        "segment_sequence_index": sequence_index,
+                        "pair_index": pair["pair_index"],
+                        "lens_id": lens_id,
+                        "source_relative_path": stream["source_relative_path"],
+                        "source_digest": stream["source_digest"],
+                        "stream_index": stream["stream_index"],
+                        "decoded_frame_index": pair["pair_index"],
+                        "source_pts_seconds": pts,
+                        "source_dts_seconds": pts,
+                        "duration_seconds": 0.033333,
+                        "key_frame": pair["pair_index"] == 0,
+                        "artifact_relative_path": path.relative_to(root).as_posix(),
+                        "digest": _digest(path),
+                        "image_metadata": {"width": 32, "height": 32},
+                        "quality_signals": {"gradient_energy": 1.0},
+                    }
+                )
     return rows
 
 
 def _recorded_decode_manifest(result: dict, binding: dict, decoded: list[dict]) -> dict:
-    source = binding["segments"][0]["files"][0]
+    sources = [segment["files"][0] for segment in binding["segments"]]
     manifest = {
         "schema_version": "native_360_lens_decode_manifest.v1",
         "stable_run_identity": "native-360-recorded-decode-fixture",
@@ -227,6 +248,7 @@ def _recorded_decode_manifest(result: dict, binding: dict, decoded: list[dict]) 
         "source_capture_digest": CAPTURE_DIGEST,
         "original_file_references": [
             {"relative_path": source["relative_path"], "digest": source["digest"]}
+            for source in sources
         ],
         "producing_method": "native_360_ffmpeg_lens_decoder.v1",
         "implementation_version": IMPLEMENTATION_DIGEST,
@@ -392,6 +414,119 @@ def test_native_lens_decoder_executes_declared_streams_and_replays(
     )
     assert dataset["train_heldout_split_digest"]
     assert dataset["candidate_dataset_contains_hidden_heldout_pixels"] is False
+
+
+def test_native_multisegment_decode_and_grouped_splits_preserve_declared_timeline(
+    tmp_path: Path,
+) -> None:
+    result, rig, binding = _normalized_artifacts(tmp_path, segment_count=2)
+    executable = tmp_path / "ffmpeg-multisegment"
+    executable.write_bytes(b"pinned-ffmpeg-multisegment-fixture")
+    decoded_sources: set[str] = set()
+
+    def runner(
+        argv: Sequence[str], _timeout: float, _maximum_output: int
+    ) -> subprocess.CompletedProcess[bytes]:
+        command = list(argv)
+        if "-version" in command:
+            return subprocess.CompletedProcess(
+                command, 0, b"ffmpeg version multisegment-fixture\n", b""
+            )
+        decoded_sources.add(command[command.index("-i") + 1])
+        stream_index = int(command[command.index("-map") + 1].split(":")[1])
+        Image.new("L", (32, 32), color=40 + stream_index * 120).save(command[-1])
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    artifact_root = tmp_path / "multisegment-output"
+    manifest = decode_native_360_lens_observations(
+        capture_root=tmp_path / "capture",
+        artifact_root=artifact_root,
+        capture_digest=CAPTURE_DIGEST,
+        normalization_result=result,
+        rig_declaration=rig,
+        dual_fisheye_binding=binding,
+        implementation_digest=IMPLEMENTATION_DIGEST,
+        source_commit_sha=SOURCE_COMMIT,
+        authority_used=AUTHORITY,
+        timestamp="2026-07-30T12:00:00Z",
+        ffmpeg_executable=executable,
+        runner=runner,
+    )
+    dataset = _compile(
+        artifact_root,
+        result,
+        rig,
+        binding,
+        manifest["frames"],
+        decode_manifest=manifest,
+    )
+    selection = _load_reference(
+        artifact_root, dataset, "retained_frame_selection_manifest"
+    )
+    split = _load_reference(artifact_root, dataset, "frozen_split_manifest")
+
+    assert manifest["decoded_frame_count"] == 20
+    assert len(manifest["original_file_references"]) == 2
+    assert len(decoded_sources) == 2
+    assert len(dataset["original_file_references"]) == 2
+    assert selection["source_video_references"] == dataset[
+        "original_file_references"
+    ]
+    assert sorted({row["t_video_sec"] for row in selection["frames"]}) == [
+        0.0,
+        0.033333,
+        0.066666,
+        0.099999,
+        0.133332,
+        1.0,
+        1.033333,
+        1.066666,
+        1.099999,
+        1.133332,
+    ]
+    assert sorted(
+        {
+            row["decoded_frame_index"]
+            for row in selection["frames"]
+            if row["source_camera_identity"] == "front"
+        }
+    ) == list(range(10))
+    splits_by_group: dict[str, set[str]] = {}
+    for row in split["assignments"]:
+        splits_by_group.setdefault(row["observation_group_id"], set()).add(
+            row["split"]
+        )
+    assert all(len(values) == 1 for values in splits_by_group.values())
+    jsonschema.Draft202012Validator(
+        _decode_schema(), format_checker=jsonschema.FormatChecker()
+    ).validate(manifest)
+    jsonschema.Draft202012Validator(_schema()).validate(dataset)
+
+
+def test_native_multisegment_compiler_rejects_decode_source_suppression(
+    tmp_path: Path,
+) -> None:
+    result, rig, binding = _normalized_artifacts(tmp_path, segment_count=2)
+    artifact_root = tmp_path / "source-suppression"
+    decoded = _decoded_frames(artifact_root, binding)
+    manifest = _recorded_decode_manifest(result, binding, decoded)
+    manifest["original_file_references"] = manifest["original_file_references"][:1]
+    manifest["lens_decode_manifest_digest"] = canonical_digest(
+        manifest, digest_field="lens_decode_manifest_digest"
+    )
+
+    with pytest.raises(
+        Native360FrameDatasetError,
+        match="native_360_grouped_dataset_decode_source_set_mismatch",
+    ):
+        _compile(
+            artifact_root,
+            result,
+            rig,
+            binding,
+            decoded,
+            decode_manifest=manifest,
+        )
 
 
 def test_native_lens_decoder_maps_timeout_and_dimension_failures(

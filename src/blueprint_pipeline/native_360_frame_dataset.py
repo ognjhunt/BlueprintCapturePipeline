@@ -346,6 +346,7 @@ def _validated_parent_artifacts(
         != "dual_fisheye_stream_binding.v1"
         or dual_fisheye_binding.get("capture_digest") != capture_digest
         or dual_fisheye_binding.get("all_segments_synchronized") is not True
+        or dual_fisheye_binding.get("capture_timeline_valid") is not True
         or dual_fisheye_binding.get("blockers") != []
         or dual_fisheye_binding.get("dual_fisheye_binding_digest")
         != canonical_digest(
@@ -399,55 +400,80 @@ def decode_native_360_lens_observations(
         dual_fisheye_binding=dual_fisheye_binding,
     )
     segments = dual_fisheye_binding.get("segments")
-    if not isinstance(segments, list) or len(segments) != 1:
-        raise Native360FrameDatasetError(
-            ["native_360_lens_decode_multisegment_timeline_unavailable"]
-        )
-    segment = segments[0]
-    if not isinstance(segment, Mapping) or segment.get("sequence_index") != 0:
-        raise Native360FrameDatasetError(["native_360_lens_decode_segment_invalid"])
-    files = segment.get("files")
-    lens_streams = segment.get("lens_streams")
-    frame_pairs = segment.get("frame_pairs")
-    if (
-        not isinstance(files, list)
-        or len(files) != 1
-        or not isinstance(lens_streams, list)
-        or not isinstance(frame_pairs, list)
-        or not frame_pairs
-    ):
-        raise Native360FrameDatasetError(["native_360_lens_decode_segment_invalid"])
-    source_reference = files[0]
-    if not isinstance(source_reference, Mapping):
-        raise Native360FrameDatasetError(["native_360_lens_decode_source_invalid"])
-    source_relative_path = str(source_reference.get("relative_path") or "")
-    source_digest = str(source_reference.get("digest") or "")
+    if not isinstance(segments, list) or not segments:
+        raise Native360FrameDatasetError(["native_360_lens_decode_segments_invalid"])
     normalized_source_references = {
         (str(row.get("relative_path") or ""), row.get("digest"))
         for row in normalization_result.get("original_file_references", [])
         if isinstance(row, Mapping)
     }
-    if (source_relative_path, source_digest) not in normalized_source_references:
-        raise Native360FrameDatasetError(["native_360_lens_decode_source_invalid"])
     source_root = Path(capture_root).expanduser().resolve()
     if not source_root.is_dir():
         raise Native360FrameDatasetError(["native_360_lens_decode_capture_root_missing"])
-    source = _safe_bound_source(source_root, source_relative_path, source_digest)
-    streams = {
-        str(row.get("lens_id") or ""): row
-        for row in lens_streams
-        if isinstance(row, Mapping)
-    }
-    if set(streams) != _LENS_IDS:
-        raise Native360FrameDatasetError(["native_360_lens_decode_streams_invalid"])
-    if any(
-        row.get("source_relative_path") != source_relative_path
-        or row.get("source_digest") != source_digest
-        or isinstance(row.get("stream_index"), bool)
-        or not isinstance(row.get("stream_index"), int)
-        for row in streams.values()
-    ):
-        raise Native360FrameDatasetError(["native_360_lens_decode_streams_invalid"])
+    segment_contexts: list[dict[str, Any]] = []
+    source_references: list[dict[str, str]] = []
+    for sequence_index, segment in enumerate(segments):
+        if not isinstance(segment, Mapping) or segment.get("sequence_index") != sequence_index:
+            raise Native360FrameDatasetError(["native_360_lens_decode_segment_invalid"])
+        files = segment.get("files")
+        lens_streams = segment.get("lens_streams")
+        frame_pairs = segment.get("frame_pairs")
+        capture_timeline_start = _optional_finite(
+            segment.get("capture_timeline_start_seconds"),
+            code="native_360_lens_decode_capture_timeline_invalid",
+            nonnegative=True,
+        )
+        if (
+            capture_timeline_start is None
+            or not isinstance(files, list)
+            or len(files) != 1
+            or not isinstance(lens_streams, list)
+            or not isinstance(frame_pairs, list)
+            or not frame_pairs
+        ):
+            raise Native360FrameDatasetError(["native_360_lens_decode_segment_invalid"])
+        source_reference = files[0]
+        if not isinstance(source_reference, Mapping):
+            raise Native360FrameDatasetError(["native_360_lens_decode_source_invalid"])
+        source_relative_path = str(source_reference.get("relative_path") or "")
+        source_digest = str(source_reference.get("digest") or "")
+        if (source_relative_path, source_digest) not in normalized_source_references:
+            raise Native360FrameDatasetError(["native_360_lens_decode_source_invalid"])
+        source = _safe_bound_source(source_root, source_relative_path, source_digest)
+        streams = {
+            str(row.get("lens_id") or ""): row
+            for row in lens_streams
+            if isinstance(row, Mapping)
+        }
+        if set(streams) != _LENS_IDS or any(
+            row.get("source_relative_path") != source_relative_path
+            or row.get("source_digest") != source_digest
+            or isinstance(row.get("stream_index"), bool)
+            or not isinstance(row.get("stream_index"), int)
+            for row in streams.values()
+        ):
+            raise Native360FrameDatasetError(["native_360_lens_decode_streams_invalid"])
+        segment_contexts.append(
+            {
+                "sequence_index": sequence_index,
+                "segment": segment,
+                "frame_pairs": frame_pairs,
+                "source": source,
+                "source_relative_path": source_relative_path,
+                "source_digest": source_digest,
+                "streams": streams,
+                "capture_timeline_start_seconds": capture_timeline_start,
+            }
+        )
+        source_reference_row = {
+            "relative_path": source_relative_path,
+            "digest": source_digest,
+        }
+        if source_reference_row in source_references:
+            raise Native360FrameDatasetError(
+                ["native_360_lens_decode_source_segment_duplicate"]
+            )
+        source_references.append(source_reference_row)
 
     executable_value = (
         str(ffmpeg_executable)
@@ -482,8 +508,10 @@ def decode_native_360_lens_observations(
     configuration = {
         "decoder_version": "native_360_ffmpeg_lens_decoder.v1",
         "source_capture_digest": capture_digest,
-        "source_relative_path": source_relative_path,
-        "source_digest": source_digest,
+        "source_references": source_references,
+        "source_reference_set_digest": canonical_digest(
+            {"references": source_references}
+        ),
         "native_360_normalization_digest": normalization_result[
             "native_360_normalization_digest"
         ],
@@ -491,7 +519,18 @@ def decode_native_360_lens_observations(
         "dual_fisheye_binding_digest": dual_fisheye_binding[
             "dual_fisheye_binding_digest"
         ],
-        "frame_pair_digest": segment.get("frame_pair_digest"),
+        "segments": [
+            {
+                "sequence_index": context["sequence_index"],
+                "capture_timeline_start_seconds": context[
+                    "capture_timeline_start_seconds"
+                ],
+                "frame_pair_digest": context["segment"].get("frame_pair_digest"),
+                "source_relative_path": context["source_relative_path"],
+                "source_digest": context["source_digest"],
+            }
+            for context in segment_contexts
+        ],
         "runtime_digest": runtime_digest,
         "implementation_digest": implementation_digest,
         "source_commit_sha": source_commit_sha,
@@ -511,21 +550,31 @@ def decode_native_360_lens_observations(
         )
 
     decoded_frames: list[dict[str, Any]] = []
-    for pair in frame_pairs:
-        if not isinstance(pair, Mapping):
-            raise Native360FrameDatasetError(
-                ["native_360_lens_decode_frame_pair_invalid"]
-            )
-        pair_index = pair.get("pair_index")
-        if isinstance(pair_index, bool) or not isinstance(pair_index, int):
-            raise Native360FrameDatasetError(
-                ["native_360_lens_decode_frame_pair_invalid"]
-            )
-        for lens_id in sorted(_LENS_IDS):
-            stream = streams[lens_id]
+    for context in segment_contexts:
+        sequence_index = context["sequence_index"]
+        decode_requests = [
+            (pair, lens_id)
+            for pair in context["frame_pairs"]
+            for lens_id in sorted(_LENS_IDS)
+        ]
+        for pair, lens_id in decode_requests:
+            if not isinstance(pair, Mapping):
+                raise Native360FrameDatasetError(
+                    ["native_360_lens_decode_frame_pair_invalid"]
+                )
+            pair_index = pair.get("pair_index")
+            if isinstance(pair_index, bool) or not isinstance(pair_index, int):
+                raise Native360FrameDatasetError(
+                    ["native_360_lens_decode_frame_pair_invalid"]
+                )
+            stream = context["streams"][lens_id]
+            source = context["source"]
+            source_relative_path = context["source_relative_path"]
+            source_digest = context["source_digest"]
             target = (
                 decode_root
                 / "frames"
+                / f"segment-{sequence_index:04d}"
                 / lens_id
                 / f"pair-{pair_index:09d}.png"
             )
@@ -621,7 +670,7 @@ def decode_native_360_lens_observations(
                 )
                 decoded_frames.append(
                     {
-                        "segment_sequence_index": 0,
+                        "segment_sequence_index": sequence_index,
                         "pair_index": pair_index,
                         "lens_id": lens_id,
                         "source_relative_path": source_relative_path,
@@ -657,7 +706,10 @@ def decode_native_360_lens_observations(
             finally:
                 temporary.unlink(missing_ok=True)
 
-    if _sha256_file(source) != source_digest:
+    if any(
+        _sha256_file(context["source"]) != context["source_digest"]
+        for context in segment_contexts
+    ):
         raise Native360FrameDatasetError(["native_360_lens_decode_source_changed"])
     if _sha256_file(executable) != runtime_digest:
         raise Native360FrameDatasetError(["native_360_lens_decode_runtime_changed"])
@@ -666,9 +718,7 @@ def decode_native_360_lens_observations(
         "stable_run_identity": f"native-360-decode-{configuration_digest[7:31]}",
         "source_capture_identity": normalization_result["source_capture_identity"],
         "source_capture_digest": capture_digest,
-        "original_file_references": [
-            {"relative_path": source_relative_path, "digest": source_digest}
-        ],
+        "original_file_references": source_references,
         "producing_method": "native_360_ffmpeg_lens_decoder.v1",
         "implementation_version": implementation_digest,
         "container_image_digest": None,
@@ -676,7 +726,9 @@ def decode_native_360_lens_observations(
         "deterministic_configuration": configuration,
         "deterministic_configuration_digest": configuration_digest,
         "input_digests": {
-            "source_digest": source_digest,
+            "source_reference_set_digest": configuration[
+                "source_reference_set_digest"
+            ],
             "native_360_normalization_digest": normalization_result[
                 "native_360_normalization_digest"
             ],
@@ -742,7 +794,7 @@ def compile_native_360_grouped_frame_dataset(
     timestamp: str,
     parent_artifact_or_event: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compile one validated single-segment dual-fisheye source into frozen splits."""
+    """Compile validated dual-fisheye segments into one frozen grouped timeline."""
 
     if not _is_digest(capture_digest):
         raise Native360FrameDatasetError(
@@ -792,87 +844,105 @@ def compile_native_360_grouped_frame_dataset(
             ["native_360_grouped_dataset_intake_identity_mismatch"]
         )
     segments = dual_fisheye_binding.get("segments")
-    if not isinstance(segments, list) or len(segments) != 1:
-        raise Native360FrameDatasetError(
-            ["native_360_grouped_dataset_multisegment_timeline_unavailable"]
-        )
-    segment = segments[0]
-    if not isinstance(segment, Mapping) or segment.get("sequence_index") != 0:
-        raise Native360FrameDatasetError(
-            ["native_360_grouped_dataset_segment_invalid"]
-        )
-    files = segment.get("files")
-    lens_streams = segment.get("lens_streams")
-    frame_pairs = segment.get("frame_pairs")
-    if (
-        not isinstance(files, list)
-        or len(files) != 1
-        or not isinstance(lens_streams, list)
-        or not isinstance(frame_pairs, list)
-        or not frame_pairs
-    ):
-        raise Native360FrameDatasetError(
-            ["native_360_grouped_dataset_segment_invalid"]
-        )
-    source_reference = files[0]
-    if not isinstance(source_reference, Mapping):
-        raise Native360FrameDatasetError(
-            ["native_360_grouped_dataset_source_invalid"]
-        )
-    source_relative_path = str(source_reference.get("relative_path") or "")
-    source_digest = source_reference.get("digest")
+    if not isinstance(segments, list) or not segments:
+        raise Native360FrameDatasetError(["native_360_grouped_dataset_segments_invalid"])
     normalized_source_references = {
         (str(row.get("relative_path") or ""), row.get("digest"))
         for row in normalization_result.get("original_file_references", [])
         if isinstance(row, Mapping)
     }
-    streams = {
-        str(row.get("lens_id") or ""): row
-        for row in lens_streams
-        if isinstance(row, Mapping)
-    }
-    if (
-        set(streams) != _LENS_IDS
-        or not _is_digest(source_digest)
-        or (source_relative_path, source_digest) not in normalized_source_references
-    ):
-        raise Native360FrameDatasetError(
-            ["native_360_grouped_dataset_source_invalid"]
+    source_references: list[dict[str, str]] = []
+    expected: dict[tuple[int, int, str], dict[str, Any]] = {}
+    global_pair_index = 0
+    for sequence_index, segment in enumerate(segments):
+        if not isinstance(segment, Mapping) or segment.get("sequence_index") != sequence_index:
+            raise Native360FrameDatasetError(["native_360_grouped_dataset_segment_invalid"])
+        files = segment.get("files")
+        lens_streams = segment.get("lens_streams")
+        frame_pairs = segment.get("frame_pairs")
+        capture_timeline_start = _optional_finite(
+            segment.get("capture_timeline_start_seconds"),
+            code="native_360_grouped_dataset_capture_timeline_invalid",
+            nonnegative=True,
         )
-
-    expected: dict[tuple[int, str], dict[str, Any]] = {}
-    for pair in frame_pairs:
-        if not isinstance(pair, Mapping):
+        if (
+            capture_timeline_start is None
+            or not isinstance(files, list)
+            or len(files) != 1
+            or not isinstance(lens_streams, list)
+            or not isinstance(frame_pairs, list)
+            or not frame_pairs
+        ):
+            raise Native360FrameDatasetError(["native_360_grouped_dataset_segment_invalid"])
+        source_reference = files[0]
+        if not isinstance(source_reference, Mapping):
+            raise Native360FrameDatasetError(["native_360_grouped_dataset_source_invalid"])
+        source_relative_path = str(source_reference.get("relative_path") or "")
+        source_digest = str(source_reference.get("digest") or "")
+        streams = {
+            str(row.get("lens_id") or ""): row
+            for row in lens_streams
+            if isinstance(row, Mapping)
+        }
+        if (
+            set(streams) != _LENS_IDS
+            or not _is_digest(source_digest)
+            or (source_relative_path, source_digest) not in normalized_source_references
+        ):
+            raise Native360FrameDatasetError(["native_360_grouped_dataset_source_invalid"])
+        first_pair_pts = _finite(
+            frame_pairs[0].get("front_pts_seconds"),
+            code="native_360_grouped_dataset_frame_pts_invalid",
+        )
+        source_reference_row = {
+            "relative_path": source_relative_path,
+            "digest": source_digest,
+        }
+        if source_reference_row in source_references:
             raise Native360FrameDatasetError(
-                ["native_360_grouped_dataset_frame_pair_invalid"]
+                ["native_360_grouped_dataset_source_segment_duplicate"]
             )
-        pair_index = pair.get("pair_index")
-        if isinstance(pair_index, bool) or not isinstance(pair_index, int):
-            raise Native360FrameDatasetError(
-                ["native_360_grouped_dataset_frame_pair_invalid"]
+        source_references.append(source_reference_row)
+        for pair in frame_pairs:
+            if not isinstance(pair, Mapping):
+                raise Native360FrameDatasetError(
+                    ["native_360_grouped_dataset_frame_pair_invalid"]
+                )
+            pair_index = pair.get("pair_index")
+            if isinstance(pair_index, bool) or not isinstance(pair_index, int):
+                raise Native360FrameDatasetError(
+                    ["native_360_grouped_dataset_frame_pair_invalid"]
+                )
+            group_reference_pts = _finite(
+                pair.get("front_pts_seconds"),
+                code="native_360_grouped_dataset_frame_pair_invalid",
             )
-        for lens_id in sorted(_LENS_IDS):
-            stream = streams[lens_id]
-            expected[(pair_index, lens_id)] = {
-                "source_relative_path": stream.get("source_relative_path"),
-                "source_digest": stream.get("source_digest"),
-                "stream_index": stream.get("stream_index"),
-                "width": stream.get("width"),
-                "height": stream.get("height"),
-                "source_pts_seconds": pair.get(f"{lens_id}_pts_seconds"),
-                "group_reference_pts_seconds": pair.get("front_pts_seconds"),
-            }
-    if len(expected) != len(frame_pairs) * 2:
+            capture_timeline_seconds = round(
+                capture_timeline_start + group_reference_pts - first_pair_pts, 9
+            )
+            for lens_id in sorted(_LENS_IDS):
+                stream = streams[lens_id]
+                expected[(sequence_index, pair_index, lens_id)] = {
+                    "source_relative_path": stream.get("source_relative_path"),
+                    "source_digest": stream.get("source_digest"),
+                    "stream_index": stream.get("stream_index"),
+                    "width": stream.get("width"),
+                    "height": stream.get("height"),
+                    "source_pts_seconds": pair.get(f"{lens_id}_pts_seconds"),
+                    "capture_timeline_seconds": capture_timeline_seconds,
+                    "global_pair_index": global_pair_index,
+                }
+            global_pair_index += 1
+    if len(expected) != global_pair_index * 2:
         raise Native360FrameDatasetError(
             ["native_360_grouped_dataset_frame_pair_duplicate"]
         )
-
-    first_pair_pts = _finite(
-        frame_pairs[0].get("front_pts_seconds"),
-        code="native_360_grouped_dataset_frame_pts_invalid",
-    )
+    if lens_decode_manifest.get("original_file_references") != source_references:
+        raise Native360FrameDatasetError(
+            ["native_360_grouped_dataset_decode_source_set_mismatch"]
+        )
     selected_frames: list[dict[str, Any]] = []
-    observed: set[tuple[int, str]] = set()
+    observed: set[tuple[int, int, str]] = set()
     for ordinal, raw in enumerate(decoded_lens_frames):
         if not isinstance(raw, Mapping):
             raise Native360FrameDatasetError(
@@ -880,7 +950,8 @@ def compile_native_360_grouped_frame_dataset(
             )
         pair_index = raw.get("pair_index")
         lens_id = str(raw.get("lens_id") or "")
-        key = (pair_index, lens_id)
+        segment_sequence_index = raw.get("segment_sequence_index")
+        key = (segment_sequence_index, pair_index, lens_id)
         declared = expected.get(key)
         if declared is None or key in observed:
             raise Native360FrameDatasetError(
@@ -895,13 +966,8 @@ def compile_native_360_grouped_frame_dataset(
             declared["source_pts_seconds"],
             code="native_360_grouped_dataset_frame_pair_invalid",
         )
-        group_reference_pts = _finite(
-            declared["group_reference_pts_seconds"],
-            code="native_360_grouped_dataset_frame_pair_invalid",
-        )
         if (
-            raw.get("segment_sequence_index") != 0
-            or raw.get("source_relative_path") != declared["source_relative_path"]
+            raw.get("source_relative_path") != declared["source_relative_path"]
             or raw.get("source_digest") != declared["source_digest"]
             or raw.get("stream_index") != declared["stream_index"]
             or raw.get("decoded_frame_index") != pair_index
@@ -925,12 +991,14 @@ def compile_native_360_grouped_frame_dataset(
             code=f"native_360_grouped_dataset_frame_duration_invalid:{ordinal}",
             nonnegative=True,
         )
-        group_id = f"segment-0000-pair-{pair_index:09d}"
+        group_id = (
+            f"segment-{segment_sequence_index:04d}-pair-{pair_index:09d}"
+        )
         selected_frames.append(
             {
                 "frame_id": f"{group_id}-{lens_id}",
-                "decoded_frame_index": pair_index,
-                "t_video_sec": round(group_reference_pts - first_pair_pts, 9),
+                "decoded_frame_index": declared["global_pair_index"],
+                "t_video_sec": declared["capture_timeline_seconds"],
                 "source_pts_seconds": pts,
                 "source_dts_seconds": source_dts_seconds,
                 "duration_seconds": duration_seconds,
@@ -999,8 +1067,8 @@ def compile_native_360_grouped_frame_dataset(
         intake_id=intake_id,
         capture_digest=capture_digest,
         capture_authority_profile="camera_360_native",
-        source_video_relative_path=source_relative_path,
-        source_video_digest=str(source_digest),
+        source_video_relative_path=source_references[0]["relative_path"],
+        source_video_digest=source_references[0]["digest"],
         decoded_frame_count=len(selected_frames),
         selected_frames=selected_frames,
         stream_metadata={
@@ -1008,6 +1076,8 @@ def compile_native_360_grouped_frame_dataset(
             "source_camera_identities": ["front", "rear"],
             "shared_physical_observation_groups": True,
             "group_timestamp_reference": "front_lens_decoded_pts",
+            "capture_timeline_source": "declared_segment_start_plus_relative_front_pts",
+            "native_segment_count": len(segments),
             "native_360_normalization_digest": normalization_result[
                 "native_360_normalization_digest"
             ],
@@ -1040,6 +1110,7 @@ def compile_native_360_grouped_frame_dataset(
                 "artifact_type": NATIVE_360_LENS_DECODE_SCHEMA_VERSION,
             }
         ],
+        source_video_references=source_references,
     )
 
 

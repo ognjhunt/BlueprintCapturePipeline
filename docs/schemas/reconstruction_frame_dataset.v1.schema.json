@@ -107,6 +107,10 @@
         },
         "complete_retained_source_preserved": {"const": true},
         "source_video_relative_path": {"$ref": "#/$defs/relative_path"},
+        "source_video_references": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/artifact_reference"}
+        },
         "frames": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/selected_frame"}},
         "selection_digest": {"$ref": "#/$defs/sha256"}
       }

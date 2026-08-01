@@ -879,6 +879,28 @@ def normalize_native_360_capture(
     if any(not item for item in segment_ids) or len(set(segment_ids)) != len(segment_ids):
         raise Native360NormalizationError(["native_360_segment_identity_invalid"])
     rig, blockers = _calibrated_rig(camera_metadata, capture_digest=capture_digest)
+    segment_timeline_starts: dict[int, float | None] = {}
+    segment_timeline_sources: dict[int, str] = {}
+    for segment in segments:
+        sequence_index = int(segment["sequence_index"])
+        raw_start = segment.get("capture_timeline_start_seconds")
+        if raw_start is None and len(segments) == 1:
+            segment_timeline_starts[sequence_index] = 0.0
+            segment_timeline_sources[sequence_index] = "single_segment_relative_origin"
+        elif (
+            isinstance(raw_start, bool)
+            or not isinstance(raw_start, (int, float))
+            or not math.isfinite(float(raw_start))
+            or float(raw_start) < 0
+        ):
+            segment_timeline_starts[sequence_index] = None
+            segment_timeline_sources[sequence_index] = "missing_or_invalid"
+            blockers.append(
+                f"native_360_segment_capture_timeline_missing:{sequence_index}"
+            )
+        else:
+            segment_timeline_starts[sequence_index] = round(float(raw_start), 9)
+            segment_timeline_sources[sequence_index] = "declared_capture_timeline"
     calibration_by_lens = {
         str(row["lens_id"]): row
         for row in rig["lens_calibrations"]
@@ -1039,6 +1061,12 @@ def normalize_native_360_capture(
             {
                 "sequence_index": segment["sequence_index"],
                 "segment_id": str(segment.get("segment_id") or f"segment-{segment['sequence_index']:04d}"),
+                "capture_timeline_start_seconds": segment_timeline_starts[
+                    int(segment["sequence_index"])
+                ],
+                "capture_timeline_start_source": segment_timeline_sources[
+                    int(segment["sequence_index"])
+                ],
                 "files": sorted(file_references, key=lambda row: row["relative_path"]),
                 "lens_streams": [lens_streams[lens_id] for lens_id in sorted(lens_streams)],
                 "frame_pairs": frame_pairs,
@@ -1062,6 +1090,28 @@ def normalize_native_360_capture(
             declaration.get("digest")
         ):
             blockers.append(f"native_360_{sensor}_digest_missing")
+    previous_capture_end: float | None = None
+    for segment in normalized_segments:
+        start = segment["capture_timeline_start_seconds"]
+        pairs = segment["frame_pairs"]
+        if start is None or not pairs:
+            segment["capture_timeline_end_seconds"] = None
+            continue
+        duration = float(pairs[-1]["front_pts_seconds"]) - float(
+            pairs[0]["front_pts_seconds"]
+        )
+        end = round(float(start) + duration, 9)
+        segment["capture_timeline_end_seconds"] = end
+        if previous_capture_end is not None and float(start) <= previous_capture_end:
+            blockers.append(
+                f"native_360_segment_capture_timeline_overlap:{segment['sequence_index']}"
+            )
+        previous_capture_end = end
+    timeline_valid = all(
+        row["capture_timeline_start_seconds"] is not None
+        and row["capture_timeline_end_seconds"] is not None
+        for row in normalized_segments
+    ) and not any("capture_timeline_overlap" in blocker for blocker in blockers)
     blockers = sorted(set(blockers))
     binding = {
         "schema_version": DUAL_FISHEYE_BINDING_SCHEMA_VERSION,
@@ -1071,6 +1121,7 @@ def normalize_native_360_capture(
         "segments": normalized_segments,
         "synchronization_tolerance_seconds": synchronization_tolerance_seconds,
         "all_segments_synchronized": all(row["synchronized"] for row in normalized_segments),
+        "capture_timeline_valid": timeline_valid,
         "original_distorted_pixels_preserved": True,
         "agent_may_rebind_lens_streams": False,
         "blockers": blockers,

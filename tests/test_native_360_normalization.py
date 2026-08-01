@@ -686,6 +686,54 @@ def _fixture(
     return metadata, {"native/capture.insv": receipt}
 
 
+def _multi_segment_fixture(root: Path) -> tuple[dict, dict]:
+    metadata, receipts = _fixture(root)
+    metadata["segments"][0]["capture_timeline_start_seconds"] = 0.0
+    second = root / "native/capture_001.insv"
+    second.write_bytes(b"immutable-native-insv-fixture-segment-1")
+    second_digest = _digest(second)
+    metadata["segments"].append(
+        {
+            "sequence_index": 1,
+            "segment_id": "segment-0001",
+            "capture_timeline_start_seconds": 1.0,
+            "files": [
+                {
+                    "relative_path": "native/capture_001.insv",
+                    "original_filename": "capture_001.insv",
+                    "size_bytes": second.stat().st_size,
+                    "digest": second_digest,
+                    "lens_streams": [
+                        {"lens_id": "front", "stream_index": 0},
+                        {"lens_id": "rear", "stream_index": 1},
+                    ],
+                }
+            ],
+        }
+    )
+    pts = [0.0, 0.033333, 0.066667]
+    receipts["native/capture_001.insv"] = build_native_360_probe_receipt(
+        source_file_digest=second_digest,
+        runtime_identity="ffprobe-fixture",
+        runtime_digest=RUNTIME_DIGEST,
+        streams=[
+            {
+                "stream_index": stream_index,
+                "media_type": "video",
+                "codec_name": "hevc",
+                "width": 3840,
+                "height": 3840,
+                "time_base": "1/90000",
+                "pts_seconds": pts,
+                "metadata": {},
+            }
+            for stream_index in range(2)
+        ],
+        format_metadata={"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+    )
+    return metadata, receipts
+
+
 def _normalize(
     capture_root: Path,
     output_root: Path,
@@ -767,6 +815,63 @@ def test_native_360_normalization_is_idempotent_and_preserves_source(
         assert _digest(path) == reference["digest"]
         persisted = json.loads(path.read_text(encoding="utf-8"))
         assert persisted["probe_receipt_digest"] == reference["probe_receipt_digest"]
+
+
+def test_native_360_multisegment_timeline_is_explicit_and_nonoverlapping(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    metadata, receipts = _multi_segment_fixture(capture_root)
+
+    result = _normalize(
+        capture_root,
+        tmp_path / "output",
+        metadata,
+        receipts,
+        maximum_source_bytes=4096,
+    )
+
+    assert result["status"] == "normalized"
+    artifact_root = next((tmp_path / "output").glob("native_360_normalization_*"))
+    binding = json.loads(
+        (artifact_root / "dual_fisheye_stream_binding.json").read_text()
+    )
+    assert binding["capture_timeline_valid"] is True
+    assert [
+        row["capture_timeline_start_seconds"] for row in binding["segments"]
+    ] == [0.0, 1.0]
+    assert binding["segments"][0]["capture_timeline_end_seconds"] == 0.066667
+    assert binding["segments"][1]["capture_timeline_end_seconds"] == 1.066667
+
+
+@pytest.mark.parametrize(
+    ("second_start", "expected"),
+    [
+        (None, "native_360_segment_capture_timeline_missing:1"),
+        (0.05, "native_360_segment_capture_timeline_overlap:1"),
+    ],
+)
+def test_native_360_multisegment_missing_or_overlapping_timeline_abstains(
+    tmp_path: Path, second_start: float | None, expected: str
+) -> None:
+    capture_root = tmp_path / "capture"
+    metadata, receipts = _multi_segment_fixture(capture_root)
+    if second_start is None:
+        metadata["segments"][1].pop("capture_timeline_start_seconds")
+    else:
+        metadata["segments"][1]["capture_timeline_start_seconds"] = second_start
+
+    result = _normalize(
+        capture_root,
+        tmp_path / "output",
+        metadata,
+        receipts,
+        maximum_source_bytes=4096,
+    )
+
+    assert result["status"] == "blocked"
+    assert expected in result["blockers"]
+    assert result["claim_ceiling"] == "decoded_native_container"
 
 
 def test_native_360_unsynchronized_streams_abstain_without_rebinding(

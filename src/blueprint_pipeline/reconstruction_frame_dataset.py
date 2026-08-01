@@ -388,6 +388,7 @@ def compile_frozen_frame_dataset(
     camera_calibration_binding: Mapping[str, Any] | None = None,
     coordinate_frame_declaration: Mapping[str, Any] | None = None,
     supporting_artifact_references: Sequence[Mapping[str, Any]] = (),
+    source_video_references: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Freeze one content-bound dataset and isolate its hidden held-out pixels."""
 
@@ -426,6 +427,47 @@ def compile_frozen_frame_dataset(
         errors.append("dataset_source_commit_sha_invalid")
     if errors:
         raise ReconstructionFrameDatasetError(errors)
+    normalized_source_references = [
+        {
+            "relative_path": normalized_source_video_relative_path,
+            "digest": source_video_digest,
+        }
+    ]
+    if source_video_references is not None:
+        normalized_source_references = []
+        source_reference_paths: set[str] = set()
+        for ordinal, raw in enumerate(source_video_references):
+            if not isinstance(raw, Mapping):
+                raise ReconstructionFrameDatasetError(
+                    [f"dataset_source_video_reference_invalid:{ordinal}"]
+                )
+            try:
+                relative_path = _safe_relative(raw.get("relative_path"))
+            except ReconstructionFrameDatasetError as exc:
+                raise ReconstructionFrameDatasetError(
+                    [f"dataset_source_video_reference_invalid:{ordinal}"]
+                ) from exc
+            digest = str(raw.get("digest") or "")
+            if not _is_digest(digest) or relative_path in source_reference_paths:
+                raise ReconstructionFrameDatasetError(
+                    [f"dataset_source_video_reference_invalid:{ordinal}"]
+                )
+            source_reference_paths.add(relative_path)
+            normalized_source_references.append(
+                {"relative_path": relative_path, "digest": digest}
+            )
+        normalized_source_references.sort(key=lambda row: row["relative_path"])
+        if (
+            not normalized_source_references
+            or {
+                "relative_path": normalized_source_video_relative_path,
+                "digest": source_video_digest,
+            }
+            not in normalized_source_references
+        ):
+            raise ReconstructionFrameDatasetError(
+                ["dataset_primary_source_video_reference_missing"]
+            )
     frames = _normalized_frames(artifact_root=root, selected_frames=selected_frames)
     normalized_supporting_references: list[dict[str, Any]] = []
     supporting_keys: set[tuple[str, str]] = set()
@@ -514,6 +556,11 @@ def compile_frozen_frame_dataset(
     if normalized_supporting_references:
         config["supporting_artifact_references_digest"] = canonical_digest(
             {"references": normalized_supporting_references}
+        )
+    if source_video_references is not None:
+        config["source_video_references"] = normalized_source_references
+        config["source_video_reference_set_digest"] = canonical_digest(
+            {"references": normalized_source_references}
         )
     configuration_digest = canonical_digest(config)
     dataset_root = root / f"frozen_dataset_{configuration_digest[7:23]}"
@@ -619,6 +666,8 @@ def compile_frozen_frame_dataset(
         "source_video_relative_path": normalized_source_video_relative_path,
         "frames": frames,
     }
+    if source_video_references is not None:
+        selection["source_video_references"] = normalized_source_references
     selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
     candidate = {
         "schema_version": CANDIDATE_SCHEMA_VERSION,
@@ -666,12 +715,7 @@ def compile_frozen_frame_dataset(
         "stable_run_identity": f"frame-dataset-{configuration_digest[7:31]}",
         "source_capture_identity": intake_id,
         "source_capture_digest": capture_digest,
-        "original_file_references": [
-            {
-                "relative_path": normalized_source_video_relative_path,
-                "digest": source_video_digest,
-            }
-        ],
+        "original_file_references": normalized_source_references,
         "producing_method": COMPILER_VERSION,
         "implementation_version": implementation_digest,
         "container_image_digest": None,
@@ -697,6 +741,15 @@ def compile_frozen_frame_dataset(
                 "coordinate_frame_declaration_digest": coordinate_frame_declaration_digest
             }
             if coordinate_frame_declaration_digest is not None
+            else {}
+        )
+        | (
+            {
+                "source_video_reference_set_digest": config[
+                    "source_video_reference_set_digest"
+                ]
+            }
+            if source_video_references is not None
             else {}
         ),
         "output_digests": {
