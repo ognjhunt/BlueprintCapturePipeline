@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -37,6 +38,7 @@ NORMALIZATION_DIGEST = "sha256:" + "7" * 64
 BINDING_DIGEST = "sha256:" + "8" * 64
 IMAGE = "registry.example/blueprint/reconstruction@sha256:" + "a" * 64
 SOURCE_SHA = "b" * 40
+RUNNER_DIGEST = "sha256:" + "e" * 64
 
 
 def _calibration(lens: str) -> dict:
@@ -549,7 +551,30 @@ def test_native_colmap_service_accepts_only_the_registered_pose_request(
         input_root=input_root,
         timestamp="2026-08-01T12:30:00Z",
         runner=_successful_runner(plan, []),
+        runner_identity_digest=RUNNER_DIGEST,
     )
+    rebound_service = build_native_360_colmap_pose_estimator_service(
+        plan=plan,
+        input_root=input_root,
+        timestamp="2026-08-01T12:30:00Z",
+        runner=_successful_runner(plan, []),
+        runner_identity_digest=RUNNER_DIGEST,
+        maximum_command_output_bytes=1024,
+    )
+
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", service.blueprint_runtime_digest)
+    assert service.blueprint_runtime_digest != rebound_service.blueprint_runtime_digest
+
+    with pytest.raises(
+        Native360ColmapRunnerError,
+        match="native_colmap_service_binding_invalid",
+    ):
+        build_native_360_colmap_pose_estimator_service(
+            plan=plan,
+            input_root=input_root,
+            timestamp="2026-08-01T12:30:00Z",
+            runner=_successful_runner(plan, []),
+        )
 
     result = service(
         request=arguments["pose_estimation_request"],

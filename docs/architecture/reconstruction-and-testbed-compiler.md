@@ -392,8 +392,10 @@ images, missing or malformed model files, timeouts, startup failures, and
 nonzero commands become typed failures with retained logs. Both successes and
 failures are immutable and replay without repeating an unchanged attempt. The
 service wrapper fits the existing registered `run_pose_estimation` callable and
-accepts only the exact request digest; the agent still receives no plan,
-filesystem, shell, or runtime handle. Hermetic tests use a fake process runner,
+accepts only the exact request digest. Its supervisor runtime identity also binds
+the plan digest, opaque input-root identity, execution bounds, and runner kind;
+the agent still receives no plan, filesystem, shell, or runtime handle. Hermetic
+tests use a fake process runner,
 so this establishes adapter behavior but not a real COLMAP trajectory.
 
 The native reconstruction route now orders normalization before frozen dataset

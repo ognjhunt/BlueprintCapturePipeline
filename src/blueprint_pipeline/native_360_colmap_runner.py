@@ -520,6 +520,7 @@ def build_native_360_colmap_pose_estimator_service(
     input_root: str | Path,
     timestamp: str,
     runner: Runner | None = None,
+    runner_identity_digest: str | None = None,
     maximum_input_bytes: int = 256 * 1024 * 1024,
     maximum_command_output_bytes: int = 8 * 1024 * 1024,
     maximum_command_timeout_seconds: float = 3600.0,
@@ -527,6 +528,42 @@ def build_native_360_colmap_pose_estimator_service(
     """Build the trusted callable injected behind ``run_pose_estimation``."""
 
     admitted = _validated_plan(plan)
+    if (
+        not str(timestamp or "").strip()
+        or isinstance(maximum_input_bytes, bool)
+        or not isinstance(maximum_input_bytes, int)
+        or maximum_input_bytes <= 0
+        or isinstance(maximum_command_output_bytes, bool)
+        or not isinstance(maximum_command_output_bytes, int)
+        or maximum_command_output_bytes <= 0
+        or isinstance(maximum_command_timeout_seconds, bool)
+        or not isinstance(maximum_command_timeout_seconds, (int, float))
+        or maximum_command_timeout_seconds <= 0
+        or (runner is None and runner_identity_digest is not None)
+        or (runner is not None and not _digest(runner_identity_digest))
+    ):
+        raise Native360ColmapRunnerError(["native_colmap_service_binding_invalid"])
+    lexical_input_root = Path(input_root)
+    if lexical_input_root.is_symlink():
+        raise Native360ColmapRunnerError(["native_colmap_runner_root_symlink_forbidden"])
+    resolved_input_root = lexical_input_root.resolve()
+    if not resolved_input_root.is_dir():
+        raise Native360ColmapRunnerError(["native_colmap_runner_execution_bounds_invalid"])
+    runtime_binding_digest = canonical_digest(
+        {
+            "runner_version": NATIVE_360_COLMAP_RUNNER_VERSION,
+            "execution_plan_digest": admitted["native_360_colmap_execution_plan_digest"],
+            "input_root_identity_digest": canonical_digest(
+                {"resolved_input_root": str(resolved_input_root)}
+            ),
+            "maximum_input_bytes": maximum_input_bytes,
+            "maximum_command_output_bytes": maximum_command_output_bytes,
+            "maximum_command_timeout_seconds": maximum_command_timeout_seconds,
+            "result_timestamp": timestamp,
+            "runner_kind": "default_subprocess" if runner is None else "injected_test_runtime",
+            "runner_identity_digest": runner_identity_digest,
+        }
+    )
 
     def estimator(*, request: Mapping[str, Any], output_root: Path) -> dict[str, Any]:
         try:
@@ -544,7 +581,7 @@ def build_native_360_colmap_pose_estimator_service(
             )
         return execute_native_360_colmap_plan(
             plan=admitted,
-            input_root=input_root,
+            input_root=resolved_input_root,
             artifact_root=output_root,
             timestamp=timestamp,
             runner=runner,
@@ -553,6 +590,7 @@ def build_native_360_colmap_pose_estimator_service(
             maximum_command_timeout_seconds=maximum_command_timeout_seconds,
         )
 
+    setattr(estimator, "blueprint_runtime_digest", runtime_binding_digest)
     return estimator
 
 
