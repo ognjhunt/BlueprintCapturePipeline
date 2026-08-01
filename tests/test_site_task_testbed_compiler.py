@@ -31,6 +31,11 @@ from blueprint_pipeline.site_task_testbed_compilation_contract import (
     validate_testbed_compilation_submission,
 )
 from blueprint_pipeline.site_task_testbed_compiler_cli import main as compiler_cli_main
+from blueprint_pipeline.semantic_testbed_evidence_bundle import (
+    SemanticTestbedEvidenceBundleError,
+    load_semantic_testbed_evidence_bundle,
+    write_semantic_testbed_evidence_bundle,
+)
 from blueprint_pipeline.site_task_testbed_webapp_sync import (
     build_site_task_testbed_webapp_publication,
     sync_site_task_testbed_to_webapp,
@@ -972,6 +977,114 @@ def test_compiler_cli_writes_one_immutable_testbed_version(tmp_path, capsys) -> 
     assert replay["testbed_digest"] == receipt["testbed_digest"]
 
 
+def test_semantic_evidence_bundle_is_execution_bound_immutable_and_replay_safe(
+    tmp_path,
+) -> None:
+    state_root = tmp_path / "reconstruction_control_plane"
+    artifacts_root = state_root / "plans" / "reconstruction-plan-1" / "artifacts"
+    artifacts_root.mkdir(parents=True)
+    plan = _plan(_qa(_envelope()))
+    reconstruction = normalize_reconstruction_result(_result(plan))
+    context = {
+        "schema_version": "reconstruction_control_plane_context.v1",
+        "capture_digest": SHA_A,
+        "context_digest": SHA_B,
+    }
+    execution = {
+        "schema_version": "reconstruction_control_plane_execution_result.v1",
+        "plan_id": "reconstruction-plan-1",
+        "state": "completed",
+        "context_digest": SHA_B,
+        "results": [reconstruction],
+        "errors": [],
+    }
+    execution["execution_result_digest"] = canonical_digest(
+        execution, digest_field="execution_result_digest"
+    )
+    (artifacts_root / "context.json").write_text(
+        json.dumps(context), encoding="utf-8"
+    )
+    (artifacts_root / "execution_result.json").write_text(
+        json.dumps(execution), encoding="utf-8"
+    )
+    semantic, _ = _semantic_artifacts(plan)
+
+    invalid_chain = copy.deepcopy(semantic)
+    invalid_chain["semantic_oriented_boxes"]["bindings"][
+        "semantic_lifting_result_digest"
+    ] = SHA_B
+    invalid_chain["semantic_oriented_boxes"]["result_digest"] = canonical_digest(
+        invalid_chain["semantic_oriented_boxes"], digest_field="result_digest"
+    )
+    with pytest.raises(
+        SemanticTestbedEvidenceBundleError, match="invalid_chain"
+    ):
+        write_semantic_testbed_evidence_bundle(
+            state_root=state_root,
+            plan_id="reconstruction-plan-1",
+            execution_result_digest=execution["execution_result_digest"],
+            semantic_evidence_artifacts=invalid_chain,
+        )
+    assert not (artifacts_root / "semantic_testbed_evidence_bundle.json").exists()
+
+    first = write_semantic_testbed_evidence_bundle(
+        state_root=state_root,
+        plan_id="reconstruction-plan-1",
+        execution_result_digest=execution["execution_result_digest"],
+        semantic_evidence_artifacts=semantic,
+    )
+    assert first["already_exists"] is False
+    assert first["proof_boundary"]["browser_authored_science"] is False
+    assert first["proof_boundary"]["semantic_geometry_is_collision_truth"] is False
+    loaded = load_semantic_testbed_evidence_bundle(
+        state_root=state_root,
+        plan_id="reconstruction-plan-1",
+        execution_result_digest=execution["execution_result_digest"],
+    )
+    assert loaded is not None
+    assert loaded["bundle_digest"] == first["bundle_digest"]
+    replay = write_semantic_testbed_evidence_bundle(
+        state_root=state_root,
+        plan_id="reconstruction-plan-1",
+        execution_result_digest=execution["execution_result_digest"],
+        semantic_evidence_artifacts=semantic,
+    )
+    assert replay["already_exists"] is True
+
+    stale = copy.deepcopy(semantic)
+    stale["semantic_gaussian_lifting"]["bindings"]["capture_digest"] = SHA_B
+    stale["semantic_gaussian_lifting"]["result_digest"] = canonical_digest(
+        stale["semantic_gaussian_lifting"], digest_field="result_digest"
+    )
+    with pytest.raises(
+        SemanticTestbedEvidenceBundleError, match="capture_digest_mismatch"
+    ):
+        write_semantic_testbed_evidence_bundle(
+            state_root=state_root,
+            plan_id="reconstruction-plan-1",
+            execution_result_digest=execution["execution_result_digest"],
+            semantic_evidence_artifacts=stale,
+        )
+
+    bundle_path = artifacts_root / "semantic_testbed_evidence_bundle.json"
+    tampered = json.loads(bundle_path.read_text(encoding="utf-8"))
+    tampered["proof_boundary"]["comparative_policy_ranking_verdict"] = (
+        "thesis_supported"
+    )
+    tampered["bundle_digest"] = canonical_digest(
+        tampered, digest_field="bundle_digest"
+    )
+    bundle_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(
+        SemanticTestbedEvidenceBundleError, match="proof_boundary_mismatch"
+    ):
+        load_semantic_testbed_evidence_bundle(
+            state_root=state_root,
+            plan_id="reconstruction-plan-1",
+            execution_result_digest=execution["execution_result_digest"],
+        )
+
+
 def test_signed_service_compiles_only_the_authoritative_approved_task(
     tmp_path, monkeypatch
 ) -> None:
@@ -1043,6 +1156,16 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
             },
         },
     )
+    semantic, semantic_refs = _semantic_artifacts(plan)
+    monkeypatch.setattr(
+        routes,
+        "load_semantic_testbed_evidence_bundle",
+        lambda **_: {
+            "schema_version": "semantic_testbed_evidence_bundle.v1",
+            "semantic_evidence_artifacts": semantic,
+            "artifact_references": semantic_refs,
+        },
+    )
     monkeypatch.setenv(service.CAPTURE_UPLOAD_STORE_ROOT_ENV, str(tmp_path / "capture-store"))
     payload = _service_compilation_payload(
         approved["approved_task_digest"], execution_digest
@@ -1076,6 +1199,12 @@ def test_signed_service_compiles_only_the_authoritative_approved_task(
     assert "artifact_path" not in json.dumps(result)
     assert result["proof_boundary"]["deployment_or_safety_approved"] is False
     assert result["webapp_sync"]["status"] == "skipped"
+    assert result["testbed"]["semantic_object_inventory"][0]["track_id"] == (
+        "track-item-1"
+    )
+    assert result["testbed"]["validation_envelope"]["reconstruction_layers"][
+        "physics_layer"
+    ] == []
     placement_evidence = next(
         row
         for row in result["testbed"]["evidence_inventory"]
