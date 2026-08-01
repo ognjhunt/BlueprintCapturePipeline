@@ -16,6 +16,9 @@ from blueprint_pipeline.processed_observation_dataset import (
 from blueprint_pipeline.reconstruction_colmap_dataset import (
     export_colmap_training_dataset,
 )
+from scripts.run_public_processed_observations import (
+    run_public_processed_observation_replay,
+)
 
 
 SOURCE_BUNDLE_BYTES = b"processed-public-dataset-source-bundle"
@@ -309,4 +312,43 @@ def test_processed_observations_reject_symlinked_pixels(tmp_path: Path) -> None:
         _compile(source, tmp_path / "output")
     assert caught.value.codes == (
         "processed_frame_artifact_missing_or_symlink:long:0",
+    )
+
+
+def test_public_processed_observation_replay_is_repeatable_and_bounded(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    bundle = tmp_path / "source.tar.gz"
+    _source_fixture(source)
+    bundle.write_bytes(SOURCE_BUNDLE_BYTES)
+    kwargs = {
+        "dataset_id": "mushroom",
+        "scene_id": "koivu",
+        "source_bundle": bundle,
+        "source_bundle_sha256": SOURCE_BUNDLE_DIGEST,
+        "source_bundle_uri": "https://doi.org/10.5281/zenodo.10230733",
+        "license_id": "CC-BY-4.0",
+        "dataset_root": source,
+        "long_transformations_relative_path": "long_capture/transformations.json",
+        "declared_heldout_ids_relative_path": "long_capture/test.txt",
+        "independent_transformations_relative_path": "short_capture/transformations.json",
+        "output_root": output,
+        "operator_identity": "blueprint-test-operator",
+        "source_commit": SOURCE_COMMIT,
+        "timestamp": TIMESTAMP,
+    }
+    first = run_public_processed_observation_replay(**kwargs)
+    second = run_public_processed_observation_replay(**kwargs)
+    assert second == first
+    assert first["counts"]["candidate_frames"] == 4
+    assert first["counts"]["hidden_heldout_frames"] == 3
+    assert first["colmap_candidate_image_count"] == 4
+    assert first["raw_capture_gate_passed"] is False
+    assert first["customer_upload_gate_passed"] is False
+    assert first["claim_flags"]["processed_captured_observation"] is True
+    assert (
+        first["claim_flags"]["comparative_policy_ranking_verdict"]
+        == "thesis_not_supported"
     )
