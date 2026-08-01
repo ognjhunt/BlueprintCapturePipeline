@@ -341,18 +341,25 @@ used as blind confirmation.
   three-view output, immediate reliability, owned-instance and global-zero
   closure, settled accounting, and generated-only same-policy query-9
   admission boundary;
+- `protocol_amendment_43_policy_query9_result_and_wam9_v1.md`,
+  `compute_authorization_ctrl_world_allocation_13.json`, and
+  `ctrl_world_current_reference_wam_9_gpu_profile_freeze_v1.json` — preserve
+  the successful same-checkpoint query 9, exact 15x8 native action, the
+  concurrent-lane control-plane reconciliation and generic fix, and bind WAM9
+  to the exact query-9 action, 33-frame generated feedback history, immutable
+  provider bundle, one single-use allocation, and the two-GPU global ceiling;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-Eight interactions are complete. WAM8 returned three exact generated views,
-passed immediate reliability with no flags or abstention, settled USD
-`0.187658`, and returned global Vast inventory to zero. Its exact final views
-and commanded-prefix state are frozen in the label-free policy-query-9 input.
-The next finite gate is one same-checkpoint policy query 9 through the canonical
-paid-resource allocator after fresh source, credential, object-transport,
-provider-inventory, cumulative-budget, watchdog, preflight, and dry-run checks.
-Its native action must then condition WAM9 before interaction nine is complete.
-Judges remain forbidden until the complete 12-interaction episode and causal-
-control matrix pass.
+Eight interactions are complete. Policy query 9 successfully returned a new
+exact native 15x8 action from WAM8's generated-only observation and registered
+state. Its provider output, terminal absence, lane reconciliation, and campaign
+settlement are preserved. The exact action now conditions the frozen WAM9
+request with 33 frames and states of history. The next finite gate is one WAM9
+generation through the canonical paid-resource allocator after fresh source,
+credential, object-transport, provider-inventory, cumulative-budget, watchdog,
+preflight, and dry-run checks. Interaction nine is not complete until WAM9's
+three views validate and pass immediate reliability. Judges remain forbidden
+until the complete 12-interaction episode and causal-control matrix pass.
