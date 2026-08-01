@@ -23,6 +23,43 @@ from blueprint_pipeline.new_site_diagnostic_smoke import build_protocol
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_canary_input_cli_routes_oscar_arm(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_build_canary_input_bundle(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {
+            "schema_version": "new_site_diagnostic_canary_input_receipt.v2",
+            "status": "completed",
+        }
+
+    monkeypatch.setattr(
+        bootstrap_module, "build_canary_input_bundle", fake_build_canary_input_bundle
+    )
+    output = tmp_path / "oscar_canary.zip"
+
+    result = bootstrap_module.main(
+        [
+            "build-canary-input",
+            "--protocol",
+            str(tmp_path / "protocol.json"),
+            "--background",
+            str(tmp_path / "background.png"),
+            "--output",
+            str(output),
+            "--arm",
+            "oscar",
+            "--native-camera-canary-result",
+            str(tmp_path / "native_camera_canary_result.json"),
+        ]
+    )
+
+    assert result == 0
+    assert observed["arm_id"] == "oscar"
+    assert observed["output_zip"] == str(output)
+    assert json.loads(output.with_suffix(".receipt.json").read_text())["status"] == "completed"
+
+
 def test_private_bundle_roundtrip_and_hash_binding(tmp_path: Path) -> None:
     background = tmp_path / "background.png"
     Image.new("RGB", (224, 224), color=(1, 2, 3)).save(background)
