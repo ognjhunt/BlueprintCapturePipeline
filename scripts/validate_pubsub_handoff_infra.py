@@ -7,6 +7,11 @@ import re
 import sys
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib  # type: ignore[no-redef]
+
 
 def fail(message: str) -> None:
     print(f"Pub/Sub handoff infra validation failed: {message}", file=sys.stderr)
@@ -20,6 +25,31 @@ def compact(text: str) -> str:
 def require_contains(text: str, needle: str, description: str) -> None:
     if needle not in text:
         fail(f"missing {description}: {needle}")
+
+
+def has_project_runtime_dependency(text: str, package_name: str) -> bool:
+    """Return whether a package is a direct production dependency.
+
+    A package present only in an optional extra is insufficient for the
+    systemd deployment, which intentionally runs ``uv sync --no-dev`` without
+    extras.
+    """
+
+    try:
+        payload = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return False
+    project = payload.get("project")
+    if not isinstance(project, dict):
+        return False
+    dependencies = project.get("dependencies")
+    if not isinstance(dependencies, list):
+        return False
+    prefix = re.compile(
+        rf"^\s*{re.escape(package_name)}(?:\s|$|[<>=!~;@\[])",
+        flags=re.IGNORECASE,
+    )
+    return any(isinstance(item, str) and prefix.search(item) for item in dependencies)
 
 
 def has_run_e2e_result_binding(text: str) -> bool:
@@ -77,9 +107,10 @@ def main() -> None:
             'blueprint-pubsub-handoff-listener = "blueprint_pipeline.pubsub_handoff_listener:main"',
             "CLI entrypoint",
         ),
-        ("google-cloud-pubsub", "Pub/Sub package dependency"),
     ]:
         require_contains(pyproject_text, needle, description)
+    if not has_project_runtime_dependency(pyproject_text, "google-cloud-pubsub"):
+        fail("google-cloud-pubsub must be a direct [project].dependencies runtime dependency")
 
     for needle, description in [
         ("def parse_handoff_payload", "payload parser"),
