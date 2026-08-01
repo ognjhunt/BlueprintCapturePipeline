@@ -8,6 +8,7 @@ TERRAFORM_MAIN = REPO_ROOT / "deploy" / "terraform" / "main.tf"
 TERRAFORM_TFVARS_EXAMPLE = REPO_ROOT / "deploy" / "terraform" / "terraform.tfvars.example"
 ROOT_DOCKERFILE = REPO_ROOT / "Dockerfile"
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_live_pipeline_control_plane.sh"
+STAGING_INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_live_pipeline_staging.sh"
 PIPELINE_DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "scripts" / "deploy.sh"
 FULL_TEST_LANE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "full-test-lane.yml"
 CI_REQUIRED_CHECKS_DOC = REPO_ROOT / "docs" / "CI_REQUIRED_CHECKS.md"
@@ -131,6 +132,39 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
     assert "threshold=40" in baseline
 
 
+def test_isolated_staging_intake_has_separate_identity_state_and_installer() -> None:
+    service = _read("blueprint-pipeline-intake-staging.service")
+    env_example = _read("pipeline-intake-staging.env.example")
+    installer = STAGING_INSTALL_SCRIPT.read_text(encoding="utf-8")
+
+    assert "BlueprintCapturePipeline-staging" in service
+    assert "Environment=PORT=8766" in service
+    assert "ReadWritePaths=/var/lib/blueprint-staging" in service
+    assert "pipeline-intake-staging.env" in service
+    assert "git rev-parse HEAD" in service
+    assert "git status --porcelain" in service
+    assert "BLUEPRINT_SOURCE_COMMIT" in service
+    assert "blueprint_pipeline.production_runtime_env_guard" in service
+    assert "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION" not in service
+    assert "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER" not in service
+
+    assert "BLUEPRINT_SOURCE_COMMIT=" in env_example
+    assert "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN=" in env_example
+    assert "Do not reuse the production value" in env_example
+    assert "PORT=8766" in env_example
+    assert "/var/lib/blueprint-staging" in env_example
+    assert "/var/lib/blueprint/pipeline-control-plane" not in env_example
+    assert "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION" not in env_example
+
+    assert "HEAD must equal origin/main" in installer
+    assert "staging checkout must be clean" in installer
+    assert 'safe.directory=${STAGING_REPO}' in installer
+    assert "blueprint-pipeline-intake-staging.service" in installer
+    assert "pipeline-intake-staging.env.example" in installer
+    assert "blueprint-pipeline-intake.service" not in installer
+    assert "blueprint-pubsub-handoff-listener" not in installer
+
+
 def test_pubsub_handoff_listener_has_repeated_deployed_runner():
     service = _read("blueprint-pubsub-handoff-listener.service")
     timer = _read("blueprint-pubsub-handoff-listener.timer")
@@ -144,6 +178,11 @@ def test_pubsub_handoff_listener_has_repeated_deployed_runner():
     assert (
         "BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION=blueprint-pipeline-handoff-listener" in env_example
     )
+    assert (
+        "GOOGLE_APPLICATION_CREDENTIALS="
+        "/etc/blueprint/credentials/pipeline-handoff-listener.json"
+    ) in env_example
+    assert "GOOGLE_CLOUD_PROJECT=blueprint-8c1ca" in env_example
     assert "BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true" in env_example
     assert "BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true" in env_example
     assert (
@@ -154,11 +193,14 @@ def test_pubsub_handoff_listener_has_repeated_deployed_runner():
         "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR="
         "/var/lib/blueprint/pipeline-control-plane/incoming_webapp_job_requests"
     ) in env_example
-    assert "OnUnitActiveSec=1min" in timer
+    assert "OnActiveSec=30s" in timer
+    assert "OnUnitInactiveSec=1min" in timer
+    assert "OnBootSec=" not in timer
     assert "Unit=blueprint-pubsub-handoff-listener.service" in timer
     assert "blueprint-pubsub-handoff-listener.service" in installer
     assert "blueprint-pubsub-handoff-listener.timer" in installer
     assert "systemctl enable --now blueprint-pubsub-handoff-listener.timer" in installer
+    assert 'chown -R --no-dereference "${SERVICE_USER}:${SERVICE_GROUP}"' in installer
     assert "${STATE_DIR}/robot-eval-job-requests" in installer
     assert "${STATE_DIR}/incoming_webapp_job_requests" in installer
     assert "${HANDOFF_DIR}" in installer
@@ -507,7 +549,7 @@ def test_full_test_lane_gates_pull_requests_and_deploy_contract():
     assert "schedule:" in workflow
     assert "workflow_dispatch:" in workflow
     assert "uv run scripts/pytest_full.sh" in workflow
-    assert "--junitxml=output/ci/full-test-lane-junit.xml" in workflow
+    assert '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml"' in workflow
     assert 'FULL_TEST_LANE_REQUIRED="${FULL_TEST_LANE_REQUIRED:-true}"' in deploy_script
     assert "check_full_test_lane_deploy_gate" in deploy_script
     assert "FULL_TEST_LANE_COMMIT" in deploy_script

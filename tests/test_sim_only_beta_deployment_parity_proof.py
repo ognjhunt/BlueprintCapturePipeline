@@ -60,6 +60,15 @@ def _fetcher(url: str, headers: Mapping[str, str] | None, timeout: int) -> dict[
     raise AssertionError(f"unexpected URL: {url}")
 
 
+def _authentication_configured_fetcher(
+    url: str, headers: Mapping[str, str] | None, timeout: int
+) -> dict[str, Any]:
+    result = _fetcher(url, headers, timeout)
+    if url.endswith("/health"):
+        result["json"] = {"ok": True, "authentication_configured": True}
+    return result
+
+
 def _git_probe(repo: Path) -> dict[str, Any]:
     head = HEAD_SHA
     return {
@@ -306,6 +315,27 @@ def test_deployment_parity_proof_blocks_without_deployed_commit_and_clean_tree()
         " M client/src/App.tsx",
         "?? output/pipeline/",
     ]
+
+
+def test_deployment_parity_accepts_current_authentication_health_field() -> None:
+    report = build_deployment_parity_proof(
+        webapp_url="https://webapp.staging.example",
+        pipeline_intake_url="https://pipeline.staging.example",
+        pipeline_intake_token="secret-token",
+        webapp_repo=Path("/repos/webapp"),
+        pipeline_repo=Path("/repos/pipeline"),
+        webapp_deployed_commit=HEAD_SHA,
+        pipeline_deployed_commit=HEAD_SHA,
+        deployment_environment="staging",
+        fetcher=_authentication_configured_fetcher,
+        git_probe=_git_probe,
+    )
+
+    assert report["status"] == "verified"
+    assert report["staging_deployment_proven"] is True
+    health = report["checks"]["pipeline_intake_health"]
+    assert health["authentication_configured"] is True
+    assert health["token_configured"] is True
 
 
 def test_deployment_parity_proof_blocks_unready_health() -> None:

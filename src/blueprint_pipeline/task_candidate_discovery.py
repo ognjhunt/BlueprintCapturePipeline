@@ -509,6 +509,8 @@ def record_task_candidate_decision(
         return decision, None
 
     task_body = _approved_task_body(candidate, edited_task)
+    actor_role = _text(actor.get("role"))
+    approval_prefix = "customer" if actor_role == "customer" else "operator"
     proposer_identity = _text(value["proposal_method"].get("proposer_identity"))
     proposal_origin = _text(value["proposal_method"].get("origin")) or "local_rule"
     prohibited_evaluators = [proposer_identity] if proposal_origin in _MODEL_PROPOSAL_ORIGINS else []
@@ -525,7 +527,11 @@ def record_task_candidate_decision(
         "approval_decision_id": decision["decision_id"],
         "approval_decision_digest": decision["decision_digest"],
         "approval_actor": _clone(actor),
-        "intent_source": "customer_edited_candidate" if edited_task is not None else "customer_approved_candidate",
+        "intent_source": (
+            f"{approval_prefix}_edited_candidate"
+            if edited_task is not None
+            else f"{approval_prefix}_approved_candidate"
+        ),
         "task": task_body,
         "proposer_identity": proposer_identity,
         "prohibited_evaluator_identities": prohibited_evaluators,

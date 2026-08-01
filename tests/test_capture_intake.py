@@ -265,6 +265,38 @@ def test_external_reconstruction_requires_source_capture_digest_and_stays_derive
     assert "derived_reconstruction" in " ".join(admission["reduced_authority_reasons"])
 
 
+def test_public_processed_rgbd_pose_profile_is_observation_only() -> None:
+    envelope = _envelope(
+        b"{}",
+        profile="public_processed_rgbd_pose_sequence",
+        streams=[
+            "processed_rgb_observations",
+            "camera_poses",
+            "camera_intrinsics",
+            "depth",
+        ],
+    )
+    envelope["original_files"][0]["original_filename"] = "processed_dataset.json"
+    envelope["original_files"][0]["relative_path"] = "processed_dataset.json"
+    for stream in envelope["available_sensor_streams"]:
+        stream["source_relative_path"] = "processed_dataset.json"
+
+    admission = build_capture_admission(envelope)
+
+    assert admission["status"] == "accepted"
+    assert admission["claim_ceiling"]["task_candidate_discovery"] is True
+    assert admission["claim_ceiling"]["captured_observation_review"] is True
+    assert admission["claim_ceiling"]["calibrated_camera_poses"] is False
+    assert admission["claim_ceiling"]["metric_scale"] is False
+    assert admission["claim_ceiling"]["metric_geometry"] is False
+    assert admission["claim_ceiling"]["collision_geometry"] is False
+    assert admission["claim_ceiling"]["physical_task_success"] is False
+    assert admission["claim_ceiling"]["comparative_policy_ranking_verdict"] == (
+        "thesis_not_supported"
+    )
+    assert "not_customer_capture" in " ".join(admission["reduced_authority_reasons"])
+
+
 def test_admitted_monocular_intake_flows_into_existing_capture_materialization(
     tmp_path: Path,
 ) -> None:

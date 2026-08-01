@@ -18,6 +18,7 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
+import google.auth
 from google.cloud import storage
 
 from .common import PipelineError, utc_now_iso, write_json
@@ -1456,6 +1457,23 @@ def _write_delivery_evidence(
     return record_path
 
 
+def _canonical_subscription_resource(subscription: str) -> str:
+    value = _string(subscription)
+    parts = value.split("/")
+    if len(parts) == 4 and parts[0] == "projects" and parts[2] == "subscriptions":
+        if parts[1] and parts[3]:
+            return value
+    if not value or "/" in value:
+        raise PipelineError("Pub/Sub subscription must be a short id or full resource name")
+    project = _string(os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCLOUD_PROJECT"))
+    if not project:
+        _credentials, default_project = google.auth.default()
+        project = _string(default_project)
+    if not project:
+        raise PipelineError("Pub/Sub project id could not be resolved for short subscription id")
+    return f"projects/{project}/subscriptions/{value}"
+
+
 def pull_and_process(
     *,
     subscription: str,
@@ -1475,9 +1493,10 @@ def pull_and_process(
     from google.cloud import pubsub_v1
 
     subscriber = pubsub_v1.SubscriberClient()
+    subscription_resource = _canonical_subscription_resource(subscription)
     response = subscriber.pull(
         request={
-            "subscription": subscription,
+            "subscription": subscription_resource,
             "max_messages": max_messages,
         },
         timeout=30,
@@ -1519,7 +1538,7 @@ def pull_and_process(
             continue
         heartbeat = _AckDeadlineHeartbeat(
             subscriber=subscriber,
-            subscription=subscription,
+            subscription=subscription_resource,
             ack_id=received.ack_id,
             ack_deadline_seconds=ack_deadline_seconds,
         )
@@ -1586,7 +1605,7 @@ def pull_and_process(
         ack_ids.append(received.ack_id)
 
     if ack_ids:
-        subscriber.acknowledge(request={"subscription": subscription, "ack_ids": ack_ids})
+        subscriber.acknowledge(request={"subscription": subscription_resource, "ack_ids": ack_ids})
     return len(ack_ids)
 
 

@@ -7,6 +7,11 @@ import re
 import sys
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib  # type: ignore[no-redef]
+
 
 def fail(message: str) -> None:
     print(f"Pub/Sub handoff infra validation failed: {message}", file=sys.stderr)
@@ -20,6 +25,47 @@ def compact(text: str) -> str:
 def require_contains(text: str, needle: str, description: str) -> None:
     if needle not in text:
         fail(f"missing {description}: {needle}")
+
+
+def has_project_runtime_dependency(text: str, package_name: str) -> bool:
+    """Return whether a package is a direct production dependency.
+
+    A package present only in an optional extra is insufficient for the
+    systemd deployment, which intentionally runs ``uv sync --no-dev`` without
+    extras.
+    """
+
+    try:
+        payload = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return False
+    project = payload.get("project")
+    if not isinstance(project, dict):
+        return False
+    dependencies = project.get("dependencies")
+    if not isinstance(dependencies, list):
+        return False
+    prefix = re.compile(
+        rf"^\s*{re.escape(package_name)}(?:\s|$|[<>=!~;@\[])",
+        flags=re.IGNORECASE,
+    )
+    return any(isinstance(item, str) and prefix.search(item) for item in dependencies)
+
+
+def has_run_e2e_result_binding(text: str) -> bool:
+    """Return whether the listener binds the canonical run_e2e result.
+
+    The listener intentionally formats its conditional invocation across
+    multiple lines.  Match Python whitespace instead of coupling the deploy
+    preflight to one formatter layout.
+    """
+
+    return bool(
+        re.search(
+            r"\bresult\s*=\s*\(?\s*run_e2e\s*\(\s*\*\*run_kwargs\s*\)",
+            text,
+        )
+    )
 
 
 def main() -> None:
@@ -61,9 +107,10 @@ def main() -> None:
             'blueprint-pubsub-handoff-listener = "blueprint_pipeline.pubsub_handoff_listener:main"',
             "CLI entrypoint",
         ),
-        ("google-cloud-pubsub", "Pub/Sub package dependency"),
     ]:
         require_contains(pyproject_text, needle, description)
+    if not has_project_runtime_dependency(pyproject_text, "google-cloud-pubsub"):
+        fail("google-cloud-pubsub must be a direct [project].dependencies runtime dependency")
 
     for needle, description in [
         ("def parse_handoff_payload", "payload parser"),
@@ -78,11 +125,12 @@ def main() -> None:
         ("subscriber.pull", "pull subscription call"),
         ("from .run_e2e import run_end_to_end", "pipeline entrypoint import"),
         ("run_e2e: Callable[..., dict[str, Any]] = run_end_to_end", "pipeline invocation default"),
-        ("result = run_e2e(", "pipeline invocation"),
         ("subscriber.acknowledge", "post-success ack"),
         ("run_evaluation_prep=run_evaluation_prep", "evaluation prep handoff"),
     ]:
         require_contains(listener_text, needle, description)
+    if not has_run_e2e_result_binding(listener_text):
+        fail("missing pipeline invocation result binding")
 
     for needle, description in [
         ('resource "google_pubsub_topic" "pipeline_trigger"', "descriptor topic resource"),
@@ -100,11 +148,25 @@ def main() -> None:
         ("dead_letter_policy", "dead-letter policy"),
         ("max_delivery_attempts = 5", "dead-letter delivery cap"),
         ('role = "roles/pubsub.subscriber"', "subscriber IAM role"),
-        ("google_service_account.pipeline_runner.email", "pipeline runner subscriber principal"),
+        ('resource "google_service_account" "pipeline_handoff_listener"', "dedicated listener identity"),
+        (
+            'resource "google_pubsub_subscription_iam_member" "pipeline_handoff_listener_subscriber"',
+            "subscription-scoped listener IAM",
+        ),
+        (
+            'resource "google_storage_bucket_iam_member" "pipeline_handoff_listener_capture_reader"',
+            "bucket-scoped listener IAM",
+        ),
+        (
+            "google_service_account.pipeline_handoff_listener.email",
+            "dedicated listener principal",
+        ),
         ("SWAP_TRIGGER_HANDOFF_PUBSUB_TOPIC = google_pubsub_topic.capture_bridge_handoff.name", "storage-trigger handoff topic env var"),
         ('output "pubsub_handoff_listener_subscription"', "subscription output"),
     ]:
         require_contains(terraform_text, needle, description)
+    if 'resource "google_project_iam_member" "pipeline_runner_pubsub_subscriber"' in terraform_text:
+        fail("pipeline-runner must not retain project-wide Pub/Sub subscriber IAM")
 
     # XR-04: listener subscription must NOT be bound to the descriptor topic.
     if "topic = google_pubsub_topic.pipeline_trigger.id" in terraform_text and (
@@ -126,9 +188,23 @@ def main() -> None:
         ("--max-retry-delay 600s", "deploy subscription retry maximum backoff"),
         ("--dead-letter-topic pipeline-trigger-dlq", "deploy dead-letter topic"),
         ("--max-delivery-attempts 5", "deploy dead-letter delivery cap"),
+        ('"pipeline-handoff-listener"', "deploy dedicated listener service account"),
+        (
+            "gcloud pubsub subscriptions add-iam-policy-binding blueprint-pipeline-handoff-listener",
+            "deploy exact subscription IAM",
+        ),
+        (
+            'gcloud storage buckets add-iam-policy-binding "gs://${STORAGE_BUCKET}"',
+            "deploy exact capture-bucket IAM",
+        ),
         ("python3 \"$PROJECT_ROOT/scripts/validate_pubsub_handoff_infra.py\"", "deploy preflight validator"),
     ]:
         require_contains(deploy_text, needle, description)
+    runner_grants = deploy_text[
+        deploy_text.find("RUNNER_EMAIL=") : deploy_text.find("# The persistent-host listener")
+    ]
+    if '"roles/pubsub.subscriber"' in compact(runner_grants):
+        fail("deploy script grants Pub/Sub subscriber to the broad pipeline runner")
 
     if "Pub/Sub Topic: pipeline-trigger" in deploy_text:
         fail("deploy summary still references stale pipeline-trigger topic")
@@ -143,7 +219,8 @@ def main() -> None:
     ]:
         require_contains(systemd_service_text, needle, description)
     for needle, description in [
-        ("OnUnitActiveSec=1min", "systemd listener timer cadence"),
+        ("OnActiveSec=30s", "systemd listener initial cadence"),
+        ("OnUnitInactiveSec=1min", "systemd listener repeat cadence"),
         ("Unit=blueprint-pubsub-handoff-listener.service", "systemd listener timer unit binding"),
     ]:
         require_contains(systemd_timer_text, needle, description)
@@ -170,6 +247,11 @@ def main() -> None:
             "BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH=/var/lib/blueprint/pipeline-control-plane/live_pipeline_staged_inputs.json",
             "env example configured staged inputs path",
         ),
+        (
+            "GOOGLE_APPLICATION_CREDENTIALS=/etc/blueprint/credentials/pipeline-handoff-listener.json",
+            "dedicated listener credential path",
+        ),
+        ("GOOGLE_CLOUD_PROJECT=blueprint-8c1ca", "listener project id"),
     ]:
         require_contains(systemd_env_text, needle, description)
 

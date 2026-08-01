@@ -865,6 +865,27 @@ def test_pull_and_process_acks_successes_and_permanent_invalid_payload(
     )
 
 
+def test_pull_and_process_expands_short_subscription_with_adc_project(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pubsub_v1 = types.SimpleNamespace()
+    subscriber = FakeSubscriber([])
+    monkeypatch.setattr(google.cloud, "pubsub_v1", pubsub_v1, raising=False)
+    monkeypatch.setattr(pubsub_v1, "SubscriberClient", lambda: subscriber, raising=False)
+    monkeypatch.setattr(listener_module.google.auth, "default", lambda: (object(), "blueprint-8c1ca"))
+
+    assert pull_and_process(
+        subscription="blueprint-pipeline-handoff-listener",
+        storage_root=tmp_path,
+        provider="openai",
+        max_messages=1,
+    ) == 0
+    assert subscriber.pull_requests[0]["request"]["subscription"] == (
+        "projects/blueprint-8c1ca/subscriptions/blueprint-pipeline-handoff-listener"
+    )
+
+
 def test_concurrent_duplicate_delivery_observes_active_lease_and_executes_once(
     tmp_path: Path,
 ) -> None:

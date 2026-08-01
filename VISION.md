@@ -13,7 +13,6 @@ and sellable **today**. Where this document describes rungs 3–5, treat them as
 bets**, not current capability. Every forward claim carries an explicit proof boundary.
 
 <!-- SHARED_VISION_START -->
-
 ## The one-sentence version
 
 Blueprint starts as the neutral way to know **which robot policy will actually work at a specific
@@ -66,13 +65,17 @@ earn each claim with evidence from the previous rung.
 
 ---
 
-### Rung 1 — The wedge: eval ranking that correlates to real-world performance
+### Rung 1 — The wedge: claim-bounded Task Evaluation Runs
 
 **What it is (shipping today).** Blueprint's one product is the **Task Evaluation
 Run**: bind a decision to an exact maintained Site-Task Testbed, decompose it into
 claims, route each claim to qualified evidence, and return a decision, a partial
-decision, or an explicit abstention with the next cheapest experiment. Comparative
-policy ranking is one possible claim, not the product definition.
+decision, or an explicit abstention with the next cheapest experiment. It returns
+a bounded positive or negative decision, candidate elimination, partial decision,
+explicit abstention, or the next evidence needed. Comparative policy ranking is
+one possible claim, not the product definition, and candidate ordering appears
+only when the evidence supports it. This is the current PMF wedge (see the
+[Commercial Wedge Overlay](PLATFORM_CONTEXT.md)).
 
 **Research direction, not Blueprint proof.** Published generated-world results
 motivate a learned-evaluator evidence method, but do not qualify it for a Blueprint
@@ -107,14 +110,18 @@ not measured equivalent rank fidelity.** Ranking is the honest, defensible unit;
 is that SC3-Eval's in-distribution 0.98 becomes ~0.85–0.87 cross-embodiment / OOD — and on the OOD
 online split its Pearson edge over its own Cosmos-Predict2.5 baseline is a statistical wash
 (0.870 vs 0.871; it keeps only an MMRV edge, 0.171 vs 0.195). The consistency recipe's advantage is
-largely an in-distribution result today — precisely the gap rung 3b has to close.
+largely an in-distribution result today — precisely the gap rung 3b has to close, and precisely why
+Pipeline must qualify each method for the requested claim and may abstain.
 
 **Proof boundary (non-negotiable).** Blueprint's current preregistered
 policy-ranking verdict is `thesis_not_supported`. A Task Evaluation Run may still
 resolve geometry, perception, collision, or other qualified claims and abstain on
-ranking. We do **not** sell a guaranteed field outcome, deployment readiness, safety
-certification, or a claim that we ran the buyer's robot without separately accepted
-physical proof. Generated frames are support, never real-world proof.
+ranking. We sell an inspectable decision or abstention with per-claim outcomes,
+validation envelope, uncertainty, disagreement, claim ceiling, next experiment,
+and exact provenance. We do **not** sell a guaranteed ranking or field outcome, an
+off-scope validation, deployment readiness, safety certification, or a claim that
+we ran the buyer's robot without separately accepted physical proof. Generated
+frames are review support, never real-world proof.
 
 ---
 
@@ -156,10 +163,11 @@ conflict-of-interest firewall** — the same discipline that keeps a ratings age
 Two capabilities grow out of the data rungs 1–2 produce. They are **partly shipping, partly bets.**
 
 **3a — Evidence reuse and optional policy experiments (inside Task Evaluation
-Runs).** Rights-cleared run evidence may become eligible for evaluation or
+Runs).** Post-training is not a separate current product. Rights-cleared run
+evidence may become eligible for evaluation or
 post-training use after provenance, robot-action alignment, quality, and leakage
-gates. Policy improvement may be an internal candidate-generation experiment; no
-export implies training occurred or a policy improved. Robotics is data-starved in a way language never was: usable
+gates; eligibility does not prove that training occurred or that a policy
+improved. Policy improvement may be an internal candidate-generation experiment. Robotics is data-starved in a way language never was: usable
 open-source real-world interaction data is **<5,000 hours** vs. trillions of text tokens; Bessemer
 calls robot data **"~a billion times smaller than internet text"** and projects **>$3B** of industry
 data spend in two years. High-quality teleoperation still costs **~$118–340/hour**. Two things follow:
@@ -267,9 +275,10 @@ These are inherited from platform doctrine and do not bend as we climb:
 > → more proprietary real-world outcome data → better prediction *and* better data generation → better
 > per-site policies → more deployments we can credibly serve → funds and justifies more capture.
 
-Rungs 1–2 are a **data-acquisition strategy disguised as a product.** Every deployment decision we
-sit under is a labeled, ground-truth outcome that the whole rest of the ladder needs and that no
-competitor without our capture footprint can buy.
+Rungs 1–2 are a **data-acquisition strategy disguised as a product**, and the buyer-facing evidence
+foundation everything above rests on. Every deployment decision we support can produce a labeled
+outcome that strengthens later evaluation and policy-improvement work — an outcome no competitor
+without our capture footprint can buy — without turning an unverified prediction into ground truth.
 
 ## The bets we are explicitly making (and what would have to become true)
 
@@ -292,7 +301,6 @@ ranking is valuable even if world models plateau.
   Decide only with rung-1 evidence and a neutrality plan.
 - **Neutrality governance:** when do we formalize the eval firewall? (Answer: before rung 4, not
   after.)
-
 <!-- SHARED_VISION_END -->
 
 ## Evidence base (selected, verified 2026-07-03; refreshed 2026-07-28)
@@ -347,6 +355,10 @@ figures beyond the ~40% one-year drop are lower-confidence.*
 
 ---
 
-*Maintained as a shared cross-repo doctrine. Edit the shared block in one place and mirror to all
-three repos. Last updated 2026-07-29 (shared block edited in `BlueprintCapturePipeline`; mirror to
-`BlueprintCapture` and `Blueprint-WebApp` pending).*
+*Shared cross-repo doctrine, generated from a single source. Edit
+`BlueprintCapturePipeline doctrine/`, then run
+`python3 scripts/sync_shared_doctrine.py --write` to splice it into every repo and
+re-lock. Do not hand-edit the block above: CI verifies it against
+`contracts/shared-doctrine.lock.json` and will reject a drifted copy. Last synced
+2026-07-31 (union merge of the previously diverged Pipeline and WebApp copies;
+`BlueprintCapture` was not checked out and remains unsynced).*

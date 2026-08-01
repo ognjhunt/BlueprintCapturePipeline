@@ -111,7 +111,8 @@
         "camera_360_equirectangular",
         "camera_360_native",
         "monocular_video",
-        "precomputed_external_reconstruction"
+        "precomputed_external_reconstruction",
+        "public_processed_rgbd_pose_sequence"
       ]
     }
   }

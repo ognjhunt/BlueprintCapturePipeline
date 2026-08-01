@@ -52,6 +52,13 @@ jobs:
       CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
 
     steps:
+      - name: Bind ephemeral artifact roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "BLUEPRINT_ARTIFACT_CACHE_ROOT=${RUNNER_TEMP}/blueprint-artifact-cache" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_EVIDENCE_ROOT=${RUNNER_TEMP}/blueprint-evidence" >> "${GITHUB_ENV}"
+
       - name: Checkout Pipeline
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

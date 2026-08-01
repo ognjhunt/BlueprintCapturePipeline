@@ -182,6 +182,90 @@ as a separately source-bound observation representation, then run task-candidate
 analysis, human approval, immutable testbed compilation, and a partial Decision
 Envelope. This remains a public proxy, not the raw-capture launch gate.
 
+The real external-reconstruction proxy is now repeatable from a clean immutable
+commit with `scripts/run_public_indoor_proxy.py`. The command requires exact
+archive and PLY SHA-256 values, inspects tar/ZIP membership without extracting,
+rejects traversal and links, and requires an explicit acknowledgment that the
+local transfer and malware scanner are test doubles. It authorizes only
+`local://external-reconstruction-import-v1`, asserts the appearance-only claim
+ceiling, and writes an immutable replay summary. A typical invocation is:
+
+```bash
+python scripts/run_public_indoor_proxy.py \
+  --dataset-id mushroom-koivu \
+  --dataset-source-uri https://doi.org/10.5281/zenodo.10230733 \
+  --license-id CC-BY-4.0 \
+  --provider-identity mushroom-zenodo-10230733 \
+  --source-bundle /path/to/koivu_iphone.tar.gz \
+  --source-bundle-sha256 sha256:<exact-archive-digest> \
+  --source-artifact /path/to/polycam_pointcloud.ply \
+  --source-artifact-sha256 sha256:<exact-ply-digest> \
+  --expected-ply-vertices 367960 \
+  --consent-status accepted \
+  --operator-identity <operator-id> \
+  --output-root /path/to/immutable-replay-output \
+  --acknowledge-test-double-malware-scan
+```
+
+The receipt deliberately records `production_security_gate_passed=false`,
+`raw_capture_gate_passed=false`, and `customer_upload_gate_passed=false`.
+
+### Completed: processed RGB-D/pose observation replay
+
+The MuSHRoom `koivu` archive also ran through the additive
+`processed_observation_dataset_manifest.v1` lane at exact clean commit
+`9e6299ea0b204868bdc0880ac1f5d27857152363`. The compiler verified the exact
+146,575,749-byte source archive, every consumed RGB/depth file, all published
+intrinsics and camera-to-world matrices, the 29 declared long-trajectory test
+IDs, and the independent short trajectory. It froze 239 training frames, 26
+validation frames, 29 declared test frames, and 121 independent-trajectory
+frames. The resulting candidate-only COLMAP export contained 265 images; all
+150 evaluation views remained under the evaluator-only boundary.
+
+The exact replay was executed twice. Both executions preserved summary SHA-256
+`36be03f03f547a542750c81d85bd7e3af37b39447cb5cf325df86f93a221166e`.
+The processed dataset digest is
+`sha256:735c3714b15b431b9bfe542cee97bbaa79c4972c93be9fc971d53cfdb37fbf18`,
+and the candidate COLMAP dataset digest is
+`sha256:46f6222b407b33e465852a4846641fe7b9aea26c15c15ceb7fe5bd57a965bc7a`.
+The compact receipt is
+`docs/evidence/public_processed_observation_mushroom_koivu_9e6299ea.json`.
+
+This establishes real processed captured-observation availability, immutable
+source binding, disjoint candidate/evaluator views, and compatibility with the
+local COLMAP training-input exporter. It does not establish original-video or
+decoded-PTS truth, Blueprint encoder retention, IMU/tracking evidence,
+independently verified metric scale, customer upload, production malware
+scanning, collision geometry, physics, physical success, deployment readiness,
+safety certification, or comparative policy ranking. The frozen verdict remains
+`thesis_not_supported`.
+
+### Completed: processed walkthrough to partial Task Evaluation Run
+
+At exact clean commit `592f8da413d808dc707bf28c032559c30ac270f3`, the
+same MuSHRoom `koivu` processed observations and source-bound appearance PLY ran
+through the remaining product seams twice. Both runs produced the same internal
+summary digest `sha256:68c0dc1ec6ae1aeb1bd3ea5c8c4dc94775f893443b33b92f43bd2806ab6860aa`,
+immutable testbed digest
+`sha256:6675d53f3874ed961a11760ba826284e200d006f6795fcf1eef75d3f50f9a109`,
+and partial Decision Envelope digest
+`sha256:1b7f430c4b1fea1b7e4ef81faf7ef212a9b77edcf9dac344a617522751e232eb`.
+
+The task first remained `task_approval_required`, then an operator approved it
+only as an internal dataset proxy. The code records
+`operator_approved_candidate`; it does not serialize that action as customer
+intent. The explicitly allowlisted local method supported processed-view
+visibility. Reach, collision, physical success, and comparative policy ranking
+abstained, with a bounded physical-evidence request and no robot run. The
+compact receipt is
+`docs/evidence/public_processed_task_testbed_mushroom_koivu_592f8da4.json`.
+
+This proves that an online indoor walkthrough can exercise Blueprint's
+processed-observation, approval, testbed, router, authorization, execution, and
+partial-decision machinery today. It still cannot prove Blueprint's retained
+encoder frames, decoded PTS, IMU/tracking, customer upload/intent, independent
+metric scale, collision physics, physical success, deployment, or safety.
+
 ### P0: live-agent, zero-tool mutation smoke
 
 With a separately configured supported OpenAI API credential and a strict

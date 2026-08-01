@@ -84,11 +84,26 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert "inputs.pytest" not in workflow
     assert "extra_args" not in workflow
     assert "uv run scripts/pytest_full.sh" in workflow
-    assert "--junitxml=output/ci/full-test-lane-junit.xml" in workflow
+    assert '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml"' in workflow
     assert "blueprint_pipeline.pytest_full_lane_evidence" in workflow
     assert "scripts/verify_full_lane_collection.py" in workflow
     assert "full-test-lane-planned.json" in workflow
     assert "full-test-lane-executed.json" in workflow
+
+
+def test_core_workflows_bind_runner_temp_only_after_job_start() -> None:
+    for workflow_name in ("ci.yml", "sim-only-local-gate.yml", "full-test-lane.yml"):
+        workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(
+            encoding="utf-8"
+        )
+        before_first_step = workflow.split("steps:", 1)[0]
+        assert "${{ runner.temp }}" not in before_first_step, workflow_name
+        assert (
+            'BLUEPRINT_ARTIFACT_CACHE_ROOT=${RUNNER_TEMP}/blueprint-artifact-cache'
+            in workflow
+        ), workflow_name
+        assert 'BLUEPRINT_EVIDENCE_ROOT=${RUNNER_TEMP}/blueprint-evidence' in workflow, workflow_name
+        assert '>> "${GITHUB_ENV}"' in workflow, workflow_name
 
 
 def test_pr_workflows_do_not_duplicate_branch_push_runs() -> None:
@@ -184,7 +199,7 @@ def test_package_policy_and_spdx_metadata_are_complete() -> None:
     assert (ROOT / ".github" / "CODEOWNERS").is_file()
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "uv build --out-dir output/ci/dist" in workflow
+    assert 'uv build --out-dir "${{ runner.temp }}/blueprint-ci/dist"' in workflow
     assert "scripts/verify_distribution_metadata.py" in workflow
 
 

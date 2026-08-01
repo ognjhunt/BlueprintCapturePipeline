@@ -400,6 +400,35 @@ probe. A verified `staging` proof sets `staging_deployment_proven=true` and
 cannot satisfy the production release gate. Generate a separate `production`
 proof only after the production deployment and rollback gates pass.
 
+### Isolated Pipeline staging intake
+
+The persistent host may run a second, localhost-only intake process for staging
+without sharing the production checkout, state tree, port, or HMAC secret. Use
+the checked-in staging unit and installer:
+
+```bash
+STAGING_REPO=/opt/blueprint/BlueprintCapturePipeline-staging \
+  scripts/install_live_pipeline_staging.sh
+```
+
+The staging checkout must be clean with `HEAD == origin/main`. Fill
+`/etc/blueprint/pipeline-intake-staging.env` with that exact 40-character commit
+and a newly generated staging-only HMAC secret, then enable the service:
+
+```bash
+systemctl enable --now blueprint-pipeline-intake-staging.service
+curl --fail http://127.0.0.1:8766/health
+curl --fail http://127.0.0.1:8766/api/live-pipeline/version
+```
+
+The unit uses `/var/lib/blueprint-staging`, port `8766`, and the production
+fail-closed runtime posture. It has no control-plane trigger, Pub/Sub listener,
+provider credential, simulator gate, paid-compute gate, or physical-action gate.
+Health/version success proves only the isolated intake process and exact source
+identity. Capture-transfer readiness additionally requires an allowlisted signed
+download host and absolute malware-scanner command, and the cross-repository
+staging proof still requires a real staging WebApp identity and health endpoint.
+
 `site_task_testbed_compilation_submission.v2` must name the exact accepted
 session/intake, approved-task digest, completed reconstruction plan/result, new
 testbed ID/version, an owner-attested robot binding, and optional provider-neutral
@@ -474,6 +503,36 @@ For capture-bridge Pub/Sub handoffs, the deployed
 BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true
 BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true
 ```
+
+Use a dedicated `pipeline-handoff-listener` service account rather than the
+Cloud Run `pipeline-runner` identity. Grant it `roles/pubsub.subscriber` on the
+exact `blueprint-pipeline-handoff-listener` subscription and
+`roles/storage.objectViewer` on the exact capture bucket—no project-wide runner,
+Firestore, logging, metrics, write, or admin role. Store its JSON credential at
+`/etc/blueprint/credentials/pipeline-handoff-listener.json`, owned by
+`root:blueprint` with mode `0640`, and set `GOOGLE_APPLICATION_CREDENTIALS` plus
+`GOOGLE_CLOUD_PROJECT` in `/etc/blueprint/pipeline-control-plane.env`. Rotate by
+creating a replacement key, atomically replacing the protected file, restarting
+and proving two timer pulls, then deleting the prior key. A short subscription ID
+is normalized to the full project resource through the explicit project or ADC;
+an unresolved project fails closed before pulling or acknowledging messages.
+
+If the dedicated account was first created manually during recovery, import it
+into the protected Terraform backend before the next apply rather than allowing
+Terraform to attempt a duplicate create:
+
+```bash
+terraform import google_service_account.pipeline_handoff_listener \
+  projects/blueprint-8c1ca/serviceAccounts/pipeline-handoff-listener@blueprint-8c1ca.iam.gserviceaccount.com
+```
+
+Use the same reviewed backend and variable inputs as the deployment runbook;
+never create local production state merely to perform this import.
+
+The timer uses `OnActiveSec` for its first pull and `OnUnitInactiveSec` for
+subsequent pulls. This matters for a oneshot listener enabled after host boot:
+`OnBootSec` plus an activation-relative cadence can otherwise leave an active
+timer with no next trigger.
 
 With those flags, the listener claims a revisioned owner/token lease, extends
 the Pub/Sub ack deadline while work is active, downloads the completed capture bundle, enriches

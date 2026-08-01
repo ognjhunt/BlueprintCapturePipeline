@@ -248,6 +248,7 @@ dependencies = [
     { name = "defusedxml" },
     { name = "fastapi" },
     { name = "google-auth" },
+    { name = "google-cloud-pubsub" },
     { name = "google-cloud-storage" },
     { name = "json-numpy" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -265,7 +266,6 @@ dependencies = [
 cloud = [
     { name = "boto3" },
     { name = "google-auth" },
-    { name = "google-cloud-pubsub" },
     { name = "google-cloud-storage" },
     { name = "requests" },
 ]
@@ -370,7 +370,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "google-auth", specifier = ">=2.0.0" },
     { name = "google-auth", marker = "extra == 'cloud'", specifier = ">=2.0.0" },
-    { name = "google-cloud-pubsub", marker = "extra == 'cloud'", specifier = ">=2.21.0" },
+    { name = "google-cloud-pubsub", specifier = ">=2.21.0" },
     { name = "google-cloud-storage", specifier = ">=2.10.0" },
     { name = "google-cloud-storage", marker = "extra == 'cloud'", specifier = ">=2.10.0" },
     { name = "google-genai", marker = "extra == 'llm'", specifier = ">=1.0.0" },

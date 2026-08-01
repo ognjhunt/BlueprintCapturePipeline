@@ -31,6 +31,9 @@
     "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py": [
       "tests/test_groot_oscar_digitalocean_closed_loop_job.py"
     ],
+    "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py": [
+      "tests/test_groot_oscar_digitalocean_builder.py"
+    ],
     "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py": [
       "tests/test_isaac_g1_kitchen_parity_job.py"
     ],
@@ -84,6 +87,9 @@
     ],
     "src/blueprint_pipeline/oscar_wam_provider_bundle.py": [
       "tests/test_oscar_wam_provider_bundle.py"
+    ],
+    "src/blueprint_pipeline/paid_resource_allocator.py": [
+      "tests/test_paid_resource_allocator.py"
     ],
     "src/blueprint_pipeline/policy_autoresearch.py": [
       "tests/test_policy_autoresearch.py"
@@ -154,6 +160,9 @@
     "src/blueprint_pipeline/site_eval_director.py": [
       "tests/test_site_eval_director.py"
     ],
+    "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": [
+      "tests/test_task_evaluation_supervisor.py"
+    ],
     "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": [
       "tests/test_unitree_groot_n17_sonic_vast_persistent_session.py"
     ],
@@ -193,22 +202,23 @@
     "src/blueprint_pipeline/alpha_readiness.py": 2163,
     "src/blueprint_pipeline/arena_result_ingest.py": 2383,
     "src/blueprint_pipeline/capture_orchestrator.py": 2002,
-    "src/blueprint_pipeline/cross_repo_first_gpu_readiness.py": 2686,
+    "src/blueprint_pipeline/cross_repo_first_gpu_readiness.py": 2687,
     "src/blueprint_pipeline/evaluation_prep_stage.py": 5141,
     "src/blueprint_pipeline/first_gpu_run_packet.py": 5015,
     "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": 2954,
     "src/blueprint_pipeline/geometry_stage.py": 2218,
     "src/blueprint_pipeline/gpu_render_providers.py": 3323,
     "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py": 2643,
+    "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py": 2020,
     "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py": 3012,
     "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": 5057,
     "src/blueprint_pipeline/isaac_runtime_task_backend.py": 3580,
-    "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": 3212,
+    "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": 3216,
     "src/blueprint_pipeline/live_pipeline_control_plane.py": 2313,
     "src/blueprint_pipeline/live_pipeline_intake_service.py": 2464,
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
     "src/blueprint_pipeline/materialization.py": 2198,
-    "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6059,
+    "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6063,
     "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": 12110,
     "src/blueprint_pipeline/native_runtime_backend.py": 2970,
     "src/blueprint_pipeline/object_index_stage.py": 2369,
@@ -217,6 +227,7 @@
     "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": 8183,
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
     "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5872,
+    "src/blueprint_pipeline/paid_resource_allocator.py": 2111,
     "src/blueprint_pipeline/policy_autoresearch.py": 2563,
     "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py": 2053,
     "src/blueprint_pipeline/post_training_data_package.py": 6713,
@@ -230,11 +241,12 @@
     "src/blueprint_pipeline/runpod_wam_async_runner.py": 3682,
     "src/blueprint_pipeline/sc3_fidelity_contracts.py": 2321,
     "src/blueprint_pipeline/scene_asset_preflight.py": 2051,
-    "src/blueprint_pipeline/scene_wam_policy_episode_packet.py": 3682,
+    "src/blueprint_pipeline/scene_wam_policy_episode_packet.py": 3689,
     "src/blueprint_pipeline/simulation_automation.py": 3740,
     "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py": 4378,
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py": 4648,
     "src/blueprint_pipeline/site_eval_director.py": 2145,
+    "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": 3303,
     "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": 10104,
     "src/blueprint_pipeline/vast_provider_adapter.py": 6725,
     "src/blueprint_pipeline/wam_derived_observation_harness.py": 3066,

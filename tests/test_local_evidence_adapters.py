@@ -6,9 +6,11 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.local_evidence_adapters import (
     ANALYTIC_REACHABILITY_ADAPTER,
     CAPTURED_VISIBILITY_ADAPTER,
+    PROCESSED_OBSERVATION_VISIBILITY_ADAPTER,
     SWEPT_AABB_COLLISION_SIMULATION_ADAPTER,
     AnalyticReachabilityAdapter,
     CapturedVisibilityAdapter,
+    ProcessedObservationVisibilityAdapter,
     SweptAabbCollisionSimulationAdapter,
     authorized_local_evidence_adapter_registry,
 )
@@ -152,6 +154,45 @@ def test_captured_visibility_binds_exact_region_and_retained_frames() -> None:
     assert missing["supports_claim"] is None
 
 
+def test_processed_observation_visibility_never_claims_raw_capture() -> None:
+    testbed = _testbed()
+    testbed["validation_envelope"]["capture_authority_profile"] = (
+        "public_processed_rgbd_pose_sequence"
+    )
+    testbed["evidence_inventory"] = [
+        {
+            "evidence_id": "processed_capture_observations",
+            "digest": "sha256:" + "f" * 64,
+            "raw_capture_authority": False,
+        }
+    ]
+
+    result = ProcessedObservationVisibilityAdapter().execute(
+        claim={
+            "claim_type": "perception_visibility",
+            "subject": {"target_region_id": "tote-1"},
+        },
+        testbed=testbed,
+    )
+
+    assert result["status"] == "valid"
+    assert result["categorical_finding"] == (
+        "target_region_visible_in_processed_dataset_views"
+    )
+    assert result["provenance"]["raw_capture_authority"] is False
+    assert result["claim_ceiling"]["processed_captured_observation_visibility"] is True
+    assert result["claim_ceiling"]["metric_geometry"] is False
+    assert result["claim_ceiling"]["physical_success"] is False
+
+    wrong_profile = _testbed()
+    abstention = ProcessedObservationVisibilityAdapter().execute(
+        claim={"claim_type": "perception_visibility", "subject": "tote-1"},
+        testbed=wrong_profile,
+    )
+    assert abstention["status"] == "unavailable"
+    assert "processed_observation_profile_required" in abstention["blockers"]
+
+
 def test_collision_simulation_is_metric_qualified_and_sim_only() -> None:
     clear = SweptAabbCollisionSimulationAdapter().execute(
         claim={
@@ -228,12 +269,14 @@ def test_local_registry_is_empty_by_default_and_rejects_unknown_authority() -> N
     assert empty.manifest() == []
     authorized = authorized_local_evidence_adapter_registry([
         CAPTURED_VISIBILITY_ADAPTER,
+        PROCESSED_OBSERVATION_VISIBILITY_ADAPTER,
         ANALYTIC_REACHABILITY_ADAPTER,
         SWEPT_AABB_COLLISION_SIMULATION_ADAPTER,
     ])
     assert authorized.manifest() == [
         ANALYTIC_REACHABILITY_ADAPTER,
         CAPTURED_VISIBILITY_ADAPTER,
+        PROCESSED_OBSERVATION_VISIBILITY_ADAPTER,
         SWEPT_AABB_COLLISION_SIMULATION_ADAPTER,
     ]
     with pytest.raises(ValueError, match="local_evidence_adapter_not_registered"):

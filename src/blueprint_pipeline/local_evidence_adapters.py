@@ -12,6 +12,9 @@ from .decision_evidence_execution import EvidenceMethodAdapterRegistry
 
 ANALYTIC_REACHABILITY_ADAPTER = "local://analytic-reachability-v1"
 CAPTURED_VISIBILITY_ADAPTER = "local://captured-visibility-v1"
+PROCESSED_OBSERVATION_VISIBILITY_ADAPTER = (
+    "local://processed-observation-visibility-v1"
+)
 SWEPT_AABB_COLLISION_SIMULATION_ADAPTER = (
     "local://swept-aabb-collision-simulation-v1"
 )
@@ -156,7 +159,11 @@ class CapturedVisibilityAdapter:
     def execute(self, **kwargs: Any) -> Mapping[str, Any]:
         claim = _mapping(kwargs.get("claim"))
         testbed = _mapping(kwargs.get("testbed"))
-        if str(claim.get("claim_type") or "") not in {"visibility", "captured_visibility"}:
+        if str(claim.get("claim_type") or "") not in {
+            "visibility",
+            "captured_visibility",
+            "perception_visibility",
+        }:
             return _unavailable("captured_visibility_claim_type_not_supported")
         subject = claim.get("subject")
         target_region_id = str(
@@ -196,6 +203,91 @@ class CapturedVisibilityAdapter:
             },
             "claim_ceiling": {
                 "captured_observation_visibility": True,
+                "metric_geometry": False,
+                "physical_success": False,
+                "deployment_readiness": False,
+                "safety_certification": False,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class ProcessedObservationVisibilityAdapter:
+    """Review visibility in a hash-bound processed public observation set.
+
+    This adapter deliberately does not reuse retained-capture wording: dataset
+    frames can support an exact-view visibility finding, but they cannot prove
+    Blueprint encoder retention, decoded PTS, raw capture, or metric authority.
+    """
+
+    adapter_reference: str = PROCESSED_OBSERVATION_VISIBILITY_ADAPTER
+
+    def execute(self, **kwargs: Any) -> Mapping[str, Any]:
+        claim = _mapping(kwargs.get("claim"))
+        testbed = _mapping(kwargs.get("testbed"))
+        if str(claim.get("claim_type") or "") not in {
+            "visibility",
+            "captured_visibility",
+            "perception_visibility",
+        }:
+            return _unavailable("processed_observation_visibility_claim_type_not_supported")
+        validation = _mapping(testbed.get("validation_envelope"))
+        if validation.get("capture_authority_profile") != (
+            "public_processed_rgbd_pose_sequence"
+        ):
+            return _unavailable("processed_observation_profile_required")
+        source_rows = [
+            row
+            for row in _rows(testbed.get("evidence_inventory"))
+            if row.get("evidence_id") == "processed_capture_observations"
+        ]
+        if len(source_rows) != 1 or source_rows[0].get("raw_capture_authority") is not False:
+            return _unavailable("processed_observation_source_binding_missing")
+        subject = claim.get("subject")
+        target_region_id = str(
+            _mapping(subject).get("target_region_id")
+            or (subject if isinstance(subject, str) else "")
+        ).strip()
+        regions = [
+            row
+            for row in _rows(testbed.get("target_regions"))
+            if str(row.get("region_id") or "").strip() == target_region_id
+        ]
+        if len(regions) != 1:
+            return _unavailable("processed_observation_target_region_not_found")
+        region = regions[0]
+        frames = sorted(
+            {str(item).strip() for item in region.get("supporting_frames", []) if str(item).strip()}
+        )
+        coverage = _number(region.get("captured_coverage"))
+        if not frames:
+            return _unavailable("processed_observation_supporting_frames_missing")
+        if coverage is None or not 0 <= coverage <= 1:
+            return _unavailable("processed_observation_coverage_missing_or_invalid")
+        return {
+            "status": "valid",
+            "supports_claim": True,
+            "observed_value": coverage,
+            "categorical_finding": "target_region_visible_in_processed_dataset_views",
+            "uncertainty": 1.0 - coverage,
+            "coverage": coverage,
+            "blockers": [],
+            "invalid_rollout_reasons": [],
+            "raw_artifact_references": [
+                {"uri": f"processed-observation://{frame}", "frame_id": frame}
+                for frame in frames
+            ],
+            "provenance": {
+                "execution_mode": "hermetic_local_read_only",
+                "source": "processed_public_dataset_supporting_frames",
+                "source_capture_digest": source_rows[0].get("digest"),
+                "raw_capture_authority": False,
+                "decoded_video_timing_verified": False,
+                "physical_robot_run_initiated": False,
+            },
+            "claim_ceiling": {
+                "processed_captured_observation_visibility": True,
+                "raw_capture_authority": False,
                 "metric_geometry": False,
                 "physical_success": False,
                 "deployment_readiness": False,
@@ -379,6 +471,7 @@ def authorized_local_evidence_adapter_registry(
     available = {
         ANALYTIC_REACHABILITY_ADAPTER: AnalyticReachabilityAdapter(),
         CAPTURED_VISIBILITY_ADAPTER: CapturedVisibilityAdapter(),
+        PROCESSED_OBSERVATION_VISIBILITY_ADAPTER: ProcessedObservationVisibilityAdapter(),
         SWEPT_AABB_COLLISION_SIMULATION_ADAPTER: SweptAabbCollisionSimulationAdapter(),
     }
     requested = sorted({str(item or "").strip() for item in authorized_references if str(item or "").strip()})
@@ -391,9 +484,11 @@ def authorized_local_evidence_adapter_registry(
 __all__ = [
     "ANALYTIC_REACHABILITY_ADAPTER",
     "CAPTURED_VISIBILITY_ADAPTER",
+    "PROCESSED_OBSERVATION_VISIBILITY_ADAPTER",
     "SWEPT_AABB_COLLISION_SIMULATION_ADAPTER",
     "AnalyticReachabilityAdapter",
     "CapturedVisibilityAdapter",
+    "ProcessedObservationVisibilityAdapter",
     "SweptAabbCollisionSimulationAdapter",
     "authorized_local_evidence_adapter_registry",
 ]

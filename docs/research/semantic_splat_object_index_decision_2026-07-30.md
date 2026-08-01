@@ -66,14 +66,28 @@ that does not make the candidate geometry canonical capture truth.
   intersections. It returns a precise next experiment on disagreement. A pass
   remains an independently cross-checked semantic candidate; it never sets
   `collision_ready` or `physics_ready`.
+- An independent semantic-geometry benchmark now consumes the exact OBB result
+  plus a rights-cleared, independently produced and reviewed metric Z-up
+  reference set that was withheld from prediction. It uses deterministic
+  label-aware optimal assignment rather than greedy instance matching and
+  reports object recall, false-positive fraction, center/dimension/yaw error,
+  true oriented 3D OBB IoU, adjacent same-label instance recovery, and geometry
+  drift under hash-bound view-removal reruns. Cuboid axis swaps and 180-degree
+  yaw symmetry are handled explicitly; near-square objects are excluded from
+  yaw scoring rather than assigned a misleading error. A bounded CLI stage
+  verifies exact artifact bytes before emitting the diagnostic result. A
+  complete digest-bound prediction-input manifest is mandatory, and the
+  evaluator rejects a reference annotation, source, or alignment artifact that
+  appeared in prediction inputs.
 
 Still missing is a real renderer adapter that emits those exact contribution
 artifacts from a production analysis splat. The checked-in stage consumes and
 qualifies contribution rows but does not synthesize them or claim a render ran.
 Large-scene production also needs a bounded chunked/binary transport rather than
 one JSON view artifact, followed by graph cleanup, a production surface-point
-adapter, production collision-scene/support evidence, testbed projection, and a
-measured ground-truth evaluation set.
+adapter, production collision-scene/support evidence, and testbed projection.
+The metric suite is implemented, but no public-dataset result is claimed until
+an independently reviewed reference split and real predictions are supplied.
 
 ## Primary-source audit
 
@@ -141,18 +155,48 @@ still contains only the release timeline and no runnable implementation/models.
 ## Blueprint stage graph
 
 1. `rendered_view_detector`: open-vocabulary candidate boxes/prompts.
-2. `source_track_importer`: source-frame masks and persistent track IDs.
-3. `gaussian_contribution_lifter`: accumulate foreground/background evidence
+2. `source_track_importer`: implemented provider-neutral normalization for
+   compact probability-RLE masks and persistent track IDs. Every observation is
+   bound to an encoder-retained source frame, decoded PTS, camera record,
+   provider profile, model/runtime digest, allowed use, and exact provider
+   result; labels remain inferred candidates and never become observed facts or
+   geometry authority. The file entrypoint rejects symlinks, input overwrite,
+   oversized payloads, and provider-byte hash/size mismatches before emitting a
+   terminal compact artifact.
+   The execution seam now includes an optional fail-closed SAM 3.1 Object
+   Multiplex adapter using Meta's official stateful predictor API. It requires
+   ordered hash-bound retained-frame JPEG derivatives, exact PTS/camera
+   bindings, pinned code/runtime/checkpoint identities, exact SAM license terms,
+   explicit gated-model/commercial-evidence/privacy/trade-controls authorization,
+   offline execution, and persistent object
+   IDs. It emits binary mask support whose RLE probability is explicitly the
+   object detection score; it performs no cross-prompt instance deduplication
+   and does not self-grade. The gated checkpoint has not yet run in an
+   authorized GPU runtime, so this is implemented code rather than live
+   semantic evidence.
+   The current primary-source audit pins Meta repository revision
+   `96914d2425f90a64f45ca977c2b5165418099543` and its SAM License bytes at
+   SHA-256 `4dea99bfaa016e21bc860d73f344236bd1e5c4977d1a9a8fd32f822b500ae1be`.
+   Those terms grant a limited royalty-free license but remain custom,
+   non-transferable, mutable terms with redistribution, privacy, trade-control,
+   termination, and indemnity conditions. A passing code path is therefore not
+   a substitute for an exact use authorization bound to the terms digest.
+3. `reference_contribution_renderer`: implemented bounded deterministic
+   standard-3DGS renderer. It projects exact anisotropic Gaussians through
+   retained-frame OpenCV cameras and emits front-to-back `transmittance * alpha`
+   rows. This is an executable small-scene/conformance lane, not the accelerated
+   large-scene transport.
+4. `gaussian_contribution_lifter`: accumulate foreground/background evidence
    using renderer contribution weights and exact camera bindings.
-4. `instance_fusion`: track-aware, multi-view, disconnected-component cleanup.
-5. `oriented_box_fitter`: implemented baseline for robust outlier removal,
+5. `instance_fusion`: track-aware, multi-view, disconnected-component cleanup.
+6. `oriented_box_fitter`: implemented baseline for robust outlier removal,
    horizontal minimum-area fitting, independent vertical bounds, and eight Z-up
    corners; production surface-point evidence remains incomplete.
-6. `collision_validator`: implemented deterministic consistency baseline for
+7. `collision_validator`: implemented deterministic consistency baseline for
    independently qualified target volumes, support planes, occupied/free-space
    volumes, coverage, and generated regions; production collision-scene and
    support-plane adapters remain incomplete.
-7. `confidence_scorer`: view count/diversity, ambiguity, coverage, reprojection,
+8. `confidence_scorer`: view count/diversity, ambiguity, coverage, reprojection,
    scale, support, and held-out validation.
 
 Every stage binds the raw capture digest, reconstruction digest, stable Gaussian
@@ -161,9 +205,10 @@ output digest. Unsupported or generated-only regions remain explicit.
 
 ## Evaluation gate
 
-Use a rights-cleared, noncommercial research fixture set only for development.
-Measure object recall/false positives, center error, dimension error, yaw error,
-3D OBB IoU, adjacent same-category separation, held-out reprojection, and
-stability under removed frames/views. No benchmark pass upgrades collision,
-physics, physical success, deployment, safety, or the frozen comparative
-policy-ranking verdict `thesis_not_supported`.
+Use a rights-cleared research fixture only within its license envelope. The
+implemented benchmark measures object recall/false positives, center error,
+dimension error, yaw error, true 3D OBB IoU, adjacent same-category separation,
+and stability under removed frames/views. Held-out reprojection remains a
+separate renderer gate. No benchmark pass upgrades collision, physics, physical
+success, deployment, safety, or the frozen comparative policy-ranking verdict
+`thesis_not_supported`.
