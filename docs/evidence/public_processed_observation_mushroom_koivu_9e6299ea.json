@@ -1,0 +1,46 @@
+{
+  "camera_observation_digest": "sha256:9cd1def3506734ba6309cb9dfecab295a533969ac774ceded15db7015796f059",
+  "candidate_dataset_digest": "sha256:4480f83b23a4df9345dba85c0b2debd0a41532656c26031ec56a5b458d3f557e",
+  "claim_ceiling": "captured_observation_review_from_processed_public_dataset",
+  "claim_flags": {
+    "collision_geometry": false,
+    "comparative_policy_ranking_verdict": "thesis_not_supported",
+    "decoded_video_timing": false,
+    "deployment_readiness": false,
+    "metric_scale_verified": false,
+    "physical_task_success": false,
+    "physics": false,
+    "processed_captured_observation": true,
+    "raw_capture_authority": false,
+    "safety_certification": false
+  },
+  "colmap_candidate_image_count": 265,
+  "colmap_training_dataset_digest": "sha256:46f6222b407b33e465852a4846641fe7b9aea26c15c15ceb7fe5bd57a965bc7a",
+  "compile_request_digest": "sha256:33cb6648958d2434b9f2ec3fc10c98cbba73aa5fdbfcea749dbd0318a0f0eddc",
+  "cost_usd": 0.0,
+  "counts": {
+    "candidate_frames": 265,
+    "hidden_heldout_frames": 150,
+    "independent_trajectory_frames": 121,
+    "long_trajectory_frames": 294
+  },
+  "customer_upload_gate_passed": false,
+  "dataset_id": "mushroom",
+  "external_provider_upload_performed": false,
+  "frozen_split_digest": "sha256:2a36c60a8d57159b9115a2476463b57eea563facbac068f0a8bdf4ad060daf0f",
+  "hidden_heldout_digest": "sha256:e58ba35454b9c47bf9a7bf3bb0e2a9d706795450161aa9c928146a23cee2db68",
+  "processed_dataset_digest": "sha256:735c3714b15b431b9bfe542cee97bbaa79c4972c93be9fc971d53cfdb37fbf18",
+  "production_security_gate_passed": false,
+  "raw_capture_gate_passed": false,
+  "replay_summary_sha256": "sha256:36be03f03f547a542750c81d85bd7e3af37b39447cb5cf325df86f93a221166e",
+  "scene_id": "koivu",
+  "schema_version": "public_processed_observation_replay.v1",
+  "source_bundle": {
+    "digest": "sha256:68735cfa0758e1288a006c30dc8b95ffb4caa3392bc9c68c0c3ea6c111966518",
+    "license_id": "CC-BY-4.0",
+    "size_bytes": 146575749,
+    "source_uri": "https://doi.org/10.5281/zenodo.10230733"
+  },
+  "source_commit_sha": "9e6299ea0b204868bdc0880ac1f5d27857152363",
+  "timestamp": "2026-08-01T09:20:00-05:00"
+}
