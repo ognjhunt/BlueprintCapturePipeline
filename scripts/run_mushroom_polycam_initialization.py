@@ -32,7 +32,10 @@ from blueprint_pipeline.external_reconstruction_import import (
     build_external_reconstruction_import_request,
     import_external_reconstruction,
 )
-from blueprint_pipeline.mushroom_processed_proxy import build_mushroom_colmap_export_request
+from blueprint_pipeline.mushroom_processed_proxy import (
+    COORDINATE_FRAME_DECLARATION,
+    build_mushroom_colmap_export_request,
+)
 from blueprint_pipeline.reconstruction_colmap_dataset import (
     ColmapTrainingDatasetError,
     bind_colmap_initialization_points,
@@ -113,6 +116,7 @@ def main() -> int:
         authority_used=report["authority_used"],
         timestamp=report["timestamp"],
         configuration_digest=report["deterministic_configuration_digest"],
+        blockers=report["colmap_training_dataset_export_result"]["blockers"],
     )
     export_request["colmap_training_dataset_export_request_digest"] = canonical_digest(
         export_request, digest_field="colmap_training_dataset_export_request_digest"
@@ -238,11 +242,7 @@ def main() -> int:
         "maximum_points": arguments.maximum_points,
         "units": "publisher_pose_units_not_independently_validated",
         "metric_scale_status": "not_independently_validated",
-        "coordinate_frame_declaration": {
-            "declaration": "mushroom_published_camera_to_world",
-            "handedness": "not_independently_declared",
-            "gravity_alignment": "not_independently_validated",
-        },
+        "coordinate_frame_declaration": dict(COORDINATE_FRAME_DECLARATION),
         "authority_used": dict(report["authority_used"]),
         "timestamp": report["timestamp"],
     }

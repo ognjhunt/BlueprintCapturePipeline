@@ -21,11 +21,31 @@ import numpy as np
 from PIL import Image
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .pose_image_consistency import check_two_view_epipolar_consistency
 from .reconstruction_colmap_dataset import export_colmap_training_dataset
 
 
 SCHEMA_VERSION = "mushroom_processed_iphone_proxy.v1"
-COMPILER_VERSION = "mushroom_processed_iphone_proxy_compiler.v2"
+COMPILER_VERSION = "mushroom_processed_iphone_proxy_compiler.v3"
+# The published transform_matrix values are nerfstudio/OpenGL-convention
+# camera-to-world (x right, y up, z backward).  Two-view epipolar evidence on
+# the real candidate images (median 0.55px converted vs 2.1px unconverted on
+# the best-conditioned pairs) established the convention; the compiler converts
+# to the OpenCV convention the COLMAP exporter requires and then re-verifies
+# the converted poses against the pixels.
+_OPENGL_TO_OPENCV = np.diag([1.0, -1.0, -1.0])
+COORDINATE_FRAME_DECLARATION = {
+    "declaration": "mushroom_published_camera_to_world_opengl_converted_to_opencv",
+    "camera_axis_convention": "opencv_x_right_y_down_z_forward",
+    "camera_convention_evidence": "two_view_epipolar_consistency",
+    "handedness": "not_independently_declared",
+    "gravity_alignment": "not_independently_validated",
+}
+BASE_BLOCKERS = (
+    "raw_video_and_timestamps_missing",
+    "arkit_sensor_streams_missing",
+    "metric_scale_not_independently_validated",
+)
 ARCHIVE_SHA256 = "sha256:68735cfa0758e1288a006c30dc8b95ffb4caa3392bc9c68c0c3ea6c111966518"
 ARCHIVE_SIZE_BYTES = 146_575_749
 PUBLISHER_MD5 = "a359dba714e7829be11747ce5dee141c"
@@ -140,6 +160,8 @@ def _load_trajectory(root: Path, capture: str) -> list[dict[str, Any]]:
         with Image.open(depth_path) as depth:
             if depth.size != (width, height):
                 raise MushroomProcessedProxyError(["mushroom_depth_dimensions_invalid"])
+        converted = matrix.copy()
+        converted[:3, :3] = converted[:3, :3] @ _OPENGL_TO_OPENCV
         rows.append(
             {
                 "frame_id": frame_id,
@@ -148,7 +170,7 @@ def _load_trajectory(root: Path, capture: str) -> list[dict[str, Any]]:
                 "image_digest": "sha256:" + _hash(image_path),
                 "depth_digest": "sha256:" + _hash(depth_path),
                 "camera": {
-                    "T_world_camera": matrix.tolist(),
+                    "T_world_camera": converted.tolist(),
                     "rgb_intrinsics": {
                         "width": width,
                         "height": height,
@@ -157,7 +179,7 @@ def _load_trajectory(root: Path, capture: str) -> list[dict[str, Any]]:
                         "cx": intrinsics["cx"],
                         "cy": intrinsics["cy"],
                     },
-                    "pose_source": "mushroom_published_colmap_camera_to_world",
+                    "pose_source": "mushroom_published_camera_to_world_opengl_converted_to_opencv",
                 },
             }
         )
@@ -176,12 +198,14 @@ def build_mushroom_colmap_export_request(
     authority_used: Mapping[str, Any],
     timestamp: str,
     configuration_digest: str,
+    blockers: Sequence[str] = BASE_BLOCKERS,
 ) -> dict[str, Any]:
     """Deterministically rebuild the proxy's COLMAP export request.
 
     The compiler and any later initialization-binding runner must produce the
     byte-identical request so the recorded ``request_digest`` can be verified
-    before a derived (for example point-seeded) request is created.
+    before a derived (for example point-seeded) request is created.  Runners
+    pass the recorded result's ``blockers`` so gate outcomes replay exactly.
     """
 
     return {
@@ -193,11 +217,11 @@ def build_mushroom_colmap_export_request(
         "frozen_split_digest": split_digest,
         "camera_observation_manifest": json.loads(canonical_json(dict(camera_observation_manifest))),
         "candidate_dataset_manifest": json.loads(canonical_json(dict(candidate_dataset_manifest))),
-        "coordinate_frame_declaration": {"declaration": "mushroom_published_camera_to_world", "handedness": "not_independently_declared", "gravity_alignment": "not_independently_validated"},
+        "coordinate_frame_declaration": dict(COORDINATE_FRAME_DECLARATION),
         "units": "publisher_pose_units_not_independently_validated",
         "metric_scale_status": "not_independently_validated",
         "authority_used": dict(authority_used),
-        "blockers": ["raw_video_and_timestamps_missing", "arkit_sensor_streams_missing", "metric_scale_not_independently_validated"],
+        "blockers": sorted(set(str(blocker) for blocker in blockers)),
         "timestamp": timestamp,
     }
 
@@ -309,6 +333,14 @@ def compile_mushroom_processed_iphone_proxy(
     _write_immutable(artifact_root / "camera_observation_manifest.json", camera)
     _write_immutable(artifact_root / "evaluator_hidden" / "hidden_evaluator_manifest.json", hidden)
     dataset_digest = canonical_digest({"candidate": candidate["candidate_dataset_digest"], "hidden": hidden["hidden_evaluator_digest"]})
+    pose_consistency = check_two_view_epipolar_consistency(
+        observations=observations, image_root=artifact_root
+    )
+    if pose_consistency["status"] == "inconsistent":
+        raise MushroomProcessedProxyError(["mushroom_pose_image_consistency_inconsistent"])
+    blockers = list(BASE_BLOCKERS)
+    if pose_consistency["status"] != "consistent":
+        blockers.append("pose_image_consistency_inconclusive")
     colmap = export_colmap_training_dataset(
         source_artifact=build_mushroom_colmap_export_request(
             source_capture_digest=source_capture_digest,
@@ -320,6 +352,7 @@ def compile_mushroom_processed_iphone_proxy(
             authority_used=authority_used,
             timestamp=timestamp,
             configuration_digest=configuration_digest,
+            blockers=blockers,
         ),
         artifact_root=artifact_root,
         output_root=artifact_root / "trainer_input",
@@ -360,11 +393,8 @@ def compile_mushroom_processed_iphone_proxy(
             "export_camera_model": "PINHOLE",
             "camera_observation_digest": camera["camera_observation_digest"],
         },
-        "coordinate_frame_declaration": {
-            "declaration": "mushroom_published_camera_to_world",
-            "handedness": "not_independently_declared",
-            "gravity_alignment": "not_independently_validated",
-        },
+        "coordinate_frame_declaration": dict(COORDINATE_FRAME_DECLARATION),
+        "pose_image_consistency": pose_consistency,
         "units": "publisher_pose_units_not_independently_validated",
         "metric_scale_status": "not_independently_validated",
         "provider_runtime_identity": {"provider": "local", "runtime": "python_numpy_pillow"},
@@ -378,8 +408,9 @@ def compile_mushroom_processed_iphone_proxy(
         "warnings": [
             "publisher_opencv_label_has_no_distortion_coefficients_and_is_exported_as_explicit_pinhole",
             "processed_images_are_not_retained_video_observations",
+            "published_pose_rotations_converted_from_opengl_to_opencv_camera_convention",
         ],
-        "blockers": ["raw_video_and_timestamps_missing", "arkit_sensor_streams_missing", "metric_scale_not_independently_validated"],
+        "blockers": sorted(set(blockers)),
         "parent_artifact_or_event": {
             "dataset": "MuSHRoom",
             "doi": "10.5281/zenodo.10230733",
