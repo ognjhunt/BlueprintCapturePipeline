@@ -240,10 +240,7 @@ def test_fabric_world_pose_query_explicitly_bypasses_stale_usd() -> None:
             calls.append(usd)
             return np.asarray([[0.1, 0.2, 0.3]]), np.asarray([[1.0, 0.0, 0.0, 0.0]])
 
-    class Prim:
-        _xform_prim_view = View()
-
-    matrix = _fabric_world_pose_matrix(Prim())
+    matrix = _fabric_world_pose_matrix(View())
 
     assert calls == [False]
     assert matrix[3, :3] == pytest.approx([0.1, 0.2, 0.3])
@@ -253,12 +250,19 @@ def test_wrist_camera_prim_exists_before_reset_and_syncs_from_live_link_afterwar
     source = inspect.getsource(isaac_sim_6_backend)
 
     camera_definition = source.index("wrist_prim = UsdGeom.Camera.Define")
+    public_pose_view = source.index("wrist_pose_view = XFormPrim")
     world_reset = source.index("world.reset()")
     calibrated_world_sync = source.index("_synchronize_camera_to_rigid_link")
 
-    assert camera_definition < world_reset < calibrated_world_sync
+    assert camera_definition < public_pose_view < world_reset < calibrated_world_sync
     assert 'wrist_path = "/World/Cameras/Wrist"' in source
+    assert "prim_paths_expr=wrist_path" in source
+    assert "reset_xform_properties=False" in source
+    assert "usd=False" in source
+    assert "world.scene.add(wrist_pose_view)" in source
+    assert 'from isaacsim.core.prims import SingleArticulation, XFormPrim' in source
     assert "get_link_transforms_after_update_articulations_kinematic" in source
+    assert "._xform_prim_view" not in source
 
 
 def test_articulation_link_pose_uses_explicit_kinematic_update_and_xyzw_tensor_order() -> None:
@@ -305,12 +309,9 @@ def test_articulation_link_pose_uses_explicit_kinematic_update_and_xyzw_tensor_o
 def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
     calls: list[dict[str, object]] = []
 
-    class XformPrimView:
+    class PublicXFormPrim:
         def set_world_poses(self, **kwargs):
             calls.append(kwargs)
-
-    class Camera:
-        _xform_prim_view = XformPrimView()
 
     parent_initial = _world_pose_matrix_from_backend_pose(
         [0.4, -0.2, 1.1],
@@ -325,13 +326,13 @@ def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
     mount_orientation = _camera_quaternion_wxyz([1.0, 0.0, -0.2], [0.0, 0.0, 1.0])
 
     initial = _synchronize_camera_to_rigid_link(
-        camera=Camera(),
+        pose_view=PublicXFormPrim(),
         parent_to_world=parent_initial,
         mount_translation_parent=mount_translation,
         mount_orientation_parent_wxyz=mount_orientation,
     )
     commanded = _synchronize_camera_to_rigid_link(
-        camera=Camera(),
+        pose_view=PublicXFormPrim(),
         parent_to_world=parent_commanded,
         mount_translation_parent=mount_translation,
         mount_orientation_parent_wxyz=mount_orientation,
@@ -353,17 +354,33 @@ def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
     assert roundtrip == pytest.approx(commanded)
 
 
-def test_world_camera_sync_rejects_stale_camera_wrapper_pose_writers() -> None:
+def test_world_camera_sync_requires_public_pose_view_api() -> None:
     class Camera:
         def set_world_pose(self, **_kwargs):
             raise AssertionError("single-pose USD writer must not be used")
 
-        def set_world_poses(self, **_kwargs):
-            raise AssertionError("camera wrapper writer must not be used")
-
-    with pytest.raises(ValueError, match="native_wrist_camera_fabric_world_poses_api_missing"):
+    with pytest.raises(
+        ValueError, match="native_wrist_camera_public_fabric_pose_write_api_missing"
+    ):
         _synchronize_camera_to_rigid_link(
-            camera=Camera(),
+            pose_view=Camera(),
+            parent_to_world=np.eye(4),
+            mount_translation_parent=[0.0, 0.1, 0.03],
+            mount_orientation_parent_wxyz=[1.0, 0.0, 0.0, 0.0],
+        )
+
+
+def test_world_camera_sync_wraps_public_pose_write_failure_in_safe_code() -> None:
+    class PublicXFormPrim:
+        def set_world_poses(self, **_kwargs):
+            raise AttributeError("opaque runtime detail")
+
+    with pytest.raises(
+        ValueError,
+        match="native_wrist_camera_public_fabric_pose_write_failed:AttributeError",
+    ):
+        _synchronize_camera_to_rigid_link(
+            pose_view=PublicXFormPrim(),
             parent_to_world=np.eye(4),
             mount_translation_parent=[0.0, 0.1, 0.03],
             mount_orientation_parent_wxyz=[1.0, 0.0, 0.0, 0.0],
