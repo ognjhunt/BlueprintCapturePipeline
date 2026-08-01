@@ -384,18 +384,18 @@ used as blind confirmation.
   concurrent-lane settlement, and bind WAM12 to the exact query-12 action,
   36-frame generated feedback history, immutable provider bundle, one
   single-use allocation, and the two-GPU global ceiling;
+- `protocol_amendment_50_wam12_result_and_complete_episode_v1.md` — preserves
+  WAM12's exact three-view output, immediate reliability, provider-zero and
+  settled accounting, and the completed 12-interaction generated-observation
+  feedback chain while keeping causal and ranking claims unearned;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-Eleven interactions are complete. Policy query 12 returned a new exact 15x8
-native action from WAM11's generated views and registered commanded state. Its
-control-plane reservation is reconciled and settled at USD `0.052292` without
-rerunning the policy. The action now conditions an immutable WAM12 bundle with
-36 generated-history frames per view and 36 registered states. The next finite
-gate is WAM12 through the canonical paid-resource allocator after fresh source,
-credential, object-transport, provider-inventory, cumulative-budget, watchdog,
-preflight, and dry-run checks. A validated WAM12 result is required before the
-complete 12-interaction episode exists. Judges remain forbidden until that
-episode and the causal-control matrix pass.
+The complete registered 12-interaction label-free episode now exists. WAM12
+returned three exact generated views, passed immediate reliability with no
+flags or abstention, settled USD `0.076964`, and returned global Vast inventory
+to zero. Cumulative GPU spend is USD `12.518662`. The next finite gate is the
+complete frozen six-condition, two-seed Ctrl-World causal-control matrix.
+Judges remain forbidden until that matrix passes.
