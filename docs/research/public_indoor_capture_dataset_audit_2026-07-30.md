@@ -162,6 +162,34 @@ as a separately source-bound observation representation, then run task-candidate
 analysis, human approval, immutable testbed compilation, and a partial Decision
 Envelope. This remains a public proxy, not the raw-capture launch gate.
 
+The real external-reconstruction proxy is now repeatable from a clean immutable
+commit with `scripts/run_public_indoor_proxy.py`. The command requires exact
+archive and PLY SHA-256 values, inspects tar/ZIP membership without extracting,
+rejects traversal and links, and requires an explicit acknowledgment that the
+local transfer and malware scanner are test doubles. It authorizes only
+`local://external-reconstruction-import-v1`, asserts the appearance-only claim
+ceiling, and writes an immutable replay summary. A typical invocation is:
+
+```bash
+python scripts/run_public_indoor_proxy.py \
+  --dataset-id mushroom-koivu \
+  --dataset-source-uri https://doi.org/10.5281/zenodo.10230733 \
+  --license-id CC-BY-4.0 \
+  --provider-identity mushroom-zenodo-10230733 \
+  --source-bundle /path/to/koivu_iphone.tar.gz \
+  --source-bundle-sha256 sha256:<exact-archive-digest> \
+  --source-artifact /path/to/polycam_pointcloud.ply \
+  --source-artifact-sha256 sha256:<exact-ply-digest> \
+  --expected-ply-vertices 367960 \
+  --consent-status accepted \
+  --operator-identity <operator-id> \
+  --output-root /path/to/immutable-replay-output \
+  --acknowledge-test-double-malware-scan
+```
+
+The receipt deliberately records `production_security_gate_passed=false`,
+`raw_capture_gate_passed=false`, and `customer_upload_gate_passed=false`.
+
 ### P0: live-agent, zero-tool mutation smoke
 
 With a separately configured supported OpenAI API credential and a strict
