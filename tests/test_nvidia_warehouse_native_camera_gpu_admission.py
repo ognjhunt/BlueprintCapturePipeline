@@ -45,6 +45,7 @@ def _inputs():
         "runnable_platform": "linux/amd64",
         "isaac_sim_major_version": 6,
         "source_dirty_patch_sha256": CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+        "startup_no_runtime_timeout_seconds": 600,
     }
     manifest = {
         "schema_version": BUNDLE_SCHEMA_VERSION,
@@ -99,6 +100,7 @@ def test_native_camera_release_binds_registry_config_to_exact_clean_source() -> 
         "resolved_digest_ref": "docker.io/example/isaac@sha256:" + "b" * 64,
         "runnable_platform": "linux/amd64",
         "raw_secret_values_recorded": False,
+        "recommended_startup_no_runtime_timeout_seconds": 600,
         "worker_build_identity": {
             "status": "verified",
             "blockers": [],
@@ -127,6 +129,7 @@ def test_native_camera_release_rejects_dirty_or_mismatched_registry_config() -> 
         "resolved_digest_ref": "docker.io/example/isaac@sha256:" + "b" * 64,
         "runnable_platform": "linux/amd64",
         "raw_secret_values_recorded": False,
+        "recommended_startup_no_runtime_timeout_seconds": 600,
         "worker_build_identity": {
             "status": "verified",
             "source_commit": "f" * 40,
@@ -395,6 +398,8 @@ def test_native_camera_monitor_tears_down_before_admitting_policy_wam(
         instance_id="camera-1",
         provider_name="vast",
         deadline_epoch=time.time() + 300,
+        startup_begin_epoch=time.time(),
+        startup_no_runtime_timeout_seconds=120,
         poll_interval_seconds=0.1,
     )
 
@@ -443,12 +448,126 @@ def test_native_camera_monitor_exits_and_tears_down_when_worker_is_terminal(
         instance_id="camera-1",
         provider_name="vast",
         deadline_epoch=time.time() + 300,
+        startup_begin_epoch=time.time(),
+        startup_no_runtime_timeout_seconds=120,
         poll_interval_seconds=0.1,
     )
 
     assert result["status"] == "failed"
     assert result["advance_to_policy_wam"] is False
     assert result["continuing_spend"] is False
+    assert result["blockers"] == ["native_camera_worker_terminal_without_output"]
+
+
+def test_native_camera_monitor_enforces_prospective_startup_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Provider:
+        def inspect(self, _instance_id: str) -> dict:
+            return {
+                "status": "observed",
+                "actual_status": "loading",
+                "cur_state": "stopped",
+                "provider_absence_confirmed": False,
+            }
+
+    def missing_output(*_args, **_kwargs):
+        raise urllib.error.HTTPError("https://storage.example/output", 404, "missing", {}, None)
+
+    monkeypatch.setattr(camera_gpu, "safe_http_request", missing_output)
+    monkeypatch.setattr(
+        camera_gpu,
+        "terminate_canary_resources",
+        lambda **_kwargs: {"provider_absence_confirmed": True},
+    )
+    monkeypatch.setattr(
+        camera_gpu,
+        "_camera_cleanup_handoff",
+        lambda **_kwargs: {
+            "provider_absence_confirmed": True,
+            "control_plane_terminal": True,
+            "continuing_spend": False,
+        },
+    )
+
+    now = time.time()
+    result = camera_gpu._monitor_native_camera_output_and_teardown(
+        root=tmp_path,
+        output_secret_get_url="https://storage.example/output?signature=secret",
+        provider=Provider(),
+        armed={"status": "armed"},
+        instance_id="camera-1",
+        provider_name="vast",
+        deadline_epoch=now + 300,
+        startup_begin_epoch=now - 61,
+        startup_no_runtime_timeout_seconds=60,
+        poll_interval_seconds=0.1,
+    )
+
+    assert result["status"] == "failed"
+    assert result["advance_to_policy_wam"] is False
+    assert result["continuing_spend"] is False
+    assert result["provider_startup_observed"] is False
+    assert result["blockers"] == [
+        "native_camera_provider_startup_timeout_without_runtime"
+    ]
+
+
+def test_native_camera_monitor_does_not_apply_startup_timeout_after_runtime_seen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Provider:
+        inspections = 0
+
+        def inspect(self, _instance_id: str) -> dict:
+            self.inspections += 1
+            if self.inspections == 1:
+                return {
+                    "status": "observed",
+                    "actual_status": "running",
+                    "cur_state": "running",
+                    "provider_absence_confirmed": False,
+                }
+            return {
+                "status": "absent",
+                "provider_absence_confirmed": True,
+                "api_confirmed": True,
+            }
+
+    def missing_output(*_args, **_kwargs):
+        raise urllib.error.HTTPError("https://storage.example/output", 404, "missing", {}, None)
+
+    monkeypatch.setattr(camera_gpu, "safe_http_request", missing_output)
+    monkeypatch.setattr(
+        camera_gpu,
+        "terminate_canary_resources",
+        lambda **_kwargs: {"provider_absence_confirmed": True},
+    )
+    monkeypatch.setattr(
+        camera_gpu,
+        "_camera_cleanup_handoff",
+        lambda **_kwargs: {
+            "provider_absence_confirmed": True,
+            "control_plane_terminal": True,
+            "continuing_spend": False,
+        },
+    )
+
+    now = time.time()
+    result = camera_gpu._monitor_native_camera_output_and_teardown(
+        root=tmp_path,
+        output_secret_get_url="https://storage.example/output?signature=secret",
+        provider=Provider(),
+        armed={"status": "armed"},
+        instance_id="camera-1",
+        provider_name="vast",
+        deadline_epoch=now + 300,
+        startup_begin_epoch=now - 61,
+        startup_no_runtime_timeout_seconds=60,
+        poll_interval_seconds=0.1,
+    )
+
+    assert result["status"] == "failed"
     assert result["blockers"] == ["native_camera_worker_terminal_without_output"]
 
 

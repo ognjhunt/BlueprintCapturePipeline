@@ -96,6 +96,8 @@ MAX_OUTPUT_ARCHIVE_MEMBERS = 32
 MAX_OUTPUT_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 MAX_CONSECUTIVE_TRANSIENT_OUTPUT_ERRORS = 3
 MAXIMUM_SUPPORTED_GLOBAL_PAID_GPUS = 2
+MIN_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS = 60
+MAX_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS = 3600
 GLOBAL_PAID_GPU_LAUNCH_LOCK = Path.home() / ".blueprint-secrets" / "paid_gpu_global_launch.lock"
 
 
@@ -275,6 +277,14 @@ def build_native_camera_gpu_release_evidence(
         blockers.append("native_camera_gpu_release_image_family_invalid")
     if identity.get("isaac_sim_major_version") != 6:
         blockers.append("native_camera_gpu_release_isaac_major_invalid")
+    startup_timeout = image_manifest.get("recommended_startup_no_runtime_timeout_seconds")
+    if not (
+        type(startup_timeout) is int
+        and MIN_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS
+        <= startup_timeout
+        <= MAX_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS
+    ):
+        blockers.append("native_camera_gpu_release_startup_timeout_invalid")
     result: dict[str, Any] = {
         "schema_version": RELEASE_SCHEMA_VERSION,
         "status": "passed" if not blockers else "blocked",
@@ -285,6 +295,7 @@ def build_native_camera_gpu_release_evidence(
         "runnable_platform": image_manifest.get("runnable_platform"),
         "isaac_sim_major_version": identity.get("isaac_sim_major_version"),
         "worker_image_family": identity.get("worker_image_family"),
+        "startup_no_runtime_timeout_seconds": startup_timeout,
         "image_manifest_sha256": canonical_sha256(dict(image_manifest)),
         "source_identity_from_immutable_registry_config": True,
         "raw_secret_values_recorded": False,
@@ -329,6 +340,14 @@ def build_native_camera_gpu_admission(
         blockers.append("native_camera_gpu_release_isaac_major_invalid")
     if release.get("source_dirty_patch_sha256") != CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256:
         blockers.append("native_camera_gpu_release_dirty_overlay_forbidden")
+    startup_timeout = release.get("startup_no_runtime_timeout_seconds")
+    if not (
+        type(startup_timeout) is int
+        and MIN_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS
+        <= startup_timeout
+        <= MAX_STARTUP_NO_RUNTIME_TIMEOUT_SECONDS
+    ):
+        blockers.append("native_camera_gpu_release_startup_timeout_invalid")
 
     if input_bundle.get("schema_version") != RECEIPT_SCHEMA_VERSION:
         blockers.append("native_camera_gpu_input_receipt_schema_invalid")
@@ -409,6 +428,8 @@ def build_native_camera_gpu_admission(
         blockers.append("native_camera_gpu_watchdog_not_armed_before_allocation")
     if type(ttl) is not int or not 60 <= ttl <= 3600:
         blockers.append("native_camera_gpu_ttl_invalid")
+    elif type(startup_timeout) is int and startup_timeout > ttl - 60:
+        blockers.append("native_camera_gpu_startup_timeout_exceeds_runtime_budget")
     if (
         type(max_spend) not in {int, float}
         or not math.isfinite(float(max_spend))
@@ -745,6 +766,9 @@ def build_native_camera_gpu_provider_request(
                 "max_active_workers": 1,
                 "requested_budget_usd": float(spend["max_spend_usd"]),
                 "hard_timeout_seconds": ttl,
+                "startup_no_runtime_timeout_seconds": int(
+                    release["startup_no_runtime_timeout_seconds"]
+                ),
                 "independent_watchdog_required": True,
                 "watchdog_armed_before_allocation": True,
                 "attempt_inventory_zero_required_before_launch": True,
@@ -830,11 +854,18 @@ def _monitor_native_camera_output_and_teardown(
     instance_id: str,
     provider_name: str,
     deadline_epoch: float,
+    startup_begin_epoch: float,
+    startup_no_runtime_timeout_seconds: int,
     poll_interval_seconds: float = 15.0,
 ) -> dict[str, Any]:
     response_bytes: bytes | None = None
     http_status: int | None = None
     consecutive_transient_errors = 0
+    startup_deadline_epoch = min(
+        deadline_epoch - 60,
+        startup_begin_epoch + startup_no_runtime_timeout_seconds,
+    )
+    provider_startup_observed = False
     while time.time() < deadline_epoch - 60:
         try:
             response = safe_http_request(
@@ -877,6 +908,12 @@ def _monitor_native_camera_output_and_teardown(
                 "raw_secret_values_recorded": False,
             }
         inspection = provider.inspect(instance_id)
+        provider_statuses = {
+            str(inspection.get("actual_status") or "").lower(),
+            str(inspection.get("cur_state") or "").lower(),
+        }
+        if provider_statuses & {"running", "active"}:
+            provider_startup_observed = True
         provider_terminal = bool(
             inspection.get("provider_absence_confirmed") is True
             or str(inspection.get("actual_status") or "").lower()
@@ -902,6 +939,35 @@ def _monitor_native_camera_output_and_teardown(
                 ),
                 "blockers": ["native_camera_worker_terminal_without_output"],
                 "advance_to_policy_wam": False,
+                "provider_inspection": inspection,
+                "teardown": teardown,
+                **handoff,
+                "raw_secret_values_recorded": False,
+            }
+        if not provider_startup_observed and time.time() >= startup_deadline_epoch:
+            teardown = terminate_canary_resources(
+                provider=provider,
+                pod_name_prefix=CANARY_NAME_PREFIX,
+                armed=armed,
+                provider_name=provider_name,
+            )
+            handoff = _camera_cleanup_handoff(
+                root=root,
+                provider=provider,
+                cleanup=teardown,
+                instance_id=instance_id,
+                provider_name=provider_name,
+            )
+            return {
+                "status": (
+                    "failed" if handoff.get("control_plane_terminal") is True else "blocked"
+                ),
+                "blockers": ["native_camera_provider_startup_timeout_without_runtime"],
+                "advance_to_policy_wam": False,
+                "provider_startup_observed": False,
+                "startup_begin_epoch": startup_begin_epoch,
+                "startup_deadline_epoch": startup_deadline_epoch,
+                "startup_no_runtime_timeout_seconds": startup_no_runtime_timeout_seconds,
                 "provider_inspection": inspection,
                 "teardown": teardown,
                 **handoff,
@@ -1476,6 +1542,10 @@ def run_native_camera_gpu_lane(
             instance_id=instance_id,
             provider_name=resolved_provider,
             deadline_epoch=deadline,
+            startup_begin_epoch=reserved_at_epoch,
+            startup_no_runtime_timeout_seconds=int(
+                release["startup_no_runtime_timeout_seconds"]
+            ),
         )
         result = {
             **adapter,
