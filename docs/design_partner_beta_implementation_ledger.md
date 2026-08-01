@@ -10,9 +10,9 @@ evidence are tracked separately.
 
 | Repository | HEAD / local main / origin main | State and handling |
 | --- | --- | --- |
-| BlueprintCapturePipeline | `21e49c3df1d4be7bacffda87bc9d78ce08e20bb4` | Startup primary checkout had a preserved user-owned `docs/CHANGELOG.md` edit and later supervisor work in a separate writer lane. The integrated controlled-beta, supervisor, experiment-boundary, and deployment-identity work is published through PRs #248–#252. Protected `main`, local `main`, `origin/main`, and remote `main` are `0923fc820388900df53ac246c671f8dea1810ba3`, tree `1d871a9ba8adda178cee047959f490dd561b0127`, with divergence `0 0` and clean status in the release checkout. This deployment-proof hardening remains isolated in a dedicated linked worktree. |
-| BlueprintCapture | `a5f84c8c7875396c6e787bc00bed48fb717d1091` | Startup primary checkout was clean. PR #60 published Raw Contract 3.2 retained-frame/decoded-PTS work to protected `main` at `88c76130813ab0e860e6b91e6b98c2c1e5bb12cb`; primary HEAD, local `main`, `origin/main`, and remote `main` match with divergence `0 0`, tree `67b5bd0d52b12a2f012e7ab06d7698235ab64c2c`, and clean status. |
-| Blueprint-WebApp | `92e4eacdcecb4b733b45998df8a8864bddebe2d4` | Startup primary checkout was clean. The authoritative Task Evaluation Run lifecycle and testbed UI are published through PR #429; protected `main`, local `main`, `origin/main`, and deployed production are `c0d8de74e5548b541d8e575de35d7d85cd8cb1ae`. |
+| BlueprintCapturePipeline | `21e49c3df1d4be7bacffda87bc9d78ce08e20bb4` | Startup primary checkout had preserved user-owned work and later gained a separate active writer; it was never overwritten. Controlled-beta work through PR #275 is published. The clean release checkout, `origin/main`, remote `main`, and production service are exact `3bb376e7b987a34ee3fa0dc5e39c9ab42e6c59f8`, tree `e949d075c4a01fca9d8954786c280286b5869a83`, divergence `0 0`. Documentation closeout continues only in the dedicated linked worktree. |
+| BlueprintCapture | `a5f84c8c7875396c6e787bc00bed48fb717d1091` | Startup primary checkout was clean. PR #60 published Raw Contract 3.2 retained-frame/decoded-PTS work at `88c76130813ab0e860e6b91e6b98c2c1e5bb12cb`; remote protected main has since advanced to `c4e03f9dfc4d64e86aedc4a7c9905bfa7dd8e646`. The primary checkout was not updated or altered by this Pipeline/WebApp continuation. |
+| Blueprint-WebApp | `92e4eacdcecb4b733b45998df8a8864bddebe2d4` | Startup primary checkout was clean; later user-owned primary-checkout changes were preserved and not altered. The authoritative Task Evaluation Run/testbed/semantic inspection workflow is published through PR #434; protected remote `main` and deployed Render production are exact `6e24b5e1dbba43e5f34f38221f353089525cb74d`. |
 
 Open Pipeline PRs were inspected at startup. PR #226 is a separate World Labs
 analysis; older integration/audit and Dependabot PRs are not absorbed into this
@@ -38,9 +38,11 @@ fail-closed Pipeline deployment-identity endpoint. The exact protected-main
 candidate `0923fc82` passed CI, CodeQL, Python compatibility, sim-only, Docker,
 and the hosted full lane; the hosted full evidence records `7594 passed`, zero
 failures/errors/skips, and exact repository SHA binding.
-WebApp PR #429 published the corresponding customer workflow at `c0d8de74` with
-tree `12f1164b7cf87b4821e4833c680166f23f7e7f89`; hosted CI and the gated Render
-deployment passed and production reports that exact commit.
+WebApp PR #429 published the initial corresponding customer workflow at
+`c0d8de74` with tree `12f1164b7cf87b4821e4833c680166f23f7e7f89`;
+hosted CI and the gated Render deployment passed. PR #434 later published and
+deployed the semantic inspection continuation at exact
+`6e24b5e1dbba43e5f34f38221f353089525cb74d`.
 
 The August 1 continuation started from clean protected-main snapshots:
 Pipeline `e4cccaa4aca1aa43228ece716776645fd0245ce9` and WebApp
@@ -50,9 +52,11 @@ then-current `origin/main`. Capture `origin/main` had advanced to
 at `88c76130813ab0e860e6b91e6b98c2c1e5bb12cb` and was deliberately not updated by
 this Pipeline/WebApp slice. Pipeline PRs #256–#260 are published; PR #260 merged
 at `e4cccaa4` after all 16 hosted checks passed and its exact-final hosted full
-lane reported `7681 passed`. The current semantic-testbed projection changes
-remain unmerged release candidates until their focused, fast, hosted, and exact
-final publication gates close.
+lane reported `7681 passed`. PRs #264, #270, and #274 subsequently published
+semantic testbed projection, the immutable semantic evidence bundle, and compact
+source-track evidence. PR #275 published the production Pub/Sub runtime
+dependency and deployed at exact protected-main commit
+`3bb376e7b987a34ee3fa0dc5e39c9ab42e6c59f8`.
 
 The first fast-lane attempt on the semantic projection candidate exposed two
 pre-existing current-main assertion drifts from PRs #261–#262: the ARKitScenes
