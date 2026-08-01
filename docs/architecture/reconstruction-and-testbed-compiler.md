@@ -730,10 +730,13 @@ success, or deployment readiness.
 ## Strict external reconstruction import
 
 Phase 6 preserves the legacy Scaniverse staging command for operator
-compatibility while adding a separate deterministic supervisor lane. The
+compatibility while adding a separate deterministic supervisor lane for
+Scaniverse and Polycam self-contained exports. The
 `external_reconstruction_import_request.v1` contract binds local exports to the
-immutable source capture and to an exact, digest-verified Scaniverse provenance
-and rights declaration. The registered `import_external_reconstruction` tool
+immutable source capture and to an exact, digest-verified, provider-matched
+provenance and rights declaration. Scaniverse retains its Niantic-specific
+receipt; Polycam emits a provider-neutral receipt. The registered
+`import_external_reconstruction` tool
 accepts only that request digest and invokes an injected repository-owned local
 importer; the model receives no filesystem, network, provider, or authority
 handle.
@@ -747,6 +750,13 @@ physical, or deployment claim. The lane performs no remote request. A future
 remote adapter must pass provider admission and explicit confidential-upload,
 terms, spend, retention/deletion, and source-binding authority before receiving
 bytes.
+
+The strict Polycam path deliberately accepts self-contained `GLB`, `USDZ`, and
+`PLY` rather than multi-file `GLTF` or `OBJ` packages whose dependencies are not
+yet bound as one immutable set. Polycam Developer Mode raw ZIPs and the
+Enterprise Content Management API are documented upstream and are promising
+future source/provider adapters, but neither is currently treated as Blueprint
+Raw Contract 3.2 or enabled for remote execution.
 
 The provider-neutral remote contract family is now present:
 `reconstruction_provider_admission.v1`,

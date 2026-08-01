@@ -2,12 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://blueprint.example/schemas/external_reconstruction_import_receipt.v1.schema.json",
   "type": "object",
-  "required": ["schema_version", "source_capture_identity", "source_capture_digest", "external_import_request_digest", "provenance_rights_receipt_digest", "imported_assets", "source_capture_binding_verified", "rights_and_provenance_verified", "status", "raw_capture_truth", "metric_scale_proven", "collision_geometry_validated", "isaac_compatibility_proven", "simulator_task_success_proven", "physical_success_proven", "deployment_readiness_proven", "remote_calls_performed", "proof_effect", "claim_ceiling", "external_import_receipt_digest"],
+  "required": ["schema_version", "source_capture_identity", "source_capture_digest", "external_import_request_digest", "provenance_rights_receipt_digest", "provenance_rights_receipt_schema_version", "imported_assets", "source_capture_binding_verified", "rights_and_provenance_verified", "status", "raw_capture_truth", "metric_scale_proven", "collision_geometry_validated", "isaac_compatibility_proven", "simulator_task_success_proven", "physical_success_proven", "deployment_readiness_proven", "remote_calls_performed", "proof_effect", "claim_ceiling", "external_import_receipt_digest"],
   "properties": {
     "schema_version": {"const": "external_reconstruction_import_receipt.v1"},
     "source_capture_digest": {"$ref": "#/$defs/digest"},
     "external_import_request_digest": {"$ref": "#/$defs/digest"},
     "provenance_rights_receipt_digest": {"$ref": "#/$defs/digest"},
+    "provenance_rights_receipt_schema_version": {"enum": ["niantic_scaniverse_provenance_rights_receipt.v1", "external_reconstruction_provenance_rights_receipt.v1"]},
     "imported_assets": {
       "type": "array",
       "minItems": 1,
