@@ -1,0 +1,105 @@
+{
+  "admission_status": "accepted",
+  "authorization_digest": "sha256:2695f742d7ad729994221daf63d62cce0b2745e08739c9a890f14511d638639b",
+  "authorized_adapters": [
+    "local://external-reconstruction-import-v1"
+  ],
+  "capture_digest": "sha256:748af95d385bfedfb2058b28b59a6f431947c13deb34321719fcc6a2b16dac1e",
+  "capture_session_id": "public-mushroom-koivu-748af95d385b",
+  "claim_ceiling": {
+    "appearance_review": true,
+    "calibrated_camera_poses": false,
+    "captured_observation": false,
+    "collision_geometry": false,
+    "comparative_policy_ranking_verdict": "thesis_not_supported",
+    "deployment_readiness": false,
+    "external_reconstruction_imported": true,
+    "metric_geometry": false,
+    "metric_scale": false,
+    "physical_task_success": false,
+    "physics": false,
+    "raw_capture_authority": false,
+    "safety_certification": false,
+    "task_discovery": false
+  },
+  "compilation_result_digests": [
+    "sha256:f3f005172c9a2bd35d0ccc4476093247a4745d278f73d36afb6e58fdfa47455a"
+  ],
+  "dataset": {
+    "dataset_id": "mushroom-koivu",
+    "license_id": "CC-BY-4.0",
+    "privacy": "restricted_local_only",
+    "provider_identity": "mushroom-zenodo-10230733",
+    "public_dataset_proxy_not_customer_capture": true,
+    "source_uri": "https://doi.org/10.5281/zenodo.10230733"
+  },
+  "envelope_digest": "sha256:a30d91381748daf6cdfa4bc84be22257f837ac9edf01555b7c69c37a2d172764",
+  "execution_cost_usd": 0.0,
+  "execution_result_digest": "sha256:ea4d0399599fc09f5a0b8c0b4e9531238d8d47209043526d71b6d5fff3675cbe",
+  "execution_state": "partial",
+  "intake_id": "public-mushroom-koivu-external-748af95d385b",
+  "missing_representations": [
+    "decoded_observation_frames"
+  ],
+  "next_cheapest_experiments": [
+    "capture or measure the missing representation with a permitted method"
+  ],
+  "plan_id": "reconstruction-67a5966757b6efab447dc61e",
+  "proof_boundary": {
+    "comparative_policy_ranking_verdict": "thesis_not_supported",
+    "customer_upload_gate_passed": false,
+    "deployment_or_safety_approved": false,
+    "malware_scan_was_test_double": true,
+    "physical_task_success_established": false,
+    "production_security_gate_passed": false,
+    "raw_capture_gate_passed": false,
+    "transfer_was_local_test_double": true
+  },
+  "qa_report_digest": "sha256:e6246b9b75bc1c3078e373a73ae11ac8efe6da997a2c14457b521f36ff394fd5",
+  "qa_status": "accepted",
+  "reconstruction_plan_digest": "sha256:67a5966757b6efab447dc61eff696e1a7b45bf444ecd6ece36a52926ac60b6b7",
+  "result_id": "external-reconstruction-dbea06166d943ab0",
+  "result_outputs": [
+    "appearance_layer"
+  ],
+  "schema_version": "public_indoor_proxy_replay.v1",
+  "source_artifact": {
+    "digest": "sha256:748af95d385bfedfb2058b28b59a6f431947c13deb34321719fcc6a2b16dac1e",
+    "filename": "polycam_pointcloud.ply",
+    "ply_header": {
+      "element_properties": {
+        "vertex": [
+          "blue",
+          "green",
+          "red",
+          "x",
+          "y",
+          "z"
+        ]
+      },
+      "elements": {
+        "vertex": 367960
+      },
+      "format": "binary_little_endian",
+      "header_digest": "sha256:f9fec5e5a0b36ee1baa392f74e57e234755c1e8dfad3085e4b4b9ebc4b32e667",
+      "header_size_bytes": 210,
+      "property_count": 6,
+      "representation_profile": "colored_point_cloud",
+      "version": "1.0"
+    },
+    "size_bytes": 9935130,
+    "vertex_count": 367960
+  },
+  "source_bundle": {
+    "archive_inspection": {
+      "declared_uncompressed_size_bytes": 189848766,
+      "format": "tar",
+      "member_count": 874,
+      "traversal_or_link_members": 0
+    },
+    "digest": "sha256:68735cfa0758e1288a006c30dc8b95ffb4caa3392bc9c68c0c3ea6c111966518",
+    "filename": "koivu_iphone.tar.gz",
+    "size_bytes": 146575749
+  },
+  "source_commit": "7e4445987973f58fbcda3852a5acde2684e8998b"
+}
