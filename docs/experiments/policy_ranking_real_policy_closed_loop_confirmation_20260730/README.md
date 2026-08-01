@@ -235,20 +235,23 @@ used as blind confirmation.
   polling correction at runtime SHA `529bc396`; and bind one scientifically
   identical query-4 retry to a versioned input archive and a fresh global-zero
   preflight;
+- `protocol_amendment_25_policy_query4_result_and_wam4_v1.md`,
+  `compute_authorization_ctrl_world_allocation_8.json`, and
+  `ctrl_world_current_reference_wam_4_gpu_profile_freeze_v1.json` — preserve
+  the successful same-checkpoint query-4 retry, close interaction four, and
+  bind WAM4 to the exact query-4 action, 28-frame feedback history, immutable
+  provider bundle, and one single-use allocation;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-The registered three-interaction engineering gate is complete. Four
-generated-only WAM transitions have now passed their immediate reliability
-gates. The same frozen `pi05_droid` checkpoint was re-queried after each of the
-first three using only the three generated views and registered commanded
-state. WAM3's exact generated observation is frozen as the only input to policy
-query 4. Its first allocation failed before boot and produced no policy request;
-the owned instance is closed and charged as failed-call cost. The next finite
-gate is fresh global provider zero followed by the prospectively frozen,
-identical-observation query-4 retry on the corrected generic runtime. Interaction
-four is complete only if query 4 returns a valid, identity-bound native action.
-Judges remain forbidden until the complete 12-interaction episode and causal-
-control matrix pass.
+The registered three-interaction engineering gate and interaction four are
+complete. Four generated-only WAM transitions passed their immediate
+reliability gates, and the same frozen `pi05_droid` checkpoint was re-queried
+after each using only the three generated views and registered commanded state.
+Query 4 completed on the corrected generic runtime. The next finite gate is one
+prospectively frozen WAM4 generation from query 4's exact native action and
+preserved 28-row feedback history, after fresh provider-zero and paid-admission
+checks. Judges remain forbidden until the complete 12-interaction episode and
+causal-control matrix pass.
