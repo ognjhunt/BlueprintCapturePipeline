@@ -978,8 +978,16 @@ rejects traversal, symlinks, compression, undeclared members, digest drift, and
 tampered replay state; it never delegates trust to ZIP `extractall` behavior.
 The in-container dispatcher can invoke only the registered native-360 COLMAP
 runner or pinned 3DGRUT trainer and revalidates typed results plus every declared
-output/checkpoint digest. Paid scientific pose/trainer execution remains
-unavailable until signed bundle transport, provider lifecycle, teardown, and
-offline replay are independently qualified. Isaac remains separately
-unavailable on its own runtime image; the worker-smoke adapter cannot stand in
-for any of these scientific lanes.
+output/checkpoint digest. It then writes a deterministic
+`reconstruction_gpu_operation_output_bundle.v1` ZIP containing the typed result,
+complete declared outputs, checkpoints, and a non-authorizing manifest. ZIP
+publication is atomic; independent retrieval validation streams large members,
+recomputes their hashes, rejects traversal, symlinks, compression, inventory
+suppression, or result/artifact drift, and emits a replay receipt whose claim
+ceiling remains unaccepted candidate transport only. This closes local result
+packaging and replay, not remote transfer or scientific acceptance. Paid
+scientific pose/trainer execution remains unavailable until presigned streaming
+transport, the provider lifecycle, retrieval-before-teardown, and provider-zero
+reconciliation are independently qualified. Isaac remains separately unavailable
+on its own runtime image; the worker-smoke adapter cannot stand in for any of
+these scientific lanes.

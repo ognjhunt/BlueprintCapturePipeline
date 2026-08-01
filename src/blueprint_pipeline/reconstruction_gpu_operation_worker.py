@@ -15,6 +15,9 @@ from .reconstruction_gpu_operation_bundle import (
     ReconstructionGpuOperationBundleError,
     extract_reconstruction_gpu_operation_bundle,
 )
+from .reconstruction_gpu_operation_output import (
+    compile_reconstruction_gpu_operation_output_bundle,
+)
 from .reconstruction_worker_contracts import (
     ReconstructionWorkerContractError,
     build_pose_estimation_result,
@@ -217,18 +220,48 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--materialization-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--result", type=Path, required=True)
+    parser.add_argument("--output-bundle", type=Path, required=True)
     args = parser.parse_args(argv)
+    bundle_receipt = _load_object(
+        args.bundle_receipt,
+        code="reconstruction_operation_worker_bundle_receipt_invalid",
+    )
     result = execute_reconstruction_gpu_operation_bundle(
         bundle_path=args.bundle,
-        bundle_receipt=_load_object(
-            args.bundle_receipt,
-            code="reconstruction_operation_worker_bundle_receipt_invalid",
-        ),
+        bundle_receipt=bundle_receipt,
         materialization_root=args.materialization_root,
         output_root=args.output_root,
     )
+    materialized = (
+        args.materialization_root.resolve()
+        / str(bundle_receipt.get("operation_input_bundle_digest") or "").removeprefix(
+            "sha256:"
+        )
+    )
+    operation_request = _load_object(
+        materialized / "operation_request.json",
+        code="reconstruction_operation_worker_request_invalid",
+    )
+    output_bundle = compile_reconstruction_gpu_operation_output_bundle(
+        operation=str(bundle_receipt.get("operation") or ""),
+        operation_request=operation_request,
+        runtime_result=result,
+        operation_output_root=args.output_root,
+        output_path=args.output_bundle,
+    )
     write_json(args.result, result)
-    print(json.dumps({"schema_version": result["schema_version"], "status": result["status"]}))
+    print(
+        json.dumps(
+            {
+                "schema_version": result["schema_version"],
+                "status": result["status"],
+                "operation_output_bundle_digest": output_bundle[
+                    "operation_output_bundle_digest"
+                ],
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

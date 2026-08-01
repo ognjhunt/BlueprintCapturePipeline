@@ -20,6 +20,13 @@ from blueprint_pipeline.reconstruction_gpu_operation_worker import (
     ReconstructionGpuOperationWorkerError,
     execute_reconstruction_gpu_operation_bundle,
 )
+from blueprint_pipeline import reconstruction_gpu_operation_output as operation_output
+from blueprint_pipeline import reconstruction_gpu_operation_worker as operation_worker
+from blueprint_pipeline.reconstruction_gpu_operation_output import (
+    ReconstructionGpuOperationOutputError,
+    compile_reconstruction_gpu_operation_output_bundle,
+    validate_reconstruction_gpu_operation_output_bundle,
+)
 from blueprint_pipeline.reconstruction_worker_contracts import (
     build_pose_estimation_request,
     build_pose_estimation_result,
@@ -550,6 +557,88 @@ def _result_common(request: dict, *, output_digests: list[dict]) -> dict:
     }
 
 
+def _operation_result(
+    *, operation: str, request: dict, output_root: Path
+) -> dict:
+    if operation == "pose_canary":
+        root = output_root / ("native_colmap_execution_" + D[5][7:23])
+        artifact = root / "workspace/model.txt"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"pose-output")
+        return build_pose_estimation_result(
+            {
+                **_result_common(
+                    request,
+                    output_digests=[
+                        {
+                            "artifact_id": "workspace/model.txt",
+                            "digest": "sha256:"
+                            + hashlib.sha256(b"pose-output").hexdigest(),
+                        }
+                    ],
+                ),
+                "pose_estimation_request_digest": request[
+                    "pose_estimation_request_digest"
+                ],
+                "native_360_colmap_execution_plan_digest": D[5],
+                "status": "succeeded",
+                "failure_code": None,
+                "registered_observation_ids": ["frame-0001"],
+                "rejected_observation_ids": [],
+                "heldout_labels_included": False,
+                "candidate_self_graded": False,
+                "proof_effect": "calibrated_trajectory_candidate_only",
+                "claim_ceiling": "calibrated_camera_trajectory",
+                "legal_next_actions": ["request_metric_anchor"],
+            }
+        )
+    root = output_root / request["reconstruction_training_request_digest"][7:23]
+    root.mkdir(parents=True, exist_ok=True)
+    outputs = {
+        "training.log": b"training-log",
+        "appearance_candidate.ply": b"ply-output",
+        "checkpoint_last.pt": b"checkpoint",
+    }
+    for relative, payload in outputs.items():
+        (root / relative).write_bytes(payload)
+    return build_training_result(
+        {
+            **_result_common(
+                request,
+                output_digests=[
+                    {
+                        "artifact_id": name,
+                        "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                    }
+                    for name, payload in outputs.items()
+                    if name != "checkpoint_last.pt"
+                ],
+            ),
+            "reconstruction_training_request_digest": request[
+                "reconstruction_training_request_digest"
+            ],
+            "status": "succeeded",
+            "failure_code": None,
+            "checkpoint_references": [
+                {
+                    "artifact_id": "checkpoint_last.pt",
+                    "digest": "sha256:"
+                    + hashlib.sha256(outputs["checkpoint_last.pt"]).hexdigest(),
+                }
+            ],
+            "training_metrics": {"heldout_metrics_computed": False},
+            "heldout_labels_included": False,
+            "candidate_self_graded": False,
+            "registered_observation_ids": ["frame-0001"],
+            "rejected_observation_ids": [],
+            "peak_resource_use": {"gpu_count": 1},
+            "legal_next_actions": ["preserve_evidence_and_stop"],
+            "proof_effect": "appearance_asset_candidate_only",
+            "claim_ceiling": "appearance_reconstruction",
+        }
+    )
+
+
 @pytest.mark.parametrize("operation", ["pose_canary", "trainer_canary"])
 def test_operation_worker_dispatches_only_typed_pose_or_trainer(
     tmp_path: Path, operation: str
@@ -581,87 +670,20 @@ def test_operation_worker_dispatches_only_typed_pose_or_trainer(
 
     def pose_executor(**kwargs):
         assert kwargs["input_root"].joinpath("images/frame-0001.png").is_file()
-        root = kwargs["artifact_root"] / ("native_colmap_execution_" + D[5][7:23])
-        artifact = root / "workspace/model.txt"
-        artifact.parent.mkdir(parents=True)
-        artifact.write_bytes(b"pose-output")
-        return build_pose_estimation_result(
-            {
-                **_result_common(
-                    request,
-                    output_digests=[
-                        {
-                            "artifact_id": "workspace/model.txt",
-                            "digest": "sha256:"
-                            + hashlib.sha256(b"pose-output").hexdigest(),
-                        }
-                    ],
-                ),
-                "pose_estimation_request_digest": request[
-                    "pose_estimation_request_digest"
-                ],
-                "status": "succeeded",
-                "failure_code": None,
-                "registered_observation_ids": ["frame-0001"],
-                "rejected_observation_ids": [],
-                "heldout_labels_included": False,
-                "candidate_self_graded": False,
-                "proof_effect": "calibrated_trajectory_candidate_only",
-                "claim_ceiling": "calibrated_camera_trajectory",
-                "legal_next_actions": ["request_metric_anchor"],
-            }
+        return _operation_result(
+            operation="pose_canary",
+            request=request,
+            output_root=kwargs["artifact_root"],
         )
 
     def trainer_executor(**kwargs):
         assert kwargs["artifact_root"].joinpath(
             "dataset/images/frame-0001.png"
         ).is_file()
-        root = kwargs["output_root"] / request[
-            "reconstruction_training_request_digest"
-        ][7:23]
-        root.mkdir(parents=True)
-        outputs = {
-            "training.log": b"training-log",
-            "appearance_candidate.ply": b"ply-output",
-            "checkpoint_last.pt": b"checkpoint",
-        }
-        for relative, payload in outputs.items():
-            (root / relative).write_bytes(payload)
-        return build_training_result(
-            {
-                **_result_common(
-                    request,
-                    output_digests=[
-                        {
-                            "artifact_id": name,
-                            "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
-                        }
-                        for name, payload in outputs.items()
-                        if name != "checkpoint_last.pt"
-                    ],
-                ),
-                "reconstruction_training_request_digest": request[
-                    "reconstruction_training_request_digest"
-                ],
-                "status": "succeeded",
-                "failure_code": None,
-                "checkpoint_references": [
-                    {
-                        "artifact_id": "checkpoint_last.pt",
-                        "digest": "sha256:"
-                        + hashlib.sha256(outputs["checkpoint_last.pt"]).hexdigest(),
-                    }
-                ],
-                "training_metrics": {"heldout_metrics_computed": False},
-                "heldout_labels_included": False,
-                "candidate_self_graded": False,
-                "registered_observation_ids": ["frame-0001"],
-                "rejected_observation_ids": [],
-                "peak_resource_use": {"gpu_count": 1},
-                "legal_next_actions": ["preserve_evidence_and_stop"],
-                "proof_effect": "appearance_asset_candidate_only",
-                "claim_ceiling": "appearance_reconstruction",
-            }
+        return _operation_result(
+            operation="trainer_canary",
+            request=request,
+            output_root=kwargs["output_root"],
         )
 
     result = execute_reconstruction_gpu_operation_bundle(
@@ -676,6 +698,245 @@ def test_operation_worker_dispatches_only_typed_pose_or_trainer(
     assert result["schema_version"] == receipt["expected_runtime_result_schema"]
     assert result["heldout_labels_included"] is False
     assert result["candidate_self_graded"] is False
+
+
+@pytest.mark.parametrize("operation", ["pose_canary", "trainer_canary"])
+def test_operation_output_bundle_is_deterministic_streamed_and_schema_valid(
+    tmp_path: Path, operation: str
+) -> None:
+    request = _pose_request() if operation == "pose_canary" else _training_request()
+    output_root = tmp_path / "operation-output"
+    output_root.mkdir()
+    result = _operation_result(
+        operation=operation, request=request, output_root=output_root
+    )
+    first = tmp_path / "first.zip"
+    second = tmp_path / "second.zip"
+    first_receipt = compile_reconstruction_gpu_operation_output_bundle(
+        operation=operation,
+        operation_request=request,
+        runtime_result=result,
+        operation_output_root=output_root,
+        output_path=first,
+    )
+    second_receipt = compile_reconstruction_gpu_operation_output_bundle(
+        operation=operation,
+        operation_request=request,
+        runtime_result=result,
+        operation_output_root=output_root,
+        output_path=second,
+    )
+    assert first.read_bytes() == second.read_bytes()
+    assert first_receipt["operation_output_bundle_digest"] == second_receipt[
+        "operation_output_bundle_digest"
+    ]
+    request_digest = request.get("pose_estimation_request_digest") or request.get(
+        "reconstruction_training_request_digest"
+    )
+    validated, replayed_result = validate_reconstruction_gpu_operation_output_bundle(
+        bundle_path=first,
+        expected_operation=operation,
+        expected_operation_request_digest=request_digest,
+        expected_worker_image_digest=IMAGE,
+        expected_source_commit_sha=SHA,
+    )
+    schema = json.loads(
+        Path(
+            "docs/schemas/reconstruction_gpu_operation_output_bundle.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.validate(validated, schema)
+    assert replayed_result == result
+    assert validated["artifact_member_count"] == (
+        1 if operation == "pose_canary" else 3
+    )
+    assert validated["heldout_labels_included"] is False
+    assert validated["candidate_self_graded"] is False
+    assert validated["scientific_qualification_inferred"] is False
+
+
+def _rewrite_output_zip(
+    source: Path,
+    destination: Path,
+    *,
+    mutate: callable,
+) -> None:
+    with zipfile.ZipFile(source, "r") as archive:
+        members = [(info, archive.read(info.filename)) for info in archive.infolist()]
+    with zipfile.ZipFile(destination, "w", allowZip64=True) as archive:
+        for info, payload in mutate(members):
+            archive.writestr(info, payload)
+
+
+def test_operation_output_bundle_rejects_tamper_suppression_and_unsafe_members(
+    tmp_path: Path,
+) -> None:
+    request = _training_request()
+    output_root = tmp_path / "operation-output"
+    output_root.mkdir()
+    result = _operation_result(
+        operation="trainer_canary", request=request, output_root=output_root
+    )
+    source = tmp_path / "source.zip"
+    compile_reconstruction_gpu_operation_output_bundle(
+        operation="trainer_canary",
+        operation_request=request,
+        runtime_result=result,
+        operation_output_root=output_root,
+        output_path=source,
+    )
+    expected = {
+        "expected_operation": "trainer_canary",
+        "expected_operation_request_digest": request[
+            "reconstruction_training_request_digest"
+        ],
+        "expected_worker_image_digest": IMAGE,
+        "expected_source_commit_sha": SHA,
+    }
+
+    tampered = tmp_path / "tampered.zip"
+    _rewrite_output_zip(
+        source,
+        tampered,
+        mutate=lambda members: [
+            (info, b"tampered")
+            if info.filename == "artifacts/appearance_candidate.ply"
+            else (info, payload)
+            for info, payload in members
+        ],
+    )
+    with pytest.raises(
+        ReconstructionGpuOperationOutputError, match="artifact_digest_mismatch"
+    ):
+        validate_reconstruction_gpu_operation_output_bundle(
+            bundle_path=tampered, **expected
+        )
+
+    suppressed = tmp_path / "suppressed.zip"
+    _rewrite_output_zip(
+        source,
+        suppressed,
+        mutate=lambda members: [
+            (info, payload)
+            for info, payload in members
+            if info.filename != "artifacts/checkpoint_last.pt"
+        ],
+    )
+    with pytest.raises(
+        ReconstructionGpuOperationOutputError, match="inventory_invalid"
+    ):
+        validate_reconstruction_gpu_operation_output_bundle(
+            bundle_path=suppressed, **expected
+        )
+
+    unsafe = tmp_path / "unsafe.zip"
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(
+        unsafe, "w", compression=zipfile.ZIP_DEFLATED
+    ) as rewritten:
+        for info in archive.infolist():
+            rewritten.writestr(info.filename, archive.read(info.filename))
+        rewritten.writestr("../escape", b"bad")
+    with pytest.raises(
+        ReconstructionGpuOperationOutputError, match="member_unsafe"
+    ):
+        validate_reconstruction_gpu_operation_output_bundle(
+            bundle_path=unsafe, **expected
+        )
+
+
+def test_operation_output_bundle_atomic_write_preserves_previous_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _pose_request()
+    output_root = tmp_path / "operation-output"
+    output_root.mkdir()
+    result = _operation_result(
+        operation="pose_canary", request=request, output_root=output_root
+    )
+    destination = tmp_path / "output.zip"
+    destination.write_bytes(b"previous-complete-bundle")
+    calls = 0
+    original = operation_output._write_member
+
+    def fail_after_metadata(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise OSError("simulated interruption")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(operation_output, "_write_member", fail_after_metadata)
+    with pytest.raises(OSError, match="simulated interruption"):
+        compile_reconstruction_gpu_operation_output_bundle(
+            operation="pose_canary",
+            operation_request=request,
+            runtime_result=result,
+            operation_output_root=output_root,
+            output_path=destination,
+        )
+    assert destination.read_bytes() == b"previous-complete-bundle"
+    assert not list(tmp_path.glob(".output.zip.*.partial"))
+
+
+def test_operation_worker_cli_requires_and_emits_complete_output_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _pose_request()
+    bundle = tmp_path / "input.zip"
+    bundle.write_bytes(b"mocked-by-test")
+    receipt = {
+        "operation": "pose_canary",
+        "operation_input_bundle_digest": D[0],
+    }
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    materialization_root = tmp_path / "materialized"
+    materialized = materialization_root / D[0].removeprefix("sha256:")
+    materialized.mkdir(parents=True)
+    (materialized / "operation_request.json").write_text(
+        json.dumps(request), encoding="utf-8"
+    )
+    output_root = tmp_path / "operation-output"
+    output_root.mkdir()
+    result = _operation_result(
+        operation="pose_canary", request=request, output_root=output_root
+    )
+    monkeypatch.setattr(
+        operation_worker,
+        "execute_reconstruction_gpu_operation_bundle",
+        lambda **_kwargs: result,
+    )
+    result_path = tmp_path / "runtime-result.json"
+    output_bundle = tmp_path / "operation-output.zip"
+    assert (
+        operation_worker.main(
+            [
+                "--bundle",
+                str(bundle),
+                "--bundle-receipt",
+                str(receipt_path),
+                "--materialization-root",
+                str(materialization_root),
+                "--output-root",
+                str(output_root),
+                "--result",
+                str(result_path),
+                "--output-bundle",
+                str(output_bundle),
+            ]
+        )
+        == 0
+    )
+    assert json.loads(result_path.read_text(encoding="utf-8")) == result
+    validated, replayed = validate_reconstruction_gpu_operation_output_bundle(
+        bundle_path=output_bundle,
+        expected_operation="pose_canary",
+        expected_operation_request_digest=request["pose_estimation_request_digest"],
+        expected_worker_image_digest=IMAGE,
+        expected_source_commit_sha=SHA,
+    )
+    assert replayed == result
+    assert validated["status"] == "validated"
 
 
 def test_operation_worker_rejects_unbound_result_before_acceptance(tmp_path: Path) -> None:
