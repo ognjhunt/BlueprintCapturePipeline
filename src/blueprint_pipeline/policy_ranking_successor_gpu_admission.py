@@ -714,8 +714,14 @@ def collect_successor_vast_preflight(
     ]
     viable.sort(key=lambda row: (float(row["hourly_rate_usd"]), -float(row["reliability"])))
     selected = viable[0] if viable else {}
-    inventory_zero = bool(
-        inventory.get("api_confirmed") is True and inventory.get("live_resource_count") == 0
+    live_resource_count = inventory.get("live_resource_count")
+    if type(live_resource_count) is not int or live_resource_count < 0:
+        live_resource_count = -1
+    maximum_existing_live_resources = max(profile.maximum_global_live_instances - 1, 0)
+    inventory_zero = bool(inventory.get("api_confirmed") is True and live_resource_count == 0)
+    inventory_within_global_limit = bool(
+        inventory.get("api_confirmed") is True
+        and 0 <= live_resource_count <= maximum_existing_live_resources
     )
     api_verified = bool(
         capacity.get("status") == "available"
@@ -725,8 +731,8 @@ def collect_successor_vast_preflight(
     blockers: list[str] = []
     if not api_verified:
         blockers.append("successor_vast_api_not_verified")
-    if not inventory_zero:
-        blockers.append("successor_vast_inventory_not_zero")
+    if not inventory_within_global_limit:
+        blockers.append("successor_vast_inventory_at_or_above_global_limit")
     if not selected:
         blockers.append("successor_compatible_single_gpu_offer_unavailable")
     result: dict[str, Any] = {
@@ -738,6 +744,9 @@ def collect_successor_vast_preflight(
         "blockers": blockers,
         "provider_api_verified": api_verified,
         "provider_inventory_verified_zero": inventory_zero,
+        "provider_inventory_within_global_limit": inventory_within_global_limit,
+        "existing_live_resource_count": live_resource_count,
+        "maximum_existing_live_resources": maximum_existing_live_resources,
         "selected_offer": selected or None,
         "capacity_request": request,
         "capacity_snapshot": capacity,
@@ -1350,7 +1359,21 @@ def build_successor_gpu_admission(
         blockers.append("successor_provider_preflight_not_verified")
     if provider_name not in profile.allowed_providers:
         blockers.append("successor_provider_preflight_provider_invalid")
-    if provider_preflight.get("provider_inventory_verified_zero") is not True:
+    if profile.maximum_global_live_instances > 1:
+        maximum_existing_live_resources = profile.maximum_global_live_instances - 1
+        if (
+            provider_preflight.get("provider_inventory_within_global_limit") is not True
+            or provider_preflight.get("maximum_existing_live_resources")
+            != maximum_existing_live_resources
+        ):
+            blockers.append("successor_provider_inventory_at_or_above_global_limit")
+        existing_live_resource_count = provider_preflight.get("existing_live_resource_count")
+        if (
+            type(existing_live_resource_count) is not int
+            or not 0 <= existing_live_resource_count <= maximum_existing_live_resources
+        ):
+            blockers.append("successor_provider_inventory_count_invalid")
+    elif provider_preflight.get("provider_inventory_verified_zero") is not True:
         blockers.append("successor_provider_inventory_not_zero")
     if provider_preflight.get("provider_mutations_performed") != 0:
         blockers.append("successor_provider_preflight_mutation_boundary_invalid")

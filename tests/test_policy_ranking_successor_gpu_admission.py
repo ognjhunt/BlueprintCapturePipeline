@@ -373,6 +373,105 @@ def test_phase_b_vast_preflight_explicitly_admits_blackwell_compute_cap(
     assert captured["prefer_isaac_rt"] is False
 
 
+@pytest.mark.parametrize(
+    ("existing_live_resources", "expected_status"),
+    [(0, "verified"), (1, "verified"), (2, "blocked")],
+)
+def test_vast_preflight_respects_two_gpu_global_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    existing_live_resources: int,
+    expected_status: str,
+) -> None:
+    class Provider:
+        def capacity_preflight(self, request: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "status": "available",
+                "viable_gpu_types": [
+                    {
+                        "ask_contract_id": 1,
+                        "gpu_name": "RTX PRO 6000 WS",
+                        "num_gpus": 1,
+                        "gpu_ram_mb": 97_887,
+                        "hourly_rate_usd": 0.88,
+                        "reliability": 0.99,
+                    }
+                ],
+            }
+
+        def billable_inventory(self, *, name_prefix: str) -> dict[str, Any]:
+            return {
+                "api_confirmed": True,
+                "live_resource_count": (0 if name_prefix else existing_live_resources),
+            }
+
+    profile = replace(
+        admission.PHASE_B_PROFILE,
+        maximum_global_live_instances=2,
+    )
+    monkeypatch.setattr(admission, "get_render_provider", lambda provider: Provider())
+
+    result = admission.collect_successor_vast_preflight(
+        name_prefix="blueprint-wam5-",
+        profile=profile,
+    )
+
+    assert result["status"] == expected_status
+    assert result["existing_live_resource_count"] == existing_live_resources
+    assert result["maximum_existing_live_resources"] == 1
+    assert result["provider_inventory_within_global_limit"] is (existing_live_resources <= 1)
+    assert result["provider_inventory_verified_zero"] is (existing_live_resources == 0)
+    assert result["provider_mutations_performed"] == 0
+
+
+@pytest.mark.parametrize(
+    ("existing_live_resources", "within_limit"),
+    [(1, True), (2, False)],
+)
+def test_admission_revalidates_two_gpu_preflight_inventory(
+    existing_live_resources: int,
+    within_limit: bool,
+) -> None:
+    profile = replace(
+        admission.PHASE_B_PROFILE,
+        maximum_global_live_instances=2,
+    )
+    preflight = _load("vast_compute_preflight.json")
+    preflight.update(
+        {
+            "schema_version": profile.preflight_schema,
+            "experiment_id": profile.experiment_id,
+            "status": "verified" if within_limit else "blocked",
+            "provider": "vast",
+            "provider_inventory_verified_zero": False,
+            "provider_inventory_within_global_limit": within_limit,
+            "existing_live_resource_count": existing_live_resources,
+            "maximum_existing_live_resources": 1,
+            "provider_mutations_performed": 0,
+        }
+    )
+
+    result = admission.build_successor_gpu_admission(
+        authorization={},
+        environment={},
+        smoke_inventory={},
+        provider_preflight=preflight,
+        bundle_inspection={"status": "passed", "blockers": []},
+        expected_source_commit="b" * 40,
+        execute=False,
+        profile=profile,
+    )
+
+    concurrency_blockers = {
+        "successor_provider_inventory_at_or_above_global_limit",
+        "successor_provider_inventory_count_invalid",
+    }
+    if within_limit:
+        assert concurrency_blockers.isdisjoint(result["blockers"])
+    else:
+        assert "successor_provider_inventory_at_or_above_global_limit" in result["blockers"]
+        assert "successor_provider_inventory_count_invalid" in result["blockers"]
+
+
 def test_droid_reference_runpod_preflight_selects_compatible_secure_offer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
