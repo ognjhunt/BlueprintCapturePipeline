@@ -766,20 +766,26 @@ def test_gpu_canary_dispatches_native_warehouse_camera_through_canonical_allocat
             "blueprint-native-warehouse-camera-test",
             "--expected-source-commit",
             "c" * 40,
+            "--expected-image-source-commit",
+            "d" * 40,
             "--probe-kind",
             allocator.NVIDIA_WAREHOUSE_NATIVE_CAMERA_PROBE_KIND,
             "--provider",
             "vast",
             "--native-camera-input-bundle-receipt",
             "input-receipt.json",
+            "--maximum-concurrent-paid-gpus-global",
+            "2",
         ]
     )
 
     assert exit_code == 0
-    assert observed["expected_source_commit"] == "c" * 40
+    assert observed["expected_source_commit"] == "d" * 40
+    assert observed["launcher_source_commit"] == "c" * 40
     assert observed["execute"] is False
     assert observed["input_bundle_receipt"] == "input-receipt.json"
     assert observed["provider_name"] == "vast"
+    assert observed["maximum_concurrent_paid_gpus_global"] == 2
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 

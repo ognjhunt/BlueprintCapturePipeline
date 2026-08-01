@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import math
 import posixpath
@@ -22,8 +23,22 @@ from .policy_ranking_thesis import canonical_sha256, file_sha256
 RESULT_SCHEMA_VERSION = "nvidia_warehouse_native_camera_canary_result.v1"
 MIN_NONBLANK_SPATIAL_STD = 4.0
 MIN_WRIST_WORLD_DISPLACEMENT_M = 0.001
-MAX_WRIST_LOCAL_TRANSFORM_DELTA = 1e-9
+# Isaac Sim 6's unified pose view returns float-backed translation and
+# quaternion tensors.  Reconstructing a parent-local 4x4 transform from those
+# values can therefore differ by a few float32 ULPs even when the authored
+# rigid mount is unchanged.  One micrometre / 1e-6 matrix-element precision is
+# still far below any meaningful camera-mount slip while remaining measurable
+# through that public API.
+MAX_WRIST_LOCAL_TRANSFORM_DELTA = 1e-6
 MAX_KINEMATIC_JOINT_POSITION_ERROR_RAD = 0.02
+# A projected centroid can be fully occluded. Require at least an 8x8-pixel
+# render-derived semantic footprint before treating a task entity as visible.
+# This camera-validity threshold is frozen independently of policy rankings.
+MIN_REQUIRED_ENTITY_VISIBLE_PIXELS = 64
+# V30's returned wrist RGB proved that the initial optical ray was blocked by
+# workcell/crate geometry at the object-height mount. Raise the one-time rigid
+# mount above that obstruction; this is fixed before any policy/WAM execution.
+WRIST_CAMERA_WORLD_CLEARANCE_M = 0.25
 REQUIRED_VIEWS = ("external", "wrist")
 SUPPORTED_OPTIONAL_VIEWS = ("external_2",)
 
@@ -89,6 +104,77 @@ def import_simulation_app() -> Any:
     if not callable(SimulationApp):
         raise ImportError("isaac_simulation_app_not_callable")
     return SimulationApp
+
+
+def _add_prim_semantic_label(prim: Any, semantic_label: str) -> str:
+    """Author one class label through the first supported Isaac semantics API."""
+
+    candidates = (
+        (
+            "isaacsim.core.experimental.utils.semantics",
+            "add_labels",
+            "isaacsim_core_experimental_labels_api",
+        ),
+        (
+            "isaacsim.core.utils.semantics",
+            "add_update_semantics",
+            "isaacsim_core_legacy_semantics_api",
+        ),
+        (
+            "semantics.schema_editor",
+            "add_prim_semantics",
+            "semantics_schema_editor",
+        ),
+        (
+            "omni.isaac.core.utils.semantics",
+            "add_update_semantics",
+            "omni_isaac_legacy_semantics_api",
+        ),
+    )
+    import_failures: list[str] = []
+    for module_name, function_name, api_name in candidates:
+        try:
+            function = getattr(importlib.import_module(module_name), function_name)
+        except (AttributeError, ImportError, ModuleNotFoundError) as exc:
+            import_failures.append(f"{module_name}:{type(exc).__name__}")
+            continue
+        if function_name == "add_labels":
+            function(prim, labels=[semantic_label], taxonomy="class")
+        else:
+            try:
+                function(
+                    prim,
+                    semantic_label=semantic_label,
+                    type_label="class",
+                )
+            except TypeError:
+                function(prim, semantic_label, "class")
+        return api_name
+    raise ImportError(
+        "native_semantics_api_unavailable:" + ",".join(import_failures)
+    )
+
+
+def _author_renderable_semantic_label_tree(
+    *,
+    root_prim: Any,
+    semantic_label: str,
+    prim_range: Callable[[Any], Any],
+    is_renderable: Callable[[Any], bool],
+    add_label: Callable[[Any, str], str] = _add_prim_semantic_label,
+) -> dict[str, Any]:
+    """Label every rendered descendant so RTX pixels inherit the entity class."""
+
+    targets = [prim for prim in prim_range(root_prim) if is_renderable(prim)]
+    if not targets:
+        targets = [root_prim]
+    apis = [add_label(prim, semantic_label) for prim in targets]
+    return {
+        "root_label": str(semantic_label),
+        "renderable_prim_count": len(targets),
+        "api_names": sorted(set(apis)),
+        "root_fallback_used": targets == [root_prim],
+    }
 
 
 def _camera_quaternion_wxyz(forward: Any, up: Any) -> np.ndarray:
@@ -195,6 +281,61 @@ def _project_required_external_entities(
     }
 
 
+def _semantic_entity_visibility(
+    *, semantic_frame: Any, entity_labels: Mapping[str, str]
+) -> dict[str, dict[str, Any]]:
+    """Count render-derived semantic pixels for required entities, fail closed."""
+
+    frame = semantic_frame if isinstance(semantic_frame, Mapping) else {}
+    payload = frame.get("data")
+    info_value = frame.get("info")
+    info = info_value if isinstance(info_value, Mapping) else {}
+    labels_value = info.get("idToLabels")
+    labels = labels_value if isinstance(labels_value, Mapping) else {}
+    try:
+        pixels = np.asarray(payload)
+        if pixels.ndim == 3 and pixels.shape[-1] == 1:
+            pixels = pixels[:, :, 0]
+        if pixels.ndim != 2 or pixels.size == 0 or not np.issubdtype(pixels.dtype, np.integer):
+            raise ValueError
+    except (TypeError, ValueError):
+        pixels = np.asarray([], dtype=np.uint32)
+
+    observed_labels = {
+        str(raw_id): {
+            str(key): str(value)
+            for key, value in raw_labels.items()
+            if isinstance(key, str)
+        }
+        for raw_id, raw_labels in list(labels.items())[:64]
+        if isinstance(raw_labels, Mapping)
+    }
+    result: dict[str, dict[str, Any]] = {}
+    for entity_id, expected_label in entity_labels.items():
+        matching_ids: list[int] = []
+        for raw_id, raw_labels in labels.items():
+            label_map = raw_labels if isinstance(raw_labels, Mapping) else {}
+            if str(label_map.get("class") or "") != str(expected_label):
+                continue
+            try:
+                matching_ids.append(int(raw_id))
+            except (TypeError, ValueError):
+                continue
+        visible_pixels = (
+            int(np.isin(pixels, matching_ids).sum()) if pixels.size and matching_ids else 0
+        )
+        result[str(entity_id)] = {
+            "semantic_class": str(expected_label),
+            "semantic_ids": sorted(set(matching_ids)),
+            "visible_pixel_count": visible_pixels,
+            "minimum_visible_pixel_count": MIN_REQUIRED_ENTITY_VISIBLE_PIXELS,
+            "visible": visible_pixels >= MIN_REQUIRED_ENTITY_VISIBLE_PIXELS,
+            "render_derived": True,
+            "observed_id_to_labels": observed_labels,
+        }
+    return result
+
+
 def _matrix_array(matrix: Any) -> np.ndarray:
     return np.asarray([[float(matrix[row][column]) for column in range(4)] for row in range(4)])
 
@@ -212,6 +353,19 @@ def _backend_array_to_numpy(value: Any) -> np.ndarray:
     if callable(to_numpy):
         value = to_numpy()
     return np.asarray(value)
+
+
+def _camera_sensor_annotator_frame(*, sensor: Any, annotator: str) -> dict[str, Any]:
+    """Normalize Isaac 6's experimental RTX sensor output for assessment."""
+
+    data, info_value = sensor.get_data(annotator)
+    if data is None:
+        raise ValueError(f"native_camera_annotator_data_unavailable:{annotator}")
+    info = dict(info_value) if isinstance(info_value, Mapping) else {}
+    return {
+        "data": _backend_array_to_numpy(data),
+        "info": info,
+    }
 
 
 def _world_pose_matrix_from_backend_pose(position: Any, orientation_wxyz: Any) -> np.ndarray:
@@ -333,7 +487,7 @@ def _articulation_link_world_pose_matrices(
 
 def _synchronize_camera_to_rigid_link(
     *,
-    camera: Any,
+    pose_view: Any,
     parent_to_world: Any,
     mount_translation_parent: Any,
     mount_orientation_parent_wxyz: Any,
@@ -345,35 +499,37 @@ def _synchronize_camera_to_rigid_link(
         mount_orientation_parent_wxyz,
     )
     camera_to_world = mount_to_parent @ np.asarray(parent_to_world, dtype=float).reshape(4, 4)
-    view = getattr(camera, "_xform_prim_view", None)
-    set_world_poses = getattr(view, "set_world_poses", None)
+    set_world_poses = getattr(pose_view, "set_world_poses", None)
     if not callable(set_world_poses):
-        raise ValueError("native_wrist_camera_fabric_world_poses_api_missing")
-    set_world_poses(
-        positions=np.asarray([camera_to_world[3, :3]], dtype=float),
-        orientations=np.asarray(
-            [_quaternion_wxyz_from_world_pose_matrix(camera_to_world)], dtype=float
-        ),
-        usd=False,
-    )
+        raise ValueError("native_wrist_camera_unified_pose_write_api_missing")
+    try:
+        set_world_poses(
+            positions=np.asarray([camera_to_world[3, :3]], dtype=float),
+            orientations=np.asarray(
+                [_quaternion_wxyz_from_world_pose_matrix(camera_to_world)], dtype=float
+            ),
+        )
+    except Exception as exc:
+        raise ValueError(
+            "native_wrist_camera_unified_pose_write_failed:" + type(exc).__name__
+        ) from exc
     return camera_to_world
 
 
-def _fabric_world_pose_matrix(prim_wrapper: Any) -> np.ndarray:
-    """Read one live Fabric pose instead of the stale authored USD transform."""
+def _unified_world_pose_matrix(pose_view: Any) -> np.ndarray:
+    """Read one pose through Isaac 6's unified USD/USDRT/Fabric API."""
 
-    view = getattr(prim_wrapper, "_xform_prim_view", None)
-    get_world_poses = getattr(view, "get_world_poses", None)
+    get_world_poses = getattr(pose_view, "get_world_poses", None)
     if not callable(get_world_poses):
-        raise ValueError("native_fabric_world_pose_api_missing")
+        raise ValueError("native_unified_world_pose_api_missing")
     try:
-        positions, orientations = get_world_poses(usd=False)
+        positions, orientations = get_world_poses()
     except Exception as exc:
-        raise ValueError("native_fabric_world_pose_query_failed:" + type(exc).__name__) from exc
+        raise ValueError("native_unified_world_pose_query_failed:" + type(exc).__name__) from exc
     positions_array = _backend_array_to_numpy(positions).astype(float).reshape(-1, 3)
     orientations_array = _backend_array_to_numpy(orientations).astype(float).reshape(-1, 4)
     if positions_array.shape[0] != 1 or orientations_array.shape[0] != 1:
-        raise ValueError("native_fabric_world_pose_cardinality_invalid")
+        raise ValueError("native_unified_world_pose_cardinality_invalid")
     return _world_pose_matrix_from_backend_pose(positions_array[0], orientations_array[0])
 
 
@@ -465,12 +621,14 @@ def _rigid_wrist_mount_from_initial_task_framing(
     mount_translation_parent: Any,
     target_world_points: Mapping[str, Any],
     world_up: Any = (0.0, 0.0, 1.0),
+    camera_eye_world_offset: Any = (0.0, 0.0, 0.0),
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Calibrate one rigid parent-local wrist gaze from initial task geometry."""
 
     matrix = np.asarray(parent_to_world, dtype=float).reshape(4, 4)
     mount = np.asarray(mount_translation_parent, dtype=float).reshape(3)
     up_world = np.asarray(world_up, dtype=float).reshape(3)
+    eye_offset_world = np.asarray(camera_eye_world_offset, dtype=float).reshape(3)
     points = {
         str(name): np.asarray(value, dtype=float).reshape(3)
         for name, value in target_world_points.items()
@@ -480,12 +638,16 @@ def _rigid_wrist_mount_from_initial_task_framing(
         or not np.isfinite(matrix).all()
         or not np.isfinite(mount).all()
         or not np.isfinite(up_world).all()
+        or not np.isfinite(eye_offset_world).all()
     ):
         raise ValueError("native_wrist_mount_calibration_input_invalid")
     target_world = np.mean(np.stack(list(points.values())), axis=0)
     world_to_parent = np.linalg.inv(matrix)
+    base_eye_world = (np.concatenate((mount, [1.0])) @ matrix)[:3]
+    eye_world = base_eye_world + eye_offset_world
+    resolved_mount = (np.concatenate((eye_world, [1.0])) @ world_to_parent)[:3]
     target_parent = np.concatenate((target_world, [1.0])) @ world_to_parent
-    forward_parent = target_parent[:3] - mount
+    forward_parent = target_parent[:3] - resolved_mount
     forward_norm = float(np.linalg.norm(forward_parent))
     if not math.isfinite(forward_norm) or forward_norm <= 1e-9:
         raise ValueError("native_wrist_mount_calibration_target_degenerate")
@@ -502,16 +664,73 @@ def _rigid_wrist_mount_from_initial_task_framing(
             key=lambda candidate: float(np.linalg.norm(np.cross(forward_parent, candidate))),
         )
     quaternion = _camera_quaternion_wxyz(forward_parent, up_parent)
-    eye_world = (np.concatenate((mount, [1.0])) @ matrix)[:3]
     return quaternion, {
         "mode": "one_time_initial_task_framing_rigid_parent_local_mount",
         "target_entity_ids": sorted(points),
         "target_centroid_world_m": target_world.tolist(),
+        "base_camera_eye_world_m": base_eye_world.tolist(),
         "camera_eye_world_m": eye_world.tolist(),
+        "camera_eye_world_offset_m": eye_offset_world.tolist(),
+        "resolved_mount_translation_parent_m": resolved_mount.tolist(),
         "mount_forward_parent": forward_parent.tolist(),
         "mount_up_parent": np.asarray(up_parent, dtype=float).tolist(),
         "per_frame_task_reaim_performed": False,
     }
+
+
+def _summarize_required_entity_projections(
+    *, view_id: str, projections_by_phase: Mapping[str, Mapping[str, Any]]
+) -> dict[str, bool]:
+    """Apply the frozen per-view projection contract without over-constraining it.
+
+    The external view is the scene-grounding view, so every required entity
+    must remain projected in both observations.  The wrist contract requires
+    the manipulated task object (the spray can) in the initial observation;
+    the commanded wrist frame is separately checked for validity and rigid
+    motion, but is not re-aimed at a world-fixed object after the hand moves.
+    """
+
+    phases = {
+        str(phase): dict(values)
+        for phase, values in projections_by_phase.items()
+        if isinstance(values, Mapping)
+    }
+    if view_id == "external":
+        names = sorted({str(name) for values in phases.values() for name in values})
+        return {
+            name: all(bool(phases.get(phase, {}).get(name)) for phase in ("initial", "commanded"))
+            for name in names
+        }
+    if view_id == "wrist":
+        return {
+            "spraycan_at_initial_pose": bool(phases.get("initial", {}).get("spraycan"))
+        }
+    raise ValueError(f"native_camera_projection_view_invalid:{view_id}")
+
+
+def _summarize_required_entity_visibility(
+    *, view_id: str, visibility_by_phase: Mapping[str, Mapping[str, Any]]
+) -> dict[str, bool]:
+    """Apply the same frozen per-view contract to render-derived visibility."""
+
+    phases = {
+        str(phase): dict(values)
+        for phase, values in visibility_by_phase.items()
+        if isinstance(values, Mapping)
+    }
+
+    def visible(phase: str, entity_id: str) -> bool:
+        value = phases.get(phase, {}).get(entity_id)
+        return bool(value.get("visible")) if isinstance(value, Mapping) else False
+
+    if view_id == "external":
+        return {
+            entity_id: all(visible(phase, entity_id) for phase in ("initial", "commanded"))
+            for entity_id in ("franka", "spraycan", "tray")
+        }
+    if view_id == "wrist":
+        return {"spraycan_at_initial_pose": visible("initial", "spraycan")}
+    raise ValueError(f"native_camera_visibility_view_invalid:{view_id}")
 
 
 def _relocate_layer_asset_path(
@@ -625,9 +844,10 @@ def isaac_sim_6_backend(
     simulation_app = SimulationApp(_simulation_app_launch_config())
     try:
         from isaacsim.core.api import World
+        from isaacsim.core.experimental.prims import XformPrim
         from isaacsim.core.prims import SingleArticulation
         from isaacsim.core.utils.stage import add_reference_to_stage
-        from isaacsim.sensors.camera import Camera
+        from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera
         from isaacsim.storage.native import get_assets_root_path
         from pxr import Gf, Usd, UsdGeom, UsdLux, UsdPhysics
 
@@ -687,6 +907,24 @@ def isaac_sim_6_backend(
         tray_xform.AddScaleOp().Set(Gf.Vec3f(0.36, 0.28, 0.03))
         UsdPhysics.CollisionAPI.Apply(tray.GetPrim())
 
+        semantic_targets = {
+            "franka": stage.GetPrimAtPath("/World/Franka"),
+            "spraycan": spray_prim,
+            "tray": tray.GetPrim(),
+        }
+        semantic_labeling_apis: dict[str, dict[str, Any]] = {}
+        for semantic_label, semantic_prim in semantic_targets.items():
+            if not semantic_prim.IsValid():
+                raise ValueError(f"native_semantic_target_prim_missing:{semantic_label}")
+            semantic_labeling_apis[semantic_label] = (
+                _author_renderable_semantic_label_tree(
+                    root_prim=semantic_prim,
+                    semantic_label=semantic_label,
+                    prim_range=Usd.PrimRange,
+                    is_renderable=lambda prim: prim.IsA(UsdGeom.Gprim),
+                )
+            )
+
         UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
         dome = UsdLux.DomeLight.Define(stage, "/World/Lights/Dome")
         dome.CreateIntensityAttr(1000.0)
@@ -694,7 +932,7 @@ def isaac_sim_6_backend(
         distant.CreateIntensityAttr(2500.0)
 
         required_views = _required_views_from_spec(spec)
-        camera_objects: dict[str, Camera] = {}
+        camera_objects: dict[str, CameraSensor] = {}
         camera_paths: dict[str, str] = {}
         for view_id in (view for view in required_views if view != "wrist"):
             camera_spec = spec["cameras"][view_id]
@@ -732,6 +970,11 @@ def isaac_sim_6_backend(
         robot = SingleArticulation(prim_path="/World/Franka", name="native_warehouse_franka")
         world.scene.add(robot)
         world.reset()
+        # Wrap the existing camera only after reset has initialized the stage
+        # and runtime backends. Isaac Sim 6's experimental XformPrim is the
+        # supported unified USD/USDRT/Fabric API; the deprecated core.prims
+        # XFormPrim's ``usd=False`` path failed inside set_world_poses on V26.
+        wrist_pose_view = XformPrim(wrist_path)
         physics_sim_view = world.physics_sim_view
         if physics_sim_view is None:
             raise ValueError("native_articulation_physics_view_missing")
@@ -769,16 +1012,29 @@ def isaac_sim_6_backend(
                 "tray": tray_center,
             },
             world_up=calibration["world_up"],
+            camera_eye_world_offset=(0.0, 0.0, WRIST_CAMERA_WORLD_CLEARANCE_M),
         )
+        resolved_wrist_mount_translation = wrist_mount_calibration[
+            "resolved_mount_translation_parent_m"
+        ]
+        # Isaac Sim 6 deprecates the legacy Camera frame-dict path in favor of
+        # CameraSensor.  Bind both RGB and semantic segmentation to the same
+        # render product so visibility evidence comes from the exact RGB view.
         for view_id in (view for view in required_views if view != "wrist"):
-            camera_objects[view_id] = Camera(prim_path=camera_paths[view_id], resolution=(640, 480))
-        camera_objects["wrist"] = Camera(prim_path=wrist_path, resolution=(640, 480))
-        for camera in camera_objects.values():
-            camera.initialize()
+            camera_objects[view_id] = CameraSensor(
+                RtxCamera(camera_paths[view_id]),
+                resolution=(480, 640),
+                annotators=["rgba", "semantic_segmentation"],
+            )
+        camera_objects["wrist"] = CameraSensor(
+            RtxCamera(wrist_path),
+            resolution=(480, 640),
+            annotators=["rgba", "semantic_segmentation"],
+        )
         _synchronize_camera_to_rigid_link(
-            camera=camera_objects["wrist"],
+            pose_view=wrist_pose_view,
             parent_to_world=hand_initial_matrix,
-            mount_translation_parent=wrist["mount_translation_m"],
+            mount_translation_parent=resolved_wrist_mount_translation,
             mount_orientation_parent_wxyz=wrist_quaternion,
         )
         for _ in range(2):
@@ -799,14 +1055,14 @@ def isaac_sim_6_backend(
         if hand_world_initial is None:
             raise ValueError("native_articulation_panda_hand_link_missing")
         _synchronize_camera_to_rigid_link(
-            camera=camera_objects["wrist"],
+            pose_view=wrist_pose_view,
             parent_to_world=hand_world_initial,
-            mount_translation_parent=wrist["mount_translation_m"],
+            mount_translation_parent=resolved_wrist_mount_translation,
             mount_orientation_parent_wxyz=wrist_quaternion,
         )
         for _ in range(2):
             _render_world_without_physics_advance(world)
-        wrist_world_initial = _fabric_world_pose_matrix(camera_objects["wrist"])
+        wrist_world_initial = _unified_world_pose_matrix(wrist_pose_view)
         wrist_local_initial = wrist_world_initial @ np.linalg.inv(hand_world_initial)
         actual_wrist_eye = wrist_world_initial[3, :3]
         actual_wrist_forward = (np.asarray([0.0, 0.0, -1.0, 0.0]) @ wrist_world_initial)[:3]
@@ -843,13 +1099,31 @@ def isaac_sim_6_backend(
         def save_frames(phase: str) -> int:
             step = int(world.current_time_step_index)
             for view_id, camera in camera_objects.items():
-                rgba = np.asarray(camera.get_rgba())
+                rgba_frame = _camera_sensor_annotator_frame(sensor=camera, annotator="rgba")
+                rgba = np.asarray(rgba_frame["data"])
                 if rgba.ndim != 3 or rgba.shape[0:2] != (480, 640):
                     raise ValueError(f"native_camera_frame_shape_invalid:{view_id}:{rgba.shape}")
                 path = output_dir / f"{view_id}_{phase}.png"
                 Image.fromarray(np.asarray(rgba[:, :, :3], dtype=np.uint8)).save(path)
                 frames[view_id][f"{phase}_frame_path"] = str(path)
                 frames[view_id][f"{phase}_physics_step"] = step
+                semantic_frame = _camera_sensor_annotator_frame(
+                    sensor=camera,
+                    annotator="semantic_segmentation",
+                )
+                frames[view_id].setdefault("required_entities_visible_pixels_by_phase", {})[
+                    phase
+                ] = _semantic_entity_visibility(
+                    semantic_frame=semantic_frame,
+                    entity_labels={
+                        entity_id: entity_id
+                        for entity_id in (
+                            ("spraycan",)
+                            if view_id == "wrist"
+                            else ("franka", "spraycan", "tray")
+                        )
+                    },
+                )
             return step
 
         def record_entity_projections(phase: str) -> None:
@@ -858,7 +1132,7 @@ def isaac_sim_6_backend(
                 camera_to_world = (
                     usd_camera_matrix(path)
                     if view_id != "wrist"
-                    else _fabric_world_pose_matrix(camera_objects["wrist"])
+                    else _unified_world_pose_matrix(wrist_pose_view)
                 )
                 if view_id != "wrist":
                     required, projection_evidence = _project_required_external_entities(
@@ -887,15 +1161,21 @@ def isaac_sim_6_backend(
         def finalize_entity_projections() -> None:
             for view_id in required_views:
                 phase_values = frames[view_id]["required_entities_projected_in_frame_by_phase"]
-                names = sorted(
-                    {str(name) for projection in phase_values.values() for name in projection}
-                )
-                frames[view_id]["required_entities_projected_in_frame"] = {
-                    name: all(
-                        bool(phase_values[phase].get(name)) for phase in ("initial", "commanded")
+                frames[view_id]["required_entities_projected_in_frame"] = (
+                    _summarize_required_entity_projections(
+                        view_id=view_id,
+                        projections_by_phase=phase_values,
                     )
-                    for name in names
-                }
+                )
+                visibility_values = frames[view_id][
+                    "required_entities_visible_pixels_by_phase"
+                ]
+                frames[view_id]["required_entities_visible_pixels"] = (
+                    _summarize_required_entity_visibility(
+                        view_id=view_id,
+                        visibility_by_phase=visibility_values,
+                    )
+                )
 
         initial_step = save_frames("initial")
         record_entity_projections("initial")
@@ -915,9 +1195,9 @@ def isaac_sim_6_backend(
         if hand_world_commanded is None:
             raise ValueError("native_articulation_panda_hand_link_missing")
         _synchronize_camera_to_rigid_link(
-            camera=camera_objects["wrist"],
+            pose_view=wrist_pose_view,
             parent_to_world=hand_world_commanded,
-            mount_translation_parent=wrist["mount_translation_m"],
+            mount_translation_parent=resolved_wrist_mount_translation,
             mount_orientation_parent_wxyz=wrist_quaternion,
         )
         for _ in range(2):
@@ -925,7 +1205,7 @@ def isaac_sim_6_backend(
         commanded_step = save_frames("commanded")
         record_entity_projections("commanded")
         finalize_entity_projections()
-        wrist_world_commanded = _fabric_world_pose_matrix(camera_objects["wrist"])
+        wrist_world_commanded = _unified_world_pose_matrix(wrist_pose_view)
         wrist_local_commanded = wrist_world_commanded @ np.linalg.inv(hand_world_commanded)
 
         missing = [
@@ -946,13 +1226,22 @@ def isaac_sim_6_backend(
             "spraycan_collision_mesh_count": collision_count,
             "spraycan_runtime_rigid_body": spray_prim.HasAPI(UsdPhysics.RigidBodyAPI),
             "spraycan_kinematic_for_camera_canary": True,
+            "semantic_labeling_apis": semantic_labeling_apis,
+            "camera_runtime_api": {
+                "module": "isaacsim.sensors.experimental.rtx",
+                "authoring_class": "RtxCamera",
+                "runtime_class": "CameraSensor",
+                "annotators": ["rgba", "semantic_segmentation"],
+                "resolution_height_width": [480, 640],
+                "shared_render_product_per_view": True,
+            },
             "views": frames,
             "wrist_mount_calibration": wrist_mount_calibration,
             "wrist_mount_implementation": {
                 "mode": "explicit_live_backend_world_sensor_sync_from_physics_link_tensor",
                 "parent_link": "panda_hand",
                 "physics_link_pose_source": "get_link_transforms_after_update_articulations_kinematic",
-                "camera_pose_write_backend": "xform_prim_view_set_world_poses_usd_false",
+                "camera_pose_write_backend": "experimental_xform_prim_unified_backend",
                 "per_frame_task_reaim_performed": False,
             },
             "franka_render_only_joint_state": {
@@ -1093,9 +1382,19 @@ def assess_native_camera_backend_result(
         projected = view.get("required_entities_projected_in_frame")
         if not isinstance(projected, Mapping) or not all(projected.values()):
             blockers.append(f"native_camera_required_entity_projection_failed:{view_id}")
+        visible = view.get("required_entities_visible_pixels")
+        if not isinstance(visible, Mapping) or not all(visible.values()):
+            blockers.append(f"native_camera_required_entity_visibility_failed:{view_id}")
         view_evidence[view_id] = {
             "frames": frames,
             "required_entities_projected_in_frame": dict(projected or {}),
+            "required_entities_projected_in_frame_by_phase": dict(
+                view.get("required_entities_projected_in_frame_by_phase") or {}
+            ),
+            "required_entities_visible_pixels": dict(visible or {}),
+            "required_entities_visible_pixels_by_phase": dict(
+                view.get("required_entities_visible_pixels_by_phase") or {}
+            ),
         }
 
     if "external_2" in required_views:

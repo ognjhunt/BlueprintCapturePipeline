@@ -2074,6 +2074,7 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
             "require_avx": True,
             "require_known_supported_isaac_driver": True,
             "preferred_gpu_keywords": ["L40S"],
+            "excluded_machine_ids": [54812],
         }
     )
 
@@ -2090,8 +2091,11 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
             "min_reliability": 0.99,
             "require_direct_port": False,
             "preferred_gpu_keywords": ["L40S"],
+            "excluded_machine_ids": [54812],
         }
     ]
+    assert result["selected_machine_id"] is None
+    assert result["excluded_machine_ids"] == [54812]
 
 
 # ----------------------------- availability reflects secrets -----------------------------

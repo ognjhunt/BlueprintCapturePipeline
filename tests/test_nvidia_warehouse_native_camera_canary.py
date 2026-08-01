@@ -12,20 +12,26 @@ import pytest
 from PIL import Image
 
 from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
+    _add_prim_semantic_label,
     _apply_and_measure_render_only_joint_pose,
     _apply_runtime_asset_relocations,
     _articulation_link_world_pose_matrices,
+    _author_renderable_semantic_label_tree,
     _backend_array_to_numpy,
+    _camera_sensor_annotator_frame,
     _camera_quaternion_wxyz,
-    _fabric_world_pose_matrix,
     _load_materialization_manifest,
     _project_required_external_entities,
     _project_world_points,
     _quaternion_wxyz_from_world_pose_matrix,
     _render_world_without_physics_advance,
     _rigid_wrist_mount_from_initial_task_framing,
+    _semantic_entity_visibility,
     _simulation_app_launch_config,
+    _summarize_required_entity_projections,
+    _summarize_required_entity_visibility,
     _synchronize_camera_to_rigid_link,
+    _unified_world_pose_matrix,
     _world_pose_matrix_from_backend_pose,
     import_simulation_app,
     isaac_sim_6_backend,
@@ -77,6 +83,10 @@ def _backend(*, output_dir: Path, spec=None, **_kwargs):
                 "franka": True,
                 "spraycan": True,
                 "tray": True,
+            },
+            "required_entities_visible_pixels": {
+                **({"franka": True, "spraycan": True, "tray": True} if view_id == "external" else {}),
+                **({"spraycan_at_initial_pose": True} if view_id == "wrist" else {}),
             },
         }
     return {
@@ -158,6 +168,188 @@ def test_external_projection_fails_closed_without_franka_link_origins() -> None:
         )
 
 
+def test_projection_summary_keeps_external_grounding_across_both_phases() -> None:
+    summary = _summarize_required_entity_projections(
+        view_id="external",
+        projections_by_phase={
+            "initial": {"franka": True, "spraycan": True, "tray": True},
+            "commanded": {"franka": True, "spraycan": False, "tray": True},
+        },
+    )
+
+    assert summary == {"franka": True, "spraycan": False, "tray": True}
+
+
+def test_projection_summary_requires_initial_task_object_but_not_commanded_reaim() -> None:
+    summary = _summarize_required_entity_projections(
+        view_id="wrist",
+        projections_by_phase={
+            "initial": {"spraycan": True, "tray": True},
+            "commanded": {"spraycan": False, "tray": True},
+        },
+    )
+
+    assert summary == {"spraycan_at_initial_pose": True}
+
+    missing_initial_object = _summarize_required_entity_projections(
+        view_id="wrist",
+        projections_by_phase={
+            "initial": {"spraycan": False, "tray": True},
+            "commanded": {"spraycan": True, "tray": True},
+        },
+    )
+    assert missing_initial_object == {"spraycan_at_initial_pose": False}
+
+
+def test_semantic_visibility_counts_only_rendered_target_pixels() -> None:
+    data = np.zeros((12, 12), dtype=np.uint32)
+    data[2:10, 2:10] = 7
+    evidence = _semantic_entity_visibility(
+        semantic_frame={
+            "data": data,
+            "info": {"idToLabels": {"0": {"class": "UNLABELLED"}, "7": {"class": "spraycan"}}},
+        },
+        entity_labels={"spraycan": "spraycan", "tray": "tray"},
+    )
+
+    assert evidence["spraycan"] == {
+        "semantic_class": "spraycan",
+        "semantic_ids": [7],
+        "visible_pixel_count": 64,
+        "minimum_visible_pixel_count": 64,
+        "visible": True,
+        "render_derived": True,
+        "observed_id_to_labels": {
+            "0": {"class": "UNLABELLED"},
+            "7": {"class": "spraycan"},
+        },
+    }
+    assert evidence["tray"]["visible"] is False
+
+
+def test_semantic_visibility_fails_closed_for_missing_or_colorized_payload() -> None:
+    assert _semantic_entity_visibility(
+        semantic_frame=None,
+        entity_labels={"spraycan": "spraycan"},
+    )["spraycan"]["visible"] is False
+    assert _semantic_entity_visibility(
+        semantic_frame={
+            "data": np.zeros((12, 12, 4), dtype=np.uint8),
+            "info": {"idToLabels": {"7": {"class": "spraycan"}}},
+        },
+        entity_labels={"spraycan": "spraycan"},
+    )["spraycan"]["visible"] is False
+
+
+def test_semantic_labeling_prefers_isaac_6_experimental_labels_api(monkeypatch) -> None:
+    calls = []
+    module = types.SimpleNamespace(
+        add_labels=lambda prim, *, labels, taxonomy: calls.append(
+            (prim, labels, taxonomy)
+        )
+    )
+
+    def fake_import(name: str):
+        if name == "isaacsim.core.experimental.utils.semantics":
+            return module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.nvidia_warehouse_native_camera_canary.importlib.import_module",
+        fake_import,
+    )
+    prim = object()
+    assert (
+        _add_prim_semantic_label(prim, "spraycan")
+        == "isaacsim_core_experimental_labels_api"
+    )
+    assert calls == [(prim, ["spraycan"], "class")]
+
+
+def test_semantic_labeling_falls_back_to_isaacsim_legacy_api(monkeypatch) -> None:
+    calls = []
+    module = types.SimpleNamespace(
+        add_update_semantics=lambda prim, semantic_label, type_label: calls.append(
+            (prim, semantic_label, type_label)
+        )
+    )
+
+    def fake_import(name: str):
+        if name == "isaacsim.core.utils.semantics":
+            return module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.nvidia_warehouse_native_camera_canary.importlib.import_module",
+        fake_import,
+    )
+    prim = object()
+    assert (
+        _add_prim_semantic_label(prim, "tray")
+        == "isaacsim_core_legacy_semantics_api"
+    )
+    assert calls == [(prim, "tray", "class")]
+
+
+def test_semantic_labeling_fails_closed_when_no_runtime_api_exists(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "blueprint_pipeline.nvidia_warehouse_native_camera_canary.importlib.import_module",
+        lambda name: (_ for _ in ()).throw(ModuleNotFoundError(name)),
+    )
+    with pytest.raises(ImportError, match="native_semantics_api_unavailable"):
+        _add_prim_semantic_label(object(), "franka")
+
+
+def test_semantic_labeling_authors_every_renderable_descendant() -> None:
+    class Prim:
+        def __init__(self, name: str, renderable: bool):
+            self.name = name
+            self.renderable = renderable
+
+    root = Prim("root", False)
+    mesh_a = Prim("mesh_a", True)
+    mesh_b = Prim("mesh_b", True)
+    non_renderable = Prim("joint", False)
+    calls = []
+
+    evidence = _author_renderable_semantic_label_tree(
+        root_prim=root,
+        semantic_label="franka",
+        prim_range=lambda _root: [root, mesh_a, non_renderable, mesh_b],
+        is_renderable=lambda prim: prim.renderable,
+        add_label=lambda prim, label: calls.append((prim.name, label)) or "api",
+    )
+
+    assert calls == [("mesh_a", "franka"), ("mesh_b", "franka")]
+    assert evidence == {
+        "root_label": "franka",
+        "renderable_prim_count": 2,
+        "api_names": ["api"],
+        "root_fallback_used": False,
+    }
+
+
+def test_visibility_summary_requires_rendered_pixels_not_projection() -> None:
+    visibility = {
+        "initial": {
+            "spraycan": {"visible": False},
+            "tray": {"visible": True},
+            "franka": {"visible": True},
+        },
+        "commanded": {
+            "spraycan": {"visible": True},
+            "tray": {"visible": True},
+            "franka": {"visible": True},
+        },
+    }
+    assert _summarize_required_entity_visibility(
+        view_id="external", visibility_by_phase=visibility
+    ) == {"franka": True, "spraycan": False, "tray": True}
+    assert _summarize_required_entity_visibility(
+        view_id="wrist", visibility_by_phase=visibility
+    ) == {"spraycan_at_initial_pose": False}
+
+
 def test_zero_time_scene_update_uses_cuda_world_render_and_preserves_step_index() -> None:
     class World:
         current_time_step_index = 7
@@ -234,6 +426,38 @@ def test_backend_array_to_numpy_moves_tensor_like_value_to_cpu() -> None:
     assert calls == ["detach", "cpu", "numpy"]
 
 
+def test_camera_sensor_annotator_frame_normalizes_data_and_info() -> None:
+    class WarpLike:
+        def numpy(self) -> np.ndarray:
+            return np.asarray([[[7]]], dtype=np.uint32)
+
+    class Sensor:
+        def get_data(self, annotator: str):
+            assert annotator == "semantic_segmentation"
+            return WarpLike(), {"idToLabels": {"7": {"class": "spraycan"}}}
+
+    frame = _camera_sensor_annotator_frame(
+        sensor=Sensor(), annotator="semantic_segmentation"
+    )
+
+    assert np.array_equal(frame["data"], np.asarray([[[7]]], dtype=np.uint32))
+    assert frame["info"] == {"idToLabels": {"7": {"class": "spraycan"}}}
+
+
+def test_camera_sensor_annotator_frame_fails_closed_when_data_is_not_ready() -> None:
+    class Sensor:
+        def get_data(self, _annotator: str):
+            return None, {}
+
+    with pytest.raises(
+        ValueError,
+        match="native_camera_annotator_data_unavailable:semantic_segmentation",
+    ):
+        _camera_sensor_annotator_frame(
+            sensor=Sensor(), annotator="semantic_segmentation"
+        )
+
+
 def test_backend_pose_matrix_uses_usd_row_vector_convention() -> None:
     half_turn = math.radians(90.0) / 2.0
     matrix = _world_pose_matrix_from_backend_pose(
@@ -245,20 +469,17 @@ def test_backend_pose_matrix_uses_usd_row_vector_convention() -> None:
     assert np.asarray([0.0, 0.0, 0.0, 1.0]) @ matrix == pytest.approx([1.0, 2.0, 3.0, 1.0])
 
 
-def test_fabric_world_pose_query_explicitly_bypasses_stale_usd() -> None:
-    calls: list[bool] = []
+def test_unified_world_pose_query_uses_supported_zero_argument_api() -> None:
+    calls: list[str] = []
 
     class View:
-        def get_world_poses(self, *, usd):
-            calls.append(usd)
+        def get_world_poses(self):
+            calls.append("get_world_poses")
             return np.asarray([[0.1, 0.2, 0.3]]), np.asarray([[1.0, 0.0, 0.0, 0.0]])
 
-    class Prim:
-        _xform_prim_view = View()
+    matrix = _unified_world_pose_matrix(View())
 
-    matrix = _fabric_world_pose_matrix(Prim())
-
-    assert calls == [False]
+    assert calls == ["get_world_poses"]
     assert matrix[3, :3] == pytest.approx([0.1, 0.2, 0.3])
 
 
@@ -266,12 +487,28 @@ def test_wrist_camera_prim_exists_before_reset_and_syncs_from_live_link_afterwar
     source = inspect.getsource(isaac_sim_6_backend)
 
     camera_definition = source.index("wrist_prim = UsdGeom.Camera.Define")
+    public_pose_view = source.index("wrist_pose_view = XformPrim")
     world_reset = source.index("world.reset()")
     calibrated_world_sync = source.index("_synchronize_camera_to_rigid_link")
 
-    assert camera_definition < world_reset < calibrated_world_sync
+    assert camera_definition < world_reset < public_pose_view < calibrated_world_sync
     assert 'wrist_path = "/World/Cameras/Wrist"' in source
+    assert "wrist_pose_view = XformPrim(wrist_path)" in source
+    assert "world.scene.add(wrist_pose_view)" not in source
+    assert "from isaacsim.core.experimental.prims import XformPrim" in source
+    assert "from isaacsim.core.prims import SingleArticulation" in source
     assert "get_link_transforms_after_update_articulations_kinematic" in source
+    assert "._xform_prim_view" not in source
+
+
+def test_backend_uses_isaac_6_experimental_rtx_camera_sensor_for_shared_annotators() -> None:
+    source = inspect.getsource(isaac_sim_6_backend)
+
+    assert "from isaacsim.sensors.experimental.rtx import CameraSensor, RtxCamera" in source
+    assert 'annotators=["rgba", "semantic_segmentation"]' in source
+    assert "resolution=(480, 640)" in source
+    assert "camera.get_current_frame()" not in source
+    assert "camera.add_semantic_segmentation_to_frame" not in source
 
 
 def test_articulation_link_pose_uses_explicit_kinematic_update_and_xyzw_tensor_order() -> None:
@@ -318,12 +555,9 @@ def test_articulation_link_pose_uses_explicit_kinematic_update_and_xyzw_tensor_o
 def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
     calls: list[dict[str, object]] = []
 
-    class XformPrimView:
+    class PublicXFormPrim:
         def set_world_poses(self, **kwargs):
             calls.append(kwargs)
-
-    class Camera:
-        _xform_prim_view = XformPrimView()
 
     parent_initial = _world_pose_matrix_from_backend_pose(
         [0.4, -0.2, 1.1],
@@ -338,20 +572,20 @@ def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
     mount_orientation = _camera_quaternion_wxyz([1.0, 0.0, -0.2], [0.0, 0.0, 1.0])
 
     initial = _synchronize_camera_to_rigid_link(
-        camera=Camera(),
+        pose_view=PublicXFormPrim(),
         parent_to_world=parent_initial,
         mount_translation_parent=mount_translation,
         mount_orientation_parent_wxyz=mount_orientation,
     )
     commanded = _synchronize_camera_to_rigid_link(
-        camera=Camera(),
+        pose_view=PublicXFormPrim(),
         parent_to_world=parent_commanded,
         mount_translation_parent=mount_translation,
         mount_orientation_parent_wxyz=mount_orientation,
     )
 
     assert len(calls) == 2
-    assert all(call["usd"] is False for call in calls)
+    assert all("usd" not in call for call in calls)
     assert all("camera_axes" not in call for call in calls)
     assert all(np.asarray(call["positions"]).shape == (1, 3) for call in calls)
     assert all(np.asarray(call["orientations"]).shape == (1, 4) for call in calls)
@@ -366,17 +600,33 @@ def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
     assert roundtrip == pytest.approx(commanded)
 
 
-def test_world_camera_sync_rejects_stale_camera_wrapper_pose_writers() -> None:
+def test_world_camera_sync_requires_public_pose_view_api() -> None:
     class Camera:
         def set_world_pose(self, **_kwargs):
             raise AssertionError("single-pose USD writer must not be used")
 
-        def set_world_poses(self, **_kwargs):
-            raise AssertionError("camera wrapper writer must not be used")
-
-    with pytest.raises(ValueError, match="native_wrist_camera_fabric_world_poses_api_missing"):
+    with pytest.raises(
+        ValueError, match="native_wrist_camera_unified_pose_write_api_missing"
+    ):
         _synchronize_camera_to_rigid_link(
-            camera=Camera(),
+            pose_view=Camera(),
+            parent_to_world=np.eye(4),
+            mount_translation_parent=[0.0, 0.1, 0.03],
+            mount_orientation_parent_wxyz=[1.0, 0.0, 0.0, 0.0],
+        )
+
+
+def test_world_camera_sync_wraps_public_pose_write_failure_in_safe_code() -> None:
+    class PublicXFormPrim:
+        def set_world_poses(self, **_kwargs):
+            raise AttributeError("opaque runtime detail")
+
+    with pytest.raises(
+        ValueError,
+        match="native_wrist_camera_unified_pose_write_failed:AttributeError",
+    ):
+        _synchronize_camera_to_rigid_link(
+            pose_view=PublicXFormPrim(),
             parent_to_world=np.eye(4),
             mount_translation_parent=[0.0, 0.1, 0.03],
             mount_orientation_parent_wxyz=[1.0, 0.0, 0.0, 0.0],
@@ -426,6 +676,23 @@ def test_wrist_mount_calibration_handles_world_up_parallel_to_gaze() -> None:
     assert np.isfinite(quaternion).all()
     assert np.linalg.norm(quaternion) == pytest.approx(1.0)
     assert abs(np.dot(evidence["mount_forward_parent"], evidence["mount_up_parent"])) < 1e-9
+
+
+def test_wrist_mount_world_clearance_resolves_to_one_fixed_parent_mount() -> None:
+    quaternion, evidence = _rigid_wrist_mount_from_initial_task_framing(
+        parent_to_world=np.eye(4),
+        mount_translation_parent=[0.0, 0.1, 0.03],
+        target_world_points={"spraycan": [0.0, 1.0, 0.0]},
+        camera_eye_world_offset=[0.0, 0.0, 0.25],
+    )
+
+    assert evidence["base_camera_eye_world_m"] == pytest.approx([0.0, 0.1, 0.03])
+    assert evidence["camera_eye_world_m"] == pytest.approx([0.0, 0.1, 0.28])
+    assert evidence["resolved_mount_translation_parent_m"] == pytest.approx(
+        [0.0, 0.1, 0.28]
+    )
+    assert evidence["camera_eye_world_offset_m"] == [0.0, 0.0, 0.25]
+    assert np.linalg.norm(quaternion) == pytest.approx(1.0)
 
 
 def test_joint_pose_is_rendered_without_requesting_physics_steps() -> None:
@@ -723,6 +990,44 @@ def test_native_camera_canary_rejects_duplicated_second_external_frame(tmp_path:
     assert "native_camera_external_pair_frame_not_distinct:initial" in result["blockers"]
 
 
+def test_native_camera_canary_rejects_projected_but_not_rendered_task_object(
+    tmp_path: Path,
+) -> None:
+    spec_path = tmp_path / "spec.json"
+    _spec(spec_path)
+
+    def occluded_backend(**kwargs):
+        value = _backend(**kwargs)
+        value["views"]["wrist"]["required_entities_visible_pixels"] = {
+            "spraycan_at_initial_pose": False
+        }
+        value["views"]["wrist"]["required_entities_visible_pixels_by_phase"] = {
+            "initial": {
+                "spraycan": {
+                    "visible_pixel_count": 0,
+                    "minimum_visible_pixel_count": 64,
+                    "visible": False,
+                    "render_derived": True,
+                }
+            }
+        }
+        return value
+
+    result = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "result",
+        backend=occluded_backend,
+    )
+
+    assert result["status"] == "failed"
+    assert result["assessment"]["views"]["wrist"][
+        "required_entities_projected_in_frame"
+    ]["spraycan"] is True
+    assert "native_camera_required_entity_projection_failed:wrist" not in result["blockers"]
+    assert "native_camera_required_entity_visibility_failed:wrist" in result["blockers"]
+
+
 def test_native_camera_canary_fails_static_or_slipping_wrist_mount(tmp_path: Path) -> None:
     spec_path = tmp_path / "spec.json"
     _spec(spec_path)
@@ -743,6 +1048,40 @@ def test_native_camera_canary_fails_static_or_slipping_wrist_mount(tmp_path: Pat
     assert result["status"] == "failed"
     assert "native_wrist_camera_did_not_move_with_hand" in result["blockers"]
     assert "native_wrist_camera_mount_not_rigid" in result["blockers"]
+
+
+def test_native_camera_canary_accepts_float32_pose_roundoff_but_rejects_real_slip(
+    tmp_path: Path,
+) -> None:
+    spec_path = tmp_path / "spec.json"
+    _spec(spec_path)
+
+    def rounded_backend(**kwargs):
+        value = _backend(**kwargs)
+        value["wrist_camera_local_transform_delta"] = 5e-7
+        return value
+
+    rounded = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "rounded",
+        backend=rounded_backend,
+    )
+    assert rounded["status"] == "passed"
+
+    def slipped_backend(**kwargs):
+        value = _backend(**kwargs)
+        value["wrist_camera_local_transform_delta"] = 2e-6
+        return value
+
+    slipped = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "slipped",
+        backend=slipped_backend,
+    )
+    assert slipped["status"] == "failed"
+    assert "native_wrist_camera_mount_not_rigid" in slipped["blockers"]
 
 
 def test_native_camera_canary_fails_closed_on_missing_or_reaimed_mount_calibration(
