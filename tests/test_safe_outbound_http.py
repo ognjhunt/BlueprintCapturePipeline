@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import urllib.error
 import urllib.request
+import hashlib
+from pathlib import Path
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -77,6 +79,30 @@ class _Transport:
         if not self._explicit_final_url:
             self.response._final_url = request.full_url
         return self.response
+
+
+class _StreamingResponse:
+    def __init__(self, body: bytes, *, status: int = 200, final_url: str) -> None:
+        self._body = body
+        self._offset = 0
+        self.status = status
+        self._final_url = final_url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+    def read(self, amount: int = -1) -> bytes:
+        if amount < 0:
+            amount = len(self._body) - self._offset
+        chunk = self._body[self._offset : self._offset + amount]
+        self._offset += len(chunk)
+        return chunk
+
+    def geturl(self) -> str:
+        return self._final_url
 
 
 def test_https_request_to_pinned_api_host_passes(monkeypatch) -> None:
@@ -361,3 +387,130 @@ def test_transports_without_sized_read_or_geturl_still_work(monkeypatch) -> None
     result = soh.request("http://127.0.0.1:8765/apply-and-measure", policy=policy)
     assert result.body == b'{"ok": 1}'
     assert result.status == 200
+
+
+def test_digest_bound_file_download_is_streamed_atomic_and_secret_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"large-operation-output" * 1000
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    url = "https://objects.example/output.zip?X-Amz-Signature=do-not-record"
+    response = _StreamingResponse(payload, final_url=url)
+    monkeypatch.setattr(soh, "_open_with_policy", _Transport(response))
+    destination = tmp_path / "retrieved.zip"
+    receipt = soh.download_file(
+        url,
+        output_path=destination,
+        expected_sha256=digest,
+        max_bytes=len(payload),
+        timeout_seconds=300,
+        policy=soh.presigned_transfer_policy(url),
+    )
+    assert destination.read_bytes() == payload
+    assert receipt.sha256 == digest
+    assert receipt.transferred_bytes == len(payload)
+    assert receipt.host == "objects.example"
+    assert "do-not-record" not in repr(receipt)
+
+
+def test_file_download_mismatch_or_oversize_preserves_previous_complete_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = "https://objects.example/output.zip?signature=secret"
+    destination = tmp_path / "retrieved.zip"
+    destination.write_bytes(b"previous")
+    wrong = "sha256:" + "0" * 64
+    monkeypatch.setattr(
+        soh,
+        "_open_with_policy",
+        _Transport(_StreamingResponse(b"new", final_url=url)),
+    )
+    with pytest.raises(soh.SafeOutboundHttpError, match="file_digest_mismatch"):
+        soh.download_file(
+            url,
+            output_path=destination,
+            expected_sha256=wrong,
+            max_bytes=10,
+            timeout_seconds=30,
+            policy=soh.presigned_transfer_policy(url),
+        )
+    assert destination.read_bytes() == b"previous"
+    assert not list(tmp_path.glob(".retrieved.zip.*.partial"))
+
+    monkeypatch.setattr(
+        soh,
+        "_open_with_policy",
+        _Transport(_StreamingResponse(b"too-large", final_url=url)),
+    )
+    with pytest.raises(soh.SafeOutboundHttpError, match="file_too_large"):
+        soh.download_file(
+            url,
+            output_path=destination,
+            expected_sha256=wrong,
+            max_bytes=3,
+            timeout_seconds=30,
+            policy=soh.presigned_transfer_policy(url),
+        )
+    assert destination.read_bytes() == b"previous"
+
+
+def test_digest_bound_file_upload_streams_body_and_pins_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"checkpoint-and-splat" * 1000
+    source = tmp_path / "output.zip"
+    source.write_bytes(payload)
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    url = "https://objects.example/output.zip?X-Amz-Signature=do-not-record"
+    captured: dict[str, object] = {}
+
+    def transport(request, timeout, policy):
+        del policy
+        captured["timeout"] = timeout
+        captured["content_length"] = request.get_header("Content-length")
+        captured["body_is_bytes"] = isinstance(request.data, bytes)
+        body = bytearray()
+        while True:
+            chunk = request.data.read(4096)
+            if not chunk:
+                break
+            body.extend(chunk)
+        captured["body"] = bytes(body)
+        return _StreamingResponse(b"", status=201, final_url=url)
+
+    monkeypatch.setattr(soh, "_open_with_policy", transport)
+    receipt = soh.upload_file(
+        url,
+        input_path=source,
+        expected_sha256=digest,
+        max_bytes=len(payload),
+        timeout_seconds=300,
+        policy=soh.presigned_transfer_policy(url, max_response_bytes=1024),
+        content_type="application/zip",
+    )
+    assert captured["body"] == payload
+    assert captured["body_is_bytes"] is False
+    assert captured["content_length"] == str(len(payload))
+    assert receipt.status == 201
+    assert receipt.sha256 == digest
+
+
+def test_blocked_presigned_redirect_does_not_expose_query_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_url = "https://objects.example/in.zip?signature=source-secret"
+    final_url = "https://objects.example/other?signature=redirect-secret"
+    monkeypatch.setattr(
+        soh,
+        "_open_with_policy",
+        _Transport(_FakeResponse(final_url=final_url)),
+    )
+    with pytest.raises(soh.SafeOutboundHttpError) as raised:
+        soh.request(
+            source_url,
+            policy=soh.presigned_transfer_policy(source_url),
+        )
+    message = str(raised.value)
+    assert "outbound_http_redirect_blocked" in message
+    assert "source-secret" not in message
+    assert "redirect-secret" not in message

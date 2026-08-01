@@ -32,6 +32,11 @@ passed :func:`validate_outbound_url`.
 from __future__ import annotations
 
 import math
+import hashlib
+import os
+from pathlib import Path
+import re
+import tempfile
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -43,7 +48,9 @@ DEFAULT_TIMEOUT_SECONDS = 90.0
 MAX_TIMEOUT_SECONDS = 3600.0
 DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 PRESIGNED_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+FILE_TRANSFER_CHUNK_BYTES = 1024 * 1024
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+_SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 class SafeOutboundHttpError(ValueError):
@@ -73,6 +80,16 @@ class SafeHttpResponse:
     body: bytes
     url: str
     final_url: str | None
+
+
+@dataclass(frozen=True)
+class SafeHttpFileTransfer:
+    """Secret-free receipt facts for one digest-bound streaming transfer."""
+
+    status: int
+    transferred_bytes: int
+    sha256: str
+    host: str
 
 
 def validate_outbound_url(
@@ -198,7 +215,7 @@ def _enforce_redirect_policy(
         )
     if not policy.follow_same_origin_redirects:
         raise SafeOutboundHttpError(
-            f"outbound_http_redirect_blocked:{final_url[:120]}"
+            f"outbound_http_redirect_blocked:{(final.hostname or '').lower() or 'missing'}"
         )
     # Same-origin redirect explicitly allowed: the final URL must still pass policy.
     validate_outbound_url(final_url, policy=policy)
@@ -222,7 +239,8 @@ class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
             )
         if not self._policy.follow_same_origin_redirects:
             raise SafeOutboundHttpError(
-                f"outbound_http_redirect_blocked:{resolved[:120]}"
+                "outbound_http_redirect_blocked:"
+                f"{(final.hostname or '').lower() or 'missing'}"
             )
         validate_outbound_url(resolved, policy=self._policy)
         return super().redirect_request(req, fp, code, msg, headers, resolved)
@@ -309,4 +327,166 @@ def request(
         policy=policy,
         timeout_seconds=timeout_seconds,
         max_response_bytes=max_response_bytes,
+    )
+
+
+def _require_sha256(value: object) -> str:
+    digest = str(value or "")
+    if _SHA256_RE.fullmatch(digest) is None:
+        raise SafeOutboundHttpError("outbound_http_file_digest_invalid")
+    return digest
+
+
+def _hash_file_capped(path: Path, *, max_bytes: int) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        while True:
+            chunk = stream.read(FILE_TRANSFER_CHUNK_BYTES)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > max_bytes:
+                raise SafeOutboundHttpError(
+                    f"outbound_http_file_too_large:{size}>{max_bytes}"
+                )
+            digest.update(chunk)
+    return size, "sha256:" + digest.hexdigest()
+
+
+def download_file(
+    url: str,
+    *,
+    output_path: str | Path,
+    expected_sha256: str,
+    max_bytes: int,
+    timeout_seconds: object,
+    policy: OutboundHttpPolicy,
+    headers: Mapping[str, str] | None = None,
+) -> SafeHttpFileTransfer:
+    """Stream one exact HTTPS object to an atomically published local file."""
+
+    requested = validate_outbound_url(url, policy=policy)
+    expected = _require_sha256(expected_sha256)
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
+        raise SafeOutboundHttpError(f"outbound_http_file_cap_invalid:{max_bytes!r}")
+    timeout = _validated_timeout(timeout_seconds)
+    destination = Path(output_path)
+    if destination.is_symlink():
+        raise SafeOutboundHttpError("outbound_http_output_symlink_forbidden")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.", suffix=".partial", dir=destination.parent
+        )
+        temporary_path = Path(temporary_name)
+        digest = hashlib.sha256()
+        size = 0
+        with os.fdopen(descriptor, "wb") as output_stream:
+            request_obj = urllib.request.Request(
+                url, method="GET", headers=dict(headers or {})
+            )
+            with _open_with_policy(request_obj, timeout, policy) as response:
+                final_url: str | None = None
+                geturl = getattr(response, "geturl", None)
+                if callable(geturl):
+                    final_url = str(geturl() or "") or None
+                _enforce_redirect_policy(requested, final_url, policy=policy)
+                status = int(getattr(response, "status", 200) or 200)
+                if not 200 <= status < 300:
+                    raise SafeOutboundHttpError(
+                        f"outbound_http_transfer_status_invalid:{status}"
+                    )
+                reader = getattr(response, "read", None)
+                if not callable(reader):
+                    raise SafeOutboundHttpError("outbound_http_response_unreadable")
+                while True:
+                    chunk = reader(FILE_TRANSFER_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise SafeOutboundHttpError(
+                            f"outbound_http_file_too_large:{size}>{max_bytes}"
+                        )
+                    digest.update(chunk)
+                    output_stream.write(chunk)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+        observed = "sha256:" + digest.hexdigest()
+        if observed != expected:
+            raise SafeOutboundHttpError("outbound_http_file_digest_mismatch")
+        os.replace(temporary_path, destination)
+        temporary_path = None
+        return SafeHttpFileTransfer(
+            status=status,
+            transferred_bytes=size,
+            sha256=observed,
+            host=(requested.hostname or "").lower(),
+        )
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def upload_file(
+    url: str,
+    *,
+    input_path: str | Path,
+    expected_sha256: str,
+    max_bytes: int,
+    timeout_seconds: object,
+    policy: OutboundHttpPolicy,
+    content_type: str = "application/octet-stream",
+    headers: Mapping[str, str] | None = None,
+) -> SafeHttpFileTransfer:
+    """Stream one exact local file to a pinned presigned HTTPS PUT URL."""
+
+    requested = validate_outbound_url(url, policy=policy)
+    expected = _require_sha256(expected_sha256)
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
+        raise SafeOutboundHttpError(f"outbound_http_file_cap_invalid:{max_bytes!r}")
+    source = Path(input_path)
+    if source.is_symlink():
+        raise SafeOutboundHttpError("outbound_http_input_symlink_forbidden")
+    try:
+        source = source.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise SafeOutboundHttpError("outbound_http_input_file_missing") from exc
+    if not source.is_file():
+        raise SafeOutboundHttpError("outbound_http_input_file_invalid")
+    size, observed = _hash_file_capped(source, max_bytes=max_bytes)
+    if observed != expected:
+        raise SafeOutboundHttpError("outbound_http_file_digest_mismatch")
+    timeout = _validated_timeout(timeout_seconds)
+    request_headers = {
+        "Content-Type": content_type,
+        "Content-Length": str(size),
+        **dict(headers or {}),
+    }
+    with source.open("rb") as input_stream:
+        request_obj = urllib.request.Request(
+            url,
+            data=input_stream,  # type: ignore[arg-type]
+            method="PUT",
+            headers=request_headers,
+        )
+        with _open_with_policy(request_obj, timeout, policy) as response:
+            final_url: str | None = None
+            geturl = getattr(response, "geturl", None)
+            if callable(geturl):
+                final_url = str(geturl() or "") or None
+            _enforce_redirect_policy(requested, final_url, policy=policy)
+            status = int(getattr(response, "status", 200) or 200)
+            if not 200 <= status < 300:
+                raise SafeOutboundHttpError(
+                    f"outbound_http_transfer_status_invalid:{status}"
+                )
+            _read_capped(response, policy.max_response_bytes)
+    return SafeHttpFileTransfer(
+        status=status,
+        transferred_bytes=size,
+        sha256=observed,
+        host=(requested.hostname or "").lower(),
     )
