@@ -377,18 +377,25 @@ used as blind confirmation.
   three-view output, immediate reliability, owned-instance and global-zero
   closure, settled accounting, and generated-only same-policy query-12
   admission boundary;
+- `protocol_amendment_49_policy_query12_result_and_wam12_v1.md`,
+  `compute_authorization_ctrl_world_allocation_16.json`, and
+  `ctrl_world_current_reference_wam_12_gpu_profile_freeze_v1.json` — preserve
+  the successful same-checkpoint query 12, exact 15x8 native action, scoped
+  concurrent-lane settlement, and bind WAM12 to the exact query-12 action,
+  36-frame generated feedback history, immutable provider bundle, one
+  single-use allocation, and the two-GPU global ceiling;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-Eleven interactions are complete. WAM11 returned three exact generated views,
-passed immediate reliability with no flags or abstention, settled USD
-`0.118723`, and returned global Vast inventory to zero. Its exact final views
-and commanded-prefix state are frozen in the label-free policy-query-12 input.
-The next finite gate is one same-checkpoint policy query 12 through the
-canonical paid-resource allocator after fresh source, credential,
-object-transport, provider-inventory, cumulative-budget, watchdog, preflight,
-and dry-run checks. Its native action must then condition WAM12 before the
+Eleven interactions are complete. Policy query 12 returned a new exact 15x8
+native action from WAM11's generated views and registered commanded state. Its
+control-plane reservation is reconciled and settled at USD `0.052292` without
+rerunning the policy. The action now conditions an immutable WAM12 bundle with
+36 generated-history frames per view and 36 registered states. The next finite
+gate is WAM12 through the canonical paid-resource allocator after fresh source,
+credential, object-transport, provider-inventory, cumulative-budget, watchdog,
+preflight, and dry-run checks. A validated WAM12 result is required before the
 complete 12-interaction episode exists. Judges remain forbidden until that
 episode and the causal-control matrix pass.
