@@ -261,6 +261,7 @@ def _reconciliation(
     *,
     live_resource_count: int = 0,
     pending: list[dict] | None = None,
+    maximum_existing_resources: int = 0,
 ) -> dict:
     return build_paid_provider_lane_reconciliation(
         provider=provider,
@@ -274,6 +275,7 @@ def _reconciliation(
             else [],
         },
         open_pending_teardowns=list(pending or []),
+        maximum_existing_resources=maximum_existing_resources,
     )
 
 
@@ -325,6 +327,65 @@ def test_second_acquire_blocks_while_owner_is_alive(tmp_path: Path) -> None:
     assert second["holder"]["job_dir"] == "a"
     # The live owner's lease is untouched.
     assert read_lease("runpod", "lane", tmp_path)["job_dir"] == "a"
+
+
+def test_initial_acquire_allows_registered_existing_resource_within_ceiling(
+    tmp_path: Path,
+) -> None:
+    pending = [
+        {
+            "provider": "vast",
+            "status": "open",
+            "instance_id": "warehouse-1",
+            "run_id": "unrelated-writer",
+        }
+    ]
+    reconciliation = _reconciliation(
+        provider="vast",
+        lane="openpi",
+        pending=pending,
+        maximum_existing_resources=1,
+    )
+
+    acquired = acquire_paid_provider_lane_lease(
+        provider="vast",
+        lane="openpi",
+        job_dir="policy-query",
+        lease_dir=tmp_path,
+        reconciliation=reconciliation,
+    )
+
+    assert reconciliation["status"] == "passed"
+    assert reconciliation["existing_resource_count"] == 1
+    assert reconciliation["acquisition_within_concurrency_limit"] is True
+    assert reconciliation["reclaim_cannot_orphan_allocation"] is False
+    assert acquired["status"] == "acquired"
+
+
+def test_initial_acquire_blocks_when_existing_resources_reach_ceiling(tmp_path: Path) -> None:
+    pending = [
+        {"provider": "vast", "status": "open", "instance_id": "warehouse-1"},
+        {"provider": "vast", "status": "open", "instance_id": "warehouse-2"},
+    ]
+    reconciliation = _reconciliation(
+        provider="vast",
+        lane="openpi",
+        pending=pending,
+        maximum_existing_resources=1,
+    )
+
+    blocked = acquire_paid_provider_lane_lease(
+        provider="vast",
+        lane="openpi",
+        job_dir="policy-query",
+        lease_dir=tmp_path,
+        reconciliation=reconciliation,
+    )
+
+    assert reconciliation["status"] == "blocked"
+    assert reconciliation["existing_resource_count"] == 2
+    assert blocked["status"] == "blocked"
+    assert blocked["blockers"] == [BLOCKER_ALREADY_OWNED]
 
 
 def test_watchdog_handoff_is_one_time_bound_and_has_no_unowned_gap(

@@ -1642,6 +1642,7 @@ def run_openpi_policy_ranking_campaign(
         lane=PAID_LANE,
         provider_inventory=inventory,
         open_pending_teardowns=load_pending_teardowns(),
+        maximum_existing_resources=maximum_concurrent_gpus - 1,
     )
     lease = acquire_paid_provider_lane_lease(
         provider=resolved_provider,

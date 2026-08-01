@@ -154,12 +154,39 @@ def _reconciliation_complete(
     )
 
 
+def _initial_acquisition_reconciliation_complete(
+    reconciliation: Mapping[str, Any] | None,
+    *,
+    provider: str,
+    lane: str,
+) -> bool:
+    if not isinstance(reconciliation, Mapping):
+        return False
+    maximum_existing = reconciliation.get("maximum_existing_resources")
+    existing = reconciliation.get("existing_resource_count")
+    return bool(
+        reconciliation.get("schema_version") == RECONCILIATION_SCHEMA_VERSION
+        and reconciliation.get("status") == "passed"
+        and str(reconciliation.get("provider") or "").strip().lower()
+        == str(provider).strip().lower()
+        and str(reconciliation.get("lane") or "") == str(lane)
+        and reconciliation.get("provider_inventory_checked") is True
+        and reconciliation.get("open_pending_teardowns_reviewed") is True
+        and reconciliation.get("acquisition_within_concurrency_limit") is True
+        and type(maximum_existing) is int
+        and maximum_existing >= 0
+        and type(existing) is int
+        and 0 <= existing <= maximum_existing
+    )
+
+
 def build_paid_provider_lane_reconciliation(
     *,
     provider: str,
     lane: str,
     provider_inventory: Mapping[str, Any] | None,
     open_pending_teardowns: list[Mapping[str, Any]],
+    maximum_existing_resources: int = 0,
 ) -> dict[str, Any]:
     """Bind read-only provider inventory and pending-teardown state to a lane.
 
@@ -179,10 +206,36 @@ def build_paid_provider_lane_reconciliation(
         if str(record.get("provider") or "").strip().lower() == provider_name
         and record.get("status") == "open"
     ]
+    maximum_existing = max(0, int(maximum_existing_resources))
+    resource_ids = {
+        str(row.get("instance_id") or "").strip()
+        for row in inventory.get("resources", [])
+        if isinstance(row, Mapping) and str(row.get("instance_id") or "").strip()
+    }
+    resource_ids.update(
+        str(record.get("instance_id") or "").strip()
+        for record in matching_pending
+        if str(record.get("instance_id") or "").strip()
+    )
+    known_inventory_ids = sum(
+        1
+        for row in inventory.get("resources", [])
+        if isinstance(row, Mapping) and str(row.get("instance_id") or "").strip()
+    )
+    unknown_inventory_count = (
+        max(0, int(live_count) - known_inventory_ids) if live_count_valid else 0
+    )
+    unknown_pending_count = sum(
+        1 for record in matching_pending if not str(record.get("instance_id") or "").strip()
+    )
+    existing_resource_count = len(resource_ids) + unknown_inventory_count + unknown_pending_count
+    within_concurrency = bool(
+        inventory_confirmed and live_count_valid and existing_resource_count <= maximum_existing
+    )
     blockers: list[str] = []
     if not inventory_confirmed or not live_count_valid:
         blockers.append(BLOCKER_RECONCILIATION_UNAVAILABLE)
-    if (live_count_valid and live_count > 0) or matching_pending:
+    if not within_concurrency and inventory_confirmed and live_count_valid:
         blockers.append(BLOCKER_ALREADY_OWNED)
     clean = not blockers
     return {
@@ -194,6 +247,9 @@ def build_paid_provider_lane_reconciliation(
         "provider_inventory_checked": inventory_confirmed and live_count_valid,
         "provider_inventory_api_confirmed": inventory_confirmed,
         "provider_live_resource_count": live_count if live_count_valid else None,
+        "maximum_existing_resources": maximum_existing,
+        "existing_resource_count": existing_resource_count,
+        "acquisition_within_concurrency_limit": within_concurrency,
         "provider_resources": [
             {
                 key: row.get(key)
@@ -220,7 +276,7 @@ def build_paid_provider_lane_reconciliation(
             }
             for record in matching_pending
         ],
-        "reclaim_cannot_orphan_allocation": clean,
+        "reclaim_cannot_orphan_allocation": clean and existing_resource_count == 0,
         "blockers": blockers,
         "raw_provider_response_recorded": False,
         "claim_boundary": _CLAIM_BOUNDARY,
@@ -280,7 +336,7 @@ def acquire_paid_provider_lane_lease(
         "preacquire_reconciliation": dict(reconciliation or {}),
         "claim_boundary": _CLAIM_BOUNDARY,
     }
-    if not path.exists() and not _reconciliation_complete(
+    if not path.exists() and not _initial_acquisition_reconciliation_complete(
         reconciliation, provider=provider, lane=lane
     ):
         reconciliation_blockers = list(dict(reconciliation or {}).get("blockers") or [])
