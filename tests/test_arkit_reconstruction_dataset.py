@@ -176,6 +176,17 @@ def test_arkit_export_is_candidate_only_idempotent_and_fail_closed(tmp_path: Pat
     assert first["colmap_training_dataset_export_request_digest"] == colmap_request[
         "colmap_training_dataset_export_request_digest"
     ]
+    assert {row["artifact_type"] for row in first["artifact_references"]} == {
+        "camera_calibration_manifest.v1",
+        "camera_observation_manifest.v1",
+        "pose_refinement_request.v1",
+        "colmap_training_dataset_export_request.v1",
+    }
+    for reference in first["artifact_references"]:
+        path = tmp_path / "export" / reference["relative_path"]
+        assert path.is_file()
+        assert _file_digest(path) == reference["artifact_digest"]
+        assert "held_out" not in reference["relative_path"]
     assert colmap_request["blockers"] == [
         "initialization_surface_not_bound",
         "pose_refinement_not_executed",
@@ -383,12 +394,89 @@ def test_registered_arkit_export_is_digest_bound_and_candidate_only(tmp_path: Pa
     assert observation["status"] == "completed"
     assert observation["typed_result"]["hidden_heldout_pixels_included"] is False
     assert observation["typed_result"]["raw_arkit_poses_modified"] is False
+    emitted_export = json.loads(
+        next(
+            (tmp_path / "run/generated/arkit_reconstruction_dataset_export").glob(
+                "arkit_export_*/arkit_reconstruction_dataset_export.json"
+            )
+        ).read_text(encoding="utf-8")
+    )
+    assert observation["typed_result"][
+        "colmap_training_dataset_export_request_digest"
+    ] == emitted_export["colmap_training_dataset_export_request_digest"]
     assert observation["typed_result"]["claim_ceiling"] == "calibrated_camera_trajectory"
     refused = bindings["export_arkit_reconstruction_dataset"].invoke(
         {"arkit_export_request_digest": "sha256:" + "9" * 64}
     )
     assert refused["status"] == "refused"
     assert "source_digest_mismatch" in refused["typed_failure"]["reason"]
+
+
+def test_registered_arkit_export_rejects_malicious_artifact_reference(
+    tmp_path: Path,
+) -> None:
+    dataset, split, candidate, scaffold, scaffold_digest = _source_artifacts(
+        tmp_path / "source"
+    )
+    request = build_arkit_reconstruction_dataset_export_request(
+        {
+            "schema_version": ARKIT_RECONSTRUCTION_DATASET_REQUEST_SCHEMA_VERSION,
+            "intake_id": "intake-malicious-reference",
+            "source_capture_digest": CAPTURE_DIGEST,
+            "dataset_manifest": dataset,
+            "split_manifest": split,
+            "candidate_manifest": candidate,
+            "metric_scaffold": scaffold,
+            "metric_scaffold_digest": scaffold_digest,
+            "implementation_digest": IMPLEMENTATION_DIGEST,
+            "source_commit_sha": SOURCE_COMMIT,
+            "authority_used": {"external_processing": False},
+            "timestamp": "2026-07-30T12:00:00Z",
+        }
+    )
+
+    def malicious_exporter(*, source_artifact: dict, output_root: Path) -> dict:
+        result = export_bound_arkit_reconstruction_dataset(
+            source_artifact=source_artifact,
+            output_root=output_root,
+        )
+        result["artifact_references"][0]["artifact_digest"] = "sha256:" + "9" * 64
+        result["arkit_reconstruction_dataset_export_digest"] = canonical_digest(
+            result,
+            digest_field="arkit_reconstruction_dataset_export_digest",
+        )
+        return result
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="arkit-export-malicious-reference",
+        customer_question="Reject a fabricated emitted artifact digest.",
+        supervisor_output_dir=str(tmp_path / "run-malicious"),
+        arkit_reconstruction_dataset_request=request,
+        arkit_reconstruction_dataset_exporter=malicious_exporter,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[request["arkit_export_request_digest"]],
+    ).to_mapping()
+    binding = next(
+        binding
+        for binding in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+        if binding.tool_id == "export_arkit_reconstruction_dataset"
+    )
+
+    observation = binding.invoke(
+        {"arkit_export_request_digest": request["arkit_export_request_digest"]}
+    )
+    assert observation["status"] == "refused"
+    assert "emitted_artifact_digest_mismatch" in observation["typed_failure"]["reason"]
 
 
 def test_registered_arkit_scaffold_cannot_promote_sensor_scale(tmp_path: Path) -> None:

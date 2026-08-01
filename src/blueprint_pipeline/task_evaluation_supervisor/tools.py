@@ -233,6 +233,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "camera_calibration_digest": {"type": "string"},
             "camera_observation_digest": {"type": "string"},
             "pose_refinement_request_digest": {"type": "string"},
+            "colmap_training_dataset_export_request_digest": {"type": "string"},
             "hidden_heldout_pixels_included": {"const": False},
             "raw_arkit_poses_modified": {"const": False},
             "claim_ceiling": {"const": "calibrated_camera_trajectory"},
@@ -705,7 +706,13 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         _descriptor(
             "export_arkit_reconstruction_dataset",
             "arkit_reconstruction_dataset_export",
-            expected_artifacts=["arkit_reconstruction_dataset_export.v1"],
+            expected_artifacts=[
+                "arkit_reconstruction_dataset_export.v1",
+                "camera_calibration_manifest.v1",
+                "camera_observation_manifest.v1",
+                "pose_refinement_request.v1",
+                "colmap_training_dataset_export_request.v1",
+            ],
             input_properties={"arkit_export_request_digest": {"type": "string"}},
             required_inputs=["arkit_export_request_digest"],
             mutability="reversible_mutation",
@@ -2035,6 +2042,83 @@ def _export_arkit_reconstruction_dataset(
         or result.get("claim_ceiling") != "calibrated_camera_trajectory"
     ):
         raise ValueError("arkit_reconstruction_dataset_export_result_contract_invalid")
+    references = result.get("artifact_references")
+    expected_references = {
+        "camera_calibration_manifest.v1": (
+            "calibration_digest",
+            result["camera_calibration_digest"],
+        ),
+        "camera_observation_manifest.v1": (
+            "camera_observation_digest",
+            result["camera_observation_digest"],
+        ),
+        "pose_refinement_request.v1": (
+            "pose_refinement_request_digest",
+            result["pose_refinement_request_digest"],
+        ),
+        "colmap_training_dataset_export_request.v1": (
+            "colmap_training_dataset_export_request_digest",
+            result["colmap_training_dataset_export_request_digest"],
+        ),
+    }
+    if (
+        not isinstance(references, list)
+        or len(references) != len(expected_references)
+        or {str(row.get("artifact_type") or "") for row in references if isinstance(row, Mapping)}
+        != set(expected_references)
+    ):
+        raise ValueError("arkit_reconstruction_dataset_export_references_invalid")
+    emitted_artifacts: list[dict[str, Any]] = []
+    loaded: dict[str, dict[str, Any]] = {}
+    for reference in references:
+        if not isinstance(reference, Mapping):
+            raise ValueError("arkit_reconstruction_dataset_export_reference_invalid")
+        artifact_type = str(reference.get("artifact_type") or "")
+        digest_field, expected_content_digest = expected_references[artifact_type]
+        artifact_path = _validated_emitted_artifact(
+            root=output_root,
+            relative_path=reference.get("relative_path"),
+            expected_digest=reference.get("artifact_digest"),
+        )
+        try:
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("arkit_reconstruction_dataset_export_artifact_not_json") from exc
+        if (
+            not isinstance(artifact, Mapping)
+            or artifact.get("schema_version") != artifact_type
+            or artifact.get(digest_field) != expected_content_digest
+            or artifact.get(digest_field)
+            != canonical_digest(artifact, digest_field=digest_field)
+            or reference.get("content_digest") != expected_content_digest
+        ):
+            raise ValueError("arkit_reconstruction_dataset_export_artifact_digest_invalid")
+        loaded[artifact_type] = dict(artifact)
+        emitted_artifacts.append(
+            {
+                "artifact_path": str(artifact_path.relative_to(Path(root_value))),
+                "artifact_digest": reference["artifact_digest"],
+                "artifact_type": artifact_type,
+            }
+        )
+    calibration = loaded["camera_calibration_manifest.v1"]
+    observations = loaded["camera_observation_manifest.v1"]
+    pose_request = loaded["pose_refinement_request.v1"]
+    colmap_request = loaded["colmap_training_dataset_export_request.v1"]
+    if (
+        calibration.get("capture_digest") != request["source_capture_digest"]
+        or observations.get("capture_digest") != request["source_capture_digest"]
+        or pose_request.get("capture_digest") != request["source_capture_digest"]
+        or colmap_request.get("source_capture_digest") != request["source_capture_digest"]
+        or observations.get("split_digest") != result["frozen_split_digest"]
+        or pose_request.get("split_digest") != result["frozen_split_digest"]
+        or colmap_request.get("frozen_split_digest") != result["frozen_split_digest"]
+        or colmap_request.get("camera_calibration_manifest") != calibration
+        or colmap_request.get("camera_observation_manifest") != observations
+        or colmap_request.get("candidate_dataset_manifest") != request["candidate_manifest"]
+        or observations.get("hidden_heldout_pixels_included") is not False
+    ):
+        raise ValueError("arkit_reconstruction_dataset_export_artifact_lineage_invalid")
     path = write_phase2_artifact(
         root_value,
         "generated/arkit_reconstruction_dataset_export/arkit_reconstruction_dataset_export.json",
@@ -2047,6 +2131,9 @@ def _export_arkit_reconstruction_dataset(
         "camera_calibration_digest": result["camera_calibration_digest"],
         "camera_observation_digest": result["camera_observation_digest"],
         "pose_refinement_request_digest": result["pose_refinement_request_digest"],
+        "colmap_training_dataset_export_request_digest": result[
+            "colmap_training_dataset_export_request_digest"
+        ],
         "hidden_heldout_pixels_included": False,
         "raw_arkit_poses_modified": False,
         "claim_ceiling": "calibrated_camera_trajectory",
@@ -2056,7 +2143,8 @@ def _export_arkit_reconstruction_dataset(
             "artifact_path": str(path.relative_to(Path(root_value))),
             "artifact_digest": result_digest,
             "artifact_type": "arkit_reconstruction_dataset_export.v1",
-        }
+        },
+        *emitted_artifacts,
     ]
 
 

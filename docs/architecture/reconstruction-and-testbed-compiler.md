@@ -230,6 +230,15 @@ calibration, and coordinate frame. It refuses generated fill, held-out access,
 or raw-pose mutation, then removes only the initialization blocker and preserves
 the explicit unrefined-pose marker.
 
+The registered exporter now returns contained, byte-hashed references for the
+camera calibration, candidate observation, pose-refinement, and COLMAP request
+artifacts rather than exposing only aggregate digests. The supervisor reopens
+each file beneath the scoped output root, rejects traversal/symlinks/digest
+drift, validates the artifact's logical digest, and rechecks capture, split,
+calibration, candidate-manifest, and hidden-view lineage. This is the immutable
+handoff needed for a later continuation to bind the observed surface and bounded
+refined poses without an operator copying paths from logs.
+
 Both `compile_arkit_metric_scaffold` and
 `export_arkit_reconstruction_dataset` are registered SDK tools. Their real
 implementations stay in trusted runtime state; the agent sees only the capture
