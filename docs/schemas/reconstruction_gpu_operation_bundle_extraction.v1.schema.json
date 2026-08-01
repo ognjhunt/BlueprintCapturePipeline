@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_gpu_operation_bundle_extraction.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version", "status", "operation", "operation_request_digest",
+    "operation_input_bundle_digest", "bundle_manifest_digest", "extracted_members",
+    "candidate_may_read_hidden_heldout", "trainer_may_grade_heldout",
+    "raw_secret_values_extracted", "provider_allocation_inferred", "proof_effect",
+    "claim_ceiling", "extraction_receipt_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "reconstruction_gpu_operation_bundle_extraction.v1"},
+    "status": {"const": "extracted"},
+    "operation": {"enum": ["pose_canary", "trainer_canary"]},
+    "operation_request_digest": {"$ref": "#/$defs/digest"},
+    "operation_input_bundle_digest": {"$ref": "#/$defs/digest"},
+    "bundle_manifest_digest": {"$ref": "#/$defs/digest"},
+    "extracted_members": {
+      "type": "array", "minItems": 4, "maxItems": 20002,
+      "items": {
+        "type": "object",
+        "required": ["archive_path", "digest", "bytes"],
+        "properties": {
+          "archive_path": {"type": "string", "minLength": 1},
+          "digest": {"$ref": "#/$defs/digest"},
+          "bytes": {"type": "integer", "minimum": 0}
+        },
+        "additionalProperties": false
+      }
+    },
+    "candidate_may_read_hidden_heldout": {"const": false},
+    "trainer_may_grade_heldout": {"const": false},
+    "raw_secret_values_extracted": {"const": false},
+    "provider_allocation_inferred": {"const": false},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "candidate_operation_input_materialization_only"},
+    "extraction_receipt_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

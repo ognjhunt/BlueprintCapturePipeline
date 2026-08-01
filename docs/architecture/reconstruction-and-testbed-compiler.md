@@ -973,6 +973,9 @@ members, binds every candidate input by digest, writes a deterministic ZIP, and
 derives the canonical canary request from that exact receipt. The bundle cannot
 authorize spending or provider mutation and has no proof effect. Isaac remains
 a separate `isaac_verification_worker_bundle.v1` and runtime-image family.
+Worker-side materialization uses a bounded member-by-member extractor that
+rejects traversal, symlinks, compression, undeclared members, digest drift, and
+tampered replay state; it never delegates trust to ZIP `extractall` behavior.
 Scientific pose, trainer, and Isaac execution adapters remain unavailable until
 their provider lifecycle, output validation, teardown, and offline replay paths
 are independently qualified; the worker-smoke adapter cannot stand in for them.

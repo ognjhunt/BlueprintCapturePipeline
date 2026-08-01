@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+import stat
+import zipfile
 
 import jsonschema
 import pytest
@@ -11,6 +14,7 @@ from blueprint_pipeline.reconstruction_gpu_operation_bundle import (
     ReconstructionGpuOperationBundleError,
     build_canary_request_from_operation_bundle,
     compile_reconstruction_gpu_operation_bundle,
+    extract_reconstruction_gpu_operation_bundle,
 )
 from blueprint_pipeline.reconstruction_worker_contracts import (
     build_pose_estimation_request,
@@ -112,7 +116,7 @@ def _write(root: Path, relative: str, payload: bytes) -> dict:
     path.write_bytes(payload)
     return {
         "relative_path": relative,
-        "digest": "sha256:" + __import__("hashlib").sha256(payload).hexdigest(),
+        "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
         "contains_hidden_heldout_pixels": False,
     }
 
@@ -259,7 +263,7 @@ def test_operation_bundle_rejects_symlink_escape_and_digest_mismatch(
         "artifact_id": "escape",
         "role": "candidate_observation",
         "relative_path": "images/escape.png",
-        "digest": "sha256:" + __import__("hashlib").sha256(b"outside").hexdigest(),
+        "digest": "sha256:" + hashlib.sha256(b"outside").hexdigest(),
         "contains_hidden_heldout_pixels": False,
     }
     with pytest.raises(
@@ -320,7 +324,7 @@ def test_operation_bundle_replay_rejects_tampered_archive(tmp_path: Path) -> Non
             output_root=tmp_path / "out",
         )
     assert receipt["operation_input_bundle_digest"] != (
-        "sha256:" + __import__("hashlib").sha256(archive.read_bytes()).hexdigest()
+        "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
     )
 
 
@@ -374,4 +378,125 @@ def test_canary_request_is_derived_from_exact_bundle_receipt(tmp_path: Path) -> 
         build_canary_request_from_operation_bundle(
             request_fields={"operation": "trainer_canary"},
             operation_bundle=tampered,
+        )
+
+
+def test_bundle_extraction_is_bounded_replayable_and_schema_valid(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    request = _training_request()
+    receipt = compile_reconstruction_gpu_operation_bundle(
+        operation="trainer_canary",
+        operation_request=request,
+        artifact_root=artifacts,
+        artifact_bindings=_training_bindings(artifacts),
+        output_root=tmp_path / "bundles",
+    )
+    archive = (
+        tmp_path
+        / "bundles"
+        / request["reconstruction_training_request_digest"].removeprefix("sha256:")
+        / "reconstruction_gpu_operation_bundle.zip"
+    )
+    first = extract_reconstruction_gpu_operation_bundle(
+        bundle_path=archive,
+        bundle_receipt=receipt,
+        output_root=tmp_path / "extracted",
+    )
+    second = extract_reconstruction_gpu_operation_bundle(
+        bundle_path=archive,
+        bundle_receipt=receipt,
+        output_root=tmp_path / "extracted",
+    )
+
+    assert first == second
+    assert first["status"] == "extracted"
+    assert first["candidate_may_read_hidden_heldout"] is False
+    assert first["trainer_may_grade_heldout"] is False
+    assert first["provider_allocation_inferred"] is False
+    assert first["extraction_receipt_digest"] == canonical_digest(
+        first, digest_field="extraction_receipt_digest"
+    )
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/reconstruction_gpu_operation_bundle_extraction.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.validate(first, schema)
+
+    root = (
+        tmp_path
+        / "extracted"
+        / receipt["operation_input_bundle_digest"].removeprefix("sha256:")
+    )
+    (root / "inputs/frame-0001.png").write_bytes(b"tampered")
+    with pytest.raises(
+        ReconstructionGpuOperationBundleError,
+        match="extraction_member_tampered",
+    ):
+        extract_reconstruction_gpu_operation_bundle(
+            bundle_path=archive,
+            bundle_receipt=receipt,
+            output_root=tmp_path / "extracted",
+        )
+
+
+@pytest.mark.parametrize("attack", ["traversal", "symlink", "compressed"])
+def test_bundle_extraction_rejects_adversarial_zip_metadata(
+    tmp_path: Path, attack: str
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    request = _pose_request()
+    receipt = compile_reconstruction_gpu_operation_bundle(
+        operation="pose_canary",
+        operation_request=request,
+        artifact_root=artifacts,
+        artifact_bindings=_pose_bindings(artifacts),
+        output_root=tmp_path / "bundles",
+    )
+    source = (
+        tmp_path
+        / "bundles"
+        / request["pose_estimation_request_digest"].removeprefix("sha256:")
+        / "reconstruction_gpu_operation_bundle.zip"
+    )
+    malicious = tmp_path / f"{attack}.zip"
+    with zipfile.ZipFile(source, "r") as original, zipfile.ZipFile(
+        malicious, "w"
+    ) as rewritten:
+        for member in original.infolist():
+            payload = original.read(member.filename)
+            if attack == "compressed" and member.filename == "operation_request.json":
+                rewritten.writestr(
+                    member.filename,
+                    payload,
+                    compress_type=zipfile.ZIP_DEFLATED,
+                )
+            else:
+                rewritten.writestr(member, payload)
+        if attack == "traversal":
+            rewritten.writestr("../escape.txt", b"escape")
+        elif attack == "symlink":
+            info = zipfile.ZipInfo("inputs/symlink")
+            info.create_system = 3
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            rewritten.writestr(info, b"../../escape")
+    drifted = dict(receipt)
+    drifted["operation_input_bundle_digest"] = (
+        "sha256:" + hashlib.sha256(malicious.read_bytes()).hexdigest()
+    )
+    drifted["receipt_digest"] = canonical_digest(
+        drifted, digest_field="receipt_digest"
+    )
+
+    with pytest.raises(
+        ReconstructionGpuOperationBundleError,
+        match="archive_(inventory_invalid|member_unsafe)",
+    ):
+        extract_reconstruction_gpu_operation_bundle(
+            bundle_path=malicious,
+            bundle_receipt=drifted,
+            output_root=tmp_path / "extract-attack",
         )

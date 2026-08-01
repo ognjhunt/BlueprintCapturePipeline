@@ -28,6 +28,7 @@ from .reconstruction_worker_contracts import (
 
 
 SCHEMA_VERSION = "reconstruction_gpu_operation_bundle.v1"
+EXTRACTION_SCHEMA_VERSION = "reconstruction_gpu_operation_bundle_extraction.v1"
 MAX_MEMBER_BYTES = 8 * 1024**3
 MAX_TOTAL_BYTES = 120 * 1024**3
 MAX_MEMBER_COUNT = 20_000
@@ -221,6 +222,47 @@ def _validate_existing(
     return receipt
 
 
+def _validated_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
+    receipt = json.loads(json.dumps(dict(value)))
+    errors: list[str] = []
+    if receipt.get("schema_version") != SCHEMA_VERSION or receipt.get("status") != "compiled":
+        errors.append("reconstruction_operation_bundle_receipt_schema_or_status_invalid")
+    if receipt.get("receipt_digest") != canonical_digest(
+        receipt, digest_field="receipt_digest"
+    ):
+        errors.append("reconstruction_operation_bundle_receipt_digest_mismatch")
+    if receipt.get("candidate_may_read_hidden_heldout") is not False:
+        errors.append("reconstruction_operation_bundle_receipt_hidden_access_forbidden")
+    if receipt.get("trainer_may_grade_heldout") is not False:
+        errors.append("reconstruction_operation_bundle_receipt_self_grading_forbidden")
+    if receipt.get("raw_secret_values_included") is not False:
+        errors.append("reconstruction_operation_bundle_receipt_secret_values_forbidden")
+    if receipt.get("provider_allocation_performed") is not False:
+        errors.append("reconstruction_operation_bundle_receipt_provider_mutation_invalid")
+    if receipt.get("paid_execution_authorized_by_bundle") is not False:
+        errors.append("reconstruction_operation_bundle_receipt_authority_invalid")
+    if receipt.get("proof_effect") != "none":
+        errors.append("reconstruction_operation_bundle_receipt_proof_effect_invalid")
+    for key in (
+        "operation_request_digest",
+        "operation_input_bundle_digest",
+        "bundle_manifest_digest",
+    ):
+        if _DIGEST.fullmatch(str(receipt.get(key) or "")) is None:
+            errors.append(f"reconstruction_operation_bundle_receipt_{key}_invalid")
+    members = receipt.get("artifact_members")
+    members = members if isinstance(members, list) else []
+    if (
+        not members
+        or receipt.get("artifact_member_count") != len(members)
+        or len(members) > MAX_MEMBER_COUNT
+    ):
+        errors.append("reconstruction_operation_bundle_receipt_members_invalid")
+    if errors:
+        raise ReconstructionGpuOperationBundleError(errors)
+    return receipt
+
+
 def compile_reconstruction_gpu_operation_bundle(
     *,
     operation: str,
@@ -364,33 +406,8 @@ def build_canary_request_from_operation_bundle(
 ) -> dict[str, Any]:
     """Bind paid admission inputs to one verified, non-authorizing bundle receipt."""
 
-    receipt = json.loads(json.dumps(dict(operation_bundle)))
+    receipt = _validated_receipt(operation_bundle)
     errors: list[str] = []
-    if receipt.get("schema_version") != SCHEMA_VERSION or receipt.get("status") != "compiled":
-        errors.append("reconstruction_operation_bundle_receipt_schema_or_status_invalid")
-    if receipt.get("receipt_digest") != canonical_digest(
-        receipt, digest_field="receipt_digest"
-    ):
-        errors.append("reconstruction_operation_bundle_receipt_digest_mismatch")
-    if receipt.get("candidate_may_read_hidden_heldout") is not False:
-        errors.append("reconstruction_operation_bundle_receipt_hidden_access_forbidden")
-    if receipt.get("trainer_may_grade_heldout") is not False:
-        errors.append("reconstruction_operation_bundle_receipt_self_grading_forbidden")
-    if receipt.get("raw_secret_values_included") is not False:
-        errors.append("reconstruction_operation_bundle_receipt_secret_values_forbidden")
-    if receipt.get("provider_allocation_performed") is not False:
-        errors.append("reconstruction_operation_bundle_receipt_provider_mutation_invalid")
-    if receipt.get("paid_execution_authorized_by_bundle") is not False:
-        errors.append("reconstruction_operation_bundle_receipt_authority_invalid")
-    if receipt.get("proof_effect") != "none":
-        errors.append("reconstruction_operation_bundle_receipt_proof_effect_invalid")
-    for key in (
-        "operation_request_digest",
-        "operation_input_bundle_digest",
-        "bundle_manifest_digest",
-    ):
-        if _DIGEST.fullmatch(str(receipt.get(key) or "")) is None:
-            errors.append(f"reconstruction_operation_bundle_receipt_{key}_invalid")
     fields = json.loads(json.dumps(dict(request_fields)))
     expected_bindings = {
         "operation": receipt.get("operation"),
@@ -418,6 +435,214 @@ def build_canary_request_from_operation_bundle(
         raise ReconstructionGpuOperationBundleError(
             [f"reconstruction_operation_bundle_canary_request_invalid:{exc}"]
         ) from exc
+
+
+def _extraction_replay(final: Path, receipt: Mapping[str, Any]) -> dict[str, Any]:
+    path = final / "reconstruction_gpu_operation_bundle_extraction.v1.json"
+    try:
+        extraction = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReconstructionGpuOperationBundleError(
+            ["reconstruction_operation_bundle_extraction_replay_invalid"]
+        ) from exc
+    errors: list[str] = []
+    if extraction.get("schema_version") != EXTRACTION_SCHEMA_VERSION:
+        errors.append("reconstruction_operation_bundle_extraction_schema_invalid")
+    if extraction.get("operation_input_bundle_digest") != receipt.get(
+        "operation_input_bundle_digest"
+    ):
+        errors.append("reconstruction_operation_bundle_extraction_digest_mismatch")
+    if extraction.get("extraction_receipt_digest") != canonical_digest(
+        extraction, digest_field="extraction_receipt_digest"
+    ):
+        errors.append("reconstruction_operation_bundle_extraction_receipt_tampered")
+    expected = {
+        row["archive_path"]: row["digest"] for row in receipt["artifact_members"]
+    }
+    for relative, digest in expected.items():
+        target = final.joinpath(*PurePosixPath(relative).parts)
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or _sha256(target) != digest
+        ):
+            errors.append("reconstruction_operation_bundle_extraction_member_tampered")
+    try:
+        request_value = json.loads(
+            (final / "operation_request.json").read_text(encoding="utf-8")
+        )
+        request, digest_field, expected_schema = _accepted_request(
+            str(receipt["operation"]), request_value
+        )
+    except (OSError, json.JSONDecodeError, ReconstructionGpuOperationBundleError):
+        errors.append("reconstruction_operation_bundle_extraction_request_tampered")
+    else:
+        if (
+            request[digest_field] != receipt["operation_request_digest"]
+            or expected_schema != receipt["expected_runtime_result_schema"]
+        ):
+            errors.append("reconstruction_operation_bundle_extraction_request_tampered")
+    if errors:
+        raise ReconstructionGpuOperationBundleError(errors)
+    return extraction
+
+
+def extract_reconstruction_gpu_operation_bundle(
+    *,
+    bundle_path: str | Path,
+    bundle_receipt: Mapping[str, Any],
+    output_root: str | Path,
+) -> dict[str, Any]:
+    """Extract an accepted bundle without trusting ZIP paths or compression metadata."""
+
+    receipt = _validated_receipt(bundle_receipt)
+    source = Path(bundle_path)
+    if source.is_symlink():
+        raise ReconstructionGpuOperationBundleError(
+            ["reconstruction_operation_bundle_archive_symlink_forbidden"]
+        )
+    try:
+        source = source.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ReconstructionGpuOperationBundleError(
+            ["reconstruction_operation_bundle_archive_missing"]
+        ) from exc
+    if (
+        not source.is_file()
+        or source.stat().st_size > MAX_TOTAL_BYTES
+        or _sha256(source) != receipt["operation_input_bundle_digest"]
+    ):
+        raise ReconstructionGpuOperationBundleError(
+            ["reconstruction_operation_bundle_archive_binding_invalid"]
+        )
+    destination = Path(output_root)
+    if destination.is_symlink():
+        raise ReconstructionGpuOperationBundleError(
+            ["reconstruction_operation_bundle_extraction_root_symlink_forbidden"]
+        )
+    destination.mkdir(parents=True, exist_ok=True)
+    destination = destination.resolve()
+    content_id = receipt["operation_input_bundle_digest"].removeprefix("sha256:")
+    final = destination / content_id
+    if final.exists():
+        return _extraction_replay(final, receipt)
+
+    expected_rows = {
+        row["archive_path"]: row for row in receipt["artifact_members"]
+    }
+    expected_names = {
+        "bundle_manifest.json",
+        "operation_request.json",
+        *expected_rows,
+    }
+    temporary = Path(tempfile.mkdtemp(prefix=".reconstruction-extract-", dir=destination))
+    try:
+        with zipfile.ZipFile(source, "r") as archive:
+            members = archive.infolist()
+            names = [member.filename for member in members]
+            errors: list[str] = []
+            if len(names) != len(set(names)) or set(names) != expected_names:
+                errors.append("reconstruction_operation_bundle_archive_inventory_invalid")
+            total_uncompressed = 0
+            for member in members:
+                portable = _portable_relative(member.filename)
+                mode = member.external_attr >> 16
+                if (
+                    portable is None
+                    or member.is_dir()
+                    or stat.S_ISLNK(mode)
+                    or member.compress_type != zipfile.ZIP_STORED
+                    or member.file_size > MAX_MEMBER_BYTES
+                ):
+                    errors.append("reconstruction_operation_bundle_archive_member_unsafe")
+                total_uncompressed += member.file_size
+            if total_uncompressed > MAX_TOTAL_BYTES:
+                errors.append("reconstruction_operation_bundle_archive_uncompressed_oversized")
+            if errors:
+                raise ReconstructionGpuOperationBundleError(errors)
+            manifest = json.loads(archive.read("bundle_manifest.json"))
+            operation_request = json.loads(archive.read("operation_request.json"))
+            if (
+                not isinstance(manifest, Mapping)
+                or manifest.get("bundle_manifest_digest")
+                != canonical_digest(manifest, digest_field="bundle_manifest_digest")
+                or manifest.get("bundle_manifest_digest")
+                != receipt["bundle_manifest_digest"]
+            ):
+                raise ReconstructionGpuOperationBundleError(
+                    ["reconstruction_operation_bundle_manifest_invalid"]
+                )
+            request, digest_field, expected_schema = _accepted_request(
+                str(receipt["operation"]), operation_request
+            )
+            if (
+                request[digest_field] != receipt["operation_request_digest"]
+                or expected_schema != receipt["expected_runtime_result_schema"]
+            ):
+                raise ReconstructionGpuOperationBundleError(
+                    ["reconstruction_operation_bundle_request_binding_invalid"]
+                )
+            for key, value in manifest.items():
+                if receipt.get(key) != value:
+                    raise ReconstructionGpuOperationBundleError(
+                        ["reconstruction_operation_bundle_manifest_receipt_mismatch"]
+                    )
+            extracted_rows: list[dict[str, Any]] = []
+            for name in sorted(expected_names):
+                target = temporary.joinpath(*PurePosixPath(name).parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256()
+                written = 0
+                with archive.open(name, "r") as input_stream, target.open("wb") as output_stream:
+                    while True:
+                        chunk = input_stream.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > MAX_MEMBER_BYTES:
+                            raise ReconstructionGpuOperationBundleError(
+                                ["reconstruction_operation_bundle_extraction_member_oversized"]
+                            )
+                        digest.update(chunk)
+                        output_stream.write(chunk)
+                observed = "sha256:" + digest.hexdigest()
+                expected_row = expected_rows.get(name)
+                if expected_row is not None and (
+                    observed != expected_row["digest"] or written != expected_row["bytes"]
+                ):
+                    raise ReconstructionGpuOperationBundleError(
+                        ["reconstruction_operation_bundle_extraction_member_mismatch"]
+                    )
+                extracted_rows.append(
+                    {"archive_path": name, "digest": observed, "bytes": written}
+                )
+        extraction = {
+            "schema_version": EXTRACTION_SCHEMA_VERSION,
+            "status": "extracted",
+            "operation": receipt["operation"],
+            "operation_request_digest": receipt["operation_request_digest"],
+            "operation_input_bundle_digest": receipt["operation_input_bundle_digest"],
+            "bundle_manifest_digest": receipt["bundle_manifest_digest"],
+            "extracted_members": extracted_rows,
+            "candidate_may_read_hidden_heldout": False,
+            "trainer_may_grade_heldout": False,
+            "raw_secret_values_extracted": False,
+            "provider_allocation_inferred": False,
+            "proof_effect": "none",
+            "claim_ceiling": "candidate_operation_input_materialization_only",
+        }
+        extraction["extraction_receipt_digest"] = canonical_digest(
+            extraction, digest_field="extraction_receipt_digest"
+        )
+        write_json(
+            temporary / "reconstruction_gpu_operation_bundle_extraction.v1.json",
+            extraction,
+        )
+        os.replace(temporary, final)
+        return extraction
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -460,9 +685,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "ReconstructionGpuOperationBundleError",
+    "EXTRACTION_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "build_canary_request_from_operation_bundle",
     "compile_reconstruction_gpu_operation_bundle",
+    "extract_reconstruction_gpu_operation_bundle",
     "main",
 ]
 
