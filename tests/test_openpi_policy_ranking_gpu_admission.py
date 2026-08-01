@@ -291,3 +291,76 @@ def test_openpi_vast_preflight_reserves_frozen_rate_ceiling() -> None:
     )
     assert admission["status"] == "admitted"
     assert admission["provider_resource_class"] == "gpu_render"
+
+
+def test_openpi_vast_preflight_allows_one_unrelated_gpu_under_two_gpu_ceiling() -> None:
+    def inventory(prefix: str) -> dict:
+        resources = [] if prefix else [{"instance_id": "unrelated-1"}]
+        return {
+            "api_confirmed": True,
+            "live_resource_count": len(resources),
+            "resources": resources,
+        }
+
+    result = collect_openpi_policy_ranking_vast_preflight(
+        name_prefix="blueprint-groot-oscar-canary-openpi-ranking-",
+        container_disk_bytes=100 * 1024**3,
+        maximum_concurrent_paid_gpus_global=2,
+        capacity_probe=lambda request: {
+            "status": "available",
+            "selected_offer": {
+                "ask_contract_id": 123,
+                "gpu_type_id": "L40S",
+                "gpu_ram_mb": 46_068,
+                "num_gpus": 1,
+                "on_demand_price_usd_per_hour": 0.5,
+            },
+            "selection_policy": request,
+        },
+        inventory_probe=inventory,
+        clock=lambda: 1000.0,
+    )
+
+    assert result["status"] == "verified"
+    assert result["provider_inventory_verified_zero"] is False
+    assert result["attempt_inventory_verified_zero"] is True
+    assert result["provider_inventory_within_global_limit"] is True
+    assert result["global_live_resource_count"] == 1
+    release, bundle, _preflight, spend = _inputs()
+    admission = build_openpi_policy_ranking_gpu_admission(
+        release=release,
+        input_bundle=bundle,
+        preflight=result,
+        spend=spend,
+        expected_source_commit="a" * 40,
+        observed_now_epoch=1001.0,
+    )
+    assert admission["status"] == "admitted"
+
+
+def test_openpi_vast_preflight_blocks_when_two_gpu_ceiling_is_full() -> None:
+    result = collect_openpi_policy_ranking_vast_preflight(
+        name_prefix="blueprint-groot-oscar-canary-openpi-ranking-",
+        container_disk_bytes=100 * 1024**3,
+        maximum_concurrent_paid_gpus_global=2,
+        capacity_probe=lambda request: {
+            "status": "available",
+            "selected_offer": {
+                "ask_contract_id": 123,
+                "gpu_type_id": "L40S",
+                "gpu_ram_mb": 46_068,
+                "num_gpus": 1,
+                "on_demand_price_usd_per_hour": 0.5,
+            },
+            "selection_policy": request,
+        },
+        inventory_probe=lambda prefix: {
+            "api_confirmed": True,
+            "live_resource_count": 0 if prefix else 2,
+            "resources": [] if prefix else [{"id": "a"}, {"id": "b"}],
+        },
+        clock=lambda: 1000.0,
+    )
+
+    assert result["status"] == "blocked"
+    assert "openpi_gpu_preflight_global_gpu_limit_reached" in result["blockers"]

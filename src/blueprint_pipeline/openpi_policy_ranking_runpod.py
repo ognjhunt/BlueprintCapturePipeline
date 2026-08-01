@@ -883,6 +883,7 @@ def run_openpi_policy_ranking_campaign(
     campaign_wall_cap_seconds: int = 36_000,
     output_secret_get_url_file: str | Path | None = None,
     provider_name: str = "vast",
+    maximum_concurrent_paid_gpus_global: int = 1,
 ) -> dict[str, Any]:
     """Validate or launch one frozen OpenPI ranking campaign.
 
@@ -923,6 +924,9 @@ def run_openpi_policy_ranking_campaign(
                 inventory_probe=lambda prefix: provider.billable_inventory(
                     name_prefix=prefix
                 ),
+                maximum_concurrent_paid_gpus_global=(
+                    maximum_concurrent_paid_gpus_global
+                ),
             )
             if resolved_provider == "vast"
             else collect_openpi_policy_ranking_runpod_preflight(
@@ -932,6 +936,9 @@ def run_openpi_policy_ranking_campaign(
                 capacity_probe=provider.capacity_preflight,
                 inventory_probe=lambda prefix: provider.billable_inventory(
                     name_prefix=prefix
+                ),
+                maximum_concurrent_paid_gpus_global=(
+                    maximum_concurrent_paid_gpus_global
                 ),
             )
         )

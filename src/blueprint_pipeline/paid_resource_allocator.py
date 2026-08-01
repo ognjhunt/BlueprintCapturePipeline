@@ -1260,6 +1260,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ),
                         output_secret_get_url_file=(args.openpi_output_secret_get_url_file),
                         provider_name=args.openpi_provider,
+                        maximum_concurrent_paid_gpus_global=(
+                            args.maximum_concurrent_paid_gpus_global
+                        ),
                     )
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))

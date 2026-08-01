@@ -740,6 +740,7 @@ def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator
     assert observed["execute"] is False
     assert observed["input_bundle_receipt"] == "input-receipt.json"
     assert observed["provider_name"] == "vast"
+    assert observed["maximum_concurrent_paid_gpus_global"] == 1
     assert json.loads(
         (tmp_path / "openpi_control_plane_identity.json").read_text(encoding="utf-8")
     )["orchestrator_source_commit"] == control_commit
