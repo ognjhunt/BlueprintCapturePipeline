@@ -1715,3 +1715,142 @@ def test_gpu_qualification_component_stop_is_a_successful_control_action(
 
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_successor_campaign_budget_is_reserved_then_conservatively_settled(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "campaign.json"
+    budget, reservation = allocator._reserve_successor_campaign_budget(
+        job_dir=tmp_path / "job",
+        authorization_path=tmp_path / "authorization.json",
+        expected_source_commit="a" * 40,
+        ledger_path=ledger,
+        initial_spent_usd=1.0,
+        initial_used_gpu_seconds=100,
+        total_spend_cap_usd=20.0,
+        wall_cap_seconds=72_000,
+        reservation_seconds=4_800,
+        max_hourly_rate_usd=2.05,
+    )
+
+    assert budget is not None
+    assert reservation["status"] == "reserved"
+    assert reservation["reserved_before_successor_provider_call"] is True
+    assert json.loads(ledger.read_text())["open_reservation_count"] == 1
+
+    settlement = allocator._settle_successor_campaign_budget(
+        budget=budget,
+        reservation=reservation,
+        result={
+            "status": "completed",
+            "provider_mutations_performed": 1,
+            "continuing_spend_from_this_run": False,
+            "independent_watchdog_close": {"status": "provider_terminal"},
+            "session_budget_summary": {
+                "live_runtime_seconds": 462.379326,
+                "estimated_cost_usd": 0.205787,
+            },
+        },
+        job_dir=tmp_path / "job",
+    )
+
+    assert settlement["status"] == "settled"
+    assert settlement["settlement"]["charged_gpu_seconds"] == 463
+    assert settlement["settlement"]["charged_usd"] == 0.205787
+    snapshot = budget.snapshot()
+    assert snapshot["open_reservation_count"] == 0
+    assert snapshot["committed_gpu_seconds"] == 563
+    assert snapshot["committed_usd"] == 1.205787
+
+
+def test_successor_campaign_budget_stays_reserved_without_provider_zero(
+    tmp_path: Path,
+) -> None:
+    budget, reservation = allocator._reserve_successor_campaign_budget(
+        job_dir=tmp_path / "job",
+        authorization_path=tmp_path / "authorization.json",
+        expected_source_commit="b" * 40,
+        ledger_path=tmp_path / "campaign.json",
+        initial_spent_usd=1.0,
+        initial_used_gpu_seconds=100,
+        total_spend_cap_usd=20.0,
+        wall_cap_seconds=72_000,
+        reservation_seconds=4_800,
+        max_hourly_rate_usd=2.05,
+    )
+    assert budget is not None
+
+    settlement = allocator._settle_successor_campaign_budget(
+        budget=budget,
+        reservation=reservation,
+        result={
+            "status": "retained_owned",
+            "provider_mutations_performed": 1,
+            "continuing_spend_from_this_run": True,
+        },
+        job_dir=tmp_path / "job",
+    )
+
+    assert settlement["status"] == "open_reservation_retained_fail_closed"
+    assert budget.snapshot()["open_reservation_count"] == 1
+
+
+def test_current_reference_execute_requires_cumulative_campaign_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        allocator,
+        "run_successor_gpu_lane",
+        lambda **_kwargs: pytest.fail("successor runner must not start without campaign budget"),
+    )
+    out = tmp_path / "out"
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider",
+            "vast",
+            "--probe-kind",
+            allocator.CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND,
+            "--provider-launch-request",
+            str(out / "authorization.json"),
+            "--release-evidence",
+            str(out / "environment.json"),
+            "--model-cache-evidence",
+            str(out / "inventory.json"),
+            "--preflight-bundle",
+            str(out / "preflight.json"),
+            "--episode-bundle",
+            str(out / "bundle.zip"),
+            "--successor-bundle-receipt",
+            str(out / "bundle-receipt.json"),
+            "--admission-out",
+            str(out / "admission.json"),
+            "--bound-request-out",
+            str(out / "bound.json"),
+            "--adapter-output",
+            str(out / "adapter.json"),
+            "--pod-name",
+            str(out / "job"),
+            "--expected-source-commit",
+            "c" * 40,
+            "--successor-session-budget-ledger",
+            str(out / "session-budget.json"),
+            "--provider-bundle-url-file",
+            str(out / "bundle-url.txt"),
+            "--provider-output-put-url-file",
+            str(out / "output-put-url.txt"),
+            "--provider-output-get-url-file",
+            str(out / "output-get-url.txt"),
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 2
+    blockers = json.loads((out / "admission.json").read_text())["blockers"]
+    assert "campaign_budget_ledger" in blockers[0]
+    assert "campaign_reservation_seconds" in blockers[0]
+    assert "campaign_max_hourly_rate_usd" in blockers[0]
+    assert json.loads(capsys.readouterr().out) == {"success": False}

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import signal
 import subprocess
@@ -90,6 +91,10 @@ from .policy_ranking_cosmos_reasoner_gpu_admission import (
     run_gpu_lane as run_cosmos_reasoner_gpu_lane,
 )
 from .policy_ranking_successor_retained_session import refresh_retained_session
+from .production_gpu_campaign_budget import (
+    CampaignBudgetExceeded,
+    ProductionGpuCampaignBudget,
+)
 from .single_g1_kitchen_episode_runpod import (
     PROBE_KIND as SINGLE_KITCHEN_EPISODE_PROBE_KIND,
     run_single_episode,
@@ -113,6 +118,152 @@ COMBINED_GPU_PLAN_SECONDS = GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALL
 PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS = 36_000
 DETACHED_MODEL_VOLUME_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
 AdmissionResult = tuple[dict[str, Any], PaidResourceAdmissionGrant | None]
+
+
+def _reserve_successor_campaign_budget(
+    *,
+    job_dir: str | Path,
+    authorization_path: str | Path,
+    expected_source_commit: str,
+    ledger_path: str | Path,
+    initial_spent_usd: float,
+    initial_used_gpu_seconds: int,
+    total_spend_cap_usd: float,
+    wall_cap_seconds: int,
+    reservation_seconds: int,
+    max_hourly_rate_usd: float,
+) -> tuple[ProductionGpuCampaignBudget | None, dict[str, Any]]:
+    """Reserve the cumulative budget before a successor provider can mutate."""
+
+    root = Path(job_dir).expanduser().resolve()
+    ensure_dir(root)
+    identity = "|".join(
+        (
+            str(Path(authorization_path).expanduser().resolve()),
+            str(expected_source_commit),
+            root.name,
+        )
+    )
+    reservation_id = "successor-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:40]
+    try:
+        budget = ProductionGpuCampaignBudget(
+            ledger_path,
+            initial_spent_usd=initial_spent_usd,
+            initial_used_gpu_seconds=initial_used_gpu_seconds,
+            total_spend_cap_usd=total_spend_cap_usd,
+            combined_gpu_wall_cap_seconds=wall_cap_seconds,
+        )
+        reservation = budget.reserve(
+            reservation_id=reservation_id,
+            gpu_seconds=reservation_seconds,
+            max_hourly_rate_usd=max_hourly_rate_usd,
+        )
+        context = {
+            "schema_version": "policy_ranking_successor_campaign_budget_reservation.v1",
+            "status": "reserved",
+            "ledger_path": str(Path(ledger_path).expanduser().resolve()),
+            "reservation": reservation,
+            "reserved_before_successor_provider_call": True,
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+    except (CampaignBudgetExceeded, OSError, ValueError) as exc:
+        budget = None
+        context = {
+            "schema_version": "policy_ranking_successor_campaign_budget_reservation.v1",
+            "status": "blocked",
+            "reason": type(exc).__name__,
+            "blockers": ["successor_production_campaign_budget_reservation_failed"],
+            "provider_mutations_performed": 0,
+            "raw_secret_values_recorded": False,
+        }
+        if isinstance(exc, CampaignBudgetExceeded):
+            context["campaign_budget_admission"] = exc.admission
+    write_json(root / "successor_campaign_budget_reservation.json", context)
+    return budget, context
+
+
+def _settle_successor_campaign_budget(
+    *,
+    budget: ProductionGpuCampaignBudget,
+    reservation: dict[str, Any],
+    result: dict[str, Any],
+    job_dir: str | Path,
+) -> dict[str, Any]:
+    """Settle only after no continuing provider spend is evidenced."""
+
+    root = Path(job_dir).expanduser().resolve()
+    ensure_dir(root)
+    reservation_row = reservation.get("reservation")
+    reservation_row = reservation_row if isinstance(reservation_row, dict) else {}
+    reservation_id = str(reservation_row.get("reservation_id") or "")
+    mutations = int(result.get("provider_mutations_performed") or 0)
+    watchdog_close = result.get("independent_watchdog_close")
+    watchdog_close = watchdog_close if isinstance(watchdog_close, dict) else {}
+    provider_terminal = bool(
+        mutations == 0
+        or result.get("provider_zero_verified") is True
+        or (
+            result.get("continuing_spend_from_this_run") is False
+            and watchdog_close.get("status") == "provider_terminal"
+        )
+    )
+    if not provider_terminal:
+        settlement = {
+            "schema_version": "policy_ranking_successor_campaign_budget_settlement.v1",
+            "status": "open_reservation_retained_fail_closed",
+            "reservation_id": reservation_id,
+            "reason": "provider_terminal_or_zero_not_proven",
+            "raw_secret_values_recorded": False,
+        }
+        write_json(root / "successor_campaign_budget_settlement.json", settlement)
+        return settlement
+
+    session = result.get("session_budget_summary")
+    session = session if isinstance(session, dict) else {}
+    runtime_value = session.get("live_runtime_seconds", result.get("runtime_seconds", 0.0))
+    cost_value = session.get(
+        "estimated_cost_usd",
+        result.get("estimated_gpu_cost_usd", result.get("estimated_cost_usd", 0.0)),
+    )
+    runtime = float(runtime_value or 0.0)
+    cost = float(cost_value or 0.0)
+    if not math.isfinite(runtime) or runtime < 0 or not math.isfinite(cost) or cost < 0:
+        settlement = {
+            "schema_version": "policy_ranking_successor_campaign_budget_settlement.v1",
+            "status": "open_reservation_retained_fail_closed",
+            "reservation_id": reservation_id,
+            "reason": "successor_runtime_or_cost_invalid",
+            "raw_secret_values_recorded": False,
+        }
+        write_json(root / "successor_campaign_budget_settlement.json", settlement)
+        return settlement
+    charged_seconds = int(math.ceil(runtime)) if mutations else 0
+    charged_usd = round(cost, 6) if mutations else 0.0
+    try:
+        row = budget.settle(
+            reservation_id=reservation_id,
+            charged_gpu_seconds=charged_seconds,
+            charged_usd=charged_usd,
+            outcome=str(result.get("status") or "unknown")[:160],
+        )
+        settlement = {
+            "schema_version": "policy_ranking_successor_campaign_budget_settlement.v1",
+            "status": "settled",
+            "settlement": row,
+            "provider_terminal_or_zero_proven": True,
+            "raw_secret_values_recorded": False,
+        }
+    except (OSError, ValueError) as exc:
+        settlement = {
+            "schema_version": "policy_ranking_successor_campaign_budget_settlement.v1",
+            "status": "open_reservation_retained_fail_closed",
+            "reservation_id": reservation_id,
+            "reason": type(exc).__name__,
+            "raw_secret_values_recorded": False,
+        }
+    write_json(root / "successor_campaign_budget_settlement.json", settlement)
+    return settlement
 
 
 def admit_openai_api_candidate(**kwargs: Any) -> AdmissionResult:
@@ -1170,6 +1321,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     missing.append("successor_staging_transport")
                 if not args.successor_session_budget_ledger:
                     missing.append("successor_session_budget_ledger")
+                if args.probe_kind == CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND:
+                    missing.extend(
+                        name
+                        for name in (
+                            "campaign_budget_ledger",
+                            "campaign_initial_spent_usd",
+                            "campaign_initial_used_gpu_seconds",
+                            "campaign_wall_cap_seconds",
+                            "campaign_reservation_seconds",
+                            "campaign_max_hourly_rate_usd",
+                        )
+                        if getattr(args, name, None) is None
+                    )
             if missing:
                 result = {
                     "status": "blocked",
@@ -1193,30 +1357,70 @@ def main(argv: Sequence[str] | None = None) -> int:
                     }
                     write_json(Path(args.admission_out), result)
                 else:
-                    result = run_successor_gpu_lane(
-                        authorization_path=args.provider_launch_request,
-                        environment_path=args.release_evidence,
-                        smoke_inventory_path=args.model_cache_evidence,
-                        provider_preflight_path=args.preflight_bundle,
-                        provider_bundle_path=args.episode_bundle,
-                        provider_bundle_receipt_path=args.successor_bundle_receipt,
-                        admission_out=args.admission_out,
-                        bound_request_out=args.bound_request_out,
-                        adapter_output=args.adapter_output,
-                        job_dir=args.pod_name,
-                        public_base_url=args.successor_public_base_url,
-                        token_file=args.successor_token_file,
-                        secret_env_file=args.successor_secret_env_file,
-                        provider_bundle_url_file=args.provider_bundle_url_file,
-                        provider_output_put_url_file=args.provider_output_put_url_file,
-                        provider_output_get_url_file=args.provider_output_get_url_file,
-                        output_path=args.successor_output_path,
-                        session_budget_ledger=args.successor_session_budget_ledger,
-                        expected_source_commit=checkout_commit,
-                        execute=args.execute,
-                        expected_probe_kind=args.probe_kind,
-                        current_reference_profile_freeze_path=args.successor_profile_freeze,
-                    )
+                    campaign_budget = None
+                    campaign_reservation: dict[str, Any] = {}
+                    if args.execute and args.probe_kind == CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND:
+                        campaign_budget, campaign_reservation = _reserve_successor_campaign_budget(
+                            job_dir=args.pod_name,
+                            authorization_path=args.provider_launch_request,
+                            expected_source_commit=checkout_commit,
+                            ledger_path=args.campaign_budget_ledger,
+                            initial_spent_usd=args.campaign_initial_spent_usd,
+                            initial_used_gpu_seconds=(args.campaign_initial_used_gpu_seconds),
+                            total_spend_cap_usd=args.campaign_total_spend_cap_usd,
+                            wall_cap_seconds=args.campaign_wall_cap_seconds,
+                            reservation_seconds=args.campaign_reservation_seconds,
+                            max_hourly_rate_usd=args.campaign_max_hourly_rate_usd,
+                        )
+                    if (
+                        args.execute
+                        and args.probe_kind == CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND
+                        and campaign_budget is None
+                    ):
+                        result = {
+                            "status": "blocked",
+                            "reason": "successor_production_campaign_budget_reservation_failed",
+                            "blockers": campaign_reservation.get("blockers")
+                            or ["successor_production_campaign_budget_reservation_failed"],
+                            "campaign_budget_reservation": campaign_reservation,
+                            "provider_mutations_performed": 0,
+                        }
+                        write_json(Path(args.adapter_output), result)
+                    else:
+                        result = run_successor_gpu_lane(
+                            authorization_path=args.provider_launch_request,
+                            environment_path=args.release_evidence,
+                            smoke_inventory_path=args.model_cache_evidence,
+                            provider_preflight_path=args.preflight_bundle,
+                            provider_bundle_path=args.episode_bundle,
+                            provider_bundle_receipt_path=args.successor_bundle_receipt,
+                            admission_out=args.admission_out,
+                            bound_request_out=args.bound_request_out,
+                            adapter_output=args.adapter_output,
+                            job_dir=args.pod_name,
+                            public_base_url=args.successor_public_base_url,
+                            token_file=args.successor_token_file,
+                            secret_env_file=args.successor_secret_env_file,
+                            provider_bundle_url_file=args.provider_bundle_url_file,
+                            provider_output_put_url_file=args.provider_output_put_url_file,
+                            provider_output_get_url_file=args.provider_output_get_url_file,
+                            output_path=args.successor_output_path,
+                            session_budget_ledger=args.successor_session_budget_ledger,
+                            expected_source_commit=checkout_commit,
+                            execute=args.execute,
+                            expected_probe_kind=args.probe_kind,
+                            current_reference_profile_freeze_path=args.successor_profile_freeze,
+                        )
+                        if campaign_budget is not None:
+                            settlement = _settle_successor_campaign_budget(
+                                budget=campaign_budget,
+                                reservation=campaign_reservation,
+                                result=result,
+                                job_dir=args.pod_name,
+                            )
+                            result["campaign_budget_reservation"] = campaign_reservation
+                            result["campaign_budget_settlement"] = settlement
+                            write_json(Path(args.adapter_output), result)
             success = result.get("status") in {
                 "dry_run_ready",
                 "completed",
