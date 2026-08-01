@@ -139,6 +139,11 @@ def _camera_line(observation: Mapping[str, Any], camera_id: int) -> tuple[str, s
     matrix = camera.get("T_world_camera")
     if not isinstance(intrinsics, Mapping) or not isinstance(matrix, list):
         raise ColmapTrainingDatasetError(["colmap_camera_binding_missing"])
+    blueprint_native_matrix = observation.get("T_world_camera")
+    if blueprint_native_matrix is not None and canonical_json(
+        blueprint_native_matrix
+    ) != canonical_json(matrix):
+        raise ColmapTrainingDatasetError(["colmap_camera_projection_pose_mismatch"])
     try:
         transform = np.asarray(matrix, dtype=np.float64)
         rotation_camera_world = transform[:3, :3]
@@ -176,6 +181,7 @@ def export_colmap_training_dataset(
     if len(source_commit) != 40 or any(c not in "0123456789abcdef" for c in source_commit):
         errors.append("colmap_export_source_commit_invalid")
     observations = request.get("camera_observation_manifest")
+    calibration = request.get("camera_calibration_manifest")
     candidate = request.get("candidate_dataset_manifest")
     if not isinstance(observations, Mapping) or not isinstance(candidate, Mapping):
         errors.append("colmap_export_manifests_missing")
@@ -193,6 +199,21 @@ def export_colmap_training_dataset(
     if errors:
         raise ColmapTrainingDatasetError(errors)
     assert isinstance(observations, Mapping) and isinstance(candidate, Mapping)
+    if observations.get("camera_observation_digest") != canonical_digest(
+        observations, digest_field="camera_observation_digest"
+    ):
+        raise ColmapTrainingDatasetError(["colmap_export_observation_manifest_digest_invalid"])
+    if calibration is not None:
+        if not isinstance(calibration, Mapping) or calibration.get(
+            "calibration_digest"
+        ) != canonical_digest(calibration, digest_field="calibration_digest"):
+            raise ColmapTrainingDatasetError(["colmap_export_calibration_manifest_invalid"])
+        if (
+            calibration.get("capture_digest") != request["source_capture_digest"]
+            or calibration.get("camera_model") != "PINHOLE"
+            or not isinstance(calibration.get("intrinsics"), Mapping)
+        ):
+            raise ColmapTrainingDatasetError(["colmap_export_calibration_binding_invalid"])
     if (
         observations.get("hidden_heldout_pixels_included") is not False
         or candidate.get("heldout_pixels_included") is not False
@@ -244,6 +265,17 @@ def export_colmap_training_dataset(
             "frame_digest"
         ) != observation.get("image_digest"):
             raise ColmapTrainingDatasetError(["colmap_export_observation_manifest_mismatch"])
+        if calibration is not None:
+            camera = observation.get("camera")
+            if (
+                observation.get("calibration_digest") != calibration.get("calibration_digest")
+                or not isinstance(camera, Mapping)
+                or canonical_json(camera.get("rgb_intrinsics"))
+                != canonical_json(calibration.get("intrinsics"))
+            ):
+                raise ColmapTrainingDatasetError(
+                    ["colmap_export_observation_calibration_projection_mismatch"]
+                )
         source = _safe_file(
             source_root, str(observation.get("image_relative_path") or ""), label="image"
         )

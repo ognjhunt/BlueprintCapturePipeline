@@ -299,6 +299,15 @@ def compile_arkit_reconstruction_dataset(
                 "image_relative_path": row["candidate_relative_path"],
                 "image_digest": row["frame_digest"],
                 "T_world_camera": camera.get("T_world_camera"),
+                # Keep the Blueprint-native fields above and also materialize
+                # the exact generic camera binding consumed by the shared
+                # candidate-only COLMAP exporter. This is a projection of the
+                # same accepted values, not a second calibration or pose.
+                "camera": {
+                    "camera_model": "PINHOLE",
+                    "T_world_camera": camera.get("T_world_camera"),
+                    "rgb_intrinsics": dict(intrinsics),
+                },
                 "calibration_digest": calibration["calibration_digest"],
                 "depth_confidence_binding": depth,
             }
@@ -353,6 +362,34 @@ def compile_arkit_reconstruction_dataset(
     )
     refinement_request = _write_immutable(root / "pose_refinement_request.json", refinement_request)
     compiled_at = timestamp or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    colmap_request = {
+        "schema_version": "colmap_training_dataset_export_request.v1",
+        "stable_run_identity": f"arkit-colmap-request-{configuration_digest[7:31]}",
+        "source_capture_digest": capture_digest,
+        "source_commit_sha": source_commit_sha,
+        "reconstruction_dataset_digest": dataset_manifest["dataset_manifest_digest"],
+        "frozen_split_digest": split_manifest["split_digest"],
+        "camera_observation_manifest": observation_manifest,
+        "camera_calibration_manifest": calibration,
+        "candidate_dataset_manifest": dict(candidate_manifest),
+        "maximum_initialization_points": 100_000,
+        "coordinate_frame_declaration": dict(coordinate_system),
+        "units": "meters",
+        "metric_scale_status": "sensor_metric_unvalidated",
+        "authority_used": dict(authority_used),
+        "timestamp": compiled_at,
+        "blockers": [
+            "initialization_surface_not_bound",
+            "pose_refinement_not_executed",
+        ],
+    }
+    colmap_request["colmap_training_dataset_export_request_digest"] = canonical_digest(
+        colmap_request,
+        digest_field="colmap_training_dataset_export_request_digest",
+    )
+    colmap_request = _write_immutable(
+        root / "colmap_training_dataset_export_request.json", colmap_request
+    )
     export = {
         "schema_version": ARKIT_RECONSTRUCTION_DATASET_SCHEMA_VERSION,
         "stable_run_identity": f"arkit-export-{configuration_digest[7:31]}",
@@ -368,13 +405,16 @@ def compile_arkit_reconstruction_dataset(
         "pose_refinement_request_digest": refinement_request[
             "pose_refinement_request_digest"
         ],
+        "colmap_training_dataset_export_request_digest": colmap_request[
+            "colmap_training_dataset_export_request_digest"
+        ],
         "metric_scaffold_digest": metric_scaffold_digest,
         "candidate_observation_count": len(observations),
         "hidden_heldout_pixels_included": False,
         "raw_arkit_poses_modified": False,
         "depth_confidence_filtering_status": "not_executed",
         "metric_scale_validation_status": "not_executed",
-        "colmap_gsplat_export_status": "blocked_pose_refinement_and_qa_not_registered",
+        "colmap_gsplat_export_status": "candidate_only_raw_arkit_pose_request_ready",
         "authority_used": dict(authority_used),
         "cost_usd": 0.0,
         "duration_seconds": 0.0,

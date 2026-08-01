@@ -16,6 +16,10 @@ from blueprint_pipeline.arkit_reconstruction_dataset import (
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_frame_dataset import compile_frozen_frame_dataset
+from blueprint_pipeline.reconstruction_colmap_dataset import (
+    ColmapTrainingDatasetError,
+    export_colmap_training_dataset,
+)
 from blueprint_pipeline.task_evaluation_supervisor import (
     AutonomyMode,
     SupervisorContext,
@@ -148,7 +152,7 @@ def test_arkit_export_is_candidate_only_idempotent_and_fail_closed(tmp_path: Pat
     assert first["raw_arkit_poses_modified"] is False
     assert first["metric_scale_validation_status"] == "not_executed"
     assert first["colmap_gsplat_export_status"] == (
-        "blocked_pose_refinement_and_qa_not_registered"
+        "candidate_only_raw_arkit_pose_request_ready"
     )
     root = next((tmp_path / "export").glob("arkit_export_*"))
     observations = json.loads(
@@ -165,6 +169,51 @@ def test_arkit_export_is_candidate_only_idempotent_and_fail_closed(tmp_path: Pat
     assert request["candidate_may_change_input_poses"] is False
     assert request["maximum_pose_drift_threshold"] is None
     calibration = json.loads((root / "camera_calibration_manifest.json").read_text())
+    colmap_request = json.loads(
+        (root / "colmap_training_dataset_export_request.json").read_text()
+    )
+    assert first["colmap_training_dataset_export_request_digest"] == colmap_request[
+        "colmap_training_dataset_export_request_digest"
+    ]
+    assert colmap_request["blockers"] == [
+        "initialization_surface_not_bound",
+        "pose_refinement_not_executed",
+    ]
+    colmap = export_colmap_training_dataset(
+        source_artifact=colmap_request,
+        artifact_root=next((tmp_path / "source").glob("frozen_dataset_*")),
+        output_root=tmp_path / "colmap",
+    )
+    assert colmap["image_count"] == first["candidate_observation_count"]
+    assert colmap["initialization_point_count"] == 0
+    assert colmap["raw_input_poses_modified"] is False
+    assert colmap["pose_refinement_executed"] is False
+    assert colmap["hidden_heldout_pixels_included"] is False
+    assert colmap["blockers"] == [
+        "initialization_surface_not_bound",
+        "pose_refinement_not_executed",
+    ]
+    tampered = json.loads(json.dumps(colmap_request))
+    tampered["camera_observation_manifest"]["observations"][0]["camera"][
+        "T_world_camera"
+    ][0][3] = 99.0
+    tampered["camera_observation_manifest"]["camera_observation_digest"] = canonical_digest(
+        tampered["camera_observation_manifest"],
+        digest_field="camera_observation_digest",
+    )
+    tampered["colmap_training_dataset_export_request_digest"] = canonical_digest(
+        tampered,
+        digest_field="colmap_training_dataset_export_request_digest",
+    )
+    with pytest.raises(
+        ColmapTrainingDatasetError,
+        match="colmap_camera_projection_pose_mismatch",
+    ):
+        export_colmap_training_dataset(
+            source_artifact=tampered,
+            artifact_root=next((tmp_path / "source").glob("frozen_dataset_*")),
+            output_root=tmp_path / "tampered-colmap",
+        )
     schema = json.loads(
         (
             Path(__file__).parents[1]

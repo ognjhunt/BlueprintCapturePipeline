@@ -194,6 +194,9 @@ def test_export_rejects_hidden_paths_digest_spoofing_and_nonrigid_pose(tmp_path:
     request["camera_observation_manifest"]["observations"][0]["image_relative_path"] = (
         "frozen/evaluator_hidden/held_out/frame-1.png"
     )
+    request["camera_observation_manifest"]["camera_observation_digest"] = canonical_digest(
+        request["camera_observation_manifest"], digest_field="camera_observation_digest"
+    )
     request["colmap_training_dataset_export_request_digest"] = canonical_digest(
         request, digest_field="colmap_training_dataset_export_request_digest"
     )
@@ -204,6 +207,9 @@ def test_export_rejects_hidden_paths_digest_spoofing_and_nonrigid_pose(tmp_path:
 
     request = _request(source)
     request["camera_observation_manifest"]["observations"][0]["image_digest"] = "sha256:" + "f" * 64
+    request["camera_observation_manifest"]["camera_observation_digest"] = canonical_digest(
+        request["camera_observation_manifest"], digest_field="camera_observation_digest"
+    )
     request["colmap_training_dataset_export_request_digest"] = canonical_digest(
         request, digest_field="colmap_training_dataset_export_request_digest"
     )
@@ -215,6 +221,9 @@ def test_export_rejects_hidden_paths_digest_spoofing_and_nonrigid_pose(tmp_path:
     request = _request(source)
     request["camera_observation_manifest"]["observations"][0]["camera"]["T_world_camera"][0][0] = (
         2.0
+    )
+    request["camera_observation_manifest"]["camera_observation_digest"] = canonical_digest(
+        request["camera_observation_manifest"], digest_field="camera_observation_digest"
     )
     request["colmap_training_dataset_export_request_digest"] = canonical_digest(
         request, digest_field="colmap_training_dataset_export_request_digest"

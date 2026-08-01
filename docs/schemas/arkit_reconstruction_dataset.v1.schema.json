@@ -105,7 +105,20 @@
         "image_digest": {"$ref": "#/$defs/sha256"},
         "T_world_camera": {"$ref": "#/$defs/matrix4"},
         "calibration_digest": {"$ref": "#/$defs/sha256"},
-        "depth_confidence_binding": {"type": ["object", "null"]}
+        "depth_confidence_binding": {"type": ["object", "null"]},
+        "camera": {
+          "type": "object",
+          "required": ["camera_model", "T_world_camera", "rgb_intrinsics"],
+          "properties": {
+            "camera_model": {"const": "PINHOLE"},
+            "T_world_camera": {"$ref": "#/$defs/matrix4"},
+            "rgb_intrinsics": {
+              "type": "object",
+              "required": ["fx", "fy", "cx", "cy", "width", "height"]
+            }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },
@@ -177,7 +190,13 @@
         "raw_arkit_poses_modified": {"const": false},
         "depth_confidence_filtering_status": {"const": "not_executed"},
         "metric_scale_validation_status": {"const": "not_executed"},
-        "colmap_gsplat_export_status": {"const": "blocked_pose_refinement_and_qa_not_registered"},
+        "colmap_gsplat_export_status": {
+          "enum": [
+            "blocked_pose_refinement_and_qa_not_registered",
+            "candidate_only_raw_arkit_pose_request_ready"
+          ]
+        },
+        "colmap_training_dataset_export_request_digest": {"$ref": "#/$defs/sha256"},
         "cost_usd": {"const": 0.0},
         "proof_effect": {"const": "calibrated_reconstruction_request_only"},
         "claim_ceiling": {"const": "calibrated_camera_trajectory"},

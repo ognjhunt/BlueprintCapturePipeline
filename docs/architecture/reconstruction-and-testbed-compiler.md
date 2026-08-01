@@ -217,6 +217,14 @@ observation manifest contains training and validation paths only. It cannot
 change raw ARKit poses or the frozen split, cannot read held-out pixels, and
 cannot enable undeclared distortion or rolling-shutter models.
 
+The same compiler now emits a digest-bound
+`colmap_training_dataset_export_request.v1` that projects those exact candidate
+observations into the shared COLMAP text exporter without changing their raw
+ARKit poses or intrinsics. This makes the unrefined ARKit-pose baseline locally
+executable. The request remains explicitly blocked from a training claim until
+an initialization surface is bound, and it records that pose refinement has not
+run; the later bounded-refinement route remains a separate comparison method.
+
 Both `compile_arkit_metric_scaffold` and
 `export_arkit_reconstruction_dataset` are registered SDK tools. Their real
 implementations stay in trusted runtime state; the agent sees only the capture
