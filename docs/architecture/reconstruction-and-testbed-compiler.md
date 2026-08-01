@@ -275,6 +275,9 @@ container/stream facts and decoded-frame PTS/DTS, and emits the existing typed
 probe receipt. That receipt binds exact source bytes, runtime, streams,
 dimensions, time bases, and monotonic decoded PTS. It explicitly does not infer
 lens identity, calibration, IMU, gyro, trajectory, or metric scale. The
+composed local entrypoint probes every declared segment before invoking the
+normalizer, checks local rights and consent before any decode, and persists each
+exact receipt under the content-addressed normalization root for replay. The
 normalizer requires exact `.insv` filename, size, and digest declarations;
 deterministic segment order; explicit front/rear
 stream bindings; calibrated per-lens intrinsics, distortion, masks and source

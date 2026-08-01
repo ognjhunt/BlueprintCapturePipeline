@@ -13,6 +13,7 @@ from blueprint_pipeline.native_360_normalization import (
     Native360NormalizationError,
     build_native_360_probe_receipt,
     normalize_native_360_capture,
+    probe_and_normalize_native_360_capture,
     probe_native_360_source,
 )
 
@@ -416,6 +417,165 @@ def test_native_360_probe_executor_rejects_unusable_observations(
         )
 
 
+def test_native_360_composed_executor_probes_and_normalizes_without_manual_receipts(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    metadata, recorded_receipts = _fixture(capture_root)
+    recorded = recorded_receipts["native/capture.insv"]
+    executable = tmp_path / "bin/ffprobe"
+    executable.parent.mkdir()
+    executable.write_bytes(b"composed-ffprobe-fixture")
+    metadata_payload = {
+        "streams": [
+            {
+                "index": row["stream_index"],
+                "codec_type": row["media_type"],
+                "codec_name": row["codec_name"],
+                "width": row["width"],
+                "height": row["height"],
+                "time_base": row["time_base"],
+            }
+            for row in recorded["streams"]
+        ],
+        "format": recorded["format_metadata"],
+    }
+    timing_payload = {
+        "frames": [
+            {
+                "stream_index": row["stream_index"],
+                "media_type": "video",
+                "pts_time": str(pts),
+                "pkt_dts_time": str(pts),
+            }
+            for row in recorded["streams"]
+            for pts in row["pts_seconds"]
+        ]
+    }
+    calls: list[list[str]] = []
+
+    def runner(
+        argv: Sequence[str], _timeout: float, _maximum_output: int
+    ) -> subprocess.CompletedProcess[bytes]:
+        command = list(argv)
+        calls.append(command)
+        if "-version" in command:
+            payload = b"ffprobe version composed-fixture\n"
+        elif "-show_frames" in command:
+            payload = json.dumps(timing_payload).encode()
+        else:
+            payload = json.dumps(metadata_payload).encode()
+        return subprocess.CompletedProcess(command, 0, payload, b"")
+
+    result = probe_and_normalize_native_360_capture(
+        capture_root=capture_root,
+        output_root=tmp_path / "output",
+        intake_id="native-360-composed",
+        capture_digest=CAPTURE_DIGEST,
+        camera_metadata=metadata,
+        source_commit_sha=SOURCE_COMMIT,
+        implementation_digest=IMPLEMENTATION_DIGEST,
+        authority_used=AUTHORITY,
+        timestamp="2026-07-30T12:00:00-05:00",
+        ffprobe_executable=executable,
+        probe_runner=runner,
+        maximum_source_bytes=1024,
+        maximum_probe_output_bytes=1024 * 1024,
+    )
+
+    assert result["status"] == "normalized"
+    assert result["claim_ceiling"] == "calibrated_camera_rig"
+    assert len(result["probe_receipt_references"]) == 1
+    artifact_root = next((tmp_path / "output").glob("native_360_normalization_*"))
+    reference = result["probe_receipt_references"][0]
+    receipt_path = artifact_root / reference["relative_path"]
+    assert _digest(receipt_path) == reference["digest"]
+    persisted_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert persisted_receipt["source_file_digest"] == _digest(
+        capture_root / "native/capture.insv"
+    )
+    assert len(calls) == 3
+
+
+def test_native_360_composed_executor_checks_authority_before_probe(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    metadata, _receipts = _fixture(capture_root)
+    executable = tmp_path / "ffprobe"
+    executable.write_bytes(b"fixture")
+    calls: list[list[str]] = []
+
+    def runner(
+        argv: Sequence[str], _timeout: float, _maximum_output: int
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(list(argv), 0, b"", b"")
+
+    authority = dict(AUTHORITY)
+    authority["consent_valid"] = False
+    with pytest.raises(Native360NormalizationError, match="authority_invalid"):
+        probe_and_normalize_native_360_capture(
+            capture_root=capture_root,
+            output_root=tmp_path / "output",
+            intake_id="native-360-no-authority",
+            capture_digest=CAPTURE_DIGEST,
+            camera_metadata=metadata,
+            source_commit_sha=SOURCE_COMMIT,
+            implementation_digest=IMPLEMENTATION_DIGEST,
+            authority_used=authority,
+            timestamp="2026-07-30T12:00:00-05:00",
+            ffprobe_executable=executable,
+            probe_runner=runner,
+        )
+    assert calls == []
+
+
+def test_native_360_composed_executor_rejects_aggregate_oversize_before_probe(
+    tmp_path: Path,
+) -> None:
+    capture_root = tmp_path / "capture"
+    metadata, _receipts = _fixture(capture_root)
+    second = capture_root / "native/second.insv"
+    second.write_bytes(b"second-native-segment-fixture")
+    metadata["segments"][0]["files"].append(
+        {
+            "relative_path": "native/second.insv",
+            "original_filename": "second.insv",
+            "size_bytes": second.stat().st_size,
+            "digest": _digest(second),
+            "lens_streams": [],
+        }
+    )
+    executable = tmp_path / "ffprobe"
+    executable.write_bytes(b"fixture")
+    calls: list[list[str]] = []
+
+    def runner(
+        argv: Sequence[str], _timeout: float, _maximum_output: int
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(list(argv), 0, b"", b"")
+
+    maximum_bytes = (capture_root / "native/capture.insv").stat().st_size + 1
+    with pytest.raises(Native360NormalizationError, match="source_oversized"):
+        probe_and_normalize_native_360_capture(
+            capture_root=capture_root,
+            output_root=tmp_path / "output",
+            intake_id="native-360-aggregate-limit",
+            capture_digest=CAPTURE_DIGEST,
+            camera_metadata=metadata,
+            source_commit_sha=SOURCE_COMMIT,
+            implementation_digest=IMPLEMENTATION_DIGEST,
+            authority_used=AUTHORITY,
+            timestamp="2026-07-30T12:00:00-05:00",
+            ffprobe_executable=executable,
+            probe_runner=runner,
+            maximum_source_bytes=maximum_bytes,
+        )
+    assert calls == []
+
+
 def _rig_calibration(lens_id: str, *, width: int = 3840) -> dict:
     return {
         "lens_id": lens_id,
@@ -601,6 +761,12 @@ def test_native_360_normalization_is_idempotent_and_preserves_source(
     for reference in first["artifact_references"].values():
         path = artifact_root / reference["relative_path"]
         assert _digest(path) == reference["digest"]
+    assert len(first["probe_receipt_references"]) == 1
+    for reference in first["probe_receipt_references"]:
+        path = artifact_root / reference["relative_path"]
+        assert _digest(path) == reference["digest"]
+        persisted = json.loads(path.read_text(encoding="utf-8"))
+        assert persisted["probe_receipt_digest"] == reference["probe_receipt_digest"]
 
 
 def test_native_360_unsynchronized_streams_abstain_without_rebinding(

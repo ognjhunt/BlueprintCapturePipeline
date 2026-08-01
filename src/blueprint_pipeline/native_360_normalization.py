@@ -31,6 +31,15 @@ _LENS_IDS = {"front", "rear"}
 _MAX_NATIVE_SOURCE_BYTES = 100 * 1024 * 1024 * 1024
 _MAX_PROBE_OUTPUT_BYTES = 128 * 1024 * 1024
 _PROBE_TIMEOUT_SECONDS = 600.0
+_REQUIRED_LOCAL_AUTHORITY = {
+    "source_capture_rights_valid": True,
+    "consent_valid": True,
+    "privacy_review_valid": True,
+    "retention_authorized": True,
+    "local_processing_authorized": True,
+    "provider_upload_authorized": False,
+    "paid_compute_authorized": False,
+}
 
 ProbeRunner = Callable[
     [Sequence[str], float, int],
@@ -44,6 +53,14 @@ class Native360NormalizationError(ValueError):
     def __init__(self, codes: Sequence[str]) -> None:
         self.codes = tuple(sorted(set(str(code) for code in codes if str(code))))
         super().__init__("; ".join(self.codes))
+
+
+def _validate_local_authority(authority_used: Mapping[str, Any]) -> None:
+    if any(
+        authority_used.get(key) is not expected
+        for key, expected in _REQUIRED_LOCAL_AUTHORITY.items()
+    ):
+        raise Native360NormalizationError(["native_360_authority_invalid"])
 
 
 def _sha256_file(path: Path) -> str:
@@ -825,17 +842,7 @@ def normalize_native_360_capture(
         or maximum_source_bytes <= 0
     ):
         raise Native360NormalizationError(["native_360_normalization_limit_invalid"])
-    required_authority = {
-        "source_capture_rights_valid": True,
-        "consent_valid": True,
-        "privacy_review_valid": True,
-        "retention_authorized": True,
-        "local_processing_authorized": True,
-        "provider_upload_authorized": False,
-        "paid_compute_authorized": False,
-    }
-    if any(authority_used.get(key) is not expected for key, expected in required_authority.items()):
-        raise Native360NormalizationError(["native_360_authority_invalid"])
+    _validate_local_authority(authority_used)
     root = Path(capture_root).expanduser().resolve()
     if not root.is_dir():
         raise Native360NormalizationError(["native_360_capture_root_missing"])
@@ -881,6 +888,7 @@ def normalize_native_360_capture(
     total_source_bytes = 0
     runtime_digests: set[str] = set()
     source_file_references: list[dict[str, Any]] = []
+    validated_probes: dict[str, dict[str, Any]] = {}
     source_paths_seen: set[str] = set()
     for segment in segments:
         files = segment.get("files")
@@ -918,6 +926,7 @@ def normalize_native_360_capture(
             if not isinstance(probe_value, Mapping):
                 raise Native360NormalizationError(["native_360_probe_receipt_missing"])
             probe = _validated_probe(probe_value, source_digest=source_digest)
+            validated_probes[relative_path] = probe
             runtime_digests.add(str(probe["runtime_digest"]))
             streams = {
                 row.get("stream_index"): row
@@ -1100,6 +1109,19 @@ def normalize_native_360_capture(
         "relative_path": "dual_fisheye_stream_binding.json",
         "digest": _sha256_file(artifact_root / "dual_fisheye_stream_binding.json"),
     }
+    probe_receipt_references: list[dict[str, Any]] = []
+    for ordinal, relative_path in enumerate(sorted(validated_probes)):
+        receipt_relative_path = f"probe_receipts/probe_{ordinal:04d}.json"
+        receipt_path = artifact_root / receipt_relative_path
+        receipt = _write_immutable(receipt_path, validated_probes[relative_path])
+        probe_receipt_references.append(
+            {
+                "source_relative_path": relative_path,
+                "relative_path": receipt_relative_path,
+                "digest": _sha256_file(receipt_path),
+                "probe_receipt_digest": receipt["probe_receipt_digest"],
+            }
+        )
     result_path = artifact_root / "native_360_capture_normalization.json"
     persisted_timestamp = compiled_at
     if result_path.exists():
@@ -1127,6 +1149,7 @@ def normalize_native_360_capture(
         "original_file_references": sorted(
             source_file_references, key=lambda row: row["relative_path"]
         ),
+        "probe_receipt_references": probe_receipt_references,
         "camera_metadata_digest": canonical_digest(camera_metadata),
         "probe_runtime_digest": next(iter(runtime_digests)) if len(runtime_digests) == 1 else None,
         "dual_fisheye_binding_digest": binding["dual_fisheye_binding_digest"],
@@ -1144,6 +1167,9 @@ def normalize_native_360_capture(
         "output_digests": {
             "dual_fisheye_binding_digest": binding["dual_fisheye_binding_digest"],
             "rig_declaration_digest": rig["rig_declaration_digest"],
+            "probe_receipt_artifact_digests": [
+                row["digest"] for row in probe_receipt_references
+            ],
         },
         "artifact_references": {
             "camera_360_rig_declaration": rig_reference,
@@ -1196,6 +1222,91 @@ def normalize_native_360_capture(
     return _write_immutable(result_path, result)
 
 
+def probe_and_normalize_native_360_capture(
+    *,
+    capture_root: str | Path,
+    output_root: str | Path,
+    intake_id: str,
+    capture_digest: str,
+    camera_metadata: Mapping[str, Any],
+    source_commit_sha: str,
+    implementation_digest: str,
+    authority_used: Mapping[str, Any],
+    timestamp: str,
+    parent_artifact_or_event: Mapping[str, Any] | None = None,
+    synchronization_tolerance_seconds: float = 0.0005,
+    maximum_source_bytes: int = _MAX_NATIVE_SOURCE_BYTES,
+    ffprobe_executable: str | Path | None = None,
+    probe_timeout_seconds: float = _PROBE_TIMEOUT_SECONDS,
+    maximum_probe_output_bytes: int = _MAX_PROBE_OUTPUT_BYTES,
+    probe_runner: ProbeRunner | None = None,
+) -> dict[str, Any]:
+    """Execute bounded source probes and normalize their exact receipts."""
+
+    _validate_local_authority(authority_used)
+    if maximum_source_bytes <= 0:
+        raise Native360NormalizationError(["native_360_probe_limit_invalid"])
+    if (
+        camera_metadata.get("schema_version") != "native_360_camera_metadata.v1"
+        or camera_metadata.get("source_capture_digest") != capture_digest
+    ):
+        raise Native360NormalizationError(["native_360_camera_metadata_invalid"])
+    segments = camera_metadata.get("segments")
+    if not isinstance(segments, list) or not segments:
+        raise Native360NormalizationError(["native_360_segments_missing"])
+    source_paths: list[str] = []
+    for segment in segments:
+        files = segment.get("files") if isinstance(segment, Mapping) else None
+        if not isinstance(files, list) or not files:
+            raise Native360NormalizationError(["native_360_segment_files_missing"])
+        for raw_file in files:
+            if not isinstance(raw_file, Mapping):
+                raise Native360NormalizationError(["native_360_segment_file_invalid"])
+            relative_path = _safe_relative(raw_file.get("relative_path"))
+            if relative_path in source_paths:
+                raise Native360NormalizationError(["native_360_source_path_reused"])
+            source_paths.append(relative_path)
+    if not source_paths:
+        raise Native360NormalizationError(["native_360_segment_files_missing"])
+
+    total_source_bytes = 0
+    for relative_path in source_paths:
+        total_source_bytes += _safe_source(
+            Path(capture_root).expanduser().resolve(), relative_path
+        ).stat().st_size
+        if total_source_bytes > maximum_source_bytes:
+            raise Native360NormalizationError(["native_360_source_oversized"])
+
+    per_source_limit = maximum_source_bytes
+    receipts = {
+        relative_path: probe_native_360_source(
+            capture_root=capture_root,
+            source_relative_path=relative_path,
+            ffprobe_executable=ffprobe_executable,
+            timeout_seconds=probe_timeout_seconds,
+            maximum_source_bytes=per_source_limit,
+            maximum_output_bytes=maximum_probe_output_bytes,
+            runner=probe_runner,
+        )
+        for relative_path in source_paths
+    }
+    return normalize_native_360_capture(
+        capture_root=capture_root,
+        output_root=output_root,
+        intake_id=intake_id,
+        capture_digest=capture_digest,
+        camera_metadata=camera_metadata,
+        probe_receipts_by_path=receipts,
+        source_commit_sha=source_commit_sha,
+        implementation_digest=implementation_digest,
+        authority_used=authority_used,
+        timestamp=timestamp,
+        parent_artifact_or_event=parent_artifact_or_event,
+        synchronization_tolerance_seconds=synchronization_tolerance_seconds,
+        maximum_source_bytes=maximum_source_bytes,
+    )
+
+
 __all__ = [
     "CAMERA_360_RIG_SCHEMA_VERSION",
     "DUAL_FISHEYE_BINDING_SCHEMA_VERSION",
@@ -1204,5 +1315,6 @@ __all__ = [
     "Native360NormalizationError",
     "build_native_360_probe_receipt",
     "normalize_native_360_capture",
+    "probe_and_normalize_native_360_capture",
     "probe_native_360_source",
 ]

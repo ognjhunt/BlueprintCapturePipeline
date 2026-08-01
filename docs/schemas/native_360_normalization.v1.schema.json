@@ -25,6 +25,19 @@
         "digest": {"$ref": "#/$defs/sha256"}
       }
     },
+    "probe_receipt_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_relative_path", "relative_path", "digest", "probe_receipt_digest"
+      ],
+      "properties": {
+        "source_relative_path": {"$ref": "#/$defs/relative_path"},
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "probe_receipt_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
     "probe_stream": {
       "type": "object",
       "additionalProperties": false,
@@ -139,6 +152,11 @@
         "container_image_digest": {"type": "null"},
         "deterministic_configuration_digest": {"$ref": "#/$defs/sha256"},
         "original_file_references": {"type": "array", "minItems": 1},
+        "probe_receipt_references": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/probe_receipt_reference"}
+        },
         "camera_metadata_digest": {"$ref": "#/$defs/sha256"},
         "probe_runtime_digest": {"type": ["string", "null"]},
         "input_digests": {"type": "object"},
