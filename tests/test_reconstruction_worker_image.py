@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from blueprint_pipeline.reconstruction_worker_contracts import PINNED_WORKER_COMPONENTS
 from blueprint_pipeline.reconstruction_worker_image_healthcheck import (
     COLMAP_REVISION,
     COLMAP_VERSION,
@@ -71,6 +72,22 @@ def _command(argv):
 def test_reconstruction_worker_recipe_is_digest_and_revision_pinned():
     dockerfile = (IMAGE_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "FROM nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:" in dockerfile
+    assert "ARG PYTHON_VERSION=3.11.9" in dockerfile
+    assert (
+        "ARG PYTHON_SOURCE_SHA256="
+        "9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87"
+        in dockerfile
+    )
+    assert "python3.11 python3.11-dev" not in dockerfile
+    assert "https://www.python.org/ftp/python/${PYTHON_VERSION}/" in dockerfile
+    assert "sha256sum --check --strict" in dockerfile
+    assert "/opt/python-${PYTHON_VERSION}/bin/python3.11 -m venv /opt/venv" in dockerfile
+    stack = next(
+        row for row in PINNED_WORKER_COMPONENTS if row["component_id"] == "python_ml_runtime"
+    )
+    assert "9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87" in stack[
+        "source_revision"
+    ]
     assert f"ARG COLMAP_REVISION={COLMAP_REVISION}" in dockerfile
     assert f"ARG GSPLAT_REVISION={GSPLAT_REVISION}" in dockerfile
     assert f"ARG THREEDGRUT_REVISION={THREEDGRUT_REVISION}" in dockerfile

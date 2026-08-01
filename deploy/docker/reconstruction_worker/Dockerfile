@@ -4,6 +4,8 @@ FROM nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:5645fec64549cc35930eee9d85aafd2
 ARG DEBIAN_FRONTEND=noninteractive
 ARG BLUEPRINT_SOURCE_COMMIT
 ARG BLUEPRINT_CONTAINER_IMAGE_DIGEST
+ARG PYTHON_VERSION=3.11.9
+ARG PYTHON_SOURCE_SHA256=9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87
 ARG FFMPEG_VERSION=6.1.1
 ARG COLMAP_REVISION=9c23f6942fe69962e06030905e77067c8673382f
 ARG GSPLAT_REVISION=937e29912570c372bed6747a5c9bf85fed877bae
@@ -22,13 +24,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates cmake curl git libboost-filesystem-dev \
       libboost-graph-dev libboost-program-options-dev libceres-dev libcgal-dev \
       libeigen3-dev libfreeimage-dev libglew-dev libgoogle-glog-dev libmetis-dev \
-      libsqlite3-dev nasm pkg-config python3.11 python3.11-dev \
-      python3-pip python3-venv yasm \
+      libbz2-dev libffi-dev libgdbm-dev liblzma-dev libncursesw5-dev \
+      libreadline-dev libsqlite3-dev libssl-dev nasm pkg-config python3-pip \
+      tk-dev uuid-dev xz-utils yasm zlib1g-dev \
     && python3 -m pip install --no-cache-dir cmake==3.28.3 ninja==1.11.1.1 \
     && gcc --version | grep -F "11.4.0" \
     && cmake --version | grep -F "cmake version 3.28.3" \
     && test "$(ninja --version)" = "1.11.1" \
     && rm -rf /var/lib/apt/lists/*
+
+RUN curl --fail --location --retry 3 \
+      "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz" \
+      --output /tmp/python.tar.xz \
+    && printf '%s  %s\n' "${PYTHON_SOURCE_SHA256}" /tmp/python.tar.xz \
+      | sha256sum --check --strict \
+    && mkdir /tmp/python \
+    && tar --extract --xz --file /tmp/python.tar.xz --strip-components=1 --directory /tmp/python \
+    && cd /tmp/python \
+    && ./configure --prefix=/opt/python-${PYTHON_VERSION} --enable-shared --with-ensurepip=install \
+    && make -j"$(nproc)" \
+    && make install \
+    && printf '%s\n' "/opt/python-${PYTHON_VERSION}/lib" \
+      > /etc/ld.so.conf.d/blueprint-python.conf \
+    && ldconfig \
+    && /opt/python-${PYTHON_VERSION}/bin/python3.11 --version \
+      | grep -F "Python ${PYTHON_VERSION}" \
+    && rm -rf /tmp/python /tmp/python.tar.xz
 
 RUN curl --fail --location --retry 3 \
       "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
@@ -57,7 +78,7 @@ RUN git clone --filter=blob:none https://github.com/colmap/colmap.git /opt/colma
     && colmap -h >/dev/null
 
 COPY deploy/docker/reconstruction_worker/requirements.lock /opt/blueprint/requirements.lock
-RUN python3.11 -m venv /opt/venv \
+RUN /opt/python-${PYTHON_VERSION}/bin/python3.11 -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip==24.2 setuptools==74.1.2 wheel==0.44.0 \
     && /opt/venv/bin/pip install --extra-index-url https://download.pytorch.org/whl/cu124 \
       --requirement /opt/blueprint/requirements.lock

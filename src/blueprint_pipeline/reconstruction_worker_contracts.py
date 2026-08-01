@@ -102,7 +102,7 @@ PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
         "name": "Python/PyTorch/NumPy/OpenCV/Trimesh",
         "version": "python-3.11.9;torch-2.4.1+cu124;numpy-1.26.4;opencv-python-headless-4.10.0.84;trimesh-4.4.9",
         "source_url": "https://www.python.org/;https://pytorch.org/;https://pypi.org/",
-        "source_revision": "candidate_lock_v1",
+        "source_revision": "python-3.11.9-source-sha256:9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87;python-wheel-lock-v1",
         "license": "PSF-2.0;BSD-3-Clause;BSD-3-Clause;Apache-2.0;MIT",
         "redistribution": "wheel_hash_lock_and_notice_bundle_required",
     },
