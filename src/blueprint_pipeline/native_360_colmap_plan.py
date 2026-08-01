@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
@@ -28,6 +29,7 @@ _CAMERA_MODELS = {
     "RAD_TAN_THIN_PRISM_FISHEYE": ("radtan_thin_prism_fisheye", 12),
 }
 _LENSES = ("front", "rear")
+_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _MODEL_PATH_ARGUMENTS = {
     "colmap_sift_bruteforce_v1": ((), ()),
     "colmap_sift_lightglue_v1": (
@@ -396,10 +398,12 @@ def compile_native_360_colmap_execution_plan(
         for ordinal, raw in enumerate(frames):
             row = dict(raw) if isinstance(raw, Mapping) else {}
             group_id = str(row.get("observation_group_id") or "")
+            frame_id = str(row.get("frame_id") or "")
             lens = str(row.get("source_camera_identity") or "")
             relative_path = _safe_relative(row.get("candidate_relative_path"))
             if (
-                not group_id
+                _SAFE_IDENTIFIER.fullmatch(group_id) is None
+                or _SAFE_IDENTIFIER.fullmatch(frame_id) is None
                 or lens not in _LENSES
                 or relative_path is None
                 or relative_path.startswith("evaluator_hidden/")
@@ -414,6 +418,11 @@ def compile_native_360_colmap_execution_plan(
             if lens in lens_rows:
                 errors.append(f"native_colmap_candidate_group_duplicate_lens:{group_id}:{lens}")
             lens_rows[lens] = row
+    frame_ids = [
+        str(row.get("frame_id")) for lens_rows in grouped.values() for row in lens_rows.values()
+    ]
+    if len(frame_ids) != len(set(frame_ids)):
+        errors.append("native_colmap_candidate_frame_id_duplicate")
     if any(set(lens_rows) != set(_LENSES) for lens_rows in grouped.values()):
         errors.append("native_colmap_candidate_group_incomplete")
     if any(
@@ -441,6 +450,7 @@ def compile_native_360_colmap_execution_plan(
             row = lens_rows[lens]
             materialization.append(
                 {
+                    "frame_id": row["frame_id"],
                     "observation_group_id": group_id,
                     "sensor_id": lens,
                     "source_relative_path": row["candidate_relative_path"],
@@ -569,6 +579,22 @@ def compile_native_360_colmap_execution_plan(
                 "0",
                 "--Mapper.ba_refine_extra_params",
                 "0",
+                "--Mapper.multiple_models",
+                "0",
+                *common,
+            ],
+        },
+        {
+            "step_id": "export_registered_model_text",
+            "argv": [
+                "colmap",
+                "model_converter",
+                "--input_path",
+                "workspace/sparse/0",
+                "--output_path",
+                "workspace/sparse_text",
+                "--output_type",
+                "TXT",
                 *common,
             ],
         },
@@ -630,6 +656,7 @@ def compile_native_360_colmap_execution_plan(
             "database": "workspace/database.db",
             "rig_config": "workspace/rig_config.json",
             "sparse_output": "workspace/sparse",
+            "sparse_text_output": "workspace/sparse_text",
         },
         "image_materialization": materialization,
         "mask_materialization": mask_materialization,
@@ -645,6 +672,7 @@ def compile_native_360_colmap_execution_plan(
         "expected_outputs": [
             "workspace/database.db",
             "workspace/sparse",
+            "workspace/sparse_text",
             "workspace/logs",
         ],
         "shell_invocation_allowed": False,

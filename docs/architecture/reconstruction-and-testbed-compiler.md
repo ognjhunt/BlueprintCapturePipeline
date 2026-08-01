@@ -374,6 +374,21 @@ front/rear groups, or any hidden path fail closed. The plan grants no shell or
 network access, does not execute COLMAP, and has an `execution_plan_only` claim
 ceiling; a registered trusted runtime and a typed pose result remain required.
 
+`native_360_colmap_runner.py` is that bounded trusted runtime. It independently
+rehashes every candidate image and calibrated mask, rejects symlinks and unsafe
+paths, materializes the fixed rig workspace, and invokes only the five admitted
+COLMAP subcommands as argv arrays with `shell=False`, bounded time, and bounded
+logs. The final model-converter step produces text camera/image/point records;
+the runner parses only the registered candidate image names to build the typed
+`pose_estimation_result.v1` registered/rejected inventory. Unknown returned
+images, missing or malformed model files, timeouts, startup failures, and
+nonzero commands become typed failures with retained logs. Both successes and
+failures are immutable and replay without repeating an unchanged attempt. The
+service wrapper fits the existing registered `run_pose_estimation` callable and
+accepts only the exact request digest; the agent still receives no plan,
+filesystem, shell, or runtime handle. Hermetic tests use a fake process runner,
+so this establishes adapter behavior but not a real COLMAP trajectory.
+
 The native reconstruction route now orders normalization before frozen dataset
 compilation. A trusted runtime-only compiler service composes decode and grouped
 split under the registered `compile_frozen_frame_dataset` tool; the model sees
