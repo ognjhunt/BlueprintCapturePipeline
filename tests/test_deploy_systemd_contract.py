@@ -159,6 +159,7 @@ def test_pubsub_handoff_listener_has_repeated_deployed_runner():
     assert "blueprint-pubsub-handoff-listener.service" in installer
     assert "blueprint-pubsub-handoff-listener.timer" in installer
     assert "systemctl enable --now blueprint-pubsub-handoff-listener.timer" in installer
+    assert 'chown -R --no-dereference "${SERVICE_USER}:${SERVICE_GROUP}"' in installer
     assert "${STATE_DIR}/robot-eval-job-requests" in installer
     assert "${STATE_DIR}/incoming_webapp_job_requests" in installer
     assert "${HANDOFF_DIR}" in installer

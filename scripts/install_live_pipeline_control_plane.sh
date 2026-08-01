@@ -95,6 +95,13 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/incoming_webapp_job_requests" \
   "${STATE_DIR}/deliveries" \
   "${STATE_DIR}/gpu_spend_guard"
+# Older units ran as root. Migrate only the two explicitly bounded runtime
+# trees before installing the hardened service-user units. GNU chown's
+# --no-dereference keeps a symlink itself in scope instead of following it to
+# an unrelated target.
+run chown -R --no-dereference "${SERVICE_USER}:${SERVICE_GROUP}" \
+  "${HANDOFF_DIR}" \
+  "${STATE_DIR}"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-control-plane.service" \
   "${SYSTEMD_DIR}/blueprint-pipeline-control-plane.service"

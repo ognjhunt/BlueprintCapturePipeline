@@ -22,6 +22,22 @@ def require_contains(text: str, needle: str, description: str) -> None:
         fail(f"missing {description}: {needle}")
 
 
+def has_run_e2e_result_binding(text: str) -> bool:
+    """Return whether the listener binds the canonical run_e2e result.
+
+    The listener intentionally formats its conditional invocation across
+    multiple lines.  Match Python whitespace instead of coupling the deploy
+    preflight to one formatter layout.
+    """
+
+    return bool(
+        re.search(
+            r"\bresult\s*=\s*\(?\s*run_e2e\s*\(\s*\*\*run_kwargs\s*\)",
+            text,
+        )
+    )
+
+
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     pyproject = repo_root / "pyproject.toml"
@@ -78,11 +94,12 @@ def main() -> None:
         ("subscriber.pull", "pull subscription call"),
         ("from .run_e2e import run_end_to_end", "pipeline entrypoint import"),
         ("run_e2e: Callable[..., dict[str, Any]] = run_end_to_end", "pipeline invocation default"),
-        ("result = run_e2e(", "pipeline invocation"),
         ("subscriber.acknowledge", "post-success ack"),
         ("run_evaluation_prep=run_evaluation_prep", "evaluation prep handoff"),
     ]:
         require_contains(listener_text, needle, description)
+    if not has_run_e2e_result_binding(listener_text):
+        fail("missing pipeline invocation result binding")
 
     for needle, description in [
         ('resource "google_pubsub_topic" "pipeline_trigger"', "descriptor topic resource"),
