@@ -62,6 +62,9 @@ _CLAIM_BOUNDARY = (
 )
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 MIN_HANDOFF_REMAINING_SECONDS = 60
+_OWNED_PENDING_TEARDOWN_LANES = {
+    "isaac_g1_kitchen_parity": frozenset({"isaac_startup_supervisor"}),
+}
 
 
 def default_lease_dir() -> Path:
@@ -196,6 +199,10 @@ def build_paid_provider_lane_reconciliation(
     """
     provider_name = str(provider).strip().lower()
     lane_name = str(lane)
+    owned_pending_lanes = {
+        lane_name,
+        *_OWNED_PENDING_TEARDOWN_LANES.get(lane_name, ()),
+    }
     inventory = dict(provider_inventory or {})
     inventory_confirmed = inventory.get("api_confirmed") is True
     live_count = inventory.get("live_resource_count")
@@ -204,7 +211,12 @@ def build_paid_provider_lane_reconciliation(
         record
         for record in open_pending_teardowns
         if str(record.get("provider") or "").strip().lower() == provider_name
-        and str(record.get("lane") or "") == lane_name
+        # A legacy record without a lane cannot be proven unrelated and must
+        # remain fail-closed. Explicitly named sibling lanes are independent.
+        and (
+            not str(record.get("lane") or "")
+            or str(record.get("lane") or "") in owned_pending_lanes
+        )
         and record.get("status") == "open"
     ]
     maximum_existing = max(0, int(maximum_existing_resources))
