@@ -187,6 +187,10 @@ used as blind confirmation.
   interaction three, and freezes the complete current-reference horizon at 12
   full policy-to-WAM-to-same-policy interactions from Ctrl-World's official
   `interact_num = 12` reference;
+- `compute_authorization_ctrl_world_allocation_4.json` and
+  `ctrl_world_current_reference_wam_2_gpu_profile_freeze_v1.json` — bind the
+  third generated-only WAM transition to policy query 2, its 26-frame feedback
+  history, one immutable provider bundle, and one single-use allocation;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
