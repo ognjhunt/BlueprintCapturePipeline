@@ -17,6 +17,8 @@ from blueprint_pipeline.reconstruction_worker_license_inventory import (
     ReconstructionWorkerLicenseInventoryError,
     build_reconstruction_worker_license_inventory,
     parse_hashed_requirements_lock,
+    validate_reconstruction_worker_license_inventory,
+    validate_reconstruction_worker_license_review_receipt,
 )
 
 
@@ -63,6 +65,38 @@ def _inventory(*, policy: dict | None = None) -> dict:
     )
 
 
+def _review_receipt(inventory: dict) -> dict:
+    value = {
+        "schema_version": "reconstruction_worker_license_review_receipt.v2",
+        "status": "accepted_internal_build_only",
+        "source_commit_sha": inventory["source_commit_sha"],
+        "worker_stack_manifest_digest": inventory["worker_stack_manifest_digest"],
+        "requirements_lock_digest": inventory["requirements_lock_digest"],
+        "license_inventory_digest": inventory["license_inventory_digest"],
+        "license_policy_digest": inventory["license_policy_digest"],
+        "registry_visibility": "private",
+        "internal_build_authorized": True,
+        "redistribution_authorized": False,
+        "commercial_distribution_authorized": False,
+        "review_basis": "human_review_of_digest_bound_inventory",
+        "reviewer_authority_id": "human-reviewer-fixture",
+        "reviewed_dependency_count": inventory["dependency_count"],
+        "reviewed_source_component_ids": sorted(
+            row["component_id"] for row in inventory["source_component_reviews"]
+        ),
+        "reviewed_model_asset_ids": sorted(
+            row["model_id"] for row in inventory["model_asset_reviews"]
+        ),
+        "acknowledged_inventory_blockers": inventory["blockers"],
+        "timestamp": "2026-08-01T12:00:00Z",
+        "warnings": ["internal private build only"],
+    }
+    value["license_review_receipt_digest"] = canonical_digest(
+        value, digest_field="license_review_receipt_digest"
+    )
+    return value
+
+
 def test_actual_worker_lock_emits_non_authorizing_review_inventory() -> None:
     inventory = _inventory()
 
@@ -96,6 +130,78 @@ def test_actual_worker_lock_emits_non_authorizing_review_inventory() -> None:
 def test_inventory_conforms_to_versioned_schema() -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator(schema).validate(_inventory())
+
+
+def test_v2_human_receipt_binds_every_inventory_identity_and_blocker() -> None:
+    inventory = _inventory()
+    receipt = _review_receipt(inventory)
+    schema = json.loads(
+        (
+            REPO_ROOT
+            / "docs/schemas/reconstruction_worker_license_review_receipt.v2.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    jsonschema.Draft202012Validator(schema).validate(receipt)
+    assert (
+        validate_reconstruction_worker_license_inventory(
+            inventory,
+            source_commit_sha=SOURCE_SHA,
+            worker_stack_manifest=_stack(),
+        )
+        == []
+    )
+    assert (
+        validate_reconstruction_worker_license_review_receipt(
+            receipt, license_inventory=inventory
+        )
+        == []
+    )
+
+
+def test_stale_inventory_or_partial_human_review_fails_closed() -> None:
+    inventory = _inventory()
+    tampered_inventory = copy.deepcopy(inventory)
+    tampered_inventory["dependency_count"] -= 1
+    assert {
+        "reconstruction_worker_license_inventory_dependencies_invalid",
+        "reconstruction_worker_license_inventory_digest_mismatch",
+    } <= set(
+        validate_reconstruction_worker_license_inventory(
+            tampered_inventory,
+            source_commit_sha=SOURCE_SHA,
+            worker_stack_manifest=_stack(),
+        )
+    )
+
+    receipt = _review_receipt(inventory)
+    receipt["acknowledged_inventory_blockers"] = receipt[
+        "acknowledged_inventory_blockers"
+    ][1:]
+    receipt["license_review_receipt_digest"] = canonical_digest(
+        receipt, digest_field="license_review_receipt_digest"
+    )
+    assert (
+        "reconstruction_worker_license_review_receipt_blockers_mismatch"
+        in validate_reconstruction_worker_license_review_receipt(
+            receipt, license_inventory=inventory
+        )
+    )
+
+
+def test_legacy_or_prompt_only_receipt_cannot_unlock_current_inventory() -> None:
+    inventory = _inventory()
+    receipt = _review_receipt(inventory)
+    receipt["schema_version"] = "reconstruction_worker_license_review_receipt.v1"
+    receipt["review_basis"] = "agent_interpreted_user_prompt"
+    receipt["license_review_receipt_digest"] = canonical_digest(
+        receipt, digest_field="license_review_receipt_digest"
+    )
+    blockers = validate_reconstruction_worker_license_review_receipt(
+        receipt, license_inventory=inventory
+    )
+    assert "reconstruction_worker_license_review_receipt_schema_invalid" in blockers
+    assert "reconstruction_worker_license_review_receipt_basis_invalid" in blockers
 
 
 def test_unhashed_requirements_and_duplicate_entries_fail_closed() -> None:

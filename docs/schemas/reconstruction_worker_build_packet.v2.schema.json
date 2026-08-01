@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_worker_build_packet.v2.schema.json",
+  "title": "Reconstruction Worker Build Packet v2",
+  "type": "object",
+  "required": ["schema_version", "packet_kind", "status", "blockers", "worker_stack_manifest_digest", "license_inventory_digest", "license_review_receipt_digest", "image_ref", "source_commit_sha", "source_tree_digest", "source_worktree_dirty", "allocator_entrypoint", "canonical_paid_resource_seam_required", "direct_provider_launcher_allowed", "provider_identity", "required_outputs", "paid_execution_started", "allocation_success_is_scientific_success", "build_success_is_scientific_success", "timestamp", "build_packet_digest"],
+  "properties": {
+    "schema_version": {"const": "reconstruction_worker_build_packet.v2"},
+    "packet_kind": {"const": "reconstruction_worker_image"},
+    "status": {"enum": ["ready", "blocked"]},
+    "license_inventory_digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+    "license_review_receipt_digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+    "canonical_paid_resource_seam_required": {"const": true},
+    "direct_provider_launcher_allowed": {"const": false},
+    "provider_identity": {"const": null},
+    "paid_execution_started": {"const": false},
+    "allocation_success_is_scientific_success": {"const": false},
+    "build_success_is_scientific_success": {"const": false},
+    "build_packet_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

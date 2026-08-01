@@ -20,6 +20,7 @@ from .reconstruction_worker_contracts import (
 
 
 SCHEMA_VERSION = "reconstruction_worker_license_inventory.v1"
+REVIEW_RECEIPT_SCHEMA_VERSION = "reconstruction_worker_license_review_receipt.v2"
 _REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s\\]+)\s*\\$")
 _HASH = re.compile(r"--hash=sha256:([0-9a-f]{64})(?:\s*\\)?$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -241,6 +242,175 @@ def build_reconstruction_worker_license_inventory(
         artifact, digest_field="license_inventory_digest"
     )
     return artifact
+
+
+def validate_reconstruction_worker_license_inventory(
+    value: Mapping[str, Any],
+    *,
+    source_commit_sha: str,
+    worker_stack_manifest: Mapping[str, Any],
+) -> list[str]:
+    """Validate the digest-bound inventory without interpreting it as authority."""
+
+    blockers: list[str] = []
+    try:
+        stack = build_worker_stack_manifest(worker_stack_manifest)
+    except ReconstructionWorkerContractError:
+        return ["reconstruction_worker_license_inventory_stack_invalid"]
+    if value.get("schema_version") != SCHEMA_VERSION:
+        blockers.append("reconstruction_worker_license_inventory_schema_invalid")
+    if value.get("source_commit_sha") != source_commit_sha:
+        blockers.append("reconstruction_worker_license_inventory_source_mismatch")
+    if value.get("worker_stack_manifest_digest") != stack.get(
+        "worker_stack_manifest_digest"
+    ):
+        blockers.append("reconstruction_worker_license_inventory_stack_mismatch")
+    if value.get("requirements_lock_digest") != "sha256:" + REQUIREMENTS_LOCK_SHA256:
+        blockers.append("reconstruction_worker_license_inventory_lock_mismatch")
+    supplied_digest = value.get("license_inventory_digest")
+    if supplied_digest != canonical_digest(
+        value, digest_field="license_inventory_digest"
+    ):
+        blockers.append("reconstruction_worker_license_inventory_digest_mismatch")
+    if not _COMMIT.fullmatch(source_commit_sha):
+        blockers.append("reconstruction_worker_license_inventory_source_invalid")
+    if not re.fullmatch(
+        r"sha256:[0-9a-f]{64}", str(value.get("license_policy_digest") or "")
+    ):
+        blockers.append("reconstruction_worker_license_inventory_policy_digest_invalid")
+    for field in (
+        "agent_approval_permitted",
+        "internal_build_authorized",
+        "redistribution_authorized",
+        "commercial_distribution_authorized",
+    ):
+        if value.get(field) is not False:
+            blockers.append(f"reconstruction_worker_license_inventory_{field}_invalid")
+    if value.get("proof_effect") != "none":
+        blockers.append("reconstruction_worker_license_inventory_proof_effect_invalid")
+    if value.get("claim_ceiling") != "license_inventory_and_review_gap_only":
+        blockers.append("reconstruction_worker_license_inventory_claim_ceiling_invalid")
+
+    dependency_rows = value.get("dependency_reviews")
+    dependency_rows = dependency_rows if isinstance(dependency_rows, list) else []
+    exact_requirements = [
+        row.get("exact_requirement")
+        for row in dependency_rows
+        if isinstance(row, Mapping)
+    ]
+    if (
+        value.get("dependency_count") != len(dependency_rows)
+        or len(exact_requirements) != len(dependency_rows)
+        or exact_requirements != sorted(exact_requirements)
+        or len(exact_requirements) != len(set(exact_requirements))
+    ):
+        blockers.append("reconstruction_worker_license_inventory_dependencies_invalid")
+
+    source_rows = value.get("source_component_reviews")
+    source_rows = source_rows if isinstance(source_rows, list) else []
+    source_ids = sorted(
+        row.get("component_id")
+        for row in source_rows
+        if isinstance(row, Mapping) and isinstance(row.get("component_id"), str)
+    )
+    if source_ids != sorted(row["component_id"] for row in stack["components"]):
+        blockers.append("reconstruction_worker_license_inventory_components_invalid")
+    model_rows = value.get("model_asset_reviews")
+    model_rows = model_rows if isinstance(model_rows, list) else []
+    model_ids = sorted(
+        row.get("model_id")
+        for row in model_rows
+        if isinstance(row, Mapping) and isinstance(row.get("model_id"), str)
+    )
+    if model_ids != sorted(row["model_id"] for row in stack["model_assets"]):
+        blockers.append("reconstruction_worker_license_inventory_models_invalid")
+
+    inventory_blockers = value.get("blockers")
+    inventory_blockers = inventory_blockers if isinstance(inventory_blockers, list) else []
+    if (
+        any(not isinstance(blocker, str) or not blocker for blocker in inventory_blockers)
+        or inventory_blockers != sorted(set(inventory_blockers))
+    ):
+        blockers.append("reconstruction_worker_license_inventory_blockers_invalid")
+    expected_status = "review_required" if inventory_blockers else "policy_approved"
+    if value.get("status") != expected_status:
+        blockers.append("reconstruction_worker_license_inventory_status_invalid")
+    return sorted(set(blockers))
+
+
+def validate_reconstruction_worker_license_review_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    license_inventory: Mapping[str, Any],
+) -> list[str]:
+    """Require explicit human review of every identity and unresolved blocker."""
+
+    blockers: list[str] = []
+    if receipt.get("schema_version") != REVIEW_RECEIPT_SCHEMA_VERSION:
+        blockers.append("reconstruction_worker_license_review_receipt_schema_invalid")
+    if receipt.get("status") != "accepted_internal_build_only":
+        blockers.append("reconstruction_worker_license_review_receipt_status_invalid")
+    for field in (
+        "source_commit_sha",
+        "worker_stack_manifest_digest",
+        "requirements_lock_digest",
+        "license_inventory_digest",
+        "license_policy_digest",
+    ):
+        if receipt.get(field) != license_inventory.get(field):
+            blockers.append(
+                f"reconstruction_worker_license_review_receipt_{field}_mismatch"
+            )
+    if receipt.get("registry_visibility") != "private":
+        blockers.append("reconstruction_worker_license_review_receipt_registry_invalid")
+    if receipt.get("internal_build_authorized") is not True:
+        blockers.append(
+            "reconstruction_worker_license_review_receipt_internal_authority_missing"
+        )
+    if receipt.get("redistribution_authorized") is not False:
+        blockers.append(
+            "reconstruction_worker_license_review_receipt_redistribution_invalid"
+        )
+    if receipt.get("commercial_distribution_authorized") is not False:
+        blockers.append(
+            "reconstruction_worker_license_review_receipt_commercial_distribution_invalid"
+        )
+    if receipt.get("review_basis") != "human_review_of_digest_bound_inventory":
+        blockers.append("reconstruction_worker_license_review_receipt_basis_invalid")
+    if not str(receipt.get("reviewer_authority_id") or "").strip():
+        blockers.append("reconstruction_worker_license_review_receipt_reviewer_missing")
+    if receipt.get("reviewed_dependency_count") != license_inventory.get(
+        "dependency_count"
+    ):
+        blockers.append(
+            "reconstruction_worker_license_review_receipt_dependency_count_mismatch"
+        )
+    expected_components = sorted(
+        row.get("component_id")
+        for row in license_inventory.get("source_component_reviews", [])
+        if isinstance(row, Mapping)
+    )
+    if receipt.get("reviewed_source_component_ids") != expected_components:
+        blockers.append(
+            "reconstruction_worker_license_review_receipt_components_mismatch"
+        )
+    expected_models = sorted(
+        row.get("model_id")
+        for row in license_inventory.get("model_asset_reviews", [])
+        if isinstance(row, Mapping)
+    )
+    if receipt.get("reviewed_model_asset_ids") != expected_models:
+        blockers.append("reconstruction_worker_license_review_receipt_models_mismatch")
+    if receipt.get("acknowledged_inventory_blockers") != license_inventory.get(
+        "blockers"
+    ):
+        blockers.append("reconstruction_worker_license_review_receipt_blockers_mismatch")
+    supplied_digest = receipt.get("license_review_receipt_digest")
+    if supplied_digest != canonical_digest(
+        receipt, digest_field="license_review_receipt_digest"
+    ):
+        blockers.append("reconstruction_worker_license_review_receipt_digest_mismatch")
+    return sorted(set(blockers))
 
 
 def main(argv: Sequence[str] | None = None) -> int:

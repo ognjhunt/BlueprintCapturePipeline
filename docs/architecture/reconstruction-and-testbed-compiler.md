@@ -502,12 +502,18 @@ Even successful tool output is only a calibrated-trajectory or appearance-asset
 candidate. The independent evaluators and later geometry/Isaac gates own any
 qualification.
 
-`reconstruction_worker_build_packet.v1` is provider-neutral and names only the
+`reconstruction_worker_build_packet.v2` is provider-neutral and names only the
 canonical `paid_resource_allocator cpu-build` seam. It cannot select a provider
 or launch a build. It fails closed without a clean immutable commit, exact source
-tree, recipe and dependency-lock digests, license-review receipt, budget, TTL,
-retry cap, and authority. Allocation and image-build success are explicitly not
-scientific success.
+tree, recipe and dependency-lock digests, digest-bound license inventory and v2
+human review receipt, budget, TTL, retry cap, and authority. The inventory binds
+all 107 hash-locked Python dependencies, source components, model assets, the
+worker stack, and the exact license-policy digest. It grants no authority. A v2
+review receipt must acknowledge every recorded inventory blocker and every
+component identity, is limited to a private internal build, and cannot be issued
+from agent prose or a legacy receipt. Allocation and image-build success are
+explicitly not scientific success. The v1 schemas remain available only for
+replay of recorded historical admissions.
 
 The current clean-SHA admission at
 `ff9deb59bd2ac96a3ffc72d2ea70abdeb6fb9912` binds its historical Git tree,
@@ -526,18 +532,18 @@ regression-tested against `reconstruction_training_request.v1`: without a
 resolved digest-pinned worker image, request compilation fails closed before
 any trainer can receive candidate pixels.
 
-`reconstruction_worker_remote_build_packet.v1` materializes the corresponding
+`reconstruction_worker_remote_build_packet.v2` materializes the corresponding
 exact-source build context for that seam. It includes only tracked package
 sources and the required Docker recipe, lock inputs, lock generator, and resolved
 lock files, records every member digest,
 rejects symlinks and unsafe archive members, emits a byte-deterministic archive,
 and binds the executable build script to the source commit, recipe, dependency
-lock, worker-stack manifest, license-review receipt, and context manifest. The
-license receipt can authorize only a private internal build; it cannot grant
+lock, worker-stack manifest, license-inventory digest, v2 license-review receipt,
+and context manifest. The license receipt can authorize only a private internal build; it cannot grant
 redistribution or commercial distribution rights, and an agent cannot issue it.
 The script builds only `linux/amd64`, requests
 BuildKit provenance and SBOM attestations, resolves the pushed registry digest,
-and emits `reconstruction_worker_build_receipt.v1`. The shared CPU builder
+and emits `reconstruction_worker_build_receipt.v2`. The shared CPU builder
 independently validates both the archive and returned receipt and still requires
 its separate numeric spend/TTL envelope, watchdog, teardown, and provider-zero
 proof. A build receipt remains below the GPU runtime-smoke and scientific gates.

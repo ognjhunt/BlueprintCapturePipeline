@@ -647,6 +647,7 @@ def test_worker_build_packet_fails_closed_without_clean_sha_locks_and_paid_autho
         source_worktree_dirty=True,
         build_recipe_digest=None,
         dependency_lock_digest=None,
+        license_inventory_digest=None,
         license_review_receipt_digest=None,
         max_spend_usd=None,
         ttl_seconds=None,
@@ -662,6 +663,7 @@ def test_worker_build_packet_fails_closed_without_clean_sha_locks_and_paid_autho
         "worker_build_requires_clean_immutable_commit",
         "worker_build_recipe_digest_missing",
         "worker_dependency_lock_digest_missing",
+        "worker_license_inventory_digest_missing",
         "worker_license_review_receipt_missing",
         "worker_build_explicit_budget_missing",
         "worker_build_explicit_ttl_missing",
@@ -679,6 +681,7 @@ def test_worker_build_packet_can_become_ready_but_never_launches_or_selects_prov
         source_worktree_dirty=False,
         build_recipe_digest=D2,
         dependency_lock_digest=D3,
+        license_inventory_digest=D4,
         license_review_receipt_digest=D4,
         max_spend_usd=3.0,
         ttl_seconds=3600,
@@ -695,7 +698,7 @@ def test_worker_build_packet_can_become_ready_but_never_launches_or_selects_prov
     schema = json.loads(
         (
             Path(__file__).resolve().parents[1]
-            / "docs/schemas/reconstruction_worker_build_packet.v1.schema.json"
+            / "docs/schemas/reconstruction_worker_build_packet.v2.schema.json"
         ).read_text(encoding="utf-8")
     )
     jsonschema.validate(packet, schema)
