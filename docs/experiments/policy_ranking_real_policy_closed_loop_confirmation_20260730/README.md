@@ -274,6 +274,13 @@ used as blind confirmation.
   zero-only check at runtime SHA `0dc5671e`, prove zero or one existing GPU
   admits while two block, and prospectively rebind the unchanged WAM5 request
   to a fresh single-use authorization;
+- `protocol_amendment_31_wam5_adapter_two_gpu_retry_v1.md`,
+  `compute_authorization_ctrl_world_allocation_9_v3.json`, and
+  `ctrl_world_current_reference_wam_5_gpu_profile_freeze_v3.json` — preserve
+  the zero-mutation, zero-cost allocation-9-v2 adapter block; carry the
+  two-GPU ceiling through the final Vast provider prelaunch guard at runtime
+  SHA `288e2bf9`; and rebind the unchanged WAM5 request to a new unconsumed
+  single-use authorization;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
@@ -283,7 +290,7 @@ The registered three-interaction engineering gate and interactions four and
 five are complete. Policy query 5 returned from the same frozen `pi05_droid`
 checkpoint using WAM4's generated-only observation, and WAM5's exact
 29-history request is now prospectively frozen. The next finite gate is one
-allocation-9-v2 WAM5 execution: immutable publication, new object key, fresh
+allocation-9-v3 WAM5 execution: immutable publication, new object key, fresh
 global inventory below the two-GPU ceiling, real cumulative campaign
 reservation, paid admission, signed transport, provider preflight, and
 canonical dry run all precede mutation. WAM5 itself remains limited to one GPU.
