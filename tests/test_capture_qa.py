@@ -207,6 +207,36 @@ def test_external_reconstruction_qa_accepts_local_import_without_video_claims(
     assert report["next_cheapest_experiment"]["kind"] == "local_or_operator_measurement"
 
 
+def test_public_processed_observation_qa_is_accepted_without_raw_or_metric_upgrade(
+    tmp_path: Path,
+) -> None:
+    payload = b'{"schema_version":"processed_observation_dataset_manifest.v1"}\n'
+    filename = "processed_dataset.json"
+    report = build_capture_qa_report(
+        _envelope(
+            payload,
+            profile="public_processed_rgbd_pose_sequence",
+            streams=[
+                "processed_rgb_observations",
+                "camera_poses",
+                "camera_intrinsics",
+                "depth",
+            ],
+            filename=filename,
+        ),
+        upload_root=_upload(tmp_path, payload, filename=filename),
+    )
+
+    assert report["status"] == "accepted"
+    assert report["claim_ceiling"]["task_candidate_discovery"] is True
+    assert report["claim_ceiling"]["captured_observation_review"] is True
+    assert report["claim_ceiling"]["calibrated_camera_poses"] is False
+    assert report["claim_ceiling"]["metric_geometry"] is False
+    assert report["claim_ceiling"]["physical_task_success"] is False
+    assert "decoded_pts_continuity" not in {row["check_id"] for row in report["checks"]}
+    assert report["comparative_policy_ranking_verdict"] == "thesis_not_supported"
+
+
 def test_capture_qa_publication_is_exactly_bound_and_receipt_verified(
     tmp_path: Path, monkeypatch
 ) -> None:

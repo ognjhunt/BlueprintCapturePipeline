@@ -1176,9 +1176,24 @@ def compile_site_task_testbed(
             "evidence_inventory": sorted(
                 [
                     {
-                        "evidence_id": "raw_capture",
+                        "evidence_id": (
+                            "processed_capture_observations"
+                            if envelope["capture_authority_profile"]
+                            == "public_processed_rgbd_pose_sequence"
+                            else "raw_capture"
+                        ),
                         "digest": capture_digest,
                         "authority": envelope["capture_authority_profile"],
+                        "raw_capture_authority": envelope[
+                            "capture_authority_profile"
+                        ]
+                        in {
+                            "iphone_arkit_lidar",
+                            "iphone_arkit_non_lidar",
+                            "camera_360_equirectangular",
+                            "camera_360_native",
+                            "monocular_video",
+                        },
                     },
                     {
                         "evidence_id": "capture_qa",
