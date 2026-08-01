@@ -37,7 +37,7 @@
           "artifact_id": {"pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
           "digest": {"$ref": "#/$defs/digest"},
           "bytes": {"type": "integer", "minimum": 0},
-          "archive_path": {"pattern": "^inputs/[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"},
+          "archive_path": {"pattern": "^inputs/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$"},
           "contains_hidden_heldout_pixels": {"const": false}
         },
         "additionalProperties": true

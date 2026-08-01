@@ -170,8 +170,7 @@ def _bound_source(root: Path, row: Mapping[str, Any]) -> tuple[Path, dict[str, A
         raise ReconstructionGpuOperationBundleError(
             ["reconstruction_operation_bundle_artifact_digest_mismatch"]
         )
-    suffix = "".join(source.suffixes)[-32:]
-    archive_path = f"inputs/{artifact_id}{suffix}"
+    archive_path = f"inputs/{relative.as_posix()}"
     return source, {
         "artifact_id": artifact_id,
         "role": role,

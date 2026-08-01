@@ -976,6 +976,10 @@ a separate `isaac_verification_worker_bundle.v1` and runtime-image family.
 Worker-side materialization uses a bounded member-by-member extractor that
 rejects traversal, symlinks, compression, undeclared members, digest drift, and
 tampered replay state; it never delegates trust to ZIP `extractall` behavior.
-Scientific pose, trainer, and Isaac execution adapters remain unavailable until
-their provider lifecycle, output validation, teardown, and offline replay paths
-are independently qualified; the worker-smoke adapter cannot stand in for them.
+The in-container dispatcher can invoke only the registered native-360 COLMAP
+runner or pinned 3DGRUT trainer and revalidates typed results plus every declared
+output/checkpoint digest. Paid scientific pose/trainer execution remains
+unavailable until signed bundle transport, provider lifecycle, teardown, and
+offline replay are independently qualified. Isaac remains separately
+unavailable on its own runtime image; the worker-smoke adapter cannot stand in
+for any of these scientific lanes.
