@@ -464,6 +464,76 @@ def test_export_rejects_hidden_paths_digest_spoofing_and_nonrigid_pose(tmp_path:
         )
 
 
+def test_export_emits_complete_digest_bound_output_artifacts(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    request = _request(source)
+    output = tmp_path / "output"
+
+    result = export_colmap_training_dataset(
+        source_artifact=request, artifact_root=source, output_root=output
+    )
+
+    artifacts = result["output_artifacts"]
+    images = [row for row in artifacts if row["artifact_type"] == "candidate_image"]
+    sparse = [row for row in artifacts if row["artifact_type"] == "colmap_sparse_text"]
+    assert len(artifacts) == len(images) + len(sparse)
+    assert len(images) == result["image_count"] == 2
+    assert sorted(row["relative_path"] for row in sparse) == [
+        "sparse/0/cameras.txt",
+        "sparse/0/images.txt",
+        "sparse/0/points3D.txt",
+    ]
+    root = output / result["relative_path"]
+    for row in artifacts:
+        relative = Path(row["relative_path"])
+        assert not relative.is_absolute()
+        assert ".." not in relative.parts
+        materialized = root / relative
+        assert materialized.is_file()
+        assert _digest(materialized) == row["digest"]
+    assert {row["digest"] for row in sparse} <= set(result["output_digests"])
+    replayed = export_colmap_training_dataset(
+        source_artifact=request, artifact_root=source, output_root=output
+    )
+    assert replayed["output_artifacts"] == artifacts
+
+
+def test_export_rejects_traversal_observation_id(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    request = _request(source)
+    observations = request["camera_observation_manifest"]
+    hostile = "../../escape"
+    observations["observations"][0]["observation_id"] = hostile
+    for frame in request["candidate_dataset_manifest"]["frames"]:
+        if frame["frame_id"] == "frame-1":
+            frame["frame_id"] = hostile
+    request["candidate_dataset_manifest"]["candidate_dataset_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in request["candidate_dataset_manifest"].items()
+            if key != "candidate_dataset_digest"
+        },
+        digest_field="candidate_dataset_digest",
+    )
+    observations["camera_observation_digest"] = canonical_digest(
+        {key: value for key, value in observations.items() if key != "camera_observation_digest"},
+        digest_field="camera_observation_digest",
+    )
+    request["colmap_training_dataset_export_request_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in request.items()
+            if key != "colmap_training_dataset_export_request_digest"
+        },
+        digest_field="colmap_training_dataset_export_request_digest",
+    )
+
+    with pytest.raises(ColmapTrainingDatasetError, match="observation_id_invalid"):
+        export_colmap_training_dataset(
+            source_artifact=request, artifact_root=source, output_root=tmp_path / "out-hostile"
+        )
+
+
 def test_recorded_real_export_is_candidate_only_and_self_digesting() -> None:
     receipt = json.loads(RECORDED_REAL_EXPORT.read_text(encoding="utf-8"))
     schema = json.loads(

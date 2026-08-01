@@ -165,6 +165,43 @@ def _load_trajectory(root: Path, capture: str) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: row["frame_id"])
 
 
+def build_mushroom_colmap_export_request(
+    *,
+    source_capture_digest: str,
+    source_commit_sha: str,
+    dataset_digest: str,
+    split_digest: str,
+    camera_observation_manifest: Mapping[str, Any],
+    candidate_dataset_manifest: Mapping[str, Any],
+    authority_used: Mapping[str, Any],
+    timestamp: str,
+    configuration_digest: str,
+) -> dict[str, Any]:
+    """Deterministically rebuild the proxy's COLMAP export request.
+
+    The compiler and any later initialization-binding runner must produce the
+    byte-identical request so the recorded ``request_digest`` can be verified
+    before a derived (for example point-seeded) request is created.
+    """
+
+    return {
+        "schema_version": "colmap_training_dataset_export_request.v1",
+        "stable_run_identity": f"mushroom-koivu-{configuration_digest[7:19]}",
+        "source_capture_digest": source_capture_digest,
+        "source_commit_sha": source_commit_sha,
+        "reconstruction_dataset_digest": dataset_digest,
+        "frozen_split_digest": split_digest,
+        "camera_observation_manifest": json.loads(canonical_json(dict(camera_observation_manifest))),
+        "candidate_dataset_manifest": json.loads(canonical_json(dict(candidate_dataset_manifest))),
+        "coordinate_frame_declaration": {"declaration": "mushroom_published_camera_to_world", "handedness": "not_independently_declared", "gravity_alignment": "not_independently_validated"},
+        "units": "publisher_pose_units_not_independently_validated",
+        "metric_scale_status": "not_independently_validated",
+        "authority_used": dict(authority_used),
+        "blockers": ["raw_video_and_timestamps_missing", "arkit_sensor_streams_missing", "metric_scale_not_independently_validated"],
+        "timestamp": timestamp,
+    }
+
+
 def compile_mushroom_processed_iphone_proxy(
     *,
     scene_root: str | Path,
@@ -273,22 +310,17 @@ def compile_mushroom_processed_iphone_proxy(
     _write_immutable(artifact_root / "evaluator_hidden" / "hidden_evaluator_manifest.json", hidden)
     dataset_digest = canonical_digest({"candidate": candidate["candidate_dataset_digest"], "hidden": hidden["hidden_evaluator_digest"]})
     colmap = export_colmap_training_dataset(
-        source_artifact={
-            "schema_version": "colmap_training_dataset_export_request.v1",
-            "stable_run_identity": f"mushroom-koivu-{configuration_digest[7:19]}",
-            "source_capture_digest": source_capture_digest,
-            "source_commit_sha": source_commit_sha,
-            "reconstruction_dataset_digest": dataset_digest,
-            "frozen_split_digest": split_digest,
-            "camera_observation_manifest": camera,
-            "candidate_dataset_manifest": candidate,
-            "coordinate_frame_declaration": {"declaration": "mushroom_published_camera_to_world", "handedness": "not_independently_declared", "gravity_alignment": "not_independently_validated"},
-            "units": "publisher_pose_units_not_independently_validated",
-            "metric_scale_status": "not_independently_validated",
-            "authority_used": dict(authority_used),
-            "blockers": ["raw_video_and_timestamps_missing", "arkit_sensor_streams_missing", "metric_scale_not_independently_validated"],
-            "timestamp": timestamp,
-        },
+        source_artifact=build_mushroom_colmap_export_request(
+            source_capture_digest=source_capture_digest,
+            source_commit_sha=source_commit_sha,
+            dataset_digest=dataset_digest,
+            split_digest=split_digest,
+            camera_observation_manifest=camera,
+            candidate_dataset_manifest=candidate,
+            authority_used=authority_used,
+            timestamp=timestamp,
+            configuration_digest=configuration_digest,
+        ),
         artifact_root=artifact_root,
         output_root=artifact_root / "trainer_input",
     )
@@ -359,4 +391,8 @@ def compile_mushroom_processed_iphone_proxy(
     return _write_immutable(artifact_root / "mushroom_processed_proxy.json", report)
 
 
-__all__ = ["MushroomProcessedProxyError", "compile_mushroom_processed_iphone_proxy"]
+__all__ = [
+    "MushroomProcessedProxyError",
+    "build_mushroom_colmap_export_request",
+    "compile_mushroom_processed_iphone_proxy",
+]
