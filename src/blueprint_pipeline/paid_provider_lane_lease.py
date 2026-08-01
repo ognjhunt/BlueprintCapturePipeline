@@ -177,6 +177,7 @@ def build_paid_provider_lane_reconciliation(
         record
         for record in open_pending_teardowns
         if str(record.get("provider") or "").strip().lower() == provider_name
+        and str(record.get("lane") or "") == lane_name
         and record.get("status") == "open"
     ]
     blockers: list[str] = []

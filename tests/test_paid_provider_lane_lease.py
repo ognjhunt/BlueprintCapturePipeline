@@ -1252,6 +1252,25 @@ def test_release_retains_lease_until_terminal_reconciliation_passes(
     assert read_lease("runpod", "lane", tmp_path) is not None
 
 
+def test_reconciliation_does_not_block_on_another_lane_pending_teardown() -> None:
+    reconciliation = _reconciliation(
+        lane="openpi_policy_ranking_gpu_canary",
+        pending=[
+            {
+                "status": "open",
+                "provider": "runpod",
+                "lane": "nvidia_warehouse_native_camera_gpu_canary",
+                "run_id": "unrelated-concurrent-run",
+                "instance_id": "unrelated-instance",
+            }
+        ],
+    )
+
+    assert reconciliation["status"] == "passed"
+    assert reconciliation["open_pending_teardown_count"] == 0
+    assert reconciliation["reclaim_cannot_orphan_allocation"] is True
+
+
 def test_paid_job_blocks_before_provider_mutation_when_lane_owned(
     tmp_path: Path, monkeypatch
 ) -> None:
