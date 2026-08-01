@@ -1,1 +1,155 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://blueprint.example/schemas/isaac_asset_verification_result.v1.schema.json","type":"object","required":["schema_version","packaging_result_digest","checks","fixed_camera_render_references","status","simulator_task_success_proven","physical_success_proven","deployment_readiness_proven","proof_effect","claim_ceiling","isaac_verification_result_digest"],"properties":{"schema_version":{"const":"isaac_asset_verification_result.v1"},"status":{"const":"verified_compatibility_only"},"simulator_task_success_proven":{"const":false},"physical_success_proven":{"const":false},"deployment_readiness_proven":{"const":false},"proof_effect":{"const":"isaac_load_render_physics_presence_only"},"claim_ceiling":{"const":"isaac_load_render_compatibility"},"isaac_verification_result_digest":{"pattern":"^sha256:[0-9a-f]{64}$"}},"additionalProperties":true}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/isaac_asset_verification_result.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "stable_run_identity",
+    "source_capture_identity",
+    "source_capture_digest",
+    "original_file_references",
+    "producing_method",
+    "implementation_version",
+    "source_commit_sha",
+    "deterministic_configuration_digest",
+    "input_digests",
+    "output_digests",
+    "train_heldout_split_digest",
+    "camera_calibration_binding",
+    "coordinate_frame_declaration",
+    "units",
+    "provider_runtime_identity",
+    "cost_usd",
+    "duration_seconds",
+    "authority_used",
+    "warnings",
+    "blockers",
+    "parent_artifact_or_event",
+    "timestamp",
+    "packaging_result_digest",
+    "package_digest",
+    "isaac_verification_request_digest",
+    "isaac_runtime_result_digest",
+    "runtime_container_image_digest",
+    "runtime_implementation_digest",
+    "fixed_camera_spec_digest",
+    "exact_package_rehash_verified",
+    "runtime_artifact_rehash_verified",
+    "checks",
+    "physics_probe",
+    "fixed_camera_render_references",
+    "status",
+    "simulator_task_success_proven",
+    "physical_success_proven",
+    "deployment_readiness_proven",
+    "proof_effect",
+    "claim_ceiling",
+    "isaac_verification_result_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "isaac_asset_verification_result.v1"},
+    "stable_run_identity": {"type": "string", "minLength": 1},
+    "source_capture_identity": {"type": "string", "minLength": 1},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "original_file_references": {"type": "array"},
+    "producing_method": {"type": "string", "minLength": 1},
+    "implementation_version": {"type": "string", "minLength": 1},
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "deterministic_configuration_digest": {"$ref": "#/$defs/digest"},
+    "input_digests": {"type": "array"},
+    "output_digests": {"type": "array"},
+    "train_heldout_split_digest": {"$ref": "#/$defs/digest"},
+    "camera_calibration_binding": {"type": "object"},
+    "coordinate_frame_declaration": {"type": "object"},
+    "units": {"const": "meters"},
+    "provider_runtime_identity": {"type": "object"},
+    "cost_usd": {"type": "number", "minimum": 0},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "authority_used": {"type": "object"},
+    "warnings": {"type": "array"},
+    "blockers": {"const": []},
+    "parent_artifact_or_event": {"type": "object"},
+    "timestamp": {"type": "string", "minLength": 1},
+    "packaging_result_digest": {"$ref": "#/$defs/digest"},
+    "package_digest": {"$ref": "#/$defs/digest"},
+    "isaac_verification_request_digest": {"$ref": "#/$defs/digest"},
+    "isaac_runtime_result_digest": {"$ref": "#/$defs/digest"},
+    "runtime_container_image_digest": {
+      "type": "string",
+      "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+    },
+    "runtime_implementation_digest": {"$ref": "#/$defs/digest"},
+    "fixed_camera_spec_digest": {"$ref": "#/$defs/digest"},
+    "exact_package_rehash_verified": {"const": true},
+    "runtime_artifact_rehash_verified": {"const": true},
+    "checks": {
+      "type": "object",
+      "required": [
+        "exact_package_opened",
+        "expected_prims_present",
+        "stage_units_valid",
+        "transforms_valid",
+        "missing_assets_detected",
+        "particlefield_loaded",
+        "collision_geometry_active",
+        "ground_contact_surface_present",
+        "test_body_fell_through_floor",
+        "fixed_camera_renders_nonblank",
+        "nan_or_corrupt_render_detected",
+        "obvious_scale_mismatch_detected"
+      ],
+      "properties": {
+        "exact_package_opened": {"const": true},
+        "expected_prims_present": {"const": true},
+        "stage_units_valid": {"const": true},
+        "transforms_valid": {"const": true},
+        "missing_assets_detected": {"const": false},
+        "particlefield_loaded": {"const": true},
+        "collision_geometry_active": {"const": true},
+        "ground_contact_surface_present": {"const": true},
+        "test_body_fell_through_floor": {"const": false},
+        "fixed_camera_renders_nonblank": {"const": true},
+        "nan_or_corrupt_render_detected": {"const": false},
+        "obvious_scale_mismatch_detected": {"const": false}
+      }
+    },
+    "physics_probe": {
+      "type": "object",
+      "required": [
+        "ground_contact_surface_present",
+        "live_rigid_body_pose_observed",
+        "test_body_fell_through_floor",
+        "contact_event_count"
+      ],
+      "properties": {
+        "ground_contact_surface_present": {"const": true},
+        "live_rigid_body_pose_observed": {"const": true},
+        "test_body_fell_through_floor": {"const": false},
+        "contact_event_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "fixed_camera_render_references": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["artifact_id", "digest"],
+        "properties": {
+          "artifact_id": {"type": "string", "minLength": 1},
+          "digest": {"$ref": "#/$defs/digest"}
+        }
+      }
+    },
+    "status": {"const": "verified_compatibility_only"},
+    "simulator_task_success_proven": {"const": false},
+    "physical_success_proven": {"const": false},
+    "deployment_readiness_proven": {"const": false},
+    "proof_effect": {"const": "isaac_load_render_physics_presence_only"},
+    "claim_ceiling": {"const": "isaac_load_render_compatibility"},
+    "isaac_verification_result_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

@@ -41,6 +41,9 @@ from ..reconstruction_geometry_compiler import (
     compile_metric_geometry as compile_metric_geometry_runtime,
     qualify_collision_candidate as qualify_collision_candidate_runtime,
 )
+from ..isaac_reconstruction_verification import (
+    build_isaac_asset_verification_request,
+)
 from ..reconstruction_heldout_evaluation import (
     build_heldout_appearance_evaluation_request,
     build_visual_heldout_evaluation_report,
@@ -2539,6 +2542,11 @@ def _execute_geometry_contract_tool(
     if tool_id == "package_nurec_openusd":
         try:
             source = build_nurec_openusd_packaging_request(source)
+        except ValueError as exc:
+            raise ValueError(f"registered_tool_request_contract_invalid:{tool_id}") from exc
+    if tool_id == "verify_isaac_asset":
+        try:
+            source = build_isaac_asset_verification_request(source)
         except ValueError as exc:
             raise ValueError(f"registered_tool_request_contract_invalid:{tool_id}") from exc
     if tool_id == "evaluate_heldout_appearance":

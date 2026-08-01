@@ -31,17 +31,27 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
 LEGACY_RESULT_SCHEMA = "isaac_splat_nurec_render_result.v1"
-QUALIFICATION_RESULT_SCHEMA = "isaac_splat_nurec_render_result.v2"
+QUALIFICATION_RESULT_SCHEMA = "isaac_splat_nurec_render_result.v3"
 PARTICLEFIELD_TYPE = "ParticleField3DGaussianSplat"
+_CAMERA_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    payload = dict(payload)
+    if payload.get("schema_version") == QUALIFICATION_RESULT_SCHEMA:
+        payload.pop("isaac_runtime_result_digest", None)
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        payload["isaac_runtime_result_digest"] = (
+            "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -198,6 +208,20 @@ def _pixel_std(png_path: Path) -> float:
             return 0.0
 
 
+def _pixel_stats(png_path: Path) -> tuple[int, int, float, float]:
+    import numpy as np  # type: ignore
+    from PIL import Image  # type: ignore
+
+    with Image.open(str(png_path)) as image:
+        image.load()
+        rgb = image.convert("RGB")
+        array = np.asarray(rgb, dtype="float32")
+    if array.ndim != 3 or array.shape[2] != 3 or not np.isfinite(array).all():
+        raise ValueError("render_pixels_invalid")
+    height, width = array.shape[:2]
+    return int(width), int(height), float(array.mean()), float(array.std())
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -214,6 +238,13 @@ def _is_sha256_digest(value) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _is_image_digest(value) -> bool:
+    return bool(
+        isinstance(value, str)
+        and re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", value)
+    )
 
 
 def _select_ground_surface(collision_prims, *, requested_path="", declared_height=None):
@@ -294,6 +325,16 @@ def _classify_physics_probe(
         "live_rigid_body_pose_observed": positions_valid,
         "test_body_fell_through_floor": fell_through,
         "contact_event_count": int(contact_event_count),
+        "probe_configuration": {
+            "test_body": {
+                "shape": "cube",
+                "size_m": 0.1,
+                "mass_kg": 1.0,
+                "spawn_height_above_ground_m": 0.5,
+            },
+            "gravity_m_s2": -9.81,
+            "physics_dt_seconds": 1.0 / 60.0,
+        },
         "errors": list(errors),
         "claim_boundary": (
             "One bounded test-body contact probe verifies physics presence only; it does not prove "
@@ -550,6 +591,7 @@ def _run_qualification_physics_probe(
 
 
 def _render(args) -> int:
+    started = time.monotonic()
     out_dir = Path(args.out_dir).expanduser().resolve()
     frames_dir = out_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
@@ -563,7 +605,21 @@ def _render(args) -> int:
         "raw_secret_values_recorded": False,
     }
     if qualification_mode:
-        base["package_digest"] = args.package_digest
+        base.update(
+            {
+                "package_digest": args.package_digest,
+                "isaac_verification_request_digest": args.verification_request_digest,
+                "fixed_camera_spec_digest": args.camera_spec_digest,
+                "runtime_container_image_digest": args.runtime_container_image_digest,
+                "runtime_implementation_digest": args.runtime_implementation_digest,
+                "runtime_identity": {
+                    "runtime": "isaac_sim",
+                    "renderer": "RayTracedLighting",
+                    "python_version": sys.version.split()[0],
+                    "headless": True,
+                },
+            }
+        )
     _phase(result_path, base, "runner_started")
 
     python = args.python or sys.executable or "python3"
@@ -607,7 +663,32 @@ def _render(args) -> int:
             )
             return 2
 
-    cameras = json.loads(Path(args.cameras).read_text(encoding="utf-8")) if args.cameras else []
+    cameras_path = Path(args.cameras).expanduser().resolve()
+    if qualification_mode:
+        if _sha256_file(cameras_path) != args.camera_spec_digest:
+            _write_json(
+                result_path,
+                {**base, "status": "blocked", "blockers": ["isaac_camera_spec_digest_mismatch"]},
+            )
+            return 2
+        if _sha256_file(Path(__file__).resolve()) != args.runtime_implementation_digest:
+            _write_json(
+                result_path,
+                {**base, "status": "blocked", "blockers": ["isaac_runtime_implementation_digest_mismatch"]},
+            )
+            return 2
+    cameras = json.loads(cameras_path.read_text(encoding="utf-8")) if args.cameras else []
+    camera_ids = [str(row.get("id") or "") for row in cameras if isinstance(row, dict)]
+    if (
+        len(camera_ids) != len(cameras)
+        or any(_CAMERA_ID.fullmatch(value) is None for value in camera_ids)
+        or len(set(camera_ids)) != len(camera_ids)
+    ):
+        _write_json(
+            result_path,
+            {**base, "status": "blocked", "blockers": ["isaac_camera_ids_invalid"]},
+        )
+        return 2
     _phase(result_path, base, "runner_importing_isaacsim", camera_count=len(cameras), stage_path=str(stage_path))
 
     try:
@@ -680,6 +761,14 @@ def _render(args) -> int:
                 UsdPhysics=UsdPhysics,
                 UsdUtils=UsdUtils,
             )
+            expected_paths = {
+                "appearance": "/World/BlueprintReconstruction/Appearance",
+                "collision": "/World/BlueprintReconstruction/Collision",
+            }
+            stage_evidence["expected_prim_paths"] = {
+                name: path if stage.GetPrimAtPath(path).IsValid() else None
+                for name, path in expected_paths.items()
+            }
             ground_surface, ground_surface_error = _select_ground_surface(
                 stage_evidence.get("collision_prims") or [],
                 requested_path=args.ground_collider_prim,
@@ -822,12 +911,18 @@ def _render(args) -> int:
             if pngs:
                 src = Path(pngs[-1])
                 canonical.write_bytes(src.read_bytes())
-                std = _pixel_std(canonical)
+                width, height, mean, std = _pixel_stats(canonical)
+            else:
+                width, height, mean = 0, 0, 0.0
             rendered.append({
                 "id": cid,
                 "png": str(canonical),
+                "artifact_reference": f"frames/{cid}.png",
                 "digest": _sha256_file(canonical) if canonical.is_file() else None,
-                "pixel_std": round(std, 3),
+                "width": width,
+                "height": height,
+                "pixel_mean": mean,
+                "pixel_std": std,
                 "nonblank": std > 3.0 and math.isfinite(std),
                 "frame_count": len(pngs),
             })
@@ -954,6 +1049,8 @@ def _render(args) -> int:
             "mp4": mp4,
             "robot": robot_report,
             "blockers": blockers,
+            "cost_usd": 0.0,
+            "duration_seconds": max(0.0, time.monotonic() - started),
             "proof_boundary": {
                 "captured_scene_displayed_in_isaac_rtx": bool(visual_ok),
                 "robot_visual_composited_at_stance": bool(robot_report.get("composited")),
@@ -1046,12 +1143,16 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--qualification-mode",
         action="store_true",
-        help="emit strict v2 load/render/physics-presence evidence for an exact packaged asset",
+        help="emit strict v3 load/render/physics-presence evidence for an exact packaged asset",
     )
     ap.add_argument(
         "--package-digest",
         help="sha256 digest of the exact --usdc/--usdz bytes; required in qualification mode",
     )
+    ap.add_argument("--verification-request-digest")
+    ap.add_argument("--camera-spec-digest")
+    ap.add_argument("--runtime-container-image-digest")
+    ap.add_argument("--runtime-implementation-digest")
     ap.add_argument(
         "--ground-collider-prim",
         default="",
@@ -1081,6 +1182,14 @@ def main(argv=None) -> int:
         ap.error("--qualification-mode requires --package-digest sha256:<64 lowercase or uppercase hex>")
     if args.package_digest:
         args.package_digest = args.package_digest.lower()
+    if args.qualification_mode and not _is_sha256_digest(args.verification_request_digest):
+        ap.error("--qualification-mode requires --verification-request-digest")
+    if args.qualification_mode and not _is_sha256_digest(args.camera_spec_digest):
+        ap.error("--qualification-mode requires --camera-spec-digest")
+    if args.qualification_mode and not _is_image_digest(args.runtime_container_image_digest):
+        ap.error("--qualification-mode requires --runtime-container-image-digest")
+    if args.qualification_mode and not _is_sha256_digest(args.runtime_implementation_digest):
+        ap.error("--qualification-mode requires --runtime-implementation-digest")
     if args.qualification_mode and args.ply:
         ap.error("--qualification-mode requires an exact packaged --usdc or --usdz, not --ply transcode")
     if args.qualification_mode and args.allow_any_stage:

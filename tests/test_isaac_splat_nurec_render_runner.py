@@ -11,6 +11,8 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
 
 REPO = Path(__file__).resolve().parents[1]
 RUNNER_PATH = REPO / "scripts" / "run_isaac_splat_nurec_render.py"
@@ -20,7 +22,8 @@ runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 
 DIGEST = "sha256:" + "a" * 64
-SCHEMA_PATH = REPO / "docs/schemas/isaac_splat_nurec_render_result.v2.schema.json"
+IMAGE = "registry.example/blueprint/isaac@sha256:" + "b" * 64
+SCHEMA_PATH = REPO / "docs/schemas/isaac_splat_nurec_render_result.v3.schema.json"
 
 
 def _stage(**updates):
@@ -33,6 +36,10 @@ def _stage(**updates):
         "particlefield_prim_count": 1,
         "active_collision_prim_count": 1,
         "obvious_scale_mismatch_detected": False,
+        "expected_prim_paths": {
+            "appearance": "/World/BlueprintReconstruction/Appearance",
+            "collision": "/World/BlueprintReconstruction/Collision",
+        },
     }
     value.update(updates)
     return value
@@ -45,18 +52,37 @@ def _physics(**updates):
         "live_rigid_body_pose_observed": True,
         "test_body_fell_through_floor": False,
         "contact_event_count": 2,
+        "probe_configuration": {
+            "test_body": {
+                "shape": "cube",
+                "size_m": 0.1,
+                "mass_kg": 1.0,
+                "spawn_height_above_ground_m": 0.5,
+            },
+            "gravity_m_s2": -9.81,
+            "physics_dt_seconds": 1.0 / 60.0,
+        },
     }
     value.update(updates)
     return value
 
 
 def _cameras(**updates):
-    value = {"id": "fixed-1", "digest": DIGEST, "pixel_std": 12.0, "nonblank": True}
+    value = {
+        "id": "fixed-1",
+        "artifact_reference": "frames/fixed-1.png",
+        "digest": DIGEST,
+        "width": 16,
+        "height": 12,
+        "pixel_mean": 100.0,
+        "pixel_std": 12.0,
+        "nonblank": True,
+    }
     value.update(updates)
     return [value]
 
 
-def test_qualification_blockers_accept_only_complete_v2_evidence() -> None:
+def test_qualification_blockers_accept_only_complete_v3_evidence() -> None:
     assert runner._qualification_blockers(
         package_digest=DIGEST,
         stage=_stage(),
@@ -65,14 +91,25 @@ def test_qualification_blockers_accept_only_complete_v2_evidence() -> None:
     ) == []
 
 
-def test_v2_schema_accepts_only_explicit_completed_qualification_evidence() -> None:
+def test_v3_schema_accepts_only_explicit_completed_qualification_evidence() -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-    jsonschema.validate(
-        {
-            "schema_version": "isaac_splat_nurec_render_result.v2",
+    evidence = {
+            "schema_version": "isaac_splat_nurec_render_result.v3",
             "status": "completed",
+            "isaac_verification_request_digest": DIGEST,
             "package_digest": DIGEST,
+            "fixed_camera_spec_digest": DIGEST,
+            "runtime_container_image_digest": IMAGE,
+            "runtime_implementation_digest": DIGEST,
+            "runtime_identity": {
+                "runtime": "isaac_sim",
+                "renderer": "RayTracedLighting",
+                "python_version": "3.11.0",
+                "headless": True,
+            },
             "raw_secret_values_recorded": False,
+            "cost_usd": 0.25,
+            "duration_seconds": 90.0,
             "stage": _stage(),
             "physics_probe": _physics(),
             "cameras": _cameras(),
@@ -84,17 +121,29 @@ def test_v2_schema_accepts_only_explicit_completed_qualification_evidence() -> N
                 "physical_robot_readiness_proven": False,
                 "deployment_readiness_proven": False,
             },
-        },
-        schema,
+        }
+    evidence["isaac_runtime_result_digest"] = canonical_digest(
+        evidence, digest_field="isaac_runtime_result_digest"
     )
+    jsonschema.validate(evidence, schema)
 
 
-def test_v2_schema_rejects_physical_claim_promotion() -> None:
+def test_v3_schema_rejects_physical_claim_promotion() -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     evidence = {
-        "schema_version": "isaac_splat_nurec_render_result.v2",
+        "schema_version": "isaac_splat_nurec_render_result.v3",
         "status": "blocked",
+        "isaac_verification_request_digest": DIGEST,
         "package_digest": DIGEST,
+        "fixed_camera_spec_digest": DIGEST,
+        "runtime_container_image_digest": IMAGE,
+        "runtime_implementation_digest": DIGEST,
+        "runtime_identity": {
+            "runtime": "isaac_sim",
+            "renderer": "RayTracedLighting",
+            "python_version": "3.11.0",
+            "headless": True,
+        },
         "raw_secret_values_recorded": False,
         "proof_boundary": {
             "isaac_load_render_physics_presence_compatibility": False,
@@ -105,6 +154,9 @@ def test_v2_schema_rejects_physical_claim_promotion() -> None:
             "deployment_readiness_proven": False,
         },
     }
+    evidence["isaac_runtime_result_digest"] = canonical_digest(
+        evidence, digest_field="isaac_runtime_result_digest"
+    )
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(evidence, schema)
 
@@ -213,6 +265,14 @@ def test_qualification_mode_rejects_package_digest_mismatch_before_isaac_import(
             "--qualification-mode",
             "--package-digest",
             DIGEST,
+            "--verification-request-digest",
+            DIGEST,
+            "--camera-spec-digest",
+            DIGEST,
+            "--runtime-container-image-digest",
+            IMAGE,
+            "--runtime-implementation-digest",
+            DIGEST,
         ],
         capture_output=True,
         text=True,
@@ -221,7 +281,7 @@ def test_qualification_mode_rejects_package_digest_mismatch_before_isaac_import(
     assert process.returncode == 2
     result = json.loads((out_dir / "isaac_runtime_result.json").read_text(encoding="utf-8"))
     jsonschema.validate(result, json.loads(SCHEMA_PATH.read_text(encoding="utf-8")))
-    assert result["schema_version"] == "isaac_splat_nurec_render_result.v2"
+    assert result["schema_version"] == "isaac_splat_nurec_render_result.v3"
     assert result["package_digest"] == DIGEST
     assert result["blockers"] == ["isaac_exact_package_digest_mismatch"]
 
@@ -229,4 +289,5 @@ def test_qualification_mode_rejects_package_digest_mismatch_before_isaac_import(
 def test_legacy_cli_does_not_silently_emit_v2() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
     assert 'LEGACY_RESULT_SCHEMA = "isaac_splat_nurec_render_result.v1"' in source
+    assert 'QUALIFICATION_RESULT_SCHEMA = "isaac_splat_nurec_render_result.v3"' in source
     assert "qualification_mode = bool(args.qualification_mode)" in source

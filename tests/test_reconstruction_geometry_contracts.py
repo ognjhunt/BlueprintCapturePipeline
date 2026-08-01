@@ -1,11 +1,23 @@
 from __future__ import annotations
 
-import pytest
+import hashlib
+import json
+from pathlib import Path
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+import jsonschema
+import numpy as np
+import pytest
+from PIL import Image
+
 from blueprint_pipeline.isaac_reconstruction_verification import (
     IsaacReconstructionVerificationError,
+    build_isaac_asset_verification_request,
+    build_isaac_runtime_result_v3,
     normalize_isaac_reconstruction_verification,
+)
+from blueprint_pipeline.reconstruction_isaac_worker_bundle import (
+    IsaacWorkerBundleError,
+    compile_isaac_verification_worker_bundle,
 )
 from blueprint_pipeline.reconstruction_geometry_contracts import (
     ReconstructionGeometryContractError,
@@ -21,7 +33,12 @@ from blueprint_pipeline.task_evaluation_supervisor.supervisor import default_aut
 from blueprint_pipeline.task_evaluation_supervisor.tools import ToolRegistry, non_spend_tool_bindings
 
 
-D = ["sha256:" + str(i) * 64 for i in range(1, 7)]
+D = ["sha256:" + str(i) * 64 for i in range(1, 10)]
+IMAGE = "registry.example/blueprint/isaac@sha256:" + "a" * 64
+
+
+def _sha256(path):
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _base(**updates):
@@ -124,6 +141,7 @@ def _qualification(**updates):
 def _package(**updates):
     value = _base(
         appearance_asset_digest=D[0],
+        appearance_asset_manifest_digest=D[1],
         metric_geometry_manifest_digest=_metric()["metric_geometry_manifest_digest"],
         collider_candidate_manifest_digest=_candidate()["collider_candidate_manifest_digest"],
         collider_qualification_digest=_qualification()["collider_qualification_digest"],
@@ -219,8 +237,22 @@ def test_isaac_verification_requires_render_and_active_collision_without_claim_p
     result = build_isaac_asset_verification_result(
         _base(
             packaging_result_digest=_package()["packaging_result_digest"],
+            package_digest=D[5],
+            isaac_verification_request_digest=D[6],
+            isaac_runtime_result_digest=D[7],
+            runtime_container_image_digest=IMAGE,
+            runtime_implementation_digest=D[8],
+            fixed_camera_spec_digest=D[2],
+            exact_package_rehash_verified=True,
+            runtime_artifact_rehash_verified=True,
             checks=checks,
             fixed_camera_render_references=[{"artifact_id": "camera-1", "digest": D[1]}],
+            physics_probe={
+                "ground_contact_surface_present": True,
+                "live_rigid_body_pose_observed": True,
+                "test_body_fell_through_floor": False,
+                "contact_event_count": 1,
+            },
             status="verified_compatibility_only",
             simulator_task_success_proven=False,
             physical_success_proven=False,
@@ -235,8 +267,22 @@ def test_isaac_verification_requires_render_and_active_collision_without_claim_p
         build_isaac_asset_verification_result(
             _base(
                 packaging_result_digest=_package()["packaging_result_digest"],
+                package_digest=D[5],
+                isaac_verification_request_digest=D[6],
+                isaac_runtime_result_digest=D[7],
+                runtime_container_image_digest=IMAGE,
+                runtime_implementation_digest=D[8],
+                fixed_camera_spec_digest=D[2],
+                exact_package_rehash_verified=True,
+                runtime_artifact_rehash_verified=True,
                 checks=checks,
                 fixed_camera_render_references=[{"artifact_id": "camera-1", "digest": D[1]}],
+                physics_probe={
+                    "ground_contact_surface_present": True,
+                    "live_rigid_body_pose_observed": True,
+                    "test_body_fell_through_floor": False,
+                    "contact_event_count": 1,
+                },
                 status="verified_compatibility_only",
                 simulator_task_success_proven=False,
                 physical_success_proven=False,
@@ -245,6 +291,60 @@ def test_isaac_verification_requires_render_and_active_collision_without_claim_p
                 claim_ceiling="isaac_load_render_compatibility",
             )
         )
+
+
+def _isaac_request(package=None, *, camera_spec_digest=D[6], runner_digest=D[7]):
+    package = package or _package()
+    request = build_isaac_asset_verification_request(
+        _base(
+            packaging_result=package,
+            packaging_result_digest=package["packaging_result_digest"],
+            package_artifact_reference=package["package_artifact_reference"],
+            package_digest=package["package_digest"],
+            fixed_camera_spec_digest=camera_spec_digest,
+            fixed_camera_ids=["fixed-1"],
+            runtime_container_image_digest=IMAGE,
+            runtime_implementation_digest=runner_digest,
+            expected_prim_paths={
+                "appearance": "/World/BlueprintReconstruction/Appearance",
+                "collision": "/World/BlueprintReconstruction/Collision",
+            },
+            physics_probe_request={
+                "steps": 120,
+                "manufacture_ground_plane": False,
+                "require_contact_event": True,
+                "test_body": {
+                    "shape": "cube",
+                    "size_m": 0.1,
+                    "mass_kg": 1.0,
+                    "spawn_height_above_ground_m": 0.5,
+                },
+                "gravity_m_s2": -9.81,
+                "physics_dt_seconds": 1.0 / 60.0,
+            },
+            headless=True,
+            display_attached=False,
+            timeout_seconds=1800,
+            resource_request={"gpu_count": 1, "minimum_vram_gb": 24},
+            input_digests=[
+                {"artifact_id": "package_result", "digest": package["packaging_result_digest"]},
+                {"artifact_id": "package", "digest": package["package_digest"]},
+                {"artifact_id": "cameras", "digest": camera_spec_digest},
+                {"artifact_id": "runner", "digest": runner_digest},
+            ],
+            output_digests=[],
+            proof_effect="none",
+            claim_ceiling="request_only",
+        )
+    )
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/isaac_asset_verification_request.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.Draft202012Validator(schema).validate(request)
+    return request
 
 
 def test_phase5_tools_are_registered_digest_only_and_metric_runtime_cannot_change_proof(tmp_path):
@@ -300,10 +400,7 @@ def test_phase5_tools_are_registered_digest_only_and_metric_runtime_cannot_chang
 
 
 def test_phase5_request_tools_refuse_tampered_request_digest(tmp_path):
-    request = {"packaging_result_digest": D[0]}
-    request["isaac_verification_request_digest"] = canonical_digest(
-        request, digest_field="isaac_verification_request_digest"
-    )
+    request = _isaac_request()
 
     def verifier(**_kwargs):
         raise AssertionError("tampered request must stop before runtime")
@@ -338,92 +435,211 @@ def test_phase5_request_tools_refuse_tampered_request_digest(tmp_path):
     assert "source_digest_mismatch" in refused["typed_failure"]["reason"]
 
 
-def _isaac_runtime_v2():
-    return {
-        "schema_version": "isaac_splat_nurec_render_result.v2",
-        "status": "completed",
-        "package_digest": D[5],
-        "raw_secret_values_recorded": False,
-        "stage": {
-            "meters_per_unit": 1.0,
-            "up_axis": "Z",
-            "transforms_valid": True,
-            "dependency_inspection_available": True,
-            "missing_asset_count": 0,
-            "particlefield_prim_count": 1,
-            "active_collision_prim_count": 2,
-            "obvious_scale_mismatch_detected": False,
-        },
-        "physics_probe": {
-            "ground_contact_surface_present": True,
-            "steps_executed": 120,
-            "live_rigid_body_pose_observed": True,
-            "test_body_fell_through_floor": False,
-            "contact_event_count": 3,
-        },
-        "cameras": [
-            {"id": "fixed-1", "digest": D[1], "pixel_std": 12.0, "nonblank": True}
-        ],
-        "proof_boundary": {
-            "isaac_load_render_physics_presence_compatibility": True,
-            "simulator_task_success_proven": False,
-            "physics_navigation_control_proven": False,
-            "physical_success_proven": False,
-            "physical_robot_readiness_proven": False,
-            "deployment_readiness_proven": False,
-        },
-    }
+def _isaac_fixture(tmp_path):
+    package_root = tmp_path / "packages"
+    package_path = package_root / "package/reconstruction.usdz"
+    package_path.parent.mkdir(parents=True)
+    package_path.write_bytes(b"exact-package-bytes")
+    package = _package(package_digest=_sha256(package_path))
+    request = _isaac_request(package)
+
+    runtime_root = tmp_path / "runtime"
+    render = runtime_root / "frames/fixed-1.png"
+    render.parent.mkdir(parents=True)
+    pixels = np.arange(12 * 16 * 3, dtype=np.uint8).reshape(12, 16, 3)
+    Image.fromarray(pixels, mode="RGB").save(render)
+    measured = np.asarray(Image.open(render).convert("RGB"), dtype=np.float32)
+    runtime = build_isaac_runtime_result_v3(
+        {
+            "schema_version": "isaac_splat_nurec_render_result.v3",
+            "status": "completed",
+            "isaac_verification_request_digest": request[
+                "isaac_verification_request_digest"
+            ],
+            "package_digest": package["package_digest"],
+            "fixed_camera_spec_digest": request["fixed_camera_spec_digest"],
+            "runtime_container_image_digest": IMAGE,
+            "runtime_implementation_digest": request["runtime_implementation_digest"],
+            "runtime_identity": {
+                "runtime": "isaac_sim",
+                "version": "6.0.0",
+                "renderer": "RayTracedLighting",
+                "python_version": "3.11.0",
+                "headless": True,
+            },
+            "raw_secret_values_recorded": False,
+            "stage": {
+                "meters_per_unit": 1.0,
+                "up_axis": "Z",
+                "transforms_valid": True,
+                "dependency_inspection_available": True,
+                "missing_asset_count": 0,
+                "particlefield_prim_count": 1,
+                "active_collision_prim_count": 2,
+                "obvious_scale_mismatch_detected": False,
+                "expected_prim_paths": request["expected_prim_paths"],
+            },
+            "physics_probe": {
+                "ground_contact_surface_present": True,
+                "steps_executed": 120,
+                "live_rigid_body_pose_observed": True,
+                "test_body_fell_through_floor": False,
+                "contact_event_count": 3,
+                "probe_configuration": {
+                    "test_body": request["physics_probe_request"]["test_body"],
+                    "gravity_m_s2": -9.81,
+                    "physics_dt_seconds": 1.0 / 60.0,
+                },
+            },
+            "cameras": [
+                {
+                    "id": "fixed-1",
+                    "artifact_reference": "frames/fixed-1.png",
+                    "digest": _sha256(render),
+                    "width": 16,
+                    "height": 12,
+                    "pixel_mean": float(measured.mean()),
+                    "pixel_std": float(measured.std()),
+                    "nonblank": True,
+                }
+            ],
+            "cost_usd": 0.4,
+            "duration_seconds": 60.0,
+            "proof_boundary": {
+                "isaac_load_render_physics_presence_compatibility": True,
+                "simulator_task_success_proven": False,
+                "physics_navigation_control_proven": False,
+                "physical_success_proven": False,
+                "physical_robot_readiness_proven": False,
+                "deployment_readiness_proven": False,
+            },
+        }
+    )
+    return request, runtime, package_root, runtime_root
 
 
-def test_isaac_runtime_v2_normalizer_requires_real_render_and_physics_presence():
+def test_isaac_v3_normalizer_rehashes_exact_package_and_png(tmp_path):
+    request, runtime, package_root, runtime_root = _isaac_fixture(tmp_path)
     result = normalize_isaac_reconstruction_verification(
-        packaging_result=_package(), runtime_result=_isaac_runtime_v2(), lineage=_base()
+        verification_request=request,
+        runtime_result=runtime,
+        package_artifact_root=package_root,
+        runtime_artifact_root=runtime_root,
     )
     assert result["status"] == "verified_compatibility_only"
-    assert result["checks"]["collision_geometry_active"] is True
+    assert result["exact_package_rehash_verified"] is True
+    assert result["runtime_artifact_rehash_verified"] is True
     assert result["simulator_task_success_proven"] is False
+    result_schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/isaac_asset_verification_result.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.Draft202012Validator(result_schema).validate(result)
 
 
-def test_visual_only_v1_runtime_cannot_pass_physics_verification():
-    runtime = _isaac_runtime_v2()
-    runtime["schema_version"] = "isaac_splat_nurec_render_result.v1"
-    runtime.pop("physics_probe")
-    with pytest.raises(
-        IsaacReconstructionVerificationError, match="isaac_runtime_result_v2_required"
-    ):
-        normalize_isaac_reconstruction_verification(
-            packaging_result=_package(), runtime_result=runtime, lineage=_base()
+def test_isaac_worker_bundle_binds_exact_package_cameras_runner_without_spend(tmp_path):
+    package_root = tmp_path / "packages"
+    package_path = package_root / "package/reconstruction.usdz"
+    package_path.parent.mkdir(parents=True)
+    package_path.write_bytes(b"exact-package-bytes")
+    cameras = tmp_path / "fixed_cameras.json"
+    cameras.write_text('[{"id":"fixed-1","spec":{}}]\n', encoding="utf-8")
+    runner = tmp_path / "runner.py"
+    runner.write_text("print('fixture')\n", encoding="utf-8")
+    package = _package(package_digest=_sha256(package_path))
+    request = _isaac_request(
+        package,
+        camera_spec_digest=_sha256(cameras),
+        runner_digest=_sha256(runner),
+    )
+    receipt = compile_isaac_verification_worker_bundle(
+        verification_request=request,
+        package_artifact_root=package_root,
+        fixed_camera_spec_path=cameras,
+        runner_path=runner,
+        output_root=tmp_path / "bundles",
+    )
+    replay = compile_isaac_verification_worker_bundle(
+        verification_request=request,
+        package_artifact_root=package_root,
+        fixed_camera_spec_path=cameras,
+        runner_path=runner,
+        output_root=tmp_path / "bundles",
+    )
+    assert replay == receipt
+    assert receipt["provider_allocation_performed"] is False
+    assert receipt["paid_execution_authorized_by_bundle"] is False
+    assert receipt["expected_runtime_schema"] == "isaac_splat_nurec_render_result.v3"
+    assert receipt["canonical_allocator_command"].endswith("gpu-canary")
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/isaac_verification_worker_bundle.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.Draft202012Validator(schema).validate(receipt)
+
+    bundle_path = (
+        tmp_path
+        / "bundles"
+        / request["isaac_verification_request_digest"][7:]
+        / "isaac_verification_worker_bundle.zip"
+    )
+    bundle_path.unlink()
+    with pytest.raises(IsaacWorkerBundleError, match="existing_output_tampered"):
+        compile_isaac_verification_worker_bundle(
+            verification_request=request,
+            package_artifact_root=package_root,
+            fixed_camera_spec_path=cameras,
+            runner_path=runner,
+            output_root=tmp_path / "bundles",
         )
 
 
-def test_falling_through_floor_and_missing_contact_fail_closed():
-    runtime = _isaac_runtime_v2()
+def test_visual_only_v2_runtime_cannot_pass_v3_verification(tmp_path):
+    request, runtime, package_root, runtime_root = _isaac_fixture(tmp_path)
+    runtime.pop("isaac_runtime_result_digest")
+    runtime["schema_version"] = "isaac_splat_nurec_render_result.v2"
+    runtime.pop("physics_probe")
+    with pytest.raises(
+        IsaacReconstructionVerificationError, match="isaac_runtime_result_v3_required"
+    ):
+        normalize_isaac_reconstruction_verification(
+            verification_request=request,
+            runtime_result=runtime,
+            package_artifact_root=package_root,
+            runtime_artifact_root=runtime_root,
+        )
+
+
+def test_falling_through_floor_missing_contact_and_tampered_png_fail_closed(tmp_path):
+    request, runtime, package_root, runtime_root = _isaac_fixture(tmp_path)
+    runtime.pop("isaac_runtime_result_digest")
     runtime["physics_probe"]["test_body_fell_through_floor"] = True
     runtime["physics_probe"]["contact_event_count"] = 0
+    runtime = build_isaac_runtime_result_v3(runtime)
+    (runtime_root / "frames/fixed-1.png").write_bytes(b"tampered")
     with pytest.raises(IsaacReconstructionVerificationError) as error:
         normalize_isaac_reconstruction_verification(
-            packaging_result=_package(), runtime_result=runtime, lineage=_base()
+            verification_request=request,
+            runtime_result=runtime,
+            package_artifact_root=package_root,
+            runtime_artifact_root=runtime_root,
         )
     assert "isaac_test_body_fell_through_floor" in str(error.value)
     assert "isaac_test_body_contact_not_observed" in str(error.value)
+    assert "isaac_fixed_render:0_digest_mismatch" in str(error.value)
 
 
-def test_forged_v2_label_cannot_bypass_runtime_evidence_or_claim_boundary():
-    runtime = _isaac_runtime_v2()
+def test_forged_v3_claim_and_secret_state_are_rejected_before_artifact_use(tmp_path):
+    _request, runtime, _package_root, _runtime_root = _isaac_fixture(tmp_path)
+    runtime.pop("isaac_runtime_result_digest")
     runtime["raw_secret_values_recorded"] = True
-    runtime["stage"]["dependency_inspection_available"] = False
-    runtime["stage"]["obvious_scale_mismatch_detected"] = True
-    runtime["physics_probe"]["live_rigid_body_pose_observed"] = False
-    runtime["cameras"][0]["digest"] = "not-a-digest"
     runtime["proof_boundary"]["physical_success_proven"] = True
     with pytest.raises(IsaacReconstructionVerificationError) as error:
-        normalize_isaac_reconstruction_verification(
-            packaging_result=_package(), runtime_result=runtime, lineage=_base()
-        )
+        build_isaac_runtime_result_v3(runtime)
     message = str(error.value)
     assert "isaac_runtime_secret_recording_state_invalid" in message
-    assert "isaac_dependency_inspection_unavailable" in message
-    assert "isaac_obvious_scale_mismatch" in message
-    assert "isaac_test_body_pose_unavailable" in message
-    assert "isaac_fixed_render_invalid:0" in message
     assert "isaac_forbidden_claim_promotion:physical_success_proven" in message

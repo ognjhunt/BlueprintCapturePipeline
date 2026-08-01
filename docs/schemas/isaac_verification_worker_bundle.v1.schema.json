@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/isaac_verification_worker_bundle.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "isaac_verification_request_digest",
+    "package_digest",
+    "fixed_camera_spec_digest",
+    "runtime_implementation_digest",
+    "runtime_container_image_digest",
+    "fixed_camera_ids",
+    "command",
+    "expected_runtime_schema",
+    "raw_secret_values_included",
+    "provider_allocation_performed",
+    "paid_execution_authorized_by_bundle",
+    "canonical_allocator_command",
+    "bundle_manifest_digest",
+    "bundle_digest",
+    "bundle_artifact_reference",
+    "bundle_member_count",
+    "bundle_bytes",
+    "cost_usd",
+    "proof_effect",
+    "claim_ceiling"
+  ],
+  "properties": {
+    "schema_version": {"const": "isaac_verification_worker_bundle.v1"},
+    "isaac_verification_request_digest": {"$ref": "#/$defs/digest"},
+    "package_digest": {"$ref": "#/$defs/digest"},
+    "fixed_camera_spec_digest": {"$ref": "#/$defs/digest"},
+    "runtime_implementation_digest": {"$ref": "#/$defs/digest"},
+    "runtime_container_image_digest": {
+      "type": "string",
+      "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+    },
+    "fixed_camera_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"}
+    },
+    "command": {
+      "type": "array",
+      "minItems": 21,
+      "prefixItems": [
+        {"const": "/isaac-sim/python.sh"},
+        {"const": "/workspace/bundle/run_isaac_splat_nurec_render.py"},
+        {"const": "--usdz"},
+        {"const": "/workspace/bundle/reconstruction.usdz"},
+        {"const": "--cameras"},
+        {"const": "/workspace/bundle/fixed_cameras.json"},
+        {"const": "--out-dir"},
+        {"const": "/workspace/out"},
+        {"const": "--qualification-mode"},
+        {"const": "--package-digest"}
+      ],
+      "items": {"type": "string", "minLength": 1}
+    },
+    "expected_runtime_schema": {"const": "isaac_splat_nurec_render_result.v3"},
+    "raw_secret_values_included": {"const": false},
+    "provider_allocation_performed": {"const": false},
+    "paid_execution_authorized_by_bundle": {"const": false},
+    "canonical_allocator_command": {
+      "const": "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
+    },
+    "bundle_manifest_digest": {"$ref": "#/$defs/digest"},
+    "bundle_digest": {"$ref": "#/$defs/digest"},
+    "bundle_artifact_reference": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}/isaac_verification_worker_bundle\\.zip$"
+    },
+    "bundle_member_count": {"const": 5},
+    "bundle_bytes": {"type": "integer", "minimum": 1},
+    "cost_usd": {"const": 0.0},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "request_only"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

@@ -453,14 +453,23 @@ render behavior, physics contact, task success, physical success, or deployment.
 headless runtime result. It intentionally rejects visual-only
 `isaac_splat_nurec_render_result.v1`. The existing ParticleField runner now has
 an explicit qualification mode that emits
-`isaac_splat_nurec_render_result.v2`, binds and re-hashes the exact package, and
+`isaac_splat_nurec_render_result.v3`, binds and re-hashes the exact package, and
 reports meters/Z-up, transforms, unresolved dependencies, ParticleField and
 active collision prim counts, a stepped live-PhysX test-body probe against an
 existing static package collider, conservative obvious-scale bounds, and
 digest-bound nonblank fixed-camera renders. It does not create a helper floor.
-Legacy callers remain on v1 and cannot satisfy
-the physics-presence gate. The v2 code path is hermetically contract-tested but
-remains real-Isaac unverified until executed on the pinned GPU worker.
+The typed `isaac_asset_verification_request.v1` freezes the exact package,
+camera set, runner implementation, pinned runtime image, expected prim paths,
+and physics-probe configuration before execution. The independent normalizer
+then re-hashes the retrieved USDZ and every PNG, decodes the PNGs itself, and
+rejects runtime-reported dimensions or pixel statistics that do not match the
+retrieved bytes. `isaac_verification_worker_bundle.v1` packages those exact
+inputs deterministically without allocating or authorizing paid compute; any
+GPU execution must still enter through
+`python -m blueprint_pipeline.paid_resource_allocator gpu-canary`. Legacy
+callers remain on v1 and cannot satisfy the physics-presence gate. The v3 code
+path and worker bundle are hermetically contract-tested but remain real-Isaac
+unverified until executed on the pinned GPU worker.
 
 ## Strict external reconstruction import
 

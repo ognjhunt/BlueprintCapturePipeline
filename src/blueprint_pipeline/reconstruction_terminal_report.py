@@ -7,6 +7,10 @@ import math
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+from .reconstruction_geometry_contracts import (
+    ReconstructionGeometryContractError,
+    build_isaac_asset_verification_result,
+)
 
 
 RECONSTRUCTION_REPORT_REQUEST_SCHEMA_VERSION = "reconstruction_terminal_report_request.v1"
@@ -148,6 +152,49 @@ def build_reconstruction_terminal_report_request(
             "metric_reference_geometry"
         ) is not True:
             errors.append("reconstruction_report_request_collision_without_metric_geometry")
+    isaac = request.get("isaac_verification")
+    if isinstance(isaac, Mapping):
+        if isaac.get("schema_version") == "isaac_asset_verification_result.v1":
+            try:
+                verified_isaac = build_isaac_asset_verification_result(isaac)
+            except ReconstructionGeometryContractError as exc:
+                errors.extend(
+                    f"reconstruction_report_request_isaac_invalid:{code}"
+                    for code in exc.codes
+                )
+            else:
+                if not isinstance(ceilings, Mapping) or ceilings.get(
+                    "isaac_load_render_compatibility"
+                ) is not True:
+                    errors.append(
+                        "reconstruction_report_request_isaac_result_without_compatibility_ceiling"
+                    )
+                if verified_isaac["isaac_verification_result_digest"] not in request.get(
+                    "recorded_output_digests", []
+                ):
+                    errors.append(
+                        "reconstruction_report_request_isaac_result_digest_unrecorded"
+                    )
+                if request.get("fixed_camera_render_references") != verified_isaac.get(
+                    "fixed_camera_render_references"
+                ):
+                    errors.append(
+                        "reconstruction_report_request_isaac_render_references_mismatch"
+                    )
+                if request.get("physics_collision_verification") != verified_isaac.get(
+                    "physics_probe"
+                ):
+                    errors.append(
+                        "reconstruction_report_request_isaac_physics_evidence_mismatch"
+                    )
+        elif isaac.get("status") not in {"not_executed", "blocked", "failed"}:
+            errors.append("reconstruction_report_request_isaac_status_invalid")
+        elif isinstance(ceilings, Mapping) and ceilings.get(
+            "isaac_load_render_compatibility"
+        ) is True:
+            errors.append(
+                "reconstruction_report_request_isaac_compatibility_without_typed_result"
+            )
     runtime = request.get("runtime_and_spend")
     if isinstance(runtime, Mapping):
         for key in ("total_runtime_seconds", "total_spend_usd"):

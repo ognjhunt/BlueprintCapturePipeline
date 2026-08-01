@@ -7,6 +7,9 @@ import jsonschema
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.reconstruction_geometry_contracts import (
+    build_isaac_asset_verification_result,
+)
 from blueprint_pipeline.reconstruction_terminal_report import (
     RECONSTRUCTION_REPORT_REQUEST_SCHEMA_VERSION,
     ReconstructionTerminalReportError,
@@ -45,6 +48,82 @@ def _ceilings(**overrides: bool) -> dict[str, bool]:
     }
     values.update(overrides)
     return values
+
+
+def _verified_isaac_result() -> dict:
+    digest = "sha256:" + "a" * 64
+    render_references = [
+        {
+            "artifact_id": "fixed-1",
+            "artifact_reference": "frames/fixed-1.png",
+            "digest": "sha256:" + "b" * 64,
+        }
+    ]
+    physics_probe = {
+        "ground_contact_surface_present": True,
+        "live_rigid_body_pose_observed": True,
+        "test_body_fell_through_floor": False,
+        "contact_event_count": 2,
+    }
+    return build_isaac_asset_verification_result(
+        {
+            "stable_run_identity": "arkitscenes-proxy-40958756",
+            "source_capture_identity": "arkitscenes-40958756",
+            "source_capture_digest": "sha256:" + "1" * 64,
+            "original_file_references": ["reconstruction.usdz"],
+            "producing_method": "independent_isaac_verifier",
+            "implementation_version": "isaac-verifier-v1",
+            "runtime_container_image_digest": (
+                "registry.example/blueprint/isaac@sha256:" + "c" * 64
+            ),
+            "source_commit_sha": "3" * 40,
+            "deterministic_configuration_digest": digest,
+            "input_digests": [digest],
+            "output_digests": ["sha256:" + "b" * 64],
+            "train_heldout_split_digest": "sha256:" + "2" * 64,
+            "camera_calibration_binding": {"status": "dataset_proxy_bound"},
+            "coordinate_frame_declaration": {"frame": "arkit_world"},
+            "units": "meters",
+            "provider_runtime_identity": {"runtime": "isaac_sim"},
+            "cost_usd": 0.25,
+            "duration_seconds": 90.0,
+            "authority_used": {"paid_compute": True},
+            "warnings": [],
+            "blockers": [],
+            "parent_artifact_or_event": {"package_digest": digest},
+            "timestamp": "2026-08-01T12:00:00Z",
+            "packaging_result_digest": digest,
+            "package_digest": digest,
+            "isaac_verification_request_digest": digest,
+            "isaac_runtime_result_digest": digest,
+            "runtime_implementation_digest": digest,
+            "fixed_camera_spec_digest": digest,
+            "exact_package_rehash_verified": True,
+            "runtime_artifact_rehash_verified": True,
+            "checks": {
+                "exact_package_opened": True,
+                "expected_prims_present": True,
+                "stage_units_valid": True,
+                "transforms_valid": True,
+                "missing_assets_detected": False,
+                "particlefield_loaded": True,
+                "collision_geometry_active": True,
+                "ground_contact_surface_present": True,
+                "test_body_fell_through_floor": False,
+                "fixed_camera_renders_nonblank": True,
+                "nan_or_corrupt_render_detected": False,
+                "obvious_scale_mismatch_detected": False,
+            },
+            "fixed_camera_render_references": render_references,
+            "physics_probe": physics_probe,
+            "status": "verified_compatibility_only",
+            "simulator_task_success_proven": False,
+            "physical_success_proven": False,
+            "deployment_readiness_proven": False,
+            "proof_effect": "isaac_load_render_physics_presence_only",
+            "claim_ceiling": "isaac_load_render_compatibility",
+        }
+    )
 
 
 def _request() -> dict:
@@ -182,6 +261,42 @@ def test_terminal_report_rejects_claim_escalation_and_failed_evidence_suppressio
     suppressed["failed_methods"] = [{"failed_evidence_preserved": False}]
     with pytest.raises(ReconstructionTerminalReportError, match="suppressed"):
         build_reconstruction_terminal_report_request(suppressed)
+
+
+def test_terminal_report_replays_only_digest_bound_typed_isaac_evidence() -> None:
+    isaac = _verified_isaac_result()
+    request = json.loads(json.dumps(_request()))
+    request.pop("reconstruction_terminal_report_request_digest")
+    request["isaac_verification"] = isaac
+    request["fixed_camera_render_references"] = isaac[
+        "fixed_camera_render_references"
+    ]
+    request["physics_collision_verification"] = isaac["physics_probe"]
+    request["recorded_output_digests"] = [
+        isaac["isaac_verification_result_digest"]
+    ]
+    request["evidence_ceilings"]["isaac_load_render_compatibility"] = True
+
+    frozen = build_reconstruction_terminal_report_request(request)
+    report = generate_reconstruction_terminal_report(frozen)
+
+    assert report["isaac_verification"] == isaac
+    assert report["evidence_ceilings"]["isaac_load_render_compatibility"] is True
+
+    tampered = json.loads(json.dumps(frozen))
+    tampered.pop("reconstruction_terminal_report_request_digest")
+    tampered["fixed_camera_render_references"][0]["digest"] = "sha256:" + "d" * 64
+    with pytest.raises(ReconstructionTerminalReportError, match="render_references_mismatch"):
+        build_reconstruction_terminal_report_request(tampered)
+
+
+def test_terminal_report_rejects_isaac_ceiling_without_typed_result() -> None:
+    request = json.loads(json.dumps(_request()))
+    request.pop("reconstruction_terminal_report_request_digest")
+    request["evidence_ceilings"]["isaac_load_render_compatibility"] = True
+
+    with pytest.raises(ReconstructionTerminalReportError, match="without_typed_result"):
+        build_reconstruction_terminal_report_request(request)
 
 
 def test_registered_terminal_report_tool_accepts_only_request_digest(tmp_path: Path) -> None:

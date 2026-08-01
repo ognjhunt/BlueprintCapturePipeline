@@ -412,8 +412,23 @@ def build_isaac_asset_verification_result(value: Mapping[str, Any]) -> dict[str,
     artifact = _clone(value)
     errors: list[str] = []
     _lineage(artifact, errors)
-    if not _is_digest(artifact.get("packaging_result_digest")):
-        errors.append("packaging_result_digest_invalid")
+    for key in (
+        "packaging_result_digest",
+        "package_digest",
+        "isaac_verification_request_digest",
+        "isaac_runtime_result_digest",
+        "runtime_implementation_digest",
+        "fixed_camera_spec_digest",
+    ):
+        if not _is_digest(artifact.get(key)):
+            errors.append(f"{key}_invalid")
+    runtime_image = str(artifact.get("runtime_container_image_digest") or "")
+    if not re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", runtime_image):
+        errors.append("runtime_container_image_digest_invalid")
+    if artifact.get("exact_package_rehash_verified") is not True:
+        errors.append("isaac_exact_package_rehash_required")
+    if artifact.get("runtime_artifact_rehash_verified") is not True:
+        errors.append("isaac_runtime_artifact_rehash_required")
     checks = {
         "exact_package_opened": True,
         "expected_prims_present": True,
@@ -431,10 +446,31 @@ def build_isaac_asset_verification_result(value: Mapping[str, Any]) -> dict[str,
     observed = artifact.get("checks")
     if not isinstance(observed, Mapping) or any(observed.get(key) is not expected for key, expected in checks.items()):
         errors.append("isaac_required_checks_failed")
-    if not isinstance(artifact.get("fixed_camera_render_references"), list) or not artifact.get(
-        "fixed_camera_render_references"
+    render_references = artifact.get("fixed_camera_render_references")
+    if (
+        not isinstance(render_references, list)
+        or not render_references
+        or any(
+            not isinstance(row, Mapping)
+            or not isinstance(row.get("artifact_id"), str)
+            or not row.get("artifact_id")
+            or not _is_digest(row.get("digest"))
+            for row in render_references or []
+        )
     ):
         errors.append("isaac_fixed_camera_renders_missing")
+    physics_probe = artifact.get("physics_probe")
+    if not isinstance(physics_probe, Mapping):
+        errors.append("isaac_physics_probe_missing")
+    elif (
+        physics_probe.get("ground_contact_surface_present") is not True
+        or physics_probe.get("live_rigid_body_pose_observed") is not True
+        or physics_probe.get("test_body_fell_through_floor") is not False
+        or isinstance(physics_probe.get("contact_event_count"), bool)
+        or not isinstance(physics_probe.get("contact_event_count"), int)
+        or physics_probe.get("contact_event_count", 0) < 1
+    ):
+        errors.append("isaac_physics_probe_invalid")
     if artifact.get("status") != "verified_compatibility_only":
         errors.append("isaac_status_invalid")
     if artifact.get("simulator_task_success_proven") is not False or artifact.get(
