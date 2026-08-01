@@ -719,6 +719,7 @@ def test_vast_launch_request_uses_frozen_floor_and_args_entrypoint(
         "capacity_request": {
             "min_gpu_ram_mb": 45_000,
             "min_reliability": 0.98,
+            "excluded_machine_ids": [27_268],
             "preferred_gpu_keywords": [
                 "A40",
                 "RTX A6000",
@@ -749,6 +750,7 @@ def test_vast_launch_request_uses_frozen_floor_and_args_entrypoint(
     assert request["max_hourly_rate_usd"] == 0.75
     assert request["min_reliability"] == 0.98
     assert request["preferred_gpu_keywords"][0] == "A40"
+    assert request["excluded_machine_ids"] == [27_268]
     assert payload["onstart"] == "bash"
     assert "openpi_policy_ranking_gpu_bootstrap run" in payload["args_str"]
     assert payload["env"][INPUT_SECRET_URL_ENV] == input_url
@@ -798,6 +800,7 @@ def _current_reference_authorization(*, runtime_commit: str, bundle_sha256: str)
         "maximum_provider_allocations": 1,
         "maximum_policy_requests": 1,
         "maximum_concurrent_gpus": 2,
+        "vast_excluded_machine_ids": [],
         "single_use_consumption_required": True,
         "paid_mutation_authorized": True,
         "runtime_source_commit": runtime_commit,
@@ -872,6 +875,29 @@ def test_current_reference_authorization_binds_runtime_policy_and_input() -> Non
         "openpi_current_reference_authorization_policy_mismatch",
         "openpi_current_reference_authorization_runtime_mismatch",
     ]
+
+
+def test_current_reference_authorization_validates_vast_machine_exclusions() -> None:
+    runtime_commit = "d" * 40
+    bundle = _current_reference_bundle(
+        image_source_commit="a" * 40,
+        runtime_commit=runtime_commit,
+    )
+    bundle["bundle_sha256"] = "e" * 64
+    bundle["manifest"]["policy_ids"] = ["pi05_droid"]
+    authorization = _current_reference_authorization(
+        runtime_commit=runtime_commit,
+        bundle_sha256=str(bundle["bundle_sha256"]),
+    )
+    authorization["vast_excluded_machine_ids"] = [27_268, 27_268]
+
+    blockers = runpod_module._current_reference_authorization_blockers(
+        authorization,
+        input_bundle=bundle,
+        expected_source_commit=runtime_commit,
+    )
+
+    assert blockers == ["openpi_current_reference_authorization_vast_exclusions_invalid"]
 
 
 def test_current_reference_campaign_blocks_before_provider_without_authorization(

@@ -145,12 +145,24 @@ def collect_openpi_policy_ranking_vast_preflight(
     min_gpu_ram_mb: int = VAST_DEFAULT_MIN_GPU_RAM_MB,
     min_reliability: float = VAST_DEFAULT_MIN_RELIABILITY,
     preferred_gpu_keywords: Sequence[str] = VAST_DEFAULT_GPU_KEYWORDS,
+    excluded_machine_ids: Sequence[int] = (),
     max_existing_live_resources: int = 0,
     clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
     """Collect the frozen lane's mutation-free Vast offer snapshot."""
 
     preferred = [str(value).strip() for value in preferred_gpu_keywords if str(value).strip()]
+    excluded: list[int] = []
+    for value in excluded_machine_ids:
+        if isinstance(value, bool):
+            continue
+        try:
+            machine_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if machine_id > 0:
+            excluded.append(machine_id)
+    excluded = sorted(set(excluded))
     request = {
         "max_hourly_rate_usd": float(max_hourly_rate_usd),
         "min_gpu_ram_mb": int(min_gpu_ram_mb),
@@ -159,6 +171,7 @@ def collect_openpi_policy_ranking_vast_preflight(
         "require_known_supported_isaac_driver": False,
         "require_direct_port": False,
         "preferred_gpu_keywords": preferred,
+        "excluded_machine_ids": excluded,
     }
     capacity = dict(capacity_probe(request))
     attempt_inventory = dict(inventory_probe(name_prefix))

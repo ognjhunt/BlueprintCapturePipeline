@@ -1615,6 +1615,7 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
         "require_known_supported_isaac_driver": True,
         "require_direct_port": False,
         "preferred_gpu_keywords": ["L40S"],
+        "excluded_machine_ids": [],
         "min_compute_cap": 0,
         "max_compute_cap": 0,
         "prefer_isaac_rt": False,
@@ -1627,6 +1628,93 @@ def test_vast_capacity_preflight_is_read_only_policy_bound_and_sanitized(
     assert "vast-secret" not in serialized
     assert "provider-runtime-secret" not in serialized
     assert "jupyter_token" not in serialized
+
+
+def test_vast_capacity_preflight_excludes_registered_machine(monkeypatch) -> None:
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-secret")
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._api_json",
+        lambda **_kwargs: (
+            200,
+            {
+                "offers": [
+                    {
+                        "ask_contract_id": 11,
+                        "gpu_name": "L40",
+                        "gpu_ram": 48_000,
+                        "dph_total": 0.50,
+                        "reliability": 0.999,
+                        "machine_id": 27_268,
+                        "has_avx": 1,
+                    },
+                    {
+                        "ask_contract_id": 12,
+                        "gpu_name": "L40",
+                        "gpu_ram": 48_000,
+                        "dph_total": 0.60,
+                        "reliability": 0.999,
+                        "machine_id": 88_001,
+                        "has_avx": 1,
+                    },
+                ]
+            },
+        ),
+    )
+    request = VastRenderProvider().build_request(_spec(), Path("/unused"))
+    request.update(
+        {
+            "min_gpu_ram_mb": 40_000,
+            "min_reliability": 0.98,
+            "require_avx": True,
+            "excluded_machine_ids": [27_268],
+        }
+    )
+
+    result = VastRenderProvider().capacity_preflight(request)
+
+    assert result["status"] == "available"
+    assert result["selected_offer"]["machine_id"] == 88_001
+    assert result["selection_policy"]["excluded_machine_ids"] == [27_268]
+    assert {row["machine_id"] for row in result["viable_gpu_types"]} == {88_001}
+
+
+def test_vast_launch_excludes_registered_machine(tmp_path: Path, monkeypatch) -> None:
+    selected_kwargs: list[dict] = []
+
+    def fake_api_json(*, method, path, api_key, payload=None, timeout_seconds=45):
+        if method == "POST":
+            return 200, {"offers": ["raw"]}
+        assert path == "/asks/ask-good/"
+        return 200, {"new_contract": 777}
+
+    offers = [
+        {"ask_contract_id": "ask-bad", "machine_id": 27_268},
+        {"ask_contract_id": "ask-good", "machine_id": 88_001},
+    ]
+
+    def fake_select(candidates, **kwargs):
+        selected_kwargs.append(kwargs)
+        excluded = set(kwargs.get("excluded_machine_ids") or [])
+        return next(
+            (offer for offer in candidates if offer.get("machine_id") not in excluded),
+            None,
+        )
+
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda _self: "vast-key")
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._api_json", fake_api_json)
+    monkeypatch.setattr(
+        "blueprint_pipeline.vast_provider_adapter._offers_from_response",
+        lambda _response: offers,
+    )
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter._select_offer", fake_select)
+    request = _with_prelaunch_guard(VastRenderProvider().build_request(_spec(), tmp_path))
+    request["excluded_machine_ids"] = [27_268]
+
+    result = VastRenderProvider().launch(tmp_path, request)
+
+    assert result["status"] == "launched"
+    assert result["instance_id"] == "777"
+    assert selected_kwargs[0]["excluded_machine_ids"] == [27_268]
 
 
 def test_vast_ssh_direct_capacity_requires_offer_with_direct_port(
@@ -2111,6 +2199,7 @@ def test_vast_launch_forwards_episode_offer_selection_policy(monkeypatch, tmp_pa
             "min_reliability": 0.99,
             "require_direct_port": False,
             "preferred_gpu_keywords": ["L40S"],
+            "excluded_machine_ids": [],
         }
     ]
 

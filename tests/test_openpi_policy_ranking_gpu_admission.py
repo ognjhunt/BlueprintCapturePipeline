@@ -297,11 +297,11 @@ def test_openpi_preflight_selects_verified_capacity_without_mutation() -> None:
 
 
 def test_openpi_vast_preflight_reserves_frozen_rate_ceiling() -> None:
-    result = collect_openpi_policy_ranking_vast_preflight(
-        name_prefix="blueprint-openpi-ranking-",
-        container_disk_bytes=100 * 1024**3,
-        max_hourly_rate_usd=0.75,
-        capacity_probe=lambda request: {
+    observed_capacity_request = {}
+
+    def capacity_probe(request):
+        observed_capacity_request.update(request)
+        return {
             "status": "available",
             "selected_offer": {
                 "ask_contract_id": 123,
@@ -311,7 +311,14 @@ def test_openpi_vast_preflight_reserves_frozen_rate_ceiling() -> None:
                 "on_demand_price_usd_per_hour": 0.28,
             },
             "selection_policy": request,
-        },
+        }
+
+    result = collect_openpi_policy_ranking_vast_preflight(
+        name_prefix="blueprint-openpi-ranking-",
+        container_disk_bytes=100 * 1024**3,
+        max_hourly_rate_usd=0.75,
+        excluded_machine_ids=(27_268,),
+        capacity_probe=capacity_probe,
         inventory_probe=lambda _prefix: {
             "api_confirmed": True,
             "live_resource_count": 0,
@@ -323,6 +330,8 @@ def test_openpi_vast_preflight_reserves_frozen_rate_ceiling() -> None:
     assert result["provider"] == "vast"
     assert result["selected_offer_price_usd_per_hour"] == 0.28
     assert result["on_demand_price_usd_per_hour"] == 0.75
+    assert observed_capacity_request["excluded_machine_ids"] == [27_268]
+    assert result["capacity_request"]["excluded_machine_ids"] == [27_268]
     release, bundle, _runpod_preflight, spend = _inputs()
     spend["hard_ttl_seconds"] = 14_400
     spend["max_spend_usd"] = 3.0

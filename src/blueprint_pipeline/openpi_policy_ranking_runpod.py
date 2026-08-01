@@ -160,6 +160,16 @@ def _current_reference_authorization_blockers(
         or authorization.get("evaluator_or_vlm_spend_authorized_by_this_record") is not False
     ):
         blockers.append("openpi_current_reference_authorization_boundary_invalid")
+    excluded_machine_ids = authorization.get("vast_excluded_machine_ids", [])
+    if (
+        not isinstance(excluded_machine_ids, list)
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in excluded_machine_ids
+        )
+        or len(set(excluded_machine_ids)) != len(excluded_machine_ids)
+    ):
+        blockers.append("openpi_current_reference_authorization_vast_exclusions_invalid")
     return sorted(set(blockers))
 
 
@@ -1152,6 +1162,7 @@ def _build_vast_launch_request(
             "require_avx": True,
             "require_known_supported_isaac_driver": False,
             "preferred_gpu_keywords": capacity_request.get("preferred_gpu_keywords"),
+            "excluded_machine_ids": list(capacity_request.get("excluded_machine_ids") or []),
         }
     )
     return request
@@ -1466,6 +1477,9 @@ def run_openpi_policy_ranking_campaign(
                 capacity_probe=provider.capacity_preflight,
                 inventory_probe=lambda prefix: provider.billable_inventory(name_prefix=prefix),
                 max_existing_live_resources=max_existing_live_resources,
+                excluded_machine_ids=list(
+                    current_reference_authorization.get("vast_excluded_machine_ids") or []
+                ),
             )
             if resolved_provider == "vast"
             else collect_openpi_policy_ranking_runpod_preflight(

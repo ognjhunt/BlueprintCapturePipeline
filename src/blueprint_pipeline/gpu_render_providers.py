@@ -263,6 +263,22 @@ def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
+def _positive_int_list(value: Any) -> list[int]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    parsed: set[int] = set()
+    for item in value:
+        if isinstance(item, bool):
+            continue
+        try:
+            number = int(item)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            parsed.add(number)
+    return sorted(parsed)
+
+
 def _record_started_id(path: Path, instance_id: str) -> dict[str, Any]:
     try:
         path.write_text(str(instance_id), encoding="utf-8")
@@ -1938,6 +1954,7 @@ class VastRenderProvider(GpuRenderProvider):
         require_avx = req.get("require_avx") is True
         require_direct_port = req.get("require_direct_port") is True
         preferred_gpu_keywords = _string_list(req.get("preferred_gpu_keywords"))
+        excluded_machine_ids = _positive_int_list(req.get("excluded_machine_ids"))
         search_payload = _mapping(req.get("search_payload")) or _search_payload(
             limit=100,
             max_hourly_rate=max_rate,
@@ -1992,6 +2009,7 @@ class VastRenderProvider(GpuRenderProvider):
             "min_reliability": min_reliability,
             "require_direct_port": require_direct_port,
             "preferred_gpu_keywords": preferred_gpu_keywords,
+            "excluded_machine_ids": excluded_machine_ids,
             **vcc.capacity_selection_overrides(req),
         }
         selected = _select_offer(offers, **selection_kwargs)
@@ -2024,7 +2042,10 @@ class VastRenderProvider(GpuRenderProvider):
             "offer_count": len(offers),
             "viable_gpu_types": viable,
             "selected_offer": viable[0] if viable else None,
-            "selection_policy": vcc.capacity_selection_policy(req, selection_kwargs),
+            "selection_policy": {
+                **vcc.capacity_selection_policy(req, selection_kwargs),
+                "excluded_machine_ids": excluded_machine_ids,
+            },
             "reservation_proven": False,
             "capacity_confidence": "advisory" if selected else "unavailable",
             "authoritative_capacity_source": "provider_create_response",
@@ -2095,6 +2116,7 @@ class VastRenderProvider(GpuRenderProvider):
         )
         require_known_driver = request.get("require_known_supported_isaac_driver") is True
         preferred_gpu_keywords = _string_list(request.get("preferred_gpu_keywords"))
+        excluded_machine_ids = _positive_int_list(request.get("excluded_machine_ids"))
         if require_avx:
             search_payload = {**search_payload, "has_avx": {"eq": True}}
         try:
@@ -2155,6 +2177,7 @@ class VastRenderProvider(GpuRenderProvider):
                 min_reliability=min_reliability,
                 require_direct_port=require_direct_port,
                 preferred_gpu_keywords=preferred_gpu_keywords,
+                excluded_machine_ids=excluded_machine_ids,
             )
             if not offer:
                 break
