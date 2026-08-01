@@ -190,6 +190,36 @@ python scripts/run_public_indoor_proxy.py \
 The receipt deliberately records `production_security_gate_passed=false`,
 `raw_capture_gate_passed=false`, and `customer_upload_gate_passed=false`.
 
+### Completed: processed RGB-D/pose observation replay
+
+The MuSHRoom `koivu` archive also ran through the additive
+`processed_observation_dataset_manifest.v1` lane at exact clean commit
+`9e6299ea0b204868bdc0880ac1f5d27857152363`. The compiler verified the exact
+146,575,749-byte source archive, every consumed RGB/depth file, all published
+intrinsics and camera-to-world matrices, the 29 declared long-trajectory test
+IDs, and the independent short trajectory. It froze 239 training frames, 26
+validation frames, 29 declared test frames, and 121 independent-trajectory
+frames. The resulting candidate-only COLMAP export contained 265 images; all
+150 evaluation views remained under the evaluator-only boundary.
+
+The exact replay was executed twice. Both executions preserved summary SHA-256
+`36be03f03f547a542750c81d85bd7e3af37b39447cb5cf325df86f93a221166e`.
+The processed dataset digest is
+`sha256:735c3714b15b431b9bfe542cee97bbaa79c4972c93be9fc971d53cfdb37fbf18`,
+and the candidate COLMAP dataset digest is
+`sha256:46f6222b407b33e465852a4846641fe7b9aea26c15c15ceb7fe5bd57a965bc7a`.
+The compact receipt is
+`docs/evidence/public_processed_observation_mushroom_koivu_9e6299ea.json`.
+
+This establishes real processed captured-observation availability, immutable
+source binding, disjoint candidate/evaluator views, and compatibility with the
+local COLMAP training-input exporter. It does not establish original-video or
+decoded-PTS truth, Blueprint encoder retention, IMU/tracking evidence,
+independently verified metric scale, customer upload, production malware
+scanning, collision geometry, physics, physical success, deployment readiness,
+safety certification, or comparative policy ranking. The frozen verdict remains
+`thesis_not_supported`.
+
 ### P0: live-agent, zero-tool mutation smoke
 
 With a separately configured supported OpenAI API credential and a strict
