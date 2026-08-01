@@ -365,18 +365,26 @@ used as blind confirmation.
   three-view output, immediate reliability, owned-instance and global-zero
   closure, settled accounting, and generated-only same-policy query-11
   admission boundary;
+- `protocol_amendment_47_policy_query11_result_and_wam11_v1.md`,
+  `compute_authorization_ctrl_world_allocation_15.json`, and
+  `ctrl_world_current_reference_wam_11_gpu_profile_freeze_v1.json` — preserve
+  the successful same-checkpoint query 11, exact 15x8 native action, terminal
+  provider and campaign accounting, and bind WAM11 to the exact query-11
+  action, 35-frame generated feedback history, immutable provider bundle, one
+  single-use allocation, and the two-GPU global ceiling;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-Ten interactions are complete. WAM10 returned three exact generated views,
-passed immediate reliability with no flags or abstention, settled USD
-`0.108777`, and returned global Vast inventory to zero. Its exact final views
-and commanded-prefix state are frozen in the label-free policy-query-11 input.
-The next finite gate is one same-checkpoint policy query 11 through the
+Ten interactions are complete. Policy query 11 returned a new same-checkpoint
+15x8 action from WAM10's exact generated observations and the registered
+commanded state, settled USD `0.062917`, and returned global Vast inventory to
+zero. Its exact action now conditions the immutable WAM11 request with 35
+generated feedback frames per view. The next finite gate is WAM11 through the
 canonical paid-resource allocator after fresh source, credential,
 object-transport, provider-inventory, cumulative-budget, watchdog, preflight,
-and dry-run checks. Its native action must then condition WAM11 before
-interaction eleven is complete. Judges remain forbidden until the complete
-12-interaction episode and causal-control matrix pass.
+and dry-run checks. WAM11 must return three exact generated views and pass
+immediate reliability before interaction eleven is complete. Judges remain
+forbidden until the complete 12-interaction episode and causal-control matrix
+pass.
