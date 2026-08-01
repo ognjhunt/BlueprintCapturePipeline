@@ -317,15 +317,24 @@ used as blind confirmation.
   three-view output, immediate reliability, owned-instance terminal proof,
   late-watchdog accounting settlement, and generated-only same-policy query-7
   admission boundary without claiming global provider zero;
+- `protocol_amendment_39_policy_query7_result_and_wam7_v1.md`,
+  `compute_authorization_ctrl_world_allocation_11.json`, and
+  `ctrl_world_current_reference_wam_7_gpu_profile_freeze_v1.json` — preserve
+  the successful same-checkpoint query 7, close its provider and campaign
+  accounting, and bind WAM7 to the exact query-7 action, 31-frame generated
+  feedback history, immutable provider bundle, one single-use allocation, and
+  the two-GPU global ceiling;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-Six interactions are complete. WAM6 passed the unchanged immediate reliability
-screen and policy-query-7 input is frozen. The next finite gate is one
-same-checkpoint query 7 through the canonical paid-resource allocator after
-fresh credential, source, object-transport, provider-inventory, cumulative
-budget, watchdog, preflight, and dry-run checks. Its native action must then
-condition WAM7 before interaction seven is complete. Judges remain forbidden
-until the complete 12-interaction episode and causal-control matrix pass.
+Six interactions are complete. Policy query 7 succeeded with the unchanged
+frozen `pi05_droid` checkpoint, its paid allocation is settled, global Vast
+inventory is zero, and its native action now binds the immutable WAM7 request.
+The next finite gate is one WAM7 request through the canonical paid-resource
+allocator after fresh credential, object-transport, provider-inventory,
+cumulative-budget, watchdog, preflight, and dry-run checks. WAM7 must return and
+pass its immediate reliability screen before interaction seven is complete.
+Judges remain forbidden until the complete 12-interaction episode and
+causal-control matrix pass.
