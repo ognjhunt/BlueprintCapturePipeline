@@ -16,6 +16,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .common import utc_now_iso, write_json
 from .reconstruction_worker_contracts import (
+    THREEDGRUT_EXECUTABLE_TRAINER_METHODS,
     ReconstructionWorkerContractError,
     build_training_request,
     build_training_result,
@@ -283,10 +284,7 @@ def run_gaussian_reconstruction_training(
         or set(observation_ids) & set(rejected_ids)
     ):
         raise GaussianTrainerRuntimeError("training_dataset_observation_ledger_invalid")
-    if request["method_profile_id"] not in {
-        "gsplat_3dgut_mcmc_v1",
-        "nvidia_3dgrut_3dgut_mcmc_v1",
-    }:
+    if request["method_profile_id"] not in THREEDGRUT_EXECUTABLE_TRAINER_METHODS:
         raise GaussianTrainerRuntimeError("trainer_method_not_executable_by_3dgrut_adapter")
     image = str(os.environ.get("BLUEPRINT_CONTAINER_IMAGE_DIGEST") or "")
     if image and image != request["container_image_digest"]:

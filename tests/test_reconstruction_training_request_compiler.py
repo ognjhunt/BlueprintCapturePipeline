@@ -212,6 +212,16 @@ def test_compiler_binds_dataset_worker_smoke_authority_and_claim_ceiling() -> No
     assert request["worker_smoke_receipt_digest"]
 
 
+def test_compiler_rejects_contract_only_trainer_before_paid_runtime() -> None:
+    configuration = _configuration()
+    configuration["method_profile_id"] = "gsplat_3dgs_mcmc_v1"
+    with pytest.raises(
+        ReconstructionTrainingRequestCompilationError,
+        match="training_method_not_executable_by_3dgrut_adapter",
+    ):
+        _compile(execution_configuration=configuration)
+
+
 def test_compiler_prepares_trusted_digest_only_supervisor_runtime(tmp_path: Path) -> None:
     arguments = _compiler_arguments()
     dataset = arguments["dataset_export"]

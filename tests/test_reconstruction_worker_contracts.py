@@ -9,10 +9,13 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_worker_contracts import (
     BUILD_REQUIREMENTS_LOCK_SHA256,
+    CONTRACT_ONLY_TRAINER_METHODS,
     FAILURE_CODES,
     PINNED_MODEL_ASSETS,
     PINNED_WORKER_COMPONENTS,
     REQUIREMENTS_LOCK_SHA256,
+    PREFERRED_GAUSSIAN_TRAINER_METHOD_PROFILE_ID,
+    THREEDGRUT_EXECUTABLE_TRAINER_METHODS,
     ReconstructionWorkerContractError,
     build_candidate_worker_stack_manifest,
     build_checkpoint_manifest,
@@ -212,6 +215,17 @@ def test_worker_manifest_pins_headless_cuda_onnx_colmap_and_gaussian_stacks():
         "deterministic_qa",
     }
     assert len(PINNED_MODEL_ASSETS) == 4
+
+
+def test_worker_contract_names_one_preferred_3dgrut_profile_and_replay_alias() -> None:
+    assert PREFERRED_GAUSSIAN_TRAINER_METHOD_PROFILE_ID == (
+        "nvidia_3dgrut_3dgut_mcmc_v1"
+    )
+    assert THREEDGRUT_EXECUTABLE_TRAINER_METHODS == {
+        "nvidia_3dgrut_3dgut_mcmc_v1",
+        "gsplat_3dgut_mcmc_v1",
+    }
+    assert CONTRACT_ONLY_TRAINER_METHODS == {"gsplat_3dgs_mcmc_v1"}
 
 
 def test_worker_manifest_cannot_claim_driver_test_before_build():

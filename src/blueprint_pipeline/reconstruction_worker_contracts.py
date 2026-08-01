@@ -205,6 +205,21 @@ TRAINER_METHODS = {
     "nvidia_3dgrut_3dgut_mcmc_v1",
 }
 
+# New Blueprint training requests use the NVIDIA profile explicitly because the
+# pinned executable adapter launches /opt/3dgrut/train.py with the 3DGUT MCMC
+# configuration.  The older ``gsplat_3dgut_mcmc_v1`` identifier is retained for
+# deterministic replay of accepted artifacts; it does not describe a different
+# runtime.  ``gsplat_3dgs_mcmc_v1`` remains a valid provider-neutral contract ID
+# for a future gsplat adapter, but it must not reach the 3DGRUT executor.
+PREFERRED_GAUSSIAN_TRAINER_METHOD_PROFILE_ID = "nvidia_3dgrut_3dgut_mcmc_v1"
+THREEDGRUT_EXECUTABLE_TRAINER_METHODS = frozenset(
+    {
+        PREFERRED_GAUSSIAN_TRAINER_METHOD_PROFILE_ID,
+        "gsplat_3dgut_mcmc_v1",
+    }
+)
+CONTRACT_ONLY_TRAINER_METHODS = frozenset(TRAINER_METHODS) - THREEDGRUT_EXECUTABLE_TRAINER_METHODS
+
 FAILURE_CODES = {
     "invalid_capture_contract",
     "missing_rights_or_consent",

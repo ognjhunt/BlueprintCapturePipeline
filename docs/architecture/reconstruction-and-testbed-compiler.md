@@ -517,6 +517,13 @@ rejected frames and typed failures. They contain no hidden held-out labels and
 cannot self-grade. Checkpoints can resume only against the exact request and
 random-state digest.
 
+New requests compiled for the pinned executable use
+`nvidia_3dgrut_3dgut_mcmc_v1` as the canonical profile identifier. The older
+`gsplat_3dgut_mcmc_v1` identifier remains accepted only as a replay-compatible
+alias for the same 3DGRUT executor. `gsplat_3dgs_mcmc_v1` remains a valid
+provider-neutral contract identifier for a future dedicated gsplat executor,
+but the 3DGRUT-bound request compiler rejects it before paid worker startup.
+
 The Agents SDK exposes `run_pose_estimation` and
 `train_gaussian_reconstruction` using request digests only. Trusted injected
 runtimes receive the validated request and a supervisor-owned output root; the

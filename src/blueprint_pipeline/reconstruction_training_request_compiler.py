@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .reconstruction_gaussian_trainer import bind_gaussian_reconstruction_trainer
 from .reconstruction_worker_contracts import (
+    THREEDGRUT_EXECUTABLE_TRAINER_METHODS,
     ReconstructionWorkerContractError,
     build_training_request,
     build_worker_build_receipt,
@@ -73,6 +74,12 @@ def compile_reconstruction_training_request(
     configuration = _mapping(execution_configuration)
     authority = _mapping(execution_authority)
     errors: list[str] = []
+
+    # This compiler binds the request to the only runtime it injects below: the
+    # pinned NVIDIA 3DGRUT adapter. Reject contract-only trainer IDs here so an
+    # incompatible request cannot pass admission and fail after paid startup.
+    if configuration.get("method_profile_id") not in THREEDGRUT_EXECUTABLE_TRAINER_METHODS:
+        errors.append("training_method_not_executable_by_3dgrut_adapter")
 
     try:
         stack = build_worker_stack_manifest(worker_stack_manifest)
