@@ -170,6 +170,17 @@ def _current_reference_authorization_blockers(
         or len(set(excluded_machine_ids)) != len(excluded_machine_ids)
     ):
         blockers.append("openpi_current_reference_authorization_vast_exclusions_invalid")
+    startup_timeout = authorization.get("provider_startup_timeout_seconds")
+    authorized_ttl = authorization.get("hard_ttl_seconds")
+    if startup_timeout is not None and (
+        isinstance(startup_timeout, bool)
+        or not isinstance(startup_timeout, int)
+        or startup_timeout < 60
+        or isinstance(authorized_ttl, bool)
+        or not isinstance(authorized_ttl, int)
+        or startup_timeout > authorized_ttl - 60
+    ):
+        blockers.append("openpi_current_reference_authorization_startup_timeout_invalid")
     return sorted(set(blockers))
 
 
@@ -1903,6 +1914,10 @@ def run_openpi_policy_ranking_campaign(
             pod_id=pod_id,
             provider_name=resolved_provider,
             deadline_epoch=deadline,
+            provider_startup_timeout_seconds=float(
+                current_reference_authorization.get("provider_startup_timeout_seconds")
+                or DEFAULT_PROVIDER_STARTUP_TIMEOUT_SECONDS
+            ),
         )
         result = {
             **adapter,

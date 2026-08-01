@@ -801,6 +801,8 @@ def _current_reference_authorization(*, runtime_commit: str, bundle_sha256: str)
         "maximum_policy_requests": 1,
         "maximum_concurrent_gpus": 2,
         "vast_excluded_machine_ids": [],
+        "hard_ttl_seconds": 14_400,
+        "provider_startup_timeout_seconds": 480,
         "single_use_consumption_required": True,
         "paid_mutation_authorized": True,
         "runtime_source_commit": runtime_commit,
@@ -898,6 +900,38 @@ def test_current_reference_authorization_validates_vast_machine_exclusions() -> 
     )
 
     assert blockers == ["openpi_current_reference_authorization_vast_exclusions_invalid"]
+
+
+def test_current_reference_authorization_validates_bounded_startup_timeout() -> None:
+    runtime_commit = "d" * 40
+    bundle = _current_reference_bundle(
+        image_source_commit="a" * 40,
+        runtime_commit=runtime_commit,
+    )
+    bundle["bundle_sha256"] = "e" * 64
+    bundle["manifest"]["policy_ids"] = ["pi05_droid"]
+    authorization = _current_reference_authorization(
+        runtime_commit=runtime_commit,
+        bundle_sha256=str(bundle["bundle_sha256"]),
+    )
+    authorization["provider_startup_timeout_seconds"] = 900
+    assert (
+        runpod_module._current_reference_authorization_blockers(
+            authorization,
+            input_bundle=bundle,
+            expected_source_commit=runtime_commit,
+        )
+        == []
+    )
+
+    authorization["provider_startup_timeout_seconds"] = 14_400
+    blockers = runpod_module._current_reference_authorization_blockers(
+        authorization,
+        input_bundle=bundle,
+        expected_source_commit=runtime_commit,
+    )
+
+    assert blockers == ["openpi_current_reference_authorization_startup_timeout_invalid"]
 
 
 def test_current_reference_campaign_blocks_before_provider_without_authorization(

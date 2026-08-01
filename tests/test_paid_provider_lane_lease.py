@@ -30,6 +30,7 @@ from blueprint_pipeline.paid_provider_lane_lease import (
     read_lease,
     rebind_paid_provider_lane_lease_to_replacement_volume,
     release_paid_provider_lane_lease,
+    release_transferred_paid_provider_lane_lease,
     restore_paid_provider_lane_lease_to_retained_watchdog,
     rotate_paid_provider_lane_lease_to_retention_watchdog,
     transfer_paid_provider_lane_lease_to_watchdog,
@@ -78,6 +79,99 @@ def test_compute_lane_transfers_directly_to_live_teardown_watchdog(
     assert observed["owner_pid"] == watchdog_pid
     assert observed["owner_role"] == "retained_compute_teardown_watchdog"
     assert observed["direct_compute_handoff"] == transferred
+
+
+def test_compute_lane_terminal_release_recovers_dead_same_host_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_pid = os.getpid()
+    watchdog_pid = owner_pid + 10_000
+    recovery_pid = watchdog_pid + 1
+    live = {owner_pid, watchdog_pid}
+    monkeypatch.setattr(lease_module, "_pid_is_alive", lambda pid: pid in live)
+    lane = "openpi_policy_ranking_gpu_canary"
+    acquired = acquire_paid_provider_lane_lease(
+        provider="runpod",
+        lane=lane,
+        job_dir=str(tmp_path),
+        lease_dir=tmp_path,
+        reconciliation=_reconciliation(lane=lane),
+    )
+    pending = open_pending_teardown(
+        provider="runpod",
+        lane=lane,
+        run_id="openpi-recovery-test",
+        resource_kind="compute_instance",
+        resource_name="blueprint-groot-oscar-canary-openpi-ranking-recovery-test",
+        registry_dir=tmp_path / "pending",
+    )
+    transferred = transfer_paid_provider_compute_lane_lease_to_watchdog(
+        acquired,
+        watchdog_pid=watchdog_pid,
+        pending_teardown_record=pending["path"],
+        watchdog_deadline_epoch=2_000.0,
+        resource_name_prefix="blueprint-groot-oscar-canary-openpi-ranking-",
+        clock=lambda: 1_000.0,
+    )
+    assert transferred["status"] == "accepted"
+    live.remove(watchdog_pid)
+
+    released = release_transferred_paid_provider_lane_lease(
+        lease_path_value=transferred["lease_path"],
+        teardown_owner_pid=recovery_pid,
+        terminal_reconciliation=_reconciliation(lane=lane),
+        reason="restarted_watchdog_terminal_recovery",
+    )
+
+    assert released["status"] == "released"
+    assert released["recovered_dead_owner"] is True
+    assert read_lease("runpod", lane, tmp_path) is None
+
+
+def test_compute_lane_terminal_release_refuses_different_owner_while_watchdog_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_pid = os.getpid()
+    watchdog_pid = owner_pid + 10_000
+    monkeypatch.setattr(
+        lease_module,
+        "_pid_is_alive",
+        lambda pid: pid in {owner_pid, watchdog_pid},
+    )
+    lane = "openpi_policy_ranking_gpu_canary"
+    acquired = acquire_paid_provider_lane_lease(
+        provider="runpod",
+        lane=lane,
+        job_dir=str(tmp_path),
+        lease_dir=tmp_path,
+        reconciliation=_reconciliation(lane=lane),
+    )
+    pending = open_pending_teardown(
+        provider="runpod",
+        lane=lane,
+        run_id="openpi-live-owner-test",
+        resource_kind="compute_instance",
+        resource_name="blueprint-groot-oscar-canary-openpi-ranking-live-owner-test",
+        registry_dir=tmp_path / "pending",
+    )
+    transferred = transfer_paid_provider_compute_lane_lease_to_watchdog(
+        acquired,
+        watchdog_pid=watchdog_pid,
+        pending_teardown_record=pending["path"],
+        watchdog_deadline_epoch=2_000.0,
+        resource_name_prefix="blueprint-groot-oscar-canary-openpi-ranking-",
+        clock=lambda: 1_000.0,
+    )
+
+    refused = release_transferred_paid_provider_lane_lease(
+        lease_path_value=transferred["lease_path"],
+        teardown_owner_pid=watchdog_pid + 1,
+        terminal_reconciliation=_reconciliation(lane=lane),
+        reason="must_not_steal_live_watchdog",
+    )
+
+    assert refused["status"] == "refused_not_teardown_owner"
+    assert read_lease("runpod", lane, tmp_path)["owner_pid"] == watchdog_pid
 
 
 def test_verified_volume_replacement_rebinds_same_lane_without_owner_gap(
