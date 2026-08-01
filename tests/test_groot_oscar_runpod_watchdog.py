@@ -585,6 +585,103 @@ def test_owner_teardown_cancel_requires_global_provider_zero(tmp_path, monkeypat
     assert all(observed_at < deadline for observed_at, name_prefix in observed if name_prefix == "")
 
 
+def test_vast_owner_cancel_allows_one_unrelated_instance_under_two_gpu_ceiling(
+    tmp_path, monkeypatch
+) -> None:
+    now = 100.0
+    deadline = 200.0
+    prefix = "blueprint-groot-oscar-canary-attempt-"
+    instance_id = "46519017"
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: now)
+    monkeypatch.setenv("BLUEPRINT_VAST_MAX_GLOBAL_LIVE_INSTANCES", "2")
+    (tmp_path / "started_vast_instance_id.txt").write_text(instance_id, encoding="utf-8")
+    cancel_path = tmp_path / watchdog_module.OWNER_TEARDOWN_CANCEL_NAME
+    cancel_path.write_text(
+        json.dumps(
+            {
+                "schema_version": watchdog_module.OWNER_TEARDOWN_CANCEL_SCHEMA_VERSION,
+                "requested_by": "qualification_owner_teardown",
+                "provider": "vast",
+                "instance_id": instance_id,
+                "pod_name_prefix": prefix,
+                "provider_absence_confirmed": True,
+                "provider_absence_evidence": (
+                    "provider_api_exact_id_prefix_and_global_inventory"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cancel_path.chmod(0o600)
+
+    def inventory(*, name_prefix: str, **_kwargs) -> dict:
+        count = 1 if name_prefix == "" else 0
+        return {
+            "api_confirmed": True,
+            "live_resource_count": count,
+            "resources": ([{"instance_id": "unrelated-live"}] if count else []),
+        }
+
+    monkeypatch.setattr(watchdog_module, "_vast_billable_inventory", inventory)
+
+    class Provider:
+        name = "vast"
+
+        def inspect(self, observed_id: str) -> dict:
+            assert observed_id == instance_id
+            return {
+                "status": "absent",
+                "provider": "vast",
+                "http": 404,
+                "instance_id": observed_id,
+                "api_confirmed": True,
+                "provider_absence_confirmed": True,
+            }
+
+    result = run_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=deadline,
+        provider_name="vast",
+        provider_factory=lambda _name: Provider(),
+        clock=lambda: now,
+        sleeper=lambda _seconds: pytest.fail("authorized residual inventory must settle"),
+    )
+
+    assert result["status"] == "provider_terminal"
+    assert result["provider_absence_confirmed"] is True
+    assert result["maximum_global_live_instances"] == 2
+    assert result["maximum_residual_unrelated_live_instances"] == 1
+    assert result["global_inventory_within_authorized_residual_limit"] is True
+    assert result["final_global_inventory"]["live_resource_count"] == 1
+
+
+def test_arm_watchdog_resumes_identical_dead_owner_without_rewriting(tmp_path, monkeypatch) -> None:
+    prefix = "blueprint-groot-oscar-canary-attempt-"
+    deadline = 500.0
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: 100.0)
+    first = watchdog_module.arm_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=deadline,
+        pid=99999,
+        provider_name="vast",
+    )
+    evidence_path = tmp_path / watchdog_module.EVIDENCE_NAME
+    original_bytes = evidence_path.read_bytes()
+    monkeypatch.setattr(watchdog_module, "_process_is_running", lambda _pid: False)
+
+    resumed = watchdog_module.arm_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix=prefix,
+        deadline_epoch=deadline,
+        provider_name="vast",
+    )
+
+    assert resumed == first
+    assert evidence_path.read_bytes() == original_bytes
+
+
 def test_vast_owner_cancel_requires_exact_recorded_id_absence(tmp_path, monkeypatch) -> None:
     now = 100.0
     deadline = 200.0

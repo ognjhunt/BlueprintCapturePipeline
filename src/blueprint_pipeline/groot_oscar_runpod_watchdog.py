@@ -30,6 +30,7 @@ EVIDENCE_NAME = WATCHDOG_EVIDENCE_NAME
 write_owner_teardown_cancel_request = _write_owner_teardown_cancel_request
 SUPPORTED_PROVIDERS = ("runpod", "vast")
 VAST_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
+VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV = "BLUEPRINT_VAST_MAX_GLOBAL_LIVE_INSTANCES"
 CANARY_NAME_PREFIXES = (
     "blueprint-groot-oscar-canary-",
     "blueprint-native-warehouse-camera-",
@@ -339,6 +340,38 @@ def _vast_delete_absence_proven(value: Mapping[str, Any]) -> bool:
     )
 
 
+def _process_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _authorized_residual_global_live_instances(provider_name: str) -> tuple[int, int]:
+    """Return the frozen global ceiling and unrelated-resource allowance.
+
+    The current-reference paid profile admits only one or two globally live
+    Vast instances. Missing, malformed, or broader values retain the historical
+    one-instance/global-zero settlement behavior.
+    """
+
+    if provider_name != "vast":
+        return 1, 0
+    raw = str(os.getenv(VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV) or "").strip()
+    try:
+        maximum = int(raw)
+    except ValueError:
+        maximum = 1
+    if maximum not in {1, 2}:
+        maximum = 1
+    return maximum, maximum - 1
+
+
 def arm_watchdog(
     *,
     out_dir: str | Path,
@@ -354,6 +387,35 @@ def arm_watchdog(
     if float(deadline_epoch) <= time.time() + 60:
         raise ValueError("watchdog_deadline_must_be_more_than_60_seconds_future")
     resolved_provider = _provider_name(provider_name)
+    evidence_path = root / EVIDENCE_NAME
+    try:
+        existing_stat = evidence_path.lstat()
+        existing_value = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        existing_stat = None
+        existing_value = None
+    if (
+        existing_stat is not None
+        and evidence_path.is_file()
+        and not evidence_path.is_symlink()
+        and stat.S_IMODE(existing_stat.st_mode) == 0o600
+        and isinstance(existing_value, Mapping)
+        and existing_value.get("schema_version") == SCHEMA_VERSION
+        and existing_value.get("status") == "armed"
+        and existing_value.get("provider") == resolved_provider
+        and existing_value.get("pod_name_prefix") == pod_name_prefix
+        and existing_value.get("watchdog_out_dir") == str(root)
+        and math.isclose(
+            float(existing_value.get("deadline_epoch") or 0.0),
+            float(deadline_epoch),
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        )
+    ):
+        existing_pid = int(existing_value.get("pid") or 0)
+        if existing_pid != os.getpid() and _process_is_running(existing_pid):
+            raise RuntimeError("watchdog_existing_owner_still_active")
+        return dict(existing_value)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "status": "armed",
@@ -369,7 +431,7 @@ def arm_watchdog(
         "provider_mutations_performed": 0,
         "raw_secret_values_recorded": False,
     }
-    write_json(root / EVIDENCE_NAME, payload)
+    write_json(evidence_path, payload)
     return payload
 
 
@@ -666,20 +728,28 @@ def run_watchdog(
                 second_zero = {}
                 second_global_zero = {}
                 exact_contract_zero = False
-            independently_zero = (
-                all(
-                    inventory.get("api_confirmed") is True
-                    and inventory.get("live_resource_count") == 0
-                    for inventory in (
-                        first_zero,
-                        first_global_zero,
-                        second_zero,
-                        second_global_zero,
-                    )
-                )
+            maximum_global_live_instances, residual_global_live_instances = (
+                _authorized_residual_global_live_instances(resolved_provider)
+            )
+            exact_scope_zero = all(
+                inventory.get("api_confirmed") is True
+                and inventory.get("live_resource_count") == 0
+                for inventory in (first_zero, second_zero)
+            )
+            global_inventory_within_residual_limit = all(
+                inventory.get("api_confirmed") is True
+                and type(inventory.get("live_resource_count")) is int
+                and 0
+                <= inventory["live_resource_count"]
+                <= residual_global_live_instances
+                for inventory in (first_global_zero, second_global_zero)
+            )
+            independently_terminal = (
+                exact_scope_zero
+                and global_inventory_within_residual_limit
                 and exact_contract_zero
             )
-            if independently_zero:
+            if independently_terminal:
                 owner_teardown_cancel = cancel_candidate
                 cancel_zero_result = {
                     **armed,
@@ -691,6 +761,11 @@ def run_watchdog(
                     "final_inventory": second_zero,
                     "final_global_inventory": second_global_zero,
                     "provider_absence_confirmed": True,
+                    "maximum_global_live_instances": maximum_global_live_instances,
+                    "maximum_residual_unrelated_live_instances": (
+                        residual_global_live_instances
+                    ),
+                    "global_inventory_within_authorized_residual_limit": True,
                     "provider_mutations_performed": 0,
                     "teardown_error_type": None,
                     "raw_secret_values_recorded": False,

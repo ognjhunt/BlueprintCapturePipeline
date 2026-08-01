@@ -308,6 +308,10 @@ used as blind confirmation.
   the successful same-checkpoint query 6, close interaction six, and bind WAM6
   to the exact query-6 action, 30-frame feedback history, immutable provider
   bundle, one single-use allocation, and the two-GPU global ceiling;
+- `protocol_amendment_37_two_gpu_watchdog_terminal_reconciliation_v1.md` —
+  preserves WAM6's owned-instance teardown while one unrelated GPU remains,
+  admits that residual inventory only under the exact two-GPU ceiling, and
+  adds byte-preserving dead-owner watchdog resume for terminal reconciliation;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
