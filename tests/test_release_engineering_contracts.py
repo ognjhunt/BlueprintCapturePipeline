@@ -84,7 +84,7 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert "inputs.pytest" not in workflow
     assert "extra_args" not in workflow
     assert "uv run scripts/pytest_full.sh" in workflow
-    assert "--junitxml=output/ci/full-test-lane-junit.xml" in workflow
+    assert '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml"' in workflow
     assert "blueprint_pipeline.pytest_full_lane_evidence" in workflow
     assert "scripts/verify_full_lane_collection.py" in workflow
     assert "full-test-lane-planned.json" in workflow
@@ -184,7 +184,7 @@ def test_package_policy_and_spdx_metadata_are_complete() -> None:
     assert (ROOT / ".github" / "CODEOWNERS").is_file()
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "uv build --out-dir output/ci/dist" in workflow
+    assert 'uv build --out-dir "${{ runner.temp }}/blueprint-ci/dist"' in workflow
     assert "scripts/verify_distribution_metadata.py" in workflow
 
 

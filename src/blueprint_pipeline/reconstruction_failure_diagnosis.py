@@ -120,6 +120,7 @@ _RECOVERY_BY_FAILURE: dict[str, tuple[str, ...]] = {
     "scale_anchor_rejection": ("request_metric_anchor", "abstain"),
     "invalid_depth_alignment": ("request_targeted_recapture", "abstain"),
     "training_divergence": ("choose_prequalified_reconstruction_method", "abstain"),
+    "training_timeout": ("resume_bound_checkpoint", "choose_prequalified_reconstruction_method"),
     "nan_output": ("retry_once_same_worker", "choose_prequalified_reconstruction_method"),
     "gpu_out_of_memory": ("resume_bound_checkpoint", "choose_prequalified_reconstruction_method"),
     "provider_capacity": ("retry_once_same_worker", "use_already_authorized_provider"),
