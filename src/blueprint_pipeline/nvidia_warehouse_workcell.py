@@ -403,9 +403,18 @@ def build_native_camera_canary_spec(
             "placements": {
                 "workcell_translation_m": [0.0, 0.0, 0.0],
                 "franka_base_translation_m": [-0.50, 0.0, 0.995],
-                "spraycan_translation_m": [0.0, 0.075, 1.085],
+                # The previous [0.0, 0.075, 1.085] placement was wholly
+                # embedded in the workcell's existing clay bottle. This
+                # collision-free pocket is selected from pinned scene AABBs,
+                # before policy/WAM execution or access to any ranking.
+                "spraycan_translation_m": [0.10, -0.05, 1.005],
                 "tray_center_translation_m": [-0.05, 0.32, 1.025],
-                "source": "frozen_mujoco_task_offsets_registered_to_workcell_tabletop",
+                "initial_target_allowed_enclosing_prim_paths": [
+                    "/World/WarehouseWorkcell/SM_Crate_A07_Yellow_04"
+                ],
+                "source": (
+                    "deterministic_pinned_scene_aabb_clearance_inside_declared_open_crate"
+                ),
                 "must_pass_scripted_feasibility_before_policy_or_wam": True,
             },
         },
@@ -423,7 +432,11 @@ def build_native_camera_canary_spec(
                 "mount_translation_m": [0.0, 0.10, 0.03],
                 "rigid_mount_orientation": {
                     "mode": "one_time_initial_task_framing_rigid_parent_local_mount",
-                    "target_entity_ids": ["spraycan", "tray"],
+                    # The wrist validity contract requires the manipulated
+                    # object at the initial pose. Aiming at a target/tray
+                    # midpoint can center neither and needlessly weakens that
+                    # observation without changing the task.
+                    "target_entity_ids": ["spraycan"],
                     "world_up": [0.0, 0.0, 1.0],
                     "calibrated_before_initial_observation": True,
                     "calibrated_after_initial_joint_hold": True,
@@ -439,6 +452,7 @@ def build_native_camera_canary_spec(
             "workcell_stage_loaded_without_missing_dataset_local_dependencies",
             "franka_articulation_has_exactly_9_dofs",
             "spraycan_has_collision_and_runtime_rigid_body",
+            "spraycan_initial_placement_has_no_undeclared_workcell_aabb_intersection",
             "external_rgb_nonblank_and_franka_spraycan_tray_visible",
             "wrist_rgb_nonblank_and_task_object_visible_at_initial_pose",
             "wrist_camera_world_pose_changes_under_command",

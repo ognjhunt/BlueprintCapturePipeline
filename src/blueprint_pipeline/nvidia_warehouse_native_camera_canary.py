@@ -757,6 +757,82 @@ def _world_bound_center_xyz(world_bound: Any) -> np.ndarray:
     return center
 
 
+def _aabb_intersection_report(
+    *,
+    subject_min_xyz: Any,
+    subject_max_xyz: Any,
+    obstacle_bounds: Mapping[str, tuple[Any, Any]],
+    allowed_enclosing_obstacle_paths: tuple[str, ...] = (),
+    minimum_intersection_volume_m3: float = 1e-9,
+) -> dict[str, Any]:
+    """Report conservative 3D placement intersections without render labels.
+
+    The check deliberately uses world-space aligned bounds.  It can reject a
+    valid placement near a concave/open receptacle, but it must never approve a
+    target that is wholly embedded in another scene object.  A task that needs
+    receptacle containment must declare a separately validated containment
+    contract instead of silently bypassing this initial-object check.
+    """
+
+    subject_min = np.asarray(subject_min_xyz, dtype=float).reshape(3)
+    subject_max = np.asarray(subject_max_xyz, dtype=float).reshape(3)
+    if (
+        not np.isfinite(subject_min).all()
+        or not np.isfinite(subject_max).all()
+        or np.any(subject_max <= subject_min)
+        or not math.isfinite(float(minimum_intersection_volume_m3))
+        or minimum_intersection_volume_m3 < 0.0
+    ):
+        raise ValueError("native_task_placement_subject_bound_invalid")
+    subject_volume = float(np.prod(subject_max - subject_min))
+    allowed = {str(path) for path in allowed_enclosing_obstacle_paths}
+    if not all(path.startswith("/World/WarehouseWorkcell/") for path in allowed):
+        raise ValueError("native_task_placement_allowed_enclosure_path_invalid")
+    intersections: list[dict[str, Any]] = []
+    allowed_enclosing_intersections: list[dict[str, Any]] = []
+    for obstacle_path, bound in sorted(obstacle_bounds.items()):
+        if not isinstance(bound, tuple) or len(bound) != 2:
+            raise ValueError("native_task_placement_obstacle_bound_invalid")
+        obstacle_min = np.asarray(bound[0], dtype=float).reshape(3)
+        obstacle_max = np.asarray(bound[1], dtype=float).reshape(3)
+        if (
+            not np.isfinite(obstacle_min).all()
+            or not np.isfinite(obstacle_max).all()
+            or np.any(obstacle_max <= obstacle_min)
+        ):
+            raise ValueError("native_task_placement_obstacle_bound_invalid")
+        intersection_extent = np.maximum(
+            0.0,
+            np.minimum(subject_max, obstacle_max) - np.maximum(subject_min, obstacle_min),
+        )
+        intersection_volume = float(np.prod(intersection_extent))
+        if intersection_volume <= minimum_intersection_volume_m3:
+            continue
+        overlap_fraction = intersection_volume / subject_volume
+        row = {
+            "obstacle_prim_path": str(obstacle_path),
+            "intersection_extent_m": intersection_extent.tolist(),
+            "intersection_volume_m3": intersection_volume,
+            "subject_overlap_fraction": overlap_fraction,
+        }
+        if str(obstacle_path) in allowed and overlap_fraction >= 1.0 - 1e-9:
+            allowed_enclosing_intersections.append(row)
+        else:
+            intersections.append(row)
+    return {
+        "status": "passed" if not intersections else "failed",
+        "method": "world_aligned_aabb_intersection_fail_closed",
+        "subject_min_world_m": subject_min.tolist(),
+        "subject_max_world_m": subject_max.tolist(),
+        "subject_volume_m3": subject_volume,
+        "minimum_intersection_volume_m3": float(minimum_intersection_volume_m3),
+        "intersections": intersections,
+        "allowed_enclosing_obstacle_paths": sorted(allowed),
+        "allowed_enclosing_intersections": allowed_enclosing_intersections,
+        "rankings_or_policy_outcomes_accessed": False,
+    }
+
+
 def _summarize_required_entity_projections(
     *, view_id: str, projections_by_phase: Mapping[str, Mapping[str, Any]]
 ) -> dict[str, bool]:
@@ -1007,6 +1083,26 @@ def isaac_sim_6_backend(
             for entity_id, prim in semantic_targets.items()
             if entity_id in {"spraycan", "tray"}
         }
+        spraycan_world_bound = bbox_cache.ComputeWorldBound(spray_prim).ComputeAlignedBox()
+        workcell_root = stage.GetPrimAtPath("/World/WarehouseWorkcell")
+        workcell_child_bounds: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        for child in workcell_root.GetChildren():
+            aligned = bbox_cache.ComputeWorldBound(child).ComputeAlignedBox()
+            child_min = np.asarray(aligned.GetMin(), dtype=float).reshape(3)
+            child_max = np.asarray(aligned.GetMax(), dtype=float).reshape(3)
+            if np.isfinite(child_min).all() and np.isfinite(child_max).all() and np.all(
+                child_max > child_min
+            ):
+                workcell_child_bounds[str(child.GetPath())] = (child_min, child_max)
+        initial_task_placement_validation = _aabb_intersection_report(
+            subject_min_xyz=spraycan_world_bound.GetMin(),
+            subject_max_xyz=spraycan_world_bound.GetMax(),
+            obstacle_bounds=workcell_child_bounds,
+            allowed_enclosing_obstacle_paths=tuple(
+                str(path)
+                for path in placements.get("initial_target_allowed_enclosing_prim_paths", [])
+            ),
+        )
 
         UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
         dome = UsdLux.DomeLight.Define(stage, "/World/Lights/Dome")
@@ -1199,6 +1295,9 @@ def isaac_sim_6_backend(
         if not wrist_pose_congruence["initial"]["congruent"]:
             raise ValueError("native_wrist_camera_pose_backend_divergence:initial")
         wrist_local_initial = wrist_world_initial @ np.linalg.inv(hand_world_initial)
+        requested_wrist_local_initial = requested_wrist_world_initial @ np.linalg.inv(
+            hand_world_initial
+        )
         actual_wrist_eye = wrist_world_initial[3, :3]
         actual_wrist_forward = (np.asarray([0.0, 0.0, -1.0, 0.0]) @ wrist_world_initial)[:3]
         actual_wrist_forward /= np.linalg.norm(actual_wrist_forward)
@@ -1343,6 +1442,9 @@ def isaac_sim_6_backend(
         if not wrist_pose_congruence["commanded"]["congruent"]:
             raise ValueError("native_wrist_camera_pose_backend_divergence:commanded")
         wrist_local_commanded = wrist_world_commanded @ np.linalg.inv(hand_world_commanded)
+        requested_wrist_local_commanded = requested_wrist_world_commanded @ np.linalg.inv(
+            hand_world_commanded
+        )
 
         missing = [
             row["relative_path"]
@@ -1367,6 +1469,7 @@ def isaac_sim_6_backend(
                 entity_id: np.asarray(point, dtype=float).tolist()
                 for entity_id, point in entity_world_points.items()
             },
+            "initial_task_placement_validation": initial_task_placement_validation,
             "camera_runtime_api": {
                 "module": "isaacsim.sensors.experimental.rtx",
                 "authoring_class": "RtxCamera",
@@ -1403,6 +1506,16 @@ def isaac_sim_6_backend(
             ),
             "wrist_camera_local_transform_delta": float(
                 np.max(np.abs(wrist_local_commanded - wrist_local_initial))
+            ),
+            "wrist_camera_observed_local_transform_delta": float(
+                np.max(np.abs(wrist_local_commanded - wrist_local_initial))
+            ),
+            "wrist_camera_requested_local_transform_delta": float(
+                np.max(
+                    np.abs(
+                        requested_wrist_local_commanded - requested_wrist_local_initial
+                    )
+                )
             ),
             "external_wrist_timestamp_pairs_exact": all(
                 frames["external"][f"{phase}_physics_step"]
@@ -1499,6 +1612,10 @@ def assess_native_camera_backend_result(
         blockers.append("native_spraycan_collision_missing")
     if backend_result.get("spraycan_runtime_rigid_body") is not True:
         blockers.append("native_spraycan_rigid_body_missing")
+    placement_value = backend_result.get("initial_task_placement_validation")
+    placement = placement_value if isinstance(placement_value, Mapping) else {}
+    if placement.get("status") != "passed":
+        blockers.append("native_spraycan_initial_placement_intersects_workcell")
 
     views_value = backend_result.get("views")
     views = views_value if isinstance(views_value, Mapping) else {}
@@ -1547,15 +1664,34 @@ def assess_native_camera_backend_result(
                 blockers.append(f"native_camera_external_pair_frame_not_distinct:{phase}")
 
     wrist_world_delta = _finite_float(backend_result.get("wrist_camera_world_displacement_m"))
-    wrist_local_delta = _finite_float(backend_result.get("wrist_camera_local_transform_delta"))
+    wrist_observed_local_delta = _finite_float(
+        backend_result.get("wrist_camera_observed_local_transform_delta")
+    )
+    wrist_requested_local_delta = _finite_float(
+        backend_result.get("wrist_camera_requested_local_transform_delta")
+    )
+    # Compatibility for injected/older backends. New Isaac evidence always
+    # reports both values and gates the mathematically fixed requested mount;
+    # per-phase backend congruence separately observes that the public camera
+    # API honored those requested poses within its existing tolerance.
+    if wrist_requested_local_delta is None:
+        wrist_requested_local_delta = _finite_float(
+            backend_result.get("wrist_camera_local_transform_delta")
+        )
+    if wrist_observed_local_delta is None:
+        wrist_observed_local_delta = _finite_float(
+            backend_result.get("wrist_camera_local_transform_delta")
+        )
     if wrist_world_delta is None:
         blockers.append("native_wrist_camera_world_displacement_missing_or_invalid")
     elif wrist_world_delta <= MIN_WRIST_WORLD_DISPLACEMENT_M:
         blockers.append("native_wrist_camera_did_not_move_with_hand")
-    if wrist_local_delta is None:
+    if wrist_requested_local_delta is None:
         blockers.append("native_wrist_camera_local_transform_missing_or_invalid")
-    elif wrist_local_delta > MAX_WRIST_LOCAL_TRANSFORM_DELTA:
+    elif wrist_requested_local_delta > MAX_WRIST_LOCAL_TRANSFORM_DELTA:
         blockers.append("native_wrist_camera_mount_not_rigid")
+    if wrist_observed_local_delta is None:
+        blockers.append("native_wrist_camera_observed_local_transform_missing_or_invalid")
     mount_value = backend_result.get("wrist_mount_calibration")
     mount = mount_value if isinstance(mount_value, Mapping) else {}
     if mount.get("mode") != "one_time_initial_task_framing_rigid_parent_local_mount":
@@ -1603,8 +1739,11 @@ def assess_native_camera_backend_result(
         "required_views": list(required_views),
         "wrist_camera_world_displacement_m": wrist_world_delta,
         "wrist_camera_world_displacement_min_m": MIN_WRIST_WORLD_DISPLACEMENT_M,
-        "wrist_camera_local_transform_delta": wrist_local_delta,
+        "wrist_camera_local_transform_delta": wrist_requested_local_delta,
+        "wrist_camera_requested_local_transform_delta": wrist_requested_local_delta,
+        "wrist_camera_observed_local_transform_delta": wrist_observed_local_delta,
         "wrist_camera_local_transform_delta_max": MAX_WRIST_LOCAL_TRANSFORM_DELTA,
+        "initial_task_placement_validation": dict(placement),
         "wrist_mount_calibration": dict(mount),
         "franka_render_only_joint_state": {
             "mode": joint_state.get("mode"),

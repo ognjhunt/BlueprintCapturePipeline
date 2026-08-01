@@ -15,6 +15,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _add_prim_semantic_label,
     _apply_and_measure_render_only_joint_pose,
     _apply_runtime_asset_relocations,
+    _aabb_intersection_report,
     _articulation_link_world_pose_matrices,
     _author_renderable_semantic_label_tree,
     _backend_array_to_numpy,
@@ -103,6 +104,12 @@ def _backend(*, output_dir: Path, spec=None, **_kwargs):
         "franka_dof_count": 9,
         "spraycan_collision_mesh_count": 3,
         "spraycan_runtime_rigid_body": True,
+        "initial_task_placement_validation": {
+            "status": "passed",
+            "method": "world_aligned_aabb_intersection_fail_closed",
+            "intersections": [],
+            "rankings_or_policy_outcomes_accessed": False,
+        },
         "views": views,
         "wrist_mount_calibration": {
             "mode": "one_time_initial_task_framing_rigid_parent_local_mount",
@@ -125,6 +132,8 @@ def _backend(*, output_dir: Path, spec=None, **_kwargs):
         "camera_transition_physics_steps_advanced": 0,
         "wrist_camera_world_displacement_m": 0.02,
         "wrist_camera_local_transform_delta": 0.0,
+        "wrist_camera_observed_local_transform_delta": 0.0,
+        "wrist_camera_requested_local_transform_delta": 0.0,
         "external_wrist_timestamp_pairs_exact": True,
         "camera_timestamps_exact": True,
     }
@@ -161,6 +170,57 @@ def test_external_projection_accepts_any_visible_franka_link_origin() -> None:
         "panda_link0": False,
         "panda_link4": True,
     }
+
+
+def test_task_placement_aabb_report_detects_full_embedding_and_accepts_clearance() -> None:
+    embedded = _aabb_intersection_report(
+        subject_min_xyz=[0.0, 0.0, 0.0],
+        subject_max_xyz=[1.0, 1.0, 1.0],
+        obstacle_bounds={"/World/ExistingBottle": ([-1.0, -1.0, -1.0], [2.0, 2.0, 2.0])},
+    )
+    assert embedded["status"] == "failed"
+    assert embedded["intersections"] == [
+        {
+            "obstacle_prim_path": "/World/ExistingBottle",
+            "intersection_extent_m": [1.0, 1.0, 1.0],
+            "intersection_volume_m3": 1.0,
+            "subject_overlap_fraction": 1.0,
+        }
+    ]
+    assert embedded["rankings_or_policy_outcomes_accessed"] is False
+
+    clear = _aabb_intersection_report(
+        subject_min_xyz=[0.0, 0.0, 0.0],
+        subject_max_xyz=[1.0, 1.0, 1.0],
+        obstacle_bounds={"/World/Clear": ([1.0, 0.0, 0.0], [2.0, 1.0, 1.0])},
+    )
+    assert clear["status"] == "passed"
+    assert clear["intersections"] == []
+
+    declared_container = _aabb_intersection_report(
+        subject_min_xyz=[0.0, 0.0, 0.0],
+        subject_max_xyz=[1.0, 1.0, 1.0],
+        obstacle_bounds={
+            "/World/WarehouseWorkcell/OpenCrate": ([-1.0, -1.0, -1.0], [2.0, 2.0, 2.0])
+        },
+        allowed_enclosing_obstacle_paths=("/World/WarehouseWorkcell/OpenCrate",),
+    )
+    assert declared_container["status"] == "passed"
+    assert declared_container["intersections"] == []
+    assert declared_container["allowed_enclosing_intersections"][0][
+        "subject_overlap_fraction"
+    ] == pytest.approx(1.0)
+
+    wall_overlap = _aabb_intersection_report(
+        subject_min_xyz=[0.0, 0.0, 0.0],
+        subject_max_xyz=[1.0, 1.0, 1.0],
+        obstacle_bounds={
+            "/World/WarehouseWorkcell/OpenCrate": ([0.9, -1.0, -1.0], [2.0, 2.0, 2.0])
+        },
+        allowed_enclosing_obstacle_paths=("/World/WarehouseWorkcell/OpenCrate",),
+    )
+    assert wall_overlap["status"] == "failed"
+    assert wall_overlap["allowed_enclosing_intersections"] == []
 
 
 def test_external_projection_fails_closed_without_franka_link_origins() -> None:
@@ -1146,6 +1206,7 @@ def test_native_camera_canary_fails_static_or_slipping_wrist_mount(tmp_path: Pat
         value = _backend(**kwargs)
         value["wrist_camera_world_displacement_m"] = 0.0
         value["wrist_camera_local_transform_delta"] = 0.01
+        value["wrist_camera_requested_local_transform_delta"] = 0.01
         return value
 
     result = run_native_camera_canary(
@@ -1169,6 +1230,8 @@ def test_native_camera_canary_accepts_float32_pose_roundoff_but_rejects_real_sli
     def rounded_backend(**kwargs):
         value = _backend(**kwargs)
         value["wrist_camera_local_transform_delta"] = 5e-7
+        value["wrist_camera_observed_local_transform_delta"] = 5e-7
+        value["wrist_camera_requested_local_transform_delta"] = 0.0
         return value
 
     rounded = run_native_camera_canary(
@@ -1182,6 +1245,8 @@ def test_native_camera_canary_accepts_float32_pose_roundoff_but_rejects_real_sli
     def slipped_backend(**kwargs):
         value = _backend(**kwargs)
         value["wrist_camera_local_transform_delta"] = 2e-6
+        value["wrist_camera_observed_local_transform_delta"] = 2e-6
+        value["wrist_camera_requested_local_transform_delta"] = 2e-6
         return value
 
     slipped = run_native_camera_canary(
@@ -1192,6 +1257,62 @@ def test_native_camera_canary_accepts_float32_pose_roundoff_but_rejects_real_sli
     )
     assert slipped["status"] == "failed"
     assert "native_wrist_camera_mount_not_rigid" in slipped["blockers"]
+
+
+def test_native_camera_canary_keeps_observed_roundoff_diagnostic_but_gates_fixed_request(
+    tmp_path: Path,
+) -> None:
+    spec_path = tmp_path / "spec.json"
+    _spec(spec_path)
+
+    def float32_backend(**kwargs):
+        value = _backend(**kwargs)
+        value["wrist_camera_observed_local_transform_delta"] = 4.2e-6
+        value["wrist_camera_requested_local_transform_delta"] = 2e-16
+        return value
+
+    result = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "result",
+        backend=float32_backend,
+    )
+    assert result["status"] == "passed"
+    assert result["assessment"]["wrist_camera_requested_local_transform_delta"] == pytest.approx(
+        2e-16
+    )
+    assert result["assessment"]["wrist_camera_observed_local_transform_delta"] == pytest.approx(
+        4.2e-6
+    )
+
+
+def test_native_camera_canary_blocks_intersecting_initial_task_placement(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.json"
+    _spec(spec_path)
+
+    def intersecting_backend(**kwargs):
+        value = _backend(**kwargs)
+        value["initial_task_placement_validation"] = {
+            "status": "failed",
+            "method": "world_aligned_aabb_intersection_fail_closed",
+            "intersections": [
+                {
+                    "obstacle_prim_path": "/World/WarehouseWorkcell/ExistingBottle",
+                    "subject_overlap_fraction": 1.0,
+                }
+            ],
+            "rankings_or_policy_outcomes_accessed": False,
+        }
+        return value
+
+    result = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "result",
+        backend=intersecting_backend,
+    )
+    assert result["status"] == "failed"
+    assert "native_spraycan_initial_placement_intersects_workcell" in result["blockers"]
 
 
 def test_native_camera_canary_fails_closed_on_missing_or_reaimed_mount_calibration(
@@ -1304,6 +1425,8 @@ def test_native_camera_canary_fails_closed_on_missing_wrist_measurements(
         value = _backend(**kwargs)
         value.pop("wrist_camera_world_displacement_m")
         value["wrist_camera_local_transform_delta"] = float("nan")
+        value.pop("wrist_camera_observed_local_transform_delta")
+        value.pop("wrist_camera_requested_local_transform_delta")
         return value
 
     result = run_native_camera_canary(

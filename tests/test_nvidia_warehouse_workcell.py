@@ -134,13 +134,21 @@ def test_materializes_hash_bound_dataset_local_closure_and_records_external_refs
     assert spec["cameras"]["wrist"]["inherits_parent_transform"] is True
     assert spec["cameras"]["wrist"]["rigid_mount_orientation"] == {
         "mode": "one_time_initial_task_framing_rigid_parent_local_mount",
-        "target_entity_ids": ["spraycan", "tray"],
+        "target_entity_ids": ["spraycan"],
         "world_up": [0.0, 0.0, 1.0],
         "calibrated_before_initial_observation": True,
         "calibrated_after_initial_joint_hold": True,
         "per_frame_task_reaim": False,
     }
     assert "mount_forward_parent" not in spec["cameras"]["wrist"]
+    assert spec["scene"]["placements"]["spraycan_translation_m"] == [0.10, -0.05, 1.005]
+    assert spec["scene"]["placements"]["initial_target_allowed_enclosing_prim_paths"] == [
+        "/World/WarehouseWorkcell/SM_Crate_A07_Yellow_04"
+    ]
+    assert (
+        "spraycan_initial_placement_has_no_undeclared_workcell_aabb_intersection"
+        in spec["required_checks"]
+    )
     assert (
         "franka_joint_states_are_rendered_kinematically_without_physics_advance"
         in spec["required_checks"]
