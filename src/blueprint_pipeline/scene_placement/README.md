@@ -91,6 +91,15 @@ uses small box-center depth samples, an inferred depth extent, identity orientat
 clustering. Blueprint therefore marks those boxes visualization-only and does not use them for
 metric placement, collision, contact, or physics qualification.
 
+Blueprint also includes a bounded deterministic NumPy contribution renderer for standard 3DGS
+PLY inputs. It consumes the compact source-track artifact plus exact retained-frame cameras,
+projects anisotropic Gaussians with the declared OpenCV pinhole convention, and emits the real
+front-to-back `transmittance * alpha` rows accepted by the semantic lifting contract. This closes
+the executable small-scene/reference path and provides a conformance oracle for a future GPU
+adapter. It intentionally rejects unrectified cameras, stale splat/camera/mask bindings,
+nonstandard compressed PLY inputs, excessive projected work, and oversized JSON views. It is not
+the large-scene production transport, a semantic detector, collision geometry, or physics proof.
+
 ## In the Isaac runner
 
 `scripts/run_isaac_g1_kitchen_parity_eval.py` uses the USD backend: a scenario with only a task

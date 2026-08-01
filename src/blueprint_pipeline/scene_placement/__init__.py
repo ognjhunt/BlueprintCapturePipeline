@@ -52,6 +52,13 @@ from .semantic_gaussian_lifting import (
     canonical_json_digest,
     lift_semantic_masks_to_gaussians,
 )
+from .semantic_contribution_renderer import (
+    METHOD_ID as SEMANTIC_CONTRIBUTION_RENDERER_METHOD_ID,
+    REQUEST_SCHEMA_VERSION as SEMANTIC_CONTRIBUTION_RENDER_REQUEST_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION as SEMANTIC_CONTRIBUTION_RENDER_RESULT_SCHEMA_VERSION,
+    render_semantic_contributions,
+    renderer_runtime_digest,
+)
 from .semantic_oriented_box import (
     FIT_METHOD as SEMANTIC_ORIENTED_BOX_FIT_METHOD,
     REQUEST_SCHEMA_VERSION as SEMANTIC_ORIENTED_BOX_REQUEST_SCHEMA_VERSION,
@@ -156,6 +163,11 @@ __all__ = [
     "SEMANTIC_GAUSSIAN_LIFTING_RESULT_SCHEMA_VERSION",
     "canonical_json_digest",
     "lift_semantic_masks_to_gaussians",
+    "SEMANTIC_CONTRIBUTION_RENDERER_METHOD_ID",
+    "SEMANTIC_CONTRIBUTION_RENDER_REQUEST_SCHEMA_VERSION",
+    "SEMANTIC_CONTRIBUTION_RENDER_RESULT_SCHEMA_VERSION",
+    "render_semantic_contributions",
+    "renderer_runtime_digest",
     "SEMANTIC_ORIENTED_BOX_FIT_METHOD",
     "SEMANTIC_ORIENTED_BOX_REQUEST_SCHEMA_VERSION",
     "SEMANTIC_ORIENTED_BOX_RESULT_SCHEMA_VERSION",

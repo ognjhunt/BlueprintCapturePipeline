@@ -163,17 +163,22 @@ still contains only the release timeline and no runnable implementation/models.
    geometry authority. The file entrypoint rejects symlinks, input overwrite,
    oversized payloads, and provider-byte hash/size mismatches before emitting a
    terminal compact artifact.
-3. `gaussian_contribution_lifter`: accumulate foreground/background evidence
+3. `reference_contribution_renderer`: implemented bounded deterministic
+   standard-3DGS renderer. It projects exact anisotropic Gaussians through
+   retained-frame OpenCV cameras and emits front-to-back `transmittance * alpha`
+   rows. This is an executable small-scene/conformance lane, not the accelerated
+   large-scene transport.
+4. `gaussian_contribution_lifter`: accumulate foreground/background evidence
    using renderer contribution weights and exact camera bindings.
-4. `instance_fusion`: track-aware, multi-view, disconnected-component cleanup.
-5. `oriented_box_fitter`: implemented baseline for robust outlier removal,
+5. `instance_fusion`: track-aware, multi-view, disconnected-component cleanup.
+6. `oriented_box_fitter`: implemented baseline for robust outlier removal,
    horizontal minimum-area fitting, independent vertical bounds, and eight Z-up
    corners; production surface-point evidence remains incomplete.
-6. `collision_validator`: implemented deterministic consistency baseline for
+7. `collision_validator`: implemented deterministic consistency baseline for
    independently qualified target volumes, support planes, occupied/free-space
    volumes, coverage, and generated regions; production collision-scene and
    support-plane adapters remain incomplete.
-7. `confidence_scorer`: view count/diversity, ambiguity, coverage, reprojection,
+8. `confidence_scorer`: view count/diversity, ambiguity, coverage, reprojection,
    scale, support, and held-out validation.
 
 Every stage binds the raw capture digest, reconstruction digest, stable Gaussian
