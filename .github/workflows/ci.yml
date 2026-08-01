@@ -17,8 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # CI runners are ephemeral; never use the checkout as a durable artifact cache.
-      BLUEPRINT_ARTIFACT_CACHE_ROOT: ${{ runner.temp }}/blueprint-artifact-cache
-      BLUEPRINT_EVIDENCE_ROOT: ${{ runner.temp }}/blueprint-evidence
       BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
       BLUEPRINT_ALLOW_LARGE_ARTIFACTS: "0"
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
@@ -26,6 +24,13 @@ jobs:
       CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
       CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
     steps:
+      - name: Bind ephemeral artifact roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "BLUEPRINT_ARTIFACT_CACHE_ROOT=${RUNNER_TEMP}/blueprint-artifact-cache" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_EVIDENCE_ROOT=${RUNNER_TEMP}/blueprint-evidence" >> "${GITHUB_ENV}"
+
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
