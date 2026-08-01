@@ -1085,7 +1085,19 @@ def test_watchdog_closes_guarded_compute_lane_and_settles_budget(
     receipt_path = tmp_path / "provider_lane_handoff_receipt.json"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     os.chmod(receipt_path, 0o600)
-    monkeypatch.setattr(watchdog_module, "load_pending_teardowns", lambda: [])
+    monkeypatch.setattr(
+        watchdog_module,
+        "load_pending_teardowns",
+        lambda: [
+            {
+                "status": "open",
+                "provider": "runpod",
+                "lane": "unrelated_concurrent_gpu_lane",
+                "run_id": "unrelated-concurrent-run",
+                "instance_id": "unrelated-instance",
+            }
+        ],
+    )
     monkeypatch.setattr(
         "blueprint_pipeline.paid_lane_guard.close_pending_teardown",
         lambda path, evidence: {"status": "closed", "path": path, "evidence": evidence},
