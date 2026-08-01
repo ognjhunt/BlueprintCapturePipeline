@@ -1,5 +1,37 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-08-01
+
+### User-Facing
+
+- Added the first executable source-frame-to-3DGS semantic bridge. Persistent
+  object masks from retained frames can now be projected through exact calibrated
+  cameras onto a standard 3DGS using deterministic front-to-back Gaussian
+  contribution weights, then passed directly to the existing semantic lifting
+  contract. The result remains candidate semantic support, not metric object,
+  collision, physics, task-success, or physical evidence.
+
+### Employee-Facing
+
+- Published PR #281 after all 16 hosted checks passed, including 6,336 fast-lane
+  and 8,011 full-lane tests. Protected main and isolated staging now use commit
+  `b3a6ce1c` with the tested tree; production remains independently pinned to
+  `3bb376e7`. The Pub/Sub listener uses a dedicated least-privilege identity and
+  corrected recurring systemd cadence.
+- Added a bounded NumPy standard-3DGS contribution renderer and file stage. It
+  rejects stale source-track, frame, camera, splat, and Gaussian-mapping digests;
+  unrectified cameras; nonstandard PLY inputs; and projected-work overflows. It
+  is a small-scene/conformance path while accelerated chunked transport remains.
+
+### Future-Agent-Facing
+
+- Preserve the source-video/3DGS authority split: source frames establish mask
+  and track evidence, calibrated cameras lift it into the splat, and separate
+  independently qualified collision geometry is required before physics use.
+- Do not reinstall the upstream Splat Analyzer locally merely to claim support.
+  Its current rough boxes remain candidate-only, and the machine does not have
+  safe disk headroom for an unbounded Torch/model installation.
+
 ## 2026-07-29
 
 ### User-Facing
