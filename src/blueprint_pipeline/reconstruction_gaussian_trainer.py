@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import time
 from functools import partial
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from .common import utc_now_iso, write_json
@@ -39,13 +39,24 @@ def _sha256(path: Path) -> str:
 
 
 def _safe_dataset(root: Path, relative_path: str) -> Path:
-    relative = Path(str(relative_path))
+    portable = PurePosixPath(str(relative_path).replace("\\", "/"))
+    forbidden_parts = {
+        "evaluator_hidden",
+        "held_out",
+        "heldout",
+        "hidden_heldout",
+    }
     if (
         not relative_path
-        or relative.is_absolute()
-        or any(part in {"", ".", "..", "evaluator_hidden", "held_out"} for part in relative.parts)
+        or portable.is_absolute()
+        or any(
+            part in {"", ".", ".."}
+            or part.casefold().replace("-", "_") in forbidden_parts
+            for part in portable.parts
+        )
     ):
         raise GaussianTrainerRuntimeError("training_dataset_path_unsafe_or_hidden")
+    relative = Path(*portable.parts)
     dataset = (root.resolve() / relative).resolve()
     if root.resolve() not in dataset.parents or dataset.is_symlink():
         raise GaussianTrainerRuntimeError("training_dataset_path_escape_or_symlink")
@@ -56,10 +67,15 @@ def _safe_dataset(root: Path, relative_path: str) -> Path:
     ]
     if any(not path.exists() or path.is_symlink() for path in required):
         raise GaussianTrainerRuntimeError("training_dataset_colmap_layout_incomplete")
-    if any(
-        "held_out" in path.parts or "evaluator_hidden" in path.parts for path in dataset.rglob("*")
-    ):
-        raise GaussianTrainerRuntimeError("training_dataset_hidden_heldout_present")
+    for path in dataset.rglob("*"):
+        if path.is_symlink():
+            raise GaussianTrainerRuntimeError("training_dataset_symlink_present")
+        relative_parts = path.relative_to(dataset).parts
+        if any(
+            part.casefold().replace("-", "_") in forbidden_parts
+            for part in relative_parts
+        ):
+            raise GaussianTrainerRuntimeError("training_dataset_hidden_heldout_present")
     return dataset
 
 
@@ -96,9 +112,23 @@ def _latest_checkpoint(paths: Sequence[Path]) -> Path | None:
 
 def _stable_checkpoint(run_dir: Path) -> Path | None:
     stable = run_dir / "checkpoint_last.pt"
+    if stable.is_symlink():
+        raise GaussianTrainerRuntimeError("training_checkpoint_symlink_forbidden")
     if stable.is_file() and not stable.is_symlink():
         return stable
-    latest = _latest_checkpoint(sorted((run_dir / "training").rglob("ckpt*.pt")))
+    training_root = run_dir / "training"
+    if training_root.is_symlink():
+        raise GaussianTrainerRuntimeError("training_checkpoint_tree_symlink_forbidden")
+    checkpoint_candidates = sorted(training_root.rglob("ckpt*.pt"))
+    if any(path.is_symlink() for path in checkpoint_candidates):
+        raise GaussianTrainerRuntimeError("training_checkpoint_symlink_forbidden")
+    latest = _latest_checkpoint(
+        [
+            path
+            for path in checkpoint_candidates
+            if path.is_file() and run_dir.resolve() in path.resolve().parents
+        ]
+    )
     if latest is None:
         return None
     shutil.copyfile(latest, stable)
@@ -178,6 +208,8 @@ def _record_interrupted_run(
     rejected_ids: Sequence[str],
 ) -> dict[str, Any]:
     log_path = run_dir / "training.log"
+    if log_path.is_symlink():
+        raise GaussianTrainerRuntimeError("training_log_symlink_forbidden")
     if not log_path.is_file() or log_path.is_symlink():
         log_path.write_text(
             "recovered interrupted run without a terminal training receipt\n",
@@ -260,7 +292,16 @@ def run_gaussian_reconstruction_training(
     if image and image != request["container_image_digest"]:
         raise GaussianTrainerRuntimeError("training_worker_image_digest_mismatch")
     dataset = _safe_dataset(Path(artifact_root), str(dataset_export.get("relative_path") or ""))
-    run_dir = Path(output_root).resolve() / request["reconstruction_training_request_digest"][7:23]
+    configured_output_root = Path(output_root).expanduser()
+    if configured_output_root.is_symlink():
+        raise GaussianTrainerRuntimeError("training_output_root_symlink_forbidden")
+    configured_output_root.mkdir(parents=True, exist_ok=True)
+    resolved_output_root = configured_output_root.resolve()
+    run_dir = resolved_output_root / request["reconstruction_training_request_digest"][7:23]
+    if run_dir.is_symlink():
+        raise GaussianTrainerRuntimeError("training_run_directory_symlink_forbidden")
+    if run_dir.exists() and resolved_output_root not in run_dir.resolve().parents:
+        raise GaussianTrainerRuntimeError("training_run_directory_escape")
     prior_run = run_dir.exists()
     run_dir.mkdir(parents=True, exist_ok=True)
     result_path = run_dir / "reconstruction_training_result.json"
@@ -277,6 +318,8 @@ def run_gaussian_reconstruction_training(
             rejected_ids=rejected_ids,
         )
     log_path = run_dir / "training.log"
+    if log_path.is_symlink():
+        raise GaussianTrainerRuntimeError("training_log_symlink_forbidden")
     log_path.write_text("training process started; terminal result pending\n", encoding="utf-8")
     ply_path = run_dir / "appearance_candidate.ply"
     iterations = int(request["iteration_budget"])
@@ -318,6 +361,10 @@ def run_gaussian_reconstruction_training(
         output_text = repr(exc)
         returncode = 127
     duration = time.monotonic() - started
+    if run_dir.is_symlink() or resolved_output_root not in run_dir.resolve().parents:
+        raise GaussianTrainerRuntimeError("training_run_directory_mutated")
+    if log_path.is_symlink():
+        raise GaussianTrainerRuntimeError("training_log_symlink_forbidden")
     log_path.write_text(output_text[-2_000_000:], encoding="utf-8")
     stable_checkpoint = _stable_checkpoint(run_dir)
     checkpoints = [stable_checkpoint] if stable_checkpoint is not None else []
@@ -329,7 +376,13 @@ def run_gaussian_reconstruction_training(
         for path in checkpoints
     ]
     log_ref = {"artifact_id": "training.log", "digest": _sha256(log_path)}
-    if returncode == 0 and checkpoints and ply_path.is_file() and ply_path.stat().st_size > 0:
+    if (
+        returncode == 0
+        and checkpoints
+        and ply_path.is_file()
+        and not ply_path.is_symlink()
+        and ply_path.stat().st_size > 0
+    ):
         result.update(
             status="succeeded",
             failure_code=None,
