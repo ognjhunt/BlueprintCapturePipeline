@@ -152,6 +152,8 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "digest_matches": {"const": True},
             "capture_authority_profile": {},
             "route_status": {"type": "string"},
+            "capture_profile_validation_status": {"type": "string"},
+            "capture_profile_validation_digest": {},
             "artifact_count": {"type": "integer"},
             "blockers": {"type": "array"},
             "raw_capture_remains_authoritative": {"const": True},
@@ -2970,6 +2972,12 @@ def _bound_artifact(
             "digest_matches": bool(actual and expected == actual),
             "capture_authority_profile": (route or {}).get("capture_authority_profile"),
             "route_status": str((route or {}).get("status") or "unavailable"),
+            "capture_profile_validation_status": str(
+                (route or {}).get("capture_profile_validation_status") or "unavailable"
+            ),
+            "capture_profile_validation_digest": (route or {}).get(
+                "capture_profile_validation_digest"
+            ),
             "artifact_count": len((value or {}).get("artifacts", []))
             if isinstance(value, Mapping)
             else 0,

@@ -7,7 +7,11 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from blueprint_pipeline.capture_profile_validation import (
+    build_capture_profile_validation,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.native_360_normalization import build_native_360_probe_receipt
 from blueprint_pipeline.reconstruction_frame_dataset import compile_frozen_frame_dataset
 from blueprint_pipeline.task_evaluation_supervisor import (
     AutonomyMode,
@@ -26,7 +30,57 @@ from blueprint_pipeline.task_evaluation_supervisor.supervisor import (
 from blueprint_pipeline.task_evaluation_supervisor.tools import non_spend_tool_bindings
 
 
-def _capture_build(tmp_path: Path, *, profile: str, has_lidar: bool | None = None) -> dict:
+CAPTURE_DIGEST = "sha256:" + "a" * 64
+
+
+def _profile_probe(lane: str) -> dict:
+    return build_native_360_probe_receipt(
+        source_file_digest="sha256:" + "b" * 64,
+        runtime_identity="ffprobe-route-fixture",
+        runtime_digest="sha256:" + "c" * 64,
+        streams=[
+            {
+                "stream_index": 0,
+                "media_type": "video",
+                "codec_name": "h264",
+                "width": 3840,
+                "height": 1920,
+                "time_base": "1/50000",
+                "pts_seconds": [0.0, 0.02],
+                "metadata": {},
+            }
+        ],
+        format_metadata={
+            "compatible_processing_lane": lane,
+            "processing_lane_claim_ceiling": "container_stream_topology_only",
+            "capture_profile_fully_validated": False,
+        },
+    )
+
+
+def _native_normalization() -> dict:
+    value = {
+        "schema_version": "native_360_capture_normalization.v1",
+        "source_capture_digest": CAPTURE_DIGEST,
+        "status": "normalized",
+        "blockers": [],
+        "claim_ceiling": "calibrated_camera_rig",
+        "proof_effect": "calibrated_native_360_rig_only",
+    }
+    value["native_360_normalization_digest"] = canonical_digest(
+        value, digest_field="native_360_normalization_digest"
+    )
+    return value
+
+
+def _capture_build(
+    tmp_path: Path,
+    *,
+    profile: str,
+    has_lidar: bool | None = None,
+    include_profile_validation: bool = True,
+    observed_360_lane: str | None = None,
+) -> dict:
     capture_root = tmp_path / profile
     capture_root.mkdir(parents=True)
     manifest = {
@@ -35,6 +89,7 @@ def _capture_build(tmp_path: Path, *, profile: str, has_lidar: bool | None = Non
         "capture_id": f"capture-{profile}",
         "capture_authority_profile": profile,
         "capture_modality": profile,
+        "capture_digest": CAPTURE_DIGEST,
     }
     if has_lidar is not None:
         manifest["has_lidar"] = has_lidar
@@ -42,6 +97,30 @@ def _capture_build(tmp_path: Path, *, profile: str, has_lidar: bool | None = Non
         json.dumps(manifest),
         encoding="utf-8",
     )
+    if profile in {"camera_360_equirectangular", "camera_360_native"} and (
+        include_profile_validation
+    ):
+        lane = observed_360_lane or (
+            "camera_360_equirectangular"
+            if profile == "camera_360_equirectangular"
+            else "camera_360_native_candidate_requires_calibration"
+        )
+        validation = build_capture_profile_validation(
+            source_capture_digest=CAPTURE_DIGEST,
+            declared_capture_authority_profile=profile,
+            probe_receipts=[_profile_probe(lane)],
+            native_normalization_result=(
+                _native_normalization()
+                if lane == "camera_360_native_candidate_requires_calibration"
+                else None
+            ),
+            source_commit_sha="d" * 40,
+            implementation_digest="sha256:" + "e" * 64,
+            timestamp="2026-08-01T12:00:00Z",
+        )
+        validation_path = capture_root / "evaluation_prep/capture_profile_validation.json"
+        validation_path.parent.mkdir(parents=True)
+        validation_path.write_text(json.dumps(validation), encoding="utf-8")
     return load_capture_build_ingress(capture_root)
 
 
@@ -134,6 +213,10 @@ def test_registered_capture_build_inspection_uses_deterministic_profile(
         "iphone_arkit_lidar"
     )
     assert observation["typed_result"]["route_status"] == "route_proposed"
+    assert observation["typed_result"]["capture_profile_validation_status"] == (
+        "not_applicable_to_profile"
+    )
+    assert observation["typed_result"]["capture_profile_validation_digest"] is None
     assert observation["typed_result"]["raw_capture_remains_authoritative"] is True
     assert observation["typed_result"]["agent_selected_capture_profile"] is False
     assert observation["proof_effect"] == "none"
@@ -163,6 +246,88 @@ def test_each_supported_capture_family_has_a_profile_specific_route(
         )
     assert route["agent_selected_capture_profile"] is False
     assert route["proof_effect"] == "none"
+
+
+def test_360_route_requires_digest_bound_deterministic_profile_validation(
+    tmp_path: Path,
+) -> None:
+    capture_build = _capture_build(
+        tmp_path,
+        profile="camera_360_equirectangular",
+        include_profile_validation=False,
+    )
+
+    route = build_capture_reconstruction_route(capture_build)
+
+    assert route["status"] == "capture_profile_validation_required"
+    assert route["capture_authority_profile"] is None
+    assert route["declared_profile_candidates"] == ["camera_360_equirectangular"]
+    assert route["capture_profile_validation_status"] == "required_missing"
+    assert route["capture_profile_validation_digest"] is None
+    assert route["stages"] == []
+    assert route["currently_registered_adapters"] == []
+    assert route["blockers"] == [
+        "deterministic_capture_profile_validation_missing"
+    ]
+    assert route["next_legal_action"] == (
+        "request_deterministic_capture_profile_validation"
+    )
+    assert route["agent_selected_capture_profile"] is False
+
+
+def test_360_declared_observed_profile_conflict_blocks_without_agent_switch(
+    tmp_path: Path,
+) -> None:
+    capture_build = _capture_build(
+        tmp_path,
+        profile="camera_360_native",
+        observed_360_lane="camera_360_equirectangular",
+    )
+
+    route = build_capture_reconstruction_route(capture_build)
+
+    assert route["status"] == "capture_profile_validation_failed"
+    assert route["capture_authority_profile"] is None
+    assert route["declared_profile_candidates"] == ["camera_360_native"]
+    assert route["capture_profile_validation_status"] == "blocked"
+    assert route["capture_profile_validation_digest"].startswith("sha256:")
+    assert route["stages"] == []
+    assert route["blockers"] == [
+        "deterministic_capture_profile_validation_failed"
+    ]
+    assert route["next_legal_action"] == "request_corrected_capture_intake"
+    assert route["agent_selected_capture_profile"] is False
+
+
+def test_360_profile_validation_projection_tamper_fails_closed(tmp_path: Path) -> None:
+    capture_build = _capture_build(
+        tmp_path,
+        profile="camera_360_equirectangular",
+    )
+    tampered = json.loads(json.dumps(capture_build))
+    validation_artifact = next(
+        artifact
+        for artifact in tampered["artifacts"]
+        if artifact["relative_path"]
+        == "evaluation_prep/capture_profile_validation.json"
+    )
+    validation_artifact["approved_projection"]["compatible_capture_authority_profile"] = (
+        "camera_360_native"
+    )
+    tampered["capture_build_digest"] = canonical_digest(
+        tampered, digest_field="capture_build_digest"
+    )
+
+    route = build_capture_reconstruction_route(tampered)
+
+    assert route["status"] == "capture_profile_validation_invalid"
+    assert route["capture_authority_profile"] is None
+    assert route["capture_profile_validation_status"] == "invalid"
+    assert route["capture_profile_validation_digest"] is None
+    assert route["blockers"] == [
+        "deterministic_capture_profile_validation_invalid"
+    ]
+    assert route["next_legal_action"] == "preserve_evidence_and_stop"
 
 
 @pytest.mark.parametrize(

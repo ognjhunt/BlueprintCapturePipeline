@@ -122,7 +122,17 @@ The Task Evaluation Supervisor registers
 `compile_frozen_frame_dataset` as a typed, zero-cost, scoped mutation tool only
 when a deterministic compiler callable is injected by the service. The tool
 cannot change the capture profile, split, proof state, or claim ceiling. The
-normal capture-build ingress intentionally projects known JSON fields without
+completed 360 capture build must also carry a deterministic
+`capture_profile_validation.v1` artifact at
+`evaluation_prep/capture_profile_validation.json` (or its pipeline-prefixed
+equivalent). It binds the immutable source digest, native probe receipts,
+observed topology, declared profile, and any calibrated native normalization.
+Supervisor routing verifies its safe-projection binding before exposing stages;
+missing, malformed, source-mismatched, or contradictory evidence yields a typed
+unresolved route with no executable adapters. The agent may request corrected
+deterministic intake but cannot switch the profile.
+
+The normal capture-build ingress intentionally projects known JSON fields without
 raw media paths, so the production lifecycle does not inject this compiler yet;
 it remains fail-closed until deterministic capture admission exposes an
 immutable retained-media binding. Agent prose cannot substitute for the tool

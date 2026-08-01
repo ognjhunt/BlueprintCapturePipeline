@@ -26,6 +26,8 @@ _KNOWN_ARTIFACTS = (
     "pipeline/evaluation_prep/task_anchor_manifest.json",
     "evaluation_prep/rights_review.json",
     "pipeline/evaluation_prep/rights_review.json",
+    "evaluation_prep/capture_profile_validation.json",
+    "pipeline/evaluation_prep/capture_profile_validation.json",
 )
 _SAFE_FIELDS = {
     "schema_version",
@@ -49,6 +51,7 @@ _SAFE_FIELDS = {
     "envelope_digest",
     "qa_report_digest",
     "object_manifest_digest",
+    "source_capture_digest",
     "has_lidar",
     "scale_hint_m_per_unit",
     "requested_outputs",
@@ -70,6 +73,20 @@ _SAFE_FIELDS = {
     "consent_status",
     "privacy_status",
     "blockers",
+    "declared_capture_authority_profile",
+    "compatible_capture_authority_profile",
+    "validation_status",
+    "probe_receipt_digests",
+    "probe_source_file_digests",
+    "observed_processing_lanes",
+    "native_normalization_digest",
+    "agent_selected_capture_profile",
+    "agent_may_change_capture_profile",
+    "proof_effect",
+    "claim_ceiling",
+    "legal_next_actions",
+    "capture_profile_routing_binding_digest",
+    "capture_profile_validation_digest",
 }
 
 
