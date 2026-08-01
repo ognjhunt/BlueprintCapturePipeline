@@ -73,6 +73,7 @@ from .vast_wam_authorized_runner import run_vast_wam_authorized_runner
 from .vast_provider_adapter import (
     VAST_API_GATE_ENV,
     VAST_INSTANCE_LAUNCH_GATE_ENV,
+    VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV,
     _env_truthy as _vast_env_truthy,
 )
 from .vast_session_budget_contract import (
@@ -117,6 +118,7 @@ class SuccessorGPUProfile:
     max_hourly_rate_usd: float
     target_spend_usd: float
     hard_ttl_seconds: int
+    maximum_global_live_instances: int = 0
     probe_kind: str = PROBE_KIND
     reference_bundle: bool = False
     powered_bundle: bool = False
@@ -281,6 +283,8 @@ def load_committed_ctrl_world_current_reference_profile(
         <= profile.target_spend_usd
     ):
         blockers.append("successor_ctrl_world_current_reference_profile_spend_limits_invalid")
+    if profile.maximum_global_live_instances not in {0, 1}:
+        blockers.append("successor_ctrl_world_current_reference_profile_global_live_limit_invalid")
     if len(profile.authorization_ids_by_allocation_index) != 1:
         blockers.append("successor_ctrl_world_current_reference_profile_allocation_count_invalid")
     if (
@@ -1477,6 +1481,7 @@ def build_successor_gpu_admission(
             "max_hourly_rate_usd": profile.max_hourly_rate_usd,
             "hard_ttl_seconds": profile.hard_ttl_seconds,
             "one_resource": True,
+            "maximum_global_live_instances": profile.maximum_global_live_instances,
             "disk_gb": DISK_GB,
             "min_gpu_ram_mb": minimum_gpu_ram_mb,
             "min_reliability": MIN_RELIABILITY if provider_name == "vast" else None,
@@ -1493,6 +1498,22 @@ def build_successor_gpu_admission(
     }
     result["manifest_sha256"] = canonical_sha256(result)
     return result
+
+
+def _vast_global_live_limit_env_blockers(
+    *, profile: SuccessorGPUProfile, execute: bool
+) -> list[str]:
+    expected = int(profile.maximum_global_live_instances)
+    if not execute or expected <= 0:
+        return []
+    raw = str(os.getenv(VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV) or "").strip()
+    try:
+        observed = int(raw)
+    except ValueError:
+        observed = -1
+    return (
+        [] if observed == expected else ["successor_vast_global_live_instance_limit_env_mismatch"]
+    )
 
 
 def _consume_authorization_once(
@@ -2153,6 +2174,9 @@ def run_successor_gpu_lane(
         for name in (VAST_API_GATE_ENV, VAST_INSTANCE_LAUNCH_GATE_ENV)
         if not _vast_env_truthy(name)
     ]
+    launch_gate_blockers.extend(
+        _vast_global_live_limit_env_blockers(profile=profile, execute=execute)
+    )
     if launch_gate_blockers:
         result = {
             "status": "blocked",

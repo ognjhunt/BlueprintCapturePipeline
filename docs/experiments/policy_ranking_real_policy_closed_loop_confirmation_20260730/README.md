@@ -199,6 +199,14 @@ used as blind confirmation.
   `ctrl_world_current_reference_wam_2_gpu_profile_freeze_v2.json` — bind that
   identical WAM2 retry to one new single-use allocation under the unchanged
   one-GPU, spend, TTL, watchdog, teardown, and provider-zero controls;
+- `protocol_amendment_20_global_gpu_concurrency_abort_and_wam2_retry_v1.md` —
+  preserves allocation 5's fail-closed abort after an unrelated writer created
+  a second live GPU, freezes generic per-poll global-instance enforcement at
+  one, and retains the scientifically identical WAM2 retry contract;
+- `compute_authorization_ctrl_world_allocation_6.json` and
+  `ctrl_world_current_reference_wam_2_gpu_profile_freeze_v3.json` — bind the
+  next identical WAM2 retry to the generic concurrency fix and one new
+  single-use allocation after global provider-zero;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 

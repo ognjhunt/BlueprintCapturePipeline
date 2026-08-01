@@ -32,6 +32,26 @@ def test_ctrl_world_profile_reservation_stays_within_target_spend() -> None:
     assert profile.target_spend_usd <= profile.max_compute_cap_usd
 
 
+def test_current_reference_global_live_limit_must_match_execution_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = replace(admission.CTRL_WORLD_REPLAY_PROFILE, maximum_global_live_instances=1)
+    monkeypatch.delenv(admission.VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV, raising=False)
+
+    assert admission._vast_global_live_limit_env_blockers(profile=profile, execute=False) == []
+    assert admission._vast_global_live_limit_env_blockers(profile=profile, execute=True) == [
+        "successor_vast_global_live_instance_limit_env_mismatch"
+    ]
+
+    monkeypatch.setenv(admission.VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV, "2")
+    assert admission._vast_global_live_limit_env_blockers(profile=profile, execute=True) == [
+        "successor_vast_global_live_instance_limit_env_mismatch"
+    ]
+
+    monkeypatch.setenv(admission.VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV, "1")
+    assert admission._vast_global_live_limit_env_blockers(profile=profile, execute=True) == []
+
+
 def _load(name: str) -> dict[str, Any]:
     path = EXPERIMENT / name
     if not path.is_file():

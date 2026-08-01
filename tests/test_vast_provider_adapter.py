@@ -1266,6 +1266,73 @@ def test_request_logs_breaks_when_live_instance_becomes_terminal(
     assert (tmp_path / "onstart.log").read_text(encoding="utf-8") == ""
 
 
+def test_request_logs_breaks_when_external_abort_probe_triggers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    abort_reasons = iter(["", "vast_global_live_instance_limit_exceeded:2>1"])
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: "")
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        no_progress_seconds=999,
+        terminal_instance_status_probe=lambda: "running",
+        external_abort_probe=lambda: next(abort_reasons),
+    )
+
+    assert result["break_reason"] == "external_abort_probe_triggered"
+    assert result["external_abort_reason"] == ("vast_global_live_instance_limit_exceeded:2>1")
+    assert result["external_abort_observed"] is True
+    assert len(result["log_poll_attempts"]) == 2
+    assert result["log_poll_attempts"][-1]["external_abort_observed"] is True
+    assert (tmp_path / "onstart.log").read_text(encoding="utf-8") == ""
+
+
+def test_global_live_instance_limit_counts_only_active_instances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (
+            200,
+            {
+                "instances": [
+                    {"id": 1, "actual_status": "running"},
+                    {"id": 2, "actual_status": "loading"},
+                    {"id": 3, "actual_status": "exited"},
+                ]
+            },
+        ),
+    )
+
+    assert (
+        vpa._global_live_instance_limit_abort_reason(api_key="secret", maximum_live_instances=1)
+        == "vast_global_live_instance_limit_exceeded:2>1"
+    )
+    assert (
+        vpa._global_live_instance_limit_abort_reason(api_key="secret", maximum_live_instances=2)
+        == ""
+    )
+    assert (
+        vpa._global_live_instance_limit_abort_reason(api_key="secret", maximum_live_instances=0)
+        == ""
+    )
+
+
 def test_request_logs_dud_container_flicker_is_not_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

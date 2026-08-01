@@ -135,6 +135,7 @@ VAST_PREFERRED_GPU_KEYWORDS_ENV = "BLUEPRINT_VAST_PREFERRED_GPU_KEYWORDS"
 VAST_PREFERRED_GEOLOCATION_REGEX_ENV = "BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX"
 VAST_WAM_NO_PROGRESS_SECONDS_ENV = "BLUEPRINT_VAST_WAM_NO_PROGRESS_SECONDS"
 VAST_HEARTBEAT_NO_PROGRESS_SECONDS_ENV = "BLUEPRINT_VAST_HEARTBEAT_NO_PROGRESS_SECONDS"
+VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV = "BLUEPRINT_VAST_MAX_GLOBAL_LIVE_INSTANCES"
 VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV = (
     "BLUEPRINT_VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK"
 )
@@ -3329,6 +3330,24 @@ def _prelaunch_inventory_guard(
     return manifest
 
 
+def _global_live_instance_limit_abort_reason(*, api_key: str, maximum_live_instances: int) -> str:
+    """Return a stable abort reason when another Vast lane exceeds the frozen limit."""
+
+    limit = max(0, int(maximum_live_instances))
+    if limit == 0:
+        return ""
+    _status_code, payload = _api_json(
+        method="GET",
+        path="/instances/",
+        api_key=api_key,
+        timeout_seconds=30,
+    )
+    active_count = len(_active_instance_rows_from_payload(payload))
+    if active_count > limit:
+        return f"vast_global_live_instance_limit_exceeded:{active_count}>{limit}"
+    return ""
+
+
 def _poll_instance(
     *,
     instance_id: int,
@@ -3428,6 +3447,7 @@ def _request_logs_and_fetch(
     container_missing_retry_attempts: int = 5,
     no_progress_seconds: int | None = None,
     terminal_instance_status_probe: Callable[[], str] | None = None,
+    external_abort_probe: Callable[[], str] | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max(0, max_wait_seconds)
     attempts: list[dict[str, Any]] = []
@@ -3453,6 +3473,7 @@ def _request_logs_and_fetch(
     attempt_index = 0
     container_missing_count = 0
     terminal_instance_status = ""
+    external_abort_reason = ""
     while True:
         attempt_index += 1
         attempt_started = time.monotonic()
@@ -3516,6 +3537,18 @@ def _request_logs_and_fetch(
         terminal_instance_status_observed = (
             terminal_instance_status in VAST_TERMINAL_INSTANCE_STATUSES
         )
+        external_abort_probe_error = None
+        if (
+            external_abort_probe is not None
+            and not marker_found
+            and not terminal_instance_status_observed
+        ):
+            try:
+                external_abort_reason = _string(external_abort_probe())
+            except Exception as exc:  # pragma: no cover - live network dependent.
+                external_abort_reason = ""
+                external_abort_probe_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+        external_abort_observed = bool(external_abort_reason)
         attempts.append(
             {
                 "attempt": attempt_index,
@@ -3538,6 +3571,9 @@ def _request_logs_and_fetch(
                 "instance_status": terminal_instance_status or None,
                 "instance_status_probe_error": instance_status_probe_error,
                 "terminal_instance_status_observed": terminal_instance_status_observed,
+                "external_abort_reason": external_abort_reason or None,
+                "external_abort_probe_error": external_abort_probe_error,
+                "external_abort_observed": external_abort_observed,
             }
         )
         terminal_container_missing = container_missing and container_missing_count >= max(
@@ -3548,6 +3584,8 @@ def _request_logs_and_fetch(
             break_reason = "success_marker_found"
         elif terminal_instance_status_observed:
             break_reason = "terminal_instance_status_observed"
+        elif external_abort_observed:
+            break_reason = "external_abort_probe_triggered"
         elif terminal_container_missing:
             break_reason = "terminal_container_missing"
         elif no_progress_timeout_reached:
@@ -3575,6 +3613,8 @@ def _request_logs_and_fetch(
         "terminal_instance_status_observed": (
             terminal_instance_status in VAST_TERMINAL_INSTANCE_STATUSES
         ),
+        "external_abort_reason": external_abort_reason or None,
+        "external_abort_observed": bool(external_abort_reason),
     }
 
 
@@ -5494,6 +5534,7 @@ def run_vast_provider_adapter(
             startup_timeout_seconds=startup_timeout_seconds,
             max_live_minutes=max_live_minutes,
         )
+        resolved_max_global_live_instances = _env_int(VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV, 0)
         onstart_logs = _request_logs_and_fetch(
             instance_id=instance_id,
             api_key=api_key,
@@ -5526,6 +5567,16 @@ def run_vast_provider_adapter(
                     api_key=api_key,
                     timeout_seconds=30,
                 )[1]
+            ),
+            external_abort_probe=(
+                lambda: (
+                    _global_live_instance_limit_abort_reason(
+                        api_key=api_key,
+                        maximum_live_instances=resolved_max_global_live_instances,
+                    )
+                    if resolved_max_global_live_instances > 0
+                    else None
+                )
             ),
         )
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
@@ -5583,6 +5634,11 @@ def run_vast_provider_adapter(
         ).lower()
         heartbeat_blockers = []
         if not startup_probe_ok:
+            if onstart_logs.get("external_abort_observed") is True:
+                heartbeat_blockers.append(
+                    _string(onstart_logs.get("external_abort_reason"))
+                    or "vast_heartbeat_external_abort"
+                )
             if onstart_logs.get("terminal_instance_status_observed") is True:
                 heartbeat_blockers.append(
                     "vast_heartbeat_terminal_instance_status:"
@@ -5607,6 +5663,7 @@ def run_vast_provider_adapter(
             "downstream_provider_marker_seen": downstream_marker_seen,
             "heartbeat_url_kind": "public_echo_endpoint",
             "heartbeat_no_progress_timeout_seconds": resolved_heartbeat_no_progress_seconds,
+            "maximum_global_live_instances": resolved_max_global_live_instances,
             "launch_mode_used": launch_mode,
             "disk_gb": resolved_disk_gb,
             "container_image": selected_container_image,
