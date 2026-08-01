@@ -281,6 +281,10 @@ used as blind confirmation.
   two-GPU ceiling through the final Vast provider prelaunch guard at runtime
   SHA `288e2bf9`; and rebind the unchanged WAM5 request to a new unconsumed
   single-use authorization;
+- `protocol_amendment_32_wam5_result_and_policy_query6_v1.md` and
+  `compute_authorization_openpi_policy_query_6.json` — preserve WAM5's
+  successful three-view result, append-only accounting correction, and
+  generated-only same-policy query-6 admission boundary;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
