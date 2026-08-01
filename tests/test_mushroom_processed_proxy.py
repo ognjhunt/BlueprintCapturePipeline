@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import jsonschema
+import pytest
 from PIL import Image
 
 from blueprint_pipeline import mushroom_processed_proxy as proxy
@@ -94,6 +96,15 @@ def test_real_layout_freezes_author_and_short_views_outside_candidate(
         "long_author_test",
         "independent_short",
     }
+    schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/mushroom_processed_iphone_proxy.v1.schema.json"
+        ).read_text()
+    )
+    jsonschema.Draft202012Validator(schema).validate(report)
+    assert report["camera_calibration_binding"]["distortion_parameters_available"] is False
+    assert report["camera_calibration_binding"]["export_camera_model"] == "PINHOLE"
 
     replay = proxy.compile_mushroom_processed_iphone_proxy(
         scene_root=scene,
@@ -108,3 +119,16 @@ def test_real_layout_freezes_author_and_short_views_outside_candidate(
         timestamp="2026-08-01T00:00:00Z",
     )
     assert replay == report
+
+
+def test_trajectory_path_traversal_fails_before_materialization(tmp_path: Path) -> None:
+    scene = tmp_path / "iphone"
+    _write_capture(scene, "long_capture", 3)
+    document_path = scene / "long_capture" / "transformations_colmap.json"
+    document = json.loads(document_path.read_text())
+    document["frames"][0]["file_path"] = "../hidden/frame_00001.jpg"
+    document_path.write_text(json.dumps(document))
+    with pytest.raises(
+        proxy.MushroomProcessedProxyError, match="mushroom_observation_path_unsafe"
+    ):
+        proxy._load_trajectory(scene, "long_capture")

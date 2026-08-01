@@ -25,7 +25,7 @@ from .reconstruction_colmap_dataset import export_colmap_training_dataset
 
 
 SCHEMA_VERSION = "mushroom_processed_iphone_proxy.v1"
-COMPILER_VERSION = "mushroom_processed_iphone_proxy_compiler.v1"
+COMPILER_VERSION = "mushroom_processed_iphone_proxy_compiler.v2"
 ARCHIVE_SHA256 = "sha256:68735cfa0758e1288a006c30dc8b95ffb4caa3392bc9c68c0c3ea6c111966518"
 ARCHIVE_SIZE_BYTES = 146_575_749
 PUBLISHER_MD5 = "a359dba714e7829be11747ce5dee141c"
@@ -225,6 +225,25 @@ def compile_mushroom_processed_iphone_proxy(
         {"source_capture_digest": source_capture_digest, "split_digest": split_digest, "compiler": COMPILER_VERSION}
     )
     artifact_root = Path(output_root).resolve() / f"mushroom_proxy_{configuration_digest[7:23]}"
+    original_file_references = [
+        {
+            "artifact_id": "koivu_iphone.tar.gz",
+            "digest": ARCHIVE_SHA256,
+            "size_bytes": ARCHIVE_SIZE_BYTES,
+        },
+        *[
+            {
+                "artifact_id": relative,
+                "digest": "sha256:" + _hash(root / relative),
+                "size_bytes": (root / relative).stat().st_size,
+            }
+            for relative in (
+                "long_capture/transformations_colmap.json",
+                "long_capture/test.txt",
+                "short_capture/transformations_colmap.json",
+            )
+        ],
+    ]
     observations: list[dict[str, Any]] = []
     candidate_frames: list[dict[str, Any]] = []
     hidden_rows: list[dict[str, Any]] = []
@@ -275,11 +294,18 @@ def compile_mushroom_processed_iphone_proxy(
     )
     report = {
         "schema_version": SCHEMA_VERSION,
+        "stable_run_identity": f"mushroom-koivu-{configuration_digest[7:31]}",
         "status": "candidate_training_proxy_ready",
+        "source_capture_identity": "mushroom-koivu-iphone-processed",
         "source_capture_digest": source_capture_digest,
         "source_commit_sha": source_commit_sha,
+        "original_file_references": original_file_references,
         "archive_digest": ARCHIVE_SHA256,
         "license": "CC-BY-4.0",
+        "producing_method": COMPILER_VERSION,
+        "implementation_version": "1.0.0",
+        "container_image_digest": None,
+        "deterministic_configuration_digest": configuration_digest,
         "authority_used": dict(authority_used),
         "frozen_split_digest": split_digest,
         "candidate_count": len(candidate_frames),
@@ -288,12 +314,45 @@ def compile_mushroom_processed_iphone_proxy(
         "camera_observation_digest": camera["camera_observation_digest"],
         "hidden_evaluator_digest": hidden["hidden_evaluator_digest"],
         "colmap_training_dataset_export_result": colmap,
+        "input_digests": [row["digest"] for row in original_file_references],
+        "output_digests": [
+            candidate["candidate_dataset_digest"],
+            camera["camera_observation_digest"],
+            hidden["hidden_evaluator_digest"],
+            colmap["colmap_training_dataset_digest"],
+        ],
+        "camera_calibration_binding": {
+            "source_camera_model": "OPENCV",
+            "available_parameters": ["fx", "fy", "cx", "cy"],
+            "distortion_parameters_available": False,
+            "export_camera_model": "PINHOLE",
+            "camera_observation_digest": camera["camera_observation_digest"],
+        },
+        "coordinate_frame_declaration": {
+            "declaration": "mushroom_published_camera_to_world",
+            "handedness": "not_independently_declared",
+            "gravity_alignment": "not_independently_validated",
+        },
+        "units": "publisher_pose_units_not_independently_validated",
+        "metric_scale_status": "not_independently_validated",
+        "provider_runtime_identity": {"provider": "local", "runtime": "python_numpy_pillow"},
+        "cost_usd": 0.0,
+        "duration_seconds": 0.0,
         "candidate_may_access_hidden_heldout": False,
         "raw_contract_3_2_proven": False,
         "metric_scale_proven": False,
         "proof_effect": "public_processed_dataset_trainer_input_only",
         "claim_ceiling": "processed_posed_image_reconstruction_proxy",
+        "warnings": [
+            "publisher_opencv_label_has_no_distortion_coefficients_and_is_exported_as_explicit_pinhole",
+            "processed_images_are_not_retained_video_observations",
+        ],
         "blockers": ["raw_video_and_timestamps_missing", "arkit_sensor_streams_missing", "metric_scale_not_independently_validated"],
+        "parent_artifact_or_event": {
+            "dataset": "MuSHRoom",
+            "doi": "10.5281/zenodo.10230733",
+            "archive_digest": ARCHIVE_SHA256,
+        },
         "timestamp": timestamp,
     }
     report["mushroom_processed_proxy_digest"] = canonical_digest(report, digest_field="mushroom_processed_proxy_digest")

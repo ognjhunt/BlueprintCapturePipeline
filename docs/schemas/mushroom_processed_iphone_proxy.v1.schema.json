@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/mushroom_processed_iphone_proxy.v1.schema.json",
+  "title": "MuSHRoom processed iPhone reconstruction proxy v1",
+  "type": "object",
+  "required": [
+    "schema_version", "stable_run_identity", "status", "source_capture_identity",
+    "source_capture_digest", "source_commit_sha", "original_file_references",
+    "producing_method", "implementation_version", "deterministic_configuration_digest",
+    "authority_used", "frozen_split_digest", "candidate_count", "author_hidden_count",
+    "independent_short_count", "camera_observation_digest", "hidden_evaluator_digest",
+    "colmap_training_dataset_export_result", "input_digests", "output_digests",
+    "camera_calibration_binding", "coordinate_frame_declaration", "units",
+    "metric_scale_status", "provider_runtime_identity", "cost_usd", "duration_seconds",
+    "candidate_may_access_hidden_heldout", "raw_contract_3_2_proven",
+    "metric_scale_proven", "proof_effect", "claim_ceiling", "warnings", "blockers",
+    "parent_artifact_or_event", "timestamp", "mushroom_processed_proxy_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "mushroom_processed_iphone_proxy.v1"},
+    "status": {"const": "candidate_training_proxy_ready"},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "frozen_split_digest": {"$ref": "#/$defs/digest"},
+    "camera_observation_digest": {"$ref": "#/$defs/digest"},
+    "hidden_evaluator_digest": {"$ref": "#/$defs/digest"},
+    "candidate_count": {"type": "integer", "minimum": 1},
+    "author_hidden_count": {"type": "integer", "minimum": 1},
+    "independent_short_count": {"type": "integer", "minimum": 1},
+    "candidate_may_access_hidden_heldout": {"const": false},
+    "raw_contract_3_2_proven": {"const": false},
+    "metric_scale_proven": {"const": false},
+    "proof_effect": {"const": "public_processed_dataset_trainer_input_only"},
+    "claim_ceiling": {"const": "processed_posed_image_reconstruction_proxy"},
+    "cost_usd": {"const": 0.0},
+    "mushroom_processed_proxy_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}
