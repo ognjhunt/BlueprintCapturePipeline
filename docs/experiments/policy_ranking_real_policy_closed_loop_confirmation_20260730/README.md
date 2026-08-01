@@ -7,11 +7,12 @@ The offline contract lane supports the prospectively named **Blueprint
 Ctrl-World current-reference** arm with three current official OpenPI DROID
 policies. The live identity-bound policy canary has now completed one real frozen
 checkpoint query for each policy, with complete hash-validated native outputs.
-No Ctrl-World WAM, policy re-query, judge, or physical-label join has completed.
-One earlier admitted Vast launch attempt reached provider create,
-but the selected marketplace ask had already expired. Vast returned HTTP 410,
-and exact-prefix inventory proved that no successor instance was created and
-attributable successor GPU spend was USD 0.
+The frozen `pi05_droid` checkpoint has now completed six real same-policy
+re-queries after its initial query, linked through six successful generated-only
+three-view Ctrl-World WAM transitions and registered commanded state. WAM5 passed its immediate
+reliability screen, and policy query 6 closed interaction six. WAM6 is frozen
+as the start of interaction seven. No judge, physical-label join, causal
+qualification, or complete 12-interaction episode has completed.
 
 The finite policy-only GPU lane is now implemented behind the canonical paid
 allocator. It packages portable label-free inputs, verifies all checkpoint
@@ -46,16 +47,15 @@ The scientific admission state is:
   `pi0_fast_droid`, and `pi05_droid`;
 - real learned-policy inference: completed once for each of `pi0_droid`,
   `pi0_fast_droid`, and `pi05_droid`;
-- real policy -> WAM -> same-policy re-query: not yet measured;
+- real policy -> WAM -> same-policy re-query: six interactions completed for
+  frozen `pi05_droid`; complete 12-interaction horizon not yet measured;
 - WAM causal qualification: not yet measured;
 - blind physical ranking: unavailable and not measured;
 - captured-site transfer: not admitted;
 - economics and speed: not admitted;
-- provider state: current Vast, RunPod, and DigitalOcean inventory is zero, but
-  the predecessor no-allocation watchdog conservatively retains its lease and
-  reservation until its immutable deadline because that already-running process
-  predates the no-instance-ID early-settlement correction; the successor does
-  not bypass or alter that process.
+- provider state: fresh authenticated Vast, RunPod, and DigitalOcean inventory
+  is zero; query 6's owned instance is destroyed, its watchdog terminal, and
+  its cumulative campaign reservation settled.
 
 The historical frozen-stack verdict remains `thesis_not_supported`. The prior
 specialized successor remains `inconclusive`. Neither result is overwritten or
@@ -302,21 +302,21 @@ used as blind confirmation.
   the authorized startup timeout into the monitor at runtime SHA `bfb6fd6c`,
   and freeze one final 900-second cold-start retry with both failed machines
   excluded;
+- `protocol_amendment_36_policy_query6_result_and_wam6_v1.md`,
+  `compute_authorization_ctrl_world_allocation_10.json`, and
+  `ctrl_world_current_reference_wam_6_gpu_profile_freeze_v1.json` — preserve
+  the successful same-checkpoint query 6, close interaction six, and bind WAM6
+  to the exact query-6 action, 30-frame feedback history, immutable provider
+  bundle, one single-use allocation, and the two-GPU global ceiling;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-The registered three-interaction engineering gate and interactions four and
-five are complete. WAM5 passed its three-view immediate reliability screen.
-The first policy-query-6 allocation failed before inference because Vast
-machine `27268` never left provider startup; it produced no policy output and
-was torn down with global provider zero. Retry 1 then stopped before provider
-mutation because paid-lane reconciliation had not inherited the registered
-two-GPU allowance. Retry 2 then proved two-GPU admission but a second distinct
-cold Vast host also failed to start the OpenPI image within 480 seconds. The
-next finite gate is one final query-6 retry from immutable runtime SHA
-`bfb6fd6c`, with both failed machines excluded and a prospectively bound
-900-second startup cutoff. All signed transport, spend, watchdog, dry-run,
-teardown, and provider-zero controls repeat. Judges remain forbidden until the
-complete 12-interaction episode and causal-control matrix pass.
+Six interactions are complete. The next finite gate is WAM6: stage its frozen
+bundle, pass fresh authenticated provider and cumulative-budget preflight, pass
+the canonical paid-resource allocator dry run from a new immutable pushed SHA,
+then execute exactly one generated-only three-view request. WAM6 must pass the
+unchanged immediate reliability screen before policy query 7 may be built.
+Judges remain forbidden until the complete 12-interaction episode and
+causal-control matrix pass.
