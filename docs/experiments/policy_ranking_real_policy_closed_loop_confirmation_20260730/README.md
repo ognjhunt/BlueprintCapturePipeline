@@ -348,18 +348,23 @@ used as blind confirmation.
   concurrent-lane control-plane reconciliation and generic fix, and bind WAM9
   to the exact query-9 action, 33-frame generated feedback history, immutable
   provider bundle, one single-use allocation, and the two-GPU global ceiling;
+- `protocol_amendment_44_wam9_result_and_policy_query10_v1.md` and
+  `compute_authorization_openpi_policy_query_10.json` — preserve WAM9's exact
+  three-view output, immediate reliability, owned-instance and global-zero
+  closure, settled accounting, and generated-only same-policy query-10
+  admission boundary;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-Eight interactions are complete. Policy query 9 successfully returned a new
-exact native 15x8 action from WAM8's generated-only observation and registered
-state. Its provider output, terminal absence, lane reconciliation, and campaign
-settlement are preserved. The exact action now conditions the frozen WAM9
-request with 33 frames and states of history. The next finite gate is one WAM9
-generation through the canonical paid-resource allocator after fresh source,
-credential, object-transport, provider-inventory, cumulative-budget, watchdog,
-preflight, and dry-run checks. Interaction nine is not complete until WAM9's
-three views validate and pass immediate reliability. Judges remain forbidden
-until the complete 12-interaction episode and causal-control matrix pass.
+Nine interactions are complete. WAM9 returned three exact generated views,
+passed immediate reliability with no flags or abstention, settled USD
+`0.118539`, and returned global Vast inventory to zero. Its exact final views
+and commanded-prefix state are frozen in the label-free policy-query-10 input.
+The next finite gate is one same-checkpoint policy query 10 through the
+canonical paid-resource allocator after fresh source, credential,
+object-transport, provider-inventory, cumulative-budget, watchdog, preflight,
+and dry-run checks. Its native action must then condition WAM10 before
+interaction ten is complete. Judges remain forbidden until the complete
+12-interaction episode and causal-control matrix pass.
