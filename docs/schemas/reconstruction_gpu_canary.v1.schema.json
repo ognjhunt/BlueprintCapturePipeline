@@ -10,7 +10,7 @@
         "schema_version": {"const": "reconstruction_gpu_canary_request.v1"},
         "operation_request_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
         "operation_input_bundle_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
-        "expected_runtime_result_schema": {"enum": ["reconstruction_vast_worker_smoke_result.v1", "pose_estimation_result.v1", "reconstruction_training_result.v1"]},
+        "expected_runtime_result_schema": {"enum": ["reconstruction_vast_worker_smoke_result.v1", "pose_estimation_result.v1", "reconstruction_training_result.v1", "isaac_splat_nurec_render_result.v3"]},
         "candidate_may_read_hidden_heldout": {"const": false},
         "trainer_may_grade_heldout": {"const": false},
         "proof_effect": {"const": "none"},

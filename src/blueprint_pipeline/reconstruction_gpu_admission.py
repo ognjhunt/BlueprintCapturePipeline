@@ -28,16 +28,83 @@ CAPTURE_PROFILES = {
     "camera_360_equirectangular",
     "trainer_smoke_fixture",
 }
-OPERATIONS = {"worker_smoke", "pose_canary", "trainer_canary"}
+OPERATIONS = {"worker_smoke", "pose_canary", "trainer_canary", "isaac_canary"}
 EXECUTABLE_OPERATIONS = {"worker_smoke"}
 EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "worker_smoke": "reconstruction_vast_worker_smoke_result.v1",
     "pose_canary": "pose_estimation_result.v1",
     "trainer_canary": "reconstruction_training_result.v1",
+    "isaac_canary": "isaac_splat_nurec_render_result.v3",
 }
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+
+
+def build_reconstruction_gpu_canary_request(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build an immutable provider-neutral request for one registered operation."""
+
+    source = json.loads(json.dumps(dict(value)))
+    source.pop("request_digest", None)
+    operation = str(source.get("operation") or "")
+    errors: list[str] = []
+    if source.get("schema_version") != REQUEST_SCHEMA_VERSION:
+        errors.append("reconstruction_gpu_request_schema_invalid")
+    if operation not in OPERATIONS:
+        errors.append("reconstruction_gpu_operation_unsupported")
+    if source.get("capture_profile") not in CAPTURE_PROFILES:
+        errors.append("reconstruction_gpu_capture_profile_unsupported")
+    if _COMMIT.fullmatch(str(source.get("source_commit_sha") or "")) is None:
+        errors.append("reconstruction_gpu_source_commit_invalid")
+    if _IMAGE.fullmatch(str(source.get("worker_image_digest") or "")) is None:
+        errors.append("reconstruction_gpu_worker_image_digest_invalid")
+    for key in (
+        "worker_stack_manifest_digest",
+        "reconstruction_dataset_digest",
+        "frozen_split_digest",
+        "calibration_digest",
+        "deterministic_configuration_digest",
+        "operation_request_digest",
+        "operation_input_bundle_digest",
+    ):
+        if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+            errors.append(f"reconstruction_gpu_{key}_invalid")
+    if source.get("expected_runtime_result_schema") != (
+        EXPECTED_RUNTIME_RESULT_SCHEMAS.get(operation)
+    ):
+        errors.append("reconstruction_gpu_expected_runtime_result_schema_invalid")
+    if source.get("candidate_may_read_hidden_heldout") is not False:
+        errors.append("reconstruction_gpu_hidden_heldout_access_forbidden")
+    if source.get("trainer_may_grade_heldout") is not False:
+        errors.append("reconstruction_gpu_trainer_self_grading_forbidden")
+    if not _finite(source.get("max_spend_usd"), minimum=0.000001):
+        errors.append("reconstruction_gpu_explicit_budget_missing")
+    ttl = source.get("hard_ttl_seconds")
+    if (
+        not isinstance(ttl, int)
+        or isinstance(ttl, bool)
+        or not 1 <= ttl <= MAX_TTL_SECONDS
+    ):
+        errors.append("reconstruction_gpu_explicit_ttl_invalid")
+    retries = source.get("retry_cap")
+    if (
+        not isinstance(retries, int)
+        or isinstance(retries, bool)
+        or not 0 <= retries <= MAX_RETRY_CAP
+    ):
+        errors.append("reconstruction_gpu_explicit_retry_cap_invalid")
+    if not isinstance(source.get("authority_id"), str) or not str(
+        source.get("authority_id")
+    ).strip():
+        errors.append("reconstruction_gpu_paid_authority_missing")
+    if source.get("proof_effect") != "none":
+        errors.append("reconstruction_gpu_request_proof_effect_invalid")
+    if errors:
+        raise ValueError(";".join(sorted(set(errors))))
+    source["request_digest"] = canonical_digest(source, digest_field="request_digest")
+    return source
 
 
 def collect_reconstruction_vast_preflight(
@@ -423,6 +490,7 @@ __all__ = [
     "PREFLIGHT_SCHEMA_VERSION",
     "PROBE_KIND",
     "REQUEST_SCHEMA_VERSION",
+    "build_reconstruction_gpu_canary_request",
     "build_reconstruction_gpu_canary_admission",
     "collect_reconstruction_vast_preflight",
     "prepare_reconstruction_gpu_canary",

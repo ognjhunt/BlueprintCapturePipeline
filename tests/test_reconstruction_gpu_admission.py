@@ -13,6 +13,7 @@ from blueprint_pipeline.reconstruction_gpu_admission import (
     PROBE_KIND,
     REQUEST_SCHEMA_VERSION,
     build_reconstruction_gpu_canary_admission,
+    build_reconstruction_gpu_canary_request,
     collect_reconstruction_vast_preflight,
 )
 
@@ -51,8 +52,7 @@ def _request(**overrides):
         "proof_effect": "none",
     }
     value.update(overrides)
-    value["request_digest"] = canonical_digest(value, digest_field="request_digest")
-    return value
+    return build_reconstruction_gpu_canary_request(value)
 
 
 def _preflight(**overrides):
@@ -119,6 +119,27 @@ def test_vast_first_reconstruction_canary_dry_run_binds_all_proof_inputs():
     jsonschema.validate(bound, schema)
 
 
+def test_request_builder_rejects_untyped_or_authority_mutating_operations():
+    for override, code in (
+        ({"operation": "shell"}, "reconstruction_gpu_operation_unsupported"),
+        (
+            {"candidate_may_read_hidden_heldout": True},
+            "reconstruction_gpu_hidden_heldout_access_forbidden",
+        ),
+        (
+            {"trainer_may_grade_heldout": True},
+            "reconstruction_gpu_trainer_self_grading_forbidden",
+        ),
+        ({"proof_effect": "qualified"}, "reconstruction_gpu_request_proof_effect_invalid"),
+    ):
+        try:
+            _request(**override)
+        except ValueError as exc:
+            assert code in str(exc)
+        else:
+            raise AssertionError(f"request builder accepted forbidden override: {override}")
+
+
 def test_preflight_collector_requires_global_zero_and_independent_watchdog():
     inventories = {
         "blueprint-reconstruction-": {
@@ -170,7 +191,11 @@ def test_preflight_collector_requires_global_zero_and_independent_watchdog():
 
 
 def test_reconstruction_canary_fails_closed_on_authority_provider_and_evidence_drift():
-    request = _request(candidate_may_read_hidden_heldout=True)
+    request = _request()
+    request["candidate_may_read_hidden_heldout"] = True
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
     admission, _ = _build(
         request=request,
         provider="runpod",
@@ -196,8 +221,8 @@ def test_execute_stays_blocked_until_vast_execution_adapter_is_qualified():
     assert bound["provider_mutation_authorized"] is False
 
 
-def test_pose_and_trainer_canaries_cannot_masquerade_as_worker_smoke_execution():
-    for operation in ("pose_canary", "trainer_canary"):
+def test_scientific_canaries_cannot_masquerade_as_worker_smoke_execution():
+    for operation in ("pose_canary", "trainer_canary", "isaac_canary"):
         request = _request(operation=operation)
         dry_run, dry_bound = _build(request=request)
         assert dry_run["status"] == "dry_run_ready"
@@ -226,10 +251,14 @@ def test_pose_and_trainer_canaries_cannot_masquerade_as_worker_smoke_execution()
 
 
 def test_operation_request_input_and_result_schema_are_immutable_admission_inputs():
-    request = _request(
+    request = _request()
+    request.update(
         operation_request_digest="not-a-digest",
         operation_input_bundle_digest="sha256:" + "z" * 64,
         expected_runtime_result_schema="reconstruction_training_result.v1",
+    )
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
     )
     admission, bound = _build(request=request)
 
