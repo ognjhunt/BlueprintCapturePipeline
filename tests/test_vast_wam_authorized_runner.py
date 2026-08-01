@@ -410,7 +410,19 @@ def test_vast_wam_authorized_runner_completed_path_and_cli(
     monkeypatch.setattr(
         runner,
         "run_vast_provider_adapter",
-        lambda **kwargs: {"status": "completed", "reason": "ok", "blockers": []},
+        lambda **kwargs: {
+            "status": "completed",
+            "reason": "ok",
+            "blockers": [],
+            "provider_create_attempted": True,
+            "vast_side_effects_may_have_occurred": True,
+            "vast_instance_ids": [1234],
+            "continuing_spend_from_this_run": False,
+            "session_budget_summary": {
+                "live_runtime_seconds": 319.130456,
+                "estimated_cost_usd": 0.153918,
+            },
+        },
     )
     monkeypatch.setattr(runner, "verify_public_staging_urls", _passed_public_staging)
     completed = runner.run_vast_wam_authorized_runner(
@@ -439,6 +451,15 @@ def test_vast_wam_authorized_runner_completed_path_and_cli(
 
     assert completed["status"] == "completed"
     assert completed["adapter_result_status"] == "completed"
+    assert completed["provider_mutations_performed"] == 1
+    assert completed["continuing_spend_from_this_run"] is False
+    assert completed["runtime_seconds"] == 319.130456
+    assert completed["estimated_cost_usd"] == 0.153918
+    assert completed["estimated_gpu_cost_usd"] == 0.153918
+    assert completed["session_budget_summary"] == {
+        "live_runtime_seconds": 319.130456,
+        "estimated_cost_usd": 0.153918,
+    }
     assert completed["session_max_live_minutes"] is None
     assert completed["vast_launch_mode"] == "template"
     assert completed["allow_unverified_public_staging_for_paid_launch"] is True

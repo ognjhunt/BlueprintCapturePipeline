@@ -622,6 +622,43 @@ def run_vast_wam_authorized_runner(
             )
         except OSError:
             output_inspection["output_zip_present"] = True
+    adapter_session_budget_summary = (
+        adapter_result.get("session_budget_summary")
+        if isinstance(adapter_result, dict)
+        and isinstance(adapter_result.get("session_budget_summary"), dict)
+        else {}
+    )
+    provider_mutations_performed = int(
+        bool(
+            adapter_result
+            and (
+                adapter_result.get("provider_create_attempted") is True
+                or adapter_result.get("vast_side_effects_may_have_occurred") is True
+                or adapter_result.get("vast_instance_ids")
+            )
+        )
+    )
+    live_runtime_seconds = float(
+        adapter_session_budget_summary.get("live_runtime_seconds") or 0.0
+    )
+    estimated_cost_usd = float(
+        adapter_session_budget_summary.get(
+            "estimated_cost_usd",
+            adapter_result.get("estimated_cost_usd", 0.0) if adapter_result else 0.0,
+        )
+        or 0.0
+    )
+    provider_zero_verified = bool(
+        (
+            adapter_result
+            and adapter_result.get("provider_zero_verified") is True
+        )
+        or (
+            watchdog_close.get("status")
+            in {"provider_terminal", "cancelled_no_allocation"}
+            and watchdog_close.get("provider_absence_confirmed") is True
+        )
+    )
     manifest = {
         "schema_version": VAST_WAM_AUTHORIZED_RUNNER_SCHEMA_VERSION,
         "generated_at": generated,
@@ -667,6 +704,17 @@ def run_vast_wam_authorized_runner(
         "independent_watchdog_close": watchdog_close,
         "adapter_result_status": adapter_result.get("status") if adapter_result else None,
         "adapter_result_reason": adapter_result.get("reason") if adapter_result else None,
+        "provider_mutations_performed": provider_mutations_performed,
+        "continuing_spend_from_this_run": (
+            adapter_result.get("continuing_spend_from_this_run")
+            if adapter_result
+            else False
+        ),
+        "provider_zero_verified": provider_zero_verified,
+        "runtime_seconds": live_runtime_seconds,
+        "estimated_cost_usd": estimated_cost_usd,
+        "estimated_gpu_cost_usd": estimated_cost_usd,
+        "session_budget_summary": adapter_session_budget_summary,
         "provider_output_completion_recovery": completion_recovery,
         "adapter_result_path": str(resolved_job_dir / "vast_provider_adapter_result.json")
         if adapter_result
