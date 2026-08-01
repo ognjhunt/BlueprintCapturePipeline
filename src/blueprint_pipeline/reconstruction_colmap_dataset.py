@@ -18,6 +18,21 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .processed_observation_dataset import (
+    CAMERA_OBSERVATION_SCHEMA_VERSION as PROCESSED_CAMERA_OBSERVATION_SCHEMA_VERSION,
+)
+from .processed_observation_dataset import PROCESSED_CANDIDATE_SCHEMA_VERSION
+from .reconstruction_frame_dataset import CANDIDATE_SCHEMA_VERSION
+
+
+_CAMERA_OBSERVATION_SCHEMA_VERSIONS = {
+    "camera_observation_manifest.v1",
+    PROCESSED_CAMERA_OBSERVATION_SCHEMA_VERSION,
+}
+_CANDIDATE_SCHEMA_VERSIONS = {
+    CANDIDATE_SCHEMA_VERSION,
+    PROCESSED_CANDIDATE_SCHEMA_VERSION,
+}
 
 
 REQUEST_SCHEMA_VERSION = "colmap_training_dataset_export_request.v1"
@@ -193,6 +208,10 @@ def export_colmap_training_dataset(
     if errors:
         raise ColmapTrainingDatasetError(errors)
     assert isinstance(observations, Mapping) and isinstance(candidate, Mapping)
+    if observations.get("schema_version") not in _CAMERA_OBSERVATION_SCHEMA_VERSIONS:
+        raise ColmapTrainingDatasetError(["colmap_export_observation_schema_unsupported"])
+    if candidate.get("schema_version") not in _CANDIDATE_SCHEMA_VERSIONS:
+        raise ColmapTrainingDatasetError(["colmap_export_candidate_schema_unsupported"])
     if (
         observations.get("hidden_heldout_pixels_included") is not False
         or candidate.get("heldout_pixels_included") is not False

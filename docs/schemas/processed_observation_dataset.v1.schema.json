@@ -1,0 +1,411 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/processed_observation_dataset.v1.schema.json",
+  "title": "Blueprint Processed Observation Dataset Contracts v1",
+  "oneOf": [
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/source"},
+    {"$ref": "#/$defs/split"},
+    {"$ref": "#/$defs/candidate"},
+    {"$ref": "#/$defs/heldout"},
+    {"$ref": "#/$defs/observations"},
+    {"$ref": "#/$defs/dataset"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "artifact_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "digest"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "intrinsics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "fx", "fy", "cx", "cy"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "fx": {"type": "number", "exclusiveMinimum": 0},
+        "fy": {"type": "number", "exclusiveMinimum": 0},
+        "cx": {"type": "number", "minimum": 0},
+        "cy": {"type": "number", "minimum": 0}
+      }
+    },
+    "matrix4": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": {"type": "number"}
+      }
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rgb_intrinsics", "T_world_camera"],
+      "properties": {
+        "rgb_intrinsics": {"$ref": "#/$defs/intrinsics"},
+        "T_world_camera": {"$ref": "#/$defs/matrix4"}
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "dataset_id", "scene_id", "source_bundle_digest",
+        "source_bundle_size_bytes", "source_bundle_uri", "license_id",
+        "long_transformations_relative_path", "declared_heldout_ids_relative_path",
+        "independent_transformations_relative_path", "source_commit_sha",
+        "authority_used", "coordinate_frame_declaration", "timestamp",
+        "processed_observation_dataset_compile_request_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "processed_observation_dataset_compile_request.v1"},
+        "dataset_id": {"type": "string", "minLength": 1, "maxLength": 192},
+        "scene_id": {"type": "string", "minLength": 1, "maxLength": 192},
+        "source_bundle_digest": {"$ref": "#/$defs/sha256"},
+        "source_bundle_size_bytes": {"type": "integer", "minimum": 1},
+        "source_bundle_uri": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "license_id": {"type": "string", "minLength": 1},
+        "long_transformations_relative_path": {"$ref": "#/$defs/relative_path"},
+        "declared_heldout_ids_relative_path": {"$ref": "#/$defs/relative_path"},
+        "independent_transformations_relative_path": {"$ref": "#/$defs/relative_path"},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "authority_used": {"type": "object", "minProperties": 1},
+        "coordinate_frame_declaration": {"type": "object", "minProperties": 1},
+        "timestamp": {"type": "string", "minLength": 1},
+        "processed_observation_dataset_compile_request_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "trajectory_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "digest", "camera_model", "frame_count"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "camera_model": {"enum": ["PINHOLE", "OPENCV"]},
+        "frame_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "dataset_id", "scene_id", "source_bundle_uri",
+        "source_bundle_digest", "source_bundle_size_bytes", "license_id",
+        "long_trajectory", "declared_heldout_ids", "independent_trajectory",
+        "source_binding_digest", "raw_capture_bundle_available",
+        "original_video_available", "decoded_video_pts_available",
+        "encoder_retention_map_available", "imu_available",
+        "tracking_relocalization_log_available", "source_manifest_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "processed_observation_source_manifest.v1"},
+        "dataset_id": {"type": "string", "minLength": 1},
+        "scene_id": {"type": "string", "minLength": 1},
+        "source_bundle_uri": {"type": "string", "format": "uri"},
+        "source_bundle_digest": {"$ref": "#/$defs/sha256"},
+        "source_bundle_size_bytes": {"type": "integer", "minimum": 1},
+        "license_id": {"type": "string", "minLength": 1},
+        "long_trajectory": {"$ref": "#/$defs/trajectory_source"},
+        "declared_heldout_ids": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["relative_path", "digest", "count"],
+          "properties": {
+            "relative_path": {"$ref": "#/$defs/relative_path"},
+            "digest": {"$ref": "#/$defs/sha256"},
+            "count": {"type": "integer", "minimum": 1}
+          }
+        },
+        "independent_trajectory": {"$ref": "#/$defs/trajectory_source"},
+        "source_binding_digest": {"$ref": "#/$defs/sha256"},
+        "raw_capture_bundle_available": {"const": false},
+        "original_video_available": {"const": false},
+        "decoded_video_pts_available": {"const": false},
+        "encoder_retention_map_available": {"const": false},
+        "imu_available": {"const": false},
+        "tracking_relocalization_log_available": {"const": false},
+        "source_manifest_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "split_assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frame_id", "trajectory", "trajectory_index", "frame_digest",
+        "depth_digest", "split"
+      ],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1},
+        "trajectory": {"enum": ["long", "independent"]},
+        "trajectory_index": {"type": "integer", "minimum": 0},
+        "frame_digest": {"$ref": "#/$defs/sha256"},
+        "depth_digest": {"$ref": "#/$defs/sha256"},
+        "split": {"enum": ["training", "validation", "held_out"]}
+      }
+    },
+    "split": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "frozen", "capture_digest",
+        "deterministic_configuration_digest", "split_seed_digest", "assignments",
+        "candidate_can_change_assignments", "hidden_heldout_access", "split_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "processed_observation_split_manifest.v1"},
+        "frozen": {"const": true},
+        "capture_digest": {"$ref": "#/$defs/sha256"},
+        "deterministic_configuration_digest": {"$ref": "#/$defs/sha256"},
+        "split_seed_digest": {"$ref": "#/$defs/sha256"},
+        "assignments": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/split_assignment"}},
+        "candidate_can_change_assignments": {"const": false},
+        "hidden_heldout_access": {"const": "independent_evaluator_only"},
+        "split_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "candidate_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frame_id", "trajectory", "trajectory_index", "frame_digest", "depth_digest",
+        "split", "candidate_relative_path", "candidate_depth_relative_path",
+        "image_metadata", "quality_signals"
+      ],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1},
+        "trajectory": {"const": "long"},
+        "trajectory_index": {"type": "integer", "minimum": 0},
+        "frame_digest": {"$ref": "#/$defs/sha256"},
+        "depth_digest": {"$ref": "#/$defs/sha256"},
+        "split": {"enum": ["training", "validation"]},
+        "candidate_relative_path": {"$ref": "#/$defs/relative_path"},
+        "candidate_depth_relative_path": {"$ref": "#/$defs/relative_path"},
+        "image_metadata": {"type": "object"},
+        "quality_signals": {"type": "object"}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "capture_digest", "split_digest",
+        "training_and_validation_only", "heldout_pixels_included", "frames",
+        "candidate_dataset_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "processed_candidate_dataset_manifest.v1"},
+        "capture_digest": {"$ref": "#/$defs/sha256"},
+        "split_digest": {"$ref": "#/$defs/sha256"},
+        "training_and_validation_only": {"const": true},
+        "heldout_pixels_included": {"const": false},
+        "frames": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/candidate_frame"}},
+        "candidate_dataset_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "heldout_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frame_id", "trajectory", "trajectory_index", "frame_digest", "depth_digest",
+        "evaluator_relative_path", "evaluator_depth_relative_path", "camera",
+        "heldout_reason"
+      ],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1},
+        "trajectory": {"enum": ["long", "independent"]},
+        "trajectory_index": {"type": "integer", "minimum": 0},
+        "frame_digest": {"$ref": "#/$defs/sha256"},
+        "depth_digest": {"$ref": "#/$defs/sha256"},
+        "evaluator_relative_path": {"$ref": "#/$defs/relative_path"},
+        "evaluator_depth_relative_path": {"$ref": "#/$defs/relative_path"},
+        "camera": {"$ref": "#/$defs/camera"},
+        "heldout_reason": {
+          "enum": [
+            "dataset_declared_long_trajectory_test_view",
+            "independent_evaluation_trajectory"
+          ]
+        }
+      }
+    },
+    "heldout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "capture_digest", "split_digest", "access_scope",
+        "candidate_method_access_allowed", "frames", "hidden_heldout_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "processed_hidden_heldout_manifest.v1"},
+        "capture_digest": {"$ref": "#/$defs/sha256"},
+        "split_digest": {"$ref": "#/$defs/sha256"},
+        "access_scope": {"const": "independent_evaluator_only"},
+        "candidate_method_access_allowed": {"const": false},
+        "frames": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/heldout_frame"}},
+        "hidden_heldout_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_id", "split", "image_relative_path", "image_digest",
+        "depth_relative_path", "depth_digest", "camera"
+      ],
+      "properties": {
+        "observation_id": {"type": "string", "minLength": 1},
+        "split": {"enum": ["training", "validation"]},
+        "image_relative_path": {"$ref": "#/$defs/relative_path"},
+        "image_digest": {"$ref": "#/$defs/sha256"},
+        "depth_relative_path": {"$ref": "#/$defs/relative_path"},
+        "depth_digest": {"$ref": "#/$defs/sha256"},
+        "camera": {"$ref": "#/$defs/camera"}
+      }
+    },
+    "observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "source_capture_digest", "split_digest",
+        "source_representation", "candidate_splits_only",
+        "hidden_heldout_pixels_included", "calibration_status", "observations",
+        "camera_observation_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "processed_camera_observation_manifest.v1"},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "split_digest": {"$ref": "#/$defs/sha256"},
+        "source_representation": {"const": "processed_public_rgbd_pose_sequence"},
+        "candidate_splits_only": {"const": true},
+        "hidden_heldout_pixels_included": {"const": false},
+        "calibration_status": {"const": "dataset_provided_not_blueprint_raw_authority"},
+        "observations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/observation"}},
+        "camera_observation_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "stable_run_identity", "source_capture_identity",
+        "source_capture_digest", "original_file_references", "producing_method",
+        "implementation_version", "container_image_digest", "source_commit_sha",
+        "deterministic_configuration", "deterministic_configuration_digest",
+        "input_digests", "output_digests", "train_heldout_split_digest",
+        "camera_calibration_binding", "coordinate_frame_declaration", "units",
+        "metric_scale_status", "capture_authority_profile", "stream_metadata",
+        "provider_runtime_identity", "cost_usd", "duration_seconds", "duration_accounting",
+        "authority_used", "warnings", "blockers", "proof_effect", "claim_ceiling",
+        "parent_artifact_or_event", "timestamp", "relative_path", "artifact_references",
+        "candidate_dataset_contains_hidden_heldout_pixels", "candidate_can_modify_split",
+        "raw_capture_bytes_remain_authoritative", "source_dataset_bundle_remains_authoritative",
+        "claim_flags", "dataset_manifest_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "processed_observation_dataset_manifest.v1"},
+        "stable_run_identity": {"type": "string", "minLength": 1},
+        "source_capture_identity": {"type": "string", "minLength": 1},
+        "source_capture_digest": {"$ref": "#/$defs/sha256"},
+        "original_file_references": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source_uri", "digest", "size_bytes"],
+            "properties": {
+              "source_uri": {"type": "string", "format": "uri"},
+              "digest": {"$ref": "#/$defs/sha256"},
+              "size_bytes": {"type": "integer", "minimum": 1}
+            }
+          }
+        },
+        "producing_method": {"const": "processed_observation_dataset_compiler.v1"},
+        "implementation_version": {"type": "string", "minLength": 1},
+        "container_image_digest": {"type": ["string", "null"]},
+        "source_commit_sha": {"$ref": "#/$defs/commit"},
+        "deterministic_configuration": {"type": "object"},
+        "deterministic_configuration_digest": {"$ref": "#/$defs/sha256"},
+        "input_digests": {"type": "object"},
+        "output_digests": {"type": "object"},
+        "train_heldout_split_digest": {"$ref": "#/$defs/sha256"},
+        "camera_calibration_binding": {"type": "object"},
+        "coordinate_frame_declaration": {"type": "object"},
+        "units": {"const": "dataset_declared_units"},
+        "metric_scale_status": {"const": "dataset_declared_not_independently_verified"},
+        "capture_authority_profile": {"const": "public_processed_rgbd_pose_sequence"},
+        "stream_metadata": {"type": "object"},
+        "provider_runtime_identity": {"type": "object"},
+        "cost_usd": {"const": 0.0},
+        "duration_seconds": {"const": 0.0},
+        "duration_accounting": {"type": "string", "minLength": 1},
+        "authority_used": {"type": "object"},
+        "warnings": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "blockers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "proof_effect": {"const": "processed_captured_observation_availability_only"},
+        "claim_ceiling": {"const": "captured_observation_review_from_processed_public_dataset"},
+        "parent_artifact_or_event": {"type": "object"},
+        "timestamp": {"type": "string", "minLength": 1},
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "artifact_references": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "processed_observation_source_manifest", "frozen_split_manifest",
+            "candidate_dataset_manifest", "hidden_heldout_evaluator_manifest",
+            "candidate_camera_observation_manifest"
+          ],
+          "properties": {
+            "processed_observation_source_manifest": {"$ref": "#/$defs/artifact_reference"},
+            "frozen_split_manifest": {"$ref": "#/$defs/artifact_reference"},
+            "candidate_dataset_manifest": {"$ref": "#/$defs/artifact_reference"},
+            "hidden_heldout_evaluator_manifest": {"$ref": "#/$defs/artifact_reference"},
+            "candidate_camera_observation_manifest": {"$ref": "#/$defs/artifact_reference"}
+          }
+        },
+        "candidate_dataset_contains_hidden_heldout_pixels": {"const": false},
+        "candidate_can_modify_split": {"const": false},
+        "raw_capture_bytes_remain_authoritative": {"const": false},
+        "source_dataset_bundle_remains_authoritative": {"const": true},
+        "claim_flags": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "processed_captured_observation", "raw_capture_authority",
+            "decoded_video_timing", "metric_scale_verified", "collision_geometry",
+            "physics", "physical_task_success", "deployment_readiness",
+            "safety_certification", "comparative_policy_ranking_verdict"
+          ],
+          "properties": {
+            "processed_captured_observation": {"const": true},
+            "raw_capture_authority": {"const": false},
+            "decoded_video_timing": {"const": false},
+            "metric_scale_verified": {"const": false},
+            "collision_geometry": {"const": false},
+            "physics": {"const": false},
+            "physical_task_success": {"const": false},
+            "deployment_readiness": {"const": false},
+            "safety_certification": {"const": false},
+            "comparative_policy_ranking_verdict": {"const": "thesis_not_supported"}
+          }
+        },
+        "dataset_manifest_digest": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}
