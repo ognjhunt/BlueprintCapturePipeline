@@ -261,11 +261,14 @@ def build_canary_input_bundle(
             "wrist",
         ]:
             raise ValueError("new_site_ctrl_world_native_three_view_assessment_required")
-        if arm_id == "oscar" and assessment.get("required_views") != [
-            "external",
-            "wrist",
-        ]:
-            raise ValueError("new_site_oscar_native_two_view_assessment_required")
+        if arm_id == "oscar":
+            declared_required_views = assessment.get("required_views")
+            if (
+                not isinstance(declared_required_views, list)
+                or len(declared_required_views) != len(set(declared_required_views))
+                or not {"external", "wrist"}.issubset(declared_required_views)
+            ):
+                raise ValueError("new_site_oscar_native_two_view_assessment_required")
         for view_id, filename, view_key in camera_requirements:
             view = views.get(view_key)
             view = view if isinstance(view, Mapping) else {}

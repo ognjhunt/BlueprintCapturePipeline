@@ -334,6 +334,65 @@ def test_oscar_input_roundtrip_requires_two_native_views_and_frozen_seed(
     assert extracted["manifest"]["wam_seed"] == 42
 
 
+def test_oscar_input_accepts_passed_three_view_camera_result_as_two_view_subset(
+    tmp_path: Path,
+) -> None:
+    protocol_path = tmp_path / "protocol.json"
+    _write_protocol(protocol_path)
+    background = tmp_path / "background.png"
+    Image.new("RGB", (224, 224), color=(12, 34, 56)).save(background)
+    frame_entries = {}
+    for view_key, color in (
+        ("external", (20, 40, 60)),
+        ("external_2", (30, 50, 70)),
+        ("wrist", (60, 40, 20)),
+    ):
+        path = tmp_path / f"native_{view_key}.png"
+        Image.new("RGB", (640, 480), color=color).save(path)
+        frame_entries[view_key] = {
+            "frames": {
+                "initial": {
+                    "path": str(path),
+                    "sha256": file_sha256(path),
+                    "resolution": [640, 480],
+                    "nonblank": True,
+                }
+            }
+        }
+    native_result = {
+        "status": "passed",
+        "label_free": True,
+        "rankings_or_policy_outcomes_accessed": False,
+        "assessment": {
+            "required_views": ["external", "external_2", "wrist"],
+            "views": frame_entries,
+        },
+    }
+    native_result["result_sha256"] = canonical_sha256(native_result)
+    native_result_path = tmp_path / "native_result.json"
+    native_result_path.write_text(json.dumps(native_result), encoding="utf-8")
+
+    receipt = build_canary_input_bundle(
+        protocol_path=protocol_path,
+        background_path=background,
+        output_zip=tmp_path / "oscar_canary.zip",
+        arm_id="oscar",
+        native_camera_canary_result_path=native_result_path,
+    )
+    extracted = extract_canary_input_bundle(
+        bundle_path=tmp_path / "oscar_canary.zip",
+        expected_bundle_sha256=receipt["bundle_sha256"],
+        output_dir=tmp_path / "oscar_extracted",
+    )
+
+    assert set(extracted["initial_camera_paths"]) == {EXTERIOR_VIEW, WRIST_VIEW}
+    assert set(receipt["manifest"]["native_initial_cameras"]) == {
+        EXTERIOR_VIEW,
+        WRIST_VIEW,
+    }
+    assert DROID_EXTERIOR_VIEW_2 not in receipt["manifest"]["native_initial_cameras"]
+
+
 def test_oscar_input_rejects_missing_native_two_view_result(tmp_path: Path) -> None:
     protocol_path = tmp_path / "protocol.json"
     _write_protocol(protocol_path)
