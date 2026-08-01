@@ -88,6 +88,19 @@ def test_reconstruction_worker_recipe_is_digest_and_revision_pinned():
     assert "9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87" in stack[
         "source_revision"
     ]
+    assert "ARG FFMPEG_VERSION=6.1.1" in dockerfile
+    assert (
+        "ARG FFMPEG_SOURCE_SHA256="
+        "8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968"
+        in dockerfile
+    )
+    assert '"https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"' in dockerfile
+    ffmpeg = next(
+        row for row in PINNED_WORKER_COMPONENTS if row["component_id"] == "ffmpeg"
+    )
+    assert "8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968" in ffmpeg[
+        "source_revision"
+    ]
     assert f"ARG COLMAP_REVISION={COLMAP_REVISION}" in dockerfile
     assert f"ARG GSPLAT_REVISION={GSPLAT_REVISION}" in dockerfile
     assert f"ARG THREEDGRUT_REVISION={THREEDGRUT_REVISION}" in dockerfile

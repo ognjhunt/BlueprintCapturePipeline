@@ -59,7 +59,7 @@ PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
         "name": "FFmpeg/ffprobe",
         "version": "6.1.1",
         "source_url": "https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.xz",
-        "source_revision": "n6.1.1",
+        "source_revision": "n6.1.1;source-sha256:8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968",
         "license": "LGPL-2.1-or-later;configuration_dependent",
         "redistribution": "build_configuration_license_review_required",
     },

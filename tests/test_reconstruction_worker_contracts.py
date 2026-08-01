@@ -178,6 +178,10 @@ def test_worker_manifest_pins_headless_cuda_onnx_colmap_and_gaussian_stacks():
         "CMAKE_CUDA_ARCHITECTURES": [75, 80, 86, 89],
     }
     assert components["onnxruntime"]["version"] == "1.24.4"
+    assert components["ffmpeg"]["source_revision"] == (
+        "n6.1.1;source-sha256:"
+        "8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968"
+    )
     assert components["gsplat"]["version"] == "1.5.3"
     assert components["threedgrut"]["version"] == "1.1.0"
     assert manifest["qualification_status"] == "candidate_unbuilt"

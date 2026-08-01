@@ -21,6 +21,9 @@ default package repositories. The image builds the official CPython 3.11.9
 source tarball only after verifying its pinned SHA-256 digest; do not substitute
 an unpinned PPA or a distro `python3.11` package.
 
+The FFmpeg 6.1.1 source archive is likewise bound to an exact SHA-256 digest
+before extraction. A versioned URL alone is not accepted as source integrity.
+
 Prepare the deterministic, exact-source build archive with
 `python -m blueprint_pipeline.reconstruction_worker_build_packet`; the archive
 does not build or push anything. Its manifest is accepted only by the canonical

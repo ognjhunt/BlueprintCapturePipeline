@@ -7,6 +7,7 @@ ARG BLUEPRINT_CONTAINER_IMAGE_DIGEST
 ARG PYTHON_VERSION=3.11.9
 ARG PYTHON_SOURCE_SHA256=9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87
 ARG FFMPEG_VERSION=6.1.1
+ARG FFMPEG_SOURCE_SHA256=8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968
 ARG COLMAP_REVISION=9c23f6942fe69962e06030905e77067c8673382f
 ARG GSPLAT_REVISION=937e29912570c372bed6747a5c9bf85fed877bae
 ARG THREEDGRUT_REVISION=0a5832248698ab8456b181d6ea17fe02eda58637
@@ -54,6 +55,8 @@ RUN curl --fail --location --retry 3 \
 RUN curl --fail --location --retry 3 \
       "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
       --output /tmp/ffmpeg.tar.xz \
+    && printf '%s  %s\n' "${FFMPEG_SOURCE_SHA256}" /tmp/ffmpeg.tar.xz \
+      | sha256sum --check --strict \
     && mkdir /tmp/ffmpeg \
     && tar --extract --xz --file /tmp/ffmpeg.tar.xz --strip-components=1 --directory /tmp/ffmpeg \
     && cd /tmp/ffmpeg \
