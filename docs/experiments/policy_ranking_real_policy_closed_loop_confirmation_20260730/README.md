@@ -207,16 +207,24 @@ used as blind confirmation.
   `ctrl_world_current_reference_wam_2_gpu_profile_freeze_v3.json` — bind the
   next identical WAM2 retry to the generic concurrency fix and one new
   single-use allocation after global provider-zero;
+- `protocol_amendment_21_wam2_result_and_policy_query3_v1.md` and
+  `compute_authorization_openpi_policy_query_3.json` — preserve allocation 6's
+  successful three-view WAM2 output, reliability, cost, teardown, and
+  provider-zero evidence; bind the resulting generated observation to one
+  same-checkpoint policy query 3; and require a fresh global-zero preflight
+  after an unrelated writer's GPU correctly caused the first preflight to fail
+  closed;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-Two generated-only WAM transitions and their immediate reliability gates
-passed. The same frozen `pi05_droid` checkpoint was re-queried after each using
-only the three WAM-generated views and registered commanded state; both
-re-queries returned distinct, complete native 15x8 actions. This is two full
-policy-to-WAM-to-same-policy interactions, not three. The next finite gate is
-one request-bound Ctrl-World generation from query 2 followed by the same-policy
-query 3. Judges remain forbidden until a complete 12-interaction episode and
-the causal-control matrix pass.
+Three generated-only WAM transitions and their immediate reliability gates
+passed. The same frozen `pi05_droid` checkpoint was re-queried after the first
+two using only the three WAM-generated views and registered commanded state;
+both re-queries returned distinct, complete native 15x8 actions. The third WAM
+output and policy-query-3 input are frozen, but an unrelated active Vast GPU
+correctly caused the first query-3 preflight to fail closed. The next finite
+gate is a fresh provider-zero preflight followed by same-policy query 3. Judges
+remain forbidden until a complete 12-interaction episode and the causal-control
+matrix pass.
