@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import sys
 from pathlib import Path
 
 from blueprint_pipeline.reconstruction_worker_contracts import (
@@ -124,7 +126,15 @@ def test_reconstruction_worker_recipe_is_digest_and_revision_pinned():
     assert "independent evaluator" in readme
     requirements = (IMAGE_ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines()
     assert requirements
-    assert all("==" in line for line in requirements)
+    requirement_lines = [
+        line
+        for line in requirements
+        if line and not line.startswith(("#", " ", "\t", "--"))
+    ]
+    assert len(requirement_lines) == 39
+    assert all("==" in line for line in requirement_lines)
+    assert sum("--hash=sha256:" in line for line in requirements) >= len(requirement_lines)
+    assert "pip install --require-hashes" in dockerfile
     assert (
         hashlib.sha256((IMAGE_ROOT / "requirements.lock").read_bytes()).hexdigest()
         == REQUIREMENTS_LOCK_SHA256
@@ -134,6 +144,18 @@ def test_reconstruction_worker_recipe_is_digest_and_revision_pinned():
             row for row in PINNED_WORKER_COMPONENTS if row["component_id"] == component_id
         )
         assert REQUIREMENTS_LOCK_SHA256 in component["source_revision"]
+
+
+def test_reconstruction_worker_lock_metadata_and_hashes_validate_offline():
+    completed = subprocess.run(
+        [sys.executable, ROOT / "scripts/compile_reconstruction_worker_lock.py", "--check"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert f"requirements_lock_sha256={REQUIREMENTS_LOCK_SHA256}" in completed.stdout
 
 
 def test_build_healthcheck_passes_without_display_or_gpu_claim():

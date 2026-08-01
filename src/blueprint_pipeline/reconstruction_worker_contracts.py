@@ -24,7 +24,7 @@ POSE_RESULT_SCHEMA_VERSION = "pose_estimation_result.v1"
 TRAINING_REQUEST_SCHEMA_VERSION = "reconstruction_training_request.v1"
 TRAINING_RESULT_SCHEMA_VERSION = "reconstruction_training_result.v1"
 CHECKPOINT_SCHEMA_VERSION = "reconstruction_checkpoint_manifest.v1"
-REQUIREMENTS_LOCK_SHA256 = "e35adb73bfc0ddd1696a5207deca496559ca25a8c5b076b657a36a901f1a795e"
+REQUIREMENTS_LOCK_SHA256 = "6139cdbdc2a467b7ac75623970603512f17e3e5cb28ff231f8c9e59a5acab4e5"
 
 PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
     {
