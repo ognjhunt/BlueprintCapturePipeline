@@ -314,36 +314,35 @@ def _synchronize_camera_to_rigid_link(
     camera_to_world = mount_to_parent @ np.asarray(parent_to_world, dtype=float).reshape(4, 4)
     set_world_poses = getattr(pose_view, "set_world_poses", None)
     if not callable(set_world_poses):
-        raise ValueError("native_wrist_camera_public_fabric_pose_write_api_missing")
+        raise ValueError("native_wrist_camera_unified_pose_write_api_missing")
     try:
         set_world_poses(
             positions=np.asarray([camera_to_world[3, :3]], dtype=float),
             orientations=np.asarray(
                 [_quaternion_wxyz_from_world_pose_matrix(camera_to_world)], dtype=float
             ),
-            usd=False,
         )
     except Exception as exc:
         raise ValueError(
-            "native_wrist_camera_public_fabric_pose_write_failed:" + type(exc).__name__
+            "native_wrist_camera_unified_pose_write_failed:" + type(exc).__name__
         ) from exc
     return camera_to_world
 
 
-def _fabric_world_pose_matrix(pose_view: Any) -> np.ndarray:
-    """Read one live Fabric pose instead of the stale authored USD transform."""
+def _unified_world_pose_matrix(pose_view: Any) -> np.ndarray:
+    """Read one pose through Isaac 6's unified USD/USDRT/Fabric API."""
 
     get_world_poses = getattr(pose_view, "get_world_poses", None)
     if not callable(get_world_poses):
-        raise ValueError("native_public_fabric_world_pose_api_missing")
+        raise ValueError("native_unified_world_pose_api_missing")
     try:
-        positions, orientations = get_world_poses(usd=False)
+        positions, orientations = get_world_poses()
     except Exception as exc:
-        raise ValueError("native_fabric_world_pose_query_failed:" + type(exc).__name__) from exc
+        raise ValueError("native_unified_world_pose_query_failed:" + type(exc).__name__) from exc
     positions_array = _backend_array_to_numpy(positions).astype(float).reshape(-1, 3)
     orientations_array = _backend_array_to_numpy(orientations).astype(float).reshape(-1, 4)
     if positions_array.shape[0] != 1 or orientations_array.shape[0] != 1:
-        raise ValueError("native_fabric_world_pose_cardinality_invalid")
+        raise ValueError("native_unified_world_pose_cardinality_invalid")
     return _world_pose_matrix_from_backend_pose(positions_array[0], orientations_array[0])
 
 
@@ -595,7 +594,8 @@ def isaac_sim_6_backend(
     simulation_app = SimulationApp(_simulation_app_launch_config())
     try:
         from isaacsim.core.api import World
-        from isaacsim.core.prims import SingleArticulation, XFormPrim
+        from isaacsim.core.experimental.prims import XformPrim
+        from isaacsim.core.prims import SingleArticulation
         from isaacsim.core.utils.stage import add_reference_to_stage
         from isaacsim.sensors.camera import Camera
         from isaacsim.storage.native import get_assets_root_path
@@ -695,14 +695,12 @@ def isaac_sim_6_backend(
 
         robot = SingleArticulation(prim_path="/World/Franka", name="native_warehouse_franka")
         world.scene.add(robot)
-        wrist_pose_view = XFormPrim(
-            prim_paths_expr=wrist_path,
-            name="native_warehouse_wrist_pose_view",
-            reset_xform_properties=False,
-            usd=False,
-        )
-        world.scene.add(wrist_pose_view)
         world.reset()
+        # Wrap the existing camera only after reset has initialized the stage
+        # and runtime backends. Isaac Sim 6's experimental XformPrim is the
+        # supported unified USD/USDRT/Fabric API; the deprecated core.prims
+        # XFormPrim's ``usd=False`` path failed inside set_world_poses on V26.
+        wrist_pose_view = XformPrim(wrist_path)
         physics_sim_view = world.physics_sim_view
         if physics_sim_view is None:
             raise ValueError("native_articulation_physics_view_missing")
@@ -776,7 +774,7 @@ def isaac_sim_6_backend(
         )
         for _ in range(2):
             _render_world_without_physics_advance(world)
-        wrist_world_initial = _fabric_world_pose_matrix(wrist_pose_view)
+        wrist_world_initial = _unified_world_pose_matrix(wrist_pose_view)
         wrist_local_initial = wrist_world_initial @ np.linalg.inv(hand_world_initial)
         actual_wrist_eye = wrist_world_initial[3, :3]
         actual_wrist_forward = (np.asarray([0.0, 0.0, -1.0, 0.0]) @ wrist_world_initial)[:3]
@@ -827,7 +825,7 @@ def isaac_sim_6_backend(
                 camera_to_world = (
                     usd_camera_matrix(path)
                     if view_id == "external"
-                    else _fabric_world_pose_matrix(wrist_pose_view)
+                    else _unified_world_pose_matrix(wrist_pose_view)
                 )
                 if view_id == "external":
                     required, projection_evidence = _project_required_external_entities(
@@ -894,7 +892,7 @@ def isaac_sim_6_backend(
         commanded_step = save_frames("commanded")
         record_entity_projections("commanded")
         finalize_entity_projections()
-        wrist_world_commanded = _fabric_world_pose_matrix(wrist_pose_view)
+        wrist_world_commanded = _unified_world_pose_matrix(wrist_pose_view)
         wrist_local_commanded = wrist_world_commanded @ np.linalg.inv(hand_world_commanded)
 
         missing = [
@@ -921,7 +919,7 @@ def isaac_sim_6_backend(
                 "mode": "explicit_live_backend_world_sensor_sync_from_physics_link_tensor",
                 "parent_link": "panda_hand",
                 "physics_link_pose_source": "get_link_transforms_after_update_articulations_kinematic",
-                "camera_pose_write_backend": "public_xform_prim_set_world_poses_usd_false",
+                "camera_pose_write_backend": "experimental_xform_prim_unified_backend",
                 "per_frame_task_reaim_performed": False,
             },
             "franka_render_only_joint_state": {

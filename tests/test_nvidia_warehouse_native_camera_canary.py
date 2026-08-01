@@ -17,7 +17,6 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _articulation_link_world_pose_matrices,
     _backend_array_to_numpy,
     _camera_quaternion_wxyz,
-    _fabric_world_pose_matrix,
     _load_materialization_manifest,
     _project_required_external_entities,
     _project_world_points,
@@ -26,6 +25,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _rigid_wrist_mount_from_initial_task_framing,
     _simulation_app_launch_config,
     _synchronize_camera_to_rigid_link,
+    _unified_world_pose_matrix,
     _world_pose_matrix_from_backend_pose,
     import_simulation_app,
     isaac_sim_6_backend,
@@ -232,17 +232,17 @@ def test_backend_pose_matrix_uses_usd_row_vector_convention() -> None:
     assert np.asarray([0.0, 0.0, 0.0, 1.0]) @ matrix == pytest.approx([1.0, 2.0, 3.0, 1.0])
 
 
-def test_fabric_world_pose_query_explicitly_bypasses_stale_usd() -> None:
-    calls: list[bool] = []
+def test_unified_world_pose_query_uses_supported_zero_argument_api() -> None:
+    calls: list[str] = []
 
     class View:
-        def get_world_poses(self, *, usd):
-            calls.append(usd)
+        def get_world_poses(self):
+            calls.append("get_world_poses")
             return np.asarray([[0.1, 0.2, 0.3]]), np.asarray([[1.0, 0.0, 0.0, 0.0]])
 
-    matrix = _fabric_world_pose_matrix(View())
+    matrix = _unified_world_pose_matrix(View())
 
-    assert calls == [False]
+    assert calls == ["get_world_poses"]
     assert matrix[3, :3] == pytest.approx([0.1, 0.2, 0.3])
 
 
@@ -250,17 +250,16 @@ def test_wrist_camera_prim_exists_before_reset_and_syncs_from_live_link_afterwar
     source = inspect.getsource(isaac_sim_6_backend)
 
     camera_definition = source.index("wrist_prim = UsdGeom.Camera.Define")
-    public_pose_view = source.index("wrist_pose_view = XFormPrim")
+    public_pose_view = source.index("wrist_pose_view = XformPrim")
     world_reset = source.index("world.reset()")
     calibrated_world_sync = source.index("_synchronize_camera_to_rigid_link")
 
-    assert camera_definition < public_pose_view < world_reset < calibrated_world_sync
+    assert camera_definition < world_reset < public_pose_view < calibrated_world_sync
     assert 'wrist_path = "/World/Cameras/Wrist"' in source
-    assert "prim_paths_expr=wrist_path" in source
-    assert "reset_xform_properties=False" in source
-    assert "usd=False" in source
-    assert "world.scene.add(wrist_pose_view)" in source
-    assert 'from isaacsim.core.prims import SingleArticulation, XFormPrim' in source
+    assert "wrist_pose_view = XformPrim(wrist_path)" in source
+    assert "world.scene.add(wrist_pose_view)" not in source
+    assert "from isaacsim.core.experimental.prims import XformPrim" in source
+    assert "from isaacsim.core.prims import SingleArticulation" in source
     assert "get_link_transforms_after_update_articulations_kinematic" in source
     assert "._xform_prim_view" not in source
 
@@ -339,7 +338,7 @@ def test_world_camera_sync_preserves_one_rigid_parent_local_mount() -> None:
     )
 
     assert len(calls) == 2
-    assert all(call["usd"] is False for call in calls)
+    assert all("usd" not in call for call in calls)
     assert all("camera_axes" not in call for call in calls)
     assert all(np.asarray(call["positions"]).shape == (1, 3) for call in calls)
     assert all(np.asarray(call["orientations"]).shape == (1, 4) for call in calls)
@@ -360,7 +359,7 @@ def test_world_camera_sync_requires_public_pose_view_api() -> None:
             raise AssertionError("single-pose USD writer must not be used")
 
     with pytest.raises(
-        ValueError, match="native_wrist_camera_public_fabric_pose_write_api_missing"
+        ValueError, match="native_wrist_camera_unified_pose_write_api_missing"
     ):
         _synchronize_camera_to_rigid_link(
             pose_view=Camera(),
@@ -377,7 +376,7 @@ def test_world_camera_sync_wraps_public_pose_write_failure_in_safe_code() -> Non
 
     with pytest.raises(
         ValueError,
-        match="native_wrist_camera_public_fabric_pose_write_failed:AttributeError",
+        match="native_wrist_camera_unified_pose_write_failed:AttributeError",
     ):
         _synchronize_camera_to_rigid_link(
             pose_view=PublicXFormPrim(),
