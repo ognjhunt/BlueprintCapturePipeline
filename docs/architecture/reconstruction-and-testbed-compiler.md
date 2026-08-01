@@ -224,6 +224,11 @@ ARKit poses or intrinsics. This makes the unrefined ARKit-pose baseline locally
 executable. The request remains explicitly blocked from a training claim until
 an initialization surface is bound, and it records that pose refinement has not
 run; the later bounded-refinement route remains a separate comparison method.
+`bind_colmap_initialization_surface` accepts only the separately compiled,
+confidence-filtered ARKit observed surface with the same capture, frozen split,
+calibration, and coordinate frame. It refuses generated fill, held-out access,
+or raw-pose mutation, then removes only the initialization blocker and preserves
+the explicit unrefined-pose marker.
 
 Both `compile_arkit_metric_scaffold` and
 `export_arkit_reconstruction_dataset` are registered SDK tools. Their real

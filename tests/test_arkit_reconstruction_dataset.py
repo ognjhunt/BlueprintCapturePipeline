@@ -18,6 +18,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_frame_dataset import compile_frozen_frame_dataset
 from blueprint_pipeline.reconstruction_colmap_dataset import (
     ColmapTrainingDatasetError,
+    bind_colmap_initialization_surface,
     export_colmap_training_dataset,
 )
 from blueprint_pipeline.task_evaluation_supervisor import (
@@ -193,6 +194,73 @@ def test_arkit_export_is_candidate_only_idempotent_and_fail_closed(tmp_path: Pat
         "initialization_surface_not_bound",
         "pose_refinement_not_executed",
     ]
+    surface_root = tmp_path / "surface-root"
+    surface_path = surface_root / "generated/arkit_observed_surface.json"
+    surface_path.parent.mkdir(parents=True)
+    surface_value = {
+        "schema_version": "observed_surface_mesh.v1",
+        "source_capture_digest": CAPTURE_DIGEST,
+        "train_heldout_split_digest": first["frozen_split_digest"],
+        "generated_fill_used": False,
+        "vertices": [
+            {"vertex_id": "v0", "position_m": [0.0, 0.0, 0.0]},
+            {"vertex_id": "v1", "position_m": [1.0, 0.0, 0.0]},
+        ],
+        "faces": [],
+    }
+    surface_path.write_text(json.dumps(surface_value), encoding="utf-8")
+    surface_digest = _file_digest(surface_path)
+    surface_result = {
+        "schema_version": "arkit_depth_surface_compilation_result.v1",
+        "status": "compiled_observed_surface_candidate",
+        "source_capture_digest": CAPTURE_DIGEST,
+        "train_heldout_split_digest": first["frozen_split_digest"],
+        "camera_calibration_binding": {
+            "calibration_digest": first["camera_calibration_digest"]
+        },
+        "coordinate_frame_declaration": colmap_request[
+            "coordinate_frame_declaration"
+        ],
+        "surface_asset": {
+            "relative_path": surface_path.relative_to(surface_root).as_posix(),
+            "digest": surface_digest,
+        },
+        "hidden_heldout_observations_accessed": False,
+        "generated_fill_used": False,
+        "raw_arkit_poses_modified": False,
+    }
+    surface_result["arkit_depth_surface_compilation_result_digest"] = canonical_digest(
+        surface_result,
+        digest_field="arkit_depth_surface_compilation_result_digest",
+    )
+    initialized_request = bind_colmap_initialization_surface(
+        source_artifact=colmap_request,
+        surface_compilation_result=surface_result,
+    )
+    assert initialized_request["blockers"] == ["pose_refinement_not_executed"]
+    initialized = export_colmap_training_dataset(
+        source_artifact=initialized_request,
+        artifact_root=next((tmp_path / "source").glob("frozen_dataset_*")),
+        initialization_artifact_root=surface_root,
+        output_root=tmp_path / "initialized-colmap",
+    )
+    assert initialized["initialization_surface_digest"] == surface_digest
+    assert initialized["initialization_point_count"] == 2
+    assert initialized["blockers"] == ["pose_refinement_not_executed"]
+    generated_surface = json.loads(json.dumps(surface_result))
+    generated_surface["generated_fill_used"] = True
+    generated_surface["arkit_depth_surface_compilation_result_digest"] = canonical_digest(
+        generated_surface,
+        digest_field="arkit_depth_surface_compilation_result_digest",
+    )
+    with pytest.raises(
+        ColmapTrainingDatasetError,
+        match="colmap_surface_binding_truth_boundary_invalid",
+    ):
+        bind_colmap_initialization_surface(
+            source_artifact=colmap_request,
+            surface_compilation_result=generated_surface,
+        )
     tampered = json.loads(json.dumps(colmap_request))
     tampered["camera_observation_manifest"]["observations"][0]["camera"][
         "T_world_camera"

@@ -167,8 +167,94 @@ def _camera_line(observation: Mapping[str, Any], camera_id: int) -> tuple[str, s
     return camera_row, pose
 
 
+def bind_colmap_initialization_surface(
+    *,
+    source_artifact: Mapping[str, Any],
+    surface_compilation_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind an accepted observed ARKit surface to a frozen COLMAP request.
+
+    The returned request keeps the same candidate pixels and poses. It changes
+    only the initialization-geometry binding and its own digest; generated fill
+    or a cross-capture/split/calibration surface is refused.
+    """
+
+    request = json.loads(canonical_json(dict(source_artifact)))
+    supplied_request_digest = request.get("colmap_training_dataset_export_request_digest")
+    if (
+        request.get("schema_version") != REQUEST_SCHEMA_VERSION
+        or supplied_request_digest
+        != canonical_digest(
+            request,
+            digest_field="colmap_training_dataset_export_request_digest",
+        )
+    ):
+        raise ColmapTrainingDatasetError(["colmap_surface_binding_request_invalid"])
+    surface_result = json.loads(canonical_json(dict(surface_compilation_result)))
+    result_digest = surface_result.get("arkit_depth_surface_compilation_result_digest")
+    if (
+        surface_result.get("schema_version")
+        != "arkit_depth_surface_compilation_result.v1"
+        or result_digest
+        != canonical_digest(
+            surface_result,
+            digest_field="arkit_depth_surface_compilation_result_digest",
+        )
+        or surface_result.get("status") != "compiled_observed_surface_candidate"
+    ):
+        raise ColmapTrainingDatasetError(["colmap_surface_binding_result_invalid"])
+    surface_asset = surface_result.get("surface_asset")
+    calibration = request.get("camera_calibration_manifest")
+    calibration_binding = surface_result.get("camera_calibration_binding")
+    surface_calibration_digest = None
+    if isinstance(calibration_binding, Mapping):
+        surface_calibration_digest = calibration_binding.get(
+            "calibration_digest"
+        ) or calibration_binding.get("digest")
+    if (
+        not isinstance(surface_asset, Mapping)
+        or not _is_digest(surface_asset.get("digest"))
+        or not str(surface_asset.get("relative_path") or "")
+        or surface_result.get("source_capture_digest") != request.get("source_capture_digest")
+        or surface_result.get("train_heldout_split_digest")
+        != request.get("frozen_split_digest")
+        or not isinstance(calibration, Mapping)
+        or surface_calibration_digest != calibration.get("calibration_digest")
+        or canonical_json(surface_result.get("coordinate_frame_declaration"))
+        != canonical_json(request.get("coordinate_frame_declaration"))
+    ):
+        raise ColmapTrainingDatasetError(["colmap_surface_binding_lineage_mismatch"])
+    if (
+        surface_result.get("hidden_heldout_observations_accessed") is not False
+        or surface_result.get("generated_fill_used") is not False
+        or surface_result.get("raw_arkit_poses_modified") is not False
+    ):
+        raise ColmapTrainingDatasetError(["colmap_surface_binding_truth_boundary_invalid"])
+    prior_request_digest = supplied_request_digest
+    request["initialization_surface"] = {
+        "relative_path": str(surface_asset["relative_path"]),
+        "digest": surface_asset["digest"],
+    }
+    request["initialization_surface_compilation_result_digest"] = result_digest
+    request["parent_colmap_training_dataset_export_request_digest"] = prior_request_digest
+    request["blockers"] = sorted(
+        blocker
+        for blocker in request.get("blockers") or []
+        if blocker != "initialization_surface_not_bound"
+    )
+    request["colmap_training_dataset_export_request_digest"] = canonical_digest(
+        request,
+        digest_field="colmap_training_dataset_export_request_digest",
+    )
+    return request
+
+
 def export_colmap_training_dataset(
-    *, source_artifact: Mapping[str, Any], artifact_root: str | Path, output_root: str | Path
+    *,
+    source_artifact: Mapping[str, Any],
+    artifact_root: str | Path,
+    output_root: str | Path,
+    initialization_artifact_root: str | Path | None = None,
 ) -> dict[str, Any]:
     request = json.loads(canonical_json(dict(source_artifact)))
     errors: list[str] = []
@@ -294,8 +380,15 @@ def export_colmap_training_dataset(
     point_lines = ["# 3D point list with one line of data per point:"]
     initialization_digest = None
     if isinstance(surface_ref, Mapping):
+        surface_root = (
+            Path(initialization_artifact_root).resolve()
+            if initialization_artifact_root is not None
+            else source_root
+        )
         surface_path = _safe_file(
-            source_root, str(surface_ref.get("relative_path") or ""), label="initialization_surface"
+            surface_root,
+            str(surface_ref.get("relative_path") or ""),
+            label="initialization_surface",
         )
         initialization_digest = _sha256_file(surface_path)
         if initialization_digest != surface_ref.get("digest"):
@@ -396,6 +489,7 @@ def export_colmap_training_dataset(
 
 
 __all__ = [
+    "bind_colmap_initialization_surface",
     "ColmapTrainingDatasetError",
     "REQUEST_SCHEMA_VERSION",
     "RESULT_SCHEMA_VERSION",
