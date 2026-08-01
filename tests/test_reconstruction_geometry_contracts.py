@@ -1002,6 +1002,9 @@ class _IsaacVastProvider:
         assert (Path(job_dir) / "prelaunch_staging_receipt.json").is_file()
         assert spec.image == IMAGE
         assert spec.env["BLUEPRINT_RECONSTRUCTION_HARD_TTL_SECONDS"] == "3600"
+        assert spec.env["ACCEPT_EULA"] == "Y"
+        assert spec.env["PRIVACY_CONSENT"] == "Y"
+        assert spec.env["CUDA_VISIBLE_DEVICES"] == "0"
         assert "reconstruction_isaac_bootstrap" in " ".join(spec.bootstrap_argv)
         return {"create_payload": {"env": dict(spec.env)}}
 

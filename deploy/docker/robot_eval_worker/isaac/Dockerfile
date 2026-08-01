@@ -45,6 +45,8 @@ RUN python3 -m pip install ".[cloud,validation]" \
 RUN mkdir -p /opt/blueprint \
     && python3 -m blueprint_pipeline.isaac_worker_image_healthcheck \
       --build-time --output /opt/blueprint/image_build_healthcheck.json
+RUN python3 -c \
+    "from blueprint_pipeline.reconstruction_isaac_bootstrap import run_reconstruction_isaac_bootstrap; from blueprint_pipeline.reconstruction_isaac_output_bundle import compile_isaac_verification_output_bundle; assert callable(run_reconstruction_isaac_bootstrap) and callable(compile_isaac_verification_output_bundle)"
 RUN PYTHONPATH=/app/src /isaac-sim/python.sh -c \
     "import blueprint_pipeline; print(blueprint_pipeline.__name__)"
 RUN PYTHONPATH=/app/src /isaac-sim/python.sh -c \

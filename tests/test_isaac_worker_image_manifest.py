@@ -325,3 +325,9 @@ def test_isaac_build_script_keeps_digest_pinned_base_default() -> None:
         "blueprint_pipeline.nvidia_warehouse_native_camera_gpu_admission" in script
     )
     assert "build-release" in script
+    dockerfile = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/docker/robot_eval_worker/isaac/Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert "blueprint_pipeline.reconstruction_isaac_bootstrap" in dockerfile
+    assert "blueprint_pipeline.reconstruction_isaac_output_bundle" in dockerfile

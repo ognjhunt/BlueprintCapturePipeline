@@ -483,6 +483,9 @@ def run_reconstruction_isaac_vast_operation(
             name=name,
             image=worker_image,
             env={
+                "ACCEPT_EULA": "Y",
+                "PRIVACY_CONSENT": "Y",
+                "CUDA_VISIBLE_DEVICES": "0",
                 "BLUEPRINT_ISAAC_INPUT_BUNDLE_GET_URL": input_bundle_get_url,
                 "BLUEPRINT_ISAAC_INPUT_RECEIPT_GET_URL": input_receipt_get_url,
                 "BLUEPRINT_ISAAC_OUTPUT_BUNDLE_PUT_URL": output_bundle_put_url,
