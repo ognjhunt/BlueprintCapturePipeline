@@ -12,8 +12,9 @@ from .decision_evidence_contracts import canonical_digest
 CAMERA_RIG_VALIDATION_REQUEST_SCHEMA_VERSION = "camera_rig_validation_request.v1"
 CAMERA_RIG_VALIDATION_RESULT_SCHEMA_VERSION = "camera_rig_validation_result.v1"
 METRIC_SCALE_ANCHOR_SCHEMA_VERSION = "metric_scale_anchor_declaration.v1"
-METRIC_SCALE_VALIDATION_REQUEST_SCHEMA_VERSION = "metric_scale_validation_request.v1"
-METRIC_SCALE_VALIDATION_RESULT_SCHEMA_VERSION = "metric_scale_validation_result.v1"
+RECONSTRUCTION_ANCHOR_MEASUREMENT_SCHEMA_VERSION = "reconstruction_anchor_measurement.v1"
+METRIC_SCALE_VALIDATION_REQUEST_SCHEMA_VERSION = "metric_scale_validation_request.v2"
+METRIC_SCALE_VALIDATION_RESULT_SCHEMA_VERSION = "metric_scale_validation_result.v2"
 
 
 class ReconstructionValidationContractError(ValueError):
@@ -31,8 +32,10 @@ def _clone(value: Any) -> Any:
 
 def _digest(value: Any) -> bool:
     text = str(value or "")
-    return len(text) == 71 and text.startswith("sha256:") and all(
-        character in "0123456789abcdef" for character in text[7:]
+    return (
+        len(text) == 71
+        and text.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in text[7:])
     )
 
 
@@ -68,9 +71,13 @@ def build_camera_rig_validation_request(value: Mapping[str, Any]) -> dict[str, A
         != canonical_digest(binding, digest_field="dual_fisheye_binding_digest")
     ):
         errors.append("camera_rig_request_stream_binding_invalid")
-    if isinstance(rig, Mapping) and isinstance(binding, Mapping) and any(
-        item != request.get("source_capture_digest")
-        for item in (rig.get("capture_digest"), binding.get("capture_digest"))
+    if (
+        isinstance(rig, Mapping)
+        and isinstance(binding, Mapping)
+        and any(
+            item != request.get("source_capture_digest")
+            for item in (rig.get("capture_digest"), binding.get("capture_digest"))
+        )
     ):
         errors.append("camera_rig_request_capture_binding_mismatch")
     if request.get("agent_may_change_calibration") is not False:
@@ -93,7 +100,11 @@ def validate_camera_rig(value: Mapping[str, Any]) -> dict[str, Any]:
     blockers = sorted(
         set(rig.get("blockers") or [])
         | set(binding.get("blockers") or [])
-        | ({"camera_rig_calibration_invalid"} if rig.get("calibration_status") != "valid" else set())
+        | (
+            {"camera_rig_calibration_invalid"}
+            if rig.get("calibration_status") != "valid"
+            else set()
+        )
         | ({"camera_rig_not_fixed"} if rig.get("rig_is_fixed") is not True else set())
         | (
             {"camera_rig_lens_streams_unsynchronized"}
@@ -108,9 +119,7 @@ def validate_camera_rig(value: Mapping[str, Any]) -> dict[str, Any]:
     )
     result = {
         "source_capture_digest": request["source_capture_digest"],
-        "camera_rig_validation_request_digest": request[
-            "camera_rig_validation_request_digest"
-        ],
+        "camera_rig_validation_request_digest": request["camera_rig_validation_request_digest"],
         "native_360_normalization_digest": request["native_360_normalization_digest"],
         "rig_declaration_digest": rig["rig_declaration_digest"],
         "dual_fisheye_binding_digest": binding["dual_fisheye_binding_digest"],
@@ -120,9 +129,7 @@ def validate_camera_rig(value: Mapping[str, Any]) -> dict[str, Any]:
         "lens_calibration_valid": rig.get("calibration_status") == "valid" and not blockers,
         "lens_streams_synchronized": binding.get("all_segments_synchronized") is True,
         "capture_timeline_valid": binding.get("capture_timeline_valid") is True,
-        "original_distorted_pixels_preserved": binding.get(
-            "original_distorted_pixels_preserved"
-        )
+        "original_distorted_pixels_preserved": binding.get("original_distorted_pixels_preserved")
         is True,
         "agent_altered_calibration": False,
         "metric_scale_proven": False,
@@ -132,9 +139,7 @@ def validate_camera_rig(value: Mapping[str, Any]) -> dict[str, Any]:
         "cost_usd": 0.0,
         "duration_seconds": 0.0,
         "parent_artifact_or_event": {
-            "native_360_normalization_digest": request[
-                "native_360_normalization_digest"
-            ]
+            "native_360_normalization_digest": request["native_360_normalization_digest"]
         },
         "timestamp": request["timestamp"],
     }
@@ -163,13 +168,17 @@ def build_metric_scale_anchor(value: Mapping[str, Any]) -> dict[str, Any]:
     }:
         errors.append("metric_anchor_type_invalid")
     distance = anchor.get("measured_distance_m")
-    if isinstance(distance, bool) or not isinstance(distance, (int, float)) or not math.isfinite(
-        float(distance)
-    ) or float(distance) <= 0:
+    if (
+        isinstance(distance, bool)
+        or not isinstance(distance, (int, float))
+        or not math.isfinite(float(distance))
+        or float(distance) <= 0
+    ):
         errors.append("metric_anchor_distance_invalid")
-    if anchor.get("independently_verified") is not True or anchor.get(
-        "learned_or_monocular_depth_only"
-    ) is not False:
+    if (
+        anchor.get("independently_verified") is not True
+        or anchor.get("learned_or_monocular_depth_only") is not False
+    ):
         errors.append("metric_anchor_independent_evidence_required")
     if not isinstance(anchor.get("coordinate_frame_declaration"), Mapping):
         errors.append("metric_anchor_coordinate_frame_invalid")
@@ -182,6 +191,55 @@ def build_metric_scale_anchor(value: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def build_reconstruction_anchor_measurement(value: Mapping[str, Any]) -> dict[str, Any]:
+    measurement = _clone(dict(value))
+    errors: list[str] = []
+    if measurement.get("schema_version") != RECONSTRUCTION_ANCHOR_MEASUREMENT_SCHEMA_VERSION:
+        errors.append("reconstruction_anchor_measurement_schema_invalid")
+    for key in (
+        "source_capture_digest",
+        "reconstruction_result_digest",
+        "frozen_split_digest",
+        "evaluator_implementation_digest",
+    ):
+        if not _digest(measurement.get(key)):
+            errors.append(f"reconstruction_anchor_measurement_{key}_invalid")
+    if (
+        not str(measurement.get("anchor_id") or "").strip()
+        or not str(measurement.get("evaluator_identity") or "").strip()
+    ):
+        errors.append("reconstruction_anchor_measurement_identity_invalid")
+    for key in ("endpoint_a", "endpoint_b"):
+        point = measurement.get(key)
+        if (
+            not isinstance(point, list)
+            or len(point) != 3
+            or any(
+                isinstance(item, bool)
+                or not isinstance(item, (int, float))
+                or not math.isfinite(float(item))
+                for item in point
+            )
+        ):
+            errors.append(f"reconstruction_anchor_measurement_{key}_invalid")
+    if not isinstance(measurement.get("coordinate_frame_declaration"), Mapping):
+        errors.append("reconstruction_anchor_measurement_coordinate_frame_invalid")
+    if (
+        measurement.get("independent_evaluator") is not True
+        or measurement.get("measurement_frozen_before_validation") is not True
+        or measurement.get("candidate_may_change_measurement") is not False
+        or measurement.get("candidate_self_graded") is not False
+    ):
+        errors.append("reconstruction_anchor_measurement_independence_invalid")
+    if errors:
+        raise ReconstructionValidationContractError(errors)
+    return _finalize(
+        measurement,
+        schema=RECONSTRUCTION_ANCHOR_MEASUREMENT_SCHEMA_VERSION,
+        digest_field="reconstruction_anchor_measurement_digest",
+    )
+
+
 def build_metric_scale_validation_request(value: Mapping[str, Any]) -> dict[str, Any]:
     request = _clone(dict(value))
     errors: list[str] = []
@@ -189,7 +247,9 @@ def build_metric_scale_validation_request(value: Mapping[str, Any]) -> dict[str,
         errors.append("metric_scale_request_schema_invalid")
     anchor_value = request.get("anchor")
     try:
-        anchor = build_metric_scale_anchor(anchor_value) if isinstance(anchor_value, Mapping) else None
+        anchor = (
+            build_metric_scale_anchor(anchor_value) if isinstance(anchor_value, Mapping) else None
+        )
     except ReconstructionValidationContractError as exc:
         errors.extend(exc.codes)
         anchor = None
@@ -197,26 +257,63 @@ def build_metric_scale_validation_request(value: Mapping[str, Any]) -> dict[str,
         errors.append("metric_scale_request_anchor_invalid")
     elif request.get("source_capture_digest") != anchor.get("source_capture_digest"):
         errors.append("metric_scale_request_capture_binding_mismatch")
+    measurement_value = request.get("reconstruction_anchor_measurement")
+    try:
+        measurement = (
+            build_reconstruction_anchor_measurement(measurement_value)
+            if isinstance(measurement_value, Mapping)
+            else None
+        )
+    except ReconstructionValidationContractError as exc:
+        errors.extend(exc.codes)
+        measurement = None
+    if measurement is None:
+        errors.append("metric_scale_request_reconstruction_anchor_measurement_invalid")
+    elif any(
+        measurement.get(key) != request.get(key)
+        for key in (
+            "source_capture_digest",
+            "reconstruction_result_digest",
+            "frozen_split_digest",
+        )
+    ) or (anchor is not None and measurement.get("anchor_id") != anchor.get("anchor_id")):
+        errors.append("metric_scale_request_reconstruction_anchor_binding_mismatch")
+    estimated_distance = (
+        math.dist(measurement["endpoint_a"], measurement["endpoint_b"])
+        if measurement is not None
+        else None
+    )
+    if estimated_distance is not None and estimated_distance <= 0:
+        errors.append("metric_scale_request_reconstruction_anchor_distance_invalid")
     for key in ("source_capture_digest", "reconstruction_result_digest", "frozen_split_digest"):
         if not _digest(request.get(key)):
             errors.append(f"metric_scale_request_{key}_invalid")
-    for key in ("estimated_anchor_distance_units", "maximum_relative_error"):
-        number = request.get(key)
-        if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(
-            float(number)
-        ) or float(number) < 0 or (key == "estimated_anchor_distance_units" and float(number) == 0):
-            errors.append(f"metric_scale_request_{key}_invalid")
-    if request.get("maximum_relative_error", 1) >= 1:
+    threshold = request.get("maximum_relative_error")
+    threshold_valid = (
+        not isinstance(threshold, bool)
+        and isinstance(threshold, (int, float))
+        and math.isfinite(float(threshold))
+        and float(threshold) >= 0
+    )
+    if not threshold_valid:
+        errors.append("metric_scale_request_maximum_relative_error_invalid")
+    elif float(threshold) >= 1:
         errors.append("metric_scale_request_threshold_invalid")
     if request.get("threshold_frozen_before_validation") is not True:
         errors.append("metric_scale_request_threshold_not_frozen")
     if request.get("candidate_may_change_anchor") is not False:
         errors.append("metric_scale_request_candidate_anchor_change_forbidden")
+    if request.get("anchor_selected_before_reconstruction") is not True:
+        errors.append("metric_scale_request_anchor_selection_not_frozen")
     if not str(request.get("timestamp") or "").strip():
         errors.append("metric_scale_request_timestamp_missing")
     if errors:
         raise ReconstructionValidationContractError(errors)
     request["anchor"] = anchor
+    request["reconstruction_anchor_measurement"] = measurement
+    assert measurement is not None
+    assert estimated_distance is not None
+    request["estimated_anchor_distance_units"] = estimated_distance
     return _finalize(
         request,
         schema=METRIC_SCALE_VALIDATION_REQUEST_SCHEMA_VERSION,
@@ -228,17 +325,19 @@ def validate_metric_scale(value: Mapping[str, Any]) -> dict[str, Any]:
     request = build_metric_scale_validation_request(value)
     anchor = request["anchor"]
     measured = float(anchor["measured_distance_m"])
-    estimated = float(request["estimated_anchor_distance_units"])
+    measurement = request["reconstruction_anchor_measurement"]
+    estimated = math.dist(measurement["endpoint_a"], measurement["endpoint_b"])
     relative_error = abs(estimated - measured) / measured
     passed = relative_error <= float(request["maximum_relative_error"])
     result = {
         "source_capture_digest": request["source_capture_digest"],
-        "metric_scale_validation_request_digest": request[
-            "metric_scale_validation_request_digest"
-        ],
+        "metric_scale_validation_request_digest": request["metric_scale_validation_request_digest"],
         "reconstruction_result_digest": request["reconstruction_result_digest"],
         "frozen_split_digest": request["frozen_split_digest"],
         "metric_scale_anchor_digest": anchor["metric_scale_anchor_digest"],
+        "reconstruction_anchor_measurement_digest": measurement[
+            "reconstruction_anchor_measurement_digest"
+        ],
         "scale_factor_to_meters": round(measured / estimated, 12),
         "measured_anchor_distance_m": measured,
         "estimated_anchor_distance_units": estimated,
@@ -270,9 +369,11 @@ __all__ = [
     "METRIC_SCALE_ANCHOR_SCHEMA_VERSION",
     "METRIC_SCALE_VALIDATION_REQUEST_SCHEMA_VERSION",
     "METRIC_SCALE_VALIDATION_RESULT_SCHEMA_VERSION",
+    "RECONSTRUCTION_ANCHOR_MEASUREMENT_SCHEMA_VERSION",
     "ReconstructionValidationContractError",
     "build_camera_rig_validation_request",
     "build_metric_scale_anchor",
+    "build_reconstruction_anchor_measurement",
     "build_metric_scale_validation_request",
     "validate_camera_rig",
     "validate_metric_scale",

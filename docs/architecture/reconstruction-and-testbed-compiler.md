@@ -85,11 +85,14 @@ inputs, unsafe paths, digest changes, and oversized retained video fail closed.
 The original retained video remains complete and authoritative.
 
 Metric scale now has a separate `metric_scale_anchor_declaration.v1` and
-`metric_scale_validation_result.v1` gate. Only a positive, independently
+`metric_scale_validation_result.v2` gate. Only a positive, independently
 verified physical reference may serve as an anchor; learned or monocular depth
-is explicitly rejected as the sole source. The registered validator compares a
-frozen estimated distance against the precommitted relative-error threshold and
-cannot let the agent change either value.
+is explicitly rejected as the sole source. A
+`reconstruction_anchor_measurement.v1` binds two frozen reconstruction-space
+endpoints, the exact reconstruction and split, and an independent evaluator;
+the validator computes their distance instead of trusting a candidate-supplied
+scalar. It compares that measurement against the precommitted relative-error
+threshold and cannot let the agent change the anchor, measurement, or threshold.
 
 The kernel emits five versioned, digest-bound artifacts governed by
 `docs/schemas/reconstruction_frame_dataset.v1.schema.json`:

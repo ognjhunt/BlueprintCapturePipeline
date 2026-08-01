@@ -177,7 +177,14 @@ def _validate_metric_scale(request: Mapping[str, Any]) -> None:
         raise ReconstructionGeometryCompilerError(["metric_scale_validation_missing"])
     supplied = result.get("metric_scale_validation_result_digest")
     if (
-        result.get("status") != "validated"
+        result.get("schema_version") != "metric_scale_validation_result.v2"
+        or result.get("status") != "validated"
+        or result.get("proof_effect") != "metric_scale_validated"
+        or result.get("claim_ceiling") != "metric_scale"
+        or result.get("learned_or_monocular_depth_established_scale") is not False
+        or result.get("agent_changed_anchor_or_threshold") is not False
+        or not isinstance(result.get("reconstruction_anchor_measurement_digest"), str)
+        or not _DIGEST.fullmatch(result["reconstruction_anchor_measurement_digest"])
         or not isinstance(supplied, str)
         or not _DIGEST.fullmatch(supplied)
         or supplied
@@ -193,9 +200,7 @@ def _validate_coordinate_frame(request: Mapping[str, Any]) -> None:
         or declaration.get("units") != "meters"
         or declaration.get("up_axis") != "Z"
     ):
-        raise ReconstructionGeometryCompilerError(
-            ["metric_geometry_coordinate_frame_unqualified"]
-        )
+        raise ReconstructionGeometryCompilerError(["metric_geometry_coordinate_frame_unqualified"])
 
 
 def _parse_observed_surface(
@@ -205,9 +210,11 @@ def _parse_observed_surface(
     if value.get("schema_version") != SOURCE_SCHEMA:
         errors.append("observed_surface_schema_invalid")
     frame = value.get("coordinate_frame_declaration")
-    if not isinstance(frame, Mapping) or frame.get("units") != "meters" or frame.get(
-        "up_axis"
-    ) != "Z":
+    if (
+        not isinstance(frame, Mapping)
+        or frame.get("units") != "meters"
+        or frame.get("up_axis") != "Z"
+    ):
         errors.append("observed_surface_metric_z_up_frame_required")
     vertices_value = value.get("vertices")
     faces_value = value.get("faces")
@@ -253,9 +260,7 @@ def _parse_observed_surface(
             "source_observation_ids": sorted(set(str(item) for item in observations)),
         }
         if confidence < minimum_confidence:
-            rejected_vertices.append(
-                {"vertex_id": vertex_id, "reason": "below_minimum_confidence"}
-            )
+            rejected_vertices.append({"vertex_id": vertex_id, "reason": "below_minimum_confidence"})
         vertices[vertex_id] = normalized
 
     faces: list[dict[str, Any]] = []
@@ -287,9 +292,7 @@ def _parse_observed_surface(
         if any(item in low_confidence for item in normalized_ids):
             rejected_faces.append({"face_id": face_id, "reason": "low_confidence_support"})
             continue
-        faces.append(
-            {"face_id": face_id, "vertex_ids": normalized_ids, "region_id": region_id}
-        )
+        faces.append({"face_id": face_id, "vertex_ids": normalized_ids, "region_id": region_id})
     if errors:
         raise ReconstructionGeometryCompilerError(errors)
     if not faces:
@@ -311,7 +314,9 @@ def _parse_observed_surface(
     return selected, faces, stats
 
 
-def _write_ascii_ply(path: Path, vertices: list[dict[str, Any]], faces: list[dict[str, Any]]) -> None:
+def _write_ascii_ply(
+    path: Path, vertices: list[dict[str, Any]], faces: list[dict[str, Any]]
+) -> None:
     indexes = {row["vertex_id"]: index for index, row in enumerate(vertices)}
     lines = [
         "ply",
@@ -383,9 +388,7 @@ def compile_metric_geometry(
     if source_digest not in original_digests:
         raise ReconstructionGeometryCompilerError(["source_asset_provenance_binding_missing"])
     source = _load_json_object(source_path)
-    if source.get("coordinate_frame_declaration") != request.get(
-        "coordinate_frame_declaration"
-    ):
+    if source.get("coordinate_frame_declaration") != request.get("coordinate_frame_declaration"):
         raise ReconstructionGeometryCompilerError(["source_coordinate_frame_binding_mismatch"])
     vertices, faces, filter_stats = _parse_observed_surface(
         source, minimum_confidence=float(minimum)
@@ -414,7 +417,10 @@ def compile_metric_geometry(
         "producing_method": COMPILER_METHOD,
         "implementation_version": COMPILER_VERSION,
         "input_digests": [
-            {"artifact_id": "metric_geometry_compilation_request", "digest": request["source_artifact_digest"]},
+            {
+                "artifact_id": "metric_geometry_compilation_request",
+                "digest": request["source_artifact_digest"],
+            },
             {"artifact_id": "observed_surface_source", "digest": source_digest},
         ],
         "output_digests": [{"artifact_id": "observed_metric_surface", "digest": output_digest}],
@@ -450,7 +456,9 @@ def compile_metric_geometry(
     return build_metric_geometry_manifest(value)
 
 
-def _read_ascii_ply(path: Path) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]:
+def _read_ascii_ply(
+    path: Path,
+) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]:
     try:
         lines = path.read_text(encoding="ascii").splitlines()
     except (OSError, UnicodeDecodeError) as exc:
@@ -458,8 +466,12 @@ def _read_ascii_ply(path: Path) -> tuple[list[tuple[float, float, float]], list[
     if not lines or lines[0] != "ply" or "format ascii 1.0" not in lines[:3]:
         raise ReconstructionGeometryCompilerError(["metric_geometry_asset_not_ascii_ply"])
     try:
-        vertex_count = int(next(line.split()[2] for line in lines if line.startswith("element vertex ")))
-        face_count = int(next(line.split()[2] for line in lines if line.startswith("element face ")))
+        vertex_count = int(
+            next(line.split()[2] for line in lines if line.startswith("element vertex "))
+        )
+        face_count = int(
+            next(line.split()[2] for line in lines if line.startswith("element face "))
+        )
         header_end = lines.index("end_header")
     except (StopIteration, ValueError, IndexError) as exc:
         raise ReconstructionGeometryCompilerError(["metric_geometry_ply_header_invalid"]) from exc
@@ -733,9 +745,7 @@ def qualify_collision_candidate(
     root = Path(artifact_root)
     measurement_path = _safe_source_path(root, measurement_binding.get("relative_path"))
     if measurement_path.stat().st_size > MAX_SOURCE_BYTES:
-        raise ReconstructionGeometryCompilerError(
-            ["collider_qualification_measurement_oversized"]
-        )
+        raise ReconstructionGeometryCompilerError(["collider_qualification_measurement_oversized"])
     measurement_digest = _sha256(measurement_path)
     if measurement_binding.get("digest") != measurement_digest:
         raise ReconstructionGeometryCompilerError(
@@ -832,12 +842,8 @@ def qualify_collision_candidate(
         "duration_seconds": 0.0,
         "warnings": list(request.get("warnings") or []),
         "blockers": sorted(set(str(item) for item in measurement_blockers)),
-        "parent_artifact_or_event": {
-            "digest": candidate["collider_candidate_manifest_digest"]
-        },
-        "collider_candidate_manifest_digest": candidate[
-            "collider_candidate_manifest_digest"
-        ],
+        "parent_artifact_or_event": {"digest": candidate["collider_candidate_manifest_digest"]},
+        "collider_candidate_manifest_digest": candidate["collider_candidate_manifest_digest"],
         "collider_asset_digest": candidate["collider_asset_digest"],
         "collider_qualification_request_digest": request_digest,
         "measurement_artifact_digest": measurement_digest,
