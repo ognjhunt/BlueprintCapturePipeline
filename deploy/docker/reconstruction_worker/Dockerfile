@@ -5,7 +5,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG BLUEPRINT_SOURCE_COMMIT
 ARG BLUEPRINT_CONTAINER_IMAGE_DIGEST
 ARG FFMPEG_VERSION=6.1.1
-ARG COLMAP_REVISION=a0d785fba74b2664f31edc4a29026a8b27c00f67
+ARG COLMAP_REVISION=9c23f6942fe69962e06030905e77067c8673382f
 ARG GSPLAT_REVISION=937e29912570c372bed6747a5c9bf85fed877bae
 ARG THREEDGRUT_REVISION=0a5832248698ab8456b181d6ea17fe02eda58637
 
@@ -22,8 +22,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates cmake curl git libboost-filesystem-dev \
       libboost-graph-dev libboost-program-options-dev libceres-dev libcgal-dev \
       libeigen3-dev libfreeimage-dev libglew-dev libgoogle-glog-dev libmetis-dev \
-      libsqlite3-dev nasm ninja-build pkg-config python3.11 python3.11-dev \
+      libsqlite3-dev nasm pkg-config python3.11 python3.11-dev \
       python3-pip python3-venv yasm \
+    && python3 -m pip install --no-cache-dir cmake==3.28.3 ninja==1.11.1.1 \
+    && gcc --version | grep -F "11.4.0" \
+    && cmake --version | grep -F "cmake version 3.28.3" \
+    && test "$(ninja --version)" = "1.11.1" \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl --fail --location --retry 3 \

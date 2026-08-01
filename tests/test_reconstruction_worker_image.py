@@ -4,8 +4,12 @@ from pathlib import Path
 
 from blueprint_pipeline.reconstruction_worker_image_healthcheck import (
     COLMAP_REVISION,
+    COLMAP_VERSION,
+    CMAKE_VERSION,
+    GCC_VERSION,
     GSPLAT_REVISION,
     MODEL_DIGESTS,
+    NINJA_VERSION,
     THREEDGRUT_REVISION,
     run_reconstruction_worker_healthcheck,
 )
@@ -52,9 +56,15 @@ def _command(argv):
     if argv[0] == "ffmpeg":
         return 0, "ffmpeg version 6.1.1"
     if argv[0] == "colmap":
-        return 0, "COLMAP 4.1.1"
+        return 0, f"COLMAP {COLMAP_VERSION}"
     if argv[0] == "nvidia-smi":
         return 0, "550.90, 49140 MiB, 8.9"
+    if argv[0] == "gcc":
+        return 0, f"gcc (Ubuntu) {GCC_VERSION}"
+    if argv[0] == "cmake":
+        return 0, f"cmake version {CMAKE_VERSION}"
+    if argv[0] == "ninja":
+        return 0, NINJA_VERSION
     return 127, ""
 
 
@@ -67,6 +77,8 @@ def test_reconstruction_worker_recipe_is_digest_and_revision_pinned():
     assert "-DGUI_ENABLED=OFF" in dockerfile
     assert "-DCUDA_ENABLED=ON" in dockerfile
     assert "-DONNX_ENABLED=ON" in dockerfile
+    assert "cmake==3.28.3" in dockerfile
+    assert "ninja==1.11.1.1" in dockerfile
     assert "pip install --no-deps --editable /opt/3dgrut" in dockerfile
     assert 'python -c "import threedgrut"' in dockerfile
     assert "sha256sum --check --strict" in dockerfile
@@ -114,3 +126,20 @@ def test_runtime_healthcheck_requires_gpu_and_fails_closed_on_model_drift():
     assert "reconstruction_worker_nvidia_runtime_unavailable" in result["blockers"]
     assert "reconstruction_worker_model_digest_invalid:aliked-n16rot.onnx" in result["blockers"]
     assert result["proof_effect"] == "none"
+
+
+def test_healthcheck_rejects_a_different_colmap_version() -> None:
+    result = run_reconstruction_worker_healthcheck(
+        build_time=True,
+        env=_env(),
+        command_runner=lambda argv: (
+            (0, "COLMAP 4.1.1") if argv[0] == "colmap" else _command(argv)
+        ),
+        importer=_importer,
+        path_exists=_exists,
+        file_digest=_digest,
+        file_text=_revision,
+    )
+
+    assert result["status"] == "failed"
+    assert "reconstruction_worker_colmap_unavailable" in result["blockers"]

@@ -166,7 +166,10 @@ def test_worker_manifest_pins_headless_cuda_onnx_colmap_and_gaussian_stacks():
     assert components["linux_base"]["linux_amd64_digest"] == (
         "sha256:5645fec64549cc35930eee9d85aafd2b0006c0c3f22632be5a1d85e2604e9749"
     )
-    assert components["colmap"]["version"] == "4.1.1"
+    assert components["colmap"]["version"] == "4.0.4"
+    assert components["colmap"]["source_revision"] == (
+        "9c23f6942fe69962e06030905e77067c8673382f"
+    )
     assert components["colmap"]["build_options"] == {
         "CUDA_ENABLED": True,
         "ONNX_ENABLED": True,
@@ -710,6 +713,12 @@ def test_recorded_proxy_cannot_enter_trainer_without_resolved_worker_image() -> 
     assert stack["worker_stack_manifest_digest"] == canonical_digest(
         stack, digest_field="worker_stack_manifest_digest"
     )
+    assert stack["worker_stack_manifest_digest"] != _worker_manifest()[
+        "worker_stack_manifest_digest"
+    ]
+    assert next(
+        row for row in stack["components"] if row["component_id"] == "colmap"
+    )["version"] == "4.1.1"
     assert admission["build_packet_digest"] == canonical_digest(
         admission, digest_field="build_packet_digest"
     )

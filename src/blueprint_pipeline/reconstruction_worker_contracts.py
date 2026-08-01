@@ -66,9 +66,9 @@ PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
     {
         "component_id": "colmap",
         "name": "COLMAP",
-        "version": "4.1.1",
+        "version": "4.0.4",
         "source_url": "https://github.com/colmap/colmap",
-        "source_revision": "a0d785fba74b2664f31edc4a29026a8b27c00f67",
+        "source_revision": "9c23f6942fe69962e06030905e77067c8673382f",
         "license": "BSD-3-Clause",
         "redistribution": "dependency_license_review_required",
         "build_options": {

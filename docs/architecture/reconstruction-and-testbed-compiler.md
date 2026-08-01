@@ -411,7 +411,8 @@ implementation.
 ## Headless pose and appearance worker contracts
 
 The Phase 4 contract kernel pins a candidate `linux/amd64` stack to a digest-bound
-CUDA 12.4.1 Ubuntu base, COLMAP 4.1.1 with CUDA and ONNX enabled, ONNX Runtime
+CUDA 12.4.1 Ubuntu base, COLMAP 4.0.4 at official tag commit
+`9c23f6942fe69962e06030905e77067c8673382f` with CUDA and ONNX enabled, ONNX Runtime
 1.24.4, gsplat 1.5.3, and NVIDIA 3DGRUT 1.1.0. It also records candidate compiler,
 FFmpeg, Python/PyTorch, OpenCV, Trimesh, OpenUSD, QA, driver, model-asset, license,
 and redistribution constraints. The ALIKED and LightGlue ONNX assets use the
@@ -443,14 +444,18 @@ retry cap, and authority. Allocation and image-build success are explicitly not
 scientific success.
 
 The current clean-SHA admission at
-`ff9deb59bd2ac96a3ffc72d2ea70abdeb6fb9912` binds the exact Git tree,
+`ff9deb59bd2ac96a3ffc72d2ea70abdeb6fb9912` binds its historical Git tree,
 Dockerfile, dependency lock, and candidate stack manifest. It is deterministically
 `blocked` only by `worker_license_review_receipt_missing`, the missing numeric
 budget, TTL, retry cap, and paid-authority identity. The recorded stack and
 admission artifacts are
 `docs/evidence/reconstruction_worker_stack_manifest_ff9deb59.json` and
 `docs/evidence/reconstruction_worker_build_admission_ff9deb59.json`. No build or
-provider launch occurred. The recorded ARKitScenes candidate dataset is also
+provider launch occurred. That historical stack named unpublished COLMAP 4.1.1
+and is now a superseded support artifact, not an executable current pin; it is
+retained so the rejected admission remains auditable. The current executable
+contract uses official COLMAP 4.0.4 and requires a new build packet and receipts.
+The recorded ARKitScenes candidate dataset is also
 regression-tested against `reconstruction_training_request.v1`: without a
 resolved digest-pinned worker image, request compilation fails closed before
 any trainer can receive candidate pixels.
