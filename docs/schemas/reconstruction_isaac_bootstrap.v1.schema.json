@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_isaac_bootstrap.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "isaac_runtime_exit_code",
+    "isaac_verification_request_digest",
+    "input_bundle_digest",
+    "input_bundle_bytes",
+    "input_receipt_file_digest",
+    "input_extraction_receipt_digest",
+    "output_bundle_digest",
+    "output_bundle_bytes",
+    "worker_image_digest",
+    "source_commit_sha",
+    "raw_secret_values_recorded",
+    "scientific_qualification_inferred",
+    "simulator_task_success_proven",
+    "physical_success_proven",
+    "deployment_readiness_proven",
+    "proof_effect",
+    "claim_ceiling",
+    "bootstrap_receipt_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "reconstruction_isaac_bootstrap.v1"},
+    "status": {"const": "output_uploaded"},
+    "isaac_runtime_exit_code": {"enum": [0, 2]},
+    "isaac_verification_request_digest": {"$ref": "#/$defs/digest"},
+    "input_bundle_digest": {"$ref": "#/$defs/digest"},
+    "input_bundle_bytes": {"type": "integer", "minimum": 1},
+    "input_receipt_file_digest": {"$ref": "#/$defs/digest"},
+    "input_extraction_receipt_digest": {"$ref": "#/$defs/digest"},
+    "output_bundle_digest": {"$ref": "#/$defs/digest"},
+    "output_bundle_bytes": {"type": "integer", "minimum": 1},
+    "worker_image_digest": {
+      "type": "string",
+      "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+    },
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "raw_secret_values_recorded": {"const": false},
+    "scientific_qualification_inferred": {"const": false},
+    "simulator_task_success_proven": {"const": false},
+    "physical_success_proven": {"const": false},
+    "deployment_readiness_proven": {"const": false},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "isaac_runtime_transport_only"},
+    "bootstrap_receipt_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

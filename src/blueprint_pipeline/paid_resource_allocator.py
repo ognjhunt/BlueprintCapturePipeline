@@ -99,6 +99,11 @@ from .reconstruction_gpu_operation_bundle import (
     ReconstructionGpuOperationBundleError,
     validate_reconstruction_gpu_operation_bundle_receipt,
 )
+from .reconstruction_isaac_vast_operation import run_reconstruction_isaac_vast_operation
+from .reconstruction_isaac_worker_bundle import (
+    IsaacWorkerBundleError,
+    validate_isaac_verification_worker_bundle_receipt,
+)
 from .reconstruction_vast_operation import run_reconstruction_vast_operation
 from .reconstruction_vast_worker_smoke import run_reconstruction_vast_worker_smoke
 from .gpu_render_providers import get_render_provider
@@ -659,7 +664,7 @@ def _run_reconstruction_gpu_canary(
         ("provider_output_get_url", args.provider_output_get_url_file),
     ]
     operation_bundle_receipt: dict[str, Any] = {}
-    if operation in {"pose_canary", "trainer_canary"}:
+    if operation in {"pose_canary", "trainer_canary", "isaac_canary"}:
         url_inputs.extend(
             [
                 ("provider_bundle_url", getattr(args, "provider_bundle_url_file", None)),
@@ -678,23 +683,48 @@ def _run_reconstruction_gpu_canary(
             )
         else:
             try:
-                operation_bundle_receipt = (
-                    validate_reconstruction_gpu_operation_bundle_receipt(
-                        _load(receipt_path)
+                if operation == "isaac_canary":
+                    operation_bundle_receipt = (
+                        validate_isaac_verification_worker_bundle_receipt(
+                            _load(receipt_path)
+                        )
                     )
-                )
-            except (OSError, ValueError, ReconstructionGpuOperationBundleError):
+                else:
+                    operation_bundle_receipt = (
+                        validate_reconstruction_gpu_operation_bundle_receipt(
+                            _load(receipt_path)
+                        )
+                    )
+            except (
+                OSError,
+                ValueError,
+                ReconstructionGpuOperationBundleError,
+                IsaacWorkerBundleError,
+            ):
                 transport_blockers.append(
                     "reconstruction_operation_bundle_receipt_invalid"
                 )
             else:
-                for request_key, receipt_key in (
-                    ("operation", "operation"),
-                    ("operation_request_digest", "operation_request_digest"),
-                    ("operation_input_bundle_digest", "operation_input_bundle_digest"),
-                    ("worker_image_digest", "worker_image_digest"),
-                    ("source_commit_sha", "source_commit_sha"),
-                ):
+                receipt_bindings = (
+                    (
+                        ("operation_request_digest", "isaac_verification_request_digest"),
+                        ("operation_input_bundle_digest", "bundle_digest"),
+                        ("worker_image_digest", "runtime_container_image_digest"),
+                        ("source_commit_sha", "source_commit_sha"),
+                    )
+                    if operation == "isaac_canary"
+                    else (
+                        ("operation", "operation"),
+                        ("operation_request_digest", "operation_request_digest"),
+                        (
+                            "operation_input_bundle_digest",
+                            "operation_input_bundle_digest",
+                        ),
+                        ("worker_image_digest", "worker_image_digest"),
+                        ("source_commit_sha", "source_commit_sha"),
+                    )
+                )
+                for request_key, receipt_key in receipt_bindings:
                     if admission.get(request_key) != operation_bundle_receipt.get(
                         receipt_key
                     ):
@@ -748,12 +778,25 @@ def _run_reconstruction_gpu_canary(
             provider=get_render_provider(args.provider),
             paid_resource_admission_grant=grant,
         )
-    else:
+    elif operation in {"pose_canary", "trainer_canary"}:
         result = run_reconstruction_vast_operation(
             bound_request=_load(args.bound_request_out),
             bundle_receipt=operation_bundle_receipt,
             preflight=_load(args.preflight_bundle),
             job_dir=adapter_path.parent / "reconstruction_vast_operation",
+            input_bundle_get_url=resolved_urls["provider_bundle_url"],
+            input_receipt_get_url=resolved_urls["operation_receipt_get_url"],
+            output_bundle_put_url=resolved_urls["provider_output_put_url"],
+            output_bundle_get_url=resolved_urls["provider_output_get_url"],
+            provider=get_render_provider(args.provider),
+            paid_resource_admission_grant=grant,
+        )
+    else:
+        result = run_reconstruction_isaac_vast_operation(
+            bound_request=_load(args.bound_request_out),
+            bundle_receipt=operation_bundle_receipt,
+            preflight=_load(args.preflight_bundle),
+            job_dir=adapter_path.parent / "reconstruction_isaac_vast_operation",
             input_bundle_get_url=resolved_urls["provider_bundle_url"],
             input_receipt_get_url=resolved_urls["operation_receipt_get_url"],
             output_bundle_put_url=resolved_urls["provider_output_put_url"],

@@ -3,12 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import sys
+import zipfile
 
 import jsonschema
 import numpy as np
 import pytest
 from PIL import Image
 
+from blueprint_pipeline import reconstruction_isaac_bootstrap as isaac_bootstrap
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.isaac_reconstruction_verification import (
     IsaacReconstructionVerificationError,
     build_isaac_asset_verification_request,
@@ -18,6 +22,18 @@ from blueprint_pipeline.isaac_reconstruction_verification import (
 from blueprint_pipeline.reconstruction_isaac_worker_bundle import (
     IsaacWorkerBundleError,
     compile_isaac_verification_worker_bundle,
+    extract_isaac_verification_worker_bundle,
+    validate_isaac_verification_worker_bundle_receipt,
+)
+from blueprint_pipeline.reconstruction_isaac_output_bundle import (
+    IsaacVerificationOutputBundleError,
+    compile_isaac_verification_output_bundle,
+    validate_and_extract_isaac_verification_output_bundle,
+)
+from blueprint_pipeline.reconstruction_isaac_vast_operation import (
+    ReconstructionIsaacVastError,
+    replay_reconstruction_isaac_vast_operation,
+    run_reconstruction_isaac_vast_operation,
 )
 from blueprint_pipeline.reconstruction_geometry_contracts import (
     ReconstructionGeometryContractError,
@@ -26,6 +42,12 @@ from blueprint_pipeline.reconstruction_geometry_contracts import (
     build_isaac_asset_verification_result,
     build_metric_geometry_manifest,
     build_nurec_openusd_packaging_result,
+)
+from blueprint_pipeline.safe_outbound_http import SafeHttpFileTransfer
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    build_paid_lane_admission,
+    require_paid_resource_admission,
 )
 from blueprint_pipeline.task_evaluation_supervisor.capabilities import SupervisorContext
 from blueprint_pipeline.task_evaluation_supervisor.contracts import AutonomyMode
@@ -518,6 +540,110 @@ def _isaac_fixture(tmp_path):
     return request, runtime, package_root, runtime_root
 
 
+def _isaac_bundle_receipt_for_request(request):
+    value = {
+        "schema_version": "isaac_verification_worker_bundle.v1",
+        "isaac_verification_request_digest": request[
+            "isaac_verification_request_digest"
+        ],
+        "package_digest": request["package_digest"],
+        "fixed_camera_spec_digest": request["fixed_camera_spec_digest"],
+        "runtime_implementation_digest": request["runtime_implementation_digest"],
+        "runtime_container_image_digest": request[
+            "runtime_container_image_digest"
+        ],
+        "source_commit_sha": request["source_commit_sha"],
+        "fixed_camera_ids": request["fixed_camera_ids"],
+        "command": [
+            "/isaac-sim/python.sh",
+            "/workspace/bundle/run_isaac_splat_nurec_render.py",
+            *[f"arg-{index}" for index in range(19)],
+        ],
+        "expected_runtime_schema": "isaac_splat_nurec_render_result.v3",
+        "raw_secret_values_included": False,
+        "provider_allocation_performed": False,
+        "paid_execution_authorized_by_bundle": False,
+        "canonical_allocator_command": (
+            "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
+        ),
+        "bundle_manifest_digest": D[7],
+        "bundle_digest": D[8],
+        "bundle_artifact_reference": (
+            f"{request['isaac_verification_request_digest'][7:]}/"
+            "isaac_verification_worker_bundle.zip"
+        ),
+        "bundle_member_count": 5,
+        "bundle_bytes": 100,
+        "cost_usd": 0.0,
+        "proof_effect": "none",
+        "claim_ceiling": "request_only",
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    return value
+
+
+def _isaac_bootstrap_fixture(tmp_path):
+    package_root = tmp_path / "bootstrap-packages"
+    package_path = package_root / "package/reconstruction.usdz"
+    package_path.parent.mkdir(parents=True)
+    package_path.write_bytes(b"exact-bootstrap-package")
+    cameras = tmp_path / "bootstrap-fixed-cameras.json"
+    cameras.write_text('[{"id":"fixed-1","spec":{}}]\n', encoding="utf-8")
+    runner = tmp_path / "bootstrap-runner.py"
+    runner.write_text("print('fixture')\n", encoding="utf-8")
+    package = _package(package_digest=_sha256(package_path))
+    request = _isaac_request(
+        package,
+        camera_spec_digest=_sha256(cameras),
+        runner_digest=_sha256(runner),
+    )
+    receipt = compile_isaac_verification_worker_bundle(
+        verification_request=request,
+        package_artifact_root=package_root,
+        fixed_camera_spec_path=cameras,
+        runner_path=runner,
+        output_root=tmp_path / "bootstrap-bundles",
+    )
+    bundle_path = (
+        tmp_path
+        / "bootstrap-bundles"
+        / request["isaac_verification_request_digest"][7:]
+        / "isaac_verification_worker_bundle.zip"
+    )
+    receipt_bytes = (
+        json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    return request, receipt, bundle_path, receipt_bytes
+
+
+def _isaac_bootstrap_environment(request, receipt, receipt_bytes, **updates):
+    value = {
+        "BLUEPRINT_ISAAC_INPUT_BUNDLE_GET_URL": (
+            "https://objects.example/input.zip?signature=input-secret"
+        ),
+        "BLUEPRINT_ISAAC_INPUT_RECEIPT_GET_URL": (
+            "https://objects.example/receipt.json?signature=receipt-secret"
+        ),
+        "BLUEPRINT_ISAAC_OUTPUT_BUNDLE_PUT_URL": (
+            "https://objects.example/output.zip?signature=output-secret"
+        ),
+        "BLUEPRINT_ISAAC_INPUT_BUNDLE_DIGEST": receipt["bundle_digest"],
+        "BLUEPRINT_ISAAC_INPUT_RECEIPT_FILE_DIGEST": (
+            "sha256:" + hashlib.sha256(receipt_bytes).hexdigest()
+        ),
+        "BLUEPRINT_ISAAC_VERIFICATION_REQUEST_DIGEST": request[
+            "isaac_verification_request_digest"
+        ],
+        "BLUEPRINT_CONTAINER_IMAGE_DIGEST": request[
+            "runtime_container_image_digest"
+        ],
+        "BLUEPRINT_SOURCE_COMMIT": request["source_commit_sha"],
+        "BLUEPRINT_RECONSTRUCTION_HARD_TTL_SECONDS": "3600",
+    }
+    value.update(updates)
+    return value
+
+
 def test_isaac_v3_normalizer_rehashes_exact_package_and_png(tmp_path):
     request, runtime, package_root, runtime_root = _isaac_fixture(tmp_path)
     result = normalize_isaac_reconstruction_verification(
@@ -537,6 +663,531 @@ def test_isaac_v3_normalizer_rehashes_exact_package_and_png(tmp_path):
         ).read_text(encoding="utf-8")
     )
     jsonschema.Draft202012Validator(result_schema).validate(result)
+
+
+def test_isaac_runtime_output_bundle_is_complete_deterministic_and_independent(
+    tmp_path,
+):
+    request, runtime, package_root, runtime_root = _isaac_fixture(tmp_path)
+    (runtime_root / "isaac_runtime_result.json").write_text(
+        json.dumps(runtime), encoding="utf-8"
+    )
+    receipt = _isaac_bundle_receipt_for_request(request)
+    first = tmp_path / "isaac-output-first.zip"
+    second = tmp_path / "isaac-output-second.zip"
+    first_receipt = compile_isaac_verification_output_bundle(
+        bundle_receipt=receipt,
+        runtime_output_root=runtime_root,
+        output_path=first,
+    )
+    second_receipt = compile_isaac_verification_output_bundle(
+        bundle_receipt=receipt,
+        runtime_output_root=runtime_root,
+        output_path=second,
+    )
+    assert first.read_bytes() == second.read_bytes()
+    assert first_receipt["output_bundle_digest"] == second_receipt[
+        "output_bundle_digest"
+    ]
+    validated, replayed_runtime, extracted = (
+        validate_and_extract_isaac_verification_output_bundle(
+            bundle_path=first,
+            expected_input_receipt=receipt,
+            expected_source_commit_sha=request["source_commit_sha"],
+            output_root=tmp_path / "validated-output",
+        )
+    )
+    assert replayed_runtime == runtime
+    assert validated["scientific_qualification_inferred"] is False
+    assert validated["simulator_task_success_proven"] is False
+    output_schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/isaac_verification_output_bundle.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.Draft202012Validator(output_schema).validate(validated)
+    assert (extracted / "frames/fixed-1.png").is_file()
+    qualified = normalize_isaac_reconstruction_verification(
+        verification_request=request,
+        runtime_result=replayed_runtime,
+        package_artifact_root=package_root,
+        runtime_artifact_root=extracted,
+    )
+    assert qualified["status"] == "verified_compatibility_only"
+    assert qualified["simulator_task_success_proven"] is False
+
+    tampered = tmp_path / "isaac-output-tampered.zip"
+    with zipfile.ZipFile(first, "r") as source_archive, zipfile.ZipFile(
+        tampered, "w", allowZip64=True
+    ) as destination_archive:
+        for member in source_archive.infolist():
+            payload = source_archive.read(member.filename)
+            if member.filename == "artifacts/frames/fixed-1.png":
+                payload = b"tampered"
+            destination_archive.writestr(member, payload)
+    with pytest.raises(
+        IsaacVerificationOutputBundleError, match="artifact_digest_mismatch"
+    ):
+        validate_and_extract_isaac_verification_output_bundle(
+            bundle_path=tampered,
+            expected_input_receipt=receipt,
+            expected_source_commit_sha=request["source_commit_sha"],
+            output_root=tmp_path / "tampered-output",
+        )
+
+
+def test_isaac_bootstrap_binds_downloads_preserves_typed_blocker_and_uploads(
+    tmp_path, monkeypatch
+):
+    request, receipt, input_bundle, receipt_bytes = _isaac_bootstrap_fixture(tmp_path)
+    uploaded: dict[str, bytes] = {}
+
+    def fake_download(url, *, output_path, expected_sha256, **_kwargs):
+        payload = receipt_bytes if "receipt.json" in url else input_bundle.read_bytes()
+        observed = "sha256:" + hashlib.sha256(payload).hexdigest()
+        assert observed == expected_sha256
+        Path(output_path).write_bytes(payload)
+        return SafeHttpFileTransfer(
+            status=200,
+            transferred_bytes=len(payload),
+            sha256=observed,
+            host="objects.example",
+        )
+
+    def fake_process(command, root, log_path, timeout_seconds):
+        assert command[0] == "/isaac-sim/python.sh"
+        assert command[1] == str(root / "bundle/run_isaac_splat_nurec_render.py")
+        assert all(not item.startswith("/workspace/") for item in command[1:])
+        assert timeout_seconds == 3480
+        runtime = build_isaac_runtime_result_v3(
+            {
+                "schema_version": "isaac_splat_nurec_render_result.v3",
+                "status": "blocked",
+                "isaac_verification_request_digest": request[
+                    "isaac_verification_request_digest"
+                ],
+                "package_digest": request["package_digest"],
+                "fixed_camera_spec_digest": request["fixed_camera_spec_digest"],
+                "runtime_container_image_digest": request[
+                    "runtime_container_image_digest"
+                ],
+                "runtime_implementation_digest": request[
+                    "runtime_implementation_digest"
+                ],
+                "runtime_identity": {
+                    "runtime": "isaac_sim",
+                    "renderer": "RayTracedLighting",
+                    "python_version": "3.11.0",
+                    "headless": True,
+                },
+                "raw_secret_values_recorded": False,
+                "blockers": ["isaacsim_module_unavailable"],
+            }
+        )
+        (root / "out/isaac_runtime_result.json").write_text(
+            json.dumps(runtime), encoding="utf-8"
+        )
+        log_path.write_text("typed blocker preserved\n", encoding="utf-8")
+        return 2
+
+    def fake_upload(url, *, input_path, expected_sha256, **_kwargs):
+        payload = Path(input_path).read_bytes()
+        observed = "sha256:" + hashlib.sha256(payload).hexdigest()
+        assert observed == expected_sha256
+        uploaded["output"] = payload
+        return SafeHttpFileTransfer(
+            status=200,
+            transferred_bytes=len(payload),
+            sha256=observed,
+            host="objects.example",
+        )
+
+    monkeypatch.setattr(isaac_bootstrap, "download_file", fake_download)
+    monkeypatch.setattr(isaac_bootstrap, "upload_file", fake_upload)
+    result = isaac_bootstrap.run_reconstruction_isaac_bootstrap(
+        environment=_isaac_bootstrap_environment(
+            request, receipt, receipt_bytes
+        ),
+        work_root=tmp_path / "bootstrap-worker",
+        process_runner=fake_process,
+    )
+    assert result["status"] == "output_uploaded"
+    assert result["isaac_runtime_exit_code"] == 2
+    assert result["scientific_qualification_inferred"] is False
+    assert result["simulator_task_success_proven"] is False
+    assert result["bootstrap_receipt_digest"] == canonical_digest(
+        result, digest_field="bootstrap_receipt_digest"
+    )
+    bootstrap_schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/reconstruction_isaac_bootstrap.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.Draft202012Validator(bootstrap_schema).validate(result)
+    encoded = json.dumps(result)
+    assert "input-secret" not in encoded
+    assert "receipt-secret" not in encoded
+    assert "output-secret" not in encoded
+
+    retrieved = tmp_path / "retrieved-isaac-output.zip"
+    retrieved.write_bytes(uploaded["output"])
+    validated, runtime, _root = validate_and_extract_isaac_verification_output_bundle(
+        bundle_path=retrieved,
+        expected_input_receipt=receipt,
+        expected_source_commit_sha=request["source_commit_sha"],
+        output_root=tmp_path / "validated-bootstrap-output",
+    )
+    assert validated["status"] == "validated"
+    assert runtime["status"] == "blocked"
+    assert runtime["blockers"] == ["isaacsim_module_unavailable"]
+
+
+def test_isaac_bootstrap_fails_closed_before_runtime_on_binding_ttl_or_missing_result(
+    tmp_path, monkeypatch
+):
+    request, receipt, input_bundle, receipt_bytes = _isaac_bootstrap_fixture(tmp_path)
+    downloads: list[str] = []
+
+    def fake_download(url, *, output_path, expected_sha256, **_kwargs):
+        downloads.append(url.split("?", maxsplit=1)[0])
+        payload = receipt_bytes if "receipt.json" in url else input_bundle.read_bytes()
+        Path(output_path).write_bytes(payload)
+        return SafeHttpFileTransfer(
+            status=200,
+            transferred_bytes=len(payload),
+            sha256=expected_sha256,
+            host="objects.example",
+        )
+
+    monkeypatch.setattr(isaac_bootstrap, "download_file", fake_download)
+    with pytest.raises(
+        isaac_bootstrap.ReconstructionIsaacBootstrapError,
+        match="receipt_binding_mismatch",
+    ):
+        isaac_bootstrap.run_reconstruction_isaac_bootstrap(
+            environment=_isaac_bootstrap_environment(
+                request,
+                receipt,
+                receipt_bytes,
+                BLUEPRINT_ISAAC_VERIFICATION_REQUEST_DIGEST=D[8],
+            ),
+            work_root=tmp_path / "binding-worker",
+            process_runner=lambda *_args: pytest.fail("runtime must not start"),
+        )
+    assert downloads == ["https://objects.example/receipt.json"]
+
+    downloads.clear()
+    with pytest.raises(
+        isaac_bootstrap.ReconstructionIsaacBootstrapError,
+        match="ttl_invalid",
+    ):
+        isaac_bootstrap.run_reconstruction_isaac_bootstrap(
+            environment=_isaac_bootstrap_environment(
+                request,
+                receipt,
+                receipt_bytes,
+                BLUEPRINT_RECONSTRUCTION_HARD_TTL_SECONDS="60",
+            ),
+            work_root=tmp_path / "ttl-worker",
+            process_runner=lambda *_args: pytest.fail("runtime must not start"),
+        )
+    assert downloads == []
+
+    with pytest.raises(
+        isaac_bootstrap.ReconstructionIsaacBootstrapError,
+        match="runtime_result_missing",
+    ):
+        isaac_bootstrap.run_reconstruction_isaac_bootstrap(
+            environment=_isaac_bootstrap_environment(
+                request, receipt, receipt_bytes
+            ),
+            work_root=tmp_path / "missing-result-worker",
+            process_runner=lambda *_args: 0,
+        )
+
+
+def test_isaac_default_process_runner_caps_live_log_and_strips_transfer_urls(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(isaac_bootstrap, "MAX_LOG_BYTES", 512)
+    for name in (
+        "BLUEPRINT_ISAAC_INPUT_BUNDLE_GET_URL",
+        "BLUEPRINT_ISAAC_INPUT_RECEIPT_GET_URL",
+        "BLUEPRINT_ISAAC_OUTPUT_BUNDLE_PUT_URL",
+    ):
+        monkeypatch.setenv(name, "https://objects.example/secret")
+    clean_log = tmp_path / "clean.log"
+    exit_code = isaac_bootstrap._default_process_runner(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; print(any(os.environ.get(k) for k in "
+                "['BLUEPRINT_ISAAC_INPUT_BUNDLE_GET_URL',"
+                "'BLUEPRINT_ISAAC_INPUT_RECEIPT_GET_URL',"
+                "'BLUEPRINT_ISAAC_OUTPUT_BUNDLE_PUT_URL']))"
+            ),
+        ],
+        tmp_path,
+        clean_log,
+        10,
+    )
+    assert exit_code == 0
+    assert clean_log.read_text(encoding="utf-8").strip() == "False"
+
+    capped_log = tmp_path / "capped.log"
+    with pytest.raises(
+        isaac_bootstrap.ReconstructionIsaacBootstrapError,
+        match="log_oversized",
+    ):
+        isaac_bootstrap._default_process_runner(
+            [sys.executable, "-c", "import sys; sys.stdout.write('x' * 4096)"],
+            tmp_path,
+            capped_log,
+            10,
+        )
+    assert capped_log.stat().st_size == 512
+
+
+def _isaac_bound_paid_request(request, receipt):
+    value = {
+        "schema_version": "reconstruction_gpu_canary_request.v1",
+        "operation": "isaac_canary",
+        "capture_profile": "iphone_arkit_lidar",
+        "source_commit_sha": request["source_commit_sha"],
+        "worker_image_digest": request["runtime_container_image_digest"],
+        "worker_stack_manifest_digest": D[0],
+        "reconstruction_dataset_digest": D[1],
+        "frozen_split_digest": D[2],
+        "calibration_digest": D[3],
+        "deterministic_configuration_digest": D[4],
+        "operation_request_digest": request["isaac_verification_request_digest"],
+        "operation_input_bundle_digest": receipt["bundle_digest"],
+        "expected_runtime_result_schema": "isaac_splat_nurec_render_result.v3",
+        "candidate_may_read_hidden_heldout": False,
+        "trainer_may_grade_heldout": False,
+        "max_spend_usd": 18.0,
+        "hard_ttl_seconds": 3600,
+        "retry_cap": 1,
+        "authority_id": "user-authorized-18usd-60min-1retry-two-gpu-ceiling",
+        "proof_effect": "none",
+        "request_digest": D[5],
+        "bound_provider": "vast",
+        "bound_preflight_digest": D[6],
+        "bound_checkout_source_commit": request["source_commit_sha"],
+        "bound_checkout_clean": True,
+        "provider_mutation_authorized": True,
+    }
+    value["bound_request_digest"] = canonical_digest(
+        value, digest_field="bound_request_digest"
+    )
+    return value
+
+
+class _IsaacVastProvider:
+    name = "vast"
+
+    def __init__(self, *, external_live=False):
+        self.external_live = external_live
+        self.launched = False
+        self.requests = []
+
+    def billable_inventory(self, *, name_prefix):
+        count = int(self.launched or (self.external_live and name_prefix == ""))
+        return {"api_confirmed": True, "live_resource_count": count, "resources": []}
+
+    def build_request(self, spec, job_dir):
+        assert (Path(job_dir) / "prelaunch_staging_receipt.json").is_file()
+        assert spec.image == IMAGE
+        assert spec.env["BLUEPRINT_RECONSTRUCTION_HARD_TTL_SECONDS"] == "3600"
+        assert "reconstruction_isaac_bootstrap" in " ".join(spec.bootstrap_argv)
+        return {"create_payload": {"env": dict(spec.env)}}
+
+    def launch(self, job_dir, request, **_kwargs):
+        del job_dir
+        self.requests.append(request)
+        self.launched = True
+        return {"status": "launched", "instance_id": "isaac-42"}
+
+    def terminate(self, instance_id):
+        assert instance_id == "isaac-42"
+        self.launched = False
+        return {"status": "stopped", "instance_id": instance_id}
+
+
+def test_isaac_vast_lifecycle_stages_before_launch_abstains_and_proves_zero(
+    tmp_path, monkeypatch
+):
+    request, receipt, input_bundle, receipt_bytes = _isaac_bootstrap_fixture(tmp_path)
+    runtime_root = tmp_path / "provider-runtime"
+    runtime_root.mkdir()
+    runtime = build_isaac_runtime_result_v3(
+        {
+            "schema_version": "isaac_splat_nurec_render_result.v3",
+            "status": "blocked",
+            "isaac_verification_request_digest": request[
+                "isaac_verification_request_digest"
+            ],
+            "package_digest": request["package_digest"],
+            "fixed_camera_spec_digest": request["fixed_camera_spec_digest"],
+            "runtime_container_image_digest": request[
+                "runtime_container_image_digest"
+            ],
+            "runtime_implementation_digest": request[
+                "runtime_implementation_digest"
+            ],
+            "runtime_identity": {
+                "runtime": "isaac_sim",
+                "renderer": "RayTracedLighting",
+                "python_version": "3.11.0",
+                "headless": True,
+            },
+            "raw_secret_values_recorded": False,
+            "blockers": ["isaacsim_module_unavailable"],
+        }
+    )
+    (runtime_root / "isaac_runtime_result.json").write_text(
+        json.dumps(runtime), encoding="utf-8"
+    )
+    provider_output = tmp_path / "provider-output.zip"
+    compile_isaac_verification_output_bundle(
+        bundle_receipt=receipt,
+        runtime_output_root=runtime_root,
+        output_path=provider_output,
+    )
+
+    def exact_fetch(url, destination, expected_digest, _maximum_bytes):
+        payload = receipt_bytes if "receipt.json" in url else input_bundle.read_bytes()
+        destination.write_bytes(payload)
+        observed = "sha256:" + hashlib.sha256(payload).hexdigest()
+        assert observed == expected_digest
+        return SafeHttpFileTransfer(200, len(payload), observed, "objects.example")
+
+    def output_fetch(_url, destination):
+        payload = provider_output.read_bytes()
+        destination.write_bytes(payload)
+        return SafeHttpFileTransfer(
+            200,
+            len(payload),
+            "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "objects.example",
+        )
+
+    provider = _IsaacVastProvider()
+    grant = require_paid_resource_admission(
+        build_paid_lane_admission(resource_class="gpu_render"),
+        resource_class="gpu_render",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+    times = iter([1000.0, 1001.0, 1002.0])
+    result = run_reconstruction_isaac_vast_operation(
+        bound_request=_isaac_bound_paid_request(request, receipt),
+        bundle_receipt=receipt,
+        preflight={
+            "watchdog": {
+                "status": "armed",
+                "independent_process": True,
+                "pid": 123,
+                "deadline_epoch": 10_000,
+                "name_prefix": "blueprint-reconstruction-",
+            },
+            "gpu_memory_bytes": 48 * 1024**3,
+            "container_disk_bytes": 120 * 1024**3,
+            "on_demand_price_usd_per_hour": 0.58,
+        },
+        job_dir=tmp_path / "isaac-vast",
+        input_bundle_get_url="https://objects.example/input.zip?sig=secret",
+        input_receipt_get_url="https://objects.example/receipt.json?sig=secret",
+        output_bundle_put_url="https://objects.example/output-put.zip?sig=secret",
+        output_bundle_get_url="https://objects.example/output-get.zip?sig=secret",
+        provider=provider,
+        paid_resource_admission_grant=grant,
+        exact_fetcher=exact_fetch,
+        output_fetcher=output_fetch,
+        sleeper=lambda _seconds: None,
+        clock=lambda: next(times),
+        watchdog_validator=lambda _watchdog, _now, _ttl: True,
+    )
+    assert result["status"] == "completed"
+    assert result["gpu_count"] == 1
+    assert result["runtime_status"] == "blocked"
+    assert result["independent_qualification_status"] == "abstained"
+    assert result["provider_zero_verified"] is True
+    assert result["output_retrieved_before_teardown"] is True
+    assert result["simulator_task_success_proven"] is False
+    assert result["physical_success_proven"] is False
+    assert provider.launched is False
+    assert provider.requests[0]["prelaunch_spend_guard"]["gpu_count"] == 1
+    assert provider.requests[0]["prelaunch_spend_guard"]["max_spend_usd"] == 18.0
+    assert "secret" not in json.dumps(result)
+    qualification = json.loads(
+        (tmp_path / "isaac-vast/independent_isaac_qualification.json").read_text()
+    )
+    assert qualification["blockers"] == ["isaac_runtime_not_completed"]
+    replay = replay_reconstruction_isaac_vast_operation(
+        job_dir=tmp_path / "isaac-vast",
+        bound_request=_isaac_bound_paid_request(request, receipt),
+        bundle_receipt=receipt,
+    )
+    assert replay["status"] == "replay_verified"
+    assert replay["live_provider_accessed"] is False
+    assert replay["live_agent_accessed"] is False
+    assert replay["independent_qualification_status"] == "abstained"
+    lifecycle_schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/reconstruction_isaac_vast_operation.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    for artifact in (
+        result,
+        replay,
+        qualification,
+        json.loads((tmp_path / "isaac-vast/teardown_receipt.json").read_text()),
+        json.loads(
+            (tmp_path / "isaac-vast/provider_zero_verification.json").read_text()
+        ),
+    ):
+        jsonschema.Draft202012Validator(lifecycle_schema).validate(artifact)
+
+
+def test_isaac_vast_second_gpu_authority_does_not_override_global_zero(
+    tmp_path,
+):
+    request, receipt, input_bundle, receipt_bytes = _isaac_bootstrap_fixture(tmp_path)
+
+    def exact_fetch(url, destination, expected_digest, _maximum_bytes):
+        payload = receipt_bytes if "receipt.json" in url else input_bundle.read_bytes()
+        destination.write_bytes(payload)
+        return SafeHttpFileTransfer(200, len(payload), expected_digest, "objects.example")
+
+    provider = _IsaacVastProvider(external_live=True)
+    grant = require_paid_resource_admission(
+        build_paid_lane_admission(resource_class="gpu_render"),
+        resource_class="gpu_render",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    )
+    with pytest.raises(
+        ReconstructionIsaacVastError, match="provider_not_zero_before_launch"
+    ):
+        run_reconstruction_isaac_vast_operation(
+            bound_request=_isaac_bound_paid_request(request, receipt),
+            bundle_receipt=receipt,
+            preflight={"watchdog": {}},
+            job_dir=tmp_path / "blocked-isaac-vast",
+            input_bundle_get_url="https://objects.example/input.zip",
+            input_receipt_get_url="https://objects.example/receipt.json",
+            output_bundle_put_url="https://objects.example/output-put.zip",
+            output_bundle_get_url="https://objects.example/output-get.zip",
+            provider=provider,
+            paid_resource_admission_grant=grant,
+            exact_fetcher=exact_fetch,
+            watchdog_validator=lambda _watchdog, _now, _ttl: True,
+            clock=lambda: 1000.0,
+        )
+    assert provider.launched is False
 
 
 def test_isaac_worker_bundle_binds_exact_package_cameras_runner_without_spend(tmp_path):
@@ -587,6 +1238,61 @@ def test_isaac_worker_bundle_binds_exact_package_cameras_runner_without_spend(tm
         / request["isaac_verification_request_digest"][7:]
         / "isaac_verification_worker_bundle.zip"
     )
+    assert validate_isaac_verification_worker_bundle_receipt(receipt) == receipt
+    extraction = extract_isaac_verification_worker_bundle(
+        bundle_path=bundle_path,
+        bundle_receipt=receipt,
+        output_root=tmp_path / "extracted",
+    )
+    assert (
+        extract_isaac_verification_worker_bundle(
+            bundle_path=bundle_path,
+            bundle_receipt=receipt,
+            output_root=tmp_path / "extracted",
+        )
+        == extraction
+    )
+    extraction_schema = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "docs/schemas/isaac_verification_worker_bundle_extraction.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.Draft202012Validator(extraction_schema).validate(extraction)
+    extracted_package = (
+        tmp_path
+        / "extracted"
+        / receipt["bundle_digest"][7:]
+        / "reconstruction.usdz"
+    )
+    extracted_package.write_bytes(b"tampered")
+    with pytest.raises(IsaacWorkerBundleError, match="extraction_replay_tampered"):
+        extract_isaac_verification_worker_bundle(
+            bundle_path=bundle_path,
+            bundle_receipt=receipt,
+            output_root=tmp_path / "extracted",
+        )
+
+    compressed = tmp_path / "compressed-isaac-bundle.zip"
+    with zipfile.ZipFile(bundle_path, "r") as source_archive, zipfile.ZipFile(
+        compressed, "w", compression=zipfile.ZIP_DEFLATED
+    ) as destination_archive:
+        for member in source_archive.infolist():
+            destination_archive.writestr(
+                member.filename, source_archive.read(member.filename)
+            )
+    drifted = dict(receipt)
+    drifted["bundle_digest"] = _sha256(compressed)
+    drifted["receipt_digest"] = canonical_digest(
+        drifted, digest_field="receipt_digest"
+    )
+    with pytest.raises(IsaacWorkerBundleError, match="archive_member_unsafe"):
+        extract_isaac_verification_worker_bundle(
+            bundle_path=compressed,
+            bundle_receipt=drifted,
+            output_root=tmp_path / "compressed-extracted",
+        )
+
     bundle_path.unlink()
     with pytest.raises(IsaacWorkerBundleError, match="existing_output_tampered"):
         compile_isaac_verification_worker_bundle(

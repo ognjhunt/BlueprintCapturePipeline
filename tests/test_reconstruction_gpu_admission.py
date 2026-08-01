@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import jsonschema
+import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -222,7 +224,7 @@ def test_execute_stays_blocked_until_vast_execution_adapter_is_qualified():
 
 
 def test_scientific_canaries_use_only_their_qualified_typed_adapters():
-    for operation in ("pose_canary", "trainer_canary"):
+    for operation in ("pose_canary", "trainer_canary", "isaac_canary"):
         request = _request(operation=operation)
         dry_run, dry_bound = _build(request=request)
         assert dry_run["status"] == "dry_run_ready"
@@ -246,25 +248,6 @@ def test_scientific_canaries_use_only_their_qualified_typed_adapters():
         assert execute["blockers"] == []
         assert execute["execution_adapter_qualified"] is True
         assert execute_bound["provider_mutation_authorized"] is True
-
-    request = _request(operation="isaac_canary")
-    dry_run, dry_bound = _build(request=request)
-    assert dry_run["status"] == "dry_run_ready"
-    assert dry_run["legal_next_actions"] == [
-        "qualify_reconstruction_operation_execution_adapter"
-    ]
-    assert dry_bound["provider_mutation_authorized"] is False
-    execute, execute_bound = _build(
-        request=request,
-        execute=True,
-        execution_adapter_qualified=True,
-    )
-    assert execute["status"] == "blocked"
-    assert execute["blockers"] == [
-        "reconstruction_gpu_operation_execution_adapter_unavailable"
-    ]
-    assert execute_bound["provider_mutation_authorized"] is False
-
 
 def test_operation_request_input_and_result_schema_are_immutable_admission_inputs():
     request = _request()
@@ -372,3 +355,95 @@ def test_allocator_routes_reconstruction_probe_without_provider_mutation(
     assert admission["status"] == "dry_run_ready"
     assert adapter["provider_mutations_performed"] == 0
     assert adapter["cost_usd"] == 0.0
+
+
+def test_allocator_routes_isaac_only_to_separate_vast_lifecycle(tmp_path, monkeypatch):
+    request_digest = D1
+    verification_digest = D2
+    bundle_digest = D3
+    image = "registry.example/isaac@sha256:" + "f" * 64
+    admission = {
+        "status": "execute_ready",
+        "operation": "isaac_canary",
+        "operation_request_digest": verification_digest,
+        "operation_input_bundle_digest": bundle_digest,
+        "worker_image_digest": image,
+        "source_commit_sha": SHA,
+        "blockers": [],
+    }
+    receipt = {
+        "isaac_verification_request_digest": verification_digest,
+        "bundle_digest": bundle_digest,
+        "runtime_container_image_digest": image,
+        "source_commit_sha": SHA,
+    }
+    bound = {"request_digest": request_digest}
+    preflight = {"provider": "vast"}
+    receipt_path = tmp_path / "isaac-receipt.json"
+    bound_path = tmp_path / "bound.json"
+    preflight_path = tmp_path / "preflight.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    bound_path.write_text(json.dumps(bound), encoding="utf-8")
+    preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
+    monkeypatch.setattr(
+        allocator, "prepare_reconstruction_gpu_canary", lambda **_kwargs: admission
+    )
+    monkeypatch.setattr(
+        allocator,
+        "validate_isaac_verification_worker_bundle_receipt",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        allocator,
+        "read_sensitive_url_file",
+        lambda _path, *, label: (
+            f"https://objects.example/{label}",
+            {"mode_is_0600": True},
+        ),
+    )
+    monkeypatch.setattr(allocator, "get_render_provider", lambda _name: object())
+    calls = []
+
+    def fake_isaac(**kwargs):
+        calls.append(kwargs)
+        return {
+            "schema_version": "reconstruction_isaac_vast_execution.v1",
+            "status": "completed",
+            "provider_mutations_performed": 2,
+            "cost_usd": 0.1,
+        }
+
+    monkeypatch.setattr(
+        allocator, "run_reconstruction_isaac_vast_operation", fake_isaac
+    )
+    monkeypatch.setattr(
+        allocator,
+        "run_reconstruction_vast_operation",
+        lambda **_kwargs: pytest.fail("pose/trainer adapter must not receive Isaac"),
+    )
+    args = SimpleNamespace(
+        reconstruction_refresh_preflight=False,
+        provider_launch_request=str(tmp_path / "unused-request.json"),
+        preflight_bundle=str(preflight_path),
+        admission_out=str(tmp_path / "admission.json"),
+        bound_request_out=str(bound_path),
+        adapter_output=str(tmp_path / "adapter.json"),
+        provider="vast",
+        expected_source_commit=SHA,
+        reconstruction_max_spend_usd=18.0,
+        reconstruction_hard_ttl_seconds=3600,
+        reconstruction_retry_cap=1,
+        reconstruction_authority_id="user-authorized",
+        execute=True,
+        provider_output_put_url_file=str(tmp_path / "put-url"),
+        provider_output_get_url_file=str(tmp_path / "get-url"),
+        provider_bundle_url_file=str(tmp_path / "input-url"),
+        reconstruction_operation_receipt_url_file=str(tmp_path / "receipt-url"),
+        reconstruction_operation_bundle_receipt=str(receipt_path),
+    )
+    result = allocator._run_reconstruction_gpu_canary(args, checkout_commit=SHA)
+    assert result["status"] == "completed"
+    assert len(calls) == 1
+    assert calls[0]["bundle_receipt"] == receipt
+    assert calls[0]["job_dir"].name == "reconstruction_isaac_vast_operation"
+    assert calls[0]["input_bundle_get_url"].endswith("provider_bundle_url")

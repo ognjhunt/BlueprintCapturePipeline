@@ -690,13 +690,15 @@ explicit disk floor and hourly-rate ceiling, records both scoped and global
 inventory, and performs zero provider mutations. It does not reserve an offer
 or bypass the independent budget, TTL, retry, clean/pushed-SHA, image, transport,
 watchdog, or paid-lane gates.
-Admission recognizes worker-smoke, pose-canary, and trainer-canary request
-contracts, but executor qualification is operation-specific. Only
-`worker_smoke` currently has a qualified Vast lifecycle adapter. Pose or trainer
-execution therefore remains blocked before provider mutation even if a caller
-sets the general execute flag; dry-run admission names the missing operation
-adapter instead of implying that a healthcheck executor can run scientific
-work.
+Admission recognizes worker-smoke, pose-canary, trainer-canary, and isaac-canary
+request contracts, and executor qualification remains operation-specific. Each
+now has a focused-tested Vast lifecycle: worker smoke uses the image
+healthcheck, pose/trainer use registered operation bundles and candidate-output
+validation, and Isaac uses its separate exact-package runtime bundle and
+independent compatibility normalizer. None has run on a resolved image in this
+lane, so adapter qualification does not imply a built image, live provider
+execution, reconstruction quality, Isaac compatibility, task success, physical
+success, or deployment readiness.
 
 ## Strict external reconstruction import
 
@@ -958,11 +960,11 @@ contract, not a built-image or live-provider result: no resolved reconstruction
 worker image has yet been built or run, and admission, allocation, or a passing
 worker smoke can never establish reconstruction quality.
 
-The current live gate therefore remains external and explicit: provide a clean
+The live gate remains external and explicit: provide a clean
 immutable source commit, a resolved `linux/amd64` image digest built from the
 pinned recipe, immutable dataset/split/calibration digests, numeric dollar
-budget, numeric TTL and retry cap, an authority identifier, and the two private
-signed URL files. Invoke it only through `python -m
+budget, numeric TTL and retry cap, an authority identifier, and the private
+signed URL files required by the selected operation. Invoke it only through `python -m
 blueprint_pipeline.paid_resource_allocator gpu-canary --probe-kind
 reconstruction-worker-smoke`; direct adapter launch has no admission capability.
 
@@ -998,6 +1000,22 @@ provider-zero receipts without provider access. A completed adapter result says
 only that provider execution and candidate transport completed: the nested pose
 or trainer status remains separate and no scientific qualification is inferred.
 This lifecycle is hermetically tested but has not run against a built pinned
-image or live Vast instance. Isaac remains separately unavailable on its own
-runtime image; neither worker smoke nor pose/trainer completion can stand in for
-Isaac, collision, physical, or deployment evidence.
+image or live Vast instance. Neither worker smoke nor pose/trainer completion
+can stand in for Isaac, collision, physical, or deployment evidence.
+
+`isaac_canary` has a separate focused-tested Vast lifecycle behind the same
+canonical allocator. It accepts only `isaac_verification_worker_bundle.v1`,
+downloads and validates the exact bundle and canonical receipt before provider
+allocation, and uses the pinned Isaac runtime image rather than the trainer
+image. The worker bootstrap materializes only declared members, enforces the
+hard TTL and a live 16 MiB process-log ceiling, strips signed transport URLs
+from the Isaac child, and accepts only `(0, completed)` or `(2, blocked)`. Its
+deterministic output ZIP contains the typed v3 result and every declared render.
+The controller retrieves and independently re-hashes output before teardown,
+then normalizes the exact staged USDZ and render bytes. A typed runtime blocker
+is a replayable scientific abstention, not infrastructure success. Offline
+replay reproduces qualification, teardown, and provider-zero without an agent
+or provider. Spend and scoped/global provider-zero remain separate. The request
+uses one GPU; authorization for more GPUs does not bypass global-zero or paid
+lane ownership. This adapter is hermetically qualified only: no resolved Isaac
+image or live Vast Isaac run has established compatibility.

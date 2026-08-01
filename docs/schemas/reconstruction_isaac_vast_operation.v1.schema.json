@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_isaac_vast_operation.v1.schema.json",
+  "oneOf": [
+    {"$ref": "#/$defs/execution"},
+    {"$ref": "#/$defs/replay"},
+    {"$ref": "#/$defs/teardown"},
+    {"$ref": "#/$defs/provider_zero"},
+    {"$ref": "#/$defs/qualification"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nullable_digest": {
+      "oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
+    },
+    "image": {
+      "type": "string",
+      "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+    },
+    "execution": {
+      "type": "object",
+      "required": [
+        "schema_version", "status", "operation", "request_digest",
+        "bound_request_digest", "isaac_verification_request_digest",
+        "input_bundle_digest", "worker_image_digest", "source_commit_sha",
+        "provider", "instance_id", "gpu_count", "fetch_attempts",
+        "output_bundle_digest", "output_bundle_receipt_digest",
+        "runtime_result_digest", "runtime_status",
+        "independent_qualification_status", "independent_qualification_digest",
+        "output_retrieved_before_teardown", "duration_seconds", "cost_usd",
+        "provider_mutations_performed", "provider_mutation_outcome_ambiguous",
+        "blockers", "teardown_receipt_digest", "provider_zero_digest",
+        "provider_zero_verified", "simulator_task_success_proven",
+        "physical_success_proven", "deployment_readiness_proven",
+        "proof_effect", "claim_ceiling", "execution_result_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_isaac_vast_execution.v1"},
+        "status": {"enum": ["completed", "failed"]},
+        "operation": {"const": "isaac_canary"},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "bound_request_digest": {"$ref": "#/$defs/digest"},
+        "isaac_verification_request_digest": {"$ref": "#/$defs/digest"},
+        "input_bundle_digest": {"$ref": "#/$defs/digest"},
+        "worker_image_digest": {"$ref": "#/$defs/image"},
+        "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "provider": {"const": "vast"},
+        "instance_id": {"type": ["string", "null"]},
+        "gpu_count": {"const": 1},
+        "fetch_attempts": {"type": "integer", "minimum": 0},
+        "output_bundle_digest": {"$ref": "#/$defs/nullable_digest"},
+        "output_bundle_receipt_digest": {"$ref": "#/$defs/nullable_digest"},
+        "runtime_result_digest": {"$ref": "#/$defs/nullable_digest"},
+        "runtime_status": {"type": ["string", "null"]},
+        "independent_qualification_status": {"type": ["string", "null"]},
+        "independent_qualification_digest": {"$ref": "#/$defs/nullable_digest"},
+        "output_retrieved_before_teardown": {"type": "boolean"},
+        "duration_seconds": {"type": "number", "minimum": 0},
+        "cost_usd": {"type": "number", "minimum": 0},
+        "provider_mutations_performed": {"type": "integer", "minimum": 0},
+        "provider_mutation_outcome_ambiguous": {"type": "boolean"},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+        "teardown_receipt_digest": {"$ref": "#/$defs/digest"},
+        "provider_zero_digest": {"$ref": "#/$defs/digest"},
+        "provider_zero_verified": {"type": "boolean"},
+        "simulator_task_success_proven": {"const": false},
+        "physical_success_proven": {"const": false},
+        "deployment_readiness_proven": {"const": false},
+        "proof_effect": {
+          "enum": ["none", "isaac_load_render_physics_presence_only"]
+        },
+        "claim_ceiling": {
+          "enum": [
+            "provider_execution_and_runtime_evidence_only",
+            "isaac_load_render_compatibility"
+          ]
+        },
+        "execution_result_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "replay": {
+      "type": "object",
+      "required": [
+        "schema_version", "status", "operation", "request_digest",
+        "bound_request_digest", "execution_result_digest", "runtime_status",
+        "independent_qualification_status", "blockers", "live_provider_accessed",
+        "live_agent_accessed", "simulator_task_success_proven",
+        "physical_success_proven", "deployment_readiness_proven",
+        "proof_effect", "claim_ceiling", "replay_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_isaac_vast_replay.v1"},
+        "status": {"enum": ["replay_verified", "replay_rejected"]},
+        "operation": {"const": "isaac_canary"},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "bound_request_digest": {"$ref": "#/$defs/digest"},
+        "execution_result_digest": {"$ref": "#/$defs/nullable_digest"},
+        "runtime_status": {"type": ["string", "null"]},
+        "independent_qualification_status": {"type": ["string", "null"]},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+        "live_provider_accessed": {"const": false},
+        "live_agent_accessed": {"const": false},
+        "simulator_task_success_proven": {"const": false},
+        "physical_success_proven": {"const": false},
+        "deployment_readiness_proven": {"const": false},
+        "proof_effect": {
+          "enum": ["none", "isaac_load_render_physics_presence_only"]
+        },
+        "claim_ceiling": {"type": "string", "minLength": 1},
+        "replay_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "teardown": {
+      "type": "object",
+      "required": [
+        "schema_version", "status", "provider", "operation", "request_digest",
+        "bound_request_digest", "worker_image_digest", "instance_id",
+        "output_retrieved_before_teardown", "terminate_result",
+        "provider_zero_verified", "timestamp", "teardown_receipt_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_isaac_vast_teardown.v1"},
+        "status": {"enum": ["PASS", "FAIL"]},
+        "provider": {"const": "vast"},
+        "operation": {"const": "isaac_canary"},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "bound_request_digest": {"$ref": "#/$defs/digest"},
+        "worker_image_digest": {"$ref": "#/$defs/image"},
+        "instance_id": {"type": ["string", "null"]},
+        "output_retrieved_before_teardown": {"type": "boolean"},
+        "terminate_result": {"type": "object"},
+        "provider_zero_verified": {"type": "boolean"},
+        "timestamp": {"type": "string", "minLength": 1},
+        "teardown_receipt_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "provider_zero": {
+      "type": "object",
+      "required": [
+        "schema_version", "status", "provider", "operation", "request_digest",
+        "scoped_live_resource_count", "global_live_resource_count",
+        "api_confirmed", "timestamp", "provider_zero_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_isaac_vast_provider_zero.v1"},
+        "status": {"enum": ["PASS", "FAIL"]},
+        "provider": {"const": "vast"},
+        "operation": {"const": "isaac_canary"},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "scoped_live_resource_count": {"type": "integer", "minimum": 0},
+        "global_live_resource_count": {"type": "integer", "minimum": 0},
+        "api_confirmed": {"type": "boolean"},
+        "timestamp": {"type": "string", "minLength": 1},
+        "provider_zero_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "required": [
+        "schema_version", "status", "isaac_verification_request_digest",
+        "runtime_result_digest", "qualified_result_digest", "blockers",
+        "simulator_task_success_proven", "physical_success_proven",
+        "deployment_readiness_proven", "proof_effect", "claim_ceiling",
+        "qualification_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "reconstruction_isaac_independent_qualification.v1"},
+        "status": {"enum": ["verified_compatibility_only", "abstained"]},
+        "isaac_verification_request_digest": {"$ref": "#/$defs/digest"},
+        "runtime_result_digest": {"$ref": "#/$defs/digest"},
+        "qualified_result_digest": {"$ref": "#/$defs/nullable_digest"},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+        "simulator_task_success_proven": {"const": false},
+        "physical_success_proven": {"const": false},
+        "deployment_readiness_proven": {"const": false},
+        "proof_effect": {
+          "enum": ["none", "isaac_load_render_physics_presence_only"]
+        },
+        "claim_ceiling": {
+          "enum": ["runtime_evidence_only", "isaac_load_render_compatibility"]
+        },
+        "qualification_digest": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

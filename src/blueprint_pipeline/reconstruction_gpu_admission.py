@@ -29,7 +29,12 @@ CAPTURE_PROFILES = {
     "trainer_smoke_fixture",
 }
 OPERATIONS = {"worker_smoke", "pose_canary", "trainer_canary", "isaac_canary"}
-EXECUTABLE_OPERATIONS = {"worker_smoke", "pose_canary", "trainer_canary"}
+EXECUTABLE_OPERATIONS = {
+    "worker_smoke",
+    "pose_canary",
+    "trainer_canary",
+    "isaac_canary",
+}
 EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "worker_smoke": "reconstruction_vast_worker_smoke_result.v1",
     "pose_canary": "pose_estimation_result.v1",
