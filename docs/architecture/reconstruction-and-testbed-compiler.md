@@ -555,6 +555,20 @@ independently validates both the archive and returned receipt and still requires
 its separate numeric spend/TTL envelope, watchdog, teardown, and provider-zero
 proof. A build receipt remains below the GPU runtime-smoke and scientific gates.
 
+`reconstruction_worker_build_receipt_normalization.py` closes the evidence seam
+between that shared CPU builder and the stable worker contract consumed by pose
+and training request compilation. It accepts only a ready, canonical, untampered
+v2 packet; a digest- and registry-repository-bound remote build receipt; the
+matching completed outer builder result; and a teardown record whose independent
+lookup confirms provider absence. Source SHA, worker stack, build context,
+license inventory, human review receipt, paid-authority envelope, image digest,
+duration, and spend must all agree and remain inside the frozen cap and TTL. The
+normalized `reconstruction_worker_build_receipt.v1` retains digests for every
+parent record and explicitly records that the GPU healthcheck has not run. It
+therefore proves only exact image construction plus CPU-builder teardown, never
+GPU compatibility, reconstruction quality, Isaac compatibility, physical
+success, or deployment readiness.
+
 After the Vast-first runtime smoke, `reconstruction_worker_smoke_receipt.py`
 normalizes the digest-bound healthcheck, execution, teardown, provider-zero, and
 paid-authority records into the canonical
