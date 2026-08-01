@@ -1179,15 +1179,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             OPENPI_POLICY_RANKING_PROBE_KIND,
             NEW_SITE_CANARY_PROBE_KIND,
         }:
+            expected_image_source_commit = (
+                args.expected_image_source_commit or args.expected_source_commit
+            )
             missing = [
                 name
                 for name in (
                     "openpi_input_bundle_receipt",
                     "openpi_input_secret_url_file",
                     "openpi_output_secret_put_url_file",
-                    "expected_source_commit",
+                    "expected_image_source_commit",
                 )
-                if not getattr(args, name, None)
+                if not (
+                    expected_image_source_commit
+                    if name == "expected_image_source_commit"
+                    else getattr(args, name, None)
+                )
             ]
             if args.execute:
                 missing.extend(
@@ -1211,18 +1218,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
                 write_json(Path(args.admission_out), result)
             else:
-                source_blockers, checkout_commit = _source_checkout_blockers(
-                    args.expected_source_commit or "",
-                    allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
+                source_blockers, control_plane_identity = (
+                    _control_plane_checkout_blockers()
                 )
                 if source_blockers:
                     result = {
                         "status": "blocked",
                         "blockers": source_blockers,
+                        "control_plane_identity": control_plane_identity,
                         "provider_mutations_performed": 0,
                     }
                     write_json(Path(args.admission_out), result)
                 else:
+                    write_json(
+                        Path(args.adapter_output).expanduser().resolve().parent
+                        / "openpi_control_plane_identity.json",
+                        control_plane_identity,
+                    )
                     result = run_openpi_policy_ranking_campaign(
                         release_evidence=args.release_evidence,
                         input_bundle_receipt=args.openpi_input_bundle_receipt,
@@ -1233,7 +1245,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         input_secret_url_file=args.openpi_input_secret_url_file,
                         output_secret_put_url_file=(args.openpi_output_secret_put_url_file),
                         pod_name=args.pod_name,
-                        expected_source_commit=checkout_commit,
+                        expected_source_commit=expected_image_source_commit,
                         execute=args.execute,
                         hard_ttl_seconds=args.openpi_hard_ttl_seconds,
                         max_spend_usd=args.openpi_max_spend_usd,

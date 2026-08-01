@@ -676,6 +676,7 @@ def test_gpu_canary_forwards_strict_policy_smoke_probe_kind(
 )
 def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator(
     probe_kind: str,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -688,9 +689,20 @@ def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator
     monkeypatch.setattr(
         allocator, "run_openpi_policy_ranking_campaign", fake_run_openpi
     )
+    control_commit = "d" * 40
     monkeypatch.setattr(
-        allocator, "_source_checkout_blockers", lambda _expected, **_kwargs: ([], "c" * 40)
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: (
+            [],
+            {
+                "schema_version": "blueprint.gpu_canary_control_plane_identity.v1",
+                "orchestrator_source_commit": control_commit,
+                "checkout_clean": True,
+            },
+        ),
     )
+    adapter_path = tmp_path / "adapter.json"
     exit_code = allocator.main(
         [
             "gpu-canary",
@@ -707,7 +719,7 @@ def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator
             "--bound-request-out",
             "bound.json",
             "--adapter-output",
-            "adapter.json",
+            str(adapter_path),
             "--pod-name",
             "blueprint-groot-oscar-canary-openpi-ranking-test",
             "--expected-source-commit",
@@ -728,6 +740,80 @@ def test_gpu_canary_dispatches_openpi_policy_ranking_through_canonical_allocator
     assert observed["execute"] is False
     assert observed["input_bundle_receipt"] == "input-receipt.json"
     assert observed["provider_name"] == "vast"
+    assert json.loads(
+        (tmp_path / "openpi_control_plane_identity.json").read_text(encoding="utf-8")
+    )["orchestrator_source_commit"] == control_commit
+    assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def test_openpi_canary_binds_distinct_image_and_orchestrator_commits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+    image_commit = "9" * 40
+    orchestrator_commit = "f" * 40
+
+    monkeypatch.setattr(
+        allocator,
+        "run_openpi_policy_ranking_campaign",
+        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: (
+            [],
+            {
+                "schema_version": "blueprint.gpu_canary_control_plane_identity.v1",
+                "orchestrator_source_commit": orchestrator_commit,
+                "checkout_clean": True,
+            },
+        ),
+    )
+    adapter_path = tmp_path / "adapter.json"
+
+    exit_code = allocator.main(
+        [
+            "gpu-canary",
+            "--provider-launch-request",
+            "unused-request.json",
+            "--release-evidence",
+            "release.json",
+            "--model-cache-evidence",
+            "unused-models.json",
+            "--preflight-bundle",
+            "preflight.json",
+            "--admission-out",
+            str(tmp_path / "admission.json"),
+            "--bound-request-out",
+            str(tmp_path / "bound.json"),
+            "--adapter-output",
+            str(adapter_path),
+            "--pod-name",
+            "blueprint-groot-oscar-canary-openpi-ranking-distinct-identity",
+            "--expected-source-commit",
+            orchestrator_commit,
+            "--expected-image-source-commit",
+            image_commit,
+            "--probe-kind",
+            allocator.NEW_SITE_CANARY_PROBE_KIND,
+            "--openpi-input-bundle-receipt",
+            "input-receipt.json",
+            "--openpi-input-secret-url-file",
+            "input-url.txt",
+            "--openpi-output-secret-put-url-file",
+            "output-url.txt",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed["expected_source_commit"] == image_commit
+    identity = json.loads(
+        (tmp_path / "openpi_control_plane_identity.json").read_text(encoding="utf-8")
+    )
+    assert identity["orchestrator_source_commit"] == orchestrator_commit
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 
