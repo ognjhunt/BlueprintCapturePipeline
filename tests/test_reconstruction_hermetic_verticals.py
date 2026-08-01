@@ -432,6 +432,8 @@ def test_native_360_hermetic_vertical_validates_rig_then_abstains(tmp_path: Path
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
             ],
+            "transform_semantics": "rear_camera_from_front_rig",
+            "translation_units": "meters",
             "calibration_source": "official_sdk_sidecar",
             "calibration_source_digest": profile["calibration_source_digest"],
         },

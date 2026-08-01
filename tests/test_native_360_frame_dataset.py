@@ -164,6 +164,8 @@ def _normalized_artifacts(
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
             ],
+            "transform_semantics": "rear_camera_from_front_rig",
+            "translation_units": "meters",
             "calibration_source": "official_sdk_sidecar",
             "calibration_source_digest": CALIBRATION_DIGEST,
         },

@@ -323,6 +323,12 @@ observation time from that declared start plus relative front-lens PTS. Missing,
 invalid, or overlapping segment timing fails closed rather than inferring order
 from filenames or segment position.
 
+Fixed rig extrinsics are accepted only with an explicit transform direction
+(`rear_camera_from_front_rig` or its declared inverse) and translation units in
+meters. The legacy matrix label alone is intentionally insufficient: without
+those declarations the normalizer abstains, so a downstream COLMAP adapter
+cannot silently guess `cam_from_rig` semantics or manufacture calibration.
+
 The same module now provides a bounded ffmpeg lens decoder. It uses only the
 validated source path, source digest, declared physical-lens stream indices, and
 declared frame-pair ordinals; invokes no shell; applies per-frame timeout and

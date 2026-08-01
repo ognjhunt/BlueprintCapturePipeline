@@ -648,6 +648,8 @@ def _fixture(
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
             ],
+            "transform_semantics": "rear_camera_from_front_rig",
+            "translation_units": "meters",
             "calibration_source": "official_sdk_sidecar",
             "calibration_source_digest": CALIBRATION_DIGEST,
         },
@@ -896,6 +898,43 @@ def test_native_360_unsynchronized_streams_abstain_without_rebinding(
         )
     )
     assert binding["agent_may_rebind_lens_streams"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        (
+            "transform_semantics",
+            None,
+            "native_360_rig_transform_semantics_missing",
+        ),
+        (
+            "translation_units",
+            "unknown",
+            "native_360_rig_translation_units_invalid",
+        ),
+    ],
+)
+def test_native_360_ambiguous_rig_transform_fails_closed(
+    tmp_path: Path, field: str, value: str | None, expected: str
+) -> None:
+    capture_root = tmp_path / "capture"
+    metadata, receipts = _fixture(capture_root)
+    if value is None:
+        metadata["rig_extrinsics"].pop(field)
+    else:
+        metadata["rig_extrinsics"][field] = value
+
+    result = _normalize(
+        capture_root,
+        tmp_path / "output",
+        metadata,
+        receipts,
+    )
+
+    assert result["status"] == "blocked"
+    assert expected in result["blockers"]
+    assert result["agent_altered_calibration"] is False
 
 
 def test_native_360_calibration_dimensions_must_match_probed_stream(

@@ -776,6 +776,16 @@ def _calibrated_rig(
         if isinstance(extrinsics, Mapping)
         else None
     )
+    transform_semantics = (
+        str(extrinsics.get("transform_semantics") or "")
+        if isinstance(extrinsics, Mapping)
+        else ""
+    )
+    translation_units = (
+        str(extrinsics.get("translation_units") or "")
+        if isinstance(extrinsics, Mapping)
+        else ""
+    )
     if set(by_lens) != _LENS_IDS:
         blockers.append("native_360_complete_lens_calibration_missing")
     if transform is None:
@@ -786,6 +796,13 @@ def _calibrated_rig(
         "qualified_external_calibration",
     } or not _is_digest(extrinsics_source_digest):
         blockers.append("native_360_rig_extrinsics_provenance_missing")
+    if transform_semantics not in {
+        "rear_camera_from_front_rig",
+        "front_rig_from_rear_camera",
+    }:
+        blockers.append("native_360_rig_transform_semantics_missing")
+    if translation_units != "meters":
+        blockers.append("native_360_rig_translation_units_invalid")
     rig = {
         "schema_version": CAMERA_360_RIG_SCHEMA_VERSION,
         "capture_digest": capture_digest,
@@ -795,6 +812,8 @@ def _calibrated_rig(
         "lens_calibrations": [by_lens[lens_id] for lens_id in sorted(by_lens)],
         "rig_extrinsics": {
             "T_front_rear": transform,
+            "transform_semantics": transform_semantics,
+            "translation_units": translation_units,
             "calibration_source": extrinsics_source,
             "calibration_source_digest": extrinsics_source_digest,
         },

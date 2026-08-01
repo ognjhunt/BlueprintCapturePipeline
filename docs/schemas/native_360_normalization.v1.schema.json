@@ -91,7 +91,26 @@
         "capture_mode": {"type": "string", "minLength": 1},
         "firmware_version": {"type": "string"},
         "lens_calibrations": {"type": "array", "maxItems": 2},
-        "rig_extrinsics": {"type": "object"},
+        "rig_extrinsics": {
+          "type": "object",
+          "required": [
+            "T_front_rear", "transform_semantics", "translation_units",
+            "calibration_source", "calibration_source_digest"
+          ],
+          "properties": {
+            "T_front_rear": {"type": ["array", "null"]},
+            "transform_semantics": {
+              "enum": [
+                "rear_camera_from_front_rig",
+                "front_rig_from_rear_camera"
+              ]
+            },
+            "translation_units": {"const": "meters"},
+            "calibration_source": {"type": "string"},
+            "calibration_source_digest": {"$ref": "#/$defs/sha256"}
+          },
+          "additionalProperties": false
+        },
         "rig_is_fixed": {"type": "boolean"},
         "calibration_status": {"enum": ["valid", "invalid"]},
         "metric_scale_status": {"const": "not_established"},
