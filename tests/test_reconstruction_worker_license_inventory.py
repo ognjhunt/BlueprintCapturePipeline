@@ -16,6 +16,7 @@ from blueprint_pipeline.reconstruction_worker_contracts import (
 from blueprint_pipeline.reconstruction_worker_license_inventory import (
     ReconstructionWorkerLicenseInventoryError,
     build_reconstruction_worker_license_inventory,
+    build_reconstruction_worker_license_review_request,
     parse_hashed_requirements_lock,
     validate_reconstruction_worker_license_inventory,
     validate_reconstruction_worker_license_review_receipt,
@@ -130,6 +131,37 @@ def test_actual_worker_lock_emits_non_authorizing_review_inventory() -> None:
 def test_inventory_conforms_to_versioned_schema() -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator(schema).validate(_inventory())
+
+
+def test_review_request_exposes_exact_human_gate_without_granting_authority() -> None:
+    inventory = _inventory()
+    request = build_reconstruction_worker_license_review_request(
+        license_inventory=inventory,
+        timestamp="2026-08-01T12:00:00Z",
+    )
+    assert request["status"] == "human_review_required"
+    assert request["review_items"] == inventory["blockers"]
+    assert request["agent_may_complete_review"] is False
+    assert request["paid_execution_authorized_by_request"] is False
+    assert request["requested_scope"]["redistribution"] is False
+    schema = json.loads(
+        (
+            REPO_ROOT
+            / "docs/schemas/reconstruction_worker_license_review_request.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.Draft202012Validator(schema).validate(request)
+
+    tampered = copy.deepcopy(inventory)
+    tampered["blockers"] = []
+    with pytest.raises(
+        ReconstructionWorkerLicenseInventoryError,
+        match="license_inventory_digest_invalid",
+    ):
+        build_reconstruction_worker_license_review_request(
+            license_inventory=tampered,
+            timestamp="2026-08-01T12:00:00Z",
+        )
 
 
 def test_v2_human_receipt_binds_every_inventory_identity_and_blocker() -> None:

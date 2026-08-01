@@ -21,6 +21,7 @@ from .reconstruction_worker_contracts import (
 
 SCHEMA_VERSION = "reconstruction_worker_license_inventory.v1"
 REVIEW_RECEIPT_SCHEMA_VERSION = "reconstruction_worker_license_review_receipt.v2"
+REVIEW_REQUEST_SCHEMA_VERSION = "reconstruction_worker_license_review_request.v1"
 _REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s\\]+)\s*\\$")
 _HASH = re.compile(r"--hash=sha256:([0-9a-f]{64})(?:\s*\\)?$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -242,6 +243,56 @@ def build_reconstruction_worker_license_inventory(
         artifact, digest_field="license_inventory_digest"
     )
     return artifact
+
+
+def build_reconstruction_worker_license_review_request(
+    *, license_inventory: Mapping[str, Any], timestamp: str
+) -> dict[str, Any]:
+    """Describe the exact human decision needed without issuing that decision."""
+
+    inventory = json.loads(json.dumps(dict(license_inventory)))
+    digest = inventory.get("license_inventory_digest")
+    if digest != canonical_digest(inventory, digest_field="license_inventory_digest"):
+        raise ReconstructionWorkerLicenseInventoryError(
+            "license_inventory_digest_invalid"
+        )
+    if inventory.get("agent_approval_permitted") is not False:
+        raise ReconstructionWorkerLicenseInventoryError(
+            "agent_approval_boundary_invalid"
+        )
+    request = {
+        "schema_version": REVIEW_REQUEST_SCHEMA_VERSION,
+        "status": "human_review_required",
+        "source_commit_sha": inventory.get("source_commit_sha"),
+        "worker_stack_manifest_digest": inventory.get(
+            "worker_stack_manifest_digest"
+        ),
+        "license_inventory_digest": digest,
+        "requested_scope": {
+            "registry_visibility": "private",
+            "internal_build": True,
+            "internal_evaluation": True,
+            "redistribution": False,
+            "commercial_distribution": False,
+        },
+        "inventory_status": inventory.get("status"),
+        "review_items": list(inventory.get("blockers") or []),
+        "required_reviewer_assertions": [
+            "reviewer_examined_the_digest_bound_inventory",
+            "reviewer_has_authority_for_private_internal_build",
+            "reviewer_accepts_recorded_inventory_blockers_for_internal_evaluation",
+            "reviewer_does_not_authorize_redistribution_or_commercial_distribution",
+        ],
+        "agent_may_complete_review": False,
+        "paid_execution_authorized_by_request": False,
+        "proof_effect": "none",
+        "claim_ceiling": "human_license_review_request_only",
+        "timestamp": timestamp,
+    }
+    request["license_review_request_digest"] = canonical_digest(
+        request, digest_field="license_review_request_digest"
+    )
+    return request
 
 
 def validate_reconstruction_worker_license_inventory(
