@@ -471,6 +471,15 @@ callers remain on v1 and cannot satisfy the physics-presence gate. The v3 code
 path and worker bundle are hermetically contract-tested but remain real-Isaac
 unverified until executed on the pinned GPU worker.
 
+For reconstruction GPU admission, the canonical `gpu-canary` seam can refresh
+the supplied preflight bundle with mutation-free Vast marketplace and billable
+inventory calls by using `--reconstruction-refresh-preflight`. The refresh
+reuses the frozen watchdog and conflicting-owner declarations, requires an
+explicit disk floor and hourly-rate ceiling, records both scoped and global
+inventory, and performs zero provider mutations. It does not reserve an offer
+or bypass the independent budget, TTL, retry, clean/pushed-SHA, image, transport,
+watchdog, or paid-lane gates.
+
 ## Strict external reconstruction import
 
 Phase 6 preserves the legacy Scaniverse staging command for operator

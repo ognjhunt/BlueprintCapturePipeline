@@ -92,6 +92,7 @@ from .policy_ranking_cosmos_reasoner_gpu_admission import (
 from .policy_ranking_successor_retained_session import refresh_retained_session
 from .reconstruction_gpu_admission import (
     PROBE_KIND as RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
+    collect_reconstruction_vast_preflight,
     prepare_reconstruction_gpu_canary,
 )
 from .reconstruction_vast_worker_smoke import run_reconstruction_vast_worker_smoke
@@ -579,6 +580,52 @@ def _run_reconstruction_gpu_canary(
 ) -> dict[str, Any]:
     """Admit and optionally execute the Vast-first worker smoke."""
 
+    if getattr(args, "reconstruction_refresh_preflight", False):
+        seed = _load(args.preflight_bundle)
+        provider = get_render_provider(args.provider)
+        capacity_request = seed.get("capacity_request")
+        capacity_request = capacity_request if isinstance(capacity_request, dict) else {}
+        max_hourly_rate = getattr(args, "reconstruction_max_hourly_rate_usd", None)
+        if max_hourly_rate is None:
+            max_hourly_rate = capacity_request.get("max_hourly_rate_usd")
+        container_disk_bytes = getattr(args, "reconstruction_container_disk_bytes", None)
+        if container_disk_bytes is None:
+            container_disk_bytes = seed.get("container_disk_bytes")
+        if (
+            isinstance(max_hourly_rate, bool)
+            or not isinstance(max_hourly_rate, (int, float))
+            or float(max_hourly_rate) <= 0
+        ):
+            max_hourly_rate = 0.0
+        if (
+            isinstance(container_disk_bytes, bool)
+            or not isinstance(container_disk_bytes, int)
+            or container_disk_bytes < 0
+        ):
+            container_disk_bytes = 0
+        refreshed = collect_reconstruction_vast_preflight(
+            name_prefix=getattr(
+                args,
+                "reconstruction_name_prefix",
+                "blueprint-reconstruction-",
+            ),
+            container_disk_bytes=container_disk_bytes,
+            watchdog=(
+                seed.get("watchdog")
+                if isinstance(seed.get("watchdog"), dict)
+                else {}
+            ),
+            conflicting_owner_present=(
+                seed.get("conflicting_owner_present") is not False
+            ),
+            capacity_probe=provider.capacity_preflight,
+            inventory_probe=lambda prefix: provider.billable_inventory(
+                name_prefix=prefix
+            ),
+            max_hourly_rate_usd=float(max_hourly_rate),
+        )
+        write_json(Path(args.preflight_bundle), refreshed)
+
     admission = prepare_reconstruction_gpu_canary(
         request_path=args.provider_launch_request,
         preflight_path=args.preflight_bundle,
@@ -780,6 +827,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--reconstruction-hard-ttl-seconds", type=int)
     gpu.add_argument("--reconstruction-retry-cap", type=int)
     gpu.add_argument("--reconstruction-authority-id")
+    gpu.add_argument(
+        "--reconstruction-refresh-preflight",
+        action="store_true",
+        help=(
+            "Refresh mutation-free Vast capacity and provider inventory in the "
+            "preflight bundle before reconstruction admission."
+        ),
+    )
+    gpu.add_argument(
+        "--reconstruction-name-prefix",
+        default="blueprint-reconstruction-",
+    )
+    gpu.add_argument("--reconstruction-container-disk-bytes", type=int)
+    gpu.add_argument("--reconstruction-max-hourly-rate-usd", type=float)
     gpu.add_argument(
         "--qualification-action",
         choices=QUALIFICATION_SESSION_ACTIONS,

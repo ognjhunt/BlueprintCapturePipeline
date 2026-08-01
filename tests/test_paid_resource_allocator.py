@@ -734,6 +734,65 @@ def test_reconstruction_gpu_execute_routes_through_shared_grant_and_vast_adapter
     )
 
 
+def test_reconstruction_gpu_refreshes_read_only_vast_preflight_before_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _reconstruction_args(tmp_path, execute=False)
+    args.reconstruction_refresh_preflight = True
+    args.reconstruction_name_prefix = "blueprint-reconstruction-"
+    args.reconstruction_container_disk_bytes = 120 * 1024**3
+    args.reconstruction_max_hourly_rate_usd = 0.75
+    Path(args.preflight_bundle).write_text(
+        json.dumps(
+            {
+                "watchdog": {"status": "armed", "independent_process": True},
+                "conflicting_owner_present": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed: dict[str, object] = {}
+
+    class Provider:
+        def capacity_preflight(self, request: object) -> dict[str, object]:
+            observed["capacity_request"] = request
+            return {
+                "status": "available",
+                "selected_offer": {
+                    "gpu_name": "L40",
+                    "gpu_ram_mb": 46_068,
+                    "on_demand_price_usd_per_hour": 0.45,
+                },
+            }
+
+        def billable_inventory(self, *, name_prefix: str) -> dict[str, object]:
+            observed.setdefault("inventory_prefixes", []).append(name_prefix)  # type: ignore[union-attr]
+            return {"api_confirmed": True, "live_resource_count": 0}
+
+    monkeypatch.setattr(allocator, "get_render_provider", lambda _name: Provider())
+
+    def fake_prepare(**kwargs: object) -> dict[str, object]:
+        observed["preflight"] = json.loads(
+            Path(str(kwargs["preflight_path"])).read_text(encoding="utf-8")
+        )
+        return {"status": "dry_run_ready", "blockers": []}
+
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", fake_prepare)
+
+    result = allocator._run_reconstruction_gpu_canary(
+        args, checkout_commit="c" * 40
+    )
+
+    assert result["status"] == "dry_run_ready"
+    preflight = observed["preflight"]
+    assert isinstance(preflight, dict)
+    assert preflight["schema_version"] == "reconstruction_gpu_provider_preflight.v1"
+    assert preflight["status"] == "verified"
+    assert preflight["provider_inventory_verified_zero"] is True
+    assert preflight["provider_mutations_performed"] == 0
+    assert observed["inventory_prefixes"] == ["blueprint-reconstruction-", ""]
+
+
 def test_reconstruction_gpu_execute_refuses_insecure_transport_before_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
