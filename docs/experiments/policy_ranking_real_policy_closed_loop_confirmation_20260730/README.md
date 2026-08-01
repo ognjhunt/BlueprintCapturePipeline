@@ -228,6 +228,13 @@ used as blind confirmation.
   and provider-zero evidence; bind WAM3's exact generated observation and
   commanded-prefix state to one same-checkpoint policy query 4; and preserve
   all existing one-GPU, spend, watchdog, TTL, and teardown controls;
+- `protocol_amendment_24_policy_query4_startup_failure_and_retry_v1.md` and
+  `compute_authorization_openpi_policy_query_4_retry_1.json` — preserve the
+  first query-4 allocation's unbooted Vast failure, exact teardown, cost,
+  settlement, and provider-zero evidence; freeze the generic provider-terminal
+  polling correction at runtime SHA `529bc396`; and bind one scientifically
+  identical query-4 retry to a versioned input archive and a fresh global-zero
+  preflight;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
@@ -238,7 +245,10 @@ generated-only WAM transitions have now passed their immediate reliability
 gates. The same frozen `pi05_droid` checkpoint was re-queried after each of the
 first three using only the three generated views and registered commanded
 state. WAM3's exact generated observation is frozen as the only input to policy
-query 4. The next finite gate is immutable publication and paid execution of
-that same-policy query. Interaction four is complete only if query 4 returns a
-valid, identity-bound native action. Judges remain forbidden until the complete
-12-interaction episode and causal-control matrix pass.
+query 4. Its first allocation failed before boot and produced no policy request;
+the owned instance is closed and charged as failed-call cost. The next finite
+gate is fresh global provider zero followed by the prospectively frozen,
+identical-observation query-4 retry on the corrected generic runtime. Interaction
+four is complete only if query 4 returns a valid, identity-bound native action.
+Judges remain forbidden until the complete 12-interaction episode and causal-
+control matrix pass.
