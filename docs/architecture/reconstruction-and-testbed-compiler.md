@@ -548,6 +548,15 @@ independently validates both the archive and returned receipt and still requires
 its separate numeric spend/TTL envelope, watchdog, teardown, and provider-zero
 proof. A build receipt remains below the GPU runtime-smoke and scientific gates.
 
+After the Vast-first runtime smoke, `reconstruction_worker_smoke_receipt.py`
+normalizes the digest-bound healthcheck, execution, teardown, provider-zero, and
+paid-authority records into the canonical
+`reconstruction_worker_smoke_test_receipt.v1` consumed by the training-request
+compiler. It refuses stale image/SHA bindings, partial healthcheck ledgers,
+ambiguous mutations, nonzero provider inventory, failed teardown, authority
+drift, and cost or duration beyond the frozen envelope. The normalized receipt
+proves worker-image compatibility only and has no reconstruction-quality effect.
+
 ## Metric geometry, collision, and Isaac qualification
 
 Phase 5 extends the existing `geometry_stage`, ParticleField/NuRec exporters,
