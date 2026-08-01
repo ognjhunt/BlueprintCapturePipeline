@@ -774,6 +774,8 @@ def test_gpu_canary_dispatches_native_warehouse_camera_through_canonical_allocat
             "vast",
             "--native-camera-input-bundle-receipt",
             "input-receipt.json",
+            "--maximum-concurrent-paid-gpus-global",
+            "2",
         ]
     )
 
@@ -783,6 +785,7 @@ def test_gpu_canary_dispatches_native_warehouse_camera_through_canonical_allocat
     assert observed["execute"] is False
     assert observed["input_bundle_receipt"] == "input-receipt.json"
     assert observed["provider_name"] == "vast"
+    assert observed["maximum_concurrent_paid_gpus_global"] == 2
     assert json.loads(capsys.readouterr().out) == {"success": True}
 
 

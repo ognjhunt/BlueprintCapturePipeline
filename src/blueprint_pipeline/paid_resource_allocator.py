@@ -605,6 +605,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--openpi-hard-ttl-seconds", type=int, default=14_400)
     gpu.add_argument("--openpi-max-spend-usd", type=float, default=3.0)
+    gpu.add_argument(
+        "--maximum-concurrent-paid-gpus-global",
+        type=int,
+        default=1,
+        help=(
+            "Prospective all-task paid-GPU ceiling. The native camera lane "
+            "supports one or two and rechecks Vast plus RunPod immediately "
+            "before provider mutation."
+        ),
+    )
     gpu.add_argument("--successor-public-base-url")
     gpu.add_argument("--successor-token-file")
     gpu.add_argument("--successor-secret-env-file")
@@ -939,6 +949,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                             else 36_000
                         ),
                         provider_name=args.provider,
+                        maximum_concurrent_paid_gpus_global=(
+                            args.maximum_concurrent_paid_gpus_global
+                        ),
                     )
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
