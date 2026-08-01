@@ -12,6 +12,7 @@ import pytest
 from PIL import Image
 
 from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
+    _add_prim_semantic_label,
     _apply_and_measure_render_only_joint_pose,
     _apply_runtime_asset_relocations,
     _articulation_link_world_pose_matrices,
@@ -219,6 +220,65 @@ def test_semantic_visibility_fails_closed_for_missing_or_colorized_payload() -> 
         },
         entity_labels={"spraycan": "spraycan"},
     )["spraycan"]["visible"] is False
+
+
+def test_semantic_labeling_prefers_isaac_6_experimental_labels_api(monkeypatch) -> None:
+    calls = []
+    module = types.SimpleNamespace(
+        add_labels=lambda prim, *, labels, taxonomy: calls.append(
+            (prim, labels, taxonomy)
+        )
+    )
+
+    def fake_import(name: str):
+        if name == "isaacsim.core.experimental.utils.semantics":
+            return module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.nvidia_warehouse_native_camera_canary.importlib.import_module",
+        fake_import,
+    )
+    prim = object()
+    assert (
+        _add_prim_semantic_label(prim, "spraycan")
+        == "isaacsim_core_experimental_labels_api"
+    )
+    assert calls == [(prim, ["spraycan"], "class")]
+
+
+def test_semantic_labeling_falls_back_to_isaacsim_legacy_api(monkeypatch) -> None:
+    calls = []
+    module = types.SimpleNamespace(
+        add_update_semantics=lambda prim, semantic_label, type_label: calls.append(
+            (prim, semantic_label, type_label)
+        )
+    )
+
+    def fake_import(name: str):
+        if name == "isaacsim.core.utils.semantics":
+            return module
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.nvidia_warehouse_native_camera_canary.importlib.import_module",
+        fake_import,
+    )
+    prim = object()
+    assert (
+        _add_prim_semantic_label(prim, "tray")
+        == "isaacsim_core_legacy_semantics_api"
+    )
+    assert calls == [(prim, "tray", "class")]
+
+
+def test_semantic_labeling_fails_closed_when_no_runtime_api_exists(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "blueprint_pipeline.nvidia_warehouse_native_camera_canary.importlib.import_module",
+        lambda name: (_ for _ in ()).throw(ModuleNotFoundError(name)),
+    )
+    with pytest.raises(ImportError, match="native_semantics_api_unavailable"):
+        _add_prim_semantic_label(object(), "franka")
 
 
 def test_visibility_summary_requires_rendered_pixels_not_projection() -> None:

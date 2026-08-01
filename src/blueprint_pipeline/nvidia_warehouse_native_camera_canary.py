@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import math
 import posixpath
@@ -66,6 +67,55 @@ def import_simulation_app() -> Any:
     if not callable(SimulationApp):
         raise ImportError("isaac_simulation_app_not_callable")
     return SimulationApp
+
+
+def _add_prim_semantic_label(prim: Any, semantic_label: str) -> str:
+    """Author one class label through the first supported Isaac semantics API."""
+
+    candidates = (
+        (
+            "isaacsim.core.experimental.utils.semantics",
+            "add_labels",
+            "isaacsim_core_experimental_labels_api",
+        ),
+        (
+            "isaacsim.core.utils.semantics",
+            "add_update_semantics",
+            "isaacsim_core_legacy_semantics_api",
+        ),
+        (
+            "semantics.schema_editor",
+            "add_prim_semantics",
+            "semantics_schema_editor",
+        ),
+        (
+            "omni.isaac.core.utils.semantics",
+            "add_update_semantics",
+            "omni_isaac_legacy_semantics_api",
+        ),
+    )
+    import_failures: list[str] = []
+    for module_name, function_name, api_name in candidates:
+        try:
+            function = getattr(importlib.import_module(module_name), function_name)
+        except (AttributeError, ImportError, ModuleNotFoundError) as exc:
+            import_failures.append(f"{module_name}:{type(exc).__name__}")
+            continue
+        if function_name == "add_labels":
+            function(prim, labels=[semantic_label], taxonomy="class")
+        else:
+            try:
+                function(
+                    prim,
+                    semantic_label=semantic_label,
+                    type_label="class",
+                )
+            except TypeError:
+                function(prim, semantic_label, "class")
+        return api_name
+    raise ImportError(
+        "native_semantics_api_unavailable:" + ",".join(import_failures)
+    )
 
 
 def _camera_quaternion_wxyz(forward: Any, up: Any) -> np.ndarray:
@@ -767,27 +817,18 @@ def isaac_sim_6_backend(
         tray_xform.AddScaleOp().Set(Gf.Vec3f(0.36, 0.28, 0.03))
         UsdPhysics.CollisionAPI.Apply(tray.GetPrim())
 
-        try:
-            from semantics.schema_editor import add_prim_semantics
-        except Exception:  # pragma: no cover - Isaac 6 compatibility fallback
-            from omni.isaac.core.utils.semantics import add_update_semantics as add_prim_semantics
-
         semantic_targets = {
             "franka": stage.GetPrimAtPath("/World/Franka"),
             "spraycan": spray_prim,
             "tray": tray.GetPrim(),
         }
+        semantic_labeling_apis: dict[str, str] = {}
         for semantic_label, semantic_prim in semantic_targets.items():
             if not semantic_prim.IsValid():
                 raise ValueError(f"native_semantic_target_prim_missing:{semantic_label}")
-            try:
-                add_prim_semantics(
-                    semantic_prim,
-                    semantic_label=semantic_label,
-                    type_label="class",
-                )
-            except TypeError:
-                add_prim_semantics(semantic_prim, semantic_label, "class")
+            semantic_labeling_apis[semantic_label] = _add_prim_semantic_label(
+                semantic_prim, semantic_label
+            )
 
         UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
         dome = UsdLux.DomeLight.Define(stage, "/World/Lights/Dome")
@@ -1073,6 +1114,7 @@ def isaac_sim_6_backend(
             "spraycan_collision_mesh_count": collision_count,
             "spraycan_runtime_rigid_body": spray_prim.HasAPI(UsdPhysics.RigidBodyAPI),
             "spraycan_kinematic_for_camera_canary": True,
+            "semantic_labeling_apis": semantic_labeling_apis,
             "views": frames,
             "wrist_mount_calibration": wrist_mount_calibration,
             "wrist_mount_implementation": {
