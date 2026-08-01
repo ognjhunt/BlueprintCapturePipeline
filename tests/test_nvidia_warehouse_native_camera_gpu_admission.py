@@ -467,7 +467,7 @@ def test_native_camera_monitor_enforces_prospective_startup_timeout(
             return {
                 "status": "observed",
                 "actual_status": "loading",
-                "cur_state": "stopped",
+                "cur_state": "running",
                 "provider_absence_confirmed": False,
             }
 

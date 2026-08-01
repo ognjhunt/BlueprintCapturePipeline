@@ -908,11 +908,8 @@ def _monitor_native_camera_output_and_teardown(
                 "raw_secret_values_recorded": False,
             }
         inspection = provider.inspect(instance_id)
-        provider_statuses = {
-            str(inspection.get("actual_status") or "").lower(),
-            str(inspection.get("cur_state") or "").lower(),
-        }
-        if provider_statuses & {"running", "active"}:
+        actual_provider_status = str(inspection.get("actual_status") or "").lower()
+        if actual_provider_status in {"running", "active"}:
             provider_startup_observed = True
         provider_terminal = bool(
             inspection.get("provider_absence_confirmed") is True
