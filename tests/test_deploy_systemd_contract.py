@@ -507,7 +507,7 @@ def test_full_test_lane_gates_pull_requests_and_deploy_contract():
     assert "schedule:" in workflow
     assert "workflow_dispatch:" in workflow
     assert "uv run scripts/pytest_full.sh" in workflow
-    assert "--junitxml=output/ci/full-test-lane-junit.xml" in workflow
+    assert '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-junit.xml"' in workflow
     assert 'FULL_TEST_LANE_REQUIRED="${FULL_TEST_LANE_REQUIRED:-true}"' in deploy_script
     assert "check_full_test_lane_deploy_gate" in deploy_script
     assert "FULL_TEST_LANE_COMMIT" in deploy_script

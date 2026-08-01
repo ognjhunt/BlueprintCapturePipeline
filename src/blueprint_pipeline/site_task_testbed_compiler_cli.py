@@ -42,6 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot-placement-result", type=Path, required=True)
     parser.add_argument("--artifact-references", type=Path, required=True)
     parser.add_argument("--supported-condition-ranges", type=Path, required=True)
+    parser.add_argument("--semantic-evidence-artifacts", type=Path)
     parser.add_argument("--previous-testbed", type=Path)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--result-output", type=Path)
@@ -77,6 +78,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             supported_condition_ranges=_object(
                 args.supported_condition_ranges, label="supported_condition_ranges"
+            ),
+            semantic_evidence_artifacts=(
+                _object(
+                    args.semantic_evidence_artifacts,
+                    label="semantic_evidence_artifacts",
+                )
+                if args.semantic_evidence_artifacts
+                else None
             ),
             previous_testbed=(
                 _object(args.previous_testbed, label="previous_testbed")

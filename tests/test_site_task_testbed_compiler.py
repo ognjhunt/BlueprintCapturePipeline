@@ -17,6 +17,7 @@ from blueprint_pipeline import live_pipeline_reconstruction_testbed_routes as ro
 from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
 from blueprint_pipeline.reconstruction_capability import (
     decide_simready_assets,
+    normalize_reconstruction_result,
     plan_reconstruction_methods,
     score_robot_placements,
 )
@@ -435,10 +436,173 @@ def _refs() -> dict:
     }
 
 
-def _compile(*, previous: dict | None = None, version: str = "1") -> dict:
+def _semantic_artifacts(plan: dict) -> tuple[dict, dict]:
+    reconstruction = normalize_reconstruction_result(_result(plan))
+    bindings = {
+        "capture_digest": SHA_A,
+        "reconstruction_digest": reconstruction["reconstruction_result_digest"],
+        "analysis_splat_digest": SHA_C,
+    }
+    lifting = {
+        "schema_version": "semantic_gaussian_lifting_result.v1",
+        "status": "completed",
+        "bindings": {**bindings, "gaussian_mapping_digest": SHA_B},
+        "world": {"up_axis": "Z", "units": "meters", "scale_verified": True},
+        "tracks": [{
+            "track_id": "track-item-1",
+            "label": "item",
+            "status": "qualified_semantic_support_candidate",
+            "selected_gaussian_ids": list(range(8)),
+            "supporting_view_ids": ["frame-1", "frame-2"],
+        }],
+        "qualified_track_count": 1,
+        "abstained_track_count": 0,
+        "blockers": [],
+        "claim_ceiling": "per_gaussian_semantic_support_candidate_metric_frame",
+        "canonical_object_geometry": False,
+        "metric_box_ready": False,
+        "physics_ready": False,
+        "generated_regions_can_upgrade_claims": False,
+    }
+    lifting["result_digest"] = canonical_digest(lifting, digest_field="result_digest")
+    oriented = {
+        "schema_version": "semantic_oriented_box_result.v1",
+        "status": "completed",
+        "bindings": {
+            **bindings,
+            "semantic_lifting_result_digest": lifting["result_digest"],
+        },
+        "world": {
+            "up_axis": "Z",
+            "units": "meters",
+            "scale_verified": True,
+            "coordinate_frame": "site_z_up",
+        },
+        "objects": [{
+            "track_id": "track-item-1",
+            "label": "item",
+            "status": "qualified_metric_obb_candidate",
+            "metric_obb_candidate_ready": True,
+            "center_world_m": [0.0, 0.0, 0.5],
+            "dimensions_m": [1.0, 0.5, 1.0],
+            "yaw_rad": 0.0,
+            "corners_world_m": [
+                [-0.5, -0.25, 0.0],
+                [0.5, -0.25, 0.0],
+                [0.5, 0.25, 0.0],
+                [-0.5, 0.25, 0.0],
+                [-0.5, -0.25, 1.0],
+                [0.5, -0.25, 1.0],
+                [0.5, 0.25, 1.0],
+                [-0.5, 0.25, 1.0],
+            ],
+            "coordinate_frame": "site_z_up",
+            "claim_ceiling": "qualified_metric_obb_candidate",
+            "collision_ready": False,
+            "physics_ready": False,
+        }],
+        "qualified_object_count": 1,
+        "abstained_object_count": 0,
+        "blockers": [],
+        "claim_ceiling": "qualified_metric_obb_candidates_only",
+        "metric_obb_candidate_ready": True,
+        "collision_ready": False,
+        "physics_ready": False,
+        "generated_regions_can_upgrade_claims": False,
+    }
+    oriented["result_digest"] = canonical_digest(oriented, digest_field="result_digest")
+    collision = {
+        "schema_version": "semantic_collision_validation_result.v1",
+        "status": "completed",
+        "bindings": {
+            **bindings,
+            "semantic_oriented_box_result_digest": oriented["result_digest"],
+        },
+        "world": {
+            "up_axis": "Z",
+            "units": "meters",
+            "scale_verified": True,
+            "coordinate_frame": "site_z_up",
+        },
+        "objects": [{
+            "track_id": "track-item-1",
+            "label": "item",
+            "status": "independent_collision_consistency_candidate",
+            "metrics": {
+                "target_collision_iou": 0.95,
+                "support_signed_gap_m": 0.0,
+                "covered_corner_fraction": 1.0,
+            },
+            "claim_ceiling": (
+                "semantic_obb_independently_consistent_with_qualified_collision_evidence"
+            ),
+            "collision_ready": False,
+            "physics_ready": False,
+        }],
+        "qualified_object_count": 1,
+        "abstained_object_count": 0,
+        "blockers": [],
+        "claim_ceiling": "independent_collision_consistency_candidates_only",
+        "collision_consistency_candidate_ready": True,
+        "collision_ready": False,
+        "physics_ready": False,
+        "generated_regions_can_upgrade_claims": False,
+    }
+    collision["result_digest"] = canonical_digest(collision, digest_field="result_digest")
+    benchmark = {
+        "schema_version": "semantic_geometry_benchmark_result.v1",
+        "status": "completed",
+        "bindings": {
+            **bindings,
+            "prediction_result_digest": oriented["result_digest"],
+            "ground_truth_digest": SHA_B,
+        },
+        "world": {
+            "up_axis": "Z",
+            "units": "meters",
+            "scale_verified": True,
+            "coordinate_frame": "site_z_up",
+        },
+        "metrics": {
+            "object_recall": 1.0,
+            "mean_center_error_cm": 1.0,
+            "mean_obb_3d_iou": 0.9,
+        },
+        "blockers": [],
+        "claim_ceiling": "independent_semantic_geometry_benchmark_diagnostic_only",
+        "benchmark_diagnostic_ready": True,
+        "collision_ready": False,
+        "physics_ready": False,
+    }
+    benchmark["result_digest"] = canonical_digest(benchmark, digest_field="result_digest")
+    artifacts = {
+        "semantic_gaussian_lifting": lifting,
+        "semantic_oriented_boxes": oriented,
+        "semantic_collision_validation": collision,
+        "semantic_geometry_benchmark": benchmark,
+    }
+    references = {
+        key: {
+            "uri": f"fixture://{key}.json",
+            "digest": artifact["result_digest"],
+        }
+        for key, artifact in artifacts.items()
+    }
+    return artifacts, references
+
+
+def _compile(
+    *,
+    previous: dict | None = None,
+    version: str = "1",
+    include_semantic_evidence: bool = False,
+) -> dict:
     envelope = _envelope()
     qa = _qa(envelope)
     plan = _plan(qa)
+    semantic, semantic_refs = (
+        _semantic_artifacts(plan) if include_semantic_evidence else (None, {})
+    )
     return compile_site_task_testbed(
         testbed_id="site-task-1",
         version=version,
@@ -449,9 +613,33 @@ def _compile(*, previous: dict | None = None, version: str = "1") -> dict:
         reconstruction_results=[_result(plan)],
         simready_decision=_simready(),
         robot_placement_result=_placement(),
-        artifact_references=_refs(),
+        artifact_references={**_refs(), **semantic_refs},
         supported_condition_ranges={"lighting_lux": [300, 600]},
         previous_testbed=previous,
+        semantic_evidence_artifacts=semantic,
+    )
+
+
+def _compile_with_semantic(
+    artifacts: dict,
+    references: dict,
+) -> dict:
+    envelope = _envelope()
+    qa = _qa(envelope)
+    plan = _plan(qa)
+    return compile_site_task_testbed(
+        testbed_id="site-task-semantic",
+        version="1",
+        capture_intake_envelope=envelope,
+        capture_qa_report=qa,
+        approved_task_definition=_approved_task(),
+        reconstruction_plan=plan,
+        reconstruction_results=[_result(plan)],
+        simready_decision=_simready(),
+        robot_placement_result=_placement(),
+        artifact_references={**_refs(), **references},
+        supported_condition_ranges={"lighting_lux": [300, 600]},
+        semantic_evidence_artifacts=artifacts,
     )
 
 
@@ -520,6 +708,106 @@ def test_compiler_emits_deterministic_layered_router_compatible_testbed() -> Non
         "deployment_or_safety_approved": False,
         "comparative_policy_ranking_verdict": "thesis_not_supported",
     }
+
+
+def test_compiler_projects_exact_semantic_chain_without_physics_upgrade() -> None:
+    testbed = _compile(include_semantic_evidence=True)
+
+    semantic = testbed["validation_envelope"]["semantic_evidence"]
+    assert semantic["metric_obb_candidate_count"] == 1
+    assert semantic["collision_consistency_candidate_count"] == 1
+    assert semantic["benchmark_metrics"]["mean_obb_3d_iou"] == 0.9
+    assert semantic["semantic_object_inventory_is_collision_truth"] is False
+    assert semantic["collision_consistency_is_physics_qualification"] is False
+    assert "semantic_object_inventory_is_not_collision_truth" in testbed[
+        "known_unsupported_conditions"
+    ]
+    assert "semantic_object_inventory_is_not_physics_qualification" in testbed[
+        "known_unsupported_conditions"
+    ]
+    layers = testbed["validation_envelope"]["reconstruction_layers"]
+    assert [row["output"] for row in layers["semantic_layer"]] == [
+        "metric_z_up_oriented_box_candidates",
+        "per_gaussian_semantic_support_candidates",
+    ]
+    assert layers["physics_layer"] == []
+    inventory = testbed["semantic_object_inventory"]
+    assert len(inventory) == 1
+    assert inventory[0]["track_id"] == "track-item-1"
+    assert inventory[0]["center_world_m"] == [0.0, 0.0, 0.5]
+    assert inventory[0]["collision_consistency_status"] == (
+        "independent_collision_consistency_candidate"
+    )
+    assert inventory[0]["collision_ready"] is False
+    assert inventory[0]["physics_ready"] is False
+    evidence_ids = {
+        row["evidence_id"] for row in testbed["evidence_inventory"]
+    }
+    assert {
+        "semantic:semantic_gaussian_lifting",
+        "semantic:semantic_oriented_boxes",
+        "semantic:semantic_collision_validation",
+        "semantic:semantic_geometry_benchmark",
+    }.issubset(evidence_ids)
+    assert "semantic_collision_consistency_not_established" not in testbed[
+        "known_unsupported_conditions"
+    ]
+    assert testbed["proof_boundary"]["comparative_policy_ranking_verdict"] == (
+        "thesis_not_supported"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        (
+            lambda artifacts, _refs: artifacts["semantic_oriented_boxes"].update(
+                {"physics_ready": True}
+            ),
+            "semantic_evidence_artifacts.semantic_oriented_boxes.physics_ready:must_be_false",
+        ),
+        (
+            lambda artifacts, _refs: artifacts["semantic_oriented_boxes"][
+                "bindings"
+            ].update({"reconstruction_digest": "sha256:" + "f" * 64}),
+            "semantic_evidence_artifacts.semantic_oriented_boxes.reconstruction_digest:stale",
+        ),
+        (
+            lambda artifacts, refs: refs["semantic_oriented_boxes"].update(
+                {"digest": SHA_B}
+            ),
+            "semantic_evidence_artifacts.semantic_oriented_boxes.artifact_reference:mismatch",
+        ),
+        (
+            lambda artifacts, _refs: artifacts.pop("semantic_gaussian_lifting"),
+            "semantic_evidence_artifacts.semantic_oriented_boxes:lifting_missing",
+        ),
+        (
+            lambda artifacts, _refs: artifacts["semantic_geometry_benchmark"][
+                "bindings"
+            ].update({"prediction_result_digest": SHA_B}),
+            "semantic_evidence_artifacts.semantic_geometry_benchmark:prediction_digest_mismatch",
+        ),
+    ],
+)
+def test_compiler_rejects_stale_tampered_or_authority_upgraded_semantic_evidence(
+    mutation,
+    expected: str,
+) -> None:
+    plan = _plan(_qa(_envelope()))
+    artifacts, references = _semantic_artifacts(plan)
+    mutation(artifacts, references)
+    for artifact in artifacts.values():
+        artifact["result_digest"] = canonical_digest(
+            artifact, digest_field="result_digest"
+        )
+    for key, reference in references.items():
+        if key in artifacts and reference["digest"] != SHA_B:
+            reference["digest"] = artifacts[key]["result_digest"]
+
+    with pytest.raises(SiteTaskTestbedCompilerError) as exc:
+        _compile_with_semantic(artifacts, references)
+    assert expected in exc.value.errors
 
 
 def test_compiled_testbed_unlocks_provider_neutral_decision_request() -> None:
@@ -650,6 +938,7 @@ def test_compiler_cli_writes_one_immutable_testbed_version(tmp_path, capsys) -> 
     envelope = _envelope()
     qa = _qa(envelope)
     plan = _plan(qa)
+    semantic, semantic_refs = _semantic_artifacts(plan)
     inputs = {
         "capture-intake-envelope": envelope,
         "capture-qa-report": qa,
@@ -658,8 +947,9 @@ def test_compiler_cli_writes_one_immutable_testbed_version(tmp_path, capsys) -> 
         "reconstruction-results": [_result(plan)],
         "simready-decision": _simready(),
         "robot-placement-result": _placement(),
-        "artifact-references": _refs(),
+        "artifact-references": {**_refs(), **semantic_refs},
         "supported-condition-ranges": {"lighting_lux": [300, 600]},
+        "semantic-evidence-artifacts": semantic,
     }
     arguments = ["--testbed-id", "site-task-cli", "--version", "1"]
     for option, value in inputs.items():
@@ -673,6 +963,9 @@ def test_compiler_cli_writes_one_immutable_testbed_version(tmp_path, capsys) -> 
     receipt = json.loads(capsys.readouterr().out)
     assert receipt["status"] == "testbed_ready"
     assert receipt["already_exists"] is False
+    stored = json.loads(Path(receipt["artifact_path"]).read_text(encoding="utf-8"))
+    assert stored["semantic_object_inventory"][0]["track_id"] == "track-item-1"
+    assert stored["validation_envelope"]["reconstruction_layers"]["physics_layer"] == []
     assert compiler_cli_main(arguments) == 0
     replay = json.loads(capsys.readouterr().out)
     assert replay["already_exists"] is True
