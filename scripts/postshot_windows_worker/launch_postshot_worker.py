@@ -69,13 +69,41 @@ function Fail-And-Stop([string]$msg) {
 }
 Put-Status "BOOT worker started"
 
+# Reboot sentinel: if anything force-reboots the box, the next boot announces
+# itself instead of dying silently (user-data only runs on first boot).
+$sentinel = @'
+Invoke-RestMethod -Method Put -Uri "__STATUS_PUT__" -InFile C:\work\status.log -ContentType "text/plain"
+Add-Content -Path C:\work\status.log -Value "$((Get-Date).ToUniversalTime().ToString('o')) UNEXPECTED_REBOOT_DETECTED"
+Invoke-RestMethod -Method Put -Uri "__STATUS_PUT__" -InFile C:\work\status.log -ContentType "text/plain"
+'@
+Set-Content -Path C:\work\reboot-sentinel.ps1 -Value $sentinel
+schtasks /Create /TN BlueprintRebootSentinel /SC ONSTART /RU SYSTEM /F /TR "powershell.exe -ExecutionPolicy Bypass -File C:\work\reboot-sentinel.ps1" | Out-Null
+
+# Heartbeat: every 3 minutes upload the transcript tail so a hang is always
+# diagnosable from outside (no inbound access exists by design).
+Start-Job -ScriptBlock {
+  while ($true) {
+    try {
+      $tail = ""
+      if (Test-Path C:\work\bootstrap-transcript.txt) {
+        $tail = (Get-Content C:\work\bootstrap-transcript.txt -Tail 40 -ErrorAction SilentlyContinue) -join "`n"
+      }
+      $hb = "$((Get-Date).ToUniversalTime().ToString('o')) HEARTBEAT`n--- transcript tail ---`n$tail"
+      Invoke-RestMethod -Method Put -Uri "__HEARTBEAT_PUT__" -Body $hb -ContentType "text/plain" | Out-Null
+    } catch {}
+    Start-Sleep -Seconds 180
+  }
+} | Out-Null
+
 # 1) NVIDIA datacenter driver
 $driverOk = $false
 foreach ($u in @(__DRIVER_URLS__)) {
   try {
     Put-Status "DRIVER downloading $u"
-    Invoke-WebRequest -Uri $u -OutFile C:\work\nvidia.exe -UseBasicParsing
-    Start-Process -FilePath C:\work\nvidia.exe -ArgumentList "-s","-noreboot" -Wait
+    Invoke-WebRequest -Uri $u -OutFile C:\work\nvidia.exe -UseBasicParsing -TimeoutSec 900
+    $p = Start-Process -FilePath C:\work\nvidia.exe -ArgumentList "-s","-noreboot" -PassThru
+    if (-not (Wait-Process -Id $p.Id -Timeout 900 -ErrorAction SilentlyContinue)) { }
+    if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force; Put-Status "DRIVER install timed out"; continue }
     $smi = "C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
     if (-not (Test-Path $smi)) { $smi = "C:\Windows\System32\nvidia-smi.exe" }
     $gpu = & $smi --query-gpu=name,driver_version --format=csv,noheader 2>$null
@@ -84,13 +112,28 @@ foreach ($u in @(__DRIVER_URLS__)) {
 }
 if (-not $driverOk) { Fail-And-Stop "nvidia_driver_install_failed" }
 
-# 2) Postshot silent install (WiX Burn bundle)
+# 2) Postshot silent install (WiX Burn bundle). 3010 = success, reboot wanted.
 try {
   Put-Status "POSTSHOT downloading installer"
-  Invoke-WebRequest -Uri "__POSTSHOT_INSTALLER_GET__" -OutFile C:\work\postshot-installer.exe -UseBasicParsing
+  Invoke-WebRequest -Uri "__POSTSHOT_INSTALLER_GET__" -OutFile C:\work\postshot-installer.exe -UseBasicParsing -TimeoutSec 600
+  $size = (Get-Item C:\work\postshot-installer.exe).Length
   $h = (Get-FileHash C:\work\postshot-installer.exe -Algorithm SHA256).Hash.ToLower()
+  Put-Status "POSTSHOT installer downloaded bytes=$size sha256_ok=$($h -eq '__POSTSHOT_SHA256__')"
   if ($h -ne "__POSTSHOT_SHA256__") { Fail-And-Stop "postshot_installer_digest_mismatch:$h" }
-  Start-Process -FilePath C:\work\postshot-installer.exe -ArgumentList "/quiet","/norestart","/log","C:\work\postshot-install.log" -Wait
+  Put-Status "POSTSHOT installing (quiet, 900s timeout)"
+  $p = Start-Process -FilePath C:\work\postshot-installer.exe -ArgumentList "/quiet","/norestart","/log","C:\work\postshot-install.log" -PassThru
+  if (-not (Wait-Process -Id $p.Id -Timeout 900 -ErrorAction SilentlyContinue)) { }
+  if (-not $p.HasExited) {
+    Stop-Process -Id $p.Id -Force
+    Get-Content C:\work\postshot-install.log -Tail 30 -ErrorAction SilentlyContinue | ForEach-Object { Add-Content C:\work\status.log $_ }
+    Fail-And-Stop "postshot_install_timed_out_after_900s"
+  }
+  $code = $p.ExitCode
+  Put-Status "POSTSHOT install exit=$code (3010 means reboot-wanted, continuing)"
+  if ($code -ne 0 -and $code -ne 3010) {
+    Get-Content C:\work\postshot-install.log -Tail 30 -ErrorAction SilentlyContinue | ForEach-Object { Add-Content C:\work\status.log $_ }
+    Fail-And-Stop "postshot_install_failed_exit_$code"
+  }
 } catch { Fail-And-Stop "postshot_install_failed: $($_.Exception.Message)" }
 $cli = "$Env:ProgramFiles\Jawset Postshot\bin\postshot-cli.exe"
 if (-not (Test-Path $cli)) {
@@ -217,6 +260,7 @@ def stage(arguments) -> dict:
         "installer": f"{prefix}/postshot-installer.exe",
         "license": f"{prefix}/license.env",
         "status": f"{prefix}/status.log",
+        "heartbeat": f"{prefix}/heartbeat.log",
         "results": f"{prefix}/results.zip",
     }
     spaces.put_object(Bucket=bucket, Key=keys["dataset"], Body=dataset_bytes, ACL="private")
@@ -236,6 +280,11 @@ def stage(arguments) -> dict:
         "status_put": spaces.generate_presigned_url(
             "put_object",
             Params={"Bucket": bucket, "Key": keys["status"], "ContentType": "text/plain"},
+            ExpiresIn=expiry,
+        ),
+        "heartbeat_put": spaces.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": bucket, "Key": keys["heartbeat"], "ContentType": "text/plain"},
             ExpiresIn=expiry,
         ),
         "results_put": spaces.generate_presigned_url(
@@ -278,6 +327,7 @@ def launch(arguments) -> None:
     driver_urls = ",".join(f'"{u}"' for u in NVIDIA_DRIVER_URLS)
     user_data = (
         BOOTSTRAP_TEMPLATE.replace("__STATUS_PUT__", urls["status_put"])
+        .replace("__HEARTBEAT_PUT__", urls["heartbeat_put"])
         .replace("__RESULTS_PUT__", urls["results_put"])
         .replace("__DRIVER_URLS__", driver_urls)
         .replace("__POSTSHOT_INSTALLER_GET__", urls["installer_get"])
