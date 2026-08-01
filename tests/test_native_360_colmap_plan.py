@@ -94,6 +94,38 @@ def _rig(*, inverse_semantics: bool = False) -> dict:
     return value
 
 
+def _normalization(rig: dict) -> dict:
+    value = {
+        "schema_version": "native_360_capture_normalization.v1",
+        "source_capture_identity": "native-capture-1",
+        "source_capture_digest": CAPTURE_DIGEST,
+        "producing_method": "deterministic_native_360_normalizer.v1",
+        "rig_declaration_digest": rig["rig_declaration_digest"],
+        "camera_calibration_binding": rig["rig_declaration_digest"],
+        "dual_fisheye_binding_digest": BINDING_DIGEST,
+        "valid_pixel_mask_references": {
+            "front": {
+                "relative_path": "calibration/front-mask.png",
+                "digest": FRONT_MASK,
+            },
+            "rear": {
+                "relative_path": "calibration/rear-mask.png",
+                "digest": REAR_MASK,
+            },
+        },
+        "status": "normalized",
+        "blockers": [],
+        "output_digests": {"valid_pixel_mask_artifact_digests": sorted([FRONT_MASK, REAR_MASK])},
+        "raw_native_bytes_remain_authoritative": True,
+        "original_native_bytes_modified": False,
+        "agent_altered_calibration": False,
+    }
+    value["native_360_normalization_digest"] = canonical_digest(
+        value, digest_field="native_360_normalization_digest"
+    )
+    return value
+
+
 def _rig_result(rig: dict) -> dict:
     value = {
         "schema_version": "camera_rig_validation_result.v1",
@@ -181,6 +213,7 @@ def _dataset(candidate: dict, rig: dict, **overrides: object) -> dict:
         "camera_calibration_binding": {
             "camera_360_rig_declaration_digest": rig["rig_declaration_digest"]
         },
+        "stream_metadata": {"dual_fisheye_binding_digest": BINDING_DIGEST},
         "coordinate_frame_declaration": {
             "units": "meters",
             "handedness": "right_handed",
@@ -292,6 +325,7 @@ def _arguments(
         "stable_run_identity": "native-colmap-plan-1",
         "reconstruction_dataset": dataset,
         "candidate_dataset_manifest": candidate,
+        "native_360_normalization": _normalization(rig),
         "camera_rig_declaration": rig,
         "camera_rig_validation_result": rig_result,
         "pose_estimation_request": _pose(dataset, rig, rig_result, method=method),
@@ -362,7 +396,10 @@ def test_native_colmap_plan_honors_declared_transform_direction() -> None:
 
 
 def test_native_colmap_plan_rebases_candidate_sources_under_trusted_artifact_root() -> None:
-    plan = _compile(candidate_artifact_root_relative_path="generated/frozen_dataset/dataset-001")
+    plan = _compile(
+        candidate_artifact_root_relative_path="generated/frozen_dataset/dataset-001",
+        normalization_artifact_root_relative_path="generated/native_360_normalization",
+    )
 
     assert all(
         row["source_relative_path"].startswith(
@@ -370,12 +407,38 @@ def test_native_colmap_plan_rebases_candidate_sources_under_trusted_artifact_roo
         )
         for row in plan["image_materialization"]
     )
+    assert all(
+        row["source_relative_path"].startswith("generated/native_360_normalization/calibration/")
+        for row in plan["mask_materialization"]
+    )
     for unsafe_root in ("evaluator_hidden/leak", "EVALUATOR_HIDDEN/leak", "../escape"):
         with pytest.raises(
             Native360ColmapPlanError,
             match="native_colmap_candidate_artifact_root_invalid",
         ):
             _compile(candidate_artifact_root_relative_path=unsafe_root)
+
+    with pytest.raises(
+        Native360ColmapPlanError,
+        match="native_colmap_normalization_artifact_root_invalid",
+    ):
+        _compile(normalization_artifact_root_relative_path="../escape")
+
+
+def test_native_colmap_plan_requires_exact_normalization_mask_lineage() -> None:
+    arguments = _arguments()
+    normalization = copy.deepcopy(arguments["native_360_normalization"])
+    normalization["valid_pixel_mask_references"]["rear"]["digest"] = FRONT_MASK
+    normalization["native_360_normalization_digest"] = canonical_digest(
+        normalization, digest_field="native_360_normalization_digest"
+    )
+    arguments["native_360_normalization"] = normalization
+
+    with pytest.raises(
+        Native360ColmapPlanError,
+        match="native_colmap_normalization_binding_invalid",
+    ):
+        compile_native_360_colmap_execution_plan(**arguments)
 
 
 @pytest.mark.parametrize(

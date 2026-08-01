@@ -226,17 +226,20 @@ def compile_native_360_colmap_execution_plan(
     stable_run_identity: str,
     reconstruction_dataset: Mapping[str, Any],
     candidate_dataset_manifest: Mapping[str, Any],
+    native_360_normalization: Mapping[str, Any],
     camera_rig_declaration: Mapping[str, Any],
     camera_rig_validation_result: Mapping[str, Any],
     pose_estimation_request: Mapping[str, Any],
     valid_pixel_mask_references: Mapping[str, Mapping[str, Any]],
     timestamp: str,
     candidate_artifact_root_relative_path: str | None = None,
+    normalization_artifact_root_relative_path: str | None = None,
 ) -> dict[str, Any]:
     """Compile one candidate-only, calibrated dual-fisheye COLMAP plan."""
 
     dataset = _mapping(reconstruction_dataset)
     candidate = _mapping(candidate_dataset_manifest)
+    normalization = _mapping(native_360_normalization)
     rig = _mapping(camera_rig_declaration)
     rig_result = _mapping(camera_rig_validation_result)
     masks = _mapping(valid_pixel_mask_references)
@@ -250,6 +253,11 @@ def compile_native_360_colmap_execution_plan(
             for token in ("held_out", "held-out", "hidden_heldout", "evaluator_hidden")
         ):
             errors.append("native_colmap_candidate_artifact_root_invalid")
+    normalization_prefix = ""
+    if normalization_artifact_root_relative_path is not None:
+        normalization_prefix = _safe_relative(normalization_artifact_root_relative_path) or ""
+        if not normalization_prefix:
+            errors.append("native_colmap_normalization_artifact_root_invalid")
     dataset_outputs = dataset.get("output_digests")
     dataset_outputs = dict(dataset_outputs) if isinstance(dataset_outputs, Mapping) else {}
     dataset_calibration = dataset.get("camera_calibration_binding")
@@ -310,6 +318,39 @@ def compile_native_360_colmap_execution_plan(
         or dataset_calibration.get("camera_360_rig_declaration_digest") != rig_digest
     ):
         errors.append("native_colmap_rig_declaration_invalid")
+    normalization_digest = normalization.get("native_360_normalization_digest")
+    normalization_masks = normalization.get("valid_pixel_mask_references")
+    normalization_outputs = normalization.get("output_digests")
+    normalization_outputs = (
+        dict(normalization_outputs) if isinstance(normalization_outputs, Mapping) else {}
+    )
+    dataset_stream = dataset.get("stream_metadata")
+    dataset_stream = dict(dataset_stream) if isinstance(dataset_stream, Mapping) else {}
+    if (
+        normalization.get("schema_version") != "native_360_capture_normalization.v1"
+        or normalization.get("producing_method") != "deterministic_native_360_normalizer.v1"
+        or not _digest(normalization_digest)
+        or normalization_digest
+        != canonical_digest(normalization, digest_field="native_360_normalization_digest")
+        or normalization.get("status") != "normalized"
+        or normalization.get("blockers") != []
+        or normalization.get("source_capture_digest") != dataset.get("source_capture_digest")
+        or normalization.get("rig_declaration_digest") != rig_digest
+        or normalization.get("camera_calibration_binding") != rig_digest
+        or normalization.get("dual_fisheye_binding_digest")
+        != dataset_stream.get("dual_fisheye_binding_digest")
+        or normalization.get("raw_native_bytes_remain_authoritative") is not True
+        or normalization.get("original_native_bytes_modified") is not False
+        or not isinstance(normalization_masks, Mapping)
+        or canonical_json(normalization_masks) != canonical_json(masks)
+        or normalization_outputs.get("valid_pixel_mask_artifact_digests")
+        != sorted(
+            str(row.get("digest") or "") if isinstance(row, Mapping) else ""
+            for row in masks.values()
+        )
+        or normalization.get("agent_altered_calibration") is not False
+    ):
+        errors.append("native_colmap_normalization_binding_invalid")
     if (
         rig_result.get("schema_version") != "camera_rig_validation_result.v1"
         or rig_result.get("camera_rig_validation_result_digest")
@@ -478,7 +519,11 @@ def compile_native_360_colmap_execution_plan(
             mask_materialization.append(
                 {
                     "sensor_id": lens,
-                    "source_relative_path": reference["relative_path"],
+                    "source_relative_path": (
+                        f"{normalization_prefix}/{reference['relative_path']}"
+                        if normalization_prefix
+                        else reference["relative_path"]
+                    ),
                     "source_digest": reference["digest"],
                     "destination_relative_path": f"workspace/masks/{lens}/{filename}.png",
                     "generated_or_inferred": False,
@@ -626,6 +671,7 @@ def compile_native_360_colmap_execution_plan(
         "input_digests": [
             {"artifact_id": "reconstruction_dataset", "digest": dataset_digest},
             {"artifact_id": "candidate_dataset", "digest": candidate_digest},
+            {"artifact_id": "native_360_normalization", "digest": normalization_digest},
             {"artifact_id": "camera_rig_declaration", "digest": rig_digest},
             {
                 "artifact_id": "camera_rig_validation",
@@ -662,6 +708,7 @@ def compile_native_360_colmap_execution_plan(
         "timestamp": timestamp,
         "pose_estimation_request_digest": pose["pose_estimation_request_digest"],
         "candidate_dataset_digest": candidate_digest,
+        "native_360_normalization_digest": normalization_digest,
         "camera_rig_validation_result_digest": rig_result["camera_rig_validation_result_digest"],
         "workspace_layout": {
             "root": "workspace",

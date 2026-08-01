@@ -369,7 +369,9 @@ replayable COLMAP 4.0.4 execution plan. Candidate observations are rematerialize
 under `front/` and `rear/` with identical filenames for each synchronized rig
 frame; a trusted supervisor may rebase their manifest-relative locations under
 one safe artifact root, while hidden-held-out locations remain structurally
-forbidden. The plan binds
+forbidden. Calibration masks must reproduce the accepted normalization receipt,
+and a separate safe normalization artifact root can be applied without changing
+their recorded relative paths. The plan binds
 per-lens calibrated valid-pixel masks, exact fisheye intrinsics/distortion, and
 the declared transform direction before producing COLMAP `cam_from_rig`
 quaternion/translation values. It emits argv arrays for headless feature
