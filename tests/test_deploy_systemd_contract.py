@@ -8,6 +8,7 @@ TERRAFORM_MAIN = REPO_ROOT / "deploy" / "terraform" / "main.tf"
 TERRAFORM_TFVARS_EXAMPLE = REPO_ROOT / "deploy" / "terraform" / "terraform.tfvars.example"
 ROOT_DOCKERFILE = REPO_ROOT / "Dockerfile"
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_live_pipeline_control_plane.sh"
+STAGING_INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_live_pipeline_staging.sh"
 PIPELINE_DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "scripts" / "deploy.sh"
 FULL_TEST_LANE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "full-test-lane.yml"
 CI_REQUIRED_CHECKS_DOC = REPO_ROOT / "docs" / "CI_REQUIRED_CHECKS.md"
@@ -129,6 +130,38 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
     baseline = (REPO_ROOT / "docs" / "SYSTEMD_SECURITY_BASELINE.md").read_text(encoding="utf-8")
     assert "systemd-analyze security" in baseline
     assert "threshold=40" in baseline
+
+
+def test_isolated_staging_intake_has_separate_identity_state_and_installer() -> None:
+    service = _read("blueprint-pipeline-intake-staging.service")
+    env_example = _read("pipeline-intake-staging.env.example")
+    installer = STAGING_INSTALL_SCRIPT.read_text(encoding="utf-8")
+
+    assert "BlueprintCapturePipeline-staging" in service
+    assert "Environment=PORT=8766" in service
+    assert "ReadWritePaths=/var/lib/blueprint-staging" in service
+    assert "pipeline-intake-staging.env" in service
+    assert "git rev-parse HEAD" in service
+    assert "git status --porcelain" in service
+    assert "BLUEPRINT_SOURCE_COMMIT" in service
+    assert "blueprint_pipeline.production_runtime_env_guard" in service
+    assert "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION" not in service
+    assert "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER" not in service
+
+    assert "BLUEPRINT_SOURCE_COMMIT=" in env_example
+    assert "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN=" in env_example
+    assert "Do not reuse the production value" in env_example
+    assert "PORT=8766" in env_example
+    assert "/var/lib/blueprint-staging" in env_example
+    assert "/var/lib/blueprint/pipeline-control-plane" not in env_example
+    assert "BLUEPRINT_ALLOW_SIMULATOR_EXECUTION" not in env_example
+
+    assert "HEAD must equal origin/main" in installer
+    assert "staging checkout must be clean" in installer
+    assert "blueprint-pipeline-intake-staging.service" in installer
+    assert "pipeline-intake-staging.env.example" in installer
+    assert "blueprint-pipeline-intake.service" not in installer
+    assert "blueprint-pubsub-handoff-listener" not in installer
 
 
 def test_pubsub_handoff_listener_has_repeated_deployed_runner():

@@ -473,6 +473,8 @@ def test_live_pipeline_intake_service_error_edges(
 
     health = client.get("/health").json()
     assert health["control_plane_ready"] is False
+    assert health["authentication_configured"] is True
+    assert health["token_configured"] is True
     assert health["task_evaluation_supervisor"]["agent_harness"] == "openai_agents_sdk"
     assert health["task_evaluation_supervisor"]["configuration_status"] == "valid"
     assert health["task_evaluation_supervisor"]["zero_spend_lifecycle_ready"] is True
