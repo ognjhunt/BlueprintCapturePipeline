@@ -251,10 +251,17 @@ threshold must be supplied by a later frozen
 `run_pose_refinement` is now a registered worker boundary for ARKit-anchored
 bundle adjustment or pose-graph refinement. It preserves the raw pose manifest,
 forbids hidden-view access, and rejects a nominally successful result when its
-maximum translation or rotation drift exceeds the precommitted limits. No
-qualified refiner runtime has been executed on a real bundle yet. Accordingly,
-the export alone is a calibrated reconstruction request, not a refined
-trajectory or COLMAP/gsplat dataset. The
+maximum translation or rotation drift exceeds the precommitted limits. An
+operational success must now emit a contained, byte-hashed
+`refined_camera_pose_manifest.v1`; legacy digest-only results remain replayable
+but cannot drive training. `bind_colmap_refined_poses` validates the exact raw
+parent, capture, frozen split, calibration, observation set, method, manifest,
+result, and drift thresholds before creating a new derived COLMAP request. The
+raw ARKit request is never overwritten, rejected observations cannot silently
+change the frozen candidate set, and the exporter records whether the selected
+request uses refined poses. No qualified refiner runtime has been executed on a
+real bundle yet. Accordingly, this is locally verified contract and fixture
+behavior, not a real refined trajectory or trained reconstruction. The
 ARKit scaffold records sensor-declared meter units, but its claim ceiling no
 longer says metric scale or a metric reference layer is independently proven:
 confidence filtering, RGB-depth alignment, metric-scale validation, and

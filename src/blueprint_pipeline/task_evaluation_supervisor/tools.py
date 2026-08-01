@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import partial
 import hashlib
+import json
 import math
 from pathlib import Path, PurePosixPath
 import re
@@ -65,6 +66,7 @@ from ..reconstruction_validation_contracts import (
 from ..reconstruction_pose_refinement import (
     build_pose_refinement_execution_request,
     build_pose_refinement_result,
+    build_refined_camera_pose_manifest,
 )
 from ..reconstruction_generated_repair import (
     build_generated_repair_candidate_request,
@@ -309,6 +311,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "failure_code": {},
             "pose_refinement_result_digest": {"type": "string"},
             "drift_within_frozen_thresholds": {"type": "boolean"},
+            "refined_pose_manifest_bound": {"type": "boolean"},
             "raw_arkit_poses_modified": {"const": False},
             "heldout_labels_included": {"const": False},
             "candidate_self_graded": {"const": False},
@@ -781,7 +784,10 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         _descriptor(
             "run_pose_refinement",
             "arkit_anchored_pose_refinement",
-            expected_artifacts=["pose_refinement_result.v1"],
+            expected_artifacts=[
+                "pose_refinement_result.v1",
+                "refined_camera_pose_manifest.v1",
+            ],
             input_properties={"pose_refinement_execution_request_digest": {"type": "string"}},
             required_inputs=["pose_refinement_execution_request_digest"],
             mutability="reversible_mutation",
@@ -2400,6 +2406,40 @@ def _run_pose_refinement(
     )
     if result["status"] == "succeeded" and not within_thresholds:
         raise ValueError("pose_refinement_result_drift_threshold_exceeded")
+    manifest_path = None
+    manifest_reference = result.get("refined_pose_manifest_reference")
+    if result["status"] == "succeeded":
+        if not isinstance(manifest_reference, Mapping):
+            raise ValueError("pose_refinement_result_manifest_reference_missing")
+        manifest_path = _validated_emitted_artifact(
+            root=Path(root_value) / "generated" / "pose_refinement",
+            relative_path=manifest_reference.get("relative_path"),
+            expected_digest=manifest_reference.get("artifact_digest"),
+        )
+        try:
+            manifest = build_refined_camera_pose_manifest(
+                json.loads(manifest_path.read_text(encoding="utf-8"))
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("pose_refinement_result_manifest_contract_invalid") from exc
+        if (
+            manifest["refined_camera_pose_manifest_digest"]
+            != result["refined_pose_manifest_digest"]
+            or manifest["pose_refinement_execution_request_digest"]
+            != request["pose_refinement_execution_request_digest"]
+            or manifest["source_capture_digest"] != request["source_capture_digest"]
+            or manifest["frozen_split_digest"] != request["frozen_split_digest"]
+            or manifest["camera_calibration_digest"]
+            != request["camera_calibration_digest"]
+            or manifest["initial_pose_manifest_digest"]
+            != request["initial_pose_manifest_digest"]
+            or manifest["method_id"] != request["method_id"]
+            or manifest["implementation_digest"] != request["implementation_digest"]
+            or manifest["container_image_digest"] != request["container_image_digest"]
+            or manifest["source_commit_sha"] != request["source_commit_sha"]
+            or manifest["authority_used"] != request["authority_used"]
+        ):
+            raise ValueError("pose_refinement_result_manifest_lineage_mismatch")
     path = write_phase2_artifact(
         root_value,
         "generated/pose_refinement/pose_refinement_result.json",
@@ -2412,6 +2452,7 @@ def _run_pose_refinement(
         "failure_code": result.get("failure_code"),
         "pose_refinement_result_digest": result["pose_refinement_result_digest"],
         "drift_within_frozen_thresholds": within_thresholds,
+        "refined_pose_manifest_bound": manifest_path is not None,
         "raw_arkit_poses_modified": False,
         "heldout_labels_included": False,
         "candidate_self_graded": False,
@@ -2422,7 +2463,18 @@ def _run_pose_refinement(
             "artifact_path": str(path.relative_to(Path(root_value))),
             "artifact_digest": result["pose_refinement_result_digest"],
             "artifact_type": "pose_refinement_result.v1",
-        }
+        },
+        *(
+            [
+                {
+                    "artifact_path": str(manifest_path.relative_to(Path(root_value))),
+                    "artifact_digest": manifest_reference["artifact_digest"],
+                    "artifact_type": "refined_camera_pose_manifest.v1",
+                }
+            ]
+            if manifest_path is not None and isinstance(manifest_reference, Mapping)
+            else []
+        ),
     ]
 
 
