@@ -658,6 +658,26 @@ def probe_native_360_source(
         "tags",
     )
     format_metadata = {key: raw_format[key] for key in format_keys if key in raw_format}
+    video_streams = [row for row in receipt_streams if row["media_type"] == "video"]
+    stitched_projection_streams: list[dict[str, Any]] = []
+    for stream in video_streams:
+        side_data = stream["metadata"].get("side_data_list")
+        if not isinstance(side_data, list):
+            continue
+        for side_data_row in side_data:
+            if not isinstance(side_data_row, Mapping):
+                continue
+            projection = str(side_data_row.get("projection") or "").strip().lower()
+            if projection in {"equirectangular", "cubemap", "cylindrical"}:
+                stitched_projection_streams.append(
+                    {"stream_index": stream["stream_index"], "projection": projection}
+                )
+    if len(video_streams) == 1 and len(stitched_projection_streams) == 1:
+        compatible_processing_lane = "camera_360_equirectangular"
+    elif len(video_streams) >= 2 and not stitched_projection_streams:
+        compatible_processing_lane = "camera_360_native_candidate_requires_calibration"
+    else:
+        compatible_processing_lane = "unsupported_or_ambiguous_360_topology"
     format_metadata.update(
         {
             "source_relative_path": relative_path,
@@ -666,6 +686,11 @@ def probe_native_360_source(
             "ffprobe_metadata_output_digest": "sha256:"
             + hashlib.sha256(metadata_output).hexdigest(),
             "ffprobe_timing_output_digest": "sha256:" + hashlib.sha256(timing_output).hexdigest(),
+            "observed_video_stream_count": len(video_streams),
+            "observed_stitched_projection_streams": stitched_projection_streams,
+            "compatible_processing_lane": compatible_processing_lane,
+            "processing_lane_claim_ceiling": "container_stream_topology_only",
+            "capture_profile_fully_validated": False,
             "probe_behavior": {
                 "shell_used": False,
                 "decoded_frames_observed": True,

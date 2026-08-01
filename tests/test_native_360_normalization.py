@@ -223,6 +223,14 @@ def test_native_360_probe_executor_binds_real_bytes_and_observed_timestamps(
         "camera_trajectory_inferred": False,
         "metric_scale_inferred": False,
     }
+    assert receipt["format_metadata"]["observed_video_stream_count"] == 2
+    assert receipt["format_metadata"]["observed_stitched_projection_streams"] == [
+        {"stream_index": 0, "projection": "equirectangular"}
+    ]
+    assert receipt["format_metadata"]["compatible_processing_lane"] == (
+        "unsupported_or_ambiguous_360_topology"
+    )
+    assert receipt["format_metadata"]["capture_profile_fully_validated"] is False
     assert len(calls) == 3
     assert all(command[0] == str(Path(executable).resolve()) for command in calls)
     assert all(
@@ -1035,6 +1043,64 @@ def test_native_360_stitched_projection_cannot_be_bound_as_raw_lens_stream(
     binding = json.loads((artifact_root / "dual_fisheye_stream_binding.json").read_text())
     assert binding["original_distorted_pixels_preserved"] is False
     assert binding["source_pixels_unmodified"] is True
+    jsonschema.Draft202012Validator(
+        _schema(), format_checker=jsonschema.FormatChecker()
+    ).validate(binding)
+
+
+def test_native_360_probe_routes_single_stitched_stream_to_equirectangular_lane(
+    tmp_path: Path,
+) -> None:
+    metadata = {
+        "streams": [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "h264",
+                "width": 3840,
+                "height": 1920,
+                "time_base": "1/50000",
+                "side_data_list": [
+                    {
+                        "side_data_type": "Spherical Mapping",
+                        "projection": "equirectangular",
+                    }
+                ],
+            }
+        ],
+        "format": {"format_name": "mov"},
+    }
+    timing = {
+        "frames": [
+            {
+                "stream_index": 0,
+                "media_type": "video",
+                "pts_time": "0.0",
+                "pkt_dts_time": None,
+                "pkt_duration_time": "0.02",
+                "key_frame": 1,
+            }
+        ]
+    }
+    capture_root, executable, runner, _calls = _probe_fixture(
+        tmp_path, metadata_payload=metadata, timing_payload=timing
+    )
+
+    receipt = probe_native_360_source(
+        capture_root=capture_root,
+        source_relative_path="native/capture.insv",
+        ffprobe_executable=executable,
+        runner=runner,
+    )
+
+    assert receipt["format_metadata"]["observed_video_stream_count"] == 1
+    assert receipt["format_metadata"]["compatible_processing_lane"] == (
+        "camera_360_equirectangular"
+    )
+    assert receipt["format_metadata"]["processing_lane_claim_ceiling"] == (
+        "container_stream_topology_only"
+    )
+    assert receipt["format_metadata"]["capture_profile_fully_validated"] is False
 
 
 @pytest.mark.parametrize("failure_mode", ["missing", "tampered", "symlink"])
