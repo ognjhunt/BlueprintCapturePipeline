@@ -62,6 +62,9 @@ _CLAIM_BOUNDARY = (
 )
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 MIN_HANDOFF_REMAINING_SECONDS = 60
+PENDING_TEARDOWN_LANE_SCOPE = {
+    "isaac_g1_kitchen_parity": {"isaac_g1_kitchen_parity", "isaac_startup_supervisor"},
+}
 
 
 def default_lease_dir() -> Path:
@@ -173,10 +176,12 @@ def build_paid_provider_lane_reconciliation(
     inventory_confirmed = inventory.get("api_confirmed") is True
     live_count = inventory.get("live_resource_count")
     live_count_valid = type(live_count) is int and live_count >= 0
+    pending_lane_scope = PENDING_TEARDOWN_LANE_SCOPE.get(lane_name, {lane_name})
     matching_pending = [
         record
         for record in open_pending_teardowns
         if str(record.get("provider") or "").strip().lower() == provider_name
+        and str(record.get("lane") or "") in pending_lane_scope
         and record.get("status") == "open"
     ]
     blockers: list[str] = []

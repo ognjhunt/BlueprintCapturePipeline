@@ -1252,6 +1252,31 @@ def test_release_retains_lease_until_terminal_reconciliation_passes(
     assert read_lease("runpod", "lane", tmp_path) is not None
 
 
+def test_terminal_reconciliation_ignores_open_pending_teardown_from_other_lane() -> None:
+    reconciliation = build_paid_provider_lane_reconciliation(
+        provider="vast",
+        lane="native_camera",
+        provider_inventory={
+            "api_confirmed": True,
+            "live_resource_count": 0,
+            "resources": [],
+        },
+        open_pending_teardowns=[
+            {
+                "status": "open",
+                "provider": "vast",
+                "lane": "real_policy",
+                "run_id": "unrelated-live-run",
+                "instance_id": "123",
+            }
+        ],
+    )
+
+    assert reconciliation["status"] == "passed"
+    assert reconciliation["open_pending_teardown_count"] == 0
+    assert reconciliation["open_pending_teardowns"] == []
+
+
 def test_paid_job_blocks_before_provider_mutation_when_lane_owned(
     tmp_path: Path, monkeypatch
 ) -> None:
