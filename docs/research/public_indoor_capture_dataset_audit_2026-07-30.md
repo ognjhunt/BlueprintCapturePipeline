@@ -220,6 +220,32 @@ scanning, collision geometry, physics, physical success, deployment readiness,
 safety certification, or comparative policy ranking. The frozen verdict remains
 `thesis_not_supported`.
 
+### Completed: processed walkthrough to partial Task Evaluation Run
+
+At exact clean commit `592f8da413d808dc707bf28c032559c30ac270f3`, the
+same MuSHRoom `koivu` processed observations and source-bound appearance PLY ran
+through the remaining product seams twice. Both runs produced the same internal
+summary digest `sha256:68c0dc1ec6ae1aeb1bd3ea5c8c4dc94775f893443b33b92f43bd2806ab6860aa`,
+immutable testbed digest
+`sha256:6675d53f3874ed961a11760ba826284e200d006f6795fcf1eef75d3f50f9a109`,
+and partial Decision Envelope digest
+`sha256:1b7f430c4b1fea1b7e4ef81faf7ef212a9b77edcf9dac344a617522751e232eb`.
+
+The task first remained `task_approval_required`, then an operator approved it
+only as an internal dataset proxy. The code records
+`operator_approved_candidate`; it does not serialize that action as customer
+intent. The explicitly allowlisted local method supported processed-view
+visibility. Reach, collision, physical success, and comparative policy ranking
+abstained, with a bounded physical-evidence request and no robot run. The
+compact receipt is
+`docs/evidence/public_processed_task_testbed_mushroom_koivu_592f8da4.json`.
+
+This proves that an online indoor walkthrough can exercise Blueprint's
+processed-observation, approval, testbed, router, authorization, execution, and
+partial-decision machinery today. It still cannot prove Blueprint's retained
+encoder frames, decoded PTS, IMU/tracking, customer upload/intent, independent
+metric scale, collision physics, physical success, deployment, or safety.
+
 ### P0: live-agent, zero-tool mutation smoke
 
 With a separately configured supported OpenAI API credential and a strict
