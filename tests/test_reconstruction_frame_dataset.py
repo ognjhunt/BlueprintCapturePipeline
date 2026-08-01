@@ -84,7 +84,13 @@ def _grouped_lens_frames(root: Path, pair_count: int = 5) -> list[dict]:
     return rows
 
 
-def _compile(root: Path, frames: list[dict], *, timestamp: str = "2026-07-30T12:00:00Z") -> dict:
+def _compile(
+    root: Path,
+    frames: list[dict],
+    *,
+    timestamp: str = "2026-07-30T12:00:00Z",
+    supporting_artifact_references: tuple[dict, ...] = (),
+) -> dict:
     return compile_frozen_frame_dataset(
         artifact_root=root,
         intake_id="intake-1",
@@ -106,6 +112,7 @@ def _compile(root: Path, frames: list[dict], *, timestamp: str = "2026-07-30T12:
         source_commit_sha=SOURCE_COMMIT,
         rights_and_retention={"rights": "accepted", "external_processing_allowed": False},
         timestamp=timestamp,
+        supporting_artifact_references=supporting_artifact_references,
     )
 
 
@@ -271,6 +278,34 @@ def test_compiler_replays_after_manifest_write_interruption(tmp_path: Path) -> N
     assert candidate["candidate_dataset_digest"] == first["output_digests"][
         "candidate_dataset_digest"
     ]
+
+
+def test_compiler_binds_supporting_artifact_and_rejects_tamper(tmp_path: Path) -> None:
+    support = tmp_path / "support/decode.json"
+    support.parent.mkdir(parents=True)
+    support.write_text('{"schema_version":"frame_decode_receipt.v1"}\n')
+    reference = {
+        "relative_path": support.relative_to(tmp_path).as_posix(),
+        "digest": _digest(support),
+        "artifact_type": "frame_decode_receipt.v1",
+    }
+    dataset = _compile(
+        tmp_path,
+        _frames(tmp_path),
+        supporting_artifact_references=(reference,),
+    )
+    assert dataset["supporting_artifact_references"] == [reference]
+
+    support.write_text("tampered\n")
+    with pytest.raises(
+        ReconstructionFrameDatasetError,
+        match="dataset_supporting_artifact_invalid",
+    ):
+        _compile(
+            tmp_path,
+            _frames(tmp_path),
+            supporting_artifact_references=(reference,),
+        )
 
 
 def test_compiler_replay_rejects_tampered_split_artifact(tmp_path: Path) -> None:

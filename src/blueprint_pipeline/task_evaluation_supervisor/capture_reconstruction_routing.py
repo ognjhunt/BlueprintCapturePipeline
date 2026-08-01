@@ -129,13 +129,13 @@ _PROFILE_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
     "camera_360_native": (
         ("retain_native_360_originals", "capture_validation", "required_deterministic_gate"),
         (
-            "compile_frozen_frame_dataset",
-            "capture_reconstruction_dataset_compilation",
+            "normalize_native_360_capture",
+            "native_360_normalization",
             "registered_conditional",
         ),
         (
-            "normalize_native_360_capture",
-            "native_360_normalization",
+            "compile_frozen_frame_dataset",
+            "capture_reconstruction_dataset_compilation",
             "registered_conditional",
         ),
         ("validate_camera_rig", "camera_rig_validation", "registered_conditional"),

@@ -156,6 +156,11 @@ def test_each_supported_capture_family_has_a_profile_specific_route(
 
     assert route["status"] == "route_proposed"
     assert required_stage in {row["stage_id"] for row in route["stages"]}
+    if profile == "camera_360_native":
+        ordered = [row["stage_id"] for row in route["stages"]]
+        assert ordered.index("normalize_native_360_capture") < ordered.index(
+            "compile_frozen_frame_dataset"
+        )
     assert route["agent_selected_capture_profile"] is False
     assert route["proof_effect"] == "none"
 
@@ -387,6 +392,10 @@ def test_agents_sdk_executes_injected_frozen_dataset_compiler_without_proof_auth
     route = build_capture_reconstruction_route(capture_build)
 
     def compiler(*, request: dict, output_root: Path) -> dict:
+        support = output_root / "support" / "frame_decode_receipt.json"
+        support.parent.mkdir(parents=True, exist_ok=True)
+        support.write_text('{"schema_version":"frame_decode_receipt.v1"}\n')
+        support_digest = "sha256:" + hashlib.sha256(support.read_bytes()).hexdigest()
         frames: list[dict] = []
         for index, timestamp in enumerate((0.0, 0.05, 0.13, 0.25, 0.5)):
             path = output_root / "frames" / f"decoded-{index:09d}.png"
@@ -426,6 +435,13 @@ def test_agents_sdk_executes_injected_frozen_dataset_compiler_without_proof_auth
                 ],
             },
             timestamp="2026-07-30T12:00:00Z",
+            supporting_artifact_references=[
+                {
+                    "relative_path": support.relative_to(output_root).as_posix(),
+                    "digest": support_digest,
+                    "artifact_type": "frame_decode_receipt.v1",
+                }
+            ],
         )
 
     registry = ToolRegistry.default()
@@ -465,10 +481,14 @@ def test_agents_sdk_executes_injected_frozen_dataset_compiler_without_proof_auth
     assert observation["status"] == "completed"
     assert observation["typed_result"]["hidden_heldout_isolated"] is True
     assert observation["typed_result"]["candidate_can_change_split"] is False
+    assert observation["typed_result"]["supporting_artifact_count"] == 1
     assert observation["proof_effect"] == "none"
     assert observation["cost_usd"] == 0.0
     assert observation["produced_artifact_references"][0]["artifact_type"] == (
         "reconstruction_dataset_manifest.v1"
+    )
+    assert observation["produced_artifact_references"][1]["artifact_type"] == (
+        "frame_decode_receipt.v1"
     )
     validate_tool_observation_binding(
         observation,
@@ -486,6 +506,104 @@ def test_agents_sdk_executes_injected_frozen_dataset_compiler_without_proof_auth
     )
     assert refused["status"] == "refused"
     assert "route_binding_mismatch" in refused["typed_failure"]["reason"]
+
+
+def test_frozen_dataset_tool_rehashes_supporting_artifacts_from_compiler(
+    tmp_path: Path,
+) -> None:
+    capture_build = _capture_build(tmp_path, profile="camera_360_equirectangular")
+    route = build_capture_reconstruction_route(capture_build)
+
+    def compiler(*, request: dict, output_root: Path) -> dict:
+        frames = []
+        for index in range(3):
+            path = output_root / "frames" / f"frame-{index}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"frame-{index}".encode())
+            frames.append(
+                {
+                    "frame_id": f"frame-{index}",
+                    "decoded_frame_index": index,
+                    "t_video_sec": float(index),
+                    "source_pts_seconds": float(index),
+                    "artifact_relative_path": path.relative_to(output_root).as_posix(),
+                    "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "quality_signals": {},
+                }
+            )
+        support = output_root / "support/decode.json"
+        support.parent.mkdir(parents=True)
+        support.write_text('{"schema_version":"frame_decode_receipt.v1"}\n')
+        support_digest = "sha256:" + hashlib.sha256(support.read_bytes()).hexdigest()
+        dataset = compile_frozen_frame_dataset(
+            artifact_root=output_root,
+            intake_id="malicious-support-fixture",
+            capture_digest="sha256:" + "1" * 64,
+            capture_authority_profile=request["capture_authority_profile"],
+            source_video_relative_path="retained/source.mov",
+            source_video_digest="sha256:" + "2" * 64,
+            decoded_frame_count=3,
+            selected_frames=frames,
+            stream_metadata={},
+            runtime_identity="fixture",
+            runtime_digest="sha256:" + "3" * 64,
+            implementation_digest="sha256:" + "4" * 64,
+            source_commit_sha="5" * 40,
+            rights_and_retention={"external_processing_allowed": False},
+            parent_artifact={
+                "capture_build_digest": request["capture_build_digest"],
+                "capture_reconstruction_route_digest": request[
+                    "capture_reconstruction_route_digest"
+                ],
+            },
+            timestamp="2026-07-30T12:00:00Z",
+            supporting_artifact_references=[
+                {
+                    "relative_path": support.relative_to(output_root).as_posix(),
+                    "digest": support_digest,
+                    "artifact_type": "frame_decode_receipt.v1",
+                }
+            ],
+        )
+        support.write_text("tampered-after-compilation\n")
+        return dataset
+
+    registry = ToolRegistry.default()
+    context = SupervisorContext(
+        run_id="supporting-artifact-rehash",
+        customer_question="Compile safely.",
+        capture_build=capture_build,
+        supervisor_output_dir=str(tmp_path / "run"),
+        reconstruction_dataset_compiler=compiler,
+    )
+    authority = default_authority_envelope(
+        run_id=context.run_id,
+        mode=AutonomyMode.EXECUTE_NON_SPEND,
+        tool_registry=registry,
+        immutable_input_digests=[capture_build["capture_build_digest"]],
+    ).to_mapping()
+    binding = next(
+        item
+        for item in non_spend_tool_bindings(
+            capability="capture_testbed_supervisor",
+            context=context,
+            registry=registry,
+            authority=authority,
+        )
+        if item.tool_id == "compile_frozen_frame_dataset"
+    )
+
+    observation = binding.invoke(
+        {
+            "capture_build_digest": capture_build["capture_build_digest"],
+            "capture_reconstruction_route_digest": route[
+                "capture_reconstruction_route_digest"
+            ],
+        }
+    )
+
+    assert observation["status"] == "refused"
+    assert "emitted_artifact_digest_mismatch" in observation["typed_failure"]["reason"]
 
 
 def test_agents_sdk_executes_digest_bound_native_360_normalizer_without_proof_authority(

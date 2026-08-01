@@ -333,6 +333,34 @@ def _validated_existing_dataset(
             "digest"
         ):
             errors.append(f"existing_dataset_artifact_digest_mismatch:{name}")
+    supporting = existing.get("supporting_artifact_references", [])
+    if not isinstance(supporting, list):
+        errors.append("existing_dataset_supporting_artifacts_invalid")
+        supporting = []
+    for index, reference in enumerate(supporting):
+        if (
+            not isinstance(reference, Mapping)
+            or not _is_digest(reference.get("digest"))
+            or not str(reference.get("artifact_type") or "").strip()
+        ):
+            errors.append(f"existing_dataset_supporting_artifact_invalid:{index}")
+            continue
+        try:
+            relative_path = _safe_relative(reference.get("relative_path"))
+        except ReconstructionFrameDatasetError:
+            errors.append(f"existing_dataset_supporting_artifact_unsafe:{index}")
+            continue
+        lexical = root / relative_path
+        artifact = lexical.resolve()
+        if root != artifact and root not in artifact.parents:
+            errors.append(f"existing_dataset_supporting_artifact_escape:{index}")
+        elif (
+            lexical.is_symlink()
+            or artifact.is_symlink()
+            or not artifact.is_file()
+            or _sha256_file(artifact) != reference.get("digest")
+        ):
+            errors.append(f"existing_dataset_supporting_artifact_digest_mismatch:{index}")
     if errors:
         raise ReconstructionFrameDatasetError(errors)
     return existing
@@ -359,6 +387,7 @@ def compile_frozen_frame_dataset(
     timestamp: str | None = None,
     camera_calibration_binding: Mapping[str, Any] | None = None,
     coordinate_frame_declaration: Mapping[str, Any] | None = None,
+    supporting_artifact_references: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Freeze one content-bound dataset and isolate its hidden held-out pixels."""
 
@@ -398,6 +427,43 @@ def compile_frozen_frame_dataset(
     if errors:
         raise ReconstructionFrameDatasetError(errors)
     frames = _normalized_frames(artifact_root=root, selected_frames=selected_frames)
+    normalized_supporting_references: list[dict[str, Any]] = []
+    supporting_keys: set[tuple[str, str]] = set()
+    for ordinal, raw in enumerate(supporting_artifact_references):
+        if not isinstance(raw, Mapping):
+            raise ReconstructionFrameDatasetError(
+                [f"dataset_supporting_artifact_invalid:{ordinal}"]
+            )
+        relative_path = _safe_relative(raw.get("relative_path"))
+        digest = str(raw.get("digest") or "")
+        artifact_type = str(raw.get("artifact_type") or "").strip()
+        key = (relative_path, artifact_type)
+        lexical = root / relative_path
+        path = lexical.resolve()
+        if (
+            not _is_digest(digest)
+            or not artifact_type
+            or key in supporting_keys
+            or (root != path and root not in path.parents)
+            or lexical.is_symlink()
+            or path.is_symlink()
+            or not path.is_file()
+            or _sha256_file(path) != digest
+        ):
+            raise ReconstructionFrameDatasetError(
+                [f"dataset_supporting_artifact_invalid:{ordinal}"]
+            )
+        supporting_keys.add(key)
+        normalized_supporting_references.append(
+            {
+                "relative_path": relative_path,
+                "digest": digest,
+                "artifact_type": artifact_type,
+            }
+        )
+    normalized_supporting_references.sort(
+        key=lambda row: (row["artifact_type"], row["relative_path"])
+    )
     selected_frame_binding_digest = canonical_digest({"frames": frames})
     stream_metadata_digest = canonical_digest(dict(stream_metadata))
     authority_digest = canonical_digest(dict(rights_and_retention))
@@ -444,6 +510,10 @@ def compile_frozen_frame_dataset(
     if coordinate_frame_declaration_digest is not None:
         config["coordinate_frame_declaration_digest"] = (
             coordinate_frame_declaration_digest
+        )
+    if normalized_supporting_references:
+        config["supporting_artifact_references_digest"] = canonical_digest(
+            {"references": normalized_supporting_references}
         )
     configuration_digest = canonical_digest(config)
     dataset_root = root / f"frozen_dataset_{configuration_digest[7:23]}"
@@ -669,6 +739,10 @@ def compile_frozen_frame_dataset(
         "raw_capture_bytes_remain_authoritative": True,
         "dataset_manifest_digest": None,
     }
+    if normalized_supporting_references:
+        dataset["supporting_artifact_references"] = (
+            normalized_supporting_references
+        )
     dataset["dataset_manifest_digest"] = canonical_digest(
         dataset, digest_field="dataset_manifest_digest"
     )

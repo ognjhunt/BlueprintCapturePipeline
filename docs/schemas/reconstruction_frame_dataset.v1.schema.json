@@ -26,6 +26,18 @@
         "digest": {"$ref": "#/$defs/sha256"}
       }
     },
+    "supporting_artifact_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "digest", "artifact_type"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "artifact_type": {
+          "type": "string", "pattern": "^[a-z0-9_.-]+\\.v[0-9]+$"
+        }
+      }
+    },
     "selected_frame": {
       "type": "object",
       "additionalProperties": false,
@@ -266,6 +278,10 @@
             "candidate_dataset_manifest": {"$ref": "#/$defs/artifact_reference"},
             "hidden_heldout_evaluator_manifest": {"$ref": "#/$defs/artifact_reference"}
           }
+        },
+        "supporting_artifact_references": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/supporting_artifact_reference"}
         },
         "candidate_dataset_contains_hidden_heldout_pixels": {"const": false},
         "candidate_can_modify_split": {"const": false},

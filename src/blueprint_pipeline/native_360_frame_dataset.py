@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 from PIL import Image
@@ -740,6 +740,7 @@ def compile_native_360_grouped_frame_dataset(
     source_commit_sha: str,
     authority_used: Mapping[str, Any],
     timestamp: str,
+    parent_artifact_or_event: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compile one validated single-segment dual-fisheye source into frozen splits."""
 
@@ -953,6 +954,46 @@ def compile_native_360_grouped_frame_dataset(
             ["native_360_grouped_dataset_decode_manifest_frames_mismatch"]
         )
 
+    decode_configuration_digest = lens_decode_manifest.get(
+        "deterministic_configuration_digest"
+    )
+    if not _is_digest(decode_configuration_digest):
+        raise Native360FrameDatasetError(
+            ["native_360_grouped_dataset_decode_manifest_invalid"]
+        )
+    decode_manifest_relative_path = (
+        "native_360_lens_decode_"
+        f"{str(decode_configuration_digest)[7:23]}/"
+        "native_360_lens_decode_manifest.json"
+    )
+    decode_manifest_path = (
+        Path(artifact_root).expanduser().resolve() / decode_manifest_relative_path
+    )
+    if (
+        decode_manifest_path.is_symlink()
+        or not decode_manifest_path.is_file()
+    ):
+        raise Native360FrameDatasetError(
+            ["native_360_grouped_dataset_decode_manifest_artifact_missing"]
+        )
+    decode_manifest_artifact_digest = _sha256_file(decode_manifest_path)
+
+    parent = dict(parent_artifact_or_event or {})
+    native_parent = {
+        "native_360_normalization_digest": normalization_result[
+            "native_360_normalization_digest"
+        ],
+        "dual_fisheye_binding_digest": dual_fisheye_binding[
+            "dual_fisheye_binding_digest"
+        ],
+        "lens_decode_manifest_digest": lens_decode_manifest_digest,
+    }
+    if any(key in parent and parent[key] != value for key, value in native_parent.items()):
+        raise Native360FrameDatasetError(
+            ["native_360_grouped_dataset_parent_binding_conflict"]
+        )
+    parent.update(native_parent)
+
     return compile_frozen_frame_dataset(
         artifact_root=artifact_root,
         intake_id=intake_id,
@@ -982,15 +1023,7 @@ def compile_native_360_grouped_frame_dataset(
         source_commit_sha=source_commit_sha,
         rights_and_retention=authority_used,
         selection_rule="evenly_spaced_actual_decoded_pts_with_endpoints_v1",
-        parent_artifact={
-            "native_360_normalization_digest": normalization_result[
-                "native_360_normalization_digest"
-            ],
-            "dual_fisheye_binding_digest": dual_fisheye_binding[
-                "dual_fisheye_binding_digest"
-            ],
-            "lens_decode_manifest_digest": lens_decode_manifest_digest,
-        },
+        parent_artifact=parent,
         timestamp=timestamp,
         camera_calibration_binding={
             "camera_360_rig_declaration_digest": rig_declaration[
@@ -1000,13 +1033,102 @@ def compile_native_360_grouped_frame_dataset(
         coordinate_frame_declaration=normalization_result[
             "coordinate_frame_declaration"
         ],
+        supporting_artifact_references=[
+            {
+                "relative_path": decode_manifest_relative_path,
+                "digest": decode_manifest_artifact_digest,
+                "artifact_type": NATIVE_360_LENS_DECODE_SCHEMA_VERSION,
+            }
+        ],
     )
+
+
+def build_native_360_dataset_compiler_service(
+    *,
+    capture_root: str | Path,
+    intake_id: str,
+    capture_digest: str,
+    capture_build_digest: str,
+    capture_reconstruction_route_digest: str,
+    normalization_result: Mapping[str, Any],
+    rig_declaration: Mapping[str, Any],
+    dual_fisheye_binding: Mapping[str, Any],
+    implementation_digest: str,
+    source_commit_sha: str,
+    authority_used: Mapping[str, Any],
+    timestamp: str,
+    ffmpeg_executable: str | Path | None = None,
+    timeout_seconds_per_frame: float = 120.0,
+    maximum_command_output_bytes: int = 4 * 1024 * 1024,
+    runner: ProbeRunner | None = None,
+) -> Callable[..., dict[str, Any]]:
+    """Build a trusted callable for the registered frozen-dataset tool."""
+
+    if not _is_digest(capture_build_digest) or not _is_digest(
+        capture_reconstruction_route_digest
+    ):
+        raise Native360FrameDatasetError(
+            ["native_360_dataset_service_route_binding_invalid"]
+        )
+
+    def compiler(*, request: Mapping[str, Any], output_root: Path) -> dict[str, Any]:
+        if (
+            request.get("capture_build_digest") != capture_build_digest
+            or request.get("capture_reconstruction_route_digest")
+            != capture_reconstruction_route_digest
+            or request.get("capture_authority_profile") != "camera_360_native"
+            or not isinstance(request.get("requested_claim_types"), list)
+        ):
+            raise Native360FrameDatasetError(
+                ["native_360_dataset_service_request_binding_mismatch"]
+            )
+        decode_manifest = decode_native_360_lens_observations(
+            capture_root=capture_root,
+            artifact_root=output_root,
+            capture_digest=capture_digest,
+            normalization_result=normalization_result,
+            rig_declaration=rig_declaration,
+            dual_fisheye_binding=dual_fisheye_binding,
+            implementation_digest=implementation_digest,
+            source_commit_sha=source_commit_sha,
+            authority_used=authority_used,
+            timestamp=timestamp,
+            ffmpeg_executable=ffmpeg_executable,
+            timeout_seconds_per_frame=timeout_seconds_per_frame,
+            maximum_command_output_bytes=maximum_command_output_bytes,
+            runner=runner,
+        )
+        return compile_native_360_grouped_frame_dataset(
+            artifact_root=output_root,
+            intake_id=intake_id,
+            capture_digest=capture_digest,
+            normalization_result=normalization_result,
+            rig_declaration=rig_declaration,
+            dual_fisheye_binding=dual_fisheye_binding,
+            lens_decode_manifest=decode_manifest,
+            decoded_lens_frames=decode_manifest["frames"],
+            runtime_identity=decode_manifest["runtime_identity"],
+            runtime_digest=decode_manifest["runtime_digest"],
+            implementation_digest=implementation_digest,
+            source_commit_sha=source_commit_sha,
+            authority_used=authority_used,
+            timestamp=timestamp,
+            parent_artifact_or_event={
+                "capture_build_digest": capture_build_digest,
+                "capture_reconstruction_route_digest": (
+                    capture_reconstruction_route_digest
+                ),
+            },
+        )
+
+    return compiler
 
 
 __all__ = [
     "NATIVE_360_GROUPED_DATASET_ADAPTER_VERSION",
     "NATIVE_360_LENS_DECODE_SCHEMA_VERSION",
     "Native360FrameDatasetError",
+    "build_native_360_dataset_compiler_service",
     "compile_native_360_grouped_frame_dataset",
     "decode_native_360_lens_observations",
 ]

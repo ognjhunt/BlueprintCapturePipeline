@@ -10,9 +10,10 @@ import jsonschema
 import pytest
 from PIL import Image
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline.native_360_frame_dataset import (
     Native360FrameDatasetError,
+    build_native_360_dataset_compiler_service,
     compile_native_360_grouped_frame_dataset,
     decode_native_360_lens_observations,
 )
@@ -279,6 +280,20 @@ def _compile(
     decode_manifest: dict | None = None,
 ) -> dict:
     manifest = decode_manifest or _recorded_decode_manifest(result, binding, decoded)
+    manifest_path = (
+        root
+        / (
+            "native_360_lens_decode_"
+            f"{manifest['deterministic_configuration_digest'][7:23]}"
+        )
+        / "native_360_lens_decode_manifest.json"
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = canonical_json(manifest) + "\n"
+    if manifest_path.exists():
+        assert manifest_path.read_text(encoding="utf-8") == payload
+    else:
+        manifest_path.write_text(payload, encoding="utf-8")
     return compile_native_360_grouped_frame_dataset(
         artifact_root=root,
         intake_id="native-grouped-fixture",
@@ -438,6 +453,78 @@ def test_native_lens_decoder_maps_timeout_and_dimension_failures(
         )
 
 
+def test_native_dataset_service_composes_decode_and_split_with_route_binding(
+    tmp_path: Path,
+) -> None:
+    result, rig, binding = _normalized_artifacts(tmp_path)
+    executable = tmp_path / "ffmpeg-service"
+    executable.write_bytes(b"pinned-ffmpeg-service-fixture")
+
+    def runner(
+        argv: Sequence[str], _timeout: float, _maximum_output: int
+    ) -> subprocess.CompletedProcess[bytes]:
+        command = list(argv)
+        if "-version" in command:
+            return subprocess.CompletedProcess(
+                command, 0, b"ffmpeg version service-fixture\n", b""
+            )
+        stream_index = int(command[command.index("-map") + 1].split(":")[1])
+        Image.new("L", (32, 32), color=32 + (stream_index * 128)).save(command[-1])
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    capture_build_digest = "sha256:" + "6" * 64
+    route_digest = "sha256:" + "7" * 64
+    service = build_native_360_dataset_compiler_service(
+        capture_root=tmp_path / "capture",
+        intake_id="native-grouped-fixture",
+        capture_digest=CAPTURE_DIGEST,
+        capture_build_digest=capture_build_digest,
+        capture_reconstruction_route_digest=route_digest,
+        normalization_result=result,
+        rig_declaration=rig,
+        dual_fisheye_binding=binding,
+        implementation_digest=IMPLEMENTATION_DIGEST,
+        source_commit_sha=SOURCE_COMMIT,
+        authority_used=AUTHORITY,
+        timestamp="2026-07-30T12:00:00Z",
+        ffmpeg_executable=executable,
+        runner=runner,
+    )
+    dataset = service(
+        request={
+            "capture_build_digest": capture_build_digest,
+            "capture_reconstruction_route_digest": route_digest,
+            "capture_authority_profile": "camera_360_native",
+            "requested_claim_types": ["navigation_clearance"],
+        },
+        output_root=tmp_path / "service-output",
+    )
+
+    assert dataset["parent_artifact_or_event"]["capture_build_digest"] == (
+        capture_build_digest
+    )
+    assert dataset["parent_artifact_or_event"][
+        "capture_reconstruction_route_digest"
+    ] == route_digest
+    assert dataset["supporting_artifact_references"][0]["artifact_type"] == (
+        "native_360_lens_decode_manifest.v1"
+    )
+
+    with pytest.raises(
+        Native360FrameDatasetError,
+        match="dataset_service_request_binding_mismatch",
+    ):
+        service(
+            request={
+                "capture_build_digest": "sha256:" + "0" * 64,
+                "capture_reconstruction_route_digest": route_digest,
+                "capture_authority_profile": "camera_360_native",
+                "requested_claim_types": [],
+            },
+            output_root=tmp_path / "refused-output",
+        )
+
+
 def test_native_grouped_dataset_binds_pairs_and_isolates_both_hidden_lenses(
     tmp_path: Path,
 ) -> None:
@@ -455,6 +542,9 @@ def test_native_grouped_dataset_binds_pairs_and_isolates_both_hidden_lenses(
     }
     assert dataset["claim_ceiling"] == "decoded_observation_availability"
     assert dataset["metric_scale_status"] == "not_established"
+    assert dataset["supporting_artifact_references"][0]["artifact_type"] == (
+        "native_360_lens_decode_manifest.v1"
+    )
     split = _load_reference(dataset_root, dataset, "frozen_split_manifest")
     candidate = _load_reference(dataset_root, dataset, "candidate_dataset_manifest")
     heldout = _load_reference(

@@ -328,6 +328,12 @@ the trusted dataset compiler until frozen candidate/hidden materialization.
 The grouped dataset compiler requires this exact manifest and binds its digest
 as a parent; runtime/source/frame substitutions are refused rather than silently
 accepted as equivalent decoded observations.
+The native reconstruction route now orders normalization before frozen dataset
+compilation. A trusted runtime-only compiler service composes decode and grouped
+split under the registered `compile_frozen_frame_dataset` tool; the model sees
+only capture-build and route digests. The dataset publishes the decode manifest
+as a supporting artifact reference, which the supervisor independently resolves,
+rehashes, and records in the tool observation ledger.
 Timeout, malformed or absent output, changed source/runtime bytes, symlinked
 targets, wrong dimensions, and immutable conflicts fail closed.
 

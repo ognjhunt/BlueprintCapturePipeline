@@ -186,6 +186,7 @@ _TOOL_OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "split_digest": {"type": "string"},
             "hidden_heldout_isolated": {"const": True},
             "candidate_can_change_split": {"const": False},
+            "supporting_artifact_count": {"type": "integer"},
             "proof_state_changed": {"const": False},
         }
     ),
@@ -639,7 +640,11 @@ def default_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         _descriptor(
             "compile_frozen_frame_dataset",
             "capture_reconstruction_dataset_compilation",
-            expected_artifacts=["reconstruction_dataset_manifest.v1"],
+            expected_artifacts=[
+                "reconstruction_dataset_manifest.v1",
+                "frame_decode_receipt.v1",
+                "native_360_lens_decode_manifest.v1",
+            ],
             input_properties={
                 "capture_build_digest": {"type": "string"},
                 "capture_reconstruction_route_digest": {"type": "string"},
@@ -1699,6 +1704,46 @@ def _compile_frozen_frame_dataset(
         "generated/reconstruction_frame_dataset/reconstruction_dataset_manifest.json",
         dataset,
     )
+    produced_artifacts = [
+        {
+            "artifact_path": str(path.relative_to(Path(root_value))),
+            "artifact_digest": dataset_digest,
+            "artifact_type": "reconstruction_dataset_manifest.v1",
+        }
+    ]
+    supporting = dataset.get("supporting_artifact_references", [])
+    if not isinstance(supporting, list) or len(supporting) > 8:
+        raise ValueError("reconstruction_dataset_supporting_artifacts_invalid")
+    supporting_keys: set[tuple[str, str]] = set()
+    for ordinal, reference in enumerate(supporting):
+        if not isinstance(reference, Mapping):
+            raise ValueError(
+                f"reconstruction_dataset_supporting_artifact_invalid:{ordinal}"
+            )
+        artifact_type = str(reference.get("artifact_type") or "")
+        key = (str(reference.get("relative_path") or ""), artifact_type)
+        if (
+            re.fullmatch(r"[a-z0-9_.-]+\.v[0-9]+", artifact_type) is None
+            or key in supporting_keys
+        ):
+            raise ValueError(
+                f"reconstruction_dataset_supporting_artifact_invalid:{ordinal}"
+            )
+        supporting_keys.add(key)
+        verified = _validated_emitted_artifact(
+            root=output_root,
+            relative_path=reference.get("relative_path"),
+            expected_digest=reference.get("digest"),
+        )
+        produced_artifacts.append(
+            {
+                "artifact_path": str(
+                    verified.relative_to(Path(root_value).resolve())
+                ),
+                "artifact_digest": reference["digest"],
+                "artifact_type": artifact_type,
+            }
+        )
     return {
         "contract_present": True,
         "digest_matches": True,
@@ -1706,14 +1751,9 @@ def _compile_frozen_frame_dataset(
         "split_digest": split_digest,
         "hidden_heldout_isolated": True,
         "candidate_can_change_split": False,
+        "supporting_artifact_count": len(supporting),
         "proof_state_changed": False,
-    }, [
-        {
-            "artifact_path": str(path.relative_to(Path(root_value))),
-            "artifact_digest": dataset_digest,
-            "artifact_type": "reconstruction_dataset_manifest.v1",
-        }
-    ]
+    }, produced_artifacts
 
 
 def _capture_reconstruction_route_for_tool(
