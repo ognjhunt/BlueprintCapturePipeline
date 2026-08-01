@@ -172,13 +172,19 @@ function Run-Arm([string]$armId, [string]$profile) {
   Put-Status "TRAIN $armId starting (profile=$profile)"
   $out = "C:\work\out\$armId"
   New-Item -ItemType Directory -Force -Path $out | Out-Null
-  $args = @("train",
+  # --login/--password are GLOBAL options and must precede the subcommand
+  # (proven by run 213413Z: trailing placement is rejected with exit 109).
+  # --no-recenter-points keeps the trained splat in the imported candidate
+  # frame instead of Postshot's recentered frame.
+  $args = @(
+    "--login", $lic["POSTSHOT_LOGIN_EMAIL"], "--password", $lic["POSTSHOT_LOGIN_PASSWORD"],
+    "train",
     "--import", $dataset,
     "--profile", $profile,
+    "--no-recenter-points",
     "--max-image-size", "0",
     "--output", "$out\$armId.psht",
-    "--export-splat", "$out\$armId.ply",
-    "--login", $lic["POSTSHOT_LOGIN_EMAIL"], "--password", $lic["POSTSHOT_LOGIN_PASSWORD"])
+    "--export-splat", "$out\$armId.ply")
   $redacted = ($args | ForEach-Object { $_ }) -join " "
   $redacted = $redacted -replace [regex]::Escape($lic["POSTSHOT_LOGIN_PASSWORD"]), "***" -replace [regex]::Escape($lic["POSTSHOT_LOGIN_EMAIL"]), "***"
   Add-Content -Path "$out\command.txt" -Value $redacted
