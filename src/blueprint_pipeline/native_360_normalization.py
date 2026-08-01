@@ -502,7 +502,10 @@ def probe_native_360_source(
             "1",
             "-show_frames",
             "-show_entries",
-            "frame=stream_index,media_type,pts_time,pkt_dts_time,best_effort_timestamp_time",
+            (
+                "frame=stream_index,media_type,pts_time,pkt_dts_time,"
+                "best_effort_timestamp_time,pkt_duration_time,key_frame"
+            ),
             "-of",
             "json",
             str(source),
@@ -567,10 +570,30 @@ def probe_native_360_source(
             if dts_raw is not None
             else None
         )
+        duration_raw = raw_frame.get("pkt_duration_time")
+        duration = (
+            _probe_number(
+                duration_raw,
+                label=f"native_360_probe_frame_duration_invalid:stream_{index}",
+            )
+            if duration_raw is not None
+            else None
+        )
+        if duration is not None and duration <= 0:
+            raise Native360NormalizationError(
+                [f"native_360_probe_frame_duration_invalid:stream_{index}"]
+            )
+        key_frame_raw = raw_frame.get("key_frame")
+        if key_frame_raw is not None and key_frame_raw not in {0, 1, False, True}:
+            raise Native360NormalizationError(
+                [f"native_360_probe_frame_key_frame_invalid:stream_{index}"]
+            )
         timing_by_stream[index].append(
             {
                 "pts_seconds": pts,
                 "dts_seconds": dts,
+                "duration_seconds": duration,
+                "key_frame": (bool(key_frame_raw) if key_frame_raw is not None else None),
                 "best_effort_timestamp_time": raw_frame.get("best_effort_timestamp_time"),
             }
         )
@@ -605,6 +628,7 @@ def probe_native_360_source(
                 {
                     "decoded_timestamp_field": "pts_time",
                     "decoded_frame_timing_digest": canonical_digest({"frames": timing}),
+                    "decoded_frame_timing": timing,
                     "all_decoded_dts_observed": all(
                         row["dts_seconds"] is not None for row in timing
                     ),

@@ -115,6 +115,8 @@ def _probe_fixture(
                 "media_type": "video",
                 "pts_time": "0.000000",
                 "pkt_dts_time": "0.000000",
+                "pkt_duration_time": "0.033333",
+                "key_frame": 1,
                 "best_effort_timestamp_time": "0.000000",
             },
             {
@@ -122,6 +124,8 @@ def _probe_fixture(
                 "media_type": "video",
                 "pts_time": "0.000000",
                 "pkt_dts_time": "0.000000",
+                "pkt_duration_time": "0.033333",
+                "key_frame": 1,
                 "best_effort_timestamp_time": "0.000000",
             },
             {
@@ -129,6 +133,8 @@ def _probe_fixture(
                 "media_type": "video",
                 "pts_time": "0.033333",
                 "pkt_dts_time": "0.033333",
+                "pkt_duration_time": "0.033333",
+                "key_frame": 0,
                 "best_effort_timestamp_time": "0.033333",
             },
             {
@@ -136,6 +142,8 @@ def _probe_fixture(
                 "media_type": "video",
                 "pts_time": "0.033333",
                 "pkt_dts_time": "0.033333",
+                "pkt_duration_time": "0.033333",
+                "key_frame": 0,
                 "best_effort_timestamp_time": "0.033333",
             },
         ]
@@ -179,6 +187,22 @@ def test_native_360_probe_executor_binds_real_bytes_and_observed_timestamps(
     assert receipt["streams"][1]["pts_seconds"] == [0.0, 0.033333]
     assert receipt["streams"][2]["pts_seconds"] == []
     assert receipt["streams"][0]["metadata"]["lens_identity_inferred"] is False
+    assert receipt["streams"][0]["metadata"]["decoded_frame_timing"] == [
+        {
+            "pts_seconds": 0.0,
+            "dts_seconds": 0.0,
+            "duration_seconds": 0.033333,
+            "key_frame": True,
+            "best_effort_timestamp_time": "0.000000",
+        },
+        {
+            "pts_seconds": 0.033333,
+            "dts_seconds": 0.033333,
+            "duration_seconds": 0.033333,
+            "key_frame": False,
+            "best_effort_timestamp_time": "0.033333",
+        },
+    ]
     assert receipt["streams"][0]["metadata"]["side_data_list"] == [
         {
             "side_data_type": "Spherical Mapping",
