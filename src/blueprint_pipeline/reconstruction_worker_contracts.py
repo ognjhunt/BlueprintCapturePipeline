@@ -24,6 +24,7 @@ POSE_RESULT_SCHEMA_VERSION = "pose_estimation_result.v1"
 TRAINING_REQUEST_SCHEMA_VERSION = "reconstruction_training_request.v1"
 TRAINING_RESULT_SCHEMA_VERSION = "reconstruction_training_result.v1"
 CHECKPOINT_SCHEMA_VERSION = "reconstruction_checkpoint_manifest.v1"
+REQUIREMENTS_LOCK_SHA256 = "e35adb73bfc0ddd1696a5207deca496559ca25a8c5b076b657a36a901f1a795e"
 
 PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
     {
@@ -102,7 +103,11 @@ PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
         "name": "Python/PyTorch/NumPy/OpenCV/Trimesh",
         "version": "python-3.11.9;torch-2.4.1+cu124;numpy-1.26.4;opencv-python-headless-4.10.0.84;trimesh-4.4.9",
         "source_url": "https://www.python.org/;https://pytorch.org/;https://pypi.org/",
-        "source_revision": "python-3.11.9-source-sha256:9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87;python-wheel-lock-v1",
+        "source_revision": (
+            "python-3.11.9-source-sha256:"
+            "9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87;"
+            f"requirements-lock-sha256:{REQUIREMENTS_LOCK_SHA256}"
+        ),
         "license": "PSF-2.0;BSD-3-Clause;BSD-3-Clause;Apache-2.0;MIT",
         "redistribution": "wheel_hash_lock_and_notice_bundle_required",
     },
@@ -129,7 +134,7 @@ PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
         "name": "image/depth QA runtime",
         "version": "scikit-image-0.24.0;imageio-2.35.1;lpips-0.1.4",
         "source_url": "https://pypi.org/",
-        "source_revision": "candidate_lock_v1",
+        "source_revision": f"requirements-lock-sha256:{REQUIREMENTS_LOCK_SHA256}",
         "license": "BSD-3-Clause;BSD-2-Clause;BSD-2-Clause",
         "redistribution": "wheel_hash_lock_and_notice_bundle_required",
     },
@@ -719,6 +724,7 @@ __all__ = [
     "PINNED_WORKER_COMPONENTS",
     "PINNED_MODEL_ASSETS",
     "POSE_METHODS",
+    "REQUIREMENTS_LOCK_SHA256",
     "POSE_REQUEST_SCHEMA_VERSION",
     "POSE_RESULT_SCHEMA_VERSION",
     "ReconstructionWorkerContractError",

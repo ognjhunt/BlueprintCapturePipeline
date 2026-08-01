@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
-from blueprint_pipeline.reconstruction_worker_contracts import PINNED_WORKER_COMPONENTS
+from blueprint_pipeline.reconstruction_worker_contracts import (
+    PINNED_WORKER_COMPONENTS,
+    REQUIREMENTS_LOCK_SHA256,
+)
 from blueprint_pipeline.reconstruction_worker_image_healthcheck import (
     COLMAP_REVISION,
     COLMAP_VERSION,
@@ -101,6 +105,8 @@ def test_reconstruction_worker_recipe_is_digest_and_revision_pinned():
     assert "8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968" in ffmpeg[
         "source_revision"
     ]
+    assert f"ARG REQUIREMENTS_LOCK_SHA256={REQUIREMENTS_LOCK_SHA256}" in dockerfile
+    assert '"${REQUIREMENTS_LOCK_SHA256}" /opt/blueprint/requirements.lock' in dockerfile
     assert f"ARG COLMAP_REVISION={COLMAP_REVISION}" in dockerfile
     assert f"ARG GSPLAT_REVISION={GSPLAT_REVISION}" in dockerfile
     assert f"ARG THREEDGRUT_REVISION={THREEDGRUT_REVISION}" in dockerfile
@@ -119,6 +125,15 @@ def test_reconstruction_worker_recipe_is_digest_and_revision_pinned():
     requirements = (IMAGE_ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines()
     assert requirements
     assert all("==" in line for line in requirements)
+    assert (
+        hashlib.sha256((IMAGE_ROOT / "requirements.lock").read_bytes()).hexdigest()
+        == REQUIREMENTS_LOCK_SHA256
+    )
+    for component_id in ("python_ml_runtime", "deterministic_qa"):
+        component = next(
+            row for row in PINNED_WORKER_COMPONENTS if row["component_id"] == component_id
+        )
+        assert REQUIREMENTS_LOCK_SHA256 in component["source_revision"]
 
 
 def test_build_healthcheck_passes_without_display_or_gpu_claim():

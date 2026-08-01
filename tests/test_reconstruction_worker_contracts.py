@@ -11,6 +11,7 @@ from blueprint_pipeline.reconstruction_worker_contracts import (
     FAILURE_CODES,
     PINNED_MODEL_ASSETS,
     PINNED_WORKER_COMPONENTS,
+    REQUIREMENTS_LOCK_SHA256,
     ReconstructionWorkerContractError,
     build_checkpoint_manifest,
     build_pose_estimation_request,
@@ -184,6 +185,8 @@ def test_worker_manifest_pins_headless_cuda_onnx_colmap_and_gaussian_stacks():
     )
     assert components["gsplat"]["version"] == "1.5.3"
     assert components["threedgrut"]["version"] == "1.1.0"
+    assert REQUIREMENTS_LOCK_SHA256 in components["python_ml_runtime"]["source_revision"]
+    assert REQUIREMENTS_LOCK_SHA256 in components["deterministic_qa"]["source_revision"]
     assert manifest["qualification_status"] == "candidate_unbuilt"
     assert manifest["hidden_heldout_access"] is False
     assert manifest["trainer_self_grading"] is False

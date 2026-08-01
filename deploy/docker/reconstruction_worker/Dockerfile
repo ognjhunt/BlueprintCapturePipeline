@@ -8,6 +8,7 @@ ARG PYTHON_VERSION=3.11.9
 ARG PYTHON_SOURCE_SHA256=9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87
 ARG FFMPEG_VERSION=6.1.1
 ARG FFMPEG_SOURCE_SHA256=8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968
+ARG REQUIREMENTS_LOCK_SHA256=e35adb73bfc0ddd1696a5207deca496559ca25a8c5b076b657a36a901f1a795e
 ARG COLMAP_REVISION=9c23f6942fe69962e06030905e77067c8673382f
 ARG GSPLAT_REVISION=937e29912570c372bed6747a5c9bf85fed877bae
 ARG THREEDGRUT_REVISION=0a5832248698ab8456b181d6ea17fe02eda58637
@@ -81,7 +82,9 @@ RUN git clone --filter=blob:none https://github.com/colmap/colmap.git /opt/colma
     && colmap -h >/dev/null
 
 COPY deploy/docker/reconstruction_worker/requirements.lock /opt/blueprint/requirements.lock
-RUN /opt/python-${PYTHON_VERSION}/bin/python3.11 -m venv /opt/venv \
+RUN printf '%s  %s\n' "${REQUIREMENTS_LOCK_SHA256}" /opt/blueprint/requirements.lock \
+      | sha256sum --check --strict \
+    && /opt/python-${PYTHON_VERSION}/bin/python3.11 -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip==24.2 setuptools==74.1.2 wheel==0.44.0 \
     && /opt/venv/bin/pip install --extra-index-url https://download.pytorch.org/whl/cu124 \
       --requirement /opt/blueprint/requirements.lock

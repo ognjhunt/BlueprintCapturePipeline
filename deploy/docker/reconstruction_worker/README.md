@@ -23,6 +23,8 @@ an unpinned PPA or a distro `python3.11` package.
 
 The FFmpeg 6.1.1 source archive is likewise bound to an exact SHA-256 digest
 before extraction. A versioned URL alone is not accepted as source integrity.
+The Python requirements lock is also digest-checked inside the image build and
+bound into the worker-stack manifest; changing it requires updating both pins.
 
 Prepare the deterministic, exact-source build archive with
 `python -m blueprint_pipeline.reconstruction_worker_build_packet`; the archive
