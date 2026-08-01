@@ -3427,6 +3427,7 @@ def _request_logs_and_fetch(
     success_markers: Sequence[str] = (),
     container_missing_retry_attempts: int = 5,
     no_progress_seconds: int | None = None,
+    terminal_instance_status_probe: Callable[[], str] | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max(0, max_wait_seconds)
     attempts: list[dict[str, Any]] = []
@@ -3451,6 +3452,7 @@ def _request_logs_and_fetch(
     break_reason = ""
     attempt_index = 0
     container_missing_count = 0
+    terminal_instance_status = ""
     while True:
         attempt_index += 1
         attempt_started = time.monotonic()
@@ -3504,6 +3506,16 @@ def _request_logs_and_fetch(
         )
         if container_missing:
             container_missing_count += 1
+        instance_status_probe_error = None
+        if terminal_instance_status_probe is not None and not marker_found:
+            try:
+                terminal_instance_status = _string(terminal_instance_status_probe()).lower()
+            except Exception as exc:  # pragma: no cover - live network dependent.
+                terminal_instance_status = ""
+                instance_status_probe_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+        terminal_instance_status_observed = (
+            terminal_instance_status in VAST_TERMINAL_INSTANCE_STATUSES
+        )
         attempts.append(
             {
                 "attempt": attempt_index,
@@ -3523,6 +3535,9 @@ def _request_logs_and_fetch(
                 "success_marker_found": marker_found,
                 "container_missing_marker_observed": container_missing,
                 "container_missing_observed_count": container_missing_count,
+                "instance_status": terminal_instance_status or None,
+                "instance_status_probe_error": instance_status_probe_error,
+                "terminal_instance_status_observed": terminal_instance_status_observed,
             }
         )
         terminal_container_missing = container_missing and container_missing_count >= max(
@@ -3531,6 +3546,8 @@ def _request_logs_and_fetch(
         deadline_reached = time.monotonic() >= deadline
         if marker_found:
             break_reason = "success_marker_found"
+        elif terminal_instance_status_observed:
+            break_reason = "terminal_instance_status_observed"
         elif terminal_container_missing:
             break_reason = "terminal_container_missing"
         elif no_progress_timeout_reached:
@@ -3554,6 +3571,10 @@ def _request_logs_and_fetch(
         "no_progress_timeout_seconds": no_progress_limit_seconds,
         "no_progress_timeout_reached": no_progress_timeout_reached,
         "break_reason": break_reason,
+        "terminal_instance_status": terminal_instance_status or None,
+        "terminal_instance_status_observed": (
+            terminal_instance_status in VAST_TERMINAL_INSTANCE_STATUSES
+        ),
     }
 
 
@@ -5498,6 +5519,14 @@ def run_vast_provider_adapter(
                 )
             ),
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
+            terminal_instance_status_probe=lambda: _instance_status(
+                _api_json(
+                    method="GET",
+                    path=f"/instances/{instance_id}/",
+                    api_key=api_key,
+                    timeout_seconds=30,
+                )[1]
+            ),
         )
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
         if not _log_text_has_success_marker(
@@ -5549,8 +5578,16 @@ def run_vast_provider_adapter(
             onstart_logs.get("no_progress_timeout_reached")
             or heartbeat_log_break_reason == "no_log_progress_timeout"
         )
+        heartbeat_terminal_instance_status = _string(
+            onstart_logs.get("terminal_instance_status")
+        ).lower()
         heartbeat_blockers = []
         if not startup_probe_ok:
+            if onstart_logs.get("terminal_instance_status_observed") is True:
+                heartbeat_blockers.append(
+                    "vast_heartbeat_terminal_instance_status:"
+                    + (heartbeat_terminal_instance_status or "unknown")
+                )
             if heartbeat_no_progress_timeout:
                 heartbeat_blockers.append("vast_heartbeat_no_log_progress_timeout")
             if _log_result_has_container_missing(onstart_logs):

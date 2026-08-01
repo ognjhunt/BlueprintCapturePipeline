@@ -1232,6 +1232,40 @@ def test_request_logs_breaks_on_no_progress_timeout(
     assert (tmp_path / "onstart.log").read_text(encoding="utf-8") == ""
 
 
+def test_request_logs_breaks_when_live_instance_becomes_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statuses = iter(["running", "exited"])
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa,
+        "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: "")
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        no_progress_seconds=999,
+        terminal_instance_status_probe=lambda: next(statuses),
+    )
+
+    assert result["break_reason"] == "terminal_instance_status_observed"
+    assert result["terminal_instance_status"] == "exited"
+    assert result["terminal_instance_status_observed"] is True
+    assert len(result["log_poll_attempts"]) == 2
+    assert result["log_poll_attempts"][-1]["terminal_instance_status_observed"] is True
+    assert (tmp_path / "onstart.log").read_text(encoding="utf-8") == ""
+
+
 def test_request_logs_dud_container_flicker_is_not_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

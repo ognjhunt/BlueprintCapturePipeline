@@ -191,6 +191,14 @@ used as blind confirmation.
   `ctrl_world_current_reference_wam_2_gpu_profile_freeze_v1.json` — bind the
   third generated-only WAM transition to policy query 2, its 26-frame feedback
   history, one immutable provider bundle, and one single-use allocation;
+- `protocol_amendment_19_vast_terminal_instance_polling_and_wam2_retry_v1.md`
+  — preserves allocation 4's terminal provider-startup failure, cost, teardown,
+  and provider-zero evidence; freezes generic terminal-state polling; and binds
+  an identical-input WAM2 retry without changing any scientific threshold;
+- `compute_authorization_ctrl_world_allocation_5.json` and
+  `ctrl_world_current_reference_wam_2_gpu_profile_freeze_v2.json` — bind that
+  identical WAM2 retry to one new single-use allocation under the unchanged
+  one-GPU, spend, TTL, watchdog, teardown, and provider-zero controls;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
