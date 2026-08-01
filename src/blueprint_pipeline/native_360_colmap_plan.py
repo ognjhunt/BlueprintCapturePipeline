@@ -231,6 +231,7 @@ def compile_native_360_colmap_execution_plan(
     pose_estimation_request: Mapping[str, Any],
     valid_pixel_mask_references: Mapping[str, Mapping[str, Any]],
     timestamp: str,
+    candidate_artifact_root_relative_path: str | None = None,
 ) -> dict[str, Any]:
     """Compile one candidate-only, calibrated dual-fisheye COLMAP plan."""
 
@@ -239,13 +240,22 @@ def compile_native_360_colmap_execution_plan(
     rig = _mapping(camera_rig_declaration)
     rig_result = _mapping(camera_rig_validation_result)
     masks = _mapping(valid_pixel_mask_references)
+    errors: list[str] = []
+    candidate_prefix = ""
+    if candidate_artifact_root_relative_path is not None:
+        candidate_prefix = _safe_relative(candidate_artifact_root_relative_path) or ""
+        lowered_candidate_prefix = candidate_prefix.lower()
+        if not candidate_prefix or any(
+            token in lowered_candidate_prefix
+            for token in ("held_out", "held-out", "hidden_heldout", "evaluator_hidden")
+        ):
+            errors.append("native_colmap_candidate_artifact_root_invalid")
     dataset_outputs = dataset.get("output_digests")
     dataset_outputs = dict(dataset_outputs) if isinstance(dataset_outputs, Mapping) else {}
     dataset_calibration = dataset.get("camera_calibration_binding")
     dataset_calibration = (
         dict(dataset_calibration) if isinstance(dataset_calibration, Mapping) else {}
     )
-    errors: list[str] = []
     if not str(stable_run_identity or "").strip() or not str(timestamp or "").strip():
         errors.append("native_colmap_plan_identity_or_timestamp_missing")
 
@@ -453,7 +463,11 @@ def compile_native_360_colmap_execution_plan(
                     "frame_id": row["frame_id"],
                     "observation_group_id": group_id,
                     "sensor_id": lens,
-                    "source_relative_path": row["candidate_relative_path"],
+                    "source_relative_path": (
+                        f"{candidate_prefix}/{row['candidate_relative_path']}"
+                        if candidate_prefix
+                        else row["candidate_relative_path"]
+                    ),
                     "source_digest": row["frame_digest"],
                     "destination_relative_path": f"workspace/images/{lens}/{filename}",
                     "split": row["split"],

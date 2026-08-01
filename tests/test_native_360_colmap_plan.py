@@ -359,6 +359,23 @@ def test_native_colmap_plan_honors_declared_transform_direction() -> None:
     assert inverse_rear["cam_from_rig_translation"] == [-0.06, 0.0, 0.0]
 
 
+def test_native_colmap_plan_rebases_candidate_sources_under_trusted_artifact_root() -> None:
+    plan = _compile(candidate_artifact_root_relative_path="generated/frozen_dataset/dataset-001")
+
+    assert all(
+        row["source_relative_path"].startswith(
+            "generated/frozen_dataset/dataset-001/frozen_dataset/candidate_dataset/"
+        )
+        for row in plan["image_materialization"]
+    )
+    for unsafe_root in ("evaluator_hidden/leak", "EVALUATOR_HIDDEN/leak", "../escape"):
+        with pytest.raises(
+            Native360ColmapPlanError,
+            match="native_colmap_candidate_artifact_root_invalid",
+        ):
+            _compile(candidate_artifact_root_relative_path=unsafe_root)
+
+
 @pytest.mark.parametrize(
     ("method", "extractor", "matcher"),
     [

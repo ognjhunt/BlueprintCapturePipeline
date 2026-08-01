@@ -367,7 +367,9 @@ trajectory nor metric scale; the resulting request keeps scale at
 `native_360_colmap_plan.py` compiles that admitted request into an inert,
 replayable COLMAP 4.0.4 execution plan. Candidate observations are rematerialized
 under `front/` and `rear/` with identical filenames for each synchronized rig
-frame; hidden-held-out observations are structurally forbidden. The plan binds
+frame; a trusted supervisor may rebase their manifest-relative locations under
+one safe artifact root, while hidden-held-out locations remain structurally
+forbidden. The plan binds
 per-lens calibrated valid-pixel masks, exact fisheye intrinsics/distortion, and
 the declared transform direction before producing COLMAP `cam_from_rig`
 quaternion/translation values. It emits argv arrays for headless feature
