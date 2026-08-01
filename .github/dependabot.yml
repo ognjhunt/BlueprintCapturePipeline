@@ -34,6 +34,7 @@ updates:
     directories:
       - /deploy/docker/deepprivacy2
       - /deploy/docker/policy_ranking_openpi
+      - /deploy/docker/reconstruction_worker
       - /deploy/docker/robot_eval_worker/groot_oscar_closed_loop
       - /deploy/docker/robot_eval_worker/isaac
       - /deploy/docker/robot_eval_worker/mujoco

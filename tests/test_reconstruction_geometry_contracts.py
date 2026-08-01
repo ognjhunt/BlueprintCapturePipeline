@@ -124,6 +124,7 @@ def _qualification(**updates):
 def _package(**updates):
     value = _base(
         appearance_asset_digest=D[0],
+        appearance_asset_manifest_digest=D[1],
         metric_geometry_manifest_digest=_metric()["metric_geometry_manifest_digest"],
         collider_candidate_manifest_digest=_candidate()["collider_candidate_manifest_digest"],
         collider_qualification_digest=_qualification()["collider_qualification_digest"],

@@ -1198,7 +1198,7 @@ def test_repository_release_quality_policies_are_machine_valid() -> None:
     assert "--extra groot-libero-cpu" in full_lane
     assert "--extra groot-libero\n" not in full_lane
     assert "scripts/build_cpu_full_lane_evidence.py" in full_lane
-    assert "output/ci/cpu_full.json" in full_lane
+    assert '--output "${{ runner.temp }}/blueprint-ci/cpu_full.json"' in full_lane
 
     critical_workflow = (
         root / ".github" / "workflows" / "critical-capability-lanes.yml"
