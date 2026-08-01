@@ -878,7 +878,7 @@ setup_iam() {
     fi
 
     # Create service accounts if they don't exist
-    for sa in "pipeline-runner" "pipeline-invoker" "storage-trigger"; do
+    for sa in "pipeline-runner" "pipeline-handoff-listener" "pipeline-invoker" "storage-trigger"; do
         SA_EMAIL="${sa}@${PROJECT_ID}.iam.gserviceaccount.com"
 
         if gcloud iam service-accounts describe "$SA_EMAIL" &>/dev/null; then
@@ -899,6 +899,20 @@ setup_iam() {
             --role "$role" \
             --quiet --no-user-output-enabled
     done
+
+    # The persistent-host listener gets only exact subscription pull access and
+    # read-only access to the capture bucket. Do not reuse the broad runner SA.
+    LISTENER_EMAIL="pipeline-handoff-listener@${PROJECT_ID}.iam.gserviceaccount.com"
+    gcloud pubsub subscriptions add-iam-policy-binding blueprint-pipeline-handoff-listener \
+        --project "$PROJECT_ID" \
+        --member "serviceAccount:${LISTENER_EMAIL}" \
+        --role "roles/pubsub.subscriber" \
+        --quiet
+    gcloud storage buckets add-iam-policy-binding "gs://${STORAGE_BUCKET}" \
+        --project "$PROJECT_ID" \
+        --member "serviceAccount:${LISTENER_EMAIL}" \
+        --role "roles/storage.objectViewer" \
+        --quiet
 
     # Grant roles to pipeline-invoker
     INVOKER_EMAIL="pipeline-invoker@${PROJECT_ID}.iam.gserviceaccount.com"

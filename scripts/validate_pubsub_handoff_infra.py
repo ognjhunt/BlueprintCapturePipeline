@@ -148,11 +148,25 @@ def main() -> None:
         ("dead_letter_policy", "dead-letter policy"),
         ("max_delivery_attempts = 5", "dead-letter delivery cap"),
         ('role = "roles/pubsub.subscriber"', "subscriber IAM role"),
-        ("google_service_account.pipeline_runner.email", "pipeline runner subscriber principal"),
+        ('resource "google_service_account" "pipeline_handoff_listener"', "dedicated listener identity"),
+        (
+            'resource "google_pubsub_subscription_iam_member" "pipeline_handoff_listener_subscriber"',
+            "subscription-scoped listener IAM",
+        ),
+        (
+            'resource "google_storage_bucket_iam_member" "pipeline_handoff_listener_capture_reader"',
+            "bucket-scoped listener IAM",
+        ),
+        (
+            "google_service_account.pipeline_handoff_listener.email",
+            "dedicated listener principal",
+        ),
         ("SWAP_TRIGGER_HANDOFF_PUBSUB_TOPIC = google_pubsub_topic.capture_bridge_handoff.name", "storage-trigger handoff topic env var"),
         ('output "pubsub_handoff_listener_subscription"', "subscription output"),
     ]:
         require_contains(terraform_text, needle, description)
+    if 'resource "google_project_iam_member" "pipeline_runner_pubsub_subscriber"' in terraform_text:
+        fail("pipeline-runner must not retain project-wide Pub/Sub subscriber IAM")
 
     # XR-04: listener subscription must NOT be bound to the descriptor topic.
     if "topic = google_pubsub_topic.pipeline_trigger.id" in terraform_text and (
@@ -174,9 +188,23 @@ def main() -> None:
         ("--max-retry-delay 600s", "deploy subscription retry maximum backoff"),
         ("--dead-letter-topic pipeline-trigger-dlq", "deploy dead-letter topic"),
         ("--max-delivery-attempts 5", "deploy dead-letter delivery cap"),
+        ('"pipeline-handoff-listener"', "deploy dedicated listener service account"),
+        (
+            "gcloud pubsub subscriptions add-iam-policy-binding blueprint-pipeline-handoff-listener",
+            "deploy exact subscription IAM",
+        ),
+        (
+            'gcloud storage buckets add-iam-policy-binding "gs://${STORAGE_BUCKET}"',
+            "deploy exact capture-bucket IAM",
+        ),
         ("python3 \"$PROJECT_ROOT/scripts/validate_pubsub_handoff_infra.py\"", "deploy preflight validator"),
     ]:
         require_contains(deploy_text, needle, description)
+    runner_grants = deploy_text[
+        deploy_text.find("RUNNER_EMAIL=") : deploy_text.find("# The persistent-host listener")
+    ]
+    if '"roles/pubsub.subscriber"' in compact(runner_grants):
+        fail("deploy script grants Pub/Sub subscriber to the broad pipeline runner")
 
     if "Pub/Sub Topic: pipeline-trigger" in deploy_text:
         fail("deploy summary still references stale pipeline-trigger topic")
@@ -191,7 +219,8 @@ def main() -> None:
     ]:
         require_contains(systemd_service_text, needle, description)
     for needle, description in [
-        ("OnUnitActiveSec=1min", "systemd listener timer cadence"),
+        ("OnActiveSec=30s", "systemd listener initial cadence"),
+        ("OnUnitInactiveSec=1min", "systemd listener repeat cadence"),
         ("Unit=blueprint-pubsub-handoff-listener.service", "systemd listener timer unit binding"),
     ]:
         require_contains(systemd_timer_text, needle, description)
@@ -218,6 +247,11 @@ def main() -> None:
             "BLUEPRINT_LIVE_PIPELINE_STAGED_INPUTS_PATH=/var/lib/blueprint/pipeline-control-plane/live_pipeline_staged_inputs.json",
             "env example configured staged inputs path",
         ),
+        (
+            "GOOGLE_APPLICATION_CREDENTIALS=/etc/blueprint/credentials/pipeline-handoff-listener.json",
+            "dedicated listener credential path",
+        ),
+        ("GOOGLE_CLOUD_PROJECT=blueprint-8c1ca", "listener project id"),
     ]:
         require_contains(systemd_env_text, needle, description)
 

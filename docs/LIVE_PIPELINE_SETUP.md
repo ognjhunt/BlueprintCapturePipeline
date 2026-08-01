@@ -504,6 +504,36 @@ BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true
 BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true
 ```
 
+Use a dedicated `pipeline-handoff-listener` service account rather than the
+Cloud Run `pipeline-runner` identity. Grant it `roles/pubsub.subscriber` on the
+exact `blueprint-pipeline-handoff-listener` subscription and
+`roles/storage.objectViewer` on the exact capture bucket—no project-wide runner,
+Firestore, logging, metrics, write, or admin role. Store its JSON credential at
+`/etc/blueprint/credentials/pipeline-handoff-listener.json`, owned by
+`root:blueprint` with mode `0640`, and set `GOOGLE_APPLICATION_CREDENTIALS` plus
+`GOOGLE_CLOUD_PROJECT` in `/etc/blueprint/pipeline-control-plane.env`. Rotate by
+creating a replacement key, atomically replacing the protected file, restarting
+and proving two timer pulls, then deleting the prior key. A short subscription ID
+is normalized to the full project resource through the explicit project or ADC;
+an unresolved project fails closed before pulling or acknowledging messages.
+
+If the dedicated account was first created manually during recovery, import it
+into the protected Terraform backend before the next apply rather than allowing
+Terraform to attempt a duplicate create:
+
+```bash
+terraform import google_service_account.pipeline_handoff_listener \
+  projects/blueprint-8c1ca/serviceAccounts/pipeline-handoff-listener@blueprint-8c1ca.iam.gserviceaccount.com
+```
+
+Use the same reviewed backend and variable inputs as the deployment runbook;
+never create local production state merely to perform this import.
+
+The timer uses `OnActiveSec` for its first pull and `OnUnitInactiveSec` for
+subsequent pulls. This matters for a oneshot listener enabled after host boot:
+`OnBootSec` plus an activation-relative cadence can otherwise leave an active
+timer with no next trigger.
+
 With those flags, the listener claims a revisioned owner/token lease, extends
 the Pub/Sub ack deadline while work is active, downloads the completed capture bundle, enriches
 the handoff from staged raw sidecars, writes a `robot_eval_job_request.v1`

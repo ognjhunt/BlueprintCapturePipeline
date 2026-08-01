@@ -4560,7 +4560,7 @@
             {
               "artifact_id": "RUN-02-AC-01-EV-01",
               "path": "src/blueprint_pipeline/pubsub_handoff_listener.py",
-              "sha256": "sha256:36ca2052b1ea292187b0f61316a7d2ecb3b7fa36c3f90beb127036e00df238e1",
+              "sha256": "sha256:3cc9c11946a43403b4524d7a6fa402dcb3500b861d9767929619fcc8d7760205",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4576,7 +4576,7 @@
             {
               "artifact_id": "RUN-02-AC-01-EV-02",
               "path": "tests/test_pubsub_handoff_listener.py",
-              "sha256": "sha256:afc0680cb3ffeb758af930a5aa061122302300f140058917e63b4829b9a24e56",
+              "sha256": "sha256:c81c27bb34a9ad568ab1e1b7e329ac1ebc5d6f16e8bd7e0f8fb5be9e57d7b7f8",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4715,7 +4715,7 @@
             {
               "artifact_id": "RUN-03-AC-01-EV-01",
               "path": "src/blueprint_pipeline/pubsub_handoff_listener.py",
-              "sha256": "sha256:36ca2052b1ea292187b0f61316a7d2ecb3b7fa36c3f90beb127036e00df238e1",
+              "sha256": "sha256:3cc9c11946a43403b4524d7a6fa402dcb3500b861d9767929619fcc8d7760205",
               "role": "implementation",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -4731,7 +4731,7 @@
             {
               "artifact_id": "RUN-03-AC-01-EV-02",
               "path": "tests/test_pubsub_handoff_listener.py",
-              "sha256": "sha256:afc0680cb3ffeb758af930a5aa061122302300f140058917e63b4829b9a24e56",
+              "sha256": "sha256:c81c27bb34a9ad568ab1e1b7e329ac1ebc5d6f16e8bd7e0f8fb5be9e57d7b7f8",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5563,7 +5563,7 @@
             {
               "artifact_id": "RUN-09-AC-01-EV-01",
               "path": "deploy/scripts/deploy.sh",
-              "sha256": "sha256:078cf090613900e0276bb0aeb4951e47f5edf685f0f08cd59252071fd35f9129",
+              "sha256": "sha256:7747fbf941bb8467408aff52599a2751f8bf6867c9c39c96582b79abcdaeaa38",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -5840,7 +5840,7 @@
             {
               "artifact_id": "RUN-11-AC-01-EV-01",
               "path": "deploy/terraform/main.tf",
-              "sha256": "sha256:9a808d3385c0ed427eb37a57bb04692af1b6e95dab8d357ab7490ca906a6e1d3",
+              "sha256": "sha256:ac172ded0fbd8440f75bb9d035e2a2398971d0db9a25392da8f37792f44183e3",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12236,7 +12236,7 @@
             {
               "artifact_id": "RUN-19-AC-01-EV-02",
               "path": "tests/test_deploy_systemd_contract.py",
-              "sha256": "sha256:368c1b47ee8a5fa51adedf2dd3a802b15189941fb23721d6d4f11e4e7b0f5ec2",
+              "sha256": "sha256:f59bfe22d9eed26a78b2d79308b099002b98b622930e810bd42febbc238f2718",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12480,7 +12480,7 @@
             {
               "artifact_id": "RUN-21-AC-01-EV-01",
               "path": "deploy/terraform/main.tf",
-              "sha256": "sha256:9a808d3385c0ed427eb37a57bb04692af1b6e95dab8d357ab7490ca906a6e1d3",
+              "sha256": "sha256:ac172ded0fbd8440f75bb9d035e2a2398971d0db9a25392da8f37792f44183e3",
               "role": "repository_artifact",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12496,7 +12496,7 @@
             {
               "artifact_id": "RUN-21-AC-01-EV-02",
               "path": "tests/test_deploy_systemd_contract.py",
-              "sha256": "sha256:368c1b47ee8a5fa51adedf2dd3a802b15189941fb23721d6d4f11e4e7b0f5ec2",
+              "sha256": "sha256:f59bfe22d9eed26a78b2d79308b099002b98b622930e810bd42febbc238f2718",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",
@@ -12626,7 +12626,7 @@
             {
               "artifact_id": "RUN-22-AC-01-EV-02",
               "path": "tests/test_deploy_systemd_contract.py",
-              "sha256": "sha256:368c1b47ee8a5fa51adedf2dd3a802b15189941fb23721d6d4f11e4e7b0f5ec2",
+              "sha256": "sha256:f59bfe22d9eed26a78b2d79308b099002b98b622930e810bd42febbc238f2718",
               "role": "test_contract",
               "authoritative": true,
               "authority": "repository_worktree_digest",

@@ -564,6 +564,14 @@ resource "google_service_account" "pipeline_runner" {
   description  = "Service account for the CPU-only qualification and World Labs pipeline job"
 }
 
+# Dedicated on-host pull listener. This identity intentionally cannot write
+# capture objects or access the runner's Firestore/logging/metrics permissions.
+resource "google_service_account" "pipeline_handoff_listener" {
+  account_id   = "pipeline-handoff-listener"
+  display_name = "Blueprint Pipeline Handoff Listener"
+  description  = "Least-privilege identity for the on-host capture handoff listener"
+}
+
 # Pipeline invoker - invokes Cloud Run Jobs from Cloud Tasks
 resource "google_service_account" "pipeline_invoker" {
   account_id   = "pipeline-invoker"
@@ -789,12 +797,6 @@ resource "google_project_iam_member" "storage_trigger_pubsub" {
   member  = "serviceAccount:${google_service_account.storage_trigger.email}"
 }
 
-resource "google_project_iam_member" "pipeline_runner_pubsub_subscriber" {
-  project = var.project_id
-  role    = "roles/pubsub.subscriber"
-  member  = "serviceAccount:${google_service_account.pipeline_runner.email}"
-}
-
 # Cloud Tasks enqueue
 resource "google_project_iam_member" "storage_trigger_tasks" {
   project = var.project_id
@@ -917,6 +919,18 @@ resource "google_pubsub_subscription" "pipeline_handoff_listener" {
   }
 
   labels = local.common_labels
+}
+
+resource "google_pubsub_subscription_iam_member" "pipeline_handoff_listener_subscriber" {
+  subscription = google_pubsub_subscription.pipeline_handoff_listener.name
+  role         = "roles/pubsub.subscriber"
+  member       = "serviceAccount:${google_service_account.pipeline_handoff_listener.email}"
+}
+
+resource "google_storage_bucket_iam_member" "pipeline_handoff_listener_capture_reader" {
+  bucket = var.storage_bucket
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.pipeline_handoff_listener.email}"
 }
 
 # =============================================================================

@@ -178,6 +178,11 @@ def test_pubsub_handoff_listener_has_repeated_deployed_runner():
     assert (
         "BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION=blueprint-pipeline-handoff-listener" in env_example
     )
+    assert (
+        "GOOGLE_APPLICATION_CREDENTIALS="
+        "/etc/blueprint/credentials/pipeline-handoff-listener.json"
+    ) in env_example
+    assert "GOOGLE_CLOUD_PROJECT=blueprint-8c1ca" in env_example
     assert "BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true" in env_example
     assert "BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true" in env_example
     assert (
@@ -188,7 +193,9 @@ def test_pubsub_handoff_listener_has_repeated_deployed_runner():
         "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR="
         "/var/lib/blueprint/pipeline-control-plane/incoming_webapp_job_requests"
     ) in env_example
-    assert "OnUnitActiveSec=1min" in timer
+    assert "OnActiveSec=30s" in timer
+    assert "OnUnitInactiveSec=1min" in timer
+    assert "OnBootSec=" not in timer
     assert "Unit=blueprint-pubsub-handoff-listener.service" in timer
     assert "blueprint-pubsub-handoff-listener.service" in installer
     assert "blueprint-pubsub-handoff-listener.timer" in installer
