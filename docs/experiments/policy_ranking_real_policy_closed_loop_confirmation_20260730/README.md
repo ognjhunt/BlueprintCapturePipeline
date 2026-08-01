@@ -7,11 +7,11 @@ The offline contract lane supports the prospectively named **Blueprint
 Ctrl-World current-reference** arm with three current official OpenPI DROID
 policies. The live identity-bound policy canary has now completed one real frozen
 checkpoint query for each policy, with complete hash-validated native outputs.
-The frozen `pi05_droid` checkpoint has now completed six real same-policy
-re-queries after its initial query, linked through six successful generated-only
-three-view Ctrl-World WAM transitions and registered commanded state. WAM5 passed its immediate
-reliability screen, and policy query 6 closed interaction six. WAM6 is frozen
-as the start of interaction seven. No judge, physical-label join, causal
+The frozen `pi05_droid` checkpoint has now completed seven real same-policy
+re-queries after its initial query, linked through seven successful generated-only
+three-view Ctrl-World WAM transitions and registered commanded state. WAM7 passed its immediate
+reliability screen, and policy query 8 produced the action frozen for WAM8.
+WAM8 is frozen as the open half of interaction eight. No judge, physical-label join, causal
 qualification, or complete 12-interaction episode has completed.
 
 The finite policy-only GPU lane is now implemented behind the canonical paid
@@ -47,14 +47,14 @@ The scientific admission state is:
   `pi0_fast_droid`, and `pi05_droid`;
 - real learned-policy inference: completed once for each of `pi0_droid`,
   `pi0_fast_droid`, and `pi05_droid`;
-- real policy -> WAM -> same-policy re-query: six interactions completed for
+- real policy -> WAM -> same-policy re-query: seven interactions completed for
   frozen `pi05_droid`; complete 12-interaction horizon not yet measured;
 - WAM causal qualification: not yet measured;
 - blind physical ranking: unavailable and not measured;
 - captured-site transfer: not admitted;
 - economics and speed: not admitted;
-- provider state: fresh authenticated Vast, RunPod, and DigitalOcean inventory
-  is zero; query 6's owned instance is destroyed, its watchdog terminal, and
+- provider state: fresh authenticated Vast inventory is zero after policy query
+  8; query 8's owned instance is destroyed, its watchdog terminal, and
   its cumulative campaign reservation settled.
 
 The historical frozen-stack verdict remains `thesis_not_supported`. The prior
@@ -329,18 +329,25 @@ used as blind confirmation.
   three-view output, immediate reliability, owned-instance closure, settled
   accounting, and generated-only same-policy query-8 admission boundary while
   one unrelated Warehouse GPU remains within the two-GPU ceiling;
+- `protocol_amendment_41_policy_query8_result_and_wam8_v1.md`,
+  `compute_authorization_ctrl_world_allocation_12.json`, and
+  `ctrl_world_current_reference_wam_8_gpu_profile_freeze_v1.json` — preserve
+  the successful same-checkpoint query 8, exact 15x8 native action, terminal
+  provider and campaign accounting, and bind WAM8 to the exact query-8 action,
+  32-frame generated feedback history, immutable provider bundle, one
+  single-use allocation, and the two-GPU global ceiling;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-Seven interactions are complete. WAM7 passed exact output validation and the
-unchanged immediate reliability screen, its paid allocation is settled, its
-owned GPU is absent, and policy-query-8 input is frozen. One unrelated
-Warehouse GPU remains live within the prospectively frozen global maximum of
-two. The next finite gate is one same-checkpoint policy query 8 through the
-canonical paid-resource allocator after fresh credential, source,
-object-transport, provider-inventory, cumulative-budget, watchdog, preflight,
-and dry-run checks. Its native action must then condition WAM8 before
-interaction eight is complete. Judges remain forbidden until the complete
-12-interaction episode and causal-control matrix pass.
+Seven interactions are complete. Policy query 8 returned a validated same-
+checkpoint 15x8 native action, its USD `0.156875` allocation is settled, and
+global Vast inventory is zero. The exact action now conditions the frozen WAM8
+request with 32-frame camera and state histories. The next finite gate is one
+WAM8 generation through the canonical paid-resource allocator after fresh
+credential, signed-object-transport, provider-inventory, cumulative-budget,
+watchdog, preflight, and dry-run checks. WAM8 must return three exact generated
+views and pass immediate reliability before interaction eight is complete.
+Judges remain forbidden until the complete 12-interaction episode and causal-
+control matrix pass.

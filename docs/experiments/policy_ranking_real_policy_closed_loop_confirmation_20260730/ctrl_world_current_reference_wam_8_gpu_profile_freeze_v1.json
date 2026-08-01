@@ -1,0 +1,60 @@
+{
+  "schema_version": "policy_ranking_ctrl_world_current_reference_gpu_profile_freeze.v1",
+  "status": "frozen",
+  "profile": {
+    "experiment_id": "policy_ranking_real_policy_closed_loop_confirmation_20260730",
+    "admission_schema": "policy_ranking_ctrl_world_current_reference_gpu_admission.v1",
+    "authorization_schema": "policy_ranking_ctrl_world_current_reference_compute_authorization.v1",
+    "preflight_schema": "policy_ranking_ctrl_world_current_reference_vast_preflight.v1",
+    "receipt_schema": "ctrl_world_current_reference_provider_bundle_receipt.v1",
+    "authorization_ids_by_allocation_index": {
+      "12": "policy-ranking-real-policy-closed-loop-20260730-ctrl-world-allocation-12-v1"
+    },
+    "cost_authorization_binding_sha256": "5db8d5c0acbe02ff28db106be19fabae56d31b096b93bed162e2743bda54ff1a",
+    "expected_bundle_sha256": "21380cf569a4f807edba9b0b9528be50ed76c5ea47eb4a59c9f81de3ee7adfd7",
+    "expected_bundle_size_bytes": 1877465,
+    "expected_embedded_input_hashes": {
+      "direct_runner_sha256": "e47eb14da4b73ab0e141d361c8271f6ba20fb56423a755c5e19c811994b5c0da",
+      "entrypoint_sha256": "5e4c8dbf17c23af4367d96fa8edc2d032c65130e338b9119122722a112e2620f",
+      "request_manifest_file_sha256": "df1c71f7822b5cf7b6a672fd6d9725293dcb4209879399ebe623669adf23d7a8",
+      "request_sha256": "db965f7fa874854faeddea907e1ab0e93ae0dadec6026647f70a179886fdd24a",
+      "rollout_manifest_file_sha256": "8babfe3d5341da4e94b7cc1f48cf6df08ccacec865193d5aff16d427fcbb61db",
+      "runtime_manifest_file_sha256": "00b13067d358ebf562fd383f3f197c2a08dd5d73fed5bb45d6138723eac307b7",
+      "source_manifest_sha256": "55562b297268cdff6e9ada23f04f581c0c6b05a72ac125e1735bcc21019d5f98",
+      "support_runner_sha256": "b8b04cbf02bad14096a8c2bd7eb1ce905fd694e5241d2929a8de1f7f60d505d9"
+    },
+    "qualification_canary_request_count": 1,
+    "scientific_matrix_request_count": 0,
+    "total_initial_generation_request_count": 1,
+    "request_budget_amendment_sha256": null,
+    "max_compute_cap_usd": 5.0,
+    "max_hourly_rate_usd": 2.05,
+    "target_spend_usd": 3.0,
+    "hard_ttl_seconds": 4800,
+    "maximum_global_live_instances": 2,
+    "probe_kind": "policy-ranking-ctrl-world-current-reference",
+    "reference_bundle": false,
+    "powered_bundle": false,
+    "edge_policy_canary_bundle": false,
+    "oscar_replay_bundle": false,
+    "ctrl_world_replay_bundle": false,
+    "ctrl_world_current_reference_bundle": true,
+    "provider_bundle_kind": "wam",
+    "bundle_schema": "wam_provider_runtime_manifest.v1",
+    "checkpoint_repository": "yjguo/Ctrl-World",
+    "checkpoint_revision": "8cf814693f411962dc866a2ddb5b785afd17a93a",
+    "public_image": "docker.io/pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "min_gpu_ram_mb": 80000,
+    "cosmos_revision": null,
+    "cosmos_framework_revision": "99fb20683fd79dfa6d0c6feb9d49c6c55eecd50d",
+    "vllm_omni_revision": null,
+    "allowed_providers": [
+      "vast"
+    ],
+    "compatible_gpu_keywords": [
+      "RTX PRO 6000",
+      "H100"
+    ]
+  },
+  "manifest_sha256": "51b79441940741ef7ccaca8a8ad978d8db5ce72a129778e910fd0aa7af6efae4"
+}
