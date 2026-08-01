@@ -226,6 +226,28 @@ def test_compiler_preserves_complete_multisegment_source_set(tmp_path: Path) -> 
     jsonschema.Draft202012Validator(_schema()).validate(selection)
 
 
+def test_compiler_preserves_unknown_keyframe_status_without_synthesizing_false(
+    tmp_path: Path,
+) -> None:
+    frames = _frames(tmp_path)
+    frames[0]["key_frame"] = None
+
+    dataset = _compile(tmp_path, frames)
+    selection = _load_ref(tmp_path, dataset, "retained_frame_selection_manifest")
+
+    assert selection["frames"][0]["key_frame"] is None
+    jsonschema.Draft202012Validator(_schema()).validate(selection)
+
+    invalid_root = tmp_path / "invalid-keyframe"
+    invalid = _frames(invalid_root)
+    invalid[0]["key_frame"] = 0
+    with pytest.raises(
+        ReconstructionFrameDatasetError,
+        match="selected_frame_key_frame_invalid:0",
+    ):
+        _compile(invalid_root, invalid)
+
+
 @pytest.mark.parametrize(
     "references, expected",
     [

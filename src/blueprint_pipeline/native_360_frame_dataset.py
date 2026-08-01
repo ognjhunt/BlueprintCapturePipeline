@@ -678,9 +678,9 @@ def decode_native_360_lens_observations(
                         "stream_index": stream["stream_index"],
                         "decoded_frame_index": pair_index,
                         "source_pts_seconds": pts,
-                        "source_dts_seconds": None,
-                        "duration_seconds": None,
-                        "key_frame": False,
+                        "source_dts_seconds": pair.get(f"{lens_id}_dts_seconds"),
+                        "duration_seconds": pair.get(f"{lens_id}_duration_seconds"),
+                        "key_frame": pair.get(f"{lens_id}_key_frame"),
                         "artifact_relative_path": target.relative_to(root).as_posix(),
                         "digest": digest,
                         "image_metadata": {
@@ -754,9 +754,19 @@ def decode_native_360_lens_observations(
         "authority_used": dict(authority_used),
         "cost_usd": 0.0,
         "duration_seconds": 0.0,
-        "warnings": [
-            "decoded_dts_duration_keyframe_and_exposure_metadata_not_established"
-        ],
+        "warnings": sorted(
+            {
+                warning
+                for row in decoded_frames
+                for warning, missing in (
+                    ("decoded_dts_not_established_for_some_frames", row["source_dts_seconds"] is None),
+                    ("decoded_duration_not_established_for_some_frames", row["duration_seconds"] is None),
+                    ("decoded_keyframe_status_not_established_for_some_frames", row["key_frame"] is None),
+                    ("decoded_exposure_metadata_not_established", True),
+                )
+                if missing
+            }
+        ),
         "blockers": [],
         "proof_effect": "decoded_native_lens_observation_availability_only",
         "claim_ceiling": "decoded_observation_availability",
@@ -929,6 +939,9 @@ def compile_native_360_grouped_frame_dataset(
                     "width": stream.get("width"),
                     "height": stream.get("height"),
                     "source_pts_seconds": pair.get(f"{lens_id}_pts_seconds"),
+                    "source_dts_seconds": pair.get(f"{lens_id}_dts_seconds"),
+                    "duration_seconds": pair.get(f"{lens_id}_duration_seconds"),
+                    "key_frame": pair.get(f"{lens_id}_key_frame"),
                     "capture_timeline_seconds": capture_timeline_seconds,
                     "global_pair_index": global_pair_index,
                 }
@@ -991,6 +1004,43 @@ def compile_native_360_grouped_frame_dataset(
             code=f"native_360_grouped_dataset_frame_duration_invalid:{ordinal}",
             nonnegative=True,
         )
+        declared_dts_seconds = _optional_finite(
+            declared.get("source_dts_seconds"),
+            code="native_360_grouped_dataset_frame_pair_invalid",
+        )
+        declared_duration_seconds = _optional_finite(
+            declared.get("duration_seconds"),
+            code="native_360_grouped_dataset_frame_pair_invalid",
+            nonnegative=True,
+        )
+        key_frame = raw.get("key_frame")
+        declared_key_frame = declared.get("key_frame")
+        if (
+            (source_dts_seconds is None) != (declared_dts_seconds is None)
+            or (
+                source_dts_seconds is not None
+                and declared_dts_seconds is not None
+                and not math.isclose(
+                    source_dts_seconds, declared_dts_seconds, rel_tol=0.0, abs_tol=1e-9
+                )
+            )
+            or (duration_seconds is None) != (declared_duration_seconds is None)
+            or (
+                duration_seconds is not None
+                and declared_duration_seconds is not None
+                and not math.isclose(
+                    duration_seconds,
+                    declared_duration_seconds,
+                    rel_tol=0.0,
+                    abs_tol=1e-9,
+                )
+            )
+            or (key_frame is not None and not isinstance(key_frame, bool))
+            or key_frame is not declared_key_frame
+        ):
+            raise Native360FrameDatasetError(
+                [f"native_360_grouped_dataset_decoded_timing_mismatch:{ordinal}"]
+            )
         group_id = (
             f"segment-{segment_sequence_index:04d}-pair-{pair_index:09d}"
         )
@@ -1002,7 +1052,7 @@ def compile_native_360_grouped_frame_dataset(
                 "source_pts_seconds": pts,
                 "source_dts_seconds": source_dts_seconds,
                 "duration_seconds": duration_seconds,
-                "key_frame": bool(raw.get("key_frame")),
+                "key_frame": key_frame,
                 "artifact_relative_path": artifact_relative_path,
                 "digest": raw.get("digest"),
                 "image_metadata": image_metadata,

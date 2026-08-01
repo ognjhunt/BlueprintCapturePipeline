@@ -57,7 +57,7 @@
         "source_pts_seconds": {"type": ["number", "null"]},
         "source_dts_seconds": {"type": ["number", "null"]},
         "duration_seconds": {"type": ["number", "null"], "minimum": 0},
-        "key_frame": {"type": "boolean"},
+        "key_frame": {"type": ["boolean", "null"]},
         "artifact_relative_path": {"$ref": "#/$defs/relative_path"},
         "digest": {"$ref": "#/$defs/sha256"},
         "image_metadata": {"type": "object"},

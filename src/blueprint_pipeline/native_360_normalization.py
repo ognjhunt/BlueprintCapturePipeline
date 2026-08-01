@@ -349,6 +349,73 @@ def _normalized_pts(value: Any, *, label: str) -> list[float]:
     return rows
 
 
+def _decoded_frame_timing(
+    stream: Mapping[str, Any], *, pts: Sequence[float], label: str
+) -> list[dict[str, Any]]:
+    metadata = stream.get("metadata")
+    raw_rows = metadata.get("decoded_frame_timing") if isinstance(metadata, Mapping) else None
+    if raw_rows is None:
+        return [
+            {
+                "pts_seconds": value,
+                "dts_seconds": None,
+                "duration_seconds": None,
+                "key_frame": None,
+            }
+            for value in pts
+        ]
+    if not isinstance(raw_rows, list) or len(raw_rows) != len(pts):
+        raise Native360NormalizationError(
+            [f"native_360_decoded_frame_timing_invalid:{label}"]
+        )
+    normalized: list[dict[str, Any]] = []
+    for index, (raw, expected_pts) in enumerate(zip(raw_rows, pts, strict=True)):
+        if not isinstance(raw, Mapping):
+            raise Native360NormalizationError(
+                [f"native_360_decoded_frame_timing_invalid:{label}:{index}"]
+            )
+        observed_pts = _probe_number(
+            raw.get("pts_seconds"),
+            label=f"native_360_decoded_frame_timing_invalid:{label}:{index}",
+        )
+        dts_raw = raw.get("dts_seconds")
+        duration_raw = raw.get("duration_seconds")
+        key_frame = raw.get("key_frame")
+        dts = (
+            _probe_number(
+                dts_raw,
+                label=f"native_360_decoded_frame_timing_invalid:{label}:{index}",
+            )
+            if dts_raw is not None
+            else None
+        )
+        duration = (
+            _probe_number(
+                duration_raw,
+                label=f"native_360_decoded_frame_timing_invalid:{label}:{index}",
+            )
+            if duration_raw is not None
+            else None
+        )
+        if (
+            not math.isclose(observed_pts, expected_pts, rel_tol=0.0, abs_tol=1e-9)
+            or (duration is not None and duration <= 0)
+            or (key_frame is not None and not isinstance(key_frame, bool))
+        ):
+            raise Native360NormalizationError(
+                [f"native_360_decoded_frame_timing_invalid:{label}:{index}"]
+            )
+        normalized.append(
+            {
+                "pts_seconds": round(observed_pts, 9),
+                "dts_seconds": round(dts, 9) if dts is not None else None,
+                "duration_seconds": round(duration, 9) if duration is not None else None,
+                "key_frame": key_frame,
+            }
+        )
+    return normalized
+
+
 def build_native_360_probe_receipt(
     *,
     source_file_digest: str,
@@ -1080,6 +1147,11 @@ def normalize_native_360_capture(
                     stream.get("pts_seconds"),
                     label=f"segment_{segment['sequence_index']}_{lens_id}",
                 )
+                decoded_timing = _decoded_frame_timing(
+                    stream,
+                    pts=pts,
+                    label=f"segment_{segment['sequence_index']}_{lens_id}",
+                )
                 lens_streams[lens_id] = {
                     "lens_id": lens_id,
                     "source_relative_path": relative_path,
@@ -1095,6 +1167,7 @@ def normalize_native_360_capture(
                     "pts_digest": canonical_digest({"pts_seconds": pts}),
                     "observed_source_projection": stitched_projection,
                     "_pts": pts,
+                    "_decoded_timing": decoded_timing,
                 }
             file_reference = {
                 "relative_path": relative_path,
@@ -1115,6 +1188,8 @@ def normalize_native_360_capture(
             rear = lens_streams["rear"]
             front_pts = front.pop("_pts")
             rear_pts = rear.pop("_pts")
+            front_timing = front.pop("_decoded_timing")
+            rear_timing = rear.pop("_decoded_timing")
             same_shape = (
                 front["frame_count"] == rear["frame_count"]
                 and front["width"] == rear["width"]
@@ -1132,6 +1207,12 @@ def normalize_native_360_capture(
                         "pair_index": index,
                         "front_pts_seconds": left,
                         "rear_pts_seconds": right,
+                        "front_dts_seconds": front_timing[index]["dts_seconds"],
+                        "rear_dts_seconds": rear_timing[index]["dts_seconds"],
+                        "front_duration_seconds": front_timing[index]["duration_seconds"],
+                        "rear_duration_seconds": rear_timing[index]["duration_seconds"],
+                        "front_key_frame": front_timing[index]["key_frame"],
+                        "rear_key_frame": rear_timing[index]["key_frame"],
                         "absolute_residual_seconds": residuals[index],
                     }
                     for index, (left, right) in enumerate(zip(front_pts, rear_pts, strict=True))
@@ -1167,6 +1248,7 @@ def normalize_native_360_capture(
                     )
         for stream in lens_streams.values():
             stream.pop("_pts", None)
+            stream.pop("_decoded_timing", None)
         normalized_segments.append(
             {
                 "sequence_index": segment["sequence_index"],

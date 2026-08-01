@@ -136,7 +136,17 @@ def _normalized_artifacts(
                     "height": 32,
                     "time_base": "1/90000",
                     "pts_seconds": pts,
-                    "metadata": {},
+                    "metadata": {
+                        "decoded_frame_timing": [
+                            {
+                                "pts_seconds": value,
+                                "dts_seconds": value,
+                                "duration_seconds": 0.033333,
+                                "key_frame": frame_index == 0,
+                            }
+                            for frame_index, value in enumerate(pts)
+                        ]
+                    },
                 }
                 for index in range(2)
             ],
@@ -383,6 +393,10 @@ def test_native_lens_decoder_executes_declared_streams_and_replays(
     assert manifest["decoded_frame_count"] == 10
     assert {row["lens_id"] for row in manifest["frames"]} == {"front", "rear"}
     assert manifest["lens_identity_inferred"] is False
+    assert all(row["source_dts_seconds"] is not None for row in manifest["frames"])
+    assert all(row["duration_seconds"] == 0.033333 for row in manifest["frames"])
+    assert sum(row["key_frame"] is True for row in manifest["frames"]) == 2
+    assert manifest["warnings"] == ["decoded_exposure_metadata_not_established"]
     assert manifest["candidate_method_access_allowed"] is False
     assert len(calls) == 12  # 11 initial commands plus one replay identity check.
     jsonschema.Draft202012Validator(
@@ -688,6 +702,12 @@ def test_native_grouped_dataset_rejects_missing_or_rebound_lens_observations(
     rebound[0]["stream_index"] = 99
     with pytest.raises(Native360FrameDatasetError, match="decoded_binding_invalid"):
         _compile(tmp_path / "rebound", result, rig, binding, rebound)
+
+    timing_root = tmp_path / "timing-spoof"
+    timing_spoof = _decoded_frames(timing_root, binding)
+    timing_spoof[0]["source_dts_seconds"] = 9.0
+    with pytest.raises(Native360FrameDatasetError, match="decoded_timing_mismatch"):
+        _compile(timing_root, result, rig, binding, timing_spoof)
 
 
 def test_native_grouped_dataset_rejects_tampered_parent_and_missing_authority(

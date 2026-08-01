@@ -166,6 +166,9 @@ def _normalized_frames(
         frame_ids.add(frame_id)
         frame_indexes.add(frame_index_key)
         presentation_times.add(presentation_time_key)
+        key_frame = raw.get("key_frame")
+        if key_frame is not None and not isinstance(key_frame, bool):
+            errors.append(f"selected_frame_key_frame_invalid:{ordinal}")
         row = {
                 "frame_id": frame_id,
                 "decoded_frame_index": frame_index,
@@ -173,7 +176,7 @@ def _normalized_frames(
                 "source_pts_seconds": raw.get("source_pts_seconds"),
                 "source_dts_seconds": raw.get("source_dts_seconds"),
                 "duration_seconds": raw.get("duration_seconds"),
-                "key_frame": bool(raw.get("key_frame")),
+                "key_frame": key_frame,
                 "artifact_relative_path": relative_path,
                 "digest": digest,
                 "image_metadata": dict(raw.get("image_metadata") or {}),
