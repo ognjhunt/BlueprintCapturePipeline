@@ -41,6 +41,7 @@ iPhone capture gate.
 | ODGS, OmniGS, PFGS360, Seam360GS | The technical descriptions are broadly accurate: native spherical/equirectangular rasterization, pose-free 360 work, and explicit dual-fisheye seam modeling. They are research implementations, not current Blueprint adapters. | Review each code/dependency/data license before adoption. | Comparative 360 method qualification on the same held-out views and camera representation. | Product qualification merely because a paper reports good results. | Candidate methods behind the existing replaceable interface. |
 | ODGS-SLAM | Provides controlled real and synthetic sequences across omnidirectional/fisheye/multicamera configurations with trajectories. It is a SLAM benchmark, not customer capture authority. | Dataset terms still require exact verification. | Pose/trajectory estimation regression. | Product rights, task discovery, or reconstruction physics. | Research benchmark only. |
 | Antigravity `.insv` sample | The published codec inspection is plausible and useful for container tooling, but the sample is outdoor drone footage, not an indoor walkthrough. Competition terms do not clearly grant Blueprint redistribution/product rights. | Reuse rights unresolved. | At most a local throwaway INSV probe after explicit rights confirmation. | Indoor site coverage, task discovery, privacy-safe product intake, or launch. | Reject for this goal. |
+| 360camsters X4 test recording | The publisher offers its own X4 recording for testing and labels the download as 2.37 GB. A 2026-08-01 HTTP metadata and ZIP central-directory audit found a 2,116,194,266-byte archive with published SHA-256 metadata `6f78f710822aec0a9911d19c82dff899468fa8cf8e7a2b93c06fbb0ed6946c7d`. Its only data members are a 2,129,707,141-byte exported MP4 and a GPX file; it contains no `.insv` source. | Publicly offered for testing; broader reuse/redistribution terms were not established. | Potential stitched/equirectangular video and GPS intake after sufficient local storage is available. | Native INSV bytes, embedded calibration/IMU preservation, dual-fisheye decode, indoor coverage, metric geometry, or commercial-product rights. | **Do not use as native-360 proof.** Download deferred because only about 2.3 GiB of host space remained, leaving no safe extraction headroom. |
 | XR AI Spotlight intermediates | Paid access, exact files, and reuse rights were not independently verified. | Paid and unresolved. | None under current evidence. | All launch claims. | Do not purchase or use. |
 
 ## Real-data test executed today
@@ -238,6 +239,8 @@ only.
 - [SAM 3 official repository](https://github.com/facebookresearch/sam3)
 - [SAM 3D Objects official repository](https://github.com/facebookresearch/sam-3d-objects)
 - [ConceptGraphs](https://concept-graphs.github.io/)
+- [360camsters X4 test-recording page](https://www.360camsters.com/360-cameras/insta360-x4/)
+- [Insta360 official Media SDK](https://github.com/Insta360Develop/MediaSDK-Cpp)
 - [Open3DIS](https://open3dis.github.io/)
 - [OGScene3D](https://arxiv.org/abs/2603.16301)
 - [MuSHRoom iPhone dataset](https://zenodo.org/records/10230733)
