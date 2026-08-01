@@ -248,6 +248,13 @@ used as blind confirmation.
   cumulative-ledger artifact without retroactive admission claims; and bind the
   resulting generated observation to one same-checkpoint policy query 5 with a
   real production-campaign reservation required before any provider mutation;
+- `protocol_amendment_27_policy_query5_atomic_authorization_and_gpu_concurrency_v1.md`
+  and `compute_authorization_openpi_policy_query_5_v2.json` — supersede the
+  unconsumed query-5 authorization before provider mutation, freeze generic
+  atomic single-use authorization consumption at runtime SHA `4f6ed4f9`, rebind
+  the versioned query-5 input, and prospectively amend the global campaign
+  concurrency ceiling to two GPUs while retaining a one-allocation query-5
+  limit;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
@@ -257,8 +264,10 @@ The registered three-interaction engineering gate and interaction four are
 complete. WAM4 also passed its immediate three-view reliability gate and its
 generated observation is frozen, but interaction five is not complete until the
 same frozen `pi05_droid` checkpoint returns policy query 5. The next finite gate
-is that one prospectively frozen query using only WAM4's generated views and
-registered commanded state, after immutable publication, a real cumulative
-campaign reservation, fresh provider-zero, paid admission, transport, and dry
-run checks. WAM5 is neither authorized nor running. Judges remain forbidden
-until the complete 12-interaction episode and causal-control matrix pass.
+is the replacement SHA-bound query-5 bundle: immutable publication, new object
+key, fresh global provider inventory, real cumulative campaign reservation,
+paid admission, transport, and canonical dry-run checks precede one live
+allocation. The prospective global ceiling is two concurrent GPUs, while this
+query remains limited to one allocation. WAM5 is neither authorized nor
+running. Judges remain forbidden until the complete 12-interaction episode and
+causal-control matrix pass.
