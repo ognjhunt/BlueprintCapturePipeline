@@ -7,12 +7,15 @@ change the frozen split, or grant any reconstruction qualification.
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -433,6 +436,27 @@ def build_worker_stack_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def build_candidate_worker_stack_manifest(*, source_commit_sha: str) -> dict[str, Any]:
+    """Build the exact repository-pinned unbuilt worker manifest for one commit."""
+
+    return build_worker_stack_manifest(
+        {
+            "worker_family": "blueprint-reconstruction-worker",
+            "runnable_platform": "linux/amd64",
+            "headless_required": True,
+            "display_required": False,
+            "source_commit_sha": source_commit_sha,
+            "qualification_status": "candidate_unbuilt",
+            "minimum_vram_gb": 24,
+            "supported_compute_capabilities": [75, 80, 86, 89],
+            "tested_driver_range": {"status": "not_yet_tested"},
+            "model_assets": list(PINNED_MODEL_ASSETS),
+            "hidden_heldout_access": False,
+            "trainer_self_grading": False,
+        }
+    )
+
+
 def build_worker_build_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
     artifact = _clone(dict(value))
     errors: list[str] = []
@@ -727,6 +751,32 @@ def build_training_result(value: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Emit the source-bound candidate reconstruction worker stack manifest."
+    )
+    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args(argv)
+    manifest = build_candidate_worker_stack_manifest(
+        source_commit_sha=args.source_commit
+    )
+    write_json(args.output, manifest)
+    print(
+        json.dumps(
+            {
+                "qualification_status": manifest["qualification_status"],
+                "source_commit_sha": manifest["source_commit_sha"],
+                "worker_stack_manifest_digest": manifest[
+                    "worker_stack_manifest_digest"
+                ],
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 __all__ = [
     "CAMERA_MODELS",
     "CHECKPOINT_SCHEMA_VERSION",
@@ -747,6 +797,7 @@ __all__ = [
     "WORKER_SMOKE_RECEIPT_SCHEMA_VERSION",
     "WORKER_STACK_SCHEMA_VERSION",
     "build_checkpoint_manifest",
+    "build_candidate_worker_stack_manifest",
     "build_pose_estimation_request",
     "build_pose_estimation_result",
     "build_training_request",
@@ -754,4 +805,9 @@ __all__ = [
     "build_worker_build_receipt",
     "build_worker_smoke_receipt",
     "build_worker_stack_manifest",
+    "main",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

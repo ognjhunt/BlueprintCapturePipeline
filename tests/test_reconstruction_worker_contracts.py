@@ -14,6 +14,7 @@ from blueprint_pipeline.reconstruction_worker_contracts import (
     PINNED_WORKER_COMPONENTS,
     REQUIREMENTS_LOCK_SHA256,
     ReconstructionWorkerContractError,
+    build_candidate_worker_stack_manifest,
     build_checkpoint_manifest,
     build_pose_estimation_request,
     build_pose_estimation_result,
@@ -22,6 +23,7 @@ from blueprint_pipeline.reconstruction_worker_contracts import (
     build_worker_build_receipt,
     build_worker_smoke_receipt,
     build_worker_stack_manifest,
+    main as worker_contracts_main,
 )
 from blueprint_pipeline.reconstruction_worker_build_packet import (
     ALLOCATOR_ENTRYPOINT,
@@ -222,6 +224,27 @@ def test_worker_manifest_cannot_claim_driver_test_before_build():
                 "tested_driver_range": {"minimum": "550.54"},
             }
         )
+
+
+def test_candidate_worker_manifest_cli_is_source_bound_and_replayable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "worker-stack.json"
+    assert worker_contracts_main(
+        ["--source-commit", SHA, "--output", str(output)]
+    ) == 0
+    first = json.loads(output.read_text(encoding="utf-8"))
+    second = build_candidate_worker_stack_manifest(source_commit_sha=SHA)
+    summary = json.loads(capsys.readouterr().out)
+
+    assert first == second
+    assert summary["source_commit_sha"] == SHA
+    assert summary["qualification_status"] == "candidate_unbuilt"
+    assert summary["worker_stack_manifest_digest"] == first[
+        "worker_stack_manifest_digest"
+    ]
+    assert first["components"] == list(PINNED_WORKER_COMPONENTS)
+    assert first["model_assets"] == list(PINNED_MODEL_ASSETS)
 
 
 def test_build_and_smoke_receipts_do_not_imply_scientific_qualification():
