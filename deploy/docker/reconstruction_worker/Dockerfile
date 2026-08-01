@@ -8,10 +8,12 @@ ARG PYTHON_VERSION=3.11.9
 ARG PYTHON_SOURCE_SHA256=9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87
 ARG FFMPEG_VERSION=6.1.1
 ARG FFMPEG_SOURCE_SHA256=8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968
-ARG REQUIREMENTS_LOCK_SHA256=6139cdbdc2a467b7ac75623970603512f17e3e5cb28ff231f8c9e59a5acab4e5
+ARG BUILD_REQUIREMENTS_LOCK_SHA256=d8a89e2d09515945f7553e12e314404b15340b128784ba3f699a64a5fb524811
+ARG REQUIREMENTS_LOCK_SHA256=3b8318ac331d0c453aa7f3e0bbff653b315ddd0ae072bfb86e4b51494ecabdff
 ARG COLMAP_REVISION=9c23f6942fe69962e06030905e77067c8673382f
 ARG GSPLAT_REVISION=937e29912570c372bed6747a5c9bf85fed877bae
 ARG THREEDGRUT_REVISION=0a5832248698ab8456b181d6ea17fe02eda58637
+ARG FUSED_SSIM_REVISION=1272e21a282342e89537159e4bad508b19b34157
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -20,6 +22,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BLUEPRINT_SOURCE_COMMIT=${BLUEPRINT_SOURCE_COMMIT} \
     BLUEPRINT_CONTAINER_IMAGE_DIGEST=${BLUEPRINT_CONTAINER_IMAGE_DIGEST} \
     BLUEPRINT_RECONSTRUCTION_MODEL_ROOT=/opt/models/colmap \
+    PYTHONPATH=/opt/blueprint/src \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -81,12 +84,16 @@ RUN git clone --filter=blob:none https://github.com/colmap/colmap.git /opt/colma
     && cmake --install /opt/colmap/build \
     && colmap -h >/dev/null
 
+COPY deploy/docker/reconstruction_worker/build-requirements.lock /opt/blueprint/build-requirements.lock
 COPY deploy/docker/reconstruction_worker/requirements.lock /opt/blueprint/requirements.lock
-RUN printf '%s  %s\n' "${REQUIREMENTS_LOCK_SHA256}" /opt/blueprint/requirements.lock \
+RUN printf '%s  %s\n' \
+      "${BUILD_REQUIREMENTS_LOCK_SHA256}" /opt/blueprint/build-requirements.lock \
+      "${REQUIREMENTS_LOCK_SHA256}" /opt/blueprint/requirements.lock \
       | sha256sum --check --strict \
     && /opt/python-${PYTHON_VERSION}/bin/python3.11 -m venv /opt/venv \
-    && /opt/venv/bin/pip install --upgrade pip==24.2 setuptools==74.1.2 wheel==0.44.0 \
-    && /opt/venv/bin/pip install --require-hashes \
+    && /opt/venv/bin/python -m pip install --require-hashes --no-deps \
+      --requirement /opt/blueprint/build-requirements.lock \
+    && /opt/venv/bin/python -m pip install --require-hashes --no-build-isolation \
       --extra-index-url https://download.pytorch.org/whl/cu124 \
       --requirement /opt/blueprint/requirements.lock
 
@@ -95,7 +102,14 @@ RUN git clone --filter=blob:none https://github.com/nerfstudio-project/gsplat.gi
     && git -C /opt/gsplat checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/gsplat rev-parse HEAD)" = "${GSPLAT_REVISION}" \
     && printf '%s\n' "${GSPLAT_REVISION}" > /opt/gsplat/.blueprint-source-revision \
-    && /opt/venv/bin/pip install --no-deps /opt/gsplat
+    && /opt/venv/bin/pip install --no-build-isolation --no-deps /opt/gsplat
+
+RUN git clone --filter=blob:none https://github.com/rahul-goel/fused-ssim.git /opt/fused-ssim \
+    && git -C /opt/fused-ssim fetch --depth 1 origin "${FUSED_SSIM_REVISION}" \
+    && git -C /opt/fused-ssim checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/fused-ssim rev-parse HEAD)" = "${FUSED_SSIM_REVISION}" \
+    && printf '%s\n' "${FUSED_SSIM_REVISION}" > /opt/fused-ssim/.blueprint-source-revision \
+    && /opt/venv/bin/pip install --no-build-isolation --no-deps /opt/fused-ssim
 
 RUN git clone --filter=blob:none --recurse-submodules https://github.com/nv-tlabs/3DGRUT.git /opt/3dgrut \
     && git -C /opt/3dgrut fetch --depth 1 origin "${THREEDGRUT_REVISION}" \
@@ -103,7 +117,7 @@ RUN git clone --filter=blob:none --recurse-submodules https://github.com/nv-tlab
     && git -C /opt/3dgrut submodule update --init --recursive \
     && test "$(git -C /opt/3dgrut rev-parse HEAD)" = "${THREEDGRUT_REVISION}" \
     && printf '%s\n' "${THREEDGRUT_REVISION}" > /opt/3dgrut/.blueprint-source-revision \
-    && /opt/venv/bin/pip install --no-deps --editable /opt/3dgrut \
+    && /opt/venv/bin/pip install --no-build-isolation --no-deps --editable /opt/3dgrut \
     && /opt/venv/bin/python -c "import threedgrut"
 
 RUN mkdir -p /opt/models/colmap \
@@ -120,8 +134,7 @@ RUN mkdir -p /opt/models/colmap \
 
 COPY pyproject.toml README.md LICENSE /opt/blueprint/
 COPY src /opt/blueprint/src
-RUN /opt/venv/bin/pip install --no-deps -e /opt/blueprint \
-    && PATH=/opt/venv/bin:${PATH} /opt/venv/bin/python -m \
+RUN PATH=/opt/venv/bin:${PATH} /opt/venv/bin/python -m \
       blueprint_pipeline.reconstruction_worker_image_healthcheck \
       --build-time --output /opt/blueprint/reconstruction_worker_build_healthcheck.json
 

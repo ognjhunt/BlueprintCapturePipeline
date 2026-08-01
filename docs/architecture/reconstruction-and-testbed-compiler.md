@@ -471,7 +471,17 @@ CUDA 12.4.1 Ubuntu base, COLMAP 4.0.4 at official tag commit
 `9c23f6942fe69962e06030905e77067c8673382f` with CUDA and ONNX enabled, ONNX Runtime
 1.24.4, gsplat 1.5.3, and NVIDIA 3DGRUT 1.1.0. It also records candidate compiler,
 FFmpeg, Python/PyTorch, OpenCV, Trimesh, OpenUSD, QA, driver, model-asset, license,
-and redistribution constraints. The ALIKED and LightGlue ONNX assets use the
+and redistribution constraints. Python 3.11.9 and FFmpeg 6.1.1 source archives
+are SHA-256 verified. The Linux/amd64 Python environment is resolved into a
+hash-enforced 107-package runtime lock plus a separate hash-enforced build-tool
+bootstrap; only the recorded pure-Python `asciitree` and
+`antlr4-python3-runtime` source distributions may build, with build isolation
+disabled. Runtime dependencies declared by the pinned gsplat and 3DGRUT sources
+are included. The baseline's unconditionally imported fused-SSIM CUDA extension
+is built from pinned upstream commit
+`1272e21a282342e89537159e4bad508b19b34157`; the embedded healthcheck verifies
+that source revision and the fused-SSIM, NCore, SlangTorch, and Hydra imports.
+The ALIKED and LightGlue ONNX assets use the
 digests published with COLMAP 3.13.0. This is a pinned candidate manifest, not a
 built or qualified image; build and headless smoke receipts remain mandatory.
 
@@ -518,7 +528,8 @@ any trainer can receive candidate pixels.
 
 `reconstruction_worker_remote_build_packet.v1` materializes the corresponding
 exact-source build context for that seam. It includes only tracked package
-sources and the required Docker recipe/lock files, records every member digest,
+sources and the required Docker recipe, lock inputs, lock generator, and resolved
+lock files, records every member digest,
 rejects symlinks and unsafe archive members, emits a byte-deterministic archive,
 and binds the executable build script to the source commit, recipe, dependency
 lock, worker-stack manifest, license-review receipt, and context manifest. The

@@ -24,7 +24,8 @@ POSE_RESULT_SCHEMA_VERSION = "pose_estimation_result.v1"
 TRAINING_REQUEST_SCHEMA_VERSION = "reconstruction_training_request.v1"
 TRAINING_RESULT_SCHEMA_VERSION = "reconstruction_training_result.v1"
 CHECKPOINT_SCHEMA_VERSION = "reconstruction_checkpoint_manifest.v1"
-REQUIREMENTS_LOCK_SHA256 = "6139cdbdc2a467b7ac75623970603512f17e3e5cb28ff231f8c9e59a5acab4e5"
+BUILD_REQUIREMENTS_LOCK_SHA256 = "d8a89e2d09515945f7553e12e314404b15340b128784ba3f699a64a5fb524811"
+REQUIREMENTS_LOCK_SHA256 = "3b8318ac331d0c453aa7f3e0bbff653b315ddd0ae072bfb86e4b51494ecabdff"
 
 PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
     {
@@ -106,6 +107,7 @@ PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
         "source_revision": (
             "python-3.11.9-source-sha256:"
             "9b1e896523fc510691126c864406d9360a3d1e986acbda59cda57b5abda45b87;"
+            f"build-requirements-lock-sha256:{BUILD_REQUIREMENTS_LOCK_SHA256};"
             f"requirements-lock-sha256:{REQUIREMENTS_LOCK_SHA256}"
         ),
         "license": "PSF-2.0;BSD-3-Clause;BSD-3-Clause;Apache-2.0;MIT",
@@ -128,6 +130,15 @@ PINNED_WORKER_COMPONENTS: tuple[dict[str, Any], ...] = (
         "source_revision": "0a5832248698ab8456b181d6ea17fe02eda58637",
         "license": "Apache-2.0",
         "redistribution": "dependency_and_model_review_required",
+    },
+    {
+        "component_id": "fused_ssim",
+        "name": "fused-ssim CUDA extension",
+        "version": "upstream_commit_1272e21",
+        "source_url": "https://github.com/rahul-goel/fused-ssim",
+        "source_revision": "1272e21a282342e89537159e4bad508b19b34157",
+        "license": "MIT",
+        "redistribution": "permitted_with_notices",
     },
     {
         "component_id": "deterministic_qa",
@@ -724,6 +735,7 @@ __all__ = [
     "PINNED_WORKER_COMPONENTS",
     "PINNED_MODEL_ASSETS",
     "POSE_METHODS",
+    "BUILD_REQUIREMENTS_LOCK_SHA256",
     "REQUIREMENTS_LOCK_SHA256",
     "POSE_REQUEST_SCHEMA_VERSION",
     "POSE_RESULT_SCHEMA_VERSION",

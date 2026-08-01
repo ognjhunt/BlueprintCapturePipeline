@@ -12,26 +12,39 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INPUT = ROOT / "deploy/docker/reconstruction_worker/requirements.in"
-OUTPUT = ROOT / "deploy/docker/reconstruction_worker/requirements.lock"
+IMAGE_ROOT = ROOT / "deploy/docker/reconstruction_worker"
+BOOTSTRAP_INPUT = IMAGE_ROOT / "build-requirements.in"
+BOOTSTRAP_OUTPUT = IMAGE_ROOT / "build-requirements.lock"
+RUNTIME_INPUT = IMAGE_ROOT / "requirements.in"
+RUNTIME_OUTPUT = IMAGE_ROOT / "requirements.lock"
 UV_VERSION = "0.10.7"
 EXCLUDE_NEWER = "2026-08-01T00:00:00Z"
 TARGET = "cpython-3.11 linux-x86_64-manylinux_2_28 torch-cu124"
-INPUT_DIGEST_PREFIX = "# blueprint-input-sha256 requirements.in "
+SOURCE_EXCEPTIONS = ("antlr4-python3-runtime", "asciitree")
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _validate_lock(text: str, *, input_digest: str) -> list[str]:
+def _validate_lock(
+    text: str,
+    *,
+    input_path: Path,
+    input_digest: str,
+    source_exceptions: tuple[str, ...],
+) -> list[str]:
     errors: list[str] = []
-    if f"{INPUT_DIGEST_PREFIX}{input_digest}" not in text.splitlines()[:8]:
+    digest_line = f"# blueprint-input-sha256 {input_path.name} {input_digest}"
+    if digest_line not in text.splitlines()[:8]:
         errors.append("requirements_input_digest_mismatch")
     if f"# blueprint-target {TARGET}" not in text.splitlines()[:8]:
         errors.append("requirements_target_missing")
     if f"# blueprint-exclude-newer {EXCLUDE_NEWER}" not in text.splitlines()[:8]:
         errors.append("requirements_cutoff_missing")
+    source_line = f"# blueprint-source-exceptions {','.join(source_exceptions) or 'none'}"
+    if source_line not in text.splitlines()[:8]:
+        errors.append("requirements_source_exceptions_mismatch")
 
     blocks = re.split(r"\n(?=[A-Za-z0-9_.-]+==)", text)
     requirements = [block for block in blocks if re.match(r"^[A-Za-z0-9_.-]+==", block)]
@@ -56,19 +69,21 @@ def _uv_version() -> str:
     return match.group(1)
 
 
-def _compile() -> None:
-    observed_uv = _uv_version()
-    if observed_uv != UV_VERSION:
-        raise SystemExit(f"uv_version_mismatch:{observed_uv}:expected:{UV_VERSION}")
-    input_digest = _sha256(INPUT)
+def _compile_one(
+    *, input_path: Path, output_path: Path, source_exceptions: tuple[str, ...]
+) -> None:
+    input_digest = _sha256(input_path)
     with tempfile.TemporaryDirectory(prefix="blueprint-reconstruction-lock-") as temp_dir:
         generated = Path(temp_dir) / "requirements.lock"
+        binary_options = ["--only-binary=:all:"]
+        for package in source_exceptions:
+            binary_options.append(f"--no-binary={package}")
         subprocess.run(
             [
                 "uv",
                 "pip",
                 "compile",
-                str(INPUT),
+                str(input_path),
                 "--python-version",
                 "3.11",
                 "--python-platform",
@@ -76,7 +91,7 @@ def _compile() -> None:
                 "--torch-backend",
                 "cu124",
                 "--generate-hashes",
-                "--only-binary=:all:",
+                *binary_options,
                 "--no-annotate",
                 "--exclude-newer",
                 EXCLUDE_NEWER,
@@ -91,15 +106,37 @@ def _compile() -> None:
         )
         body = generated.read_text(encoding="utf-8")
         header = (
-            f"{INPUT_DIGEST_PREFIX}{input_digest}\n"
+            f"# blueprint-input-sha256 {input_path.name} {input_digest}\n"
             f"# blueprint-target {TARGET}\n"
             f"# blueprint-exclude-newer {EXCLUDE_NEWER}\n"
+            f"# blueprint-source-exceptions {','.join(source_exceptions) or 'none'}\n"
         )
         content = header + body
-        errors = _validate_lock(content, input_digest=input_digest)
+        errors = _validate_lock(
+            content,
+            input_path=input_path,
+            input_digest=input_digest,
+            source_exceptions=source_exceptions,
+        )
         if errors:
             raise SystemExit(";".join(errors))
-        OUTPUT.write_text(content, encoding="utf-8")
+        output_path.write_text(content, encoding="utf-8")
+
+
+def _compile() -> None:
+    observed_uv = _uv_version()
+    if observed_uv != UV_VERSION:
+        raise SystemExit(f"uv_version_mismatch:{observed_uv}:expected:{UV_VERSION}")
+    _compile_one(
+        input_path=BOOTSTRAP_INPUT,
+        output_path=BOOTSTRAP_OUTPUT,
+        source_exceptions=(),
+    )
+    _compile_one(
+        input_path=RUNTIME_INPUT,
+        output_path=RUNTIME_OUTPUT,
+        source_exceptions=SOURCE_EXCEPTIONS,
+    )
 
 
 def main() -> int:
@@ -111,14 +148,25 @@ def main() -> int:
     )
     args = parser.parse_args()
     if args.check:
-        errors = _validate_lock(
-            OUTPUT.read_text(encoding="utf-8"), input_digest=_sha256(INPUT)
-        )
+        errors: list[str] = []
+        for input_path, output_path, source_exceptions in (
+            (BOOTSTRAP_INPUT, BOOTSTRAP_OUTPUT, ()),
+            (RUNTIME_INPUT, RUNTIME_OUTPUT, SOURCE_EXCEPTIONS),
+        ):
+            errors.extend(
+                _validate_lock(
+                    output_path.read_text(encoding="utf-8"),
+                    input_path=input_path,
+                    input_digest=_sha256(input_path),
+                    source_exceptions=source_exceptions,
+                )
+            )
         if errors:
             raise SystemExit(";".join(errors))
     else:
         _compile()
-    print(f"requirements_lock_sha256={_sha256(OUTPUT)}")
+    print(f"build_requirements_lock_sha256={_sha256(BOOTSTRAP_OUTPUT)}")
+    print(f"requirements_lock_sha256={_sha256(RUNTIME_OUTPUT)}")
     return 0
 
 

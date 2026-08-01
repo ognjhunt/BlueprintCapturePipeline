@@ -28,8 +28,16 @@ bound into the worker-stack manifest; changing it requires updating both pins.
 Regenerate the fully resolved Linux/amd64 Python 3.11 CUDA 12.4 hash lock with
 `python scripts/compile_reconstruction_worker_lock.py`. The generator requires
 the repository-pinned uv version, an immutable cutoff, binary distributions,
-and hashes for direct and transitive packages. `--check` validates the recorded
-input, target, cutoff, exact versions, and hashes without package-index access.
+and hashes for direct and transitive packages. Only the pure-Python `asciitree`
+and `antlr4-python3-runtime` source distributions are allowed; their builds use
+the separately hash-locked pip/setuptools/wheel bootstrap with build isolation
+disabled. `--check` validates both locks' recorded input, target, cutoff, exact
+versions, and hashes without package-index access.
+
+The baseline 3DGRUT loss imports the fused-SSIM CUDA extension unconditionally.
+The image therefore builds that extension from its upstream pinned commit and
+checks the source revision and import during the embedded healthcheck. NCore,
+SlangTorch, and Hydra imports are checked for the same trainer-startup reason.
 
 Prepare the deterministic, exact-source build archive with
 `python -m blueprint_pipeline.reconstruction_worker_build_packet`; the archive

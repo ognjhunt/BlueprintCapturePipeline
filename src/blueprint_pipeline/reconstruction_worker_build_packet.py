@@ -38,6 +38,8 @@ DEFAULT_IMAGE_REF = "docker.io/nijelhunt/blueprint-reconstruction-worker:2026073
 DOCKERFILE_RELATIVE_PATH = Path("deploy/docker/reconstruction_worker/Dockerfile")
 REQUIRED_CONTEXT_PATHS = (
     DOCKERFILE_RELATIVE_PATH,
+    Path("deploy/docker/reconstruction_worker/build-requirements.in"),
+    Path("deploy/docker/reconstruction_worker/build-requirements.lock"),
     Path("deploy/docker/reconstruction_worker/requirements.in"),
     Path("deploy/docker/reconstruction_worker/requirements.lock"),
     Path("scripts/compile_reconstruction_worker_lock.py"),

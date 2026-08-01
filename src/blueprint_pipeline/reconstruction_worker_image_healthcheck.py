@@ -25,6 +25,7 @@ CMAKE_VERSION = "3.28.3"
 NINJA_VERSION = "1.11.1"
 GSPLAT_REVISION = "937e29912570c372bed6747a5c9bf85fed877bae"
 THREEDGRUT_REVISION = "0a5832248698ab8456b181d6ea17fe02eda58637"
+FUSED_SSIM_REVISION = "1272e21a282342e89537159e4bad508b19b34157"
 MODEL_DIGESTS = {
     "aliked-n16rot.onnx": "39c423d0a6f03d39ec89d3d1d61853765c2fb6a8b8381376c703e5758778a547",
     "aliked-lightglue.onnx": "b9a5de7204648b18a8cf5dcac819f9d30de1a5961ef03756803c8b86c2dceb8d",
@@ -97,6 +98,10 @@ def run_reconstruction_worker_healthcheck(
             Path("/opt/3dgrut/.blueprint-source-revision"),
             THREEDGRUT_REVISION,
         ),
+        "fused_ssim_revision": (
+            Path("/opt/fused-ssim/.blueprint-source-revision"),
+            FUSED_SSIM_REVISION,
+        ),
     }
     for check_id, (path, expected) in revision_paths.items():
         present = bool(exists(path))
@@ -133,6 +138,10 @@ def run_reconstruction_worker_healthcheck(
         "onnxruntime",
         "gsplat",
         "threedgrut",
+        "fused_ssim",
+        "ncore",
+        "slangtorch",
+        "hydra",
         "numpy",
         "cv2",
         "trimesh",

@@ -8,6 +8,7 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_worker_contracts import (
+    BUILD_REQUIREMENTS_LOCK_SHA256,
     FAILURE_CODES,
     PINNED_MODEL_ASSETS,
     PINNED_WORKER_COMPONENTS,
@@ -185,7 +186,11 @@ def test_worker_manifest_pins_headless_cuda_onnx_colmap_and_gaussian_stacks():
     )
     assert components["gsplat"]["version"] == "1.5.3"
     assert components["threedgrut"]["version"] == "1.1.0"
+    assert components["fused_ssim"]["source_revision"] == (
+        "1272e21a282342e89537159e4bad508b19b34157"
+    )
     assert REQUIREMENTS_LOCK_SHA256 in components["python_ml_runtime"]["source_revision"]
+    assert BUILD_REQUIREMENTS_LOCK_SHA256 in components["python_ml_runtime"]["source_revision"]
     assert REQUIREMENTS_LOCK_SHA256 in components["deterministic_qa"]["source_revision"]
     assert manifest["qualification_status"] == "candidate_unbuilt"
     assert manifest["hidden_heldout_access"] is False
@@ -201,6 +206,7 @@ def test_worker_manifest_pins_headless_cuda_onnx_colmap_and_gaussian_stacks():
         "python_ml_runtime",
         "openusd",
         "threedgrut",
+        "fused_ssim",
         "deterministic_qa",
     }
     assert len(PINNED_MODEL_ASSETS) == 4

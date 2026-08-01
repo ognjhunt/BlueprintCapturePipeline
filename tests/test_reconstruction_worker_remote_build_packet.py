@@ -31,6 +31,8 @@ from blueprint_pipeline.image_build_result_verification import (
 def _fixture_repo(root: Path) -> str:
     files = {
         "deploy/docker/reconstruction_worker/Dockerfile": "FROM scratch\n",
+        "deploy/docker/reconstruction_worker/build-requirements.in": "pip==24.2\n",
+        "deploy/docker/reconstruction_worker/build-requirements.lock": "pip==24.2\n",
         "deploy/docker/reconstruction_worker/requirements.in": "numpy==1.26.4\n",
         "deploy/docker/reconstruction_worker/requirements.lock": "numpy==1.26.4\n",
         "scripts/compile_reconstruction_worker_lock.py": "print('fixture')\n",
@@ -124,6 +126,14 @@ def test_remote_packet_is_clean_bound_deterministic_and_secret_free(tmp_path: Pa
     assert first["tarball_sha256"] == second["tarball_sha256"]
     assert first["archive_member_sha256"] == second["archive_member_sha256"]
     assert validate_reconstruction_worker_archive(first) == []
+    assert (
+        f"{PACKET_DIRNAME}/context/deploy/docker/reconstruction_worker/build-requirements.in"
+        in first["archive_members"]
+    )
+    assert (
+        f"{PACKET_DIRNAME}/context/deploy/docker/reconstruction_worker/build-requirements.lock"
+        in first["archive_members"]
+    )
     assert f"{PACKET_DIRNAME}/context/deploy/docker/reconstruction_worker/requirements.in" in first[
         "archive_members"
     ]
