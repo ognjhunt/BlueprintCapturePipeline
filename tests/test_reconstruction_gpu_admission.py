@@ -8,6 +8,7 @@ import jsonschema
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.reconstruction_gpu_admission import (
+    EXPECTED_RUNTIME_RESULT_SCHEMAS,
     PREFLIGHT_SCHEMA_VERSION,
     PROBE_KIND,
     REQUEST_SCHEMA_VERSION,
@@ -26,6 +27,7 @@ IMAGE = "registry.example/blueprint/reconstruction@sha256:" + "b" * 64
 
 
 def _request(**overrides):
+    operation = overrides.get("operation", "worker_smoke")
     value = {
         "schema_version": REQUEST_SCHEMA_VERSION,
         "operation": "worker_smoke",
@@ -37,6 +39,9 @@ def _request(**overrides):
         "frozen_split_digest": D3,
         "calibration_digest": D4,
         "deterministic_configuration_digest": D5,
+        "operation_request_digest": D1,
+        "operation_input_bundle_digest": D2,
+        "expected_runtime_result_schema": EXPECTED_RUNTIME_RESULT_SCHEMAS.get(operation),
         "candidate_may_read_hidden_heldout": False,
         "trainer_may_grade_heldout": False,
         "max_spend_usd": 1.0,
@@ -97,6 +102,12 @@ def test_vast_first_reconstruction_canary_dry_run_binds_all_proof_inputs():
     assert admission["allocation_success_is_scientific_success"] is False
     assert bound["reconstruction_dataset_digest"] == D2
     assert bound["frozen_split_digest"] == D3
+    assert bound["operation_request_digest"] == D1
+    assert bound["operation_input_bundle_digest"] == D2
+    assert (
+        bound["expected_runtime_result_schema"]
+        == "reconstruction_vast_worker_smoke_result.v1"
+    )
     assert bound["provider_mutation_authorized"] is False
     schema = json.loads(
         (
@@ -105,6 +116,7 @@ def test_vast_first_reconstruction_canary_dry_run_binds_all_proof_inputs():
         ).read_text(encoding="utf-8")
     )
     jsonschema.validate(admission, schema)
+    jsonschema.validate(bound, schema)
 
 
 def test_preflight_collector_requires_global_zero_and_independent_watchdog():
@@ -190,6 +202,10 @@ def test_pose_and_trainer_canaries_cannot_masquerade_as_worker_smoke_execution()
         dry_run, dry_bound = _build(request=request)
         assert dry_run["status"] == "dry_run_ready"
         assert dry_run["operation"] == operation
+        assert (
+            dry_run["expected_runtime_result_schema"]
+            == EXPECTED_RUNTIME_RESULT_SCHEMAS[operation]
+        )
         assert dry_run["execution_adapter_qualified"] is False
         assert dry_run["legal_next_actions"] == [
             "qualify_reconstruction_operation_execution_adapter"
@@ -207,6 +223,29 @@ def test_pose_and_trainer_canaries_cannot_masquerade_as_worker_smoke_execution()
         ]
         assert execute["execution_adapter_qualified"] is False
         assert execute_bound["provider_mutation_authorized"] is False
+
+
+def test_operation_request_input_and_result_schema_are_immutable_admission_inputs():
+    request = _request(
+        operation_request_digest="not-a-digest",
+        operation_input_bundle_digest="sha256:" + "z" * 64,
+        expected_runtime_result_schema="reconstruction_training_result.v1",
+    )
+    admission, bound = _build(request=request)
+
+    assert admission["status"] == "blocked"
+    assert (
+        "reconstruction_gpu_operation_request_digest_invalid" in admission["blockers"]
+    )
+    assert (
+        "reconstruction_gpu_operation_input_bundle_digest_invalid"
+        in admission["blockers"]
+    )
+    assert (
+        "reconstruction_gpu_expected_runtime_result_schema_invalid"
+        in admission["blockers"]
+    )
+    assert bound["provider_mutation_authorized"] is False
 
 
 def test_reconstruction_canary_rejects_stale_preflight_and_underfunded_ttl():

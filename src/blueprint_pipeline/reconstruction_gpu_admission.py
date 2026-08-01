@@ -30,6 +30,11 @@ CAPTURE_PROFILES = {
 }
 OPERATIONS = {"worker_smoke", "pose_canary", "trainer_canary"}
 EXECUTABLE_OPERATIONS = {"worker_smoke"}
+EXPECTED_RUNTIME_RESULT_SCHEMAS = {
+    "worker_smoke": "reconstruction_vast_worker_smoke_result.v1",
+    "pose_canary": "pose_estimation_result.v1",
+    "trainer_canary": "reconstruction_training_result.v1",
+}
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
@@ -180,6 +185,11 @@ def build_reconstruction_gpu_canary_admission(
         blockers.append("reconstruction_gpu_request_schema_invalid")
     if source.get("operation") not in OPERATIONS:
         blockers.append("reconstruction_gpu_operation_unsupported")
+    expected_result_schema = EXPECTED_RUNTIME_RESULT_SCHEMAS.get(
+        str(source.get("operation") or "")
+    )
+    if source.get("expected_runtime_result_schema") != expected_result_schema:
+        blockers.append("reconstruction_gpu_expected_runtime_result_schema_invalid")
     if source.get("capture_profile") not in CAPTURE_PROFILES:
         blockers.append("reconstruction_gpu_capture_profile_unsupported")
     if source.get("source_commit_sha") != expected_source_commit:
@@ -198,6 +208,8 @@ def build_reconstruction_gpu_canary_admission(
         "frozen_split_digest",
         "calibration_digest",
         "deterministic_configuration_digest",
+        "operation_request_digest",
+        "operation_input_bundle_digest",
     ):
         if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
             blockers.append(f"reconstruction_gpu_{key}_invalid")
@@ -317,6 +329,11 @@ def build_reconstruction_gpu_canary_admission(
         "bound_request_digest": bound_request["bound_request_digest"],
         "source_commit_sha": checkout_source_commit,
         "operation": operation,
+        "operation_request_digest": source.get("operation_request_digest"),
+        "operation_input_bundle_digest": source.get("operation_input_bundle_digest"),
+        "expected_runtime_result_schema": source.get(
+            "expected_runtime_result_schema"
+        ),
         "worker_image_digest": source.get("worker_image_digest"),
         "reconstruction_dataset_digest": source.get("reconstruction_dataset_digest"),
         "frozen_split_digest": source.get("frozen_split_digest"),
@@ -402,6 +419,7 @@ def prepare_reconstruction_gpu_canary(
 __all__ = [
     "ADMISSION_SCHEMA_VERSION",
     "EXECUTABLE_OPERATIONS",
+    "EXPECTED_RUNTIME_RESULT_SCHEMAS",
     "PREFLIGHT_SCHEMA_VERSION",
     "PROBE_KIND",
     "REQUEST_SCHEMA_VERSION",

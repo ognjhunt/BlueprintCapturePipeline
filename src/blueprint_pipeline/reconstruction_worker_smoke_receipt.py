@@ -106,6 +106,8 @@ def compile_reconstruction_worker_smoke_receipt(
     if (
         request.get("schema_version") != "reconstruction_gpu_canary_request.v1"
         or request.get("operation") != "worker_smoke"
+        or request.get("expected_runtime_result_schema")
+        != "reconstruction_vast_worker_smoke_result.v1"
         or request.get("bound_provider") != "vast"
         or request.get("bound_checkout_clean") is not True
         or request.get("provider_mutation_authorized") is not True

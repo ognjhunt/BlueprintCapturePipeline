@@ -54,6 +54,9 @@ def _bound_request():
         "frozen_split_digest": D1,
         "calibration_digest": D1,
         "deterministic_configuration_digest": D1,
+        "operation_request_digest": D1,
+        "operation_input_bundle_digest": D1,
+        "expected_runtime_result_schema": "reconstruction_vast_worker_smoke_result.v1",
         "candidate_may_read_hidden_heldout": False,
         "trainer_may_grade_heldout": False,
         "max_spend_usd": 1.0,
@@ -207,6 +210,30 @@ def test_smoke_result_validation_binds_image_gpu_and_no_proof():
             worker_image_digest=IMAGE,
             source_commit_sha=SHA,
         )
+
+
+def test_worker_smoke_rejects_wrong_operation_result_contract_before_allocation(
+    tmp_path: Path,
+):
+    request = _bound_request()
+    request["expected_runtime_result_schema"] = "reconstruction_training_result.v1"
+    request["bound_request_digest"] = canonical_digest(
+        request, digest_field="bound_request_digest"
+    )
+    provider = _Provider()
+
+    with pytest.raises(ReconstructionVastSmokeError, match="bound_request_not_executable"):
+        run_reconstruction_vast_worker_smoke(
+            bound_request=request,
+            preflight=_preflight(),
+            job_dir=tmp_path,
+            output_put_url="https://objects.example/upload?sig=secret",
+            output_get_url="https://objects.example/download?sig=secret",
+            provider=provider,
+            paid_resource_admission_grant=_grant(),
+        )
+
+    assert provider.requests == []
 
 
 def test_one_instance_smoke_retrieves_output_and_proves_teardown_zero(tmp_path: Path):

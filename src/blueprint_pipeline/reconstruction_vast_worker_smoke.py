@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -231,8 +232,15 @@ def run_reconstruction_vast_worker_smoke(
         request.get("bound_provider") != "vast"
         or request.get("provider_mutation_authorized") is not True
         or request.get("operation") != "worker_smoke"
+        or request.get("expected_runtime_result_schema") != RESULT_SCHEMA_VERSION
     ):
         raise ReconstructionVastSmokeError("reconstruction_bound_request_not_executable")
+    for key in ("operation_request_digest", "operation_input_bundle_digest"):
+        value = request.get(key)
+        if not isinstance(value, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+            raise ReconstructionVastSmokeError(
+                f"reconstruction_bound_request_{key}_invalid"
+            )
     if provider.name != "vast":
         raise ReconstructionVastSmokeError("reconstruction_vast_first_required")
     worker_image = str(request.get("worker_image_digest") or "")
