@@ -241,17 +241,24 @@ used as blind confirmation.
   the successful same-checkpoint query-4 retry, close interaction four, and
   bind WAM4 to the exact query-4 action, 28-frame feedback history, immutable
   provider bundle, and one single-use allocation;
+- `protocol_amendment_26_wam4_result_and_policy_query5_v1.md` and
+  `compute_authorization_openpi_policy_query_5.json` — preserve WAM4's
+  successful three-view output, immediate reliability, teardown, and
+  provider-zero evidence; disclose and reconcile the missing pre-mutation
+  cumulative-ledger artifact without retroactive admission claims; and bind the
+  resulting generated observation to one same-checkpoint policy query 5 with a
+  real production-campaign reservation required before any provider mutation;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
 The registered three-interaction engineering gate and interaction four are
-complete. Four generated-only WAM transitions passed their immediate
-reliability gates, and the same frozen `pi05_droid` checkpoint was re-queried
-after each using only the three generated views and registered commanded state.
-Query 4 completed on the corrected generic runtime. The next finite gate is one
-prospectively frozen WAM4 generation from query 4's exact native action and
-preserved 28-row feedback history, after fresh provider-zero and paid-admission
-checks. Judges remain forbidden until the complete 12-interaction episode and
-causal-control matrix pass.
+complete. WAM4 also passed its immediate three-view reliability gate and its
+generated observation is frozen, but interaction five is not complete until the
+same frozen `pi05_droid` checkpoint returns policy query 5. The next finite gate
+is that one prospectively frozen query using only WAM4's generated views and
+registered commanded state, after immutable publication, a real cumulative
+campaign reservation, fresh provider-zero, paid admission, transport, and dry
+run checks. WAM5 is neither authorized nor running. Judges remain forbidden
+until the complete 12-interaction episode and causal-control matrix pass.
