@@ -358,6 +358,22 @@ without provider authority retained in both the execution envelope and capture
 artifact fail closed. Compilation does not execute COLMAP and proves neither a
 trajectory nor metric scale; the resulting request keeps scale at
 `anchor_required`.
+
+`native_360_colmap_plan.py` compiles that admitted request into an inert,
+replayable COLMAP 4.0.4 execution plan. Candidate observations are rematerialized
+under `front/` and `rear/` with identical filenames for each synchronized rig
+frame; hidden-held-out observations are structurally forbidden. The plan binds
+per-lens calibrated valid-pixel masks, exact fisheye intrinsics/distortion, and
+the declared transform direction before producing COLMAP `cam_from_rig`
+quaternion/translation values. It emits argv arrays for headless feature
+extraction, `rig_configurator`, deterministic sequential matching, and mapping
+with sensor extrinsics and intrinsics held fixed. SIFT/ALIKED and compatible
+brute-force/LightGlue pairings use one frozen protocol. Unknown camera axes,
+missing masks, malformed transforms, mismatched distortion models, incomplete
+front/rear groups, or any hidden path fail closed. The plan grants no shell or
+network access, does not execute COLMAP, and has an `execution_plan_only` claim
+ceiling; a registered trusted runtime and a typed pose result remain required.
+
 The native reconstruction route now orders normalization before frozen dataset
 compilation. A trusted runtime-only compiler service composes decode and grouped
 split under the registered `compile_frozen_frame_dataset` tool; the model sees

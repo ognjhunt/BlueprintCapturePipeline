@@ -18,6 +18,20 @@ from .reconstruction_worker_contracts import (
 )
 
 
+_METHOD_MODEL_ASSETS = {
+    "colmap_sift_bruteforce_v1": (None, None),
+    "colmap_sift_lightglue_v1": (None, PINNED_MODEL_ASSETS[2]["digest"]),
+    "colmap_aliked_bruteforce_v1": (
+        PINNED_MODEL_ASSETS[0]["digest"],
+        PINNED_MODEL_ASSETS[3]["digest"],
+    ),
+    "colmap_aliked_lightglue_v1": (
+        PINNED_MODEL_ASSETS[0]["digest"],
+        PINNED_MODEL_ASSETS[1]["digest"],
+    ),
+}
+
+
 class Native360PoseRequestCompilationError(ValueError):
     """Stable fail-closed error for native pose request compilation."""
 
@@ -32,8 +46,10 @@ def _mapping(value: Any) -> dict[str, Any]:
 
 def _digest(value: Any) -> bool:
     text = str(value or "")
-    return len(text) == 71 and text.startswith("sha256:") and all(
-        character in "0123456789abcdef" for character in text[7:]
+    return (
+        len(text) == 71
+        and text.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in text[7:])
     )
 
 
@@ -72,8 +88,7 @@ def compile_native_360_pose_estimation_request(
     if (
         dataset.get("schema_version") != "reconstruction_dataset_manifest.v1"
         or not _digest(dataset_digest)
-        or dataset_digest
-        != canonical_digest(dataset, digest_field="dataset_manifest_digest")
+        or dataset_digest != canonical_digest(dataset, digest_field="dataset_manifest_digest")
         or dataset.get("capture_authority_profile") != "camera_360_native"
     ):
         errors.append("native_pose_dataset_manifest_invalid")
@@ -112,10 +127,7 @@ def compile_native_360_pose_estimation_request(
     ):
         errors.append("native_pose_camera_rig_not_accepted")
     capture_digest = dataset.get("source_capture_digest")
-    if (
-        not _digest(capture_digest)
-        or rig_result.get("source_capture_digest") != capture_digest
-    ):
+    if not _digest(capture_digest) or rig_result.get("source_capture_digest") != capture_digest:
         errors.append("native_pose_capture_binding_invalid")
     calibration_binding = dataset.get("camera_calibration_binding")
     stream_metadata = dataset.get("stream_metadata")
@@ -123,14 +135,10 @@ def compile_native_360_pose_estimation_request(
         dict(calibration_binding) if isinstance(calibration_binding, Mapping) else {}
     )
     stream_metadata = dict(stream_metadata) if isinstance(stream_metadata, Mapping) else {}
-    calibration_digest = calibration_binding.get(
-        "camera_360_rig_declaration_digest"
-    )
-    if (
-        calibration_digest != rig_result.get("rig_declaration_digest")
-        or stream_metadata.get("dual_fisheye_binding_digest")
-        != rig_result.get("dual_fisheye_binding_digest")
-    ):
+    calibration_digest = calibration_binding.get("camera_360_rig_declaration_digest")
+    if calibration_digest != rig_result.get("rig_declaration_digest") or stream_metadata.get(
+        "dual_fisheye_binding_digest"
+    ) != rig_result.get("dual_fisheye_binding_digest"):
         errors.append("native_pose_calibration_or_stream_binding_mismatch")
 
     try:
@@ -152,8 +160,7 @@ def compile_native_360_pose_estimation_request(
     if (
         build.get("status") != "built"
         or build.get("blockers") != []
-        or build.get("worker_stack_manifest_digest")
-        != stack.get("worker_stack_manifest_digest")
+        or build.get("worker_stack_manifest_digest") != stack.get("worker_stack_manifest_digest")
         or build.get("source_commit_sha") != stack.get("source_commit_sha")
     ):
         errors.append("native_pose_worker_build_not_accepted")
@@ -173,9 +180,7 @@ def compile_native_360_pose_estimation_request(
         row["digest"] for row in PINNED_MODEL_ASSETS if isinstance(row, Mapping)
     }
     worker_asset_digests = {
-        row.get("digest")
-        for row in stack.get("model_assets", [])
-        if isinstance(row, Mapping)
+        row.get("digest") for row in stack.get("model_assets", []) if isinstance(row, Mapping)
     }
     feature_digest = configuration.get("model_asset_digest")
     matcher_digest = configuration.get("matcher_model_asset_digest")
@@ -189,6 +194,9 @@ def compile_native_360_pose_estimation_request(
         or matcher_digest not in worker_asset_digests
     ):
         errors.append("native_pose_matcher_model_not_pinned")
+    expected_assets = _METHOD_MODEL_ASSETS.get(configuration.get("method_profile_id"))
+    if expected_assets is not None and (feature_digest, matcher_digest) != expected_assets:
+        errors.append("native_pose_method_model_assets_invalid")
     if configuration.get("camera_model") not in {
         "OPENCV_FISHEYE",
         "RAD_TAN_THIN_PRISM_FISHEYE",
@@ -217,9 +225,7 @@ def compile_native_360_pose_estimation_request(
     ):
         errors.append("native_pose_execution_authority_invalid")
     capture_authority = dataset.get("authority_used")
-    capture_authority = (
-        dict(capture_authority) if isinstance(capture_authority, Mapping) else {}
-    )
+    capture_authority = dict(capture_authority) if isinstance(capture_authority, Mapping) else {}
     if is_remote and (
         authority.get("paid_compute_authorized") is not True
         or authority.get("provider_processing_authorized") is not True
@@ -253,8 +259,7 @@ def compile_native_360_pose_estimation_request(
         "source_capture_identity": dataset.get("source_capture_identity"),
         "source_capture_digest": capture_digest,
         "original_file_references": [
-            {"artifact_id": row["relative_path"], "digest": row["digest"]}
-            for row in original_files
+            {"artifact_id": row["relative_path"], "digest": row["digest"]} for row in original_files
         ],
         "producing_method": "blueprint.native_360_pose_request_compiler",
         "implementation_version": "1.0.0",

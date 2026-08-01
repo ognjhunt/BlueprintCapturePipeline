@@ -83,14 +83,10 @@ def _dataset(rig_result: dict, **overrides: object) -> dict:
         "candidate_can_modify_split": False,
         "raw_capture_bytes_remain_authoritative": True,
         "camera_calibration_binding": {
-            "camera_360_rig_declaration_digest": rig_result[
-                "rig_declaration_digest"
-            ]
+            "camera_360_rig_declaration_digest": rig_result["rig_declaration_digest"]
         },
         "stream_metadata": {
-            "dual_fisheye_binding_digest": rig_result[
-                "dual_fisheye_binding_digest"
-            ]
+            "dual_fisheye_binding_digest": rig_result["dual_fisheye_binding_digest"]
         },
         "coordinate_frame_declaration": {
             "units": "meters",
@@ -146,9 +142,7 @@ def _worker() -> tuple[dict, dict, dict]:
             "source_commit_sha": SHA,
             "provider_runtime_identity": {"provider": "local", "runtime": "fixture"},
             "status": "passed",
-            "checks": [
-                {"check_id": "colmap-headless", "status": "passed", "output_digest": D4}
-            ],
+            "checks": [{"check_id": "colmap-headless", "status": "passed", "output_digest": D4}],
             "display_attached": False,
             "scientific_qualification_inferred": False,
         }
@@ -206,8 +200,7 @@ def test_native_pose_request_is_replayable_and_binds_all_native_evidence() -> No
     assert len(first["original_file_references"]) == 2
     schema = json.loads(
         (
-            Path(__file__).parents[1]
-            / "docs/schemas/pose_estimation_request.v1.schema.json"
+            Path(__file__).parents[1] / "docs/schemas/pose_estimation_request.v1.schema.json"
         ).read_text(encoding="utf-8")
     )
     jsonschema.validate(first, schema)
@@ -215,9 +208,7 @@ def test_native_pose_request_is_replayable_and_binds_all_native_evidence() -> No
 
 def test_native_pose_request_rejects_hidden_pixels_and_invalid_timeline() -> None:
     rig_request, rig_result = _rig()
-    hidden = _dataset(
-        rig_result, candidate_dataset_contains_hidden_heldout_pixels=True
-    )
+    hidden = _dataset(rig_result, candidate_dataset_contains_hidden_heldout_pixels=True)
     with pytest.raises(
         Native360PoseRequestCompilationError,
         match="native_pose_dataset_isolation_invalid",
@@ -260,9 +251,7 @@ def test_native_pose_request_rejects_remote_execution_without_capture_authority(
             "source_commit_sha": SHA,
             "provider_runtime_identity": {"provider": "vast", "runtime": "gpu-canary"},
             "status": "passed",
-            "checks": [
-                {"check_id": "colmap-headless", "status": "passed", "output_digest": D4}
-            ],
+            "checks": [{"check_id": "colmap-headless", "status": "passed", "output_digest": D4}],
             "display_attached": False,
             "scientific_qualification_inferred": False,
         }
@@ -306,5 +295,27 @@ def test_native_pose_request_rejects_unpinned_learned_models() -> None:
     with pytest.raises(
         Native360PoseRequestCompilationError,
         match="native_pose_feature_model_not_pinned",
+    ):
+        _compile(execution_configuration=configuration)
+
+
+def test_native_pose_request_requires_exact_method_checkpoint_pairing() -> None:
+    request = _compile()
+    configuration = {
+        "provider_runtime_identity": request["provider_runtime_identity"],
+        "method_profile_id": "colmap_aliked_bruteforce_v1",
+        "feature_extractor": "ALIKED_N16ROT",
+        "feature_matcher": "ALIKED_BRUTEFORCE",
+        "camera_model": "OPENCV_FISHEYE",
+        "model_asset_digest": PINNED_MODEL_ASSETS[0]["digest"],
+        "matcher_model_asset_digest": None,
+        "random_seed": 17,
+        "resource_request": {"gpu_count": 1, "minimum_vram_gb": 16},
+        "timeout_seconds": 900,
+        "spend_cap_usd": 0.0,
+    }
+    with pytest.raises(
+        Native360PoseRequestCompilationError,
+        match="native_pose_method_model_assets_invalid",
     ):
         _compile(execution_configuration=configuration)

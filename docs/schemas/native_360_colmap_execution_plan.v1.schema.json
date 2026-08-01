@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/native_360_colmap_execution_plan.v1.schema.json",
+  "title": "Blueprint native 360 COLMAP execution plan v1",
+  "type": "object",
+  "required": [
+    "schema_version", "stable_run_identity", "source_capture_identity",
+    "source_capture_digest", "original_file_references", "producing_method", "implementation_version",
+    "container_image_digest", "source_commit_sha", "deterministic_configuration_digest",
+    "input_digests", "output_digests", "train_heldout_split_digest", "camera_calibration_binding",
+    "coordinate_frame_declaration", "units", "metric_scale_status",
+    "provider_runtime_identity", "authority_used", "cost_usd", "duration_seconds",
+    "warnings", "blockers", "proof_effect", "claim_ceiling",
+    "parent_artifact_or_event", "timestamp", "pose_estimation_request_digest",
+    "candidate_dataset_digest", "camera_rig_validation_result_digest",
+    "workspace_layout", "image_materialization", "mask_materialization",
+    "rig_config", "rig_config_digest", "commands", "execution_bounds", "expected_outputs",
+    "shell_invocation_allowed", "network_access_allowed",
+    "hidden_heldout_access_allowed", "candidate_can_change_split",
+    "agent_can_change_calibration", "plan_executed", "camera_trajectory_proven",
+    "metric_scale_proven", "appearance_reconstruction_proven",
+    "collision_geometry_proven", "isaac_compatibility_proven",
+    "native_360_colmap_execution_plan_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "native_360_colmap_execution_plan.v1"},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "deterministic_configuration_digest": {"$ref": "#/$defs/digest"},
+    "train_heldout_split_digest": {"$ref": "#/$defs/digest"},
+    "pose_estimation_request_digest": {"$ref": "#/$defs/digest"},
+    "candidate_dataset_digest": {"$ref": "#/$defs/digest"},
+    "camera_rig_validation_result_digest": {"$ref": "#/$defs/digest"},
+    "rig_config_digest": {"$ref": "#/$defs/digest"},
+    "native_360_colmap_execution_plan_digest": {"$ref": "#/$defs/digest"},
+    "metric_scale_status": {"const": "anchor_required"},
+    "cost_usd": {"const": 0.0},
+    "duration_seconds": {"const": 0.0},
+    "blockers": {"type": "array", "maxItems": 0},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "execution_plan_only"},
+    "image_materialization": {"type": "array", "minItems": 2},
+    "mask_materialization": {"type": "array", "minItems": 2},
+    "rig_config": {"type": "array", "minItems": 1},
+    "commands": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step_id", "argv"],
+        "properties": {
+          "step_id": {"type": "string", "minLength": 1},
+          "argv": {
+            "type": "array", "minItems": 2,
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "shell_invocation_allowed": {"const": false},
+    "network_access_allowed": {"const": false},
+    "hidden_heldout_access_allowed": {"const": false},
+    "candidate_can_change_split": {"const": false},
+    "agent_can_change_calibration": {"const": false},
+    "plan_executed": {"const": false},
+    "camera_trajectory_proven": {"const": false},
+    "metric_scale_proven": {"const": false},
+    "appearance_reconstruction_proven": {"const": false},
+    "collision_geometry_proven": {"const": false},
+    "isaac_compatibility_proven": {"const": false}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}
