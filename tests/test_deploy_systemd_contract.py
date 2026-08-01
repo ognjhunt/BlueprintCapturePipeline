@@ -158,6 +158,7 @@ def test_isolated_staging_intake_has_separate_identity_state_and_installer() -> 
 
     assert "HEAD must equal origin/main" in installer
     assert "staging checkout must be clean" in installer
+    assert 'safe.directory=${STAGING_REPO}' in installer
     assert "blueprint-pipeline-intake-staging.service" in installer
     assert "pipeline-intake-staging.env.example" in installer
     assert "blueprint-pipeline-intake.service" not in installer
