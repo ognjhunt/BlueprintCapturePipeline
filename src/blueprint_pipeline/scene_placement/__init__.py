@@ -65,6 +65,13 @@ from .semantic_collision_validation import (
     VALIDATION_METHOD as SEMANTIC_COLLISION_VALIDATION_METHOD,
     validate_semantic_boxes_against_collision,
 )
+from .semantic_geometry_benchmark import (
+    BENCHMARK_METHOD as SEMANTIC_GEOMETRY_BENCHMARK_METHOD,
+    GROUND_TRUTH_SCHEMA_VERSION as SEMANTIC_GEOMETRY_GROUND_TRUTH_SCHEMA_VERSION,
+    REQUEST_SCHEMA_VERSION as SEMANTIC_GEOMETRY_BENCHMARK_REQUEST_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION as SEMANTIC_GEOMETRY_BENCHMARK_RESULT_SCHEMA_VERSION,
+    benchmark_semantic_geometry,
+)
 from .placement import compute_stand_pose, ring_scan_stand_pose
 from .robot_profile import (
     DEFAULT_ROBOT_ID,
@@ -158,6 +165,11 @@ __all__ = [
     "SEMANTIC_COLLISION_VALIDATION_RESULT_SCHEMA_VERSION",
     "SEMANTIC_COLLISION_VALIDATION_METHOD",
     "validate_semantic_boxes_against_collision",
+    "SEMANTIC_GEOMETRY_BENCHMARK_METHOD",
+    "SEMANTIC_GEOMETRY_GROUND_TRUTH_SCHEMA_VERSION",
+    "SEMANTIC_GEOMETRY_BENCHMARK_REQUEST_SCHEMA_VERSION",
+    "SEMANTIC_GEOMETRY_BENCHMARK_RESULT_SCHEMA_VERSION",
+    "benchmark_semantic_geometry",
     "resolve_target",
     "resolve_target_by_label",
     "compute_stand_pose",
