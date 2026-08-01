@@ -722,6 +722,41 @@ def _rigid_wrist_mount_from_initial_task_framing(
     }
 
 
+def _reference_camera_ray_eye_offset(
+    *,
+    target_world_points: Mapping[str, Any],
+    reference_camera: Mapping[str, Any],
+    standoff_m: Any,
+) -> np.ndarray:
+    """Return a fixed task-relative eye offset along a declared clear camera ray.
+
+    The reference pose and standoff are frozen inputs.  This does not inspect a
+    rendered frame or policy outcome; it simply gives a rigid wrist camera the
+    same initial line of sight as a separately declared camera.
+    """
+
+    points = [np.asarray(value, dtype=float).reshape(3) for value in target_world_points.values()]
+    try:
+        reference_eye = np.asarray(reference_camera["position_m"], dtype=float).reshape(3)
+        standoff = float(standoff_m)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("native_wrist_reference_camera_ray_input_invalid") from exc
+    if (
+        not points
+        or not np.isfinite(np.stack(points)).all()
+        or not np.isfinite(reference_eye).all()
+        or not math.isfinite(standoff)
+        or standoff <= 0.0
+    ):
+        raise ValueError("native_wrist_reference_camera_ray_input_invalid")
+    target = np.mean(np.stack(points), axis=0)
+    ray = reference_eye - target
+    ray_norm = float(np.linalg.norm(ray))
+    if not math.isfinite(ray_norm) or ray_norm <= 1e-9:
+        raise ValueError("native_wrist_reference_camera_ray_degenerate")
+    return ray * (standoff / ray_norm)
+
+
 def _wrist_calibration_target_world_points(
     *, calibration: Mapping[str, Any], entity_world_points: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -1184,14 +1219,28 @@ def isaac_sim_6_backend(
         hand_initial_matrix = precalibration_link_matrices.get("panda_hand")
         if hand_initial_matrix is None:
             raise ValueError("native_articulation_panda_hand_link_missing")
+        wrist_target_points = _wrist_calibration_target_world_points(
+            calibration=calibration,
+            entity_world_points=entity_world_points,
+        )
         target_relative_eye_offset = calibration.get("target_relative_camera_eye_world_offset_m")
+        reference_ray_standoff = calibration.get("reference_camera_ray_standoff_m")
+        if target_relative_eye_offset is not None and reference_ray_standoff is not None:
+            raise ValueError("native_wrist_eye_placement_modes_conflict")
+        reference_camera_id = str(calibration.get("reference_camera_id") or "external")
+        if reference_ray_standoff is not None:
+            reference_camera = spec["cameras"].get(reference_camera_id)
+            if not isinstance(reference_camera, Mapping):
+                raise ValueError("native_wrist_reference_camera_missing")
+            target_relative_eye_offset = _reference_camera_ray_eye_offset(
+                target_world_points=wrist_target_points,
+                reference_camera=reference_camera,
+                standoff_m=reference_ray_standoff,
+            )
         wrist_quaternion, wrist_mount_calibration = _rigid_wrist_mount_from_initial_task_framing(
             parent_to_world=hand_initial_matrix,
             mount_translation_parent=wrist["mount_translation_m"],
-            target_world_points=_wrist_calibration_target_world_points(
-                calibration=calibration,
-                entity_world_points=entity_world_points,
-            ),
+            target_world_points=wrist_target_points,
             world_up=calibration["world_up"],
             camera_eye_world_offset=(
                 (0.0, 0.0, WRIST_CAMERA_WORLD_CLEARANCE_M)
@@ -1200,6 +1249,14 @@ def isaac_sim_6_backend(
             ),
             target_relative_camera_eye_world_offset=target_relative_eye_offset,
         )
+        if reference_ray_standoff is not None:
+            wrist_mount_calibration.update(
+                {
+                    "camera_eye_placement_mode": "reference_camera_ray_standoff",
+                    "reference_camera_id": reference_camera_id,
+                    "reference_camera_ray_standoff_m": float(reference_ray_standoff),
+                }
+            )
         resolved_wrist_mount_translation = wrist_mount_calibration[
             "resolved_mount_translation_parent_m"
         ]

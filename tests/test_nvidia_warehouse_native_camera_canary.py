@@ -26,6 +26,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _project_required_external_entities,
     _project_world_points,
     _quaternion_wxyz_from_world_pose_matrix,
+    _reference_camera_ray_eye_offset,
     _render_world_without_physics_advance,
     _rigid_wrist_mount_from_initial_task_framing,
     _semantic_entity_visibility,
@@ -862,6 +863,37 @@ def test_wrist_mount_can_place_eye_at_prospective_target_relative_offset() -> No
     assert evidence["camera_eye_placement_mode"] == "target_relative_world_offset"
     assert evidence["camera_eye_world_m"] == pytest.approx([0.0, 0.075, 1.44])
     assert evidence["target_relative_camera_eye_world_offset_m"] == [0.0, 0.0, 0.3]
+
+
+def test_reference_camera_ray_eye_offset_uses_frozen_clear_line_of_sight() -> None:
+    offset = _reference_camera_ray_eye_offset(
+        target_world_points={"spraycan": [0.1, -0.05, 1.05]},
+        reference_camera={"position_m": [0.75, -0.85, 2.05]},
+        standoff_m=0.15,
+    )
+
+    expected_ray = np.asarray([0.65, -0.8, 1.0])
+    assert offset == pytest.approx(expected_ray / np.linalg.norm(expected_ray) * 0.15)
+    assert np.linalg.norm(offset) == pytest.approx(0.15)
+
+
+@pytest.mark.parametrize(
+    ("reference_camera", "standoff", "error"),
+    [
+        ({}, 0.15, "native_wrist_reference_camera_ray_input_invalid"),
+        ({"position_m": [0.0, 0.0, 0.0]}, 0.0, "native_wrist_reference_camera_ray_input_invalid"),
+        ({"position_m": [0.1, -0.05, 1.05]}, 0.15, "native_wrist_reference_camera_ray_degenerate"),
+    ],
+)
+def test_reference_camera_ray_eye_offset_fails_closed(
+    reference_camera: dict[str, object], standoff: float, error: str
+) -> None:
+    with pytest.raises(ValueError, match=error):
+        _reference_camera_ray_eye_offset(
+            target_world_points={"spraycan": [0.1, -0.05, 1.05]},
+            reference_camera=reference_camera,
+            standoff_m=standoff,
+        )
 
 
 def test_joint_pose_is_rendered_without_requesting_physics_steps() -> None:
