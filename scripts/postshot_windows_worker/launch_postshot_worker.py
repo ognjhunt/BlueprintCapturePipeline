@@ -47,7 +47,9 @@ NVIDIA_DRIVER_URLS = [
     "https://us.download.nvidia.com/tesla/566.03/566.03-data-center-tesla-desktop-winserver-2022-dch-international.exe",
     "https://us.download.nvidia.com/tesla/553.62/553.62-data-center-tesla-desktop-winserver-2022-dch-international.exe",
 ]
-POSTSHOT_INSTALLER_SHA256 = "99fc687cf5753f41dce4d6f7b201d9c74893aa25ab2a73fdc3ec85796d1ac38a"
+# sha256 of Postshot-1.1.0.msi, carved from the vendor bundle and verified
+# against the bundle manifest's SHA-512 (bundle sha256 was 99fc687c...).
+POSTSHOT_INSTALLER_SHA256 = "70d4c35de6ff1296a8c0b4b2d87e84b35579baaf08ae173fa843601a2ea0e361"
 TTL_MINUTES = 360
 SPEND_CAP_USD = 90.0
 EXPECTED_HOURLY_USD = 1.25  # g6.xlarge Windows on-demand, upper-bound estimate
@@ -112,27 +114,31 @@ foreach ($u in @(__DRIVER_URLS__)) {
 }
 if (-not $driverOk) { Fail-And-Stop "nvidia_driver_install_failed" }
 
-# 2) Postshot silent install (WiX Burn bundle). 3010 = success, reboot wanted.
+# 2) Postshot install via the extracted MSI and native msiexec. The vendor
+#    bundle's managed bootstrapper (ReactionsBA.exe, .NET) hangs forever in
+#    /quiet on bare Server 2022 -- proven on attempts 1 and 2 -- so the MSI
+#    (the bundle's only package, hash-verified against its manifest) is
+#    installed directly. 3010 = success, reboot wanted.
 try {
-  Put-Status "POSTSHOT downloading installer"
-  Invoke-WebRequest -Uri "__POSTSHOT_INSTALLER_GET__" -OutFile C:\work\postshot-installer.exe -UseBasicParsing -TimeoutSec 600
-  $size = (Get-Item C:\work\postshot-installer.exe).Length
-  $h = (Get-FileHash C:\work\postshot-installer.exe -Algorithm SHA256).Hash.ToLower()
-  Put-Status "POSTSHOT installer downloaded bytes=$size sha256_ok=$($h -eq '__POSTSHOT_SHA256__')"
-  if ($h -ne "__POSTSHOT_SHA256__") { Fail-And-Stop "postshot_installer_digest_mismatch:$h" }
-  Put-Status "POSTSHOT installing (quiet, 900s timeout)"
-  $p = Start-Process -FilePath C:\work\postshot-installer.exe -ArgumentList "/quiet","/norestart","/log","C:\work\postshot-install.log" -PassThru
+  Put-Status "POSTSHOT downloading msi"
+  Invoke-WebRequest -Uri "__POSTSHOT_INSTALLER_GET__" -OutFile C:\work\Postshot-1.1.0.msi -UseBasicParsing -TimeoutSec 600
+  $size = (Get-Item C:\work\Postshot-1.1.0.msi).Length
+  $h = (Get-FileHash C:\work\Postshot-1.1.0.msi -Algorithm SHA256).Hash.ToLower()
+  Put-Status "POSTSHOT msi downloaded bytes=$size sha256_ok=$($h -eq '__POSTSHOT_SHA256__')"
+  if ($h -ne "__POSTSHOT_SHA256__") { Fail-And-Stop "postshot_msi_digest_mismatch:$h" }
+  Put-Status "POSTSHOT installing via msiexec (qn, 900s timeout)"
+  $p = Start-Process -FilePath msiexec.exe -ArgumentList "/i","C:\work\Postshot-1.1.0.msi","/qn","/norestart","/l*v","C:\work\postshot-install.log" -PassThru
   if (-not (Wait-Process -Id $p.Id -Timeout 900 -ErrorAction SilentlyContinue)) { }
   if (-not $p.HasExited) {
     Stop-Process -Id $p.Id -Force
     Get-Content C:\work\postshot-install.log -Tail 30 -ErrorAction SilentlyContinue | ForEach-Object { Add-Content C:\work\status.log $_ }
-    Fail-And-Stop "postshot_install_timed_out_after_900s"
+    Fail-And-Stop "postshot_msiexec_timed_out_after_900s"
   }
   $code = $p.ExitCode
-  Put-Status "POSTSHOT install exit=$code (3010 means reboot-wanted, continuing)"
+  Put-Status "POSTSHOT msiexec exit=$code (0 or 3010 accepted)"
   if ($code -ne 0 -and $code -ne 3010) {
-    Get-Content C:\work\postshot-install.log -Tail 30 -ErrorAction SilentlyContinue | ForEach-Object { Add-Content C:\work\status.log $_ }
-    Fail-And-Stop "postshot_install_failed_exit_$code"
+    Get-Content C:\work\postshot-install.log -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Add-Content C:\work\status.log $_ }
+    Fail-And-Stop "postshot_msiexec_failed_exit_$code"
   }
 } catch { Fail-And-Stop "postshot_install_failed: $($_.Exception.Message)" }
 $cli = "$Env:ProgramFiles\Jawset Postshot\bin\postshot-cli.exe"
@@ -257,7 +263,7 @@ def stage(arguments) -> dict:
 
     keys = {
         "dataset": f"{prefix}/dataset.zip",
-        "installer": f"{prefix}/postshot-installer.exe",
+        "installer": f"{prefix}/Postshot-1.1.0.msi",
         "license": f"{prefix}/license.env",
         "status": f"{prefix}/status.log",
         "heartbeat": f"{prefix}/heartbeat.log",
