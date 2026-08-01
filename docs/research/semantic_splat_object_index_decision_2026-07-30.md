@@ -155,7 +155,14 @@ still contains only the release timeline and no runnable implementation/models.
 ## Blueprint stage graph
 
 1. `rendered_view_detector`: open-vocabulary candidate boxes/prompts.
-2. `source_track_importer`: source-frame masks and persistent track IDs.
+2. `source_track_importer`: implemented provider-neutral normalization for
+   compact probability-RLE masks and persistent track IDs. Every observation is
+   bound to an encoder-retained source frame, decoded PTS, camera record,
+   provider profile, model/runtime digest, allowed use, and exact provider
+   result; labels remain inferred candidates and never become observed facts or
+   geometry authority. The file entrypoint rejects symlinks, input overwrite,
+   oversized payloads, and provider-byte hash/size mismatches before emitting a
+   terminal compact artifact.
 3. `gaussian_contribution_lifter`: accumulate foreground/background evidence
    using renderer contribution weights and exact camera bindings.
 4. `instance_fusion`: track-aware, multi-view, disconnected-component cleanup.
