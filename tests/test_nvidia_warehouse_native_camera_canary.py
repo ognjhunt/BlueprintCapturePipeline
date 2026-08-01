@@ -20,6 +20,7 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _author_renderable_semantic_label_tree,
     _backend_array_to_numpy,
     _camera_pose_backend_congruence,
+    _configure_camera_clipping,
     _camera_sensor_annotator_frame,
     _camera_quaternion_wxyz,
     _load_materialization_manifest,
@@ -248,6 +249,18 @@ def test_projection_summary_keeps_external_grounding_across_both_phases() -> Non
     assert summary == {"franka": True, "spraycan": False, "tray": True}
 
 
+def test_projection_summary_applies_external_grounding_to_second_external_view() -> None:
+    summary = _summarize_required_entity_projections(
+        view_id="external_2",
+        projections_by_phase={
+            "initial": {"franka": True, "spraycan": True, "tray": True},
+            "commanded": {"franka": True, "spraycan": True, "tray": False},
+        },
+    )
+
+    assert summary == {"franka": True, "spraycan": True, "tray": False}
+
+
 def test_projection_summary_requires_initial_task_object_but_not_commanded_reaim() -> None:
     summary = _summarize_required_entity_projections(
         view_id="wrist",
@@ -416,6 +429,25 @@ def test_visibility_summary_requires_rendered_pixels_not_projection() -> None:
     ) == {"spraycan_at_initial_pose": False}
 
 
+def test_visibility_summary_applies_external_grounding_to_second_external_view() -> None:
+    visibility = {
+        "initial": {
+            "spraycan": {"visible": True},
+            "tray": {"visible": True},
+            "franka": {"visible": True},
+        },
+        "commanded": {
+            "spraycan": {"visible": False},
+            "tray": {"visible": True},
+            "franka": {"visible": True},
+        },
+    }
+
+    assert _summarize_required_entity_visibility(
+        view_id="external_2", visibility_by_phase=visibility
+    ) == {"franka": True, "spraycan": False, "tray": True}
+
+
 def test_zero_time_scene_update_uses_cuda_world_render_and_preserves_step_index() -> None:
     class World:
         current_time_step_index = 7
@@ -520,6 +552,34 @@ def test_camera_sensor_annotator_frame_fails_closed_when_data_is_not_ready() -> 
         _camera_sensor_annotator_frame(sensor=Sensor(), annotator="semantic_segmentation")
 
 
+def test_camera_clipping_covers_close_wrist_geometry_and_verifies_readback() -> None:
+    calls: list[tuple[object, object]] = []
+
+    class Camera:
+        def set_clipping_ranges(self, *, near_distances, far_distances):
+            calls.append((near_distances, far_distances))
+
+        def get_clipping_ranges(self):
+            return np.asarray([[0.01]], dtype=np.float32), np.asarray([[1000.0]], dtype=np.float32)
+
+    evidence = _configure_camera_clipping(types.SimpleNamespace(camera=Camera()))
+
+    assert calls == [([0.01], [1000.0])]
+    assert evidence == {"near_m": pytest.approx(0.01), "far_m": pytest.approx(1000.0)}
+
+
+def test_camera_clipping_fails_closed_on_default_openusd_near_plane() -> None:
+    class Camera:
+        def set_clipping_ranges(self, **_kwargs):
+            return None
+
+        def get_clipping_ranges(self):
+            return np.asarray([[1.0]]), np.asarray([[1_000_000.0]])
+
+    with pytest.raises(ValueError, match="native_camera_clipping_readback_invalid"):
+        _configure_camera_clipping(types.SimpleNamespace(camera=Camera()))
+
+
 def test_backend_pose_matrix_uses_usd_row_vector_convention() -> None:
     half_turn = math.radians(90.0) / 2.0
     matrix = _world_pose_matrix_from_backend_pose(
@@ -613,6 +673,8 @@ def test_backend_uses_isaac_6_experimental_rtx_camera_sensor_for_shared_annotato
     assert "native_camera_rtx_authoring_setup_failed" in source
     assert "native_camera_rtx_runtime_setup_failed" in source
     assert "native_camera_rtx_authoring_identity_lost" in source
+    assert "_configure_camera_clipping(authored_camera)" in source
+    assert '"clipping_ranges_by_view": clipping_ranges_by_view' in source
     assert "native_wrist_camera_pose_backend_divergence" in source
     assert "native_camera_frame_shape_invalid" in source
     assert 'annotators=["rgba", "semantic_segmentation"]' not in source

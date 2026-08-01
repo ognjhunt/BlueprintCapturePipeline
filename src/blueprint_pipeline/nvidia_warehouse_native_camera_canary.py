@@ -35,6 +35,12 @@ MAX_KINEMATIC_JOINT_POSITION_ERROR_RAD = 0.02
 # render-derived semantic footprint before treating a task entity as visible.
 # This camera-validity threshold is frozen independently of policy rankings.
 MIN_REQUIRED_ENTITY_VISIBLE_PIXELS = 64
+# OpenUSD's default near clip is 1.0 scene unit.  That is suitable for the
+# fixed overview cameras but removes the task geometry from a wrist camera
+# mounted only centimetres away.  Keep one explicit metric clipping contract
+# for every view so projection evidence and RTX pixels cover the same volume.
+CAMERA_NEAR_CLIP_M = 0.01
+CAMERA_FAR_CLIP_M = 1000.0
 # V30's returned wrist RGB proved that the initial optical ray was blocked by
 # workcell/crate geometry at the object-height mount. Raise the one-time rigid
 # mount above that obstruction; this is fixed before any policy/WAM execution.
@@ -361,6 +367,39 @@ def _camera_sensor_annotator_frame(*, sensor: Any, annotator: str) -> dict[str, 
     return {
         "data": _backend_array_to_numpy(data),
         "info": info,
+    }
+
+
+def _configure_camera_clipping(authoring_camera: Any) -> dict[str, float]:
+    """Author and read back one metric clipping range through Isaac's camera API."""
+
+    camera = getattr(authoring_camera, "camera", None)
+    set_ranges = getattr(camera, "set_clipping_ranges", None)
+    get_ranges = getattr(camera, "get_clipping_ranges", None)
+    if not callable(set_ranges) or not callable(get_ranges):
+        raise ValueError("native_camera_clipping_api_missing")
+    try:
+        set_ranges(
+            near_distances=[CAMERA_NEAR_CLIP_M],
+            far_distances=[CAMERA_FAR_CLIP_M],
+        )
+        near_values, far_values = get_ranges()
+        near = _backend_array_to_numpy(near_values).astype(float).reshape(-1)
+        far = _backend_array_to_numpy(far_values).astype(float).reshape(-1)
+    except Exception as exc:
+        raise ValueError("native_camera_clipping_configuration_failed:" + type(exc).__name__) from exc
+    if (
+        near.shape != (1,)
+        or far.shape != (1,)
+        or not np.isfinite(near).all()
+        or not np.isfinite(far).all()
+        or not math.isclose(float(near[0]), CAMERA_NEAR_CLIP_M, rel_tol=0.0, abs_tol=1e-6)
+        or not math.isclose(float(far[0]), CAMERA_FAR_CLIP_M, rel_tol=0.0, abs_tol=1e-3)
+    ):
+        raise ValueError("native_camera_clipping_readback_invalid")
+    return {
+        "near_m": float(near[0]),
+        "far_m": float(far[0]),
     }
 
 
@@ -885,7 +924,7 @@ def _summarize_required_entity_projections(
         for phase, values in projections_by_phase.items()
         if isinstance(values, Mapping)
     }
-    if view_id == "external":
+    if view_id in {"external", "external_2"}:
         names = sorted({str(name) for values in phases.values() for name in values})
         return {
             name: all(bool(phases.get(phase, {}).get(name)) for phase in ("initial", "commanded"))
@@ -911,7 +950,7 @@ def _summarize_required_entity_visibility(
         value = phases.get(phase, {}).get(entity_id)
         return bool(value.get("visible")) if isinstance(value, Mapping) else False
 
-    if view_id == "external":
+    if view_id in {"external", "external_2"}:
         return {
             entity_id: all(visible(phase, entity_id) for phase in ("initial", "commanded"))
             for entity_id in ("franka", "spraycan", "tray")
@@ -1268,7 +1307,7 @@ def isaac_sim_6_backend(
         # in OpenCV/NumPy order: (height, width).
         def create_camera_authoring(view_id: str, camera_path: str) -> Any:
             try:
-                return RtxCamera(
+                authored_camera = RtxCamera(
                     camera_path,
                     reset_xform_op_properties=False,
                 )
@@ -1276,6 +1315,11 @@ def isaac_sim_6_backend(
                 raise ValueError(
                     f"native_camera_rtx_authoring_setup_failed:{view_id}:{type(exc).__name__}"
                 ) from exc
+            try:
+                clipping_ranges_by_view[view_id] = _configure_camera_clipping(authored_camera)
+            except ValueError as exc:
+                raise ValueError(f"native_camera_clipping_setup_failed:{view_id}:{exc}") from exc
+            return authored_camera
 
         def create_camera_sensor(view_id: str, authored_camera: Any) -> Any:
             try:
@@ -1292,6 +1336,7 @@ def isaac_sim_6_backend(
                 raise ValueError(f"native_camera_rtx_authoring_identity_lost:{view_id}")
             return sensor
 
+        clipping_ranges_by_view: dict[str, dict[str, float]] = {}
         camera_authoring = {
             view_id: create_camera_authoring(view_id, camera_paths[view_id])
             for view_id in required_views
@@ -1534,6 +1579,7 @@ def isaac_sim_6_backend(
                 "annotators": ["rgb", "semantic_segmentation"],
                 "resolution_width_height": [640, 480],
                 "shared_render_product_per_view": True,
+                "clipping_ranges_by_view": clipping_ranges_by_view,
             },
             "views": frames,
             "wrist_mount_calibration": wrist_mount_calibration,
