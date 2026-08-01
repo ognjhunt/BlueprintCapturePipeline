@@ -10,19 +10,32 @@ never leak into a candidate method's dataset.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import os
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
+import numpy as np
 from PIL import Image
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, canonical_json
+from .native_360_normalization import (
+    Native360NormalizationError,
+    ProbeRunner,
+    _bounded_probe_command,
+)
 from .reconstruction_frame_dataset import compile_frozen_frame_dataset
 
 
 NATIVE_360_GROUPED_DATASET_ADAPTER_VERSION = (
     "native_360_grouped_frame_dataset_adapter.v1"
 )
+NATIVE_360_LENS_DECODE_SCHEMA_VERSION = "native_360_lens_decode_manifest.v1"
 _LENS_IDS = {"front", "rear"}
 _REQUIRED_LOCAL_AUTHORITY = {
     "source_capture_rights_valid": True,
@@ -71,12 +84,169 @@ def _optional_finite(value: Any, *, code: str, nonnegative: bool = False) -> flo
     return number
 
 
+def _normalized_timestamp(value: Any) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise Native360FrameDatasetError(
+            ["native_360_lens_decode_timestamp_invalid"]
+        ) from exc
+    if parsed.tzinfo is None:
+        raise Native360FrameDatasetError(
+            ["native_360_lens_decode_timestamp_invalid"]
+        )
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def _write_immutable(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = json.loads(canonical_json(dict(value)))
+    payload = (canonical_json(normalized) + "\n").encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise Native360FrameDatasetError(
+                ["native_360_lens_decode_immutable_manifest_invalid"]
+            ) from exc
+        if canonical_json(existing) != canonical_json(normalized):
+            raise Native360FrameDatasetError(
+                ["native_360_lens_decode_immutable_manifest_conflict"]
+            )
+        return dict(existing)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if canonical_json(existing) != canonical_json(normalized):
+                raise Native360FrameDatasetError(
+                    ["native_360_lens_decode_immutable_manifest_conflict"]
+                )
+            return dict(existing)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return normalized
+
+
+def _run_media_command(
+    runner: ProbeRunner,
+    argv: Sequence[str],
+    *,
+    timeout_seconds: float,
+    maximum_output_bytes: int,
+) -> bytes:
+    try:
+        completed = runner(argv, timeout_seconds, maximum_output_bytes)
+    except Native360NormalizationError as exc:
+        raise Native360FrameDatasetError(
+            [f"native_360_lens_decode_{code.removeprefix('native_360_probe_')}" for code in exc.codes]
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise Native360FrameDatasetError(["native_360_lens_decode_timeout"]) from exc
+    except OSError as exc:
+        raise Native360FrameDatasetError(
+            ["native_360_lens_decode_execution_failed"]
+        ) from exc
+    stdout = completed.stdout.encode() if isinstance(completed.stdout, str) else completed.stdout
+    stderr = completed.stderr.encode() if isinstance(completed.stderr, str) else completed.stderr
+    stdout = stdout if isinstance(stdout, bytes) else b""
+    stderr = stderr if isinstance(stderr, bytes) else b""
+    if len(stdout) + len(stderr) > maximum_output_bytes:
+        raise Native360FrameDatasetError(["native_360_lens_decode_output_oversized"])
+    if completed.returncode != 0:
+        raise Native360FrameDatasetError(["native_360_lens_decode_media_rejected"])
+    return stdout
+
+
+def _safe_bound_source(root: Path, relative_path: str, expected_digest: str) -> Path:
+    text = str(relative_path or "").replace("\\", "/")
+    relative = PurePosixPath(text)
+    if (
+        not text
+        or relative.is_absolute()
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise Native360FrameDatasetError(["native_360_lens_decode_source_path_unsafe"])
+    lexical = root / Path(*relative.parts)
+    if lexical.is_symlink():
+        raise Native360FrameDatasetError(["native_360_lens_decode_source_invalid"])
+    source = lexical.resolve()
+    if (
+        (root != source and root not in source.parents)
+        or not source.is_file()
+        or not _is_digest(expected_digest)
+        or _sha256_file(source) != expected_digest
+    ):
+        raise Native360FrameDatasetError(["native_360_lens_decode_source_invalid"])
+    return source
+
+
+def _validated_existing_decode_manifest(
+    manifest_path: Path, *, artifact_root: Path, configuration_digest: str
+) -> dict[str, Any]:
+    try:
+        value = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Native360FrameDatasetError(
+            ["native_360_lens_decode_existing_manifest_invalid"]
+        ) from exc
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != NATIVE_360_LENS_DECODE_SCHEMA_VERSION
+        or value.get("deterministic_configuration_digest") != configuration_digest
+        or value.get("lens_decode_manifest_digest")
+        != canonical_digest(value, digest_field="lens_decode_manifest_digest")
+        or not isinstance(value.get("frames"), list)
+    ):
+        raise Native360FrameDatasetError(
+            ["native_360_lens_decode_existing_manifest_invalid"]
+        )
+    for ordinal, row in enumerate(value["frames"]):
+        if not isinstance(row, Mapping):
+            raise Native360FrameDatasetError(
+                ["native_360_lens_decode_existing_manifest_invalid"]
+            )
+        text = str(row.get("artifact_relative_path") or "").replace("\\", "/")
+        relative = PurePosixPath(text)
+        if (
+            not text
+            or relative.is_absolute()
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise Native360FrameDatasetError(
+                [f"native_360_lens_decode_replay_frame_invalid:{ordinal}"]
+            )
+        lexical = artifact_root / Path(*relative.parts)
+        if lexical.is_symlink():
+            raise Native360FrameDatasetError(
+                [f"native_360_lens_decode_replay_frame_invalid:{ordinal}"]
+            )
+        path = lexical.resolve()
+        if (
+            (artifact_root != path and artifact_root not in path.parents)
+            or path.is_symlink()
+            or not path.is_file()
+            or _sha256_file(path) != row.get("digest")
+        ):
+            raise Native360FrameDatasetError(
+                [f"native_360_lens_decode_replay_frame_invalid:{ordinal}"]
+            )
+    return dict(value)
 
 
 def _validated_image(
@@ -189,6 +359,371 @@ def _validated_parent_artifacts(
         )
 
 
+def decode_native_360_lens_observations(
+    *,
+    capture_root: str | Path,
+    artifact_root: str | Path,
+    capture_digest: str,
+    normalization_result: Mapping[str, Any],
+    rig_declaration: Mapping[str, Any],
+    dual_fisheye_binding: Mapping[str, Any],
+    implementation_digest: str,
+    source_commit_sha: str,
+    authority_used: Mapping[str, Any],
+    timestamp: str,
+    ffmpeg_executable: str | Path | None = None,
+    timeout_seconds_per_frame: float = 120.0,
+    maximum_command_output_bytes: int = 4 * 1024 * 1024,
+    runner: ProbeRunner | None = None,
+) -> dict[str, Any]:
+    """Decode every declared synchronized lens observation without inference."""
+
+    if any(
+        authority_used.get(key) is not expected
+        for key, expected in _REQUIRED_LOCAL_AUTHORITY.items()
+    ):
+        raise Native360FrameDatasetError(["native_360_lens_decode_authority_invalid"])
+    if (
+        not math.isfinite(timeout_seconds_per_frame)
+        or timeout_seconds_per_frame <= 0
+        or maximum_command_output_bytes <= 0
+        or not _is_digest(implementation_digest)
+        or len(source_commit_sha) != 40
+        or any(character not in "0123456789abcdef" for character in source_commit_sha)
+    ):
+        raise Native360FrameDatasetError(["native_360_lens_decode_request_invalid"])
+    _validated_parent_artifacts(
+        capture_digest=capture_digest,
+        normalization_result=normalization_result,
+        rig_declaration=rig_declaration,
+        dual_fisheye_binding=dual_fisheye_binding,
+    )
+    segments = dual_fisheye_binding.get("segments")
+    if not isinstance(segments, list) or len(segments) != 1:
+        raise Native360FrameDatasetError(
+            ["native_360_lens_decode_multisegment_timeline_unavailable"]
+        )
+    segment = segments[0]
+    if not isinstance(segment, Mapping) or segment.get("sequence_index") != 0:
+        raise Native360FrameDatasetError(["native_360_lens_decode_segment_invalid"])
+    files = segment.get("files")
+    lens_streams = segment.get("lens_streams")
+    frame_pairs = segment.get("frame_pairs")
+    if (
+        not isinstance(files, list)
+        or len(files) != 1
+        or not isinstance(lens_streams, list)
+        or not isinstance(frame_pairs, list)
+        or not frame_pairs
+    ):
+        raise Native360FrameDatasetError(["native_360_lens_decode_segment_invalid"])
+    source_reference = files[0]
+    if not isinstance(source_reference, Mapping):
+        raise Native360FrameDatasetError(["native_360_lens_decode_source_invalid"])
+    source_relative_path = str(source_reference.get("relative_path") or "")
+    source_digest = str(source_reference.get("digest") or "")
+    normalized_source_references = {
+        (str(row.get("relative_path") or ""), row.get("digest"))
+        for row in normalization_result.get("original_file_references", [])
+        if isinstance(row, Mapping)
+    }
+    if (source_relative_path, source_digest) not in normalized_source_references:
+        raise Native360FrameDatasetError(["native_360_lens_decode_source_invalid"])
+    source_root = Path(capture_root).expanduser().resolve()
+    if not source_root.is_dir():
+        raise Native360FrameDatasetError(["native_360_lens_decode_capture_root_missing"])
+    source = _safe_bound_source(source_root, source_relative_path, source_digest)
+    streams = {
+        str(row.get("lens_id") or ""): row
+        for row in lens_streams
+        if isinstance(row, Mapping)
+    }
+    if set(streams) != _LENS_IDS:
+        raise Native360FrameDatasetError(["native_360_lens_decode_streams_invalid"])
+    if any(
+        row.get("source_relative_path") != source_relative_path
+        or row.get("source_digest") != source_digest
+        or isinstance(row.get("stream_index"), bool)
+        or not isinstance(row.get("stream_index"), int)
+        for row in streams.values()
+    ):
+        raise Native360FrameDatasetError(["native_360_lens_decode_streams_invalid"])
+
+    executable_value = (
+        str(ffmpeg_executable)
+        if ffmpeg_executable is not None
+        else shutil.which("ffmpeg")
+    )
+    if not executable_value:
+        raise Native360FrameDatasetError(["native_360_lens_decode_runtime_unavailable"])
+    executable = Path(executable_value).expanduser().resolve()
+    if not executable.is_file():
+        raise Native360FrameDatasetError(["native_360_lens_decode_runtime_unavailable"])
+    runtime_digest = _sha256_file(executable)
+    compiled_at = _normalized_timestamp(timestamp)
+    execute = runner or _bounded_probe_command
+    version_output = _run_media_command(
+        execute,
+        [str(executable), "-version"],
+        timeout_seconds=min(timeout_seconds_per_frame, 30.0),
+        maximum_output_bytes=min(maximum_command_output_bytes, 1024 * 1024),
+    )
+    try:
+        runtime_identity = version_output.decode("utf-8").splitlines()[0].strip()
+    except (IndexError, UnicodeDecodeError) as exc:
+        raise Native360FrameDatasetError(
+            ["native_360_lens_decode_runtime_identity_invalid"]
+        ) from exc
+    if not runtime_identity or len(runtime_identity) > 512:
+        raise Native360FrameDatasetError(
+            ["native_360_lens_decode_runtime_identity_invalid"]
+        )
+
+    configuration = {
+        "decoder_version": "native_360_ffmpeg_lens_decoder.v1",
+        "source_capture_digest": capture_digest,
+        "source_relative_path": source_relative_path,
+        "source_digest": source_digest,
+        "native_360_normalization_digest": normalization_result[
+            "native_360_normalization_digest"
+        ],
+        "rig_declaration_digest": rig_declaration["rig_declaration_digest"],
+        "dual_fisheye_binding_digest": dual_fisheye_binding[
+            "dual_fisheye_binding_digest"
+        ],
+        "frame_pair_digest": segment.get("frame_pair_digest"),
+        "runtime_digest": runtime_digest,
+        "implementation_digest": implementation_digest,
+        "source_commit_sha": source_commit_sha,
+        "authority_digest": canonical_digest(authority_used),
+        "pixel_output": "png_native_distorted_pixels_no_autorotate",
+        "threading": "ffmpeg_default_decode_single_frame_requests",
+    }
+    configuration_digest = canonical_digest(configuration)
+    root = Path(artifact_root).expanduser().resolve()
+    decode_root = root / f"native_360_lens_decode_{configuration_digest[7:23]}"
+    manifest_path = decode_root / "native_360_lens_decode_manifest.json"
+    if manifest_path.is_file():
+        return _validated_existing_decode_manifest(
+            manifest_path,
+            artifact_root=root,
+            configuration_digest=configuration_digest,
+        )
+
+    decoded_frames: list[dict[str, Any]] = []
+    for pair in frame_pairs:
+        if not isinstance(pair, Mapping):
+            raise Native360FrameDatasetError(
+                ["native_360_lens_decode_frame_pair_invalid"]
+            )
+        pair_index = pair.get("pair_index")
+        if isinstance(pair_index, bool) or not isinstance(pair_index, int):
+            raise Native360FrameDatasetError(
+                ["native_360_lens_decode_frame_pair_invalid"]
+            )
+        for lens_id in sorted(_LENS_IDS):
+            stream = streams[lens_id]
+            target = (
+                decode_root
+                / "frames"
+                / lens_id
+                / f"pair-{pair_index:09d}.png"
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{target.stem}.", suffix=".png", dir=target.parent
+            )
+            os.close(descriptor)
+            temporary = Path(temporary_name)
+            try:
+                _run_media_command(
+                    execute,
+                    [
+                        str(executable),
+                        "-v",
+                        "error",
+                        "-hide_banner",
+                        "-nostdin",
+                        "-noautorotate",
+                        "-i",
+                        str(source),
+                        "-map",
+                        f"0:{stream['stream_index']}",
+                        "-vf",
+                        f"select=eq(n\\,{pair_index})",
+                        "-frames:v",
+                        "1",
+                        "-fps_mode",
+                        "passthrough",
+                        "-c:v",
+                        "png",
+                        "-f",
+                        "image2",
+                        "-y",
+                        str(temporary),
+                    ],
+                    timeout_seconds=timeout_seconds_per_frame,
+                    maximum_output_bytes=maximum_command_output_bytes,
+                )
+                if (
+                    temporary.is_symlink()
+                    or not temporary.is_file()
+                    or temporary.stat().st_size <= 0
+                ):
+                    raise Native360FrameDatasetError(
+                        [f"native_360_lens_decode_frame_missing:{pair_index}:{lens_id}"]
+                    )
+                try:
+                    with Image.open(temporary) as image:
+                        image.verify()
+                    with Image.open(temporary) as image:
+                        actual_size = image.size
+                        gray = np.asarray(image.convert("L"), dtype=np.float32)
+                except (OSError, SyntaxError) as exc:
+                    raise Native360FrameDatasetError(
+                        [f"native_360_lens_decode_frame_invalid:{pair_index}:{lens_id}"]
+                    ) from exc
+                declared_size = (stream.get("width"), stream.get("height"))
+                if actual_size != declared_size:
+                    raise Native360FrameDatasetError(
+                        [
+                            "native_360_lens_decode_frame_dimensions_invalid:"
+                            f"{pair_index}:{lens_id}"
+                        ]
+                    )
+                digest = _sha256_file(temporary)
+                if target.is_symlink():
+                    raise Native360FrameDatasetError(
+                        ["native_360_lens_decode_target_symlink_forbidden"]
+                    )
+                if target.exists():
+                    if _sha256_file(target) != digest:
+                        raise Native360FrameDatasetError(
+                            ["native_360_lens_decode_immutable_frame_conflict"]
+                        )
+                else:
+                    try:
+                        os.link(temporary, target)
+                    except FileExistsError:
+                        if _sha256_file(target) != digest:
+                            raise Native360FrameDatasetError(
+                                ["native_360_lens_decode_immutable_frame_conflict"]
+                            )
+                horizontal = (
+                    np.diff(gray, axis=1) if gray.shape[1] > 1 else np.zeros_like(gray)
+                )
+                vertical = (
+                    np.diff(gray, axis=0) if gray.shape[0] > 1 else np.zeros_like(gray)
+                )
+                pts = _finite(
+                    pair.get(f"{lens_id}_pts_seconds"),
+                    code="native_360_lens_decode_frame_pair_invalid",
+                )
+                decoded_frames.append(
+                    {
+                        "segment_sequence_index": 0,
+                        "pair_index": pair_index,
+                        "lens_id": lens_id,
+                        "source_relative_path": source_relative_path,
+                        "source_digest": source_digest,
+                        "stream_index": stream["stream_index"],
+                        "decoded_frame_index": pair_index,
+                        "source_pts_seconds": pts,
+                        "source_dts_seconds": None,
+                        "duration_seconds": None,
+                        "key_frame": False,
+                        "artifact_relative_path": target.relative_to(root).as_posix(),
+                        "digest": digest,
+                        "image_metadata": {
+                            "width": actual_size[0],
+                            "height": actual_size[1],
+                            "pixel_orientation": "native_distorted_pixels_no_autorotate",
+                            "source_camera_identity": lens_id,
+                        },
+                        "quality_signals": {
+                            "mean_luma_0_255": round(float(np.mean(gray)), 6),
+                            "gradient_energy": round(
+                                float(
+                                    np.mean(horizontal * horizontal)
+                                    + np.mean(vertical * vertical)
+                                ),
+                                6,
+                            ),
+                            "exposure_metadata": {},
+                            "excessive_blur_deterministically_established": False,
+                        },
+                    }
+                )
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    if _sha256_file(source) != source_digest:
+        raise Native360FrameDatasetError(["native_360_lens_decode_source_changed"])
+    if _sha256_file(executable) != runtime_digest:
+        raise Native360FrameDatasetError(["native_360_lens_decode_runtime_changed"])
+    manifest = {
+        "schema_version": NATIVE_360_LENS_DECODE_SCHEMA_VERSION,
+        "stable_run_identity": f"native-360-decode-{configuration_digest[7:31]}",
+        "source_capture_identity": normalization_result["source_capture_identity"],
+        "source_capture_digest": capture_digest,
+        "original_file_references": [
+            {"relative_path": source_relative_path, "digest": source_digest}
+        ],
+        "producing_method": "native_360_ffmpeg_lens_decoder.v1",
+        "implementation_version": implementation_digest,
+        "container_image_digest": None,
+        "source_commit_sha": source_commit_sha,
+        "deterministic_configuration": configuration,
+        "deterministic_configuration_digest": configuration_digest,
+        "input_digests": {
+            "source_digest": source_digest,
+            "native_360_normalization_digest": normalization_result[
+                "native_360_normalization_digest"
+            ],
+            "rig_declaration_digest": rig_declaration["rig_declaration_digest"],
+            "dual_fisheye_binding_digest": dual_fisheye_binding[
+                "dual_fisheye_binding_digest"
+            ],
+            "authority_digest": canonical_digest(authority_used),
+        },
+        "output_digests": {
+            "decoded_frame_digests": [row["digest"] for row in decoded_frames]
+        },
+        "runtime_identity": runtime_identity,
+        "runtime_digest": runtime_digest,
+        "frames": decoded_frames,
+        "decoded_frame_count": len(decoded_frames),
+        "complete_retained_native_source_preserved": True,
+        "original_distorted_pixels_preserved": True,
+        "lens_identity_inferred": False,
+        "calibration_inferred": False,
+        "candidate_method_access_allowed": False,
+        "access_scope": "trusted_dataset_compiler_only",
+        "authority_used": dict(authority_used),
+        "cost_usd": 0.0,
+        "duration_seconds": 0.0,
+        "warnings": [
+            "decoded_dts_duration_keyframe_and_exposure_metadata_not_established"
+        ],
+        "blockers": [],
+        "proof_effect": "decoded_native_lens_observation_availability_only",
+        "claim_ceiling": "decoded_observation_availability",
+        "parent_artifact_or_event": {
+            "native_360_normalization_digest": normalization_result[
+                "native_360_normalization_digest"
+            ],
+            "dual_fisheye_binding_digest": dual_fisheye_binding[
+                "dual_fisheye_binding_digest"
+            ],
+        },
+        "timestamp": compiled_at,
+    }
+    manifest["lens_decode_manifest_digest"] = canonical_digest(
+        manifest, digest_field="lens_decode_manifest_digest"
+    )
+    return _write_immutable(manifest_path, manifest)
+
+
 def compile_native_360_grouped_frame_dataset(
     *,
     artifact_root: str | Path,
@@ -197,6 +732,7 @@ def compile_native_360_grouped_frame_dataset(
     normalization_result: Mapping[str, Any],
     rig_declaration: Mapping[str, Any],
     dual_fisheye_binding: Mapping[str, Any],
+    lens_decode_manifest: Mapping[str, Any],
     decoded_lens_frames: Sequence[Mapping[str, Any]],
     runtime_identity: str,
     runtime_digest: str,
@@ -224,6 +760,32 @@ def compile_native_360_grouped_frame_dataset(
         rig_declaration=rig_declaration,
         dual_fisheye_binding=dual_fisheye_binding,
     )
+    lens_decode_manifest_digest = lens_decode_manifest.get(
+        "lens_decode_manifest_digest"
+    )
+    decode_parent = lens_decode_manifest.get("parent_artifact_or_event")
+    if (
+        lens_decode_manifest.get("schema_version")
+        != NATIVE_360_LENS_DECODE_SCHEMA_VERSION
+        or lens_decode_manifest.get("source_capture_digest") != capture_digest
+        or not _is_digest(lens_decode_manifest_digest)
+        or lens_decode_manifest_digest
+        != canonical_digest(
+            lens_decode_manifest, digest_field="lens_decode_manifest_digest"
+        )
+        or lens_decode_manifest.get("runtime_identity") != runtime_identity
+        or lens_decode_manifest.get("runtime_digest") != runtime_digest
+        or lens_decode_manifest.get("candidate_method_access_allowed") is not False
+        or lens_decode_manifest.get("blockers") != []
+        or not isinstance(decode_parent, Mapping)
+        or decode_parent.get("native_360_normalization_digest")
+        != normalization_result.get("native_360_normalization_digest")
+        or decode_parent.get("dual_fisheye_binding_digest")
+        != dual_fisheye_binding.get("dual_fisheye_binding_digest")
+    ):
+        raise Native360FrameDatasetError(
+            ["native_360_grouped_dataset_decode_manifest_invalid"]
+        )
     if normalization_result.get("source_capture_identity") != intake_id:
         raise Native360FrameDatasetError(
             ["native_360_grouped_dataset_intake_identity_mismatch"]
@@ -384,6 +946,12 @@ def compile_native_360_grouped_frame_dataset(
         raise Native360FrameDatasetError(
             ["native_360_grouped_dataset_decoded_observations_incomplete"]
         )
+    if canonical_digest({"frames": lens_decode_manifest.get("frames")}) != canonical_digest(
+        {"frames": [dict(row) for row in decoded_lens_frames]}
+    ):
+        raise Native360FrameDatasetError(
+            ["native_360_grouped_dataset_decode_manifest_frames_mismatch"]
+        )
 
     return compile_frozen_frame_dataset(
         artifact_root=artifact_root,
@@ -405,6 +973,7 @@ def compile_native_360_grouped_frame_dataset(
             "dual_fisheye_binding_digest": dual_fisheye_binding[
                 "dual_fisheye_binding_digest"
             ],
+            "lens_decode_manifest_digest": lens_decode_manifest_digest,
             "group_adapter_version": NATIVE_360_GROUPED_DATASET_ADAPTER_VERSION,
         },
         runtime_identity=runtime_identity,
@@ -420,6 +989,7 @@ def compile_native_360_grouped_frame_dataset(
             "dual_fisheye_binding_digest": dual_fisheye_binding[
                 "dual_fisheye_binding_digest"
             ],
+            "lens_decode_manifest_digest": lens_decode_manifest_digest,
         },
         timestamp=timestamp,
         camera_calibration_binding={
@@ -435,6 +1005,8 @@ def compile_native_360_grouped_frame_dataset(
 
 __all__ = [
     "NATIVE_360_GROUPED_DATASET_ADAPTER_VERSION",
+    "NATIVE_360_LENS_DECODE_SCHEMA_VERSION",
     "Native360FrameDatasetError",
     "compile_native_360_grouped_frame_dataset",
+    "decode_native_360_lens_observations",
 ]

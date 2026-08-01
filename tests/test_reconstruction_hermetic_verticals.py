@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,7 @@ from blueprint_pipeline.native_360_normalization import (
 )
 from blueprint_pipeline.native_360_frame_dataset import (
     compile_native_360_grouped_frame_dataset,
+    decode_native_360_lens_observations,
 )
 from blueprint_pipeline.reconstruction_frame_dataset import (
     compile_frozen_frame_dataset,
@@ -483,47 +485,39 @@ def test_native_360_hermetic_vertical_validates_rig_then_abstains(tmp_path: Path
         }
     )
     dataset_root = tmp_path / "native360-dataset"
-    streams = {row["lens_id"]: row for row in binding["segments"][0]["lens_streams"]}
-    decoded_lens_frames: list[dict] = []
-    for pair in binding["segments"][0]["frame_pairs"]:
-        for lens_id, pixel in (("front", 48), ("rear", 192)):
-            frame_path = (
-                dataset_root / "decoded" / lens_id / f"{pair['pair_index']:09d}.png"
+    ffmpeg_fixture = tmp_path / "ffmpeg-hermetic-fixture"
+    ffmpeg_fixture.write_bytes(b"ffmpeg-hermetic-fixture")
+
+    def decode_runner(argv, _timeout, _maximum_output):
+        command = list(argv)
+        if "-version" in command:
+            return subprocess.CompletedProcess(
+                command, 0, b"ffmpeg version hermetic-fixture\n", b""
             )
-            frame_path.parent.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(
-                np.full((profile["height"], profile["width"]), pixel, dtype=np.uint8)
-            ).save(frame_path)
-            stream = streams[lens_id]
-            pts = pair[f"{lens_id}_pts_seconds"]
-            decoded_lens_frames.append(
-                {
-                    "segment_sequence_index": 0,
-                    "pair_index": pair["pair_index"],
-                    "lens_id": lens_id,
-                    "source_relative_path": stream["source_relative_path"],
-                    "source_digest": stream["source_digest"],
-                    "stream_index": stream["stream_index"],
-                    "decoded_frame_index": pair["pair_index"],
-                    "source_pts_seconds": pts,
-                    "source_dts_seconds": pts,
-                    "duration_seconds": 0.033333,
-                    "key_frame": pair["pair_index"] == 0,
-                    "artifact_relative_path": frame_path.relative_to(
-                        dataset_root
-                    ).as_posix(),
-                    "digest": _file_digest(frame_path),
-                    "image_metadata": {
-                        "width": profile["width"],
-                        "height": profile["height"],
-                        "pixel_orientation": "native_distorted_lens_pixels",
-                    },
-                    "quality_signals": {
-                        "mean_luma_0_255": float(pixel),
-                        "gradient_energy": 0.0,
-                    },
-                }
+        stream_index = int(command[command.index("-map") + 1].split(":")[1])
+        Image.fromarray(
+            np.full(
+                (profile["height"], profile["width"]),
+                48 if stream_index == 0 else 192,
+                dtype=np.uint8,
             )
+        ).save(command[-1])
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    decode_manifest = decode_native_360_lens_observations(
+        capture_root=capture_root,
+        artifact_root=dataset_root,
+        capture_digest=profile["source_capture_digest"],
+        normalization_result=normalized,
+        rig_declaration=rig,
+        dual_fisheye_binding=binding,
+        implementation_digest=spec["implementation_digest"],
+        source_commit_sha=spec["source_commit_sha"],
+        authority_used=spec["authority"],
+        timestamp=spec["timestamp"],
+        ffmpeg_executable=ffmpeg_fixture,
+        runner=decode_runner,
+    )
     dataset = compile_native_360_grouped_frame_dataset(
         artifact_root=dataset_root,
         intake_id="hermetic-native-360",
@@ -531,9 +525,10 @@ def test_native_360_hermetic_vertical_validates_rig_then_abstains(tmp_path: Path
         normalization_result=normalized,
         rig_declaration=rig,
         dual_fisheye_binding=binding,
-        decoded_lens_frames=decoded_lens_frames,
-        runtime_identity="ffmpeg-hermetic-recorded-output",
-        runtime_digest=spec["runtime_digest"],
+        lens_decode_manifest=decode_manifest,
+        decoded_lens_frames=decode_manifest["frames"],
+        runtime_identity=decode_manifest["runtime_identity"],
+        runtime_digest=decode_manifest["runtime_digest"],
         implementation_digest=spec["implementation_digest"],
         source_commit_sha=spec["source_commit_sha"],
         authority_used=spec["authority"],

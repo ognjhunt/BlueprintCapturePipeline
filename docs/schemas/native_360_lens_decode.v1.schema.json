@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/native_360_lens_decode.v1.schema.json",
+  "title": "Blueprint native 360 lens decode manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "stable_run_identity", "source_capture_identity",
+    "source_capture_digest", "original_file_references", "producing_method",
+    "implementation_version", "container_image_digest", "source_commit_sha",
+    "deterministic_configuration", "deterministic_configuration_digest",
+    "input_digests", "output_digests", "runtime_identity", "runtime_digest",
+    "frames", "decoded_frame_count", "complete_retained_native_source_preserved",
+    "original_distorted_pixels_preserved", "lens_identity_inferred",
+    "calibration_inferred", "candidate_method_access_allowed", "access_scope",
+    "authority_used", "cost_usd", "duration_seconds", "warnings", "blockers",
+    "proof_effect", "claim_ceiling", "parent_artifact_or_event", "timestamp",
+    "lens_decode_manifest_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "native_360_lens_decode_manifest.v1"},
+    "stable_run_identity": {"type": "string", "minLength": 1},
+    "source_capture_identity": {"type": "string", "minLength": 1},
+    "source_capture_digest": {"$ref": "#/$defs/sha256"},
+    "original_file_references": {
+      "type": "array", "minItems": 1,
+      "items": {"$ref": "#/$defs/source_reference"}
+    },
+    "producing_method": {"const": "native_360_ffmpeg_lens_decoder.v1"},
+    "implementation_version": {"$ref": "#/$defs/sha256"},
+    "container_image_digest": {"type": ["string", "null"]},
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "deterministic_configuration": {"type": "object"},
+    "deterministic_configuration_digest": {"$ref": "#/$defs/sha256"},
+    "input_digests": {"type": "object"},
+    "output_digests": {"type": "object"},
+    "runtime_identity": {"type": "string", "minLength": 1},
+    "runtime_digest": {"$ref": "#/$defs/sha256"},
+    "frames": {
+      "type": "array", "minItems": 2,
+      "items": {"$ref": "#/$defs/frame"}
+    },
+    "decoded_frame_count": {"type": "integer", "minimum": 2},
+    "complete_retained_native_source_preserved": {"const": true},
+    "original_distorted_pixels_preserved": {"const": true},
+    "lens_identity_inferred": {"const": false},
+    "calibration_inferred": {"const": false},
+    "candidate_method_access_allowed": {"const": false},
+    "access_scope": {"const": "trusted_dataset_compiler_only"},
+    "authority_used": {"type": "object"},
+    "cost_usd": {"const": 0.0},
+    "duration_seconds": {"const": 0.0},
+    "warnings": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "blockers": {"type": "array", "maxItems": 0},
+    "proof_effect": {"const": "decoded_native_lens_observation_availability_only"},
+    "claim_ceiling": {"const": "decoded_observation_availability"},
+    "parent_artifact_or_event": {"type": "object"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "lens_decode_manifest_digest": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "relative_path": {
+      "type": "string", "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "source_reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relative_path", "digest"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "frame": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "segment_sequence_index", "pair_index", "lens_id",
+        "source_relative_path", "source_digest", "stream_index",
+        "decoded_frame_index", "source_pts_seconds", "source_dts_seconds",
+        "duration_seconds", "key_frame", "artifact_relative_path", "digest",
+        "image_metadata", "quality_signals"
+      ],
+      "properties": {
+        "segment_sequence_index": {"const": 0},
+        "pair_index": {"type": "integer", "minimum": 0},
+        "lens_id": {"enum": ["front", "rear"]},
+        "source_relative_path": {"$ref": "#/$defs/relative_path"},
+        "source_digest": {"$ref": "#/$defs/sha256"},
+        "stream_index": {"type": "integer", "minimum": 0},
+        "decoded_frame_index": {"type": "integer", "minimum": 0},
+        "source_pts_seconds": {"type": "number"},
+        "source_dts_seconds": {"type": ["number", "null"]},
+        "duration_seconds": {"type": ["number", "null"], "minimum": 0},
+        "key_frame": {"type": "boolean"},
+        "artifact_relative_path": {"$ref": "#/$defs/relative_path"},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "image_metadata": {"type": "object"},
+        "quality_signals": {"type": "object"}
+      }
+    }
+  }
+}

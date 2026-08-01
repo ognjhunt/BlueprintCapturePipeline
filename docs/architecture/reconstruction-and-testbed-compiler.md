@@ -318,6 +318,27 @@ reaches this grouped split gate and abstains at the later pose-worker and metric
 anchor gates. Multi-segment native decoding remains fail-closed until an
 authoritative cross-segment capture timeline is available.
 
+The same module now provides a bounded ffmpeg lens decoder. It uses only the
+validated source path, source digest, declared physical-lens stream indices, and
+declared frame-pair ordinals; invokes no shell; applies per-frame timeout and
+output limits; disables autorotation; preserves fisheye distortion; validates
+the exact PNG dimensions and digests; and emits the replayable
+`native_360_lens_decode_manifest.v1`. Decoded pixels remain accessible only to
+the trusted dataset compiler until frozen candidate/hidden materialization.
+The grouped dataset compiler requires this exact manifest and binds its digest
+as a parent; runtime/source/frame substitutions are refused rather than silently
+accepted as equivalent decoded observations.
+Timeout, malformed or absent output, changed source/runtime bytes, symlinked
+targets, wrong dimensions, and immutable conflicts fail closed.
+
+An installed-runtime smoke traversed a generated two-stream 64x64 MOV carrying
+an `.insv` filename through ffprobe, normalization, ffmpeg lens decoding, and
+the grouped frozen-split compiler: two streams with three frames each produced
+three synchronized pairs and six decoded lens observations. Its ceiling is
+decoded-observation availability only. The container, calibration, and rig were
+synthetic, so this is not native Insta360, real 360, metric-scale, pose,
+appearance, collision, or Isaac proof.
+
 ## Stitched equirectangular shared-center rig
 
 `equirectangular_virtual_rig.py` accepts only retained, digest-bound 2:1
