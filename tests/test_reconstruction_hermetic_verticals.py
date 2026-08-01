@@ -9,9 +9,13 @@ import numpy as np
 import jsonschema
 from PIL import Image
 
+from blueprint_pipeline.arkit_raw_contract_validation import (
+    build_arkit_raw_contract_validation,
+)
 from blueprint_pipeline.arkit_reconstruction_dataset import (
     compile_arkit_reconstruction_dataset,
 )
+from blueprint_pipeline.capture_profile_validation import build_capture_profile_validation
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.equirectangular_virtual_rig import (
     compile_equirectangular_virtual_rig,
@@ -110,15 +114,27 @@ def _terminal_report(
     calibration_status: dict,
     selected_frames: list[dict] | None = None,
     rejected_frames: list[dict] | None = None,
+    capture_profile_validation: dict | None = None,
+    arkit_raw_contract_validation: dict | None = None,
 ) -> dict:
+    bound_input_digests = list(input_digests)
+    bound_output_digests = list(recorded_output_digests)
+    for evidence, digest_key in (
+        (capture_profile_validation, "capture_profile_validation_digest"),
+        (arkit_raw_contract_validation, "arkit_raw_contract_validation_digest"),
+    ):
+        if evidence is not None:
+            digest = evidence[digest_key]
+            bound_input_digests.append(digest)
+            bound_output_digests.append(digest)
     request = {
         "schema_version": RECONSTRUCTION_REPORT_REQUEST_SCHEMA_VERSION,
         "stable_run_identity": f"hermetic-{profile}",
         "original_capture_location": f"hermetic-fixture://{profile}",
         "source_capture_digest": source_digest,
         "implementation_digest": spec["implementation_digest"],
-        "input_digests": input_digests,
-        "recorded_output_digests": recorded_output_digests,
+        "input_digests": bound_input_digests,
+        "recorded_output_digests": bound_output_digests,
         "validated_capture_profile": profile,
         "original_customer_request": "Exercise the local capture reconstruction vertical.",
         "rights_and_permitted_use": {
@@ -131,10 +147,14 @@ def _terminal_report(
         "frozen_split_digest": split_digest,
         "calibration_and_coordinate_status": calibration_status,
         "camera_calibration_binding": calibration_status,
-        "coordinate_frame_declaration": {
-            "units": "meters" if profile == "iphone_arkit_lidar" else "unknown",
-            "handedness": "right_handed",
-        },
+        "coordinate_frame_declaration": (
+            arkit_raw_contract_validation["coordinate_frame_declaration"]
+            if arkit_raw_contract_validation is not None
+            else {
+                "units": "meters" if profile == "iphone_arkit_lidar" else "unknown",
+                "handedness": "right_handed",
+            }
+        ),
         "units_and_metric_scale_status": {
             "declared_units": "meters" if profile == "iphone_arkit_lidar" else "unknown",
             "independently_validated": ceilings["metric_scale"],
@@ -214,6 +234,10 @@ def _terminal_report(
         },
         "timestamp": spec["timestamp"],
     }
+    if capture_profile_validation is not None:
+        request["capture_profile_validation"] = capture_profile_validation
+    if arkit_raw_contract_validation is not None:
+        request["arkit_raw_contract_validation"] = arkit_raw_contract_validation
     return generate_reconstruction_terminal_report(request)
 
 
@@ -333,6 +357,27 @@ def test_iphone_hermetic_vertical_reaches_worker_gate_and_abstains(tmp_path: Pat
     spec = _spec()
     dataset, candidate, export, scaffold = _compile_iphone_vertical(tmp_path / "iphone", spec)
     profile = spec["iphone_arkit_lidar"]
+    scaffold_digest = _canonical_artifact_digest(scaffold)
+    raw_contract = build_arkit_raw_contract_validation(
+        intake_id="hermetic-iphone",
+        source_capture_digest=profile["source_capture_digest"],
+        source_artifact_digests=scaffold["source_artifact_digests"],
+        implementation_digest=spec["implementation_digest"],
+        source_commit_sha=spec["source_commit_sha"],
+        runtime_identity="hermetic-ffmpeg-fixture",
+        runtime_digest=spec["runtime_digest"],
+        frozen_split_digest=dataset["train_heldout_split_digest"],
+        metric_scaffold_digest=scaffold_digest,
+        reconstruction_dataset_export_digest=export[
+            "arkit_reconstruction_dataset_export_digest"
+        ],
+        coordinate_frame_declaration=scaffold["coordinate_system"],
+        retained_frame_count=len(candidate["frames"]),
+        dropped_attempt_count=0,
+        depth_confidence_pair_count=0,
+        authority_used=spec["authority"],
+        timestamp=spec["timestamp"],
+    )
     report = _terminal_report(
         spec=spec,
         profile="iphone_arkit_lidar",
@@ -347,11 +392,13 @@ def test_iphone_hermetic_vertical_reaches_worker_gate_and_abstains(tmp_path: Pat
         ceilings=_ceilings(decoded=True, calibrated=True),
         calibration_status={
             "status": "arkit_sensor_bound_not_refined",
-            "metric_scaffold_digest": _canonical_artifact_digest(scaffold),
+            "metric_scaffold_digest": scaffold_digest,
+            "raw_contract_3_2": True,
             "raw_arkit_poses_modified": False,
         },
         selected_frames=[{"frame_id": row["frame_id"]} for row in candidate["frames"]],
         rejected_frames=[],
+        arkit_raw_contract_validation=raw_contract,
     )
 
     assert export["hidden_heldout_pixels_included"] is False
@@ -462,7 +509,14 @@ def test_native_360_hermetic_vertical_validates_rig_then_abstains(tmp_path: Path
             }
             for stream_index, lens_id in enumerate(("front", "rear"))
         ],
-        format_metadata={"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+        format_metadata={
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "compatible_processing_lane": (
+                "camera_360_native_candidate_requires_calibration"
+            ),
+            "processing_lane_claim_ceiling": "container_stream_topology_only",
+            "capture_profile_fully_validated": False,
+        },
     )
     normalized = normalize_native_360_capture(
         capture_root=capture_root,
@@ -541,6 +595,15 @@ def test_native_360_hermetic_vertical_validates_rig_then_abstains(tmp_path: Path
         authority_used=spec["authority"],
         timestamp=spec["timestamp"],
     )
+    profile_validation = build_capture_profile_validation(
+        source_capture_digest=profile["source_capture_digest"],
+        declared_capture_authority_profile="camera_360_native",
+        probe_receipts=[receipt],
+        native_normalization_result=normalized,
+        source_commit_sha=spec["source_commit_sha"],
+        implementation_digest=spec["implementation_digest"],
+        timestamp=spec["timestamp"],
+    )
     report = _terminal_report(
         spec=spec,
         profile="camera_360_native",
@@ -563,6 +626,7 @@ def test_native_360_hermetic_vertical_validates_rig_then_abstains(tmp_path: Path
             ],
             "metric_scale_established": False,
         },
+        capture_profile_validation=profile_validation,
     )
 
     assert normalized["status"] == "normalized"
@@ -593,6 +657,37 @@ def test_equirectangular_360_vertical_compiles_shared_center_views_then_abstains
     image[..., 1] = latitude
     image[..., 2] = 127
     Image.fromarray(image).save(panorama)
+    probe = build_native_360_probe_receipt(
+        source_file_digest=_file_digest(panorama),
+        runtime_identity="ffprobe-hermetic-fixture",
+        runtime_digest=spec["runtime_digest"],
+        streams=[
+            {
+                "stream_index": 0,
+                "media_type": "video",
+                "codec_name": "h264",
+                "width": profile["width"],
+                "height": profile["height"],
+                "time_base": "1/30000",
+                "pts_seconds": [1.25],
+                "metadata": {"projection": "equirectangular"},
+            }
+        ],
+        format_metadata={
+            "format_name": "image2",
+            "compatible_processing_lane": "camera_360_equirectangular",
+            "processing_lane_claim_ceiling": "container_stream_topology_only",
+            "capture_profile_fully_validated": False,
+        },
+    )
+    profile_validation = build_capture_profile_validation(
+        source_capture_digest=profile["source_capture_digest"],
+        declared_capture_authority_profile="camera_360_equirectangular",
+        probe_receipts=[probe],
+        source_commit_sha=spec["source_commit_sha"],
+        implementation_digest=spec["implementation_digest"],
+        timestamp=spec["timestamp"],
+    )
     split_digest = canonical_digest(
         {
             "schema_version": "hermetic_panorama_split.v1",
@@ -653,6 +748,7 @@ def test_equirectangular_360_vertical_compiles_shared_center_views_then_abstains
             "metric_scale_proven": False,
         },
         selected_frames=[{"frame_id": "panorama-0001"}],
+        capture_profile_validation=profile_validation,
     )
 
     assert compilation["virtual_observation_count"] == profile["expected_virtual_view_count"]

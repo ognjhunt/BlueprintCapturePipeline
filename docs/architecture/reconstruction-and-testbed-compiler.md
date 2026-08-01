@@ -797,6 +797,20 @@ the overall usability decision. The report is a replayable explanation: it
 cannot mutate proof, hide a supplied failed attempt, grant authority, or turn
 simulation into physical or deployment success.
 
+Strict capture profiles cannot enter that report through a profile name alone.
+Native and stitched 360 reports must embed the validated, source-bound
+`capture_profile_validation.v1` receipt; a blocked or contradictory receipt can
+only produce a rejected decision or abstention and its blockers must remain
+visible. An `iphone_arkit_lidar` report must embed the strict
+`arkit_raw_contract_validation.v1` receipt and bind its exact source, frozen
+split, source commit, metric scaffold, and coordinate declaration. Public
+dataset proxies remain explicitly outside that Raw Contract gate. The report
+also emits a deterministic qualification digest over the proof-bearing capture,
+split, typed artifacts, decision, ceilings, and blockers. Agent/customer prose
+remains in the audit report but is excluded from that qualification binding, so
+replay of the same accepted evidence produces the same qualification even when
+live explanatory wording changes.
+
 ## Normalized results and layers
 
 `reconstruction_result.v1` binds exact capture, method-profile,

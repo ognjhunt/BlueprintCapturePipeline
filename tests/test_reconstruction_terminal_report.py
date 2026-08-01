@@ -6,7 +6,12 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from blueprint_pipeline.arkit_raw_contract_validation import (
+    build_arkit_raw_contract_validation,
+)
+from blueprint_pipeline.capture_profile_validation import build_capture_profile_validation
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.native_360_normalization import build_native_360_probe_receipt
 from blueprint_pipeline.reconstruction_geometry_contracts import (
     build_isaac_asset_verification_result,
 )
@@ -48,6 +53,68 @@ def _ceilings(**overrides: bool) -> dict[str, bool]:
     }
     values.update(overrides)
     return values
+
+
+def _arkit_raw_contract() -> dict:
+    return build_arkit_raw_contract_validation(
+        intake_id="strict-iphone-1",
+        source_capture_digest="sha256:" + "1" * 64,
+        source_artifact_digests={
+            "walkthrough.mov": "sha256:" + "7" * 64,
+            "sync_map.jsonl": "sha256:" + "8" * 64,
+        },
+        implementation_digest="sha256:" + "9" * 64,
+        source_commit_sha="3" * 40,
+        runtime_identity="ffmpeg-fixture",
+        runtime_digest="sha256:" + "a" * 64,
+        frozen_split_digest="sha256:" + "2" * 64,
+        metric_scaffold_digest="sha256:" + "b" * 64,
+        reconstruction_dataset_export_digest="sha256:" + "c" * 64,
+        coordinate_frame_declaration={
+            "units": "meters",
+            "handedness": "right_handed",
+            "gravity_aligned": True,
+        },
+        retained_frame_count=2,
+        dropped_attempt_count=0,
+        depth_confidence_pair_count=1,
+        authority_used={"local_processing_authorized": True},
+        timestamp="2026-08-01T12:00:00Z",
+    )
+
+
+def _profile_validation(*, declared: str, observed: str) -> dict:
+    width, height = (3840, 1920) if observed == "camera_360_equirectangular" else (3840, 3840)
+    probe = build_native_360_probe_receipt(
+        source_file_digest="sha256:" + "d" * 64,
+        runtime_identity="ffprobe-fixture",
+        runtime_digest="sha256:" + "e" * 64,
+        streams=[
+            {
+                "stream_index": 0,
+                "media_type": "video",
+                "codec_name": "h264",
+                "width": width,
+                "height": height,
+                "time_base": "1/30000",
+                "pts_seconds": [0.0, 1.0 / 30.0],
+                "metadata": {},
+            }
+        ],
+        format_metadata={
+            "compatible_processing_lane": observed,
+            "processing_lane_claim_ceiling": "container_stream_topology_only",
+            "capture_profile_fully_validated": False,
+        },
+    )
+    return build_capture_profile_validation(
+        source_capture_digest="sha256:" + "1" * 64,
+        declared_capture_authority_profile=declared,
+        probe_receipts=[probe],
+        source_commit_sha="3" * 40,
+        implementation_digest="sha256:" + "f" * 64,
+        timestamp="2026-08-01T12:00:00Z",
+    )
 
 
 def _verified_isaac_result() -> dict:
@@ -239,7 +306,126 @@ def test_terminal_report_replays_recorded_proxy_abstention_without_claim_upgrade
     assert first["agent_output_authoritative"] is False
     assert first["proof_state_mutated_by_report"] is False
     assert first["proof_effect"] == "deterministic_reconstruction_explanation_only"
+    assert first["capture_profile_validation"]["proof_effect"] == "none"
+    assert first["arkit_raw_contract_validation"]["proof_effect"] == "none"
+    assert first["deterministic_qualification_digest"] == canonical_digest(
+        first["deterministic_qualification"]
+    )
     assert "abstained" in first["customer_summary"].lower()
+
+
+def test_terminal_qualification_replay_is_independent_of_agent_prose() -> None:
+    first_request = _request()
+    second_request = json.loads(json.dumps(first_request))
+    second_request.pop("reconstruction_terminal_report_request_digest")
+    second_request["original_customer_request"] = "Different live-agent paraphrase."
+    second_request["agent_proposals_and_actions"] = [
+        {
+            "action": "A different explanation of the same bounded abstention.",
+            "proof_effect": "none",
+        }
+    ]
+
+    first = generate_reconstruction_terminal_report(first_request)
+    second = generate_reconstruction_terminal_report(second_request)
+
+    assert first["reconstruction_terminal_report_digest"] != second[
+        "reconstruction_terminal_report_digest"
+    ]
+    assert first["source_request_digest"] != second["source_request_digest"]
+    assert first["deterministic_qualification"] == second[
+        "deterministic_qualification"
+    ]
+    assert first["deterministic_qualification_digest"] == second[
+        "deterministic_qualification_digest"
+    ]
+
+
+def test_strict_iphone_terminal_report_requires_bound_raw_contract_receipt() -> None:
+    missing = json.loads(json.dumps(_request()))
+    missing.pop("reconstruction_terminal_report_request_digest")
+    missing["validated_capture_profile"] = "iphone_arkit_lidar"
+    with pytest.raises(ReconstructionTerminalReportError, match="raw_contract_missing"):
+        build_reconstruction_terminal_report_request(missing)
+
+    raw = _arkit_raw_contract()
+    bound = json.loads(json.dumps(missing))
+    bound["arkit_raw_contract_validation"] = raw
+    bound["input_digests"].append(raw["arkit_raw_contract_validation_digest"])
+    bound["recorded_output_digests"].append(
+        raw["arkit_raw_contract_validation_digest"]
+    )
+    bound["calibration_and_coordinate_status"] = {
+        "status": "strict_raw_contract_validated",
+        "raw_contract_3_2": True,
+        "metric_scaffold_digest": raw["camera_calibration_binding"],
+    }
+    bound["coordinate_frame_declaration"] = raw["coordinate_frame_declaration"]
+
+    report = generate_reconstruction_terminal_report(bound)
+
+    assert report["arkit_raw_contract_validation"] == raw
+    assert report["deterministic_qualification"][
+        "arkit_raw_contract_validation_digest"
+    ] == raw["arkit_raw_contract_validation_digest"]
+
+
+def test_strict_iphone_terminal_rejects_rehashed_proof_upgrade_and_split_mismatch() -> None:
+    raw = _arkit_raw_contract()
+    request = json.loads(json.dumps(_request()))
+    request.pop("reconstruction_terminal_report_request_digest")
+    request["validated_capture_profile"] = "iphone_arkit_lidar"
+    request["arkit_raw_contract_validation"] = raw
+    request["input_digests"].append(raw["arkit_raw_contract_validation_digest"])
+    request["recorded_output_digests"].append(
+        raw["arkit_raw_contract_validation_digest"]
+    )
+    request["calibration_and_coordinate_status"] = {
+        "status": "strict_raw_contract_validated",
+        "raw_contract_3_2": True,
+        "metric_scaffold_digest": raw["camera_calibration_binding"],
+    }
+    request["coordinate_frame_declaration"] = raw["coordinate_frame_declaration"]
+
+    mismatched = json.loads(json.dumps(request))
+    mismatched["frozen_split_digest"] = "sha256:" + "6" * 64
+    with pytest.raises(ReconstructionTerminalReportError, match="arkit_split_mismatch"):
+        build_reconstruction_terminal_report_request(mismatched)
+
+    upgraded = json.loads(json.dumps(request))
+    upgraded["arkit_raw_contract_validation"]["metric_scale_proven"] = True
+    upgraded["arkit_raw_contract_validation"][
+        "arkit_raw_contract_validation_digest"
+    ] = canonical_digest(
+        upgraded["arkit_raw_contract_validation"],
+        digest_field="arkit_raw_contract_validation_digest",
+    )
+    with pytest.raises(ReconstructionTerminalReportError, match="raw_contract_invalid"):
+        build_reconstruction_terminal_report_request(upgraded)
+
+
+def test_360_profile_conflict_is_bound_into_terminal_abstention() -> None:
+    validation = _profile_validation(
+        declared="camera_360_native",
+        observed="camera_360_equirectangular",
+    )
+    request = json.loads(json.dumps(_request()))
+    request.pop("reconstruction_terminal_report_request_digest")
+    request["validated_capture_profile"] = "camera_360_native"
+    request["capture_profile_validation"] = validation
+    request["input_digests"].append(validation["capture_profile_validation_digest"])
+    request["recorded_output_digests"].append(
+        validation["capture_profile_validation_digest"]
+    )
+    request["evidence_ceilings"] = _ceilings(calibrated_camera_trajectory=False)
+    request["blockers"].extend(validation["blockers"])
+
+    report = generate_reconstruction_terminal_report(request)
+
+    assert report["decision"] == "abstention"
+    assert report["capture_profile_validation"]["validation_status"] == "blocked"
+    assert report["capture_profile_validation"]["agent_may_change_capture_profile"] is False
+    assert report["evidence_ceilings"]["calibrated_camera_trajectory"] is False
 
 
 def test_terminal_report_rejects_claim_escalation_and_failed_evidence_suppression() -> None:
