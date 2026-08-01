@@ -285,18 +285,23 @@ used as blind confirmation.
   `compute_authorization_openpi_policy_query_6.json` — preserve WAM5's
   successful three-view result, append-only accounting correction, and
   generated-only same-policy query-6 admission boundary;
+- `protocol_amendment_33_policy_query6_vast_startup_retry_v1.md` and
+  `compute_authorization_openpi_policy_query_6_retry_1.json` — preserve the
+  first query-6 attempt's provider-startup timeout, teardown, provider-zero,
+  and settled-cost evidence; add a generic authorization-to-offer Vast machine
+  exclusion; and bind one retry to immutable runtime SHA `f5b3e99a` with failed
+  machine `27268` excluded;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
 The registered three-interaction engineering gate and interactions four and
-five are complete. Policy query 5 returned from the same frozen `pi05_droid`
-checkpoint using WAM4's generated-only observation, and WAM5's exact
-29-history request is now prospectively frozen. The next finite gate is one
-allocation-9-v3 WAM5 execution: immutable publication, new object key, fresh
-global inventory below the two-GPU ceiling, real cumulative campaign
-reservation, paid admission, signed transport, provider preflight, and
-canonical dry run all precede mutation. WAM5 itself remains limited to one GPU.
-Judges remain forbidden until the complete 12-interaction episode and
-causal-control matrix pass.
+five are complete. WAM5 passed its three-view immediate reliability screen.
+The first policy-query-6 allocation failed before inference because Vast
+machine `27268` never left provider startup; it produced no policy output and
+was torn down with global provider zero. The next finite gate is one fresh
+query-6 retry from immutable runtime SHA `f5b3e99a`, with machine `27268`
+excluded and all signed transport, spend, watchdog, dry-run, teardown, and
+provider-zero controls repeated. Judges remain forbidden until the complete
+12-interaction episode and causal-control matrix pass.
