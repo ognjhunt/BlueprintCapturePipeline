@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.blueprint.ai/artifixer_heldout_evaluation.v2.schema.json",
+  "title": "ArtiFixer Independent Held-Out Evaluation v2",
+  "oneOf": [
+    {"$ref": "#/$defs/manifest"},
+    {"$ref": "#/$defs/result"}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "fileSha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "pair": {
+      "type": "object",
+      "required": [
+        "view_id",
+        "real_view_reference",
+        "real_view_sha256",
+        "baseline_view_reference",
+        "baseline_view_sha256",
+        "generated_view_reference",
+        "generated_view_sha256",
+        "excluded_from_candidate_training"
+      ],
+      "properties": {
+        "view_id": {"type": "string", "minLength": 1},
+        "real_view_reference": {"type": "string", "minLength": 1},
+        "real_view_sha256": {"$ref": "#/$defs/fileSha"},
+        "baseline_view_reference": {"type": "string", "minLength": 1},
+        "baseline_view_sha256": {"$ref": "#/$defs/fileSha"},
+        "generated_view_reference": {"type": "string", "minLength": 1},
+        "generated_view_sha256": {"$ref": "#/$defs/fileSha"},
+        "excluded_from_candidate_training": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "manifest": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "frozen",
+        "frozen_before_candidate_execution",
+        "source_capture_digest",
+        "frozen_split_digest",
+        "baseline_reconstruction_digest",
+        "enhancement_method_audit_digest",
+        "training_view_ids",
+        "pairs",
+        "timestamp",
+        "manifest_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "artifixer_heldout_evaluation_manifest.v2"},
+        "frozen": {"const": true},
+        "frozen_before_candidate_execution": {"const": true},
+        "source_capture_digest": {"$ref": "#/$defs/digest"},
+        "frozen_split_digest": {"$ref": "#/$defs/digest"},
+        "baseline_reconstruction_digest": {"$ref": "#/$defs/digest"},
+        "enhancement_method_audit_digest": {"$ref": "#/$defs/digest"},
+        "training_view_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "pairs": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/pair"}},
+        "timestamp": {"type": "string", "minLength": 1},
+        "manifest_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "timestamp",
+        "status",
+        "manifest_digest",
+        "source_capture_digest",
+        "frozen_split_digest",
+        "baseline_reconstruction_digest",
+        "enhancement_method_audit_digest",
+        "heldout_view_count",
+        "rows",
+        "aggregate",
+        "blockers",
+        "proof_effect",
+        "claim_ceiling",
+        "claim_boundary",
+        "result_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "artifixer_heldout_real_view_evaluation.v2"},
+        "status": {"enum": ["passed_advisory", "blocked_or_failed"]},
+        "manifest_digest": {"$ref": "#/$defs/digest"},
+        "source_capture_digest": {"$ref": "#/$defs/digest"},
+        "frozen_split_digest": {"$ref": "#/$defs/digest"},
+        "baseline_reconstruction_digest": {"$ref": "#/$defs/digest"},
+        "enhancement_method_audit_digest": {"$ref": "#/$defs/digest"},
+        "heldout_view_count": {"type": "integer", "minimum": 0},
+        "rows": {"type": "array"},
+        "aggregate": {"type": "object"},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+        "proof_effect": {"enum": ["generated_visual_support_quality_only", "none"]},
+        "claim_ceiling": {"const": "generated_visual_support"},
+        "claim_boundary": {"type": "object"},
+        "result_digest": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

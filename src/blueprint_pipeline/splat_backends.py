@@ -174,6 +174,8 @@ def _artifixer_run(
     python: str = "python",
     timeout_seconds: int = 7200,
     held_out_manifest=None,
+    heldout_root=None,
+    baseline_root=None,
     model_id: str | None = None,
     checkpoint_digest: str | None = None,
     base_model_digest: str | None = None,
@@ -204,9 +206,9 @@ def _artifixer_run(
     blockers = list(qualification_audit["blockers"])
     blockers.extend(
         [
-        f"artifixer_{key}_missing_or_invalid"
-        for key, value in pins.items()
-        if not _DIGEST.fullmatch(str(value or ""))
+            f"artifixer_{key}_missing_or_invalid"
+            for key, value in pins.items()
+            if not _DIGEST.fullmatch(str(value or ""))
         ]
     )
     if _COMMIT.fullmatch(str(source_commit_sha or "")) is None:
@@ -220,6 +222,10 @@ def _artifixer_run(
         blockers.append("artifixer_base_model_identity_missing_or_invalid")
     if not held_out_manifest:
         blockers.append("artifixer_frozen_real_heldout_manifest_required")
+    if not heldout_root:
+        blockers.append("artifixer_evaluator_owned_heldout_root_required")
+    if not baseline_root:
+        blockers.append("artifixer_unenhanced_baseline_render_root_required")
     checkpoint = Path(checkpoint_pt)
     split = Path(split_path)
     heldout = Path(held_out_manifest) if held_out_manifest else None
@@ -273,6 +279,8 @@ def _artifixer_run(
 
     evaluation = evaluate_artifixer_heldout_views(
         manifest_path=held_out_manifest,
+        heldout_root=heldout_root,
+        baseline_root=baseline_root,
         generated_root=save_dir,
         output_path=Path(save_dir) / "artifixer_heldout_real_view_evaluation.json",
     )

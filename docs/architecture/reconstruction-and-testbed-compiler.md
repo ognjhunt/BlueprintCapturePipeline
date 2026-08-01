@@ -724,6 +724,17 @@ baseline, excludes hidden held-out observations, and remains bounded to
 generated visual support with no metric, collision, physical, or deployment
 effect.
 
+`artifixer_heldout_evaluation.v2` replaces the older absolute-path advisory
+helper with a frozen, digest-bound independent comparison. Real held-out,
+unenhanced-baseline, and generated renders live under three disjoint roots;
+manifest references must be relative, nonsymlinked, and match their recorded
+hashes. At least three real views are required. The evaluator uses a fixed
+threshold profile that candidate or agent input cannot change and accepts only
+an absolute-quality pass that also improves mean PSNR, mean absolute error, and
+the required fraction of views over the preserved baseline. Its maximum claim
+remains generated visual support quality; rendered improvement cannot alter
+metric, collision, Isaac, physical, or deployment qualification.
+
 `run_generated_repair_candidate` is a registered digest-only gate. Under the
 current audits it emits `generated_repair_candidate_result.v1` with
 `blocked_not_qualified`, no generated artifacts, zero cost, and the exact
