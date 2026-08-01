@@ -296,6 +296,12 @@ used as blind confirmation.
   retry-1's zero-mutation paid-lane block, carry the frozen two-GPU allowance
   into atomic initial lane reconciliation without weakening stale reclaim, and
   bind one new query-6 retry to immutable runtime SHA `8b2191c1`;
+- `protocol_amendment_35_policy_query6_final_cold_start_retry_v1.md` and
+  `compute_authorization_openpi_policy_query_6_retry_3.json` — preserve retry
+  2's second distinct pre-inference startup timeout and terminal recovery, bind
+  the authorized startup timeout into the monitor at runtime SHA `bfb6fd6c`,
+  and freeze one final 900-second cold-start retry with both failed machines
+  excluded;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
@@ -307,8 +313,10 @@ The first policy-query-6 allocation failed before inference because Vast
 machine `27268` never left provider startup; it produced no policy output and
 was torn down with global provider zero. Retry 1 then stopped before provider
 mutation because paid-lane reconciliation had not inherited the registered
-two-GPU allowance. The next finite gate is one fresh query-6 retry from
-immutable runtime SHA `8b2191c1`, with machine `27268` excluded and at most one
-already-registered unrelated GPU. All signed transport, spend, watchdog,
-dry-run, teardown, and provider-zero controls repeat. Judges remain forbidden
-until the complete 12-interaction episode and causal-control matrix pass.
+two-GPU allowance. Retry 2 then proved two-GPU admission but a second distinct
+cold Vast host also failed to start the OpenPI image within 480 seconds. The
+next finite gate is one final query-6 retry from immutable runtime SHA
+`bfb6fd6c`, with both failed machines excluded and a prospectively bound
+900-second startup cutoff. All signed transport, spend, watchdog, dry-run,
+teardown, and provider-zero controls repeat. Judges remain forbidden until the
+complete 12-interaction episode and causal-control matrix pass.
