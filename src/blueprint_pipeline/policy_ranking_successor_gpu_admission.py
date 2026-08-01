@@ -283,7 +283,7 @@ def load_committed_ctrl_world_current_reference_profile(
         <= profile.target_spend_usd
     ):
         blockers.append("successor_ctrl_world_current_reference_profile_spend_limits_invalid")
-    if profile.maximum_global_live_instances not in {0, 1}:
+    if profile.maximum_global_live_instances not in {0, 1, 2}:
         blockers.append("successor_ctrl_world_current_reference_profile_global_live_limit_invalid")
     if len(profile.authorization_ids_by_allocation_index) != 1:
         blockers.append("successor_ctrl_world_current_reference_profile_allocation_count_invalid")
@@ -2135,9 +2135,7 @@ def run_successor_gpu_lane(
         if consumption["status"] != "consumed":
             result_blockers = result.get("blockers")
             blockers = (
-                [str(item) for item in result_blockers]
-                if isinstance(result_blockers, list)
-                else []
+                [str(item) for item in result_blockers] if isinstance(result_blockers, list) else []
             )
             if result.get("status") in {"completed", "retained_owned"}:
                 blockers.append(

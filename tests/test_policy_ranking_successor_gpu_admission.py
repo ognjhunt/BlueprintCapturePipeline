@@ -51,6 +51,13 @@ def test_current_reference_global_live_limit_must_match_execution_env(
     monkeypatch.setenv(admission.VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV, "1")
     assert admission._vast_global_live_limit_env_blockers(profile=profile, execute=True) == []
 
+    profile = replace(profile, maximum_global_live_instances=2)
+    assert admission._vast_global_live_limit_env_blockers(profile=profile, execute=True) == [
+        "successor_vast_global_live_instance_limit_env_mismatch"
+    ]
+    monkeypatch.setenv(admission.VAST_MAX_GLOBAL_LIVE_INSTANCES_ENV, "2")
+    assert admission._vast_global_live_limit_env_blockers(profile=profile, execute=True) == []
+
 
 def _load(name: str) -> dict[str, Any]:
     path = EXPERIMENT / name
@@ -1069,10 +1076,7 @@ def test_current_reference_receipt_requires_committed_profile_freeze(tmp_path: P
 
     assert result["status"] == "blocked"
     assert result["provider_mutations_performed"] == 0
-    assert (
-        "successor_ctrl_world_current_reference_profile_freeze_missing"
-        in result["blockers"]
-    )
+    assert "successor_ctrl_world_current_reference_profile_freeze_missing" in result["blockers"]
     assert json.loads((tmp_path / "admission.json").read_text()) == result
     assert json.loads((tmp_path / "bound.json").read_text()) == result
     assert json.loads((tmp_path / "adapter.json").read_text()) == result
@@ -1163,10 +1167,8 @@ def test_current_reference_profile_must_equal_tracked_head(tmp_path: Path) -> No
     }
 
     profile_path.write_text(profile_path.read_text() + "\n", encoding="utf-8")
-    dirty_profile, dirty_blockers = (
-        admission.load_committed_ctrl_world_current_reference_profile(
-            profile_path, expected_source_commit=head
-        )
+    dirty_profile, dirty_blockers = admission.load_committed_ctrl_world_current_reference_profile(
+        profile_path, expected_source_commit=head
     )
     assert dirty_profile is None
     assert "successor_ctrl_world_current_reference_profile_not_exact_head" in dirty_blockers
@@ -1234,9 +1236,7 @@ def test_paid_resource_allocator_dispatches_successor_lane_only_through_probe_ki
     assert captured["provider_output_put_url_file"] == "output-put-url.txt"
     assert captured["provider_output_get_url_file"] == "output-get-url.txt"
     assert captured["expected_source_commit"] == "d" * 40
-    assert captured["expected_probe_kind"] == (
-        allocator.POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND
-    )
+    assert captured["expected_probe_kind"] == (allocator.POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND)
 
 
 def test_paid_resource_allocator_dispatches_ctrl_world_current_reference_probe(
@@ -1253,8 +1253,10 @@ def test_paid_resource_allocator_dispatches_ctrl_world_current_reference_probe(
     monkeypatch.setattr(
         allocator,
         "run_successor_gpu_lane",
-        lambda **kwargs: captured.update(kwargs)
-        or {"status": "dry_run_ready", "provider_mutations_performed": 0},
+        lambda **kwargs: (
+            captured.update(kwargs)
+            or {"status": "dry_run_ready", "provider_mutations_performed": 0}
+        ),
     )
 
     code = allocator.main(
@@ -1291,7 +1293,5 @@ def test_paid_resource_allocator_dispatches_ctrl_world_current_reference_probe(
 
     assert code == 0
     assert json.loads(capsys.readouterr().out) == {"success": True}
-    assert captured["expected_probe_kind"] == (
-        allocator.CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND
-    )
+    assert captured["expected_probe_kind"] == (allocator.CTRL_WORLD_CURRENT_REFERENCE_PROBE_KIND)
     assert captured["current_reference_profile_freeze_path"] == "profile.json"
