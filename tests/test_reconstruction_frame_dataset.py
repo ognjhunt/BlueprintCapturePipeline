@@ -57,6 +57,33 @@ def _frames(root: Path, count: int = 10) -> list[dict]:
     return rows
 
 
+def _grouped_lens_frames(root: Path, pair_count: int = 5) -> list[dict]:
+    rows: list[dict] = []
+    for pair_index in range(pair_count):
+        for lens_id in ("front", "rear"):
+            path = root / "lens-frames" / lens_id / f"pair-{pair_index:04d}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"{lens_id}-pair-{pair_index}".encode())
+            rows.append(
+                {
+                    "frame_id": f"{lens_id}-pair-{pair_index:04d}",
+                    "decoded_frame_index": pair_index,
+                    "t_video_sec": pair_index * 0.033333,
+                    "source_pts_seconds": pair_index * 0.033333,
+                    "source_dts_seconds": pair_index * 0.033333,
+                    "duration_seconds": 0.033333,
+                    "key_frame": pair_index == 0,
+                    "artifact_relative_path": path.relative_to(root).as_posix(),
+                    "digest": _digest(path),
+                    "image_metadata": {"width": 8, "height": 8},
+                    "quality_signals": {"gradient_energy": 1.0},
+                    "source_camera_identity": lens_id,
+                    "observation_group_id": f"pair-{pair_index:04d}",
+                }
+            )
+    return rows
+
+
 def _compile(root: Path, frames: list[dict], *, timestamp: str = "2026-07-30T12:00:00Z") -> dict:
     return compile_frozen_frame_dataset(
         artifact_root=root,
@@ -79,6 +106,42 @@ def _compile(root: Path, frames: list[dict], *, timestamp: str = "2026-07-30T12:
         source_commit_sha=SOURCE_COMMIT,
         rights_and_retention={"rights": "accepted", "external_processing_allowed": False},
         timestamp=timestamp,
+    )
+
+
+def _compile_grouped(root: Path, frames: list[dict]) -> dict:
+    return compile_frozen_frame_dataset(
+        artifact_root=root,
+        intake_id="native-360-intake",
+        capture_digest=CAPTURE_DIGEST,
+        capture_authority_profile="camera_360_native",
+        source_video_relative_path="native/capture.insv",
+        source_video_digest="sha256:" + "e" * 64,
+        decoded_frame_count=len(frames),
+        selected_frames=frames,
+        stream_metadata={
+            "camera_representation": "calibrated_dual_fisheye_rig",
+            "source_camera_identities": ["front", "rear"],
+            "shared_physical_observation_groups": True,
+        },
+        runtime_identity="ffmpeg_dual_lens_fixture",
+        runtime_digest=RUNTIME_DIGEST,
+        implementation_digest=IMPLEMENTATION_DIGEST,
+        source_commit_sha=SOURCE_COMMIT,
+        rights_and_retention={
+            "rights": "accepted",
+            "external_processing_allowed": False,
+        },
+        parent_artifact={"dual_fisheye_binding_digest": "sha256:" + "f" * 64},
+        timestamp="2026-07-30T12:00:00Z",
+        camera_calibration_binding={
+            "camera_360_rig_declaration_digest": "sha256:" + "1" * 64
+        },
+        coordinate_frame_declaration={
+            "units": "meters",
+            "handedness": "right_handed",
+            "rig_frame": "front_lens_optical_center",
+        },
     )
 
 
@@ -125,6 +188,74 @@ def test_compiler_is_idempotent_and_isolates_hidden_heldout_pixels(tmp_path: Pat
     validator = jsonschema.Draft202012Validator(_schema())
     for artifact in (first, split, candidate, heldout, _load_ref(tmp_path, first, "retained_frame_selection_manifest")):
         validator.validate(artifact)
+
+
+def test_compiler_freezes_synchronized_camera_groups_without_counterpart_leakage(
+    tmp_path: Path,
+) -> None:
+    dataset = _compile_grouped(tmp_path, _grouped_lens_frames(tmp_path))
+    split = _load_ref(tmp_path, dataset, "frozen_split_manifest")
+    candidate = _load_ref(tmp_path, dataset, "candidate_dataset_manifest")
+    heldout = _load_ref(tmp_path, dataset, "hidden_heldout_evaluator_manifest")
+    selection = _load_ref(tmp_path, dataset, "retained_frame_selection_manifest")
+
+    splits_by_group: dict[str, set[str]] = {}
+    cameras_by_group: dict[str, set[str]] = {}
+    for row in split["assignments"]:
+        splits_by_group.setdefault(row["observation_group_id"], set()).add(
+            row["split"]
+        )
+        cameras_by_group.setdefault(row["observation_group_id"], set()).add(
+            row["source_camera_identity"]
+        )
+    assert all(values == {"front", "rear"} for values in cameras_by_group.values())
+    assert all(len(values) == 1 for values in splits_by_group.values())
+
+    candidate_groups = {row["observation_group_id"] for row in candidate["frames"]}
+    heldout_groups = {row["observation_group_id"] for row in heldout["frames"]}
+    assert heldout_groups
+    assert candidate_groups.isdisjoint(heldout_groups)
+    assert {
+        row["source_camera_identity"]
+        for row in heldout["frames"]
+        if row["observation_group_id"] in heldout_groups
+    } == {"front", "rear"}
+    assert dataset["candidate_dataset_contains_hidden_heldout_pixels"] is False
+    assert dataset["claim_ceiling"] == "decoded_observation_availability"
+    assert dataset["camera_calibration_binding"] == {
+        "camera_360_rig_declaration_digest": "sha256:" + "1" * 64
+    }
+    assert dataset["coordinate_frame_declaration"]["units"] == "meters"
+
+    validator = jsonschema.Draft202012Validator(_schema())
+    for artifact in (dataset, split, candidate, heldout, selection):
+        validator.validate(artifact)
+
+
+def test_compiler_allows_equal_pts_across_cameras_but_rejects_incomplete_groups(
+    tmp_path: Path,
+) -> None:
+    frames = _grouped_lens_frames(tmp_path)
+    dataset = _compile_grouped(tmp_path, frames)
+    assert dataset["blockers"] == []
+
+    incomplete_root = tmp_path / "incomplete"
+    incomplete = [dict(row) for row in _grouped_lens_frames(incomplete_root)]
+    incomplete[0].pop("observation_group_id")
+    with pytest.raises(
+        ReconstructionFrameDatasetError,
+        match="selected_frame_group_binding_incomplete",
+    ):
+        _compile_grouped(incomplete_root, incomplete)
+
+    duplicate_root = tmp_path / "duplicate-camera"
+    duplicate = _grouped_lens_frames(duplicate_root)
+    duplicate[1]["source_camera_identity"] = "front"
+    with pytest.raises(
+        ReconstructionFrameDatasetError,
+        match="selected_frame_group_camera_duplicate",
+    ):
+        _compile_grouped(duplicate_root, duplicate)
 
 
 def test_compiler_replays_after_manifest_write_interruption(tmp_path: Path) -> None:

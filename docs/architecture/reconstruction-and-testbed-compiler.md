@@ -304,6 +304,20 @@ probing and receipt compilation only. It is not representative Insta360 media
 and proves no native stream topology, embedded metadata, calibration, or 360
 route qualification.
 
+`native_360_frame_dataset.py` binds already-decoded lens images back to the
+validated source path, source digest, declared stream index, decoded index, and
+per-lens PTS in the dual-fisheye binding. The shared frozen dataset kernel now
+supports optional physical-camera and synchronized-observation-group identities:
+front and rear pixels from one physical instant always receive the same frozen
+train, validation, or hidden-held-out assignment. It rejects missing/rebound
+lenses, duplicate camera membership, invalid images, digest/dimension mismatch,
+and hidden-counterpart leakage. Camera calibration is bound into the dataset but
+the compiler's proof effect remains decoded-observation availability only; it
+does not establish trajectory or metric scale. The hermetic native fixture now
+reaches this grouped split gate and abstains at the later pose-worker and metric-
+anchor gates. Multi-segment native decoding remains fail-closed until an
+authoritative cross-segment capture timeline is available.
+
 ## Stitched equirectangular shared-center rig
 
 `equirectangular_virtual_rig.py` accepts only retained, digest-bound 2:1

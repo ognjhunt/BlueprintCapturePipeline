@@ -19,6 +19,9 @@ from blueprint_pipeline.native_360_normalization import (
     build_native_360_probe_receipt,
     normalize_native_360_capture,
 )
+from blueprint_pipeline.native_360_frame_dataset import (
+    compile_native_360_grouped_frame_dataset,
+)
 from blueprint_pipeline.reconstruction_frame_dataset import (
     compile_frozen_frame_dataset,
 )
@@ -479,19 +482,78 @@ def test_native_360_hermetic_vertical_validates_rig_then_abstains(tmp_path: Path
             "timestamp": spec["timestamp"],
         }
     )
-    split_absence = _absence_digest(
-        stage="compile_frozen_frame_dataset",
-        reason="raw_lens_decoder_not_bound",
+    dataset_root = tmp_path / "native360-dataset"
+    streams = {row["lens_id"]: row for row in binding["segments"][0]["lens_streams"]}
+    decoded_lens_frames: list[dict] = []
+    for pair in binding["segments"][0]["frame_pairs"]:
+        for lens_id, pixel in (("front", 48), ("rear", 192)):
+            frame_path = (
+                dataset_root / "decoded" / lens_id / f"{pair['pair_index']:09d}.png"
+            )
+            frame_path.parent.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(
+                np.full((profile["height"], profile["width"]), pixel, dtype=np.uint8)
+            ).save(frame_path)
+            stream = streams[lens_id]
+            pts = pair[f"{lens_id}_pts_seconds"]
+            decoded_lens_frames.append(
+                {
+                    "segment_sequence_index": 0,
+                    "pair_index": pair["pair_index"],
+                    "lens_id": lens_id,
+                    "source_relative_path": stream["source_relative_path"],
+                    "source_digest": stream["source_digest"],
+                    "stream_index": stream["stream_index"],
+                    "decoded_frame_index": pair["pair_index"],
+                    "source_pts_seconds": pts,
+                    "source_dts_seconds": pts,
+                    "duration_seconds": 0.033333,
+                    "key_frame": pair["pair_index"] == 0,
+                    "artifact_relative_path": frame_path.relative_to(
+                        dataset_root
+                    ).as_posix(),
+                    "digest": _file_digest(frame_path),
+                    "image_metadata": {
+                        "width": profile["width"],
+                        "height": profile["height"],
+                        "pixel_orientation": "native_distorted_lens_pixels",
+                    },
+                    "quality_signals": {
+                        "mean_luma_0_255": float(pixel),
+                        "gradient_energy": 0.0,
+                    },
+                }
+            )
+    dataset = compile_native_360_grouped_frame_dataset(
+        artifact_root=dataset_root,
+        intake_id="hermetic-native-360",
+        capture_digest=profile["source_capture_digest"],
+        normalization_result=normalized,
+        rig_declaration=rig,
+        dual_fisheye_binding=binding,
+        decoded_lens_frames=decoded_lens_frames,
+        runtime_identity="ffmpeg-hermetic-recorded-output",
+        runtime_digest=spec["runtime_digest"],
+        implementation_digest=spec["implementation_digest"],
+        source_commit_sha=spec["source_commit_sha"],
+        authority_used=spec["authority"],
+        timestamp=spec["timestamp"],
     )
     report = _terminal_report(
         spec=spec,
         profile="camera_360_native",
         source_digest=profile["source_capture_digest"],
-        split_digest=split_absence,
-        input_digests=[normalized["native_360_normalization_digest"]],
-        recorded_output_digests=[rig_result["camera_rig_validation_result_digest"]],
+        split_digest=dataset["train_heldout_split_digest"],
+        input_digests=[
+            normalized["native_360_normalization_digest"],
+            dataset["dataset_manifest_digest"],
+        ],
+        recorded_output_digests=[
+            rig_result["camera_rig_validation_result_digest"],
+            dataset["dataset_manifest_digest"],
+        ],
         blocker=profile["expected_terminal_blocker"],
-        ceilings=_ceilings(decoded=False, calibrated=False),
+        ceilings=_ceilings(decoded=True, calibrated=False),
         calibration_status={
             "status": "fixed_native_rig_validated",
             "camera_rig_validation_result_digest": rig_result[
@@ -502,10 +564,15 @@ def test_native_360_hermetic_vertical_validates_rig_then_abstains(tmp_path: Path
     )
 
     assert normalized["status"] == "normalized"
+    assert dataset["candidate_dataset_contains_hidden_heldout_pixels"] is False
+    assert dataset["camera_calibration_binding"] == {
+        "camera_360_rig_declaration_digest": rig["rig_declaration_digest"]
+    }
     assert rig_result["status"] == "validated"
     assert rig_result["camera_trajectory_proven"] is False
     assert rig_result["metric_scale_proven"] is False
     assert report["decision"] == "abstention"
+    assert report["evidence_ceilings"]["decoded_observation_availability"] is True
     assert report["evidence_ceilings"]["calibrated_camera_trajectory"] is False
 
 

@@ -120,8 +120,9 @@ def _normalized_frames(
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
     frame_ids: set[str] = set()
-    frame_indexes: set[int] = set()
-    presentation_times: set[float] = set()
+    frame_indexes: set[tuple[str, int]] = set()
+    presentation_times: set[tuple[str, float]] = set()
+    group_camera_bindings: set[tuple[str, str]] = set()
     for ordinal, raw in enumerate(selected_frames):
         frame_id = str(raw.get("frame_id") or "").strip()
         try:
@@ -131,6 +132,17 @@ def _normalized_frames(
             errors.append(f"selected_frame_numeric_binding_invalid:{ordinal}")
             continue
         digest = str(raw.get("digest") or "")
+        source_camera_identity = str(raw.get("source_camera_identity") or "").strip()
+        observation_group_id = str(raw.get("observation_group_id") or "").strip()
+        grouped = bool(source_camera_identity or observation_group_id)
+        if grouped and not (source_camera_identity and observation_group_id):
+            errors.append(f"selected_frame_group_binding_incomplete:{ordinal}")
+        group_camera_binding = (observation_group_id, source_camera_identity)
+        if grouped and group_camera_binding in group_camera_bindings:
+            errors.append(f"selected_frame_group_camera_duplicate:{ordinal}")
+        elif grouped:
+            group_camera_bindings.add(group_camera_binding)
+        uniqueness_camera = source_camera_identity or "__single_camera__"
         try:
             relative_path = _safe_relative(raw.get("artifact_relative_path"))
         except ReconstructionFrameDatasetError as exc:
@@ -138,9 +150,11 @@ def _normalized_frames(
             continue
         if not frame_id or frame_id in frame_ids:
             errors.append(f"selected_frame_id_missing_or_duplicate:{ordinal}")
-        if frame_index < 0 or frame_index in frame_indexes:
+        frame_index_key = (uniqueness_camera, frame_index)
+        presentation_time_key = (uniqueness_camera, presentation_time)
+        if frame_index < 0 or frame_index_key in frame_indexes:
             errors.append(f"selected_frame_index_invalid_or_duplicate:{ordinal}")
-        if presentation_time < 0 or presentation_time in presentation_times:
+        if presentation_time < 0 or presentation_time_key in presentation_times:
             errors.append(f"selected_frame_pts_invalid_or_duplicate:{ordinal}")
         if not _is_digest(digest):
             errors.append(f"selected_frame_digest_invalid:{ordinal}")
@@ -150,10 +164,9 @@ def _normalized_frames(
         elif source.is_symlink() or not source.is_file() or _sha256_file(source) != digest:
             errors.append(f"selected_frame_source_invalid:{ordinal}")
         frame_ids.add(frame_id)
-        frame_indexes.add(frame_index)
-        presentation_times.add(presentation_time)
-        rows.append(
-            {
+        frame_indexes.add(frame_index_key)
+        presentation_times.add(presentation_time_key)
+        row = {
                 "frame_id": frame_id,
                 "decoded_frame_index": frame_index,
                 "t_video_sec": round(presentation_time, 9),
@@ -166,9 +179,27 @@ def _normalized_frames(
                 "image_metadata": dict(raw.get("image_metadata") or {}),
                 "quality_signals": dict(raw.get("quality_signals") or {}),
             }
+        if grouped:
+            row["source_camera_identity"] = source_camera_identity
+            row["observation_group_id"] = observation_group_id
+        rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            str(row.get("source_camera_identity") or ""),
+            row["decoded_frame_index"],
+            row["frame_id"],
         )
-    rows.sort(key=lambda row: row["decoded_frame_index"])
-    if any(rows[index]["t_video_sec"] >= rows[index + 1]["t_video_sec"] for index in range(len(rows) - 1)):
+    )
+    rows_by_camera: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        rows_by_camera.setdefault(
+            str(row.get("source_camera_identity") or "__single_camera__"), []
+        ).append(row)
+    if any(
+        camera_rows[index]["t_video_sec"] >= camera_rows[index + 1]["t_video_sec"]
+        for camera_rows in rows_by_camera.values()
+        for index in range(len(camera_rows) - 1)
+    ):
         errors.append("selected_frame_pts_not_strictly_increasing")
     if not rows:
         errors.append("selected_frames_missing")
@@ -180,10 +211,20 @@ def _normalized_frames(
 def _split_assignments(
     frames: Sequence[Mapping[str, Any]], *, split_seed_digest: str
 ) -> tuple[dict[str, str], list[str]]:
-    count = len(frames)
+    groups: dict[str, list[Mapping[str, Any]]] = {}
+    grouped_mode = any(row.get("observation_group_id") for row in frames)
+    for row in frames:
+        group_id = str(row.get("observation_group_id") or row["frame_id"])
+        groups.setdefault(group_id, []).append(row)
+    count = len(groups)
     if count < 3:
         return ({str(row["frame_id"]): "training" for row in frames}, [
-            "insufficient_selected_frames_for_disjoint_validation_and_hidden_heldout"
+            (
+                "insufficient_selected_observation_groups_for_disjoint_"
+                "validation_and_hidden_heldout"
+                if grouped_mode
+                else "insufficient_selected_frames_for_disjoint_validation_and_hidden_heldout"
+            )
         ])
     heldout_count = max(1, round(count * 0.2))
     validation_count = max(1, round(count * 0.1))
@@ -194,19 +235,49 @@ def _split_assignments(
             validation_count -= 1
         else:
             break
-    ranked = sorted(
-        frames,
-        key=lambda row: hashlib.sha256(
-            f"{split_seed_digest}\0{row['frame_id']}\0{row['digest']}".encode("utf-8")
-        ).hexdigest(),
-    )
-    assignments: dict[str, str] = {}
-    for row in ranked[:heldout_count]:
-        assignments[str(row["frame_id"])] = "held_out"
-    for row in ranked[heldout_count : heldout_count + validation_count]:
-        assignments[str(row["frame_id"])] = "validation"
-    for row in ranked[heldout_count + validation_count :]:
-        assignments[str(row["frame_id"])] = "training"
+    ranked: list[tuple[str, list[Mapping[str, Any]], str]] = []
+    for group_id, group_rows in groups.items():
+        if len(group_rows) == 1 and not group_rows[0].get("observation_group_id"):
+            rank_digest = str(group_rows[0]["digest"])
+        else:
+            rank_digest = canonical_digest(
+                {
+                    "group_id": group_id,
+                    "frames": sorted(
+                        (
+                            {
+                                "frame_id": row["frame_id"],
+                                "source_camera_identity": row.get(
+                                    "source_camera_identity"
+                                ),
+                                "digest": row["digest"],
+                            }
+                            for row in group_rows
+                        ),
+                        key=lambda row: row["frame_id"],
+                    ),
+                }
+            )
+        rank = hashlib.sha256(
+            f"{split_seed_digest}\0{group_id}\0{rank_digest}".encode("utf-8")
+        ).hexdigest()
+        ranked.append((group_id, group_rows, rank))
+    ranked.sort(key=lambda row: row[2])
+    group_assignments: dict[str, str] = {}
+    for group_id, _rows, _rank in ranked[:heldout_count]:
+        group_assignments[group_id] = "held_out"
+    for group_id, _rows, _rank in ranked[
+        heldout_count : heldout_count + validation_count
+    ]:
+        group_assignments[group_id] = "validation"
+    for group_id, _rows, _rank in ranked[heldout_count + validation_count :]:
+        group_assignments[group_id] = "training"
+    assignments = {
+        str(row["frame_id"]): group_assignments[
+            str(row.get("observation_group_id") or row["frame_id"])
+        ]
+        for row in frames
+    }
     return assignments, []
 
 
@@ -286,6 +357,8 @@ def compile_frozen_frame_dataset(
     selection_rule: str = "evenly_spaced_actual_decoded_pts_with_endpoints_v1",
     parent_artifact: Mapping[str, Any] | None = None,
     timestamp: str | None = None,
+    camera_calibration_binding: Mapping[str, Any] | None = None,
+    coordinate_frame_declaration: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze one content-bound dataset and isolate its hidden held-out pixels."""
 
@@ -312,6 +385,14 @@ def compile_frozen_frame_dataset(
         errors.append("dataset_runtime_identity_missing")
     if not str(selection_rule).strip():
         errors.append("dataset_selection_rule_missing")
+    if camera_calibration_binding is not None and not isinstance(
+        camera_calibration_binding, Mapping
+    ):
+        errors.append("dataset_camera_calibration_binding_invalid")
+    if coordinate_frame_declaration is not None and not isinstance(
+        coordinate_frame_declaration, Mapping
+    ):
+        errors.append("dataset_coordinate_frame_declaration_invalid")
     if len(source_commit_sha) != 40 or any(character not in "0123456789abcdef" for character in source_commit_sha):
         errors.append("dataset_source_commit_sha_invalid")
     if errors:
@@ -321,13 +402,29 @@ def compile_frozen_frame_dataset(
     stream_metadata_digest = canonical_digest(dict(stream_metadata))
     authority_digest = canonical_digest(dict(rights_and_retention))
     parent_artifact_digest = canonical_digest(dict(parent_artifact or {}))
+    camera_calibration_binding_digest = (
+        canonical_digest(dict(camera_calibration_binding))
+        if camera_calibration_binding is not None
+        else None
+    )
+    coordinate_frame_declaration_digest = (
+        canonical_digest(dict(coordinate_frame_declaration))
+        if coordinate_frame_declaration is not None
+        else None
+    )
+    grouped_observations = any(row.get("observation_group_id") for row in frames)
     config = {
         "compiler_version": COMPILER_VERSION,
         "source_capture_identity": intake_id,
         "source_capture_digest": capture_digest,
         "capture_authority_profile": capture_authority_profile,
         "selection_rule": str(selection_rule),
-        "split_rule": "digest_ranked_disjoint_train_validation_hidden_heldout_v1",
+        "split_rule": (
+            "digest_ranked_disjoint_observation_group_train_validation_hidden_heldout_v1"
+            if grouped_observations
+            else "digest_ranked_disjoint_train_validation_hidden_heldout_v1"
+        ),
+        "grouped_observation_splits": grouped_observations,
         "decoded_frame_count": decoded_frame_count,
         "selected_frame_count": len(frames),
         "source_video_relative_path": normalized_source_video_relative_path,
@@ -340,6 +437,14 @@ def compile_frozen_frame_dataset(
         "implementation_digest": implementation_digest,
         "source_commit_sha": source_commit_sha,
     }
+    if camera_calibration_binding_digest is not None:
+        config["camera_calibration_binding_digest"] = (
+            camera_calibration_binding_digest
+        )
+    if coordinate_frame_declaration_digest is not None:
+        config["coordinate_frame_declaration_digest"] = (
+            coordinate_frame_declaration_digest
+        )
     configuration_digest = canonical_digest(config)
     dataset_root = root / f"frozen_dataset_{configuration_digest[7:23]}"
     existing_path = dataset_root / "reconstruction_dataset_manifest.json"
@@ -363,6 +468,14 @@ def compile_frozen_frame_dataset(
             "frame_digest": row["digest"],
             "split": assignments[row["frame_id"]],
         }
+        | (
+            {
+                "source_camera_identity": row["source_camera_identity"],
+                "observation_group_id": row["observation_group_id"],
+            }
+            if row.get("observation_group_id")
+            else {}
+        )
         for row in frames
     ]
     split_binding = {
@@ -392,6 +505,14 @@ def compile_frozen_frame_dataset(
                     "frame_digest": row["digest"],
                     "evaluator_relative_path": relative.as_posix(),
                 }
+                | (
+                    {
+                        "source_camera_identity": row["source_camera_identity"],
+                        "observation_group_id": row["observation_group_id"],
+                    }
+                    if row.get("observation_group_id")
+                    else {}
+                )
             )
         else:
             relative = Path("candidate_dataset") / split / f"{row['frame_id']}.png"
@@ -407,6 +528,14 @@ def compile_frozen_frame_dataset(
                     "image_metadata": row["image_metadata"],
                     "quality_signals": row["quality_signals"],
                 }
+                | (
+                    {
+                        "source_camera_identity": row["source_camera_identity"],
+                        "observation_group_id": row["observation_group_id"],
+                    }
+                    if row.get("observation_group_id")
+                    else {}
+                )
             )
     compiled_at = timestamp or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     selection = {
@@ -485,16 +614,36 @@ def compile_frozen_frame_dataset(
             "stream_metadata_digest": stream_metadata_digest,
             "authority_digest": authority_digest,
             "parent_artifact_digest": parent_artifact_digest,
-        },
+        }
+        | (
+            {
+                "camera_calibration_binding_digest": camera_calibration_binding_digest
+            }
+            if camera_calibration_binding_digest is not None
+            else {}
+        )
+        | (
+            {
+                "coordinate_frame_declaration_digest": coordinate_frame_declaration_digest
+            }
+            if coordinate_frame_declaration_digest is not None
+            else {}
+        ),
         "output_digests": {
             "candidate_dataset_digest": candidate["candidate_dataset_digest"],
             "hidden_heldout_digest": heldout["hidden_heldout_digest"],
         },
         "train_heldout_split_digest": split_binding["split_digest"],
-        "camera_calibration_binding": None,
-        "coordinate_frame_declaration": {
-            "status": "not_established_by_frame_dataset_compiler"
-        },
+        "camera_calibration_binding": (
+            dict(camera_calibration_binding)
+            if camera_calibration_binding is not None
+            else None
+        ),
+        "coordinate_frame_declaration": (
+            dict(coordinate_frame_declaration)
+            if coordinate_frame_declaration is not None
+            else {"status": "not_established_by_frame_dataset_compiler"}
+        ),
         "units": "source_pixels_and_seconds",
         "metric_scale_status": "not_established",
         "capture_authority_profile": capture_authority_profile,
