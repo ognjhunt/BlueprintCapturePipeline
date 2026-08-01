@@ -29,6 +29,10 @@ MIN_WRIST_WORLD_DISPLACEMENT_M = 0.001
 # through that public API.
 MAX_WRIST_LOCAL_TRANSFORM_DELTA = 1e-6
 MAX_KINEMATIC_JOINT_POSITION_ERROR_RAD = 0.02
+# A projected centroid can be fully occluded. Require at least an 8x8-pixel
+# render-derived semantic footprint before treating a task entity as visible.
+# This camera-validity threshold is frozen independently of policy rankings.
+MIN_REQUIRED_ENTITY_VISIBLE_PIXELS = 64
 REQUIRED_VIEWS = ("external", "wrist")
 
 
@@ -166,6 +170,51 @@ def _project_required_external_entities(
         "franka_visibility_rule": "at_least_one_articulation_link_origin_in_frame",
         "franka_link_origins_projected_in_frame": link_projection,
     }
+
+
+def _semantic_entity_visibility(
+    *, semantic_frame: Any, entity_labels: Mapping[str, str]
+) -> dict[str, dict[str, Any]]:
+    """Count render-derived semantic pixels for required entities, fail closed."""
+
+    frame = semantic_frame if isinstance(semantic_frame, Mapping) else {}
+    payload = frame.get("data")
+    info_value = frame.get("info")
+    info = info_value if isinstance(info_value, Mapping) else {}
+    labels_value = info.get("idToLabels")
+    labels = labels_value if isinstance(labels_value, Mapping) else {}
+    try:
+        pixels = np.asarray(payload)
+        if pixels.ndim == 3 and pixels.shape[-1] == 1:
+            pixels = pixels[:, :, 0]
+        if pixels.ndim != 2 or pixels.size == 0 or not np.issubdtype(pixels.dtype, np.integer):
+            raise ValueError
+    except (TypeError, ValueError):
+        pixels = np.asarray([], dtype=np.uint32)
+
+    result: dict[str, dict[str, Any]] = {}
+    for entity_id, expected_label in entity_labels.items():
+        matching_ids: list[int] = []
+        for raw_id, raw_labels in labels.items():
+            label_map = raw_labels if isinstance(raw_labels, Mapping) else {}
+            if str(label_map.get("class") or "") != str(expected_label):
+                continue
+            try:
+                matching_ids.append(int(raw_id))
+            except (TypeError, ValueError):
+                continue
+        visible_pixels = (
+            int(np.isin(pixels, matching_ids).sum()) if pixels.size and matching_ids else 0
+        )
+        result[str(entity_id)] = {
+            "semantic_class": str(expected_label),
+            "semantic_ids": sorted(set(matching_ids)),
+            "visible_pixel_count": visible_pixels,
+            "minimum_visible_pixel_count": MIN_REQUIRED_ENTITY_VISIBLE_PIXELS,
+            "visible": visible_pixels >= MIN_REQUIRED_ENTITY_VISIBLE_PIXELS,
+            "render_derived": True,
+        }
+    return result
 
 
 def _matrix_array(matrix: Any) -> np.ndarray:
@@ -519,6 +568,31 @@ def _summarize_required_entity_projections(
     raise ValueError(f"native_camera_projection_view_invalid:{view_id}")
 
 
+def _summarize_required_entity_visibility(
+    *, view_id: str, visibility_by_phase: Mapping[str, Mapping[str, Any]]
+) -> dict[str, bool]:
+    """Apply the same frozen per-view contract to render-derived visibility."""
+
+    phases = {
+        str(phase): dict(values)
+        for phase, values in visibility_by_phase.items()
+        if isinstance(values, Mapping)
+    }
+
+    def visible(phase: str, entity_id: str) -> bool:
+        value = phases.get(phase, {}).get(entity_id)
+        return bool(value.get("visible")) if isinstance(value, Mapping) else False
+
+    if view_id == "external":
+        return {
+            entity_id: all(visible(phase, entity_id) for phase in ("initial", "commanded"))
+            for entity_id in ("franka", "spraycan", "tray")
+        }
+    if view_id == "wrist":
+        return {"spraycan_at_initial_pose": visible("initial", "spraycan")}
+    raise ValueError(f"native_camera_visibility_view_invalid:{view_id}")
+
+
 def _relocate_layer_asset_path(
     layer_path: Path, source_asset_uri: str, replacement_authored_path: str
 ) -> int:  # pragma: no cover - exercised inside the pinned Isaac/OpenUSD image
@@ -693,6 +767,28 @@ def isaac_sim_6_backend(
         tray_xform.AddScaleOp().Set(Gf.Vec3f(0.36, 0.28, 0.03))
         UsdPhysics.CollisionAPI.Apply(tray.GetPrim())
 
+        try:
+            from semantics.schema_editor import add_prim_semantics
+        except Exception:  # pragma: no cover - Isaac 6 compatibility fallback
+            from omni.isaac.core.utils.semantics import add_update_semantics as add_prim_semantics
+
+        semantic_targets = {
+            "franka": stage.GetPrimAtPath("/World/Franka"),
+            "spraycan": spray_prim,
+            "tray": tray.GetPrim(),
+        }
+        for semantic_label, semantic_prim in semantic_targets.items():
+            if not semantic_prim.IsValid():
+                raise ValueError(f"native_semantic_target_prim_missing:{semantic_label}")
+            try:
+                add_prim_semantics(
+                    semantic_prim,
+                    semantic_label=semantic_label,
+                    type_label="class",
+                )
+            except TypeError:
+                add_prim_semantics(semantic_prim, semantic_label, "class")
+
         UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
         dome = UsdLux.DomeLight.Define(stage, "/World/Lights/Dome")
         dome.CreateIntensityAttr(1000.0)
@@ -779,6 +875,9 @@ def isaac_sim_6_backend(
         camera_objects["wrist"] = Camera(prim_path=wrist_path, resolution=(640, 480))
         for camera in camera_objects.values():
             camera.initialize()
+            camera.add_semantic_segmentation_to_frame(
+                init_params={"semanticTypes": ["class"], "colorize": False}
+            )
         _synchronize_camera_to_rigid_link(
             pose_view=wrist_pose_view,
             parent_to_world=hand_initial_matrix,
@@ -854,6 +953,25 @@ def isaac_sim_6_backend(
                 Image.fromarray(np.asarray(rgba[:, :, :3], dtype=np.uint8)).save(path)
                 frames[view_id][f"{phase}_frame_path"] = str(path)
                 frames[view_id][f"{phase}_physics_step"] = step
+                current_frame = camera.get_current_frame()
+                semantic_frame = (
+                    current_frame.get("semantic_segmentation")
+                    if isinstance(current_frame, Mapping)
+                    else None
+                )
+                frames[view_id].setdefault("required_entities_visible_pixels_by_phase", {})[
+                    phase
+                ] = _semantic_entity_visibility(
+                    semantic_frame=semantic_frame,
+                    entity_labels={
+                        entity_id: entity_id
+                        for entity_id in (
+                            ("franka", "spraycan", "tray")
+                            if view_id == "external"
+                            else ("spraycan",)
+                        )
+                    },
+                )
             return step
 
         def record_entity_projections(phase: str) -> None:
@@ -894,6 +1012,15 @@ def isaac_sim_6_backend(
                     _summarize_required_entity_projections(
                         view_id=view_id,
                         projections_by_phase=phase_values,
+                    )
+                )
+                visibility_values = frames[view_id][
+                    "required_entities_visible_pixels_by_phase"
+                ]
+                frames[view_id]["required_entities_visible_pixels"] = (
+                    _summarize_required_entity_visibility(
+                        view_id=view_id,
+                        visibility_by_phase=visibility_values,
                     )
                 )
 
@@ -1079,11 +1206,18 @@ def assess_native_camera_backend_result(
         projected = view.get("required_entities_projected_in_frame")
         if not isinstance(projected, Mapping) or not all(projected.values()):
             blockers.append(f"native_camera_required_entity_projection_failed:{view_id}")
+        visible = view.get("required_entities_visible_pixels")
+        if not isinstance(visible, Mapping) or not all(visible.values()):
+            blockers.append(f"native_camera_required_entity_visibility_failed:{view_id}")
         view_evidence[view_id] = {
             "frames": frames,
             "required_entities_projected_in_frame": dict(projected or {}),
             "required_entities_projected_in_frame_by_phase": dict(
                 view.get("required_entities_projected_in_frame_by_phase") or {}
+            ),
+            "required_entities_visible_pixels": dict(visible or {}),
+            "required_entities_visible_pixels_by_phase": dict(
+                view.get("required_entities_visible_pixels_by_phase") or {}
             ),
         }
 

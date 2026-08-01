@@ -23,8 +23,10 @@ from blueprint_pipeline.nvidia_warehouse_native_camera_canary import (
     _quaternion_wxyz_from_world_pose_matrix,
     _render_world_without_physics_advance,
     _rigid_wrist_mount_from_initial_task_framing,
+    _semantic_entity_visibility,
     _simulation_app_launch_config,
     _summarize_required_entity_projections,
+    _summarize_required_entity_visibility,
     _synchronize_camera_to_rigid_link,
     _unified_world_pose_matrix,
     _world_pose_matrix_from_backend_pose,
@@ -66,6 +68,10 @@ def _backend(*, output_dir: Path, **_kwargs):
                 "franka": True,
                 "spraycan": True,
                 "tray": True,
+            },
+            "required_entities_visible_pixels": {
+                **({"franka": True, "spraycan": True, "tray": True} if view_id == "external" else {}),
+                **({"spraycan_at_initial_pose": True} if view_id == "wrist" else {}),
             },
         }
     return {
@@ -177,6 +183,63 @@ def test_projection_summary_requires_initial_task_object_but_not_commanded_reaim
         },
     )
     assert missing_initial_object == {"spraycan_at_initial_pose": False}
+
+
+def test_semantic_visibility_counts_only_rendered_target_pixels() -> None:
+    data = np.zeros((12, 12), dtype=np.uint32)
+    data[2:10, 2:10] = 7
+    evidence = _semantic_entity_visibility(
+        semantic_frame={
+            "data": data,
+            "info": {"idToLabels": {"0": {"class": "UNLABELLED"}, "7": {"class": "spraycan"}}},
+        },
+        entity_labels={"spraycan": "spraycan", "tray": "tray"},
+    )
+
+    assert evidence["spraycan"] == {
+        "semantic_class": "spraycan",
+        "semantic_ids": [7],
+        "visible_pixel_count": 64,
+        "minimum_visible_pixel_count": 64,
+        "visible": True,
+        "render_derived": True,
+    }
+    assert evidence["tray"]["visible"] is False
+
+
+def test_semantic_visibility_fails_closed_for_missing_or_colorized_payload() -> None:
+    assert _semantic_entity_visibility(
+        semantic_frame=None,
+        entity_labels={"spraycan": "spraycan"},
+    )["spraycan"]["visible"] is False
+    assert _semantic_entity_visibility(
+        semantic_frame={
+            "data": np.zeros((12, 12, 4), dtype=np.uint8),
+            "info": {"idToLabels": {"7": {"class": "spraycan"}}},
+        },
+        entity_labels={"spraycan": "spraycan"},
+    )["spraycan"]["visible"] is False
+
+
+def test_visibility_summary_requires_rendered_pixels_not_projection() -> None:
+    visibility = {
+        "initial": {
+            "spraycan": {"visible": False},
+            "tray": {"visible": True},
+            "franka": {"visible": True},
+        },
+        "commanded": {
+            "spraycan": {"visible": True},
+            "tray": {"visible": True},
+            "franka": {"visible": True},
+        },
+    }
+    assert _summarize_required_entity_visibility(
+        view_id="external", visibility_by_phase=visibility
+    ) == {"franka": True, "spraycan": False, "tray": True}
+    assert _summarize_required_entity_visibility(
+        view_id="wrist", visibility_by_phase=visibility
+    ) == {"spraycan_at_initial_pose": False}
 
 
 def test_zero_time_scene_update_uses_cuda_world_render_and_preserves_step_index() -> None:
@@ -720,6 +783,44 @@ def test_native_camera_canary_requires_scene_robot_rigid_object_and_two_synced_v
     )
     assert result["paid_policy_or_wam_model_invoked"] is False
     assert result["claim_boundary"]["policy_wam_loop_proven"] is False
+
+
+def test_native_camera_canary_rejects_projected_but_not_rendered_task_object(
+    tmp_path: Path,
+) -> None:
+    spec_path = tmp_path / "spec.json"
+    _spec(spec_path)
+
+    def occluded_backend(**kwargs):
+        value = _backend(**kwargs)
+        value["views"]["wrist"]["required_entities_visible_pixels"] = {
+            "spraycan_at_initial_pose": False
+        }
+        value["views"]["wrist"]["required_entities_visible_pixels_by_phase"] = {
+            "initial": {
+                "spraycan": {
+                    "visible_pixel_count": 0,
+                    "minimum_visible_pixel_count": 64,
+                    "visible": False,
+                    "render_derived": True,
+                }
+            }
+        }
+        return value
+
+    result = run_native_camera_canary(
+        spec_path=spec_path,
+        assets_root=tmp_path / "assets",
+        output_dir=tmp_path / "result",
+        backend=occluded_backend,
+    )
+
+    assert result["status"] == "failed"
+    assert result["assessment"]["views"]["wrist"][
+        "required_entities_projected_in_frame"
+    ]["spraycan"] is True
+    assert "native_camera_required_entity_projection_failed:wrist" not in result["blockers"]
+    assert "native_camera_required_entity_visibility_failed:wrist" in result["blockers"]
 
 
 def test_native_camera_canary_fails_static_or_slipping_wrist_mount(tmp_path: Path) -> None:
