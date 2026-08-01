@@ -360,19 +360,23 @@ used as blind confirmation.
   provider and campaign accounting, and bind WAM10 to the exact query-10
   action, 34-frame generated feedback history, immutable provider bundle, one
   single-use allocation, and the two-GPU global ceiling;
+- `protocol_amendment_46_wam10_result_and_policy_query11_v1.md` and
+  `compute_authorization_openpi_policy_query_11.json` — preserve WAM10's exact
+  three-view output, immediate reliability, owned-instance and global-zero
+  closure, settled accounting, and generated-only same-policy query-11
+  admission boundary;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-Nine interactions are complete. Policy query 10 returned a new same-checkpoint
-15x8 action from WAM9's exact generated observations and the registered
-commanded state, settled USD `0.060833`, and returned global Vast inventory to
-zero. Its exact action now conditions the immutable WAM10 request with 34
-generated feedback frames per view. The next finite gate is WAM10 through the
+Ten interactions are complete. WAM10 returned three exact generated views,
+passed immediate reliability with no flags or abstention, settled USD
+`0.108777`, and returned global Vast inventory to zero. Its exact final views
+and commanded-prefix state are frozen in the label-free policy-query-11 input.
+The next finite gate is one same-checkpoint policy query 11 through the
 canonical paid-resource allocator after fresh source, credential,
 object-transport, provider-inventory, cumulative-budget, watchdog, preflight,
-and dry-run checks. WAM10 must return three exact generated views and pass
-immediate reliability before interaction ten is complete. Judges remain
-forbidden until the complete 12-interaction episode and causal-control matrix
-pass.
+and dry-run checks. Its native action must then condition WAM11 before
+interaction eleven is complete. Judges remain forbidden until the complete
+12-interaction episode and causal-control matrix pass.
