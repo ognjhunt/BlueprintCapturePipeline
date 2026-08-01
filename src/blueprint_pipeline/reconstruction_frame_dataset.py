@@ -32,7 +32,7 @@ SELECTION_SCHEMA_VERSION = "retained_frame_selection_manifest.v1"
 SPLIT_SCHEMA_VERSION = "frozen_reconstruction_split_manifest.v1"
 CANDIDATE_SCHEMA_VERSION = "candidate_reconstruction_dataset_manifest.v1"
 HELDOUT_SCHEMA_VERSION = "hidden_heldout_evaluator_manifest.v1"
-COMPILER_VERSION = "deterministic_retained_frame_compiler.v1"
+COMPILER_VERSION = "deterministic_retained_frame_compiler.v2"
 
 
 class ReconstructionFrameDatasetError(ValueError):
@@ -521,17 +521,18 @@ def compile_frozen_frame_dataset(
         else None
     )
     grouped_observations = any(row.get("observation_group_id") for row in frames)
+    split_rule = (
+        "digest_ranked_disjoint_observation_group_train_validation_hidden_heldout_v1"
+        if grouped_observations
+        else "digest_ranked_disjoint_train_validation_hidden_heldout_v1"
+    )
     config = {
         "compiler_version": COMPILER_VERSION,
         "source_capture_identity": intake_id,
         "source_capture_digest": capture_digest,
         "capture_authority_profile": capture_authority_profile,
         "selection_rule": str(selection_rule),
-        "split_rule": (
-            "digest_ranked_disjoint_observation_group_train_validation_hidden_heldout_v1"
-            if grouped_observations
-            else "digest_ranked_disjoint_train_validation_hidden_heldout_v1"
-        ),
+        "split_rule": split_rule,
         "grouped_observation_splits": grouped_observations,
         "decoded_frame_count": decoded_frame_count,
         "selected_frame_count": len(frames),
@@ -569,12 +570,16 @@ def compile_frozen_frame_dataset(
         return _validated_existing_dataset(
             existing_path, root=root, configuration_digest=configuration_digest
         )
-    split_seed = canonical_digest(
+    split_protocol_digest = canonical_digest(
         {
             "capture_digest": capture_digest,
-            "configuration_digest": configuration_digest,
             "selected_frame_binding_digest": selected_frame_binding_digest,
+            "selection_rule": str(selection_rule),
+            "split_rule": split_rule,
         }
+    )
+    split_seed = canonical_digest(
+        {"split_protocol_digest": split_protocol_digest}
     )
     assignments, blockers = _split_assignments(frames, split_seed_digest=split_seed)
     split_rows = [
@@ -599,7 +604,7 @@ def compile_frozen_frame_dataset(
         "schema_version": SPLIT_SCHEMA_VERSION,
         "frozen": True,
         "capture_digest": capture_digest,
-        "deterministic_configuration_digest": configuration_digest,
+        "deterministic_configuration_digest": split_protocol_digest,
         "split_seed_digest": split_seed,
         "assignments": split_rows,
         "candidate_can_change_assignments": False,

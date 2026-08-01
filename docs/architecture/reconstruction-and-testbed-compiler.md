@@ -83,6 +83,11 @@ rotation, pixel/color, and locally measurable image-quality metadata when those
 values are available. Duplicate or reordered PTS, undecodable media, symlinked
 inputs, unsafe paths, digest changes, and oversized retained video fail closed.
 The original retained video remains complete and authoritative.
+The v2 compiler isolates the split protocol digest from compiler SHA, runtime,
+and implementation provenance, so unchanged selected observations and split
+rules preserve exact train/validation/hidden-held-out membership across a code
+or worker rebuild. Dataset provenance and the overall dataset digest still
+change when the producing implementation changes.
 
 Metric scale now has a separate `metric_scale_anchor_declaration.v1` and
 `metric_scale_validation_result.v2` gate. Only a positive, independently

@@ -91,6 +91,8 @@ def _compile(
     timestamp: str = "2026-07-30T12:00:00Z",
     supporting_artifact_references: tuple[dict, ...] = (),
     source_video_references: tuple[dict, ...] | None = None,
+    implementation_digest: str = IMPLEMENTATION_DIGEST,
+    source_commit_sha: str = SOURCE_COMMIT,
 ) -> dict:
     return compile_frozen_frame_dataset(
         artifact_root=root,
@@ -109,8 +111,8 @@ def _compile(
         },
         runtime_identity="ffmpeg_ffprobe_local",
         runtime_digest=RUNTIME_DIGEST,
-        implementation_digest=IMPLEMENTATION_DIGEST,
-        source_commit_sha=SOURCE_COMMIT,
+        implementation_digest=implementation_digest,
+        source_commit_sha=source_commit_sha,
         rights_and_retention={"rights": "accepted", "external_processing_allowed": False},
         timestamp=timestamp,
         supporting_artifact_references=supporting_artifact_references,
@@ -389,6 +391,30 @@ def test_compiler_configuration_binds_pts_and_stream_metadata(tmp_path: Path) ->
         "deterministic_configuration_digest"
     ]
     assert first["dataset_manifest_digest"] != second["dataset_manifest_digest"]
+
+
+def test_split_membership_is_stable_across_compiler_provenance_changes(
+    tmp_path: Path,
+) -> None:
+    frames = _frames(tmp_path)
+    first = _compile(tmp_path, frames)
+    changed = _compile(
+        tmp_path,
+        frames,
+        implementation_digest="sha256:" + "9" * 64,
+        source_commit_sha="8" * 40,
+    )
+    first_split = _load_ref(tmp_path, first, "frozen_split_manifest")
+    changed_split = _load_ref(tmp_path, changed, "frozen_split_manifest")
+
+    assert first["deterministic_configuration_digest"] != changed[
+        "deterministic_configuration_digest"
+    ]
+    assert first["dataset_manifest_digest"] != changed["dataset_manifest_digest"]
+    assert first_split == changed_split
+    assert first["train_heldout_split_digest"] == changed[
+        "train_heldout_split_digest"
+    ]
 
 
 def test_compiler_rejects_duplicate_pts_and_frame_path_escape(tmp_path: Path) -> None:
