@@ -214,17 +214,25 @@ used as blind confirmation.
   same-checkpoint policy query 3; and require a fresh global-zero preflight
   after an unrelated writer's GPU correctly caused the first preflight to fail
   closed;
+- `protocol_amendment_22_policy_query3_result_and_wam3_v1.md`,
+  `compute_authorization_ctrl_world_allocation_7.json`, and
+  `ctrl_world_current_reference_wam_3_gpu_profile_freeze_v1.json` — preserve
+  the successful same-checkpoint policy query 3, explicitly supersede its
+  invalid first local validation with the corrected non-null identity check,
+  close the three-interaction gate, and bind WAM3 to the exact query-3 action,
+  27-frame feedback history, immutable provider bundle, and one single-use
+  allocation;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-Three generated-only WAM transitions and their immediate reliability gates
-passed. The same frozen `pi05_droid` checkpoint was re-queried after the first
-two using only the three WAM-generated views and registered commanded state;
-both re-queries returned distinct, complete native 15x8 actions. The third WAM
-output and policy-query-3 input are frozen, but an unrelated active Vast GPU
-correctly caused the first query-3 preflight to fail closed. The next finite
-gate is a fresh provider-zero preflight followed by same-policy query 3. Judges
-remain forbidden until a complete 12-interaction episode and the causal-control
-matrix pass.
+The registered three-interaction engineering gate is complete. Three
+generated-only WAM transitions passed their immediate reliability gates, and
+the same frozen `pi05_droid` checkpoint was re-queried after each using only
+the three generated views and registered commanded state. Query 3 returned a
+complete native 15x8 action. WAM3 is now frozen with the preserved 27-frame
+feedback history as interaction four of the 12-interaction horizon. The next
+finite gate is immutable publication and paid execution of WAM3, followed by
+same-policy query 4 if reliability passes. Judges remain forbidden until the
+complete 12-interaction episode and causal-control matrix pass.
