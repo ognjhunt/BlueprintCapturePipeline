@@ -182,15 +182,21 @@ used as blind confirmation.
   second generated-only WAM transition to the exact action from the first
   same-policy re-query, its preserved 25-frame feedback history, and one
   single-use allocation under the unchanged ceilings;
+- `protocol_amendment_18_interaction_count_and_complete_horizon_v1.md` —
+  preserves and corrects the query-versus-interaction counting error before
+  interaction three, and freezes the complete current-reference horizon at 12
+  full policy-to-WAM-to-same-policy interactions from Ctrl-World's official
+  `interact_num = 12` reference;
 - external object inventories — complete public GCS metadata for all three
   OpenPI DROID checkpoints, preserved under the external evidence root.
 
 ## Next finite gate
 
-The first generated-only WAM transition and immediate reliability gate passed.
-The same frozen `pi05_droid` checkpoint was then re-queried using only the three
-WAM-generated views and registered commanded state; it returned a distinct,
-complete native 15x8 action. The next finite gate is one request-bound Ctrl-World
-generation from that action with the complete feedback history preserved. This
-is interaction two of the registered three-interaction episode. Judges remain
-forbidden until a complete episode passes causal qualification.
+Two generated-only WAM transitions and their immediate reliability gates
+passed. The same frozen `pi05_droid` checkpoint was re-queried after each using
+only the three WAM-generated views and registered commanded state; both
+re-queries returned distinct, complete native 15x8 actions. This is two full
+policy-to-WAM-to-same-policy interactions, not three. The next finite gate is
+one request-bound Ctrl-World generation from query 2 followed by the same-policy
+query 3. Judges remain forbidden until a complete 12-interaction episode and
+the causal-control matrix pass.
