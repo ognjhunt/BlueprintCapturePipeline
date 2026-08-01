@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blueprint.example/schemas/reconstruction_gpu_operation_bundle.v1.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version", "status", "operation", "operation_request_schema",
+    "operation_request_digest", "operation_input_bundle_digest",
+    "expected_runtime_result_schema", "source_capture_digest", "source_commit_sha",
+    "worker_image_digest", "reconstruction_dataset_digest", "frozen_split_digest",
+    "calibration_digest", "artifact_members", "artifact_member_count",
+    "artifact_total_bytes", "request_archive_path", "candidate_may_read_hidden_heldout",
+    "trainer_may_grade_heldout", "raw_secret_values_included",
+    "provider_allocation_performed", "paid_execution_authorized_by_bundle",
+    "bundle_manifest_digest", "bundle_artifact_reference", "bundle_bytes",
+    "cost_usd", "proof_effect", "claim_ceiling", "receipt_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "reconstruction_gpu_operation_bundle.v1"},
+    "status": {"const": "compiled"},
+    "operation": {"enum": ["pose_canary", "trainer_canary"]},
+    "operation_request_schema": {"enum": ["pose_estimation_request.v1", "reconstruction_training_request.v1"]},
+    "operation_request_digest": {"$ref": "#/$defs/digest"},
+    "operation_input_bundle_digest": {"$ref": "#/$defs/digest"},
+    "expected_runtime_result_schema": {"enum": ["pose_estimation_result.v1", "reconstruction_training_result.v1"]},
+    "source_capture_digest": {"$ref": "#/$defs/digest"},
+    "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
+    "worker_image_digest": {"pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"},
+    "reconstruction_dataset_digest": {"$ref": "#/$defs/digest"},
+    "frozen_split_digest": {"$ref": "#/$defs/digest"},
+    "calibration_digest": {"$ref": "#/$defs/digest"},
+    "artifact_members": {
+      "type": "array", "minItems": 2, "maxItems": 20000,
+      "items": {
+        "type": "object",
+        "required": ["artifact_id", "role", "digest", "bytes", "archive_path", "contains_hidden_heldout_pixels"],
+        "properties": {
+          "artifact_id": {"pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+          "digest": {"$ref": "#/$defs/digest"},
+          "bytes": {"type": "integer", "minimum": 0},
+          "archive_path": {"pattern": "^inputs/[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"},
+          "contains_hidden_heldout_pixels": {"const": false}
+        },
+        "additionalProperties": true
+      }
+    },
+    "artifact_member_count": {"type": "integer", "minimum": 2, "maximum": 20000},
+    "artifact_total_bytes": {"type": "integer", "minimum": 0},
+    "request_archive_path": {"const": "operation_request.json"},
+    "candidate_may_read_hidden_heldout": {"const": false},
+    "trainer_may_grade_heldout": {"const": false},
+    "raw_secret_values_included": {"const": false},
+    "provider_allocation_performed": {"const": false},
+    "paid_execution_authorized_by_bundle": {"const": false},
+    "bundle_manifest_digest": {"$ref": "#/$defs/digest"},
+    "bundle_artifact_reference": {"pattern": "^[0-9a-f]{64}/reconstruction_gpu_operation_bundle\\.zip$"},
+    "bundle_bytes": {"type": "integer", "minimum": 1},
+    "cost_usd": {"const": 0.0},
+    "proof_effect": {"const": "none"},
+    "claim_ceiling": {"const": "candidate_operation_input_only"},
+    "receipt_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}

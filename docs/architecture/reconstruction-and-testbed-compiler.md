@@ -965,3 +965,14 @@ budget, numeric TTL and retry cap, an authority identifier, and the two private
 signed URL files. Invoke it only through `python -m
 blueprint_pipeline.paid_resource_allocator gpu-canary --probe-kind
 reconstruction-worker-smoke`; direct adapter launch has no admission capability.
+
+Pose and trainer canaries additionally require a
+`reconstruction_gpu_operation_bundle.v1` receipt. The local compiler validates
+the typed pose or training request, rejects hidden-held-out and secret-bearing
+members, binds every candidate input by digest, writes a deterministic ZIP, and
+derives the canonical canary request from that exact receipt. The bundle cannot
+authorize spending or provider mutation and has no proof effect. Isaac remains
+a separate `isaac_verification_worker_bundle.v1` and runtime-image family.
+Scientific pose, trainer, and Isaac execution adapters remain unavailable until
+their provider lifecycle, output validation, teardown, and offline replay paths
+are independently qualified; the worker-smoke adapter cannot stand in for them.
