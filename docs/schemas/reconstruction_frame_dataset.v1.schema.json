@@ -244,7 +244,12 @@
             }
           }
         },
-        "producing_method": {"const": "deterministic_retained_frame_compiler.v2"},
+        "producing_method": {
+          "enum": [
+            "deterministic_retained_frame_compiler.v1",
+            "deterministic_retained_frame_compiler.v2"
+          ]
+        },
         "implementation_version": {"$ref": "#/$defs/sha256"},
         "container_image_digest": {"type": ["string", "null"]},
         "source_commit_sha": {"$ref": "#/$defs/commit"},

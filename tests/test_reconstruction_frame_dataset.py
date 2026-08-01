@@ -199,6 +199,9 @@ def test_compiler_is_idempotent_and_isolates_hidden_heldout_pixels(tmp_path: Pat
     validator = jsonschema.Draft202012Validator(_schema())
     for artifact in (first, split, candidate, heldout, _load_ref(tmp_path, first, "retained_frame_selection_manifest")):
         validator.validate(artifact)
+    legacy_dataset = dict(first)
+    legacy_dataset["producing_method"] = "deterministic_retained_frame_compiler.v1"
+    validator.validate(legacy_dataset)
 
 
 def test_compiler_preserves_complete_multisegment_source_set(tmp_path: Path) -> None:
