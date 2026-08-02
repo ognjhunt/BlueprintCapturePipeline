@@ -613,6 +613,34 @@ def _log_summary(path: Path) -> dict[str, Any]:
     }
 
 
+def _subprocess_failure_codes(stderr_path: Path, exit_code: int) -> list[str]:
+    """Return bounded diagnostic categories without persisting worker stderr."""
+
+    try:
+        text = stderr_path.read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        text = ""
+    codes = [f"worker_exit_nonzero:{exit_code}"]
+    if exit_code < 0:
+        codes.append(f"worker_signal:{-exit_code}")
+    patterns = (
+        ("qt.qpa", "worker_stderr_qt_platform_failure"),
+        ("could not load the qt platform plugin", "worker_stderr_qt_platform_failure"),
+        ("omp: error", "worker_stderr_openmp_runtime_failure"),
+        ("libgomp", "worker_stderr_openmp_runtime_failure"),
+        ("cuda_error", "worker_stderr_cuda_runtime_failure"),
+        ("cuda error", "worker_stderr_cuda_runtime_failure"),
+        ("libcuda", "worker_stderr_cuda_runtime_failure"),
+        ("driver version is insufficient", "worker_stderr_cuda_runtime_failure"),
+        ("terminate called", "worker_stderr_native_termination"),
+        ("assertion", "worker_stderr_native_assertion"),
+        ("fatal python error", "worker_stderr_fatal_python_error"),
+        ("traceback (most recent call last)", "worker_stderr_python_traceback"),
+    )
+    codes.extend(code for pattern, code in patterns if pattern in text)
+    return sorted(set(codes))
+
+
 def _receipt(
     request: Mapping[str, Any],
     *,
@@ -730,7 +758,7 @@ def run_measurement_adapter_execution(
                 exit_code = completed.returncode
                 if exit_code != 0:
                     status = "failed"
-                    failures.append(f"worker_exit_nonzero:{exit_code}")
+                    failures.extend(_subprocess_failure_codes(stderr_path, exit_code))
                 elif not result_path.is_file() or result_path.is_symlink():
                     status = "failed"
                     failures.append("worker_result_missing_or_unsafe")

@@ -1,0 +1,61 @@
+{
+  "schema_version": "measurement_dlo_lab_vast_attempt_evidence.v1",
+  "attempt_id": "measurement-dlo-lab-vast-attempt1-2026-08-02",
+  "status": "failed_execution_preserved",
+  "blueprint_source_commit": "90d9a44aae7063df6b8ccd0e5ca8db6a11ca2fb6",
+  "dlo_lab_source_commit": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
+  "runtime_image_digest": "pytorch/pytorch:2.9.1-cuda13.0-cudnn9-runtime@sha256:60f22fb80755fd0b470fb47928dbd55816aa9f847edd95cf43c93253507a9ddf",
+  "runtime_release_digest": "sha256:39e21d90fafbb51f9277977732cde72acaff8a3b7886bbc0ac114f0611b87166",
+  "input_bundle_digest": "sha256:943db8353b246a08a7c7965b5b8cd7a58fbe311bd7f76122a5a6a4e2ce7e7e4a",
+  "bundle_manifest_digest": "sha256:25f48a00173a04f8ee3d393ba175873187994d2678d6b87046f141bf3f7409ee",
+  "provider": "vast",
+  "instance_id": "46635175",
+  "gpu_name": "L40S",
+  "hourly_rate_usd": 0.4888888888888888,
+  "duration_seconds": 363.31112909317017,
+  "estimated_cost_usd": 0.060701365601574936,
+  "runtime_result_digest": "sha256:a8cf65eb7ff4762117f8450c0f317d1b52ed2851a69b183e85e5921544eac076",
+  "execution_result_digest": "sha256:182261227a939c074f94bce73374b223e119cba3e4ce90cf27b194abdc6cc024",
+  "observed_failure": {
+    "execution_bundle_count": 2,
+    "common_exit_code": -6,
+    "common_signal": 6,
+    "common_stderr_bytes": 222,
+    "generic_failure_code": "worker_exit_nonzero:-6",
+    "stderr_content_persisted": false,
+    "executions": [
+      {
+        "execution_id": "dlo-lab-cuda-cable-001-dlo-lab-cable-development-001",
+        "stderr_digest": "sha256:44dd0a70fc3fb94b2cd3718e30000b93f1bb8d7b9aa38e65f37d5a9f4d145d1c"
+      },
+      {
+        "execution_id": "dlo-lab-cuda-cable-002-dlo-lab-cable-development-002",
+        "stderr_digest": "sha256:2f69f58f950be3a8709c426c8e099d3c70628cd9d1fffd430abfef6e3db65e66"
+      }
+    ]
+  },
+  "teardown": {
+    "status": "PASS",
+    "teardown_receipt_digest": "sha256:e62ed5522772802399a99570d684e276411f3f2bd913b48c37119b7661c49281",
+    "provider_zero_status": "PASS",
+    "provider_zero_digest": "sha256:3e62969d55f6a84018517e2fd28fda5bbaf48586fc35630f20ecba5f3b983c2a",
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "exact_object_count": 2,
+    "all_objects_absent": true,
+    "signed_url_files_removed": true
+  },
+  "claim_boundary": {
+    "development_execution_completed": false,
+    "qualification_created": false,
+    "r5_evidence": false,
+    "r6_decision": false,
+    "r7_admission": false,
+    "physical_success_established": false,
+    "proof_effect": "failed_provider_execution_only"
+  },
+  "next_encoded_action": "Run the DLO worker under a native-process supervisor that retains only the last phase, signal, stderr digest, byte count, and normalized error categories."
+}

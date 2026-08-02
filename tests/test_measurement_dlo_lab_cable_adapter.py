@@ -131,6 +131,53 @@ def test_dlo_lab_worker_blocks_cleanly_without_exact_gpu_runtime() -> None:
     assert result["qualification_labels_accessed"] is False
 
 
+def test_dlo_lab_supervisor_contains_native_abort_and_classifies_stderr(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        dlo_adapter.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=-6,
+            stdout=b"",
+            stderr=b"OMP: Error libgomp terminate called\n",
+        ),
+    )
+    result = dlo_adapter._run_supervised_worker(_request())
+    assert result["status"] == "blocked"
+    assert result["failure_codes"] == [
+        "dlo_lab_adapter_native_termination",
+        "dlo_lab_adapter_openmp_runtime_failure",
+        "dlo_lab_adapter_supervised_worker_exit_nonzero:-6",
+        "dlo_lab_adapter_supervised_worker_signal:6",
+    ]
+    observations = result["runtime_observations"]
+    assert observations["supervised_worker_native_signal"] == 6
+    assert observations["supervised_worker_timed_out"] is False
+    assert observations["supervised_worker_stderr_bytes"] > 0
+    assert observations["supervised_worker_stderr_content_persisted"] is False
+
+
+def test_dlo_lab_supervisor_does_not_report_timeout_as_native_signal(
+    monkeypatch,
+) -> None:
+    def timed_out(*_args, **_kwargs):
+        raise dlo_adapter.subprocess.TimeoutExpired(
+            cmd=["dlo-worker"],
+            timeout=5,
+            stderr=b"partial diagnostic",
+        )
+
+    monkeypatch.setattr(dlo_adapter.subprocess, "run", timed_out)
+    result = dlo_adapter._run_supervised_worker(_request())
+    assert result["status"] == "blocked"
+    assert result["failure_codes"] == ["dlo_lab_adapter_supervised_worker_timed_out"]
+    observations = result["runtime_observations"]
+    assert observations["supervised_worker_exit_code"] is None
+    assert observations["supervised_worker_native_signal"] is None
+    assert observations["supervised_worker_timed_out"] is True
+
+
 def test_dlo_lab_worker_rejects_protocol_solver_and_implementation_tampering() -> None:
     protocol = copy.deepcopy(_request())
     protocol["case_manifest"]["operating_point"]["adapter_protocol"] = "generic-genesis"
