@@ -138,6 +138,8 @@ def _runtime(request: dict, root: Path) -> dict:
                 "robot_pose": [1.0, 2.0, 0.0, 0.0],
                 "world_bound_min": [0.8, 1.8, 0.0],
                 "world_bound_max": [1.2, 2.2, 1.0],
+                "robot_only_environment_hidden": True,
+                "robot_only_hidden_environment_prim_paths": ["/World/gauss/gauss"],
                 "robot_only_pass": robot_rows,
             },
             "proof_boundary": {

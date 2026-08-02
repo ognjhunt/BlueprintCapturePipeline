@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "external_scene_collision_compilation_request.v1.schema.json",
+  "title": "External scene collision compilation request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_asset_digest", "source_format", "source_coordinate_frame", "metric_scale_status", "source_video_available", "generated_fill_allowed", "collision_validated", "request_digest"],
+  "properties": {
+    "schema_version": {"const": "external_scene_collision_compilation_request.v1"},
+    "source_asset_digest": {"$ref": "#/$defs/digest"},
+    "source_format": {"const": "glb"},
+    "source_coordinate_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["up_axis", "handedness"],
+      "properties": {
+        "up_axis": {"enum": ["Y", "Z"]},
+        "handedness": {"const": "right"}
+      }
+    },
+    "metric_scale_status": {"enum": ["provider_declared_not_independently_validated", "sensor_metric_unvalidated", "unverified", "validated"]},
+    "source_video_available": {"type": "boolean"},
+    "generated_fill_allowed": {"const": false},
+    "collision_validated": {"const": false},
+    "request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

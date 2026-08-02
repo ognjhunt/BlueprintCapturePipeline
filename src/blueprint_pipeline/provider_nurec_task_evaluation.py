@@ -29,6 +29,7 @@ from .external_provider_nurec import (
 )
 from .local_evidence_adapters import (
     SIGNED_ISAAC_POINT_CONTACT_ADAPTER,
+    SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER,
     SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER,
     authorized_local_evidence_adapter_registry,
 )
@@ -73,6 +74,76 @@ def _validate_digest_artifact(
     return artifact
 
 
+def _validated_policy_trace_pair(runtime: Mapping[str, Any]) -> dict[str, Any] | None:
+    value = runtime.get("articulated_policy_trace_pair")
+    if not isinstance(value, Mapping) or value.get("requested") is not True:
+        return None
+    pair = _clone(value)
+    errors: list[str] = []
+    if pair.get("schema_version") != "franka_articulated_policy_trace_pair.v1":
+        errors.append("articulated_policy_trace_pair_schema_invalid")
+    if pair.get("status") != "completed" or pair.get("blockers") not in ([], (None,)):
+        errors.append("articulated_policy_trace_pair_not_completed")
+    if pair.get("robot_id") != "franka_panda":
+        errors.append("articulated_policy_trace_pair_robot_invalid")
+    if pair.get("controller_id") != "deterministic_franka_joint_position_pair.v1":
+        errors.append("articulated_policy_trace_pair_controller_invalid")
+    if pair.get("articulated_policy_execution_observed") is not True:
+        errors.append("articulated_policy_trace_execution_not_observed")
+    if pair.get("comparative_policy_ranking_proven") is not False:
+        errors.append("articulated_policy_trace_ranking_boundary_invalid")
+    if pair.get("physical_success_claimed") is not False:
+        errors.append("articulated_policy_trace_physical_boundary_invalid")
+    if pair.get("articulated_policy_trace_pair_digest") != canonical_digest(
+        pair, digest_field="articulated_policy_trace_pair_digest"
+    ):
+        errors.append("articulated_policy_trace_pair_digest_mismatch")
+    traces = pair.get("candidate_traces")
+    expected_ids = ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+    if (
+        not isinstance(traces, list)
+        or len(traces) != 2
+        or [row.get("policy_id") for row in traces if isinstance(row, Mapping)] != expected_ids
+    ):
+        errors.append("articulated_policy_trace_candidates_invalid")
+        traces = []
+    for index, trace in enumerate(traces):
+        if not isinstance(trace, Mapping):
+            errors.append(f"articulated_policy_trace_{index}_invalid")
+            continue
+        if trace.get("status") != "completed" or trace.get(
+            "policy_trace_digest"
+        ) != canonical_digest(trace, digest_field="policy_trace_digest"):
+            errors.append(f"articulated_policy_trace_{index}_digest_or_status_invalid")
+        if not isinstance(trace.get("samples"), list) or not trace.get("samples"):
+            errors.append(f"articulated_policy_trace_{index}_samples_missing")
+        observation = trace.get("egocentric_observation")
+        if (
+            not isinstance(observation, Mapping)
+            or observation.get("robot_relative_mount") is not True
+            or observation.get("nonblank") is not True
+            or not str(observation.get("artifact_reference") or "")
+            or not str(observation.get("digest") or "").startswith("sha256:")
+        ):
+            errors.append(f"articulated_policy_trace_{index}_egocentric_observation_invalid")
+    assessment = pair.get("trace_pair_assessment")
+    if not isinstance(assessment, Mapping):
+        errors.append("articulated_policy_trace_pair_assessment_missing")
+    else:
+        if (
+            assessment.get("status") != "completed"
+            or assessment.get("distinct") is not True
+            or assessment.get("identical_frozen_start_observed") is not True
+            or assessment.get("robot_relative_egocentric_camera") is not True
+            or assessment.get("trace_pair_digest")
+            != canonical_digest(assessment, digest_field="trace_pair_digest")
+        ):
+            errors.append("articulated_policy_trace_pair_assessment_invalid")
+    if errors:
+        raise ProviderNuRecTaskEvaluationError(errors)
+    return pair
+
+
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> None:
     payload = (canonical_json(value) + "\n").encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,6 +184,14 @@ def _method_profiles(
     *, testbed: Mapping[str, Any]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     bindings = testbed["robot_sensor_controller_bindings"]
+    source_bundle = testbed["source_capture_bundles"][0]
+    bundle_id = str(source_bundle["bundle_id"])
+    scene_entrypoint = str(
+        testbed["supported_condition_ranges"].get("scene_entrypoint")
+        or "scene.usdz"
+    )
+    task_id = str(testbed["task_distribution"]["tasks"][0])
+    task_family = str(testbed["task_distribution"]["task_family"])
 
     def replay_leaf(method_id: str, required_evidence: str) -> dict[str, Any]:
         return {
@@ -122,9 +201,9 @@ def _method_profiles(
             "scene_bundle": {
                 "adapter_id": "openusd_scene_bundle",
                 "adapter_version": "1",
-                "bundle_id": "ethel-provider-nurec-package",
-                "uri": "artifact://ethel-provider-nurec-package",
-                "entrypoint": "ethel_sim.usdz",
+                "bundle_id": bundle_id,
+                "uri": f"artifact://{bundle_id}",
+                "entrypoint": scene_entrypoint,
                 "content_digest": testbed["source_capture_bundles"][0]["digest"],
             },
             "robot_adapter": {
@@ -136,12 +215,12 @@ def _method_profiles(
             "task_scenario_pack": {
                 "adapter_id": "manifest_task_scenario_pack",
                 "adapter_version": "1",
-                "pack_id": "ethel-ground-probe-inspection",
-                "tasks": [{"task_id": testbed["task_distribution"]["tasks"][0]}],
+                "pack_id": f"{task_id}-exact-scene-pack",
+                "tasks": [{"task_id": task_id}],
                 "scenarios": [
                     {
                         "scenario_id": "exact-signed-run-replay",
-                        "task_id": testbed["task_distribution"]["tasks"][0],
+                        "task_id": task_id,
                     }
                 ],
             },
@@ -177,13 +256,40 @@ def _method_profiles(
             "metadata": {"live_provider_execution": False},
         }
 
+    def trace_replay_leaf() -> dict[str, Any]:
+        leaf = replay_leaf(
+            "signed-isaac-policy-trace-pair-replay",
+            "signed_isaac_articulated_policy_trace_pair",
+        )
+        leaf["policy_adapter"] = {
+            "adapter_id": "robot_eval_policy_package",
+            "adapter_version": "1",
+            "policy_id": "franka-frozen-candidate-pair-v1",
+            "observation_schema_ref": "franka_articulated_policy_trace_pair.v1",
+            "action_schema_ref": "deterministic_franka_joint_position_pair.v1",
+        }
+        leaf["proof_contract"] = {
+            "adapter_id": "robot_eval_proof_contract",
+            "adapter_version": "1",
+            "contract_id": "signed-isaac-policy-trace-pair-replay-proof",
+            "required_evidence": ["signed_isaac_articulated_policy_trace_pair"],
+            "claim_ceiling": {"level": "simulated_policy_trace_distinguishability_only"},
+            "prohibited_claims": [
+                "comparative_policy_ranking",
+                "metric_task_success",
+                "physical_success",
+                "deployment_readiness",
+            ],
+        }
+        return leaf
+
     common = {
         "schema_version": "evidence_method_profile.v1",
         "version": "1",
         "applicability_envelope": {
             "testbed_ids": [testbed["testbed_id"]],
             "testbed_versions": [testbed["version"]],
-            "task_families": [TASK_FAMILY],
+            "task_families": [task_family],
         },
         "calibration_evidence_references": [],
         "constraints": {"external_processing": False, "data_retention_days": 0},
@@ -207,7 +313,7 @@ def _method_profiles(
             "authority_tier": 1,
             "proof_tier": "isaac_visual_placement_only",
             "correlation_group": "exact-isaac-runtime",
-            "shared_dependencies": ["exact-provider-package", "exact-isaac-runtime"],
+            "shared_dependencies": ["exact-scene-package", "exact-isaac-runtime"],
             "expected_cost_usd": 0.0,
             "provider_availability": {"status": "available"},
             "evaluation_run_template": replay_leaf(
@@ -227,13 +333,30 @@ def _method_profiles(
             "authority_tier": 2,
             "proof_tier": "isaac_single_point_contact_only",
             "correlation_group": "exact-isaac-runtime",
-            "shared_dependencies": ["exact-provider-package", "exact-isaac-runtime"],
+            "shared_dependencies": ["exact-scene-package", "exact-isaac-runtime"],
             "expected_cost_usd": 0.0,
             "provider_availability": {"status": "available"},
             "evaluation_run_template": replay_leaf(
                 "signed-isaac-point-contact-replay",
                 "signed_isaac_point_contact",
             ),
+        },
+        {
+            "method_id": "signed-isaac-policy-trace-pair-replay",
+            "implementation_digest": canonical_digest(
+                {"adapter": SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER, "version": "1"}
+            ),
+            "adapter_reference": SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER,
+            "method_family": "traditional_simulation",
+            "supported_claim_types": ["simulated_policy_trace_distinguishability"],
+            "required_inputs": ["signed_isaac_articulated_policy_trace_pair"],
+            "authority_tier": 2,
+            "proof_tier": "isaac_articulated_trace_pair_only",
+            "correlation_group": "exact-isaac-runtime",
+            "shared_dependencies": ["exact-scene-package", "exact-isaac-runtime"],
+            "expected_cost_usd": 0.0,
+            "provider_availability": {"status": "available"},
+            "evaluation_run_template": trace_replay_leaf(),
         },
         {
             "method_id": "analytic-franka-kinematics-candidate",
@@ -270,7 +393,7 @@ def _method_profiles(
             "authority_tier": 3,
             "proof_tier": "sim_only_candidate",
             "correlation_group": "isaac-articulated-runtime",
-            "shared_dependencies": ["exact-provider-package", "formal-placement"],
+            "shared_dependencies": ["exact-scene-package", "formal-placement"],
             "expected_cost_usd": 0.15,
             "provider_availability": {"status": "available"},
         },
@@ -289,7 +412,7 @@ def _method_profiles(
             "authority_tier": 3,
             "proof_tier": "learned_sim_candidate",
             "correlation_group": "learned-site-model",
-            "shared_dependencies": ["exact-provider-package"],
+            "shared_dependencies": ["exact-scene-package"],
             "expected_cost_usd": 0.3,
             "provider_availability": {"status": "unavailable"},
         },
@@ -315,13 +438,13 @@ def _method_profiles(
         for definition in definitions
     ]
     scope = {
-        "task_family": TASK_FAMILY,
+        "task_family": task_family,
         "site_domain_conditions": testbed["supported_condition_ranges"],
         "embodiment": bindings["embodiment"],
         "sensors": bindings["sensors"],
         "controller_action_representation": bindings["controller_action_representation"],
     }
-    visual, contact = profiles[:2]
+    visual, contact, trace_pair_profile = profiles[:3]
     visual_evidence = next(
         row
         for row in testbed["evidence_inventory"]
@@ -331,6 +454,19 @@ def _method_profiles(
         row
         for row in testbed["evidence_inventory"]
         if row["evidence_id"] == "signed_isaac_point_contact"
+    )
+    trace_pair_evidence = next(
+        (
+            row
+            for row in testbed["evidence_inventory"]
+            if row["evidence_id"] == "signed_isaac_articulated_policy_trace_pair"
+        ),
+        None,
+    )
+    visual_digest = str(
+        visual_evidence.get("visual_placement_evidence_digest")
+        or visual_evidence.get("provider_robot_placement_evidence_digest")
+        or ""
     )
 
     def qualification(
@@ -382,24 +518,41 @@ def _method_profiles(
             }
         ).to_mapping()
 
-    qualifications = [
-        qualification(
-            profile=visual,
-            qualification_id="qualification-ethel-exact-visual-placement-v1",
-            claim_type="perception_visibility",
-            evaluator_id="blueprint-independent-depth-rehasher",
-            evaluator_digest=visual_evidence["provider_robot_placement_evidence_digest"],
-            owner_digest=visual_evidence["provider_robot_placement_evidence_digest"],
-        ),
+    qualifications = []
+    if visual_evidence.get("independently_rehashed") is True and visual_digest.startswith(
+        "sha256:"
+    ):
+        qualifications.append(
+            qualification(
+                profile=visual,
+                qualification_id="qualification-exact-visual-placement-v1",
+                claim_type="perception_visibility",
+                evaluator_id="blueprint-independent-depth-rehasher",
+                evaluator_digest=visual_digest,
+                owner_digest=visual_digest,
+            )
+        )
+    qualifications.append(
         qualification(
             profile=contact,
-            qualification_id="qualification-ethel-exact-point-contact-v1",
+            qualification_id="qualification-exact-point-contact-v1",
             claim_type="collision_contact",
             evaluator_id="blueprint-independent-isaac-qualifier",
             evaluator_digest=contact_evidence["independent_qualification_digest"],
             owner_digest=contact_evidence["independent_qualification_digest"],
-        ),
-    ]
+        )
+    )
+    if trace_pair_evidence is not None:
+        qualifications.append(
+            qualification(
+                profile=trace_pair_profile,
+                qualification_id="qualification-exact-policy-trace-pair-v1",
+                claim_type="simulated_policy_trace_distinguishability",
+                evaluator_id="blueprint-independent-trace-pair-validator",
+                evaluator_digest=trace_pair_evidence["articulated_policy_trace_pair_digest"],
+                owner_digest=trace_pair_evidence["articulated_policy_trace_pair_digest"],
+            )
+        )
     return profiles, qualifications
 
 
@@ -419,6 +572,7 @@ def compile_provider_nurec_task_evaluation(
     runtime = build_provider_nurec_isaac_runtime_result(
         runtime_result, verification_request=request_input
     )
+    policy_trace_pair = _validated_policy_trace_pair(runtime)
     independent = _validate_digest_artifact(
         independent_qualification,
         schema_version="reconstruction_isaac_independent_qualification.v1",
@@ -511,6 +665,16 @@ def compile_provider_nurec_task_evaluation(
         },
         "sensors": {
             "fixed_camera_ids": [row["id"] for row in camera_evidence],
+            "robot_relative_camera": (
+                {
+                    "camera_id": "franka-wrist-egocentric",
+                    "parent_link": "panda_hand",
+                    "modality": "isaac_rgb",
+                    "trace_pair_digest": policy_trace_pair["articulated_policy_trace_pair_digest"],
+                }
+                if policy_trace_pair is not None
+                else None
+            ),
             "modality": "isaac_rgb_distance_to_camera",
         },
         "controller_action_representation": {
@@ -604,7 +768,45 @@ def compile_provider_nurec_task_evaluation(
                     "up_axis": runtime["stage"]["up_axis"],
                     "independent_known_distance_anchor": False,
                 },
-            ],
+            ]
+            + (
+                [
+                    {
+                        "evidence_id": "signed_isaac_articulated_policy_trace_pair",
+                        "independently_validated": True,
+                        "articulated_policy_trace_pair_digest": policy_trace_pair[
+                            "articulated_policy_trace_pair_digest"
+                        ],
+                        "policy_trace_request_digest": policy_trace_pair[
+                            "policy_trace_request_digest"
+                        ],
+                        "controller_id": policy_trace_pair["controller_id"],
+                        "identical_frozen_start_observed": policy_trace_pair[
+                            "trace_pair_assessment"
+                        ]["identical_frozen_start_observed"],
+                        "distinct": policy_trace_pair["trace_pair_assessment"]["distinct"],
+                        "maximum_end_joint_delta_rad": policy_trace_pair["trace_pair_assessment"][
+                            "maximum_end_joint_delta_rad"
+                        ],
+                        "candidate_traces": [
+                            {
+                                "policy_id": row["policy_id"],
+                                "status": row["status"],
+                                "policy_trace_digest": row["policy_trace_digest"],
+                                "egocentric_observation_digest": row["egocentric_observation"][
+                                    "digest"
+                                ],
+                            }
+                            for row in policy_trace_pair["candidate_traces"]
+                        ],
+                        "comparative_policy_ranking": False,
+                        "metric_task_success": False,
+                        "physical_task_success": False,
+                    }
+                ]
+                if policy_trace_pair is not None
+                else []
+            ),
             "validation_envelope": {
                 "exact_digest_scope": True,
                 "isaac_verification_request_digest": request_input[
@@ -616,6 +818,11 @@ def compile_provider_nurec_task_evaluation(
                     "provider_robot_placement_evidence_digest"
                 ],
                 "formal_robot_placement_digest": placement["robot_placement_digest"],
+                "articulated_policy_trace_pair_digest": (
+                    policy_trace_pair["articulated_policy_trace_pair_digest"]
+                    if policy_trace_pair is not None
+                    else None
+                ),
             },
             "target_regions": [
                 {
@@ -630,11 +837,11 @@ def compile_provider_nurec_task_evaluation(
                 "formal_robot_placement",
                 "complete_robot_footprint_clearance",
                 "kinematic_reachability",
-                "articulated_policy_execution",
                 "comparative_policy_ranking",
                 "physical_task_success",
                 "deployment_readiness",
-            ],
+            ]
+            + ([] if policy_trace_pair is not None else ["articulated_policy_execution"]),
             "invalidation_triggers": [
                 "package_digest_change",
                 "robot_asset_change",
@@ -673,6 +880,20 @@ def compile_provider_nurec_task_evaluation(
             scope=scope,
         ),
         _claim(
+            "franka-policy-trace-distinguishability",
+            "simulated_policy_trace_distinguishability",
+            subject={
+                "candidate_policy_ids": [
+                    "franka-fixed-hold-v1",
+                    "franka-inspection-sweep-v1",
+                ],
+                "trace_status": (
+                    "collected_distinct_pair" if policy_trace_pair is not None else "not_collected"
+                ),
+            },
+            scope=scope,
+        ),
+        _claim(
             "franka-candidate-policy-ranking",
             "comparative_policy_ranking",
             subject={
@@ -680,7 +901,9 @@ def compile_provider_nurec_task_evaluation(
                     "franka-fixed-hold-v1",
                     "franka-inspection-sweep-v1",
                 ],
-                "trace_status": "not_collected",
+                "trace_status": (
+                    "collected_distinct_pair" if policy_trace_pair is not None else "not_collected"
+                ),
             },
             scope=scope,
             consequence="high",
@@ -711,12 +934,34 @@ def compile_provider_nurec_task_evaluation(
                 {
                     "robot_id": "franka_panda",
                     "policy_id": "franka-fixed-hold-v1",
-                    "policy_trace_status": "not_collected",
+                    "policy_trace_status": (
+                        "collected" if policy_trace_pair is not None else "not_collected"
+                    ),
+                    **(
+                        {
+                            "policy_trace_digest": policy_trace_pair["candidate_traces"][0][
+                                "policy_trace_digest"
+                            ]
+                        }
+                        if policy_trace_pair is not None
+                        else {}
+                    ),
                 },
                 {
                     "robot_id": "franka_panda",
                     "policy_id": "franka-inspection-sweep-v1",
-                    "policy_trace_status": "not_collected",
+                    "policy_trace_status": (
+                        "collected" if policy_trace_pair is not None else "not_collected"
+                    ),
+                    **(
+                        {
+                            "policy_trace_digest": policy_trace_pair["candidate_traces"][1][
+                                "policy_trace_digest"
+                            ]
+                        }
+                        if policy_trace_pair is not None
+                        else {}
+                    ),
                 },
             ],
             "claims": claims,
@@ -748,7 +993,7 @@ def compile_provider_nurec_task_evaluation(
     authorized_adapters = [
         SIGNED_ISAAC_POINT_CONTACT_ADAPTER,
         SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER,
-    ]
+    ] + ([SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER] if policy_trace_pair is not None else [])
     authorization = {
         "schema_version": "provider_nurec_task_evaluation_authorization.v1",
         "plan_digest": plan["plan_digest"],
@@ -777,6 +1022,8 @@ def compile_provider_nurec_task_evaluation(
         or verdicts.get("exact-sim-robot-visibility") != "supported"
         or verdicts.get("exact-sim-point-contact") != "supported"
         or verdicts.get("franka-kinematic-feasibility") != "abstention"
+        or verdicts.get("franka-policy-trace-distinguishability")
+        != ("supported" if policy_trace_pair is not None else "abstention")
         or verdicts.get("franka-candidate-policy-ranking") != "abstention"
         or verdicts.get("franka-physical-task-success") != "abstention"
         or decision["deployment_approval"] is not False
@@ -826,7 +1073,7 @@ def compile_provider_nurec_task_evaluation(
         "route_summary": route_summary,
         "candidate_policies": decision_request["candidates"],
         "cost_usd": 0.0,
-        "paid_compute_reused_not_relaunched": True,
+        "paid_compute_reused_not_relaunched": policy_trace_pair is None,
         "claim_flags": {
             "metric_stage_semantics": True,
             "independent_known_distance_scale_anchor": False,
@@ -834,7 +1081,8 @@ def compile_provider_nurec_task_evaluation(
             "single_point_scene_contact": True,
             "formal_robot_placement": False,
             "kinematic_feasibility": False,
-            "articulated_policy_execution": False,
+            "articulated_policy_execution": policy_trace_pair is not None,
+            "policy_trace_distinguishability": policy_trace_pair is not None,
             "comparative_policy_ranking": False,
             "physical_task_success": False,
             "deployment_readiness": False,

@@ -25,8 +25,28 @@ from .gaussian_splat_decode import SplatData
 DEFAULT_CAMERA_IDS = (
     "head_pov", "torso", "wrist", "third_person", "overhead", "task_focus",
 )
+FRANKA_PANDA_CAMERA_IDS = (
+    "torso", "wrist", "third_person", "overhead", "task_focus",
+)
+UNITREE_G1_CAMERA_IDS = DEFAULT_CAMERA_IDS
 DEFAULT_EYE_HEIGHT = 1.5      # metres-ish above floor for first-person cameras
 DEFAULT_VISIBLE_OPACITY = 0.18
+
+
+def evaluation_camera_ids_for_robot(robot_id: str) -> tuple[str, ...]:
+    """Return semantically valid default evaluation cameras for a robot.
+
+    Franka Panda has no head, so a scene-level camera must never be relabeled
+    as ``head_pov``. Unitree G1 is the supported humanoid and retains that
+    viewpoint. Task-focus and external cameras remain available to both.
+    """
+
+    normalized = str(robot_id or "").strip().lower()
+    if normalized == "franka_panda":
+        return FRANKA_PANDA_CAMERA_IDS
+    if normalized == "unitree_g1":
+        return UNITREE_G1_CAMERA_IDS
+    raise ValueError(f"unsupported_scene_evaluation_robot:{normalized or 'missing'}")
 
 
 @dataclass

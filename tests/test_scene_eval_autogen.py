@@ -4,6 +4,8 @@ import json
 import struct
 from pathlib import Path
 
+import trimesh
+
 from blueprint_pipeline import scene_eval_autogen as sea
 from blueprint_pipeline.robot_eval_dataset import (
     SCENARIO_VARIATION_DEFINITIONS,
@@ -125,6 +127,30 @@ def test_ascii_ply_generates_min_tasks_and_many_scenarios(tmp_path: Path) -> Non
     variation_ids = {card["variation_id"] for card in scenario_cards["cards"]}
     assert _VARIATION_IDS <= variation_ids
     assert "baseline" in variation_ids
+
+
+def test_glb_scene_generates_review_scope_without_claiming_metric_scale(tmp_path: Path) -> None:
+    scene = tmp_path / "apartment.glb"
+    scene.write_bytes(trimesh.creation.box(extents=[9.0, 3.0, 7.0]).export(file_type="glb"))
+    output = tmp_path / "glb-out"
+
+    manifest = sea.generate_scene_eval_tasks(
+        scene,
+        output,
+        site_id="private-apartment-001",
+        generated_at="2026-08-02T00:00:00+00:00",
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["task_count"] >= sea.MIN_TASK_COUNT
+    analysis = json.loads((output / "scene_analysis.json").read_text())
+    assert analysis["scene"]["asset_type"] == "glb"
+    assert analysis["scene"]["up_axis"] == "Y"
+    assert analysis["scene"]["metric_scale_status"] == (
+        "provider_declared_not_independently_validated"
+    )
+    assert analysis["scene"]["metric_scale_proven"] is False
+    assert analysis["claim_boundary"]["default_robot_id"] == "franka_panda"
 
 
 def test_zone_poses_stay_inside_scene_bounds(tmp_path: Path) -> None:

@@ -64,6 +64,7 @@ from .scene_asset_preflight import (
     _parse_ply_header,
     _ply_header,
     inspect_binary_vertex_ply_xyz,
+    inspect_gltf_asset,
     inspect_ply_asset,
     inspect_usd_asset,
 )
@@ -83,7 +84,7 @@ DEFAULT_MAX_TASK_COUNT = 12
 DEFAULT_SEEDS_PER_VARIATION = 3
 DEFAULT_ATTEMPTS_PER_SCENARIO = 3
 
-SUPPORTED_SCENE_SUFFIXES = {".ply", ".usd", ".usda", ".usdc", ".usdz"}
+SUPPORTED_SCENE_SUFFIXES = {".glb", ".gltf", ".ply", ".usd", ".usda", ".usdc", ".usdz"}
 
 DIFFICULTY_TIERS = ("nominal", "moderate", "hard")
 
@@ -93,6 +94,8 @@ CLAIM_BOUNDARY: Dict[str, Any] = {
     "tasks_and_scenarios_auto_generated": True,
     "generated_artifacts_are_review_inputs": True,
     "scene_semantics_source": "geometry_and_name_token_heuristics_only",
+    "default_robot_id": "franka_panda",
+    "humanoid_robot_id": "unitree_g1",
     "simulator_execution_proven": False,
     "robot_policy_execution_proven": False,
     "navigability_proven": False,
@@ -484,7 +487,7 @@ def _usd_scene_objects(path: Path) -> List[Dict[str, Any]]:
 
 
 def ingest_scene_file(scene_path: Path) -> Dict[str, Any]:
-    """Normalize a single PLY/USD file into one scene model dict.
+    """Normalize a single PLY/GLB/USD file into one scene model dict.
 
     Fail-closed: unreadable/unsupported inputs return ``status: blocked`` with
     blockers instead of raising. Bounds may be ``None`` (header-only inspection);
@@ -495,7 +498,9 @@ def ingest_scene_file(scene_path: Path) -> Dict[str, Any]:
         "status": "completed",
         "scene_path": str(scene_path.resolve()),
         "scene_file_name": scene_path.name,
-        "asset_type": "ply" if suffix == ".ply" else "usd",
+        "asset_type": (
+            "ply" if suffix == ".ply" else "glb" if suffix in {".glb", ".gltf"} else "usd"
+        ),
         "up_axis": "Z",
         "up_axis_source": "default_pending_inspection",
         "meters_per_unit": None,
@@ -548,6 +553,32 @@ def _ingest_supported_scene_file(
             for key in ("asset_type", "format", "vertex_count", "estimate_method", "confidence")
         }
         scene["estimate_method"] = estimate.get("estimate_method")
+    elif suffix in {".glb", ".gltf"}:
+        inspection = inspect_gltf_asset(scene_path)
+        estimate = {
+            "bounds": inspection.get("bounds"),
+            "centroid": inspection.get("centroid"),
+            "floor_z_estimate": inspection.get("floor_z_estimate"),
+            "estimate_method": inspection.get("estimate_method"),
+        }
+        scene["up_axis"] = "Y"
+        scene["up_axis_source"] = "gltf_format_convention"
+        scene["meters_per_unit"] = 1.0
+        scene["metric_scale_status"] = "provider_declared_not_independently_validated"
+        scene["object_labels"] = _labels_from_semantic_hints(inspection.get("semantic_hints") or [])
+        scene["inspection"] = {
+            key: inspection.get(key)
+            for key in (
+                "asset_type",
+                "status",
+                "estimate_method",
+                "confidence",
+                "node_count",
+                "mesh_count",
+            )
+        }
+        scene["estimate_method"] = estimate.get("estimate_method")
+        scene["limitations"].extend(inspection.get("limitations") or [])
     else:
         inspection = inspect_usd_asset(scene_path)
         estimate = {
@@ -594,6 +625,8 @@ def _ingest_supported_scene_file(
         floor = (
             floor_candidates[up_index]
             if floor_candidates is not None
+            else low[up_index]
+            if suffix in {".glb", ".gltf"}
             else estimate.get("floor_z_estimate")
             if up_index == 2
             else None

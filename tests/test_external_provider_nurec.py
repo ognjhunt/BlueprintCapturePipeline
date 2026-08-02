@@ -548,6 +548,41 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
                 "robot_only_pass": True,
                 "robot_placement_digest": D[3],
                 "placement_proposal_digest": D[4],
+                "articulated_policy_trace_request": {
+                    "schema_version": "franka_articulated_policy_trace_request.v1",
+                    "robot_id": "franka_panda",
+                    "robot_prim_path": "/World/Franka",
+                    "controller_id": "deterministic_franka_joint_position_pair.v1",
+                    "joint_names": [f"panda_joint{index}" for index in range(1, 8)],
+                    "start_joint_positions_rad": [0.0, -0.55, 0.0, -2.6, 0.0, 2.05, 0.75],
+                    "physics_dt_seconds": 1.0 / 60.0,
+                    "reset_settle_steps": 30,
+                    "sample_interval_steps": 10,
+                    "distinctness_threshold_rad": 0.1,
+                    "identical_start_tolerance_rad": 0.02,
+                    "candidates": [
+                        {
+                            "policy_id": "franka-fixed-hold-v1",
+                            "duration_steps": 120,
+                            "final_joint_positions_rad": [0.0, -0.55, 0.0, -2.6, 0.0, 2.05, 0.75],
+                        },
+                        {
+                            "policy_id": "franka-inspection-sweep-v1",
+                            "duration_steps": 120,
+                            "final_joint_positions_rad": [0.35, -0.55, 0.0, -2.6, 0.0, 2.05, 0.75],
+                        },
+                    ],
+                    "egocentric_camera": {
+                        "parent_link_name": "panda_hand",
+                        "local_position_m": [0.05, 0.0, 0.04],
+                        "local_target_m": [0.3, 0.0, 0.04],
+                        "local_up": [0.0, 0.0, 1.0],
+                        "fov_degrees": 70.0,
+                        "width": 320,
+                        "height": 240,
+                    },
+                    "physical_success_claimed": False,
+                },
             }
         )
     )

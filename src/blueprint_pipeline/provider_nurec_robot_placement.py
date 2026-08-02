@@ -35,6 +35,7 @@ from .scene_placement.robot_profile import DEFAULT_ROBOT_ID, get_robot_profile
 PROPOSAL_SCHEMA_VERSION = "provider_nurec_robot_placement_proposal.v1"
 TASK_SCHEMA_VERSION = "provider_nurec_site_task_definition.v1"
 PACKET_SCHEMA_VERSION = "provider_nurec_robot_placement_packet.v1"
+FRANKA_POLICY_TRACE_REQUEST_SCHEMA_VERSION = "franka_articulated_policy_trace_request.v1"
 
 
 class ProviderNuRecRobotPlacementError(ValueError):
@@ -49,6 +50,71 @@ def _clone(value: Mapping[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError) as exc:
         raise ProviderNuRecRobotPlacementError(["placement_input_not_json_serializable"]) from exc
     return result
+
+
+def build_default_franka_policy_trace_request(*, robot_prim_path: str) -> dict[str, Any]:
+    """Build the frozen two-candidate articulated trace request used by site evals.
+
+    The request is intentionally target-agnostic: it proves that the exact
+    official Franka can execute two controlled, distinguishable joint behaviors
+    from an identical reset. Target binding and policy ranking remain separate
+    qualification gates.
+    """
+
+    if (
+        not isinstance(robot_prim_path, str)
+        or not robot_prim_path.startswith("/")
+        or ".." in robot_prim_path.split("/")
+    ):
+        raise ProviderNuRecRobotPlacementError(["franka_policy_trace_robot_prim_path_invalid"])
+    start = [0.0, -0.55, 0.0, -2.6, 0.0, 2.05, 0.75]
+    request = {
+        "schema_version": FRANKA_POLICY_TRACE_REQUEST_SCHEMA_VERSION,
+        "robot_id": "franka_panda",
+        "robot_prim_path": robot_prim_path,
+        "controller_id": "deterministic_franka_joint_position_pair.v1",
+        "joint_names": [f"panda_joint{index}" for index in range(1, 8)],
+        "start_joint_positions_rad": start,
+        "physics_dt_seconds": 1.0 / 60.0,
+        "reset_settle_steps": 30,
+        "sample_interval_steps": 10,
+        "distinctness_threshold_rad": 0.1,
+        "identical_start_tolerance_rad": 0.02,
+        "candidates": [
+            {
+                "policy_id": "franka-fixed-hold-v1",
+                "duration_steps": 120,
+                "final_joint_positions_rad": start,
+            },
+            {
+                "policy_id": "franka-inspection-sweep-v1",
+                "duration_steps": 120,
+                "final_joint_positions_rad": [
+                    0.35,
+                    -0.55,
+                    0.0,
+                    -2.6,
+                    0.0,
+                    2.05,
+                    0.75,
+                ],
+            },
+        ],
+        "egocentric_camera": {
+            "parent_link_name": "panda_hand",
+            "local_position_m": [0.05, 0.0, 0.04],
+            "local_target_m": [0.3, 0.0, 0.04],
+            "local_up": [0.0, 0.0, 1.0],
+            "fov_degrees": 70.0,
+            "width": 320,
+            "height": 240,
+        },
+        "physical_success_claimed": False,
+    }
+    request["policy_trace_request_digest"] = canonical_digest(
+        request, digest_field="policy_trace_request_digest"
+    )
+    return request
 
 
 def _validated_independent_qualification(
@@ -87,6 +153,7 @@ def build_provider_nurec_robot_placement_packet(
     site_id: str,
     task_id: str,
     robot_id: str = DEFAULT_ROBOT_ID,
+    include_articulated_policy_trace_pair: bool = False,
 ) -> dict[str, Any]:
     """Build a proposal, formal placement abstention, and render options.
 
@@ -220,10 +287,22 @@ def build_provider_nurec_robot_placement_packet(
         "candidate_id": "franka-at-verified-ground-probe",
         "robot_pose_xyzyaw_site": [x, y, z, 0.0],
         "site_from_robot_base": [
-            1.0, 0.0, 0.0, x,
-            0.0, 1.0, 0.0, y,
-            0.0, 0.0, 1.0, z,
-            0.0, 0.0, 0.0, 1.0,
+            1.0,
+            0.0,
+            0.0,
+            x,
+            0.0,
+            1.0,
+            0.0,
+            y,
+            0.0,
+            0.0,
+            1.0,
+            z,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
         ],
         "ground_surface_prim": surface.get("prim_path"),
         "evidence_digests": evidence_digests,
@@ -294,6 +373,14 @@ def build_provider_nurec_robot_placement_packet(
         "placement_proposal_digest": proposal["placement_proposal_digest"],
         "lights_path": "/World/Lights",
     }
+    if include_articulated_policy_trace_pair:
+        if profile.robot_id != "franka_panda":
+            raise ProviderNuRecRobotPlacementError(
+                ["articulated_policy_trace_pair_requires_franka_panda"]
+            )
+        render_options["articulated_policy_trace_request"] = (
+            build_default_franka_policy_trace_request(robot_prim_path=profile.usd_prim_path)
+        )
     return {
         "task_definition": task_definition,
         "placement_proposal": proposal,
@@ -322,12 +409,8 @@ def write_provider_nurec_robot_placement_packet(
         "status": "formal_placement_abstained_runtime_visualization_ready",
         "artifact_digests": {key: sha256_file(path) for key, path in files.items()},
         "task_digest": packet["task_definition"]["approved_task_digest"],
-        "placement_proposal_digest": packet["placement_proposal"][
-            "placement_proposal_digest"
-        ],
-        "robot_placement_digest": packet["robot_placement_result"][
-            "robot_placement_digest"
-        ],
+        "placement_proposal_digest": packet["placement_proposal"]["placement_proposal_digest"],
+        "robot_placement_digest": packet["robot_placement_result"]["robot_placement_digest"],
         "formal_placement_status": packet["robot_placement_result"]["status"],
         "runtime_visualization_authorized": True,
         "physical_robot_execution_authorized": False,
@@ -353,9 +436,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--site-id", required=True)
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--robot-id", default=DEFAULT_ROBOT_ID)
+    parser.add_argument("--include-articulated-policy-traces", action="store_true")
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args(argv)
     try:
+
         def load(path: str) -> Any:
             return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -366,14 +451,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             site_id=args.site_id,
             task_id=args.task_id,
             robot_id=args.robot_id,
+            include_articulated_policy_trace_pair=args.include_articulated_policy_traces,
         )
         receipt = write_provider_nurec_robot_placement_packet(
             output_dir=args.output_dir, packet=packet
         )
     except (OSError, json.JSONDecodeError, ProviderNuRecRobotPlacementError) as exc:
-        codes = list(exc.codes) if isinstance(exc, ProviderNuRecRobotPlacementError) else [
-            f"placement_packet_input_error:{type(exc).__name__}"
-        ]
+        codes = (
+            list(exc.codes)
+            if isinstance(exc, ProviderNuRecRobotPlacementError)
+            else [f"placement_packet_input_error:{type(exc).__name__}"]
+        )
         print(json.dumps({"status": "abstention", "blockers": sorted(codes)}, sort_keys=True))
         return 2
     print(json.dumps(receipt, sort_keys=True))
@@ -385,10 +473,12 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "FRANKA_POLICY_TRACE_REQUEST_SCHEMA_VERSION",
     "PACKET_SCHEMA_VERSION",
     "PROPOSAL_SCHEMA_VERSION",
     "TASK_SCHEMA_VERSION",
     "ProviderNuRecRobotPlacementError",
+    "build_default_franka_policy_trace_request",
     "build_provider_nurec_robot_placement_packet",
     "write_provider_nurec_robot_placement_packet",
 ]

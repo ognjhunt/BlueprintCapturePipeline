@@ -83,6 +83,172 @@ def _cameras(**updates):
     return [value]
 
 
+def _policy_trace_options() -> dict:
+    start = [0.0, -0.55, 0.0, -2.6, 0.0, 2.05, 0.75]
+    return {
+        "robot_prim_path": "/World/Franka",
+        "articulated_policy_trace_request": {
+            "schema_version": "franka_articulated_policy_trace_request.v1",
+            "robot_id": "franka_panda",
+            "robot_prim_path": "/World/Franka",
+            "controller_id": "deterministic_franka_joint_position_pair.v1",
+            "joint_names": [f"panda_joint{index}" for index in range(1, 8)],
+            "start_joint_positions_rad": start,
+            "physics_dt_seconds": 1.0 / 60.0,
+            "reset_settle_steps": 30,
+            "sample_interval_steps": 10,
+            "distinctness_threshold_rad": 0.1,
+            "identical_start_tolerance_rad": 0.02,
+            "candidates": [
+                {
+                    "policy_id": "franka-fixed-hold-v1",
+                    "duration_steps": 120,
+                    "final_joint_positions_rad": start,
+                },
+                {
+                    "policy_id": "franka-inspection-sweep-v1",
+                    "duration_steps": 120,
+                    "final_joint_positions_rad": [
+                        0.35,
+                        -0.55,
+                        0.0,
+                        -2.6,
+                        0.0,
+                        2.05,
+                        0.75,
+                    ],
+                },
+            ],
+            "egocentric_camera": {
+                "parent_link_name": "panda_hand",
+                "local_position_m": [0.05, 0.0, 0.04],
+                "local_target_m": [0.3, 0.0, 0.04],
+                "local_up": [0.0, 0.0, 1.0],
+                "fov_degrees": 70.0,
+                "width": 320,
+                "height": 240,
+            },
+            "physical_success_claimed": False,
+        },
+    }
+
+
+def test_policy_trace_request_and_pair_distinctness_are_fail_closed() -> None:
+    request, blockers = runner._validate_policy_trace_request(_policy_trace_options())
+    assert blockers == []
+    assert request is not None
+    traces = [
+        {
+            "status": "completed",
+            "observed_start_joint_positions_rad": request["start_joint_positions_rad"],
+            "observed_end_joint_positions_rad": request["start_joint_positions_rad"],
+        },
+        {
+            "status": "completed",
+            "observed_start_joint_positions_rad": [
+                value + 0.001 for value in request["start_joint_positions_rad"]
+            ],
+            "observed_end_joint_positions_rad": request["candidates"][1][
+                "final_joint_positions_rad"
+            ],
+        },
+    ]
+    assessment = runner._trace_pair_distinctness(traces, request)
+    assert assessment["status"] == "completed"
+    assert assessment["identical_frozen_start_observed"] is True
+    assert assessment["distinct"] is True
+
+    invalid = _policy_trace_options()
+    invalid["articulated_policy_trace_request"]["candidates"][1]["final_joint_positions_rad"] = (
+        invalid["articulated_policy_trace_request"]["start_joint_positions_rad"]
+    )
+    request, blockers = runner._validate_policy_trace_request(invalid)
+    assert request is None
+    assert "franka_policy_trace_sweep_not_distinct" in blockers
+
+
+def test_joint_position_target_compatibility_uses_direct_legacy_api() -> None:
+    calls = []
+
+    class _Articulation:
+        def set_joint_position_targets(self, positions, *, joint_indices):
+            calls.append((positions, joint_indices))
+
+    mode = runner._set_articulation_joint_position_targets(
+        _Articulation(), [0.1, 0.2], [1, 2], action_factory=pytest.fail
+    )
+
+    assert mode == "direct_set_joint_position_targets"
+    assert calls == [([0.1, 0.2], [1, 2])]
+
+
+def test_joint_position_target_compatibility_uses_isaac6_action_api() -> None:
+    actions = []
+
+    class _Action:
+        def __init__(self, **values):
+            self.values = values
+
+    class _Articulation:
+        def apply_action(self, action):
+            actions.append(action.values)
+
+    mode = runner._set_articulation_joint_position_targets(
+        _Articulation(), [0.3, 0.4], [3, 4], action_factory=_Action
+    )
+
+    assert mode == "articulation_apply_action"
+    assert actions == [{"joint_positions": [0.3, 0.4], "joint_indices": [3, 4]}]
+
+
+def test_joint_position_target_compatibility_uses_controller_fallback() -> None:
+    actions = []
+
+    class _Action:
+        def __init__(self, **values):
+            self.values = values
+
+    class _Controller:
+        def apply_action(self, action):
+            actions.append(action.values)
+
+    class _Articulation:
+        def get_articulation_controller(self):
+            return _Controller()
+
+    mode = runner._set_articulation_joint_position_targets(
+        _Articulation(), [0.5], [5], action_factory=_Action
+    )
+
+    assert mode == "articulation_controller_apply_action"
+    assert actions == [{"joint_positions": [0.5], "joint_indices": [5]}]
+
+
+def test_policy_trace_keeps_isaac6_physics_handle_live_between_candidates() -> None:
+    source = RUNNER_PATH.read_text(encoding="utf-8")
+    body = source.split("def _run_articulated_policy_traces(", 1)[1].split(
+        "def _pixel_std(", 1
+    )[0]
+    candidate_loop = body.split('for candidate in request["candidates"]:', 1)[1]
+
+    assert "context.play()" in candidate_loop
+    assert "articulation, indices = _bind_live_articulation()" in candidate_loop
+    assert "context.stop()" not in candidate_loop.split("finally:", 1)[0]
+    assert 'failure_phase = "candidate_articulation_rebind"' in candidate_loop
+    assert 'failure_phase = "observe_reset_state"' in candidate_loop
+
+
+def test_robot_only_pass_hides_appearance_and_environment_collision() -> None:
+    source = RUNNER_PATH.read_text(encoding="utf-8")
+    robot_only = source.split("# Optional probe/composite pass", 1)[1].split(
+        "policy_trace_result =", 1
+    )[0]
+
+    assert "environment_prims = list(pf)" in robot_only
+    assert 'stage_evidence.get("collision_prims", [])' in robot_only
+    assert "imageable.MakeInvisible()" in robot_only
+
+
 def test_qualification_blockers_accept_only_complete_v3_evidence() -> None:
     assert (
         runner._qualification_blockers(

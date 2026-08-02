@@ -20,6 +20,11 @@ from .external_provider_nurec import (
     build_provider_nurec_isaac_request,
     normalize_provider_nurec_isaac_verification,
 )
+from .external_scene_isaac_verification import (
+    ExternalSceneIsaacVerificationError,
+    build_external_scene_isaac_verification_request,
+    normalize_external_scene_isaac_verification,
+)
 from .gpu_render_providers import GpuRenderProvider, RenderLaunchSpec
 from .isaac_reconstruction_verification import (
     IsaacReconstructionVerificationError,
@@ -104,9 +109,9 @@ def _load(path: Path, *, code: str) -> dict[str, Any]:
 
 def _canonical_receipt(root: Path, receipt: Mapping[str, Any]) -> tuple[Path, str]:
     path = root / "isaac_input_bundle_receipt.json"
-    payload = (
-        json.dumps(dict(receipt), sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode("utf-8")
+    payload = (json.dumps(dict(receipt), sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "utf-8"
+    )
     path.write_bytes(payload)
     return path, "sha256:" + hashlib.sha256(payload).hexdigest()
 
@@ -187,8 +192,14 @@ def _validate_bindings(
         ) from exc
     blockers: list[str] = []
     provider_bundle = receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA
+    external_scene_bundle = (
+        receipt.get("verification_request_member")
+        == "external_scene_isaac_verification_request.v1.json"
+    )
     expected_operation = (
-        "provider_nurec_isaac_canary" if provider_bundle else "isaac_canary"
+        "provider_nurec_isaac_canary"
+        if provider_bundle
+        else ("external_scene_isaac_canary" if external_scene_bundle else "isaac_canary")
     )
     expected_runtime_schema = (
         "provider_nurec_isaac_runtime_result.v1"
@@ -234,9 +245,7 @@ def _safe_package_root(materialized: Path, request: Mapping[str, Any], root: Pat
         or any(part in {"", ".", ".."} for part in reference.parts)
         or ":" in reference.parts[0]
     ):
-        raise ReconstructionIsaacVastError(
-            ["reconstruction_isaac_vast_package_reference_unsafe"]
-        )
+        raise ReconstructionIsaacVastError(["reconstruction_isaac_vast_package_reference_unsafe"])
     source = materialized / "reconstruction.usdz"
     destination = root.joinpath(*reference.parts)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -265,13 +274,15 @@ def _independent_qualification(
             package_artifact_root=package_root,
             runtime_artifact_root=runtime_root,
         )
-    except (ExternalProviderNuRecError, IsaacReconstructionVerificationError) as exc:
+    except (
+        ExternalProviderNuRecError,
+        ExternalSceneIsaacVerificationError,
+        IsaacReconstructionVerificationError,
+    ) as exc:
         blockers.extend(exc.codes)
     result = {
         "schema_version": QUALIFICATION_SCHEMA_VERSION,
-        "status": (
-            "verified_compatibility_only" if qualified is not None else "abstained"
-        ),
+        "status": ("verified_compatibility_only" if qualified is not None else "abstained"),
         "isaac_verification_request_digest": verification_request.get(
             "isaac_verification_request_digest"
         ),
@@ -280,6 +291,7 @@ def _independent_qualification(
             (
                 qualified.get("provider_isaac_verification_result_digest")
                 or qualified.get("isaac_verification_result_digest")
+                or qualified.get("verification_result_digest")
             )
             if qualified
             else None
@@ -288,16 +300,12 @@ def _independent_qualification(
         "simulator_task_success_proven": False,
         "physical_success_proven": False,
         "deployment_readiness_proven": False,
-        "proof_effect": (
-            "isaac_load_render_physics_presence_only" if qualified else "none"
-        ),
+        "proof_effect": ("isaac_load_render_physics_presence_only" if qualified else "none"),
         "claim_ceiling": (
             "isaac_load_render_compatibility" if qualified else "runtime_evidence_only"
         ),
     }
-    result["qualification_digest"] = canonical_digest(
-        result, digest_field="qualification_digest"
-    )
+    result["qualification_digest"] = canonical_digest(result, digest_field="qualification_digest")
     return result
 
 
@@ -332,6 +340,10 @@ def run_reconstruction_isaac_vast_operation(
         bound_request=bound_request, bundle_receipt=bundle_receipt
     )
     provider_bundle = receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA
+    external_scene_bundle = (
+        receipt.get("verification_request_member")
+        == "external_scene_isaac_verification_request.v1.json"
+    )
     operation = str(request["operation"])
     try:
         for url in (
@@ -346,9 +358,7 @@ def run_reconstruction_isaac_vast_operation(
             ["reconstruction_isaac_vast_transport_url_invalid"]
         ) from exc
     if provider.name != "vast":
-        raise ReconstructionIsaacVastError(
-            ["reconstruction_isaac_vast_first_required"]
-        )
+        raise ReconstructionIsaacVastError(["reconstruction_isaac_vast_first_required"])
     request_digest = str(request.get("request_digest") or "")
     worker_image = str(request["worker_image_digest"])
     source_commit = str(request["source_commit_sha"])
@@ -361,9 +371,7 @@ def run_reconstruction_isaac_vast_operation(
         or max_spend <= 0
         or not 0 <= retry_cap <= 2
     ):
-        raise ReconstructionIsaacVastError(
-            ["reconstruction_isaac_vast_execution_bounds_invalid"]
-        )
+        raise ReconstructionIsaacVastError(["reconstruction_isaac_vast_execution_bounds_invalid"])
 
     root = Path(job_dir)
     ensure_dir(root)
@@ -405,9 +413,7 @@ def run_reconstruction_isaac_vast_operation(
             bundle_receipt=receipt,
             output_root=root / "staged_inputs/materialized",
         )
-        materialized = (
-            root / "staged_inputs/materialized" / receipt["bundle_digest"][7:]
-        )
+        materialized = root / "staged_inputs/materialized" / receipt["bundle_digest"][7:]
         request_member = str(receipt["verification_request_member"])
         request_value = _load(
             materialized / request_member,
@@ -416,7 +422,11 @@ def run_reconstruction_isaac_vast_operation(
         verification_request = (
             build_provider_nurec_isaac_request(request_value)
             if provider_bundle
-            else build_isaac_asset_verification_request(request_value)
+            else (
+                build_external_scene_isaac_verification_request(request_value)
+                if external_scene_bundle
+                else build_isaac_asset_verification_request(request_value)
+            )
         )
         if (
             verification_request["isaac_verification_request_digest"]
@@ -431,6 +441,7 @@ def run_reconstruction_isaac_vast_operation(
     except (
         SafeOutboundHttpError,
         ExternalProviderNuRecError,
+        ExternalSceneIsaacVerificationError,
         IsaacWorkerBundleError,
         IsaacReconstructionVerificationError,
     ) as exc:
@@ -453,14 +464,10 @@ def run_reconstruction_isaac_vast_operation(
     watchdog = preflight.get("watchdog")
     watchdog = watchdog if isinstance(watchdog, Mapping) else {}
     validator = watchdog_validator or (
-        lambda value, now, ttl: _watchdog_valid(
-            value, now_epoch=now, hard_ttl_seconds=ttl
-        )
+        lambda value, now, ttl: _watchdog_valid(value, now_epoch=now, hard_ttl_seconds=ttl)
     )
     if not validator(watchdog, started_at, hard_ttl):
-        raise ReconstructionIsaacVastError(
-            ["reconstruction_isaac_vast_watchdog_not_live"]
-        )
+        raise ReconstructionIsaacVastError(["reconstruction_isaac_vast_watchdog_not_live"])
     scoped_before = provider.billable_inventory(name_prefix=NAME_PREFIX)
     global_before = provider.billable_inventory(name_prefix="")
     if not all(
@@ -488,9 +495,7 @@ def run_reconstruction_isaac_vast_operation(
         reconciliation=reconciliation,
     )
     if lease.get("status") != "acquired":
-        raise ReconstructionIsaacVastError(
-            ["reconstruction_isaac_vast_paid_lane_not_acquired"]
-        )
+        raise ReconstructionIsaacVastError(["reconstruction_isaac_vast_paid_lane_not_acquired"])
     name = f"{NAME_PREFIX}isaac-{request_digest[7:19]}"
     pending = open_pending_teardown(
         provider="vast",
@@ -535,16 +540,10 @@ def run_reconstruction_isaac_vast_operation(
             },
             bootstrap_argv=["-lc", _bootstrap_script()],
             entrypoint=["bash"],
-            container_disk_gb=max(
-                100, int(preflight.get("container_disk_bytes") or 0) // 1024**3
-            ),
+            container_disk_gb=max(100, int(preflight.get("container_disk_bytes") or 0) // 1024**3),
             volume_gb=0,
-            max_hourly_rate_usd=float(
-                preflight.get("on_demand_price_usd_per_hour") or 0
-            ),
-            min_gpu_ram_mb=max(
-                24_000, int(preflight.get("gpu_memory_bytes") or 0) // 1_000_000
-            ),
+            max_hourly_rate_usd=float(preflight.get("on_demand_price_usd_per_hour") or 0),
+            min_gpu_ram_mb=max(24_000, int(preflight.get("gpu_memory_bytes") or 0) // 1_000_000),
             requires_rtx=True,
             vast_launch_mode="args",
         )
@@ -576,9 +575,7 @@ def run_reconstruction_isaac_vast_operation(
                 evidence={"blockers": list(launch_result.get("blockers") or [])},
             )
             blockers.append("reconstruction_isaac_vast_create_ambiguous")
-        elif launch_result.get("status") != "launched" or not launch_result.get(
-            "instance_id"
-        ):
+        elif launch_result.get("status") != "launched" or not launch_result.get("instance_id"):
             cancel_pending_teardown(
                 pending_path,
                 reason="provider_confirmed_no_allocation",
@@ -609,8 +606,7 @@ def run_reconstruction_isaac_vast_operation(
                         bundle_path=attempt,
                         expected_input_receipt=receipt,
                         expected_source_commit_sha=source_commit,
-                        output_root=root
-                        / f"retrieval_attempts/validated_{fetch_attempts:04d}",
+                        output_root=root / f"retrieval_attempts/validated_{fetch_attempts:04d}",
                     )
                     if validated_receipt.get("output_bundle_digest") != retrieved.sha256:
                         raise IsaacVerificationOutputBundleError(
@@ -627,9 +623,7 @@ def run_reconstruction_isaac_vast_operation(
                         },
                     )
                     if retrieved.sha256 in invalid_digests:
-                        blockers.append(
-                            "reconstruction_isaac_vast_repeated_identical_blocker"
-                        )
+                        blockers.append("reconstruction_isaac_vast_repeated_identical_blocker")
                         break
                     invalid_digests.add(retrieved.sha256)
                     if len(invalid_digests) > retry_cap:
@@ -644,7 +638,11 @@ def run_reconstruction_isaac_vast_operation(
                     normalizer=(
                         normalize_provider_nurec_isaac_verification
                         if provider_bundle
-                        else normalizer
+                        else (
+                            normalize_external_scene_isaac_verification
+                            if external_scene_bundle
+                            else normalizer
+                        )
                     ),
                 )
                 output_retrieved_before_teardown = True
@@ -759,9 +757,7 @@ def run_reconstruction_isaac_vast_operation(
         "operation": operation,
         "request_digest": request_digest,
         "bound_request_digest": request.get("bound_request_digest"),
-        "isaac_verification_request_digest": receipt[
-            "isaac_verification_request_digest"
-        ],
+        "isaac_verification_request_digest": receipt["isaac_verification_request_digest"],
         "input_bundle_digest": receipt["bundle_digest"],
         "worker_image_digest": worker_image,
         "source_commit_sha": source_commit,
@@ -771,9 +767,7 @@ def run_reconstruction_isaac_vast_operation(
         "fetch_attempts": fetch_attempts,
         "output_bundle_digest": retrieved.sha256 if retrieved else None,
         "output_bundle_receipt_digest": (
-            validated_receipt.get("output_bundle_receipt_digest")
-            if validated_receipt
-            else None
+            validated_receipt.get("output_bundle_receipt_digest") if validated_receipt else None
         ),
         "runtime_result_digest": (
             runtime_result.get("isaac_runtime_result_digest") if runtime_result else None
@@ -801,14 +795,12 @@ def run_reconstruction_isaac_vast_operation(
         "deployment_readiness_proven": False,
         "proof_effect": (
             "isaac_load_render_physics_presence_only"
-            if qualification
-            and qualification.get("status") == "verified_compatibility_only"
+            if qualification and qualification.get("status") == "verified_compatibility_only"
             else "none"
         ),
         "claim_ceiling": (
             "isaac_load_render_compatibility"
-            if qualification
-            and qualification.get("status") == "verified_compatibility_only"
+            if qualification and qualification.get("status") == "verified_compatibility_only"
             else "provider_execution_and_runtime_evidence_only"
         ),
     }
@@ -836,6 +828,10 @@ def replay_reconstruction_isaac_vast_operation(
         bound_request=bound_request, bundle_receipt=bundle_receipt
     )
     provider_bundle = receipt.get("schema_version") == PROVIDER_ISAAC_WORKER_BUNDLE_SCHEMA
+    external_scene_bundle = (
+        receipt.get("verification_request_member")
+        == "external_scene_isaac_verification_request.v1.json"
+    )
     operation = str(request["operation"])
     blockers: list[str] = []
     try:
@@ -877,9 +873,7 @@ def replay_reconstruction_isaac_vast_operation(
             bundle_receipt=receipt,
             output_root=root / "staged_inputs/materialized",
         )
-        materialized = (
-            root / "staged_inputs/materialized" / receipt["bundle_digest"][7:]
-        )
+        materialized = root / "staged_inputs/materialized" / receipt["bundle_digest"][7:]
         request_value = _load(
             materialized / str(receipt["verification_request_member"]),
             code="reconstruction_isaac_vast_replay_request_missing",
@@ -887,12 +881,17 @@ def replay_reconstruction_isaac_vast_operation(
         verification_request = (
             build_provider_nurec_isaac_request(request_value)
             if provider_bundle
-            else build_isaac_asset_verification_request(request_value)
+            else (
+                build_external_scene_isaac_verification_request(request_value)
+                if external_scene_bundle
+                else build_isaac_asset_verification_request(request_value)
+            )
         )
         package_root = root / "staged_package"
     except (
         ReconstructionIsaacVastError,
         ExternalProviderNuRecError,
+        ExternalSceneIsaacVerificationError,
         IsaacWorkerBundleError,
         IsaacReconstructionVerificationError,
     ) as exc:
@@ -943,14 +942,17 @@ def replay_reconstruction_isaac_vast_operation(
                     normalizer=(
                         normalize_provider_nurec_isaac_verification
                         if provider_bundle
-                        else normalizer
+                        else (
+                            normalize_external_scene_isaac_verification
+                            if external_scene_bundle
+                            else normalizer
+                        )
                     ),
                 )
             except (IsaacVerificationOutputBundleError, OSError) as exc:
                 codes = getattr(exc, "codes", [type(exc).__name__])
                 blockers.extend(
-                    f"reconstruction_isaac_vast_replay_output_invalid:{code}"
-                    for code in codes
+                    f"reconstruction_isaac_vast_replay_output_invalid:{code}" for code in codes
                 )
     finally:
         shutil.rmtree(temporary_root, ignore_errors=True)
@@ -1002,9 +1004,7 @@ def replay_reconstruction_isaac_vast_operation(
         "bound_request_digest": request.get("bound_request_digest"),
         "execution_result_digest": execution.get("execution_result_digest"),
         "runtime_status": execution.get("runtime_status"),
-        "independent_qualification_status": execution.get(
-            "independent_qualification_status"
-        ),
+        "independent_qualification_status": execution.get("independent_qualification_status"),
         "blockers": sorted(set(blockers)),
         "live_provider_accessed": False,
         "live_agent_accessed": False,

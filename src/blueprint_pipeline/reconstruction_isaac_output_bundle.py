@@ -142,6 +142,30 @@ def _result_artifact_bindings(result: Mapping[str, Any]) -> list[tuple[PurePosix
                 raise IsaacVerificationOutputBundleError(["isaac_output_robot_reference_invalid"])
             bindings.append((reference, str(digest_value)))
 
+    trace_pair = result.get("articulated_policy_trace_pair")
+    trace_pair = trace_pair if isinstance(trace_pair, Mapping) else {}
+    candidate_traces = trace_pair.get("candidate_traces")
+    candidate_traces = candidate_traces if isinstance(candidate_traces, list) else []
+    for trace in candidate_traces:
+        if not isinstance(trace, Mapping):
+            raise IsaacVerificationOutputBundleError(
+                ["isaac_output_policy_trace_reference_invalid"]
+            )
+        observation = trace.get("egocentric_observation")
+        if observation is None:
+            continue
+        if not isinstance(observation, Mapping):
+            raise IsaacVerificationOutputBundleError(
+                ["isaac_output_policy_trace_reference_invalid"]
+            )
+        reference = _portable(observation.get("artifact_reference"))
+        digest = str(observation.get("digest") or "")
+        if reference is None or reference.suffix.lower() != ".png" or not digest:
+            raise IsaacVerificationOutputBundleError(
+                ["isaac_output_policy_trace_reference_invalid"]
+            )
+        bindings.append((reference, digest))
+
     references = [reference.as_posix() for reference, _digest in bindings]
     if len(references) != len(set(references)):
         raise IsaacVerificationOutputBundleError(["isaac_output_artifact_inventory_invalid"])

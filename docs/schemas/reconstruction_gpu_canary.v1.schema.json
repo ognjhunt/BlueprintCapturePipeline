@@ -20,28 +20,55 @@
         {
           "if": {
             "properties": {
-              "operation": {"const": "provider_nurec_isaac_canary"}
+              "operation": {"enum": ["provider_nurec_isaac_canary", "external_scene_isaac_canary"]}
             },
             "required": ["operation"]
           },
           "then": {
             "required": [
-              "external_import_receipt_digest",
-              "provider_qualification_report_digest",
               "source_relationship_to_blueprint_raw_capture",
               "external_derived_support_asset",
               "blueprint_raw_capture_truth"
             ],
             "properties": {
-              "external_import_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
-              "provider_qualification_report_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
               "source_relationship_to_blueprint_raw_capture": {"const": "none"},
               "external_derived_support_asset": {"const": true},
               "blueprint_raw_capture_truth": {"const": false},
               "reconstruction_dataset_digest": false,
               "frozen_split_digest": false,
               "calibration_digest": false
-            }
+            },
+            "allOf": [
+              {
+                "if": {"properties": {"operation": {"const": "provider_nurec_isaac_canary"}}, "required": ["operation"]},
+                "then": {
+                  "required": ["external_import_receipt_digest", "provider_qualification_report_digest"],
+                  "properties": {
+                    "external_import_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+                    "provider_qualification_report_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
+                  }
+                }
+              },
+              {
+                "if": {"properties": {"operation": {"const": "external_scene_isaac_canary"}}, "required": ["operation"]},
+                "then": {
+                  "required": [
+                    "remote_processing_authorization_digest", "package_result_digest",
+                    "collision_candidate_digest", "scene_frame_binding_digest",
+                    "target_analysis_digest", "target_binding_digest", "placement_proposal_digest",
+                    "source_video_available", "source_video_required_for_candidate_execution",
+                    "independent_metric_scale_proven", "remote_upload_authorized", "paid_compute_authorized"
+                  ],
+                  "properties": {
+                    "source_video_available": {"const": false},
+                    "source_video_required_for_candidate_execution": {"const": false},
+                    "independent_metric_scale_proven": {"const": false},
+                    "remote_upload_authorized": {"const": true},
+                    "paid_compute_authorized": {"const": true}
+                  }
+                }
+              }
+            ]
           },
           "else": {
             "required": [

@@ -12,16 +12,11 @@ from .decision_evidence_execution import EvidenceMethodAdapterRegistry
 
 ANALYTIC_REACHABILITY_ADAPTER = "local://analytic-reachability-v1"
 CAPTURED_VISIBILITY_ADAPTER = "local://captured-visibility-v1"
-PROCESSED_OBSERVATION_VISIBILITY_ADAPTER = (
-    "local://processed-observation-visibility-v1"
-)
-SWEPT_AABB_COLLISION_SIMULATION_ADAPTER = (
-    "local://swept-aabb-collision-simulation-v1"
-)
-SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER = (
-    "local://signed-isaac-visual-placement-replay-v1"
-)
+PROCESSED_OBSERVATION_VISIBILITY_ADAPTER = "local://processed-observation-visibility-v1"
+SWEPT_AABB_COLLISION_SIMULATION_ADAPTER = "local://swept-aabb-collision-simulation-v1"
+SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER = "local://signed-isaac-visual-placement-replay-v1"
 SIGNED_ISAAC_POINT_CONTACT_ADAPTER = "local://signed-isaac-point-contact-replay-v1"
+SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER = "local://signed-isaac-policy-trace-pair-replay-v1"
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -29,7 +24,9 @@ def _mapping(value: Any) -> dict[str, Any]:
 
 
 def _rows(value: Any) -> list[dict[str, Any]]:
-    return [dict(row) for row in value if isinstance(row, Mapping)] if isinstance(value, list) else []
+    return (
+        [dict(row) for row in value if isinstance(row, Mapping)] if isinstance(value, list) else []
+    )
 
 
 def _vector3(value: Any) -> tuple[float, float, float] | None:
@@ -90,12 +87,12 @@ class AnalyticReachabilityAdapter:
         placement = _mapping(bindings.get("selected_robot_placement"))
         base = _vector3(placement.get("base_position_site_m"))
         target_region_id = str(
-            subject.get("target_region_id") or (
-                subject_value if isinstance(subject_value, str) else ""
-            )
+            subject.get("target_region_id")
+            or (subject_value if isinstance(subject_value, str) else "")
         ).strip()
         target_regions = [
-            row for row in _rows(testbed.get("target_regions"))
+            row
+            for row in _rows(testbed.get("target_regions"))
             if str(row.get("region_id") or "").strip() == target_region_id
         ]
         target = _vector3(subject.get("target_position_site_m"))
@@ -115,7 +112,9 @@ class AnalyticReachabilityAdapter:
             blockers.append("robot_placement_not_qualified_for_analytic_use")
         if blockers:
             return _unavailable(*blockers)
-        assert base is not None and target is not None and minimum is not None and maximum is not None
+        assert (
+            base is not None and target is not None and minimum is not None and maximum is not None
+        )
         distance = math.dist(base, target)
         uncertainty = _number(placement.get("calibration_uncertainty_m"))
         if uncertainty is None or uncertainty < 0:
@@ -135,7 +134,9 @@ class AnalyticReachabilityAdapter:
             "status": "valid",
             "supports_claim": fully_inside,
             "observed_value": distance,
-            "categorical_finding": "within_reach_envelope" if fully_inside else "outside_reach_envelope",
+            "categorical_finding": "within_reach_envelope"
+            if fully_inside
+            else "outside_reach_envelope",
             "uncertainty": min(1.0, uncertainty / max(maximum, 1e-9)),
             "coverage": float(placement.get("captured_coverage") or 0.0),
             "blockers": [],
@@ -144,7 +145,9 @@ class AnalyticReachabilityAdapter:
             "provenance": {
                 "execution_mode": "hermetic_local_read_only",
                 "calculation": "euclidean_base_to_target_distance_with_uncertainty_interval",
-                "robot_placement_digest": _mapping(testbed.get("validation_envelope")).get("robot_placement_digest"),
+                "robot_placement_digest": _mapping(testbed.get("validation_envelope")).get(
+                    "robot_placement_digest"
+                ),
                 "physical_robot_run_initiated": False,
             },
             "claim_ceiling": {
@@ -171,18 +174,20 @@ class CapturedVisibilityAdapter:
             return _unavailable("captured_visibility_claim_type_not_supported")
         subject = claim.get("subject")
         target_region_id = str(
-            _mapping(subject).get("target_region_id") or (
-                subject if isinstance(subject, str) else ""
-            )
+            _mapping(subject).get("target_region_id")
+            or (subject if isinstance(subject, str) else "")
         ).strip()
         regions = [
-            row for row in _rows(testbed.get("target_regions"))
+            row
+            for row in _rows(testbed.get("target_regions"))
             if str(row.get("region_id") or "").strip() == target_region_id
         ]
         if len(regions) != 1:
             return _unavailable("captured_visibility_target_region_not_found")
         region = regions[0]
-        frames = sorted({str(item).strip() for item in region.get("supporting_frames", []) if str(item).strip()})
+        frames = sorted(
+            {str(item).strip() for item in region.get("supporting_frames", []) if str(item).strip()}
+        )
         coverage = _number(region.get("captured_coverage"))
         if not frames:
             return _unavailable("captured_visibility_supporting_frames_missing")
@@ -236,9 +241,7 @@ class ProcessedObservationVisibilityAdapter:
         }:
             return _unavailable("processed_observation_visibility_claim_type_not_supported")
         validation = _mapping(testbed.get("validation_envelope"))
-        if validation.get("capture_authority_profile") != (
-            "public_processed_rgbd_pose_sequence"
-        ):
+        if validation.get("capture_authority_profile") != ("public_processed_rgbd_pose_sequence"):
             return _unavailable("processed_observation_profile_required")
         source_rows = [
             row
@@ -278,8 +281,7 @@ class ProcessedObservationVisibilityAdapter:
             "blockers": [],
             "invalid_rollout_reasons": [],
             "raw_artifact_references": [
-                {"uri": f"processed-observation://{frame}", "frame_id": frame}
-                for frame in frames
+                {"uri": f"processed-observation://{frame}", "frame_id": frame} for frame in frames
             ],
             "provenance": {
                 "execution_mode": "hermetic_local_read_only",
@@ -355,10 +357,10 @@ class SweptAabbCollisionSimulationAdapter:
             return _unavailable("collision_geometry_claim_ceiling_missing")
         scene = _mapping(_mapping(physics.get("asset_references")).get("collision_scene"))
         supplied_digest = str(scene.get("collision_scene_digest") or "")
-        if (
-            scene.get("schema_version") != "collision_scene_aabb.v1"
-            or supplied_digest
-            != canonical_digest(scene, digest_field="collision_scene_digest")
+        if scene.get(
+            "schema_version"
+        ) != "collision_scene_aabb.v1" or supplied_digest != canonical_digest(
+            scene, digest_field="collision_scene_digest"
         ):
             return _unavailable("collision_scene_digest_invalid")
         scene_validation = _mapping(scene.get("validation"))
@@ -375,8 +377,7 @@ class SweptAabbCollisionSimulationAdapter:
         ):
             blockers.append("collision_scene_independent_validation_missing")
         source_digests = {
-            str(row.get("digest") or "")
-            for row in _rows(testbed.get("source_capture_bundles"))
+            str(row.get("digest") or "") for row in _rows(testbed.get("source_capture_bundles"))
         }
         if scene.get("source_capture_digest") not in source_digests:
             blockers.append("collision_scene_source_capture_mismatch")
@@ -388,11 +389,15 @@ class SweptAabbCollisionSimulationAdapter:
         radius = _number(subject.get("swept_radius_m"))
         if radius is None or radius < 0:
             blockers.append("collision_swept_radius_missing_or_invalid")
-        excluded = {
-            str(item).strip()
-            for item in subject.get("excluded_collision_object_ids", [])
-            if str(item).strip()
-        } if isinstance(subject.get("excluded_collision_object_ids"), list) else set()
+        excluded = (
+            {
+                str(item).strip()
+                for item in subject.get("excluded_collision_object_ids", [])
+                if str(item).strip()
+            }
+            if isinstance(subject.get("excluded_collision_object_ids"), list)
+            else set()
+        )
         primitives: list[tuple[str, tuple[float, float, float], tuple[float, float, float]]] = []
         for row in _rows(scene.get("primitives")):
             object_id = str(row.get("object_id") or row.get("primitive_id") or "").strip()
@@ -480,8 +485,10 @@ def _evidence_row(testbed: Mapping[str, Any], evidence_id: str) -> dict[str, Any
 
 def _sha256_digest(value: Any) -> bool:
     text = str(value or "")
-    return len(text) == 71 and text.startswith("sha256:") and all(
-        character in "0123456789abcdef" for character in text[7:]
+    return (
+        len(text) == 71
+        and text.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in text[7:])
     )
 
 
@@ -531,7 +538,8 @@ class SignedIsaacVisualPlacementReplayAdapter:
                     "digest": row["rgb_digest"],
                 }
                 for row in camera_rows
-            ] + [
+            ]
+            + [
                 {
                     "uri": f"artifact://{row['distance_artifact_reference']}",
                     "digest": row["distance_digest"],
@@ -618,6 +626,76 @@ class SignedIsaacPointContactReplayAdapter:
         }
 
 
+@dataclass(frozen=True)
+class SignedIsaacPolicyTracePairReplayAdapter:
+    """Replay two independently validated, exact Isaac Franka traces.
+
+    This supports only the boolean claim that the two frozen candidates were
+    executed from an identical start and produced distinct simulated traces.
+    It does not rank them or turn stage-unit motion into metric task success.
+    """
+
+    adapter_reference: str = SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER
+
+    def execute(self, **kwargs: Any) -> Mapping[str, Any]:
+        claim = _mapping(kwargs.get("claim"))
+        testbed = _mapping(kwargs.get("testbed"))
+        if str(claim.get("claim_type") or "") != "simulated_policy_trace_distinguishability":
+            return _unavailable("signed_isaac_policy_trace_claim_type_not_supported")
+        evidence = _evidence_row(testbed, "signed_isaac_articulated_policy_trace_pair")
+        candidates = _rows(_mapping(evidence).get("candidate_traces"))
+        expected_ids = ["franka-fixed-hold-v1", "franka-inspection-sweep-v1"]
+        if (
+            evidence is None
+            or evidence.get("independently_validated") is not True
+            or evidence.get("identical_frozen_start_observed") is not True
+            or evidence.get("distinct") is not True
+            or not _sha256_digest(evidence.get("articulated_policy_trace_pair_digest"))
+            or [row.get("policy_id") for row in candidates] != expected_ids
+            or any(
+                row.get("status") != "completed"
+                or not _sha256_digest(row.get("policy_trace_digest"))
+                or not _sha256_digest(row.get("egocentric_observation_digest"))
+                for row in candidates
+            )
+        ):
+            return _unavailable("signed_isaac_policy_trace_pair_evidence_missing")
+        return {
+            "status": "valid",
+            "supports_claim": True,
+            "observed_value": evidence.get("maximum_end_joint_delta_rad"),
+            "categorical_finding": "frozen_franka_candidates_produced_distinct_simulated_traces",
+            "uncertainty": 0.0,
+            "coverage": 1.0,
+            "blockers": [],
+            "invalid_rollout_reasons": [],
+            "raw_artifact_references": [
+                {
+                    "uri": f"artifact://policy-trace/{row['policy_id']}",
+                    "digest": row["policy_trace_digest"],
+                }
+                for row in candidates
+            ],
+            "provenance": {
+                "execution_mode": "hermetic_local_signed_evidence_replay",
+                "source_runtime": "isaac_sim",
+                "controller_id": evidence.get("controller_id"),
+                "identical_frozen_start_observed": True,
+                "robot_relative_egocentric_camera": True,
+                "physical_robot_run_initiated": False,
+            },
+            "claim_ceiling": {
+                "simulated_articulated_policy_execution": True,
+                "simulated_policy_trace_distinguishability": True,
+                "comparative_policy_ranking": False,
+                "metric_task_success": False,
+                "physical_success": False,
+                "deployment_readiness": False,
+                "safety_certification": False,
+            },
+        }
+
+
 def authorized_local_evidence_adapter_registry(
     authorized_references: Sequence[str],
 ) -> EvidenceMethodAdapterRegistry:
@@ -628,8 +706,11 @@ def authorized_local_evidence_adapter_registry(
         SWEPT_AABB_COLLISION_SIMULATION_ADAPTER: SweptAabbCollisionSimulationAdapter(),
         SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER: SignedIsaacVisualPlacementReplayAdapter(),
         SIGNED_ISAAC_POINT_CONTACT_ADAPTER: SignedIsaacPointContactReplayAdapter(),
+        SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER: SignedIsaacPolicyTracePairReplayAdapter(),
     }
-    requested = sorted({str(item or "").strip() for item in authorized_references if str(item or "").strip()})
+    requested = sorted(
+        {str(item or "").strip() for item in authorized_references if str(item or "").strip()}
+    )
     unknown = sorted(set(requested) - set(available))
     if unknown:
         raise ValueError(f"local_evidence_adapter_not_registered:{','.join(unknown)}")
@@ -641,12 +722,14 @@ __all__ = [
     "CAPTURED_VISIBILITY_ADAPTER",
     "PROCESSED_OBSERVATION_VISIBILITY_ADAPTER",
     "SIGNED_ISAAC_POINT_CONTACT_ADAPTER",
+    "SIGNED_ISAAC_POLICY_TRACE_PAIR_ADAPTER",
     "SIGNED_ISAAC_VISUAL_PLACEMENT_ADAPTER",
     "SWEPT_AABB_COLLISION_SIMULATION_ADAPTER",
     "AnalyticReachabilityAdapter",
     "CapturedVisibilityAdapter",
     "ProcessedObservationVisibilityAdapter",
     "SignedIsaacPointContactReplayAdapter",
+    "SignedIsaacPolicyTracePairReplayAdapter",
     "SignedIsaacVisualPlacementReplayAdapter",
     "SweptAabbCollisionSimulationAdapter",
     "authorized_local_evidence_adapter_registry",
