@@ -5,6 +5,7 @@ import pytest
 
 from blueprint_pipeline import groot_oscar_runpod_watchdog as watchdog_module
 from blueprint_pipeline.groot_oscar_runpod_watchdog import (
+    arm_watchdog,
     run_watchdog,
     terminate_canary_resources,
 )
@@ -26,6 +27,22 @@ class _Provider:
     def terminate(self, instance_id: str) -> dict:
         self.ids.remove(instance_id)
         return {"status": "terminated"}
+
+
+def test_watchdog_arms_measurement_isaac_canary_prefix(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(watchdog_module.time, "time", lambda: 1_000.0)
+
+    result = arm_watchdog(
+        out_dir=tmp_path,
+        pod_name_prefix="blueprint-measurement-isaac-",
+        deadline_epoch=3_000.0,
+        pid=os.getpid(),
+        provider_name="vast",
+    )
+
+    assert result["status"] == "armed"
+    assert result["pod_name_prefix"] == "blueprint-measurement-isaac-"
+    assert result["provider"] == "vast"
 
 
 def test_vast_watchdog_reaps_only_active_label_prefix_matches_and_proves_absence(
