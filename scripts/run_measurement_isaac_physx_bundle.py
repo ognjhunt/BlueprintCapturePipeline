@@ -7,12 +7,14 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 from statistics import fmean
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.claim_contract_keys import PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY
 from blueprint_pipeline.measurement_adapter_execution import (
     run_measurement_adapter_execution,
     validate_measurement_adapter_execution_request,
@@ -42,8 +44,16 @@ def _environment(name: str) -> str:
 
 
 def _sha256_json(value: dict) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    normalized = dict(value)
+    normalized.pop("preflight_result_digest", None)
+    encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _safe_process_tail(value: str) -> str:
+    tail = value[-4000:]
+    tail = re.sub(r"https?://\S+", "<redacted-url>", tail)
+    return tail.replace("\x00", "")
 
 
 def _run_rtx_preflight(bundle_root: Path) -> tuple[dict, list[str]]:
@@ -67,12 +77,40 @@ def _run_rtx_preflight(bundle_root: Path) -> tuple[dict, list[str]]:
         text=True,
         timeout=180,
     )
+    process_observation = {
+        "exit_code": completed.returncode,
+        "stdout_bytes": len(completed.stdout.encode("utf-8", "replace")),
+        "stderr_bytes": len(completed.stderr.encode("utf-8", "replace")),
+        "stdout_digest": "sha256:"
+        + hashlib.sha256(completed.stdout.encode("utf-8", "replace")).hexdigest(),
+        "stderr_digest": "sha256:"
+        + hashlib.sha256(completed.stderr.encode("utf-8", "replace")).hexdigest(),
+        "stdout_tail": _safe_process_tail(completed.stdout),
+        "stderr_tail": _safe_process_tail(completed.stderr),
+        "raw_secret_values_recorded": False,
+    }
     if not output.is_file() or output.is_symlink() or output.stat().st_size > 1024 * 1024:
-        return {}, ["measurement_isaac_rtx_preflight_result_missing_or_unsafe"]
+        result = {
+            "schema_version": "isaac_worker_runtime_preflight.v1",
+            "status": "blocked",
+            "checks": [],
+            "blockers": ["rtx_preflight_result_missing_or_unsafe"],
+            "subprocess_observation": process_observation,
+            "raw_secret_values_recorded": False,
+            "proof_boundary": {
+                "rtx_pixels_rendered": False,
+                "calibrated_sensor_match_proven": False,
+                "q_sensor_qualification_created": False,
+                PUBLIC_CLAIM_UPGRADE_ALLOWED_KEY: False,
+            },
+        }
+        result["preflight_result_digest"] = _sha256_json(result)
+        return result, ["measurement_isaac_rtx_preflight_result_missing_or_unsafe"]
     try:
         result = _read_object(output)
     except (OSError, ValueError, json.JSONDecodeError):
         return {}, ["measurement_isaac_rtx_preflight_result_invalid"]
+    result["subprocess_observation"] = process_observation
     result["preflight_result_digest"] = _sha256_json(result)
     blockers: list[str] = []
     if completed.returncode != 0:
