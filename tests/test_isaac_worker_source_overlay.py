@@ -13,6 +13,7 @@ from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
 from blueprint_pipeline.isaac_worker_source_overlay import (
     BUILD_METHOD,
     DEFAULT_BASE_IMAGE_DIGEST,
+    build_image_manifest_from_registry_evidence,
     main,
     prepare_source_overlay,
     verify_registry_overlay,
@@ -237,3 +238,32 @@ def test_verify_registry_cli_writes_atomic_result(tmp_path: Path) -> None:
         == 0
     )
     assert json.loads(output.read_text(encoding="utf-8"))["status"] == "verified"
+
+
+def test_canonical_image_manifest_is_built_from_crane_registry_evidence() -> None:
+    plan = _plan()
+    source_layer = "sha256:" + "d" * 64
+    environment = [
+        f"{key}={value}" for key, value in plan["expected_final_environment"].items()
+    ]
+    environment.append(f"BLUEPRINT_WORKER_SOURCE_LAYER_DIGEST={source_layer}")
+    result = build_image_manifest_from_registry_evidence(
+        image_ref="docker.io/example/isaac-worker@sha256:" + "e" * 64,
+        resolved_image_digest="sha256:" + "e" * 64,
+        final_manifest={
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "layers": [
+                {"digest": "sha256:" + "c" * 64, "size": 10},
+                {"digest": source_layer, "size": 20},
+            ],
+        },
+        final_config={
+            "architecture": "amd64",
+            "os": "linux",
+            "config": {"Env": environment},
+        },
+    )
+    assert result["status"] == "completed"
+    assert result["runnable_platform"] == "linux/amd64"
+    assert result["worker_build_identity"]["status"] == "verified"
+    assert result["worker_build_identity"]["source_layer_matches_last_registry_layer"] is True

@@ -124,8 +124,12 @@ PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" \
     > "$output_dir/verify.stdout.json"
 
 PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}" \
-  python3 -m blueprint_pipeline.isaac_worker_image_manifest \
-    --image "$final_digest_ref" \
-    --output "$output_dir/isaac_worker_image_manifest_diagnostic.json"
+  python3 -m blueprint_pipeline.isaac_worker_source_overlay write-image-manifest \
+    --image-ref "$final_digest_ref" \
+    --final-manifest "$output_dir/final_manifest.json" \
+    --final-config "$output_dir/final_config.json" \
+    --resolved-digest "$final_digest" \
+    --output "$output_dir/isaac_worker_image_manifest_diagnostic.json" \
+    > "$output_dir/image_manifest.stdout.json"
 printf '%s\n' "$final_digest_ref" > "$output_dir/resolved_image_digest.txt"
 echo "pushed and verified exact-source Isaac worker overlay: $final_digest_ref"

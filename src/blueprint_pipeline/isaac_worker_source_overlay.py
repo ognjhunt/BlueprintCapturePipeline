@@ -26,6 +26,7 @@ from .decision_evidence_contracts import canonical_digest
 from .g1_kitchen_bundle_compatibility import (
     CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
 )
+from .isaac_worker_image_manifest import summarize_manifest
 
 
 SCHEMA_VERSION = "isaac_worker_source_overlay.v1"
@@ -356,6 +357,24 @@ def verify_registry_overlay(
     return result
 
 
+def build_image_manifest_from_registry_evidence(
+    *,
+    image_ref: str,
+    resolved_image_digest: str,
+    final_manifest: Mapping[str, Any],
+    final_config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build the canonical image diagnostic from crane-fetched registry JSON."""
+
+    return summarize_manifest(
+        image_ref=image_ref,
+        raw_manifest=final_manifest,
+        resolved_digest=resolved_image_digest,
+        runnable_platform="linux/amd64",
+        image_config=final_config,
+    )
+
+
 def _load(path: str | Path) -> dict[str, Any]:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, Mapping):
@@ -381,6 +400,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     verify.add_argument("--final-config", required=True)
     verify.add_argument("--resolved-digest", required=True)
     verify.add_argument("--output", required=True)
+    manifest = subparsers.add_parser("write-image-manifest")
+    manifest.add_argument("--image-ref", required=True)
+    manifest.add_argument("--final-manifest", required=True)
+    manifest.add_argument("--final-config", required=True)
+    manifest.add_argument("--resolved-digest", required=True)
+    manifest.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     if args.command == "prepare":
         result = prepare_source_overlay(
@@ -392,16 +417,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(json.dumps(result, sort_keys=True))
         return 0 if result.get("status") == "ready" else 2
-    result = verify_registry_overlay(
-        plan=_load(args.plan),
-        base_manifest=_load(args.base_manifest),
-        final_manifest=_load(args.final_manifest),
-        final_config=_load(args.final_config),
-        resolved_image_digest=args.resolved_digest,
-    )
+    if args.command == "verify-registry":
+        result = verify_registry_overlay(
+            plan=_load(args.plan),
+            base_manifest=_load(args.base_manifest),
+            final_manifest=_load(args.final_manifest),
+            final_config=_load(args.final_config),
+            resolved_image_digest=args.resolved_digest,
+        )
+        success = result.get("status") == "verified"
+    else:
+        result = build_image_manifest_from_registry_evidence(
+            image_ref=args.image_ref,
+            resolved_image_digest=args.resolved_digest,
+            final_manifest=_load(args.final_manifest),
+            final_config=_load(args.final_config),
+        )
+        success = (
+            result.get("status") == "completed"
+            and (result.get("worker_build_identity") or {}).get("status") == "verified"
+        )
     write_json(Path(args.output), result)
     print(json.dumps(result, sort_keys=True))
-    return 0 if result.get("status") == "verified" else 2
+    return 0 if success else 2
 
 
 if __name__ == "__main__":
