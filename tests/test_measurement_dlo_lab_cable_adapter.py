@@ -124,36 +124,50 @@ def test_dlo_lab_descriptor_requires_exact_source_checkout_not_package_guess() -
 
 
 def test_dlo_lab_worker_blocks_cleanly_without_exact_gpu_runtime() -> None:
-    result = run_dlo_lab_cable_request(_request())
+    phases: list[str] = []
+    result = run_dlo_lab_cable_request(_request(), phase_writer=phases.append)
     assert result["status"] == "blocked"
     assert result["failure_codes"] == ["dlo_lab_adapter_runtime_unavailable"]
     assert result["physical_success_established"] is False
     assert result["qualification_labels_accessed"] is False
+    assert phases[0] == "torch_import_started"
+    assert "genesis_import_completed" not in phases
 
 
 def test_dlo_lab_supervisor_contains_native_abort_and_classifies_stderr(
     monkeypatch,
 ) -> None:
+    outcomes = iter(
+        [
+            SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+            SimpleNamespace(
+                returncode=-6,
+                stdout=b"",
+                stderr=b"OMP: Error libgomp terminate called\n",
+            ),
+        ]
+    )
     monkeypatch.setattr(
         dlo_adapter.subprocess,
         "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=-6,
-            stdout=b"",
-            stderr=b"OMP: Error libgomp terminate called\n",
-        ),
+        lambda *_args, **_kwargs: next(outcomes),
     )
     result = dlo_adapter._run_supervised_worker(_request())
     assert result["status"] == "blocked"
     assert result["failure_codes"] == [
+        "dlo_lab_adapter_native_import_probe_failed:torch_then_quadrants",
         "dlo_lab_adapter_native_termination",
         "dlo_lab_adapter_openmp_runtime_failure",
         "dlo_lab_adapter_supervised_worker_exit_nonzero:-6",
         "dlo_lab_adapter_supervised_worker_signal:6",
     ]
     observations = result["runtime_observations"]
+    assert observations["supervised_worker_phase"] == (
+        "native_import_probe:torch_then_quadrants"
+    )
     assert observations["supervised_worker_native_signal"] == 6
     assert observations["supervised_worker_timed_out"] is False
+    assert observations["supervised_worker_import_order"] == ["torch", "genesis"]
     assert observations["supervised_worker_stderr_bytes"] > 0
     assert observations["supervised_worker_stderr_content_persisted"] is False
 
@@ -171,7 +185,7 @@ def test_dlo_lab_supervisor_does_not_report_timeout_as_native_signal(
     monkeypatch.setattr(dlo_adapter.subprocess, "run", timed_out)
     result = dlo_adapter._run_supervised_worker(_request())
     assert result["status"] == "blocked"
-    assert result["failure_codes"] == ["dlo_lab_adapter_supervised_worker_timed_out"]
+    assert result["failure_codes"] == ["dlo_lab_adapter_native_import_probe_timed_out"]
     observations = result["runtime_observations"]
     assert observations["supervised_worker_exit_code"] is None
     assert observations["supervised_worker_native_signal"] is None

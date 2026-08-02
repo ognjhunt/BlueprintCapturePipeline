@@ -17,6 +17,7 @@ import math
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -32,6 +33,12 @@ IMPLEMENTATION_VERSION = "1"
 PROTOCOL_ID = "dlo_lab_parameterized_rod_cantilever.v1"
 EXPECTED_DISTRIBUTION_VERSION = "1.0.0"
 EXPECTED_SOURCE_COMMIT = "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796"
+_IMPORT_PROBES = (
+    ("torch", "import torch"),
+    ("torch_then_quadrants", "import torch\nimport quadrants"),
+    ("torch_then_genesis", "import torch\nimport genesis"),
+)
+_IMPORT_UNAVAILABLE_EXIT_CODE = 86
 
 
 def implementation_digest() -> str:
@@ -259,11 +266,26 @@ def run_dlo_lab_cable_request(
     if runtime["backend_id"] != "dlo-lab-genesis-cuda" or runtime["precision"] != "float64":
         raise MeasurementAdapterExecutionError("dlo_lab_adapter_runtime_configuration_invalid")
     point = _operating_point(request)
+    # DLO-Lab's own CUDA examples load PyTorch before Genesis. Preserve that
+    # native-library order: Genesis imports Quadrants with RTLD_DEEPBIND on
+    # Linux, and loading it first aborted during import in two paid L40S cases.
+    record_phase("torch_import_started")
+    try:
+        import torch
+    except (ImportError, OSError):
+        return build_measurement_adapter_worker_result(
+            request,
+            status="blocked",
+            observed_metrics={},
+            unsafe_condition_predicted=None,
+            runtime_observations=observations,
+            failure_codes=["dlo_lab_adapter_runtime_unavailable"],
+        )
+    record_phase("torch_import_completed")
     record_phase("genesis_import_started")
     try:
         import genesis as gs
-        import torch
-    except ImportError:
+    except (ImportError, OSError):
         return build_measurement_adapter_worker_result(
             request,
             status="blocked",
@@ -388,6 +410,54 @@ def _classified_native_failure(stderr: bytes, exit_code: int) -> list[str]:
     return sorted(set(codes))
 
 
+def _probe_script(import_statements: str) -> str:
+    indented = "\n".join(f"    {line}" for line in import_statements.splitlines())
+    return (
+        "try:\n"
+        f"{indented}\n"
+        "except ImportError:\n"
+        f"    raise SystemExit({_IMPORT_UNAVAILABLE_EXIT_CODE})\n"
+    )
+
+
+def _supervised_failure_result(
+    request: Mapping[str, Any],
+    *,
+    stderr: bytes,
+    exit_code: int | None,
+    timed_out: bool,
+    phase: str,
+    failure_codes: Sequence[str],
+) -> dict[str, Any]:
+    observations = {
+        "engine_version": "unavailable",
+        "distribution_version": "unavailable",
+        "source_commit": "unavailable",
+        "backend_id": request["runtime_configuration"]["backend_id"],
+        "precision": request["runtime_configuration"]["precision"],
+        "seed": request["runtime_configuration"]["seed"],
+        "cpu_fallback_used": False,
+        "supervised_worker_phase": phase,
+        "supervised_worker_exit_code": exit_code,
+        "supervised_worker_native_signal": (
+            -exit_code if not timed_out and exit_code is not None and exit_code < 0 else None
+        ),
+        "supervised_worker_timed_out": timed_out,
+        "supervised_worker_import_order": ["torch", "genesis"],
+        "supervised_worker_stderr_digest": "sha256:" + hashlib.sha256(stderr).hexdigest(),
+        "supervised_worker_stderr_bytes": len(stderr),
+        "supervised_worker_stderr_content_persisted": False,
+    }
+    return build_measurement_adapter_worker_result(
+        request,
+        status="blocked",
+        observed_metrics={},
+        unsafe_condition_predicted=None,
+        runtime_observations=observations,
+        failure_codes=sorted(set(failure_codes)),
+    )
+
+
 def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="blueprint-dlo-lab-supervisor-") as raw_root:
         root = Path(raw_root)
@@ -398,6 +468,43 @@ def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
             json.dumps(dict(request), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        deadline = time.monotonic() + int(request["timeout_seconds"])
+        for probe_id, import_statements in _IMPORT_PROBES:
+            phase = f"native_import_probe:{probe_id}"
+            try:
+                probe = subprocess.run(  # nosec B603 - fixed interpreter and probe source
+                    [sys.executable, "-c", _probe_script(import_statements)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=max(0.001, deadline - time.monotonic()),
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                return _supervised_failure_result(
+                    request,
+                    stderr=bytes(exc.stderr or b""),
+                    exit_code=None,
+                    timed_out=True,
+                    phase=phase,
+                    failure_codes=["dlo_lab_adapter_native_import_probe_timed_out"],
+                )
+            probe_exit_code = int(probe.returncode)
+            if probe_exit_code == 0:
+                continue
+            if probe_exit_code == _IMPORT_UNAVAILABLE_EXIT_CODE:
+                failure_codes = ["dlo_lab_adapter_runtime_unavailable"]
+            else:
+                failure_codes = _classified_native_failure(probe.stderr, probe_exit_code)
+                failure_codes.append(f"dlo_lab_adapter_native_import_probe_failed:{probe_id}")
+            return _supervised_failure_result(
+                request,
+                stderr=probe.stderr,
+                exit_code=probe_exit_code,
+                timed_out=False,
+                phase=phase,
+                failure_codes=failure_codes,
+            )
         try:
             completed = subprocess.run(  # nosec B603 - fixed module and argv
                 [
@@ -415,7 +522,7 @@ def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=int(request["timeout_seconds"]),
+                timeout=max(0.001, deadline - time.monotonic()),
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
@@ -441,31 +548,12 @@ def _run_supervised_worker(request: Mapping[str, Any]) -> dict[str, Any]:
                 phase = str(phase_value.get("phase") or phase)
         except (OSError, json.JSONDecodeError):
             pass
-        observations = {
-            "engine_version": "unavailable",
-            "distribution_version": "unavailable",
-            "source_commit": "unavailable",
-            "backend_id": request["runtime_configuration"]["backend_id"],
-            "precision": request["runtime_configuration"]["precision"],
-            "seed": request["runtime_configuration"]["seed"],
-            "cpu_fallback_used": False,
-            "supervised_worker_phase": phase,
-            "supervised_worker_exit_code": exit_code,
-            "supervised_worker_native_signal": (
-                -exit_code if not timed_out and exit_code is not None and exit_code < 0 else None
-            ),
-            "supervised_worker_timed_out": timed_out,
-            "supervised_worker_stderr_digest": "sha256:"
-            + hashlib.sha256(stderr).hexdigest(),
-            "supervised_worker_stderr_bytes": len(stderr),
-            "supervised_worker_stderr_content_persisted": False,
-        }
-        return build_measurement_adapter_worker_result(
+        return _supervised_failure_result(
             request,
-            status="blocked",
-            observed_metrics={},
-            unsafe_condition_predicted=None,
-            runtime_observations=observations,
+            stderr=stderr,
+            exit_code=exit_code,
+            timed_out=timed_out,
+            phase=phase,
             failure_codes=failure_codes,
         )
 
