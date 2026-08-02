@@ -81,6 +81,20 @@ def _request(**overrides):
         "authority_id": "user-authorization-20260730",
         "proof_effect": "none",
     }
+    if operation == "provider_nurec_isaac_canary":
+        for key in (
+            "reconstruction_dataset_digest",
+            "frozen_split_digest",
+            "calibration_digest",
+        ):
+            value.pop(key)
+        value.update(
+            external_import_receipt_digest=D2,
+            provider_qualification_report_digest=D3,
+            source_relationship_to_blueprint_raw_capture="none",
+            external_derived_support_asset=True,
+            blueprint_raw_capture_truth=False,
+        )
     value.update(overrides)
     return build_reconstruction_gpu_canary_request(value)
 
@@ -168,6 +182,30 @@ def test_request_builder_rejects_untyped_or_authority_mutating_operations():
             assert code in str(exc)
         else:
             raise AssertionError(f"request builder accepted forbidden override: {override}")
+
+
+def test_provider_request_forbids_fabricated_capture_bindings():
+    request = _request(
+        operation="provider_nurec_isaac_canary",
+        capture_profile="public_provider_sample",
+    )
+    assert request["source_relationship_to_blueprint_raw_capture"] == "none"
+    assert "reconstruction_dataset_digest" not in request
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "docs/schemas/reconstruction_gpu_canary.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    jsonschema.validate(request, schema)
+    with pytest.raises(
+        ValueError, match="reconstruction_gpu_provider_capture_binding_forbidden"
+    ):
+        _request(
+            operation="provider_nurec_isaac_canary",
+            capture_profile="public_provider_sample",
+            reconstruction_dataset_digest=D1,
+        )
 
 
 def test_preflight_collector_requires_global_zero_and_independent_watchdog():

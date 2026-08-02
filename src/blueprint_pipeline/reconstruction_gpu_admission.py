@@ -55,6 +55,7 @@ EXPECTED_RUNTIME_RESULT_SCHEMAS = {
     "isaac_canary": "isaac_splat_nurec_render_result.v3",
     "provider_nurec_isaac_canary": "provider_nurec_isaac_runtime_result.v1",
 }
+PROVIDER_NUREC_ISAAC_OPERATION = "provider_nurec_isaac_canary"
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
@@ -81,15 +82,42 @@ def build_reconstruction_gpu_canary_request(
         errors.append("reconstruction_gpu_worker_image_digest_invalid")
     for key in (
         "worker_stack_manifest_digest",
-        "reconstruction_dataset_digest",
-        "frozen_split_digest",
-        "calibration_digest",
         "deterministic_configuration_digest",
         "operation_request_digest",
         "operation_input_bundle_digest",
     ):
         if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
             errors.append(f"reconstruction_gpu_{key}_invalid")
+    if operation == PROVIDER_NUREC_ISAAC_OPERATION:
+        for key in (
+            "external_import_receipt_digest",
+            "provider_qualification_report_digest",
+        ):
+            if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+                errors.append(f"reconstruction_gpu_{key}_invalid")
+        for key in (
+            "reconstruction_dataset_digest",
+            "frozen_split_digest",
+            "calibration_digest",
+        ):
+            if key in source:
+                errors.append(f"reconstruction_gpu_provider_capture_binding_forbidden:{key}")
+        expected_boundaries = {
+            "source_relationship_to_blueprint_raw_capture": "none",
+            "external_derived_support_asset": True,
+            "blueprint_raw_capture_truth": False,
+        }
+        for key, expected in expected_boundaries.items():
+            if source.get(key) != expected:
+                errors.append(f"reconstruction_gpu_provider_source_boundary_invalid:{key}")
+    else:
+        for key in (
+            "reconstruction_dataset_digest",
+            "frozen_split_digest",
+            "calibration_digest",
+        ):
+            if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+                errors.append(f"reconstruction_gpu_{key}_invalid")
     if source.get("expected_runtime_result_schema") != (
         EXPECTED_RUNTIME_RESULT_SCHEMAS.get(operation)
     ):
@@ -291,15 +319,42 @@ def build_reconstruction_gpu_canary_admission(
         blockers.append("reconstruction_gpu_worker_image_digest_invalid")
     for key in (
         "worker_stack_manifest_digest",
-        "reconstruction_dataset_digest",
-        "frozen_split_digest",
-        "calibration_digest",
         "deterministic_configuration_digest",
         "operation_request_digest",
         "operation_input_bundle_digest",
     ):
         if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
             blockers.append(f"reconstruction_gpu_{key}_invalid")
+    operation = str(source.get("operation") or "")
+    if operation == PROVIDER_NUREC_ISAAC_OPERATION:
+        for key in (
+            "external_import_receipt_digest",
+            "provider_qualification_report_digest",
+        ):
+            if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+                blockers.append(f"reconstruction_gpu_{key}_invalid")
+        for key in (
+            "reconstruction_dataset_digest",
+            "frozen_split_digest",
+            "calibration_digest",
+        ):
+            if key in source:
+                blockers.append(f"reconstruction_gpu_provider_capture_binding_forbidden:{key}")
+        for key, expected in {
+            "source_relationship_to_blueprint_raw_capture": "none",
+            "external_derived_support_asset": True,
+            "blueprint_raw_capture_truth": False,
+        }.items():
+            if source.get(key) != expected:
+                blockers.append(f"reconstruction_gpu_provider_source_boundary_invalid:{key}")
+    else:
+        for key in (
+            "reconstruction_dataset_digest",
+            "frozen_split_digest",
+            "calibration_digest",
+        ):
+            if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+                blockers.append(f"reconstruction_gpu_{key}_invalid")
     if source.get("candidate_may_read_hidden_heldout") is not False:
         blockers.append("reconstruction_gpu_hidden_heldout_access_forbidden")
     if source.get("trainer_may_grade_heldout") is not False:
@@ -448,6 +503,12 @@ def build_reconstruction_gpu_canary_admission(
         "isaac_image_release_digest": image_release_digest,
         "reconstruction_dataset_digest": source.get("reconstruction_dataset_digest"),
         "frozen_split_digest": source.get("frozen_split_digest"),
+        "external_import_receipt_digest": source.get(
+            "external_import_receipt_digest"
+        ),
+        "provider_qualification_report_digest": source.get(
+            "provider_qualification_report_digest"
+        ),
         "max_spend_usd": max_spend_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
         "retry_cap": retry_cap,

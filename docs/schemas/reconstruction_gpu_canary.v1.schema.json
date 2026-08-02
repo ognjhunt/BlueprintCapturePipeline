@@ -5,7 +5,7 @@
   "oneOf": [
     {
       "type": "object",
-      "required": ["schema_version", "operation", "capture_profile", "source_commit_sha", "worker_image_digest", "worker_stack_manifest_digest", "reconstruction_dataset_digest", "frozen_split_digest", "calibration_digest", "deterministic_configuration_digest", "operation_request_digest", "operation_input_bundle_digest", "expected_runtime_result_schema", "candidate_may_read_hidden_heldout", "trainer_may_grade_heldout", "max_spend_usd", "hard_ttl_seconds", "retry_cap", "authority_id", "proof_effect", "request_digest"],
+      "required": ["schema_version", "operation", "capture_profile", "source_commit_sha", "worker_image_digest", "worker_stack_manifest_digest", "deterministic_configuration_digest", "operation_request_digest", "operation_input_bundle_digest", "expected_runtime_result_schema", "candidate_may_read_hidden_heldout", "trainer_may_grade_heldout", "max_spend_usd", "hard_ttl_seconds", "retry_cap", "authority_id", "proof_effect", "request_digest"],
       "properties": {
         "schema_version": {"const": "reconstruction_gpu_canary_request.v1"},
         "operation_request_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
@@ -16,6 +16,42 @@
         "proof_effect": {"const": "none"},
         "request_digest": {"pattern": "^sha256:[0-9a-f]{64}$"}
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {"const": "provider_nurec_isaac_canary"}
+            },
+            "required": ["operation"]
+          },
+          "then": {
+            "required": [
+              "external_import_receipt_digest",
+              "provider_qualification_report_digest",
+              "source_relationship_to_blueprint_raw_capture",
+              "external_derived_support_asset",
+              "blueprint_raw_capture_truth"
+            ],
+            "properties": {
+              "external_import_receipt_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+              "provider_qualification_report_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+              "source_relationship_to_blueprint_raw_capture": {"const": "none"},
+              "external_derived_support_asset": {"const": true},
+              "blueprint_raw_capture_truth": {"const": false},
+              "reconstruction_dataset_digest": false,
+              "frozen_split_digest": false,
+              "calibration_digest": false
+            }
+          },
+          "else": {
+            "required": [
+              "reconstruction_dataset_digest",
+              "frozen_split_digest",
+              "calibration_digest"
+            ]
+          }
+        }
+      ],
       "additionalProperties": true
     },
     {
