@@ -47,10 +47,63 @@ PHASE_LIMITS_SECONDS: dict[str, int] = {
 }
 
 # Worker pulses are serialized by PowerShell's ConvertTo-Json, which is not
-# canonical_json.  Their digests are computed over the exact compact JSON line
-# with the trailing pulse_digest member absent, flagged by this encoding tag.
-WORKER_PULSE_LINE_ENCODING = "sha256:utf8_compact_json_line_without_digest_member"
-_PULSE_LINE_DIGEST_SUFFIX_RE = re.compile(r',"pulse_digest":"sha256:([0-9a-f]{64})"}\s*$')
+# canonical_json.  Their digest is computed over the exact compact JSON line
+# with the trailing pulse_digest member absent, flagged by this encoding tag
+# (the same tag the worker template emits and validate_pulse accepts).
+WORKER_PULSE_LINE_ENCODING = "sha256:json_utf8_noncanonical"
+_PULSE_LINE_DIGEST_SUFFIX_RE = re.compile(r',"pulse_digest":"sha256:([0-9a-f]{64})"\}\s*$')
+
+
+def verify_worker_pulse_line(line: str) -> list[str]:
+    """Integrity-check one worker-emitted pulse line at the raw-byte level.
+
+    The worker appends ``pulse_digest`` as the final member of the compact
+    JSON object, where the digest is sha256 over the exact line bytes without
+    that member.  Removing the suffix therefore reproduces the digest input
+    without needing to reproduce PowerShell's serialization.
+    """
+
+    text = line.strip()
+    if not text:
+        return ["pulse_line_empty"]
+    match = _PULSE_LINE_DIGEST_SUFFIX_RE.search(text)
+    if match is None:
+        return ["pulse_line_digest_member_missing"]
+    expected = match.group(1)
+    payload = text[: match.start()] + "}"
+    observed = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    if observed != expected:
+        return ["pulse_line_digest_mismatch"]
+    return []
+
+
+def derive_phase_started_epoch(
+    pulses: Sequence[Mapping[str, Any]], *, launched_epoch: float
+) -> float:
+    """Anchor phase timeouts at the current phase's start, not at launch.
+
+    Prefers the worker-reported ``phase_started_at_utc``; otherwise walks the
+    contiguous run of latest-phase pulses.  Falls back to launch time so a
+    missing field can only make the timeout stricter, never looser.
+    """
+
+    if not pulses:
+        return launched_epoch
+    latest = pulses[-1]
+    reported = parse_timestamp(latest.get("phase_started_at_utc"))
+    phase = str(latest.get("phase", ""))
+    earliest_observed: float | None = None
+    for pulse in reversed(pulses):
+        if str(pulse.get("phase", "")) != phase:
+            break
+        observed = parse_timestamp(pulse.get("observed_at_utc"))
+        if observed is not None:
+            earliest_observed = observed
+    candidates = [value for value in (reported, earliest_observed) if value is not None]
+    if not candidates:
+        return launched_epoch
+    anchor = min(candidates)
+    return max(anchor, launched_epoch) if anchor < launched_epoch else anchor
 
 TRAINING_PHASES = {"tiny_training_canary", "P1", "P2"}
 POSTSHOT_PROCESS_REQUIRED_PHASES = TRAINING_PHASES
@@ -200,6 +253,70 @@ def decode_worker_text(raw: bytes) -> str:
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
         return raw.decode("utf-16", errors="replace")
     return raw.decode("utf-8", errors="replace")
+
+
+def evaluate_canary_gate(
+    *,
+    pulses: Sequence[Mapping[str, Any]],
+    canary_outputs: Mapping[str, int],
+    secrets_found: bool,
+    required_consecutive: int = 3,
+) -> dict[str, Any]:
+    """Decide whether the same-instance tiny canary earned P1/P2 approval.
+
+    Requires ``required_consecutive`` consecutive valid pulses observed since
+    the canary phase began (canary + approval-wait phases), at least one pulse
+    inside the canary phase showing a live Postshot PID with GPU or log/output
+    evidence, both bounded outputs present and non-empty, and zero secret
+    leaks anywhere in the pulse series.
+    """
+
+    reasons: list[str] = []
+    canary_phases = {"tiny_training_canary", "awaiting_canary_approval"}
+    window = [p for p in pulses if str(p.get("phase", "")) in canary_phases]
+    consecutive = 0
+    best_streak = 0
+    for pulse in window:
+        progress = pulse.get("progress", {}) if isinstance(pulse.get("progress"), Mapping) else {}
+        credible = bool(
+            progress.get("credible_training_progress")
+            or progress.get("log_progress")
+            or progress.get("output_progress")
+            or (progress.get("postshot_process_alive") and progress.get("gpu_active"))
+        )
+        consecutive = consecutive + 1 if credible else 0
+        best_streak = max(best_streak, consecutive)
+    if best_streak < required_consecutive:
+        reasons.append(
+            f"insufficient_consecutive_credible_pulses:{best_streak}<{required_consecutive}"
+        )
+    trained = [
+        p
+        for p in window
+        if str(p.get("phase")) == "tiny_training_canary"
+        and isinstance(p.get("progress"), Mapping)
+        and p["progress"].get("postshot_process_alive")
+        and (
+            p["progress"].get("gpu_active")
+            or p["progress"].get("log_progress")
+            or p["progress"].get("output_progress")
+        )
+    ]
+    if not trained:
+        reasons.append("no_pulse_shows_live_postshot_process_with_gpu_or_growth")
+    for name in ("psht", "ply"):
+        if int(canary_outputs.get(name, 0) or 0) <= 0:
+            reasons.append(f"canary_output_missing_or_empty:{name}")
+    if secrets_found:
+        reasons.append("secret_leak_in_pulse_series")
+    return {
+        "schema_version": "postshot_canary_gate.v1",
+        "passed": not reasons,
+        "reasons": sorted(reasons),
+        "credible_pulse_streak": best_streak,
+        "required_consecutive": required_consecutive,
+        "canary_pulse_count": len(window),
+    }
 
 
 def sha256_bytes(payload: bytes) -> str:

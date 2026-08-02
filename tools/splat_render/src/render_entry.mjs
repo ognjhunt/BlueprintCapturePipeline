@@ -9,12 +9,16 @@ const state = {
   scene: null,
   camera: null,
   mesh: null,
+  meshes: [],
+  backgroundMesh: null,
+  objectMeshes: new Map(),
   bounds: null,
   canvas: null,
   overlayGroup: null,
+  composition: null,
 };
 
-async function load(url, width, height, clearColor) {
+function setupRenderer(width, height, clearColor) {
   const canvas = document.getElementById("c");
   canvas.width = width;
   canvas.height = height;
@@ -30,56 +34,61 @@ async function load(url, width, height, clearColor) {
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 100000);
-
   const spark = new SparkRenderer({ renderer });
   scene.add(spark);
+  return { canvas, renderer, scene, camera };
+}
 
-  const mesh = new SplatMesh({ url });
-  await mesh.initialized;
-  scene.add(mesh);
+function transformedMeshBounds(mesh) {
   mesh.updateMatrixWorld(true);
-
-  // Spark stores splats in packed GPU buffers (not a standard three geometry), so
-  // Box3.setFromObject() returns empty. Use Spark's own splat-centers bounding box.
-  let box = null;
+  let local = null;
   try {
-    box = mesh.getBoundingBox(true);
+    local = mesh.getBoundingBox(true);
   } catch (e) {
-    box = null;
+    local = null;
   }
-  if (!box || box.isEmpty() || !isFinite(box.min.x)) {
-    box = new THREE.Box3();
-    mesh.forEachSplat((_i, center) => box.expandByPoint(center));
+  if (!local || local.isEmpty() || !isFinite(local.min.x)) {
+    local = new THREE.Box3();
+    mesh.forEachSplat((_i, center) => local.expandByPoint(center));
   }
+  const world = new THREE.Box3();
+  for (const x of [local.min.x, local.max.x]) {
+    for (const y of [local.min.y, local.max.y]) {
+      for (const z of [local.min.z, local.max.z]) {
+        world.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(mesh.matrixWorld));
+      }
+    }
+  }
+  return { local, world };
+}
+
+function finalizeSceneState({ canvas, renderer, scene, camera, meshes, backgroundMesh, objectMeshes }) {
+  const box = new THREE.Box3();
+  const meshDiagnostics = [];
+  for (const mesh of meshes) {
+    const bounds = transformedMeshBounds(mesh);
+    box.union(bounds.world);
+    meshDiagnostics.push({
+      id: mesh.name,
+      splat_count: mesh.numSplats != null ? mesh.numSplats : null,
+      local_min: bounds.local.min.toArray(),
+      local_max: bounds.local.max.toArray(),
+      world_min: bounds.world.min.toArray(),
+      world_max: bounds.world.max.toArray(),
+      matrixWorld: mesh.matrixWorld.elements.map((value) => +value.toFixed(6)),
+    });
+  }
+  if (box.isEmpty() || !isFinite(box.min.x)) throw new Error("composite_splat_bounds_invalid");
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
   const sphere = box.getBoundingSphere(new THREE.Sphere());
-
-  // --- diagnostics: manual bbox + sample centers + world transform ---
-  const manual = new THREE.Box3();
-  const samples = [];
-  let seen = 0;
-  mesh.forEachSplat((i, c) => {
-    manual.expandByPoint(c);
-    if (seen < 5) samples.push([+c.x.toFixed(3), +c.y.toFixed(3), +c.z.toFixed(3)]);
-    seen++;
-  });
-  state._diag = {
-    getBoundingBox_min: box.min.toArray().map((v) => +v.toFixed(3)),
-    getBoundingBox_max: box.max.toArray().map((v) => +v.toFixed(3)),
-    forEachSplat_min: manual.min.toArray().map((v) => +v.toFixed(3)),
-    forEachSplat_max: manual.max.toArray().map((v) => +v.toFixed(3)),
-    mesh_position: mesh.position.toArray(),
-    mesh_quaternion: mesh.quaternion.toArray(),
-    mesh_scale: mesh.scale.toArray(),
-    matrixWorld: mesh.matrixWorld.elements.map((v) => +v.toFixed(4)),
-    sample_centers: samples,
-  };
-
   state.renderer = renderer;
   state.scene = scene;
   state.camera = camera;
-  state.mesh = mesh;
+  state.mesh = backgroundMesh || meshes[0] || null;
+  state.meshes = meshes;
+  state.backgroundMesh = backgroundMesh || null;
+  state.objectMeshes = objectMeshes || new Map();
   state.canvas = canvas;
   state.bounds = {
     center: center.toArray(),
@@ -87,9 +96,71 @@ async function load(url, width, height, clearColor) {
     radius: sphere.radius,
     min: box.min.toArray(),
     max: box.max.toArray(),
-    splatCount: mesh.numSplats != null ? mesh.numSplats : null,
+    splatCount: meshes.reduce((sum, mesh) => sum + Number(mesh.numSplats || 0), 0),
   };
+  state._diag = { meshes: meshDiagnostics };
   return { ...state.bounds, _diag: state._diag };
+}
+
+async function load(url, width, height, clearColor) {
+  const initialized = setupRenderer(width, height, clearColor);
+  const { scene } = initialized;
+
+  const mesh = new SplatMesh({ url });
+  await mesh.initialized;
+  mesh.name = "background";
+  scene.add(mesh);
+  mesh.updateMatrixWorld(true);
+  state.composition = null;
+  return finalizeSceneState({
+    ...initialized,
+    meshes: [mesh],
+    backgroundMesh: mesh,
+    objectMeshes: new Map(),
+  });
+}
+
+async function loadComposite(backgroundUrl, objects, width, height, clearColor) {
+  if (!Array.isArray(objects) || objects.length === 0) throw new Error("composite_objects_missing");
+  const objectIds = objects.map((item) => String(item.object_id || ""));
+  if (objectIds.some((id) => !id) || new Set(objectIds).size !== objectIds.length) {
+    throw new Error("composite_object_ids_missing_or_duplicate");
+  }
+  const initialized = setupRenderer(width, height, clearColor);
+  const { scene } = initialized;
+  const backgroundMesh = new SplatMesh({ url: backgroundUrl });
+  await backgroundMesh.initialized;
+  backgroundMesh.name = "background";
+  scene.add(backgroundMesh);
+  const objectMeshes = new Map();
+  for (const item of objects) {
+    const mesh = new SplatMesh({ url: item.url });
+    await mesh.initialized;
+    mesh.name = String(item.object_id);
+    const matrix = item.T_world_object;
+    if (!Array.isArray(matrix) || matrix.length !== 4 || matrix.some((row) => !Array.isArray(row) || row.length !== 4)) {
+      throw new Error(`composite_object_transform_invalid:${mesh.name}`);
+    }
+    const world = new THREE.Matrix4().set(...matrix.flat().map(Number));
+    world.decompose(mesh.position, mesh.quaternion, mesh.scale);
+    mesh.updateMatrixWorld(true);
+    scene.add(mesh);
+    objectMeshes.set(mesh.name, mesh);
+  }
+  const meshes = [backgroundMesh, ...objectMeshes.values()];
+  const bounds = finalizeSceneState({
+    ...initialized,
+    meshes,
+    backgroundMesh,
+    objectMeshes,
+  });
+  state.composition = {
+    background_instance_count: 1,
+    object_ids: [...objectMeshes.keys()].sort(),
+    visual_instance_counts: Object.fromEntries([...objectMeshes.keys()].sort().map((id) => [id, 1])),
+    exactly_one_visual_instance_per_object: [...objectMeshes.values()].every((mesh) => mesh.visible),
+  };
+  return { ...bounds, composition: state.composition };
 }
 
 function setOverlay(items = []) {
@@ -188,5 +259,5 @@ async function renderView(spec, settleFrames = 10, settleMs = 110) {
   return canvas.toDataURL("image/png");
 }
 
-window.BlueprintSplat = { load, setOverlay, warmup, renderView };
+window.BlueprintSplat = { load, loadComposite, setOverlay, warmup, renderView };
 window.__sparkReady = true;

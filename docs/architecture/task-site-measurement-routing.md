@@ -512,6 +512,12 @@ Implemented and hermetically tested:
   independently qualified metric mesh/collider and a signed measured
   robot/site registration into a maintained testbed without agent promotion or
   proof inflation;
+- a broad artifact compiler that consumes raw capture manifests and the
+  capture/reconstruction/qualification artifact families, attaches the
+  resulting `site_evidence_profile.v1` to a maintained testbed, and stays
+  fail-closed: raw streams and metric-geometry manifests are candidates, while
+  only the existing collider, articulation, and material gates can validate
+  their physical evidence records;
 - a real SAPIEN 3.0.3 physics-only rigid-contact worker over the shared
   sphere/box corpus, with exact SAPIEN/PhysX/implementation/solver binding,
   headless operation, enhanced-determinism settings, and deterministic double
@@ -557,6 +563,21 @@ Implemented and hermetically tested:
 - receipt-backed predictions, independent-executor proof fields, a minimum
   repeated-trial gate, evaluator-identity binding, and computed 95% confidence
   intervals for R5 evidence candidates;
+- a route-to-execution development bridge that binds a selected measurement
+  stage to the uniform worker boundary and then creates a separate immutable
+  Evidence Plan attachment containing the exact plan, claim, route, receipt,
+  case, and prediction digests. A same-logical-case MuJoCo/Drake report retains
+  both engine identities and numeric metric ranges without treating agreement
+  as qualification;
+- an on-demand SimReady object lane that retains 3DGS as appearance, inserts
+  per-object USD/MJCF physics drafts, and feeds all generated collider/mass/
+  friction records back to the router as `validated=false` candidates. Its
+  schema-checked preflight records the local trimesh/USD/MuJoCo checks and
+  optional Blender/NVIDIA validator availability before target-simulator
+  admission; load/stability never upgrades physical validity. Dynamic display
+  additionally requires an exact source-digest-bound Gaussian object partition:
+  selected rows are absent from the static background, preserved in one
+  object-local splat, and driven with the collider by one body-pose channel;
 - release monitoring plus immutable primary-source snapshot/diff monitoring,
   candidate/version/access alerts, benchmark recommendations, bounded
   regression plans, a monthly cadence contract, and a read-only monthly GitHub
@@ -623,6 +644,12 @@ Not established by this repository change:
   checked monthly GitHub Actions workflow becomes operational only after merge
   with Actions enabled and covers public GitHub release feeds; non-GitHub and
   restricted sources remain deployment configuration;
+- Blender or NVIDIA Content-Agent Validation execution in the current local
+  preflight. The exact environment probe found neither executable; their
+  optional validator slots are recorded as typed unavailable without install,
+  network access, or provider calls. The current green preflight proves only
+  local geometry/USD generation plus headless MJCF load and numerical
+  stability;
 - independent R6 human decisions or R7 production catalog admissions for the
   research candidates;
 - policy-ranking validity (the current verdict remains `thesis_not_supported`);

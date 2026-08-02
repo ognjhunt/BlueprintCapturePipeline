@@ -45,6 +45,8 @@ from blueprint_pipeline.postshot_worker_contracts import (  # noqa: E402
     build_live_cost_estimate,
     build_provider_zero_proof,
     build_reconciled_cost,
+    derive_phase_started_epoch,
+    evaluate_canary_gate,
     evaluate_pulses,
     parse_timestamp,
     sanitize_text,
@@ -74,14 +76,22 @@ RUN_TAG_KEY = "blueprint-run"
 AUTHORIZATION_LINE = "AUTHORIZE_POSTSHOT_ATTEMPT_5 MAX_INCREMENTAL_USD=15 TTL_MINUTES=300"
 RUN_ID_RE = re.compile(r"^postshot-[0-9]{8}T[0-9]{6}Z$")
 
+# Per-object expiries sized to each object's last legitimate use, measured
+# from stage time.  Inputs are consumed by ~launch + boot(10m) + driver(15m)
+# + install(10m) + retrieval(15m); two hours absorbs launch latency without
+# reviving the old everything-lives-12h posture.  Telemetry/result PUT URLs
+# are re-signed for the same key on every upload, and the worker keeps using
+# them until the 300-minute TTL plus collection, so they must outlive TTL.
 URL_EXPIRIES_SECONDS = {
-    "dataset_get": 15 * 60,
-    "installer_get": 15 * 60,
-    "license_get": 5 * 60,
-    "license_delete": 5 * 60,
-    "status_put": 10 * 60,
-    "pulse_put": 10 * 60,
-    "results_put": 60 * 60,
+    "dataset_get": 2 * 3600,
+    "installer_get": 2 * 3600,
+    "license_get": 2 * 3600,
+    "license_delete": 3 * 3600,
+    "status_put": 7 * 3600,
+    "pulse_put": 7 * 3600,
+    "results_put": 7 * 3600,
+    "canary_results_put": 7 * 3600,
+    "canary_approval_get": 7 * 3600,
 }
 
 
@@ -885,7 +895,12 @@ def watch_once(arguments: argparse.Namespace) -> dict[str, Any]:
     elif pulse_errors:
         decision = WatchDecision("terminate", "pulse_contract_invalid")
     else:
-        decision = evaluate_pulses(pulses, now_epoch=now_epoch, phase_started_epoch=float(launch.get("launched_at_epoch", now_epoch)), launched_epoch=float(launch.get("launched_at_epoch", now_epoch)), live_cost_estimate_usd=float(_cost_for_launch(launch, now_epoch)["total_usd"]), incremental_cap_usd=float(launch.get("incremental_cap_usd", ATTEMPT_5_INCREMENTAL_CAP_USD)))
+        launched_epoch = float(launch.get("launched_at_epoch", now_epoch))
+        # Phase timeouts anchor at the current phase's start; anchoring at
+        # launch would fire the 15-minute driver limit mid-install and kill
+        # P2 at minute ~150 even when it just started.
+        phase_started_epoch = derive_phase_started_epoch(pulses, launched_epoch=launched_epoch)
+        decision = evaluate_pulses(pulses, now_epoch=now_epoch, phase_started_epoch=phase_started_epoch, launched_epoch=launched_epoch, live_cost_estimate_usd=float(_cost_for_launch(launch, now_epoch)["total_usd"]), incremental_cap_usd=float(launch.get("incremental_cap_usd", ATTEMPT_5_INCREMENTAL_CAP_USD)))
     action: dict[str, Any] = decision.as_dict()
     if decision.action in {"abort", "terminate"}:
         action.update(_terminate_exact(run_id=arguments.run_id, launch=launch))

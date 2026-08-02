@@ -1,82 +1,452 @@
 {
-  "schema_version": "capture_to_tactile_development_corpus.v1",
+  "cases": [
+    {
+      "case_id": "direct-tactile-development-stable-001",
+      "contact_intensity_frames": [
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0.6,
+          0.6,
+          0,
+          0,
+          0.6,
+          0.6,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0.8,
+          0.8,
+          0,
+          0,
+          0.8,
+          0.8,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0.9,
+          0.9,
+          0,
+          0,
+          0.9,
+          0.9,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0.9,
+          0.9,
+          0,
+          0,
+          0.9,
+          0.9,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "marker_displacement_frames_px": [
+        [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ]
+        ],
+        [
+          [
+            0.1,
+            0.0
+          ],
+          [
+            0.1,
+            0.0
+          ],
+          [
+            0.1,
+            0.0
+          ],
+          [
+            0.1,
+            0.0
+          ]
+        ],
+        [
+          [
+            0.2,
+            0.1
+          ],
+          [
+            0.2,
+            0.1
+          ],
+          [
+            0.2,
+            0.1
+          ],
+          [
+            0.2,
+            0.1
+          ]
+        ],
+        [
+          [
+            0.3,
+            0.1
+          ],
+          [
+            0.3,
+            0.1
+          ],
+          [
+            0.3,
+            0.1
+          ],
+          [
+            0.3,
+            0.1
+          ]
+        ],
+        [
+          [
+            0.35,
+            0.1
+          ],
+          [
+            0.35,
+            0.1
+          ],
+          [
+            0.35,
+            0.1
+          ],
+          [
+            0.35,
+            0.1
+          ]
+        ]
+      ],
+      "normal_force_n": [
+        0.0,
+        2.0,
+        4.0,
+        5.0,
+        5.0
+      ],
+      "shear_force_n": [
+        0.0,
+        0.2,
+        0.5,
+        1.0,
+        1.2
+      ]
+    },
+    {
+      "case_id": "direct-tactile-development-slip-002",
+      "contact_intensity_frames": [
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0.6,
+          0.6,
+          0,
+          0,
+          0.6,
+          0.6,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0.8,
+          0.8,
+          0,
+          0,
+          0.8,
+          0.8,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0.9,
+          0.9,
+          0,
+          0,
+          0.9,
+          0.9,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0.7,
+          0.7,
+          0,
+          0,
+          0.7,
+          0.7,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "marker_displacement_frames_px": [
+        [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ]
+        ],
+        [
+          [
+            0.1,
+            0.0
+          ],
+          [
+            0.1,
+            0.0
+          ],
+          [
+            0.1,
+            0.0
+          ],
+          [
+            0.1,
+            0.0
+          ]
+        ],
+        [
+          [
+            0.4,
+            0.2
+          ],
+          [
+            0.4,
+            0.2
+          ],
+          [
+            0.4,
+            0.2
+          ],
+          [
+            0.4,
+            0.2
+          ]
+        ],
+        [
+          [
+            1.0,
+            0.4
+          ],
+          [
+            1.1,
+            0.4
+          ],
+          [
+            1.0,
+            0.5
+          ],
+          [
+            1.1,
+            0.5
+          ]
+        ],
+        [
+          [
+            1.4,
+            0.6
+          ],
+          [
+            1.5,
+            0.6
+          ],
+          [
+            1.4,
+            0.7
+          ],
+          [
+            1.5,
+            0.7
+          ]
+        ]
+      ],
+      "normal_force_n": [
+        0.0,
+        2.0,
+        4.0,
+        4.0,
+        3.0
+      ],
+      "shear_force_n": [
+        0.0,
+        0.3,
+        1.0,
+        2.4,
+        2.0
+      ]
+    }
+  ],
   "corpus_id": "blueprint-direct-tactile-development-v1",
   "description": "Synthetic synchronized optical-tactile marker/contact and force sequences for Q-TACT development plumbing; not real sensor calibration or force truth.",
-  "lane": "tactile",
-  "numpy_version": "2.4.6",
   "development_only": true,
-  "synthetic_fixture": true,
   "held_out": false,
+  "lane": "tactile",
+  "metric_definitions": {
+    "force": "Peak synchronized shear-force sample in newtons.",
+    "state_trajectory": "Peak frame-mean optical marker displacement in pixels.",
+    "task_outcome": "Whether the public shear-ratio and marker-motion rule observed incipient slip.",
+    "topology_contact": "Whether a thresholded tactile contact patch was observed."
+  },
+  "numpy_version": "2.4.6",
   "physical_measurements_included": false,
-  "real_sensor_calibration_included": false,
   "qualification_labels_included": false,
   "r5_evidence": false,
   "r6_decision": false,
   "r7_admission": false,
+  "real_sensor_calibration_included": false,
+  "schema_version": "capture_to_tactile_development_corpus.v1",
   "shared_operating_point": {
     "adapter_protocol": "direct_tactile_sequence_reduction.v1",
-    "sensor_class": "optical_tactile_with_synchronized_force",
-    "data_origin": "synthetic_development_fixture",
     "calibration_scope": "synthetic_identity_only",
-    "image_unit": "pixels",
-    "force_unit": "newtons",
-    "timestamp_unit": "nanoseconds",
-    "frame_count": 5,
-    "marker_count": 4,
-    "contact_grid_width": 4,
     "contact_grid_height": 4,
-    "timestamps_ns": [1000000000, 1010000000, 1020000000, 1030000000, 1040000000],
-    "pixel_pitch_mm": 0.25,
+    "contact_grid_width": 4,
     "contact_intensity_threshold": 0.5,
+    "data_origin": "synthetic_development_fixture",
+    "force_unit": "newtons",
+    "frame_count": 5,
+    "image_unit": "pixels",
+    "marker_count": 4,
+    "maximum_peak_shear_force_n": 10.0,
     "minimum_normal_force_for_slip_n": 1.0,
-    "slip_shear_to_normal_ratio": 0.5,
+    "pixel_pitch_mm": 0.25,
+    "sensor_class": "optical_tactile_with_synchronized_force",
     "slip_marker_displacement_px": 0.8,
-    "maximum_peak_shear_force_n": 10.0
+    "slip_shear_to_normal_ratio": 0.5,
+    "timestamp_unit": "nanoseconds",
+    "timestamps_ns": [
+      1000000000,
+      1010000000,
+      1020000000,
+      1030000000,
+      1040000000
+    ]
   },
-  "metric_definitions": {
-    "state_trajectory": "Peak frame-mean optical marker displacement in pixels.",
-    "topology_contact": "Whether a thresholded tactile contact patch was observed.",
-    "force": "Peak synchronized shear-force sample in newtons.",
-    "task_outcome": "Whether the public shear-ratio and marker-motion rule observed incipient slip."
-  },
-  "cases": [
-    {
-      "case_id": "direct-tactile-development-stable-001",
-      "marker_displacement_frames_px": [
-        [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
-        [[0.1, 0.0], [0.1, 0.0], [0.1, 0.0], [0.1, 0.0]],
-        [[0.2, 0.1], [0.2, 0.1], [0.2, 0.1], [0.2, 0.1]],
-        [[0.3, 0.1], [0.3, 0.1], [0.3, 0.1], [0.3, 0.1]],
-        [[0.35, 0.1], [0.35, 0.1], [0.35, 0.1], [0.35, 0.1]]
-      ],
-      "contact_intensity_frames": [
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0.6, 0.6, 0, 0, 0.6, 0.6, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0.8, 0.8, 0, 0, 0.8, 0.8, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0.9, 0.9, 0, 0, 0.9, 0.9, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0.9, 0.9, 0, 0, 0.9, 0.9, 0, 0, 0, 0, 0]
-      ],
-      "normal_force_n": [0.0, 2.0, 4.0, 5.0, 5.0],
-      "shear_force_n": [0.0, 0.2, 0.5, 1.0, 1.2]
-    },
-    {
-      "case_id": "direct-tactile-development-slip-002",
-      "marker_displacement_frames_px": [
-        [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
-        [[0.1, 0.0], [0.1, 0.0], [0.1, 0.0], [0.1, 0.0]],
-        [[0.4, 0.2], [0.4, 0.2], [0.4, 0.2], [0.4, 0.2]],
-        [[1.0, 0.4], [1.1, 0.4], [1.0, 0.5], [1.1, 0.5]],
-        [[1.4, 0.6], [1.5, 0.6], [1.4, 0.7], [1.5, 0.7]]
-      ],
-      "contact_intensity_frames": [
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0.6, 0.6, 0, 0, 0.6, 0.6, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0.8, 0.8, 0, 0, 0.8, 0.8, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0.9, 0.9, 0, 0, 0.9, 0.9, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0.7, 0.7, 0, 0, 0.7, 0.7, 0, 0, 0, 0, 0]
-      ],
-      "normal_force_n": [0.0, 2.0, 4.0, 4.0, 3.0],
-      "shear_force_n": [0.0, 0.3, 1.0, 2.4, 2.0]
-    }
-  ]
+  "synthetic_fixture": true
 }

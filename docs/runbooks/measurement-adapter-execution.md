@@ -545,6 +545,51 @@ box cases executed with the bound Isaac/PhysX runtime and replayed. It does not
 create held-out R5 evidence, an R6 decision, R7 admission, captured-site
 accuracy, policy ranking, physical success, deployment readiness, or safety.
 
+## Routed Evidence Plan attachments and cross-engine development reports
+
+`measurement_routed_execution.execute_routed_development_stage` accepts only a
+`route_selected` decision and still requires the caller's explicit execution
+flag. After completion, use `attach_routed_development_evidence` to create a
+result-side attachment bound to the immutable Evidence Plan, claim, routing
+decision, case, receipt, and prediction digests. The plan itself is not
+rewritten.
+
+For a comparative development check, put the same
+`comparison_case_shape` object in each engine-specific case manifest, execute
+each through the routed boundary, and pass the plan-bound attachments to
+`build_routed_cross_engine_development_report`. The report rejects plan,
+claim, route, case-shape, attachment-digest, or engine-identity drift. Numeric
+metric ranges are solver disagreement evidence only; they do not establish
+physical error, qualification, or engine interchangeability.
+
+## SimReady preflight before target-simulator admission
+
+`simready_asset_lane.preflight_simready_scene` validates each draft with a
+headless MJCF load, body/mass/collider invariants, and a bounded finite-state
+dynamics probe. The accompanying `probe_simready_preflight_toolchain` result
+records whether the local trimesh, USD/pxr, MuJoCo, Blender, and NVIDIA
+Content-Agent Validation surfaces are actually present. Missing optional
+Blender or agentic validators are typed and visible; the function performs no
+install, network access, or provider call.
+
+The current macOS probe has trimesh, pxr/USD, and MuJoCo, but no `blender` or
+`validation-agent` executable. Therefore a green current preflight means the
+generated USD/MJCF draft is structurally loadable and numerically stable in the
+bounded local reference, not that Blender/NVIDIA validation ran and not that
+collider, articulation, material, contact, or sim-to-real validity exists.
+
+### Moving a captured 3DGS object
+
+Do not add an object splat on top of the original whole-scene splat. That leaves
+the captured object in the background and creates a visible duplicate when the
+new instance moves. Produce `gaussian_object_selection.v1`, run
+`partition_gaussian_object`, and verify the resulting manifest/files. Then pass
+the partition and the matching SimReady manifest to `build_dynamic_splat_scene`.
+The compositor loads the static background once and the object-local splat once;
+both visual and collider consume the declared body-pose channel. A legacy
+`compose_simready_scene_binding` call without a partition is static-only and
+cannot claim duplicate-free dynamic rendering.
+
 ## Failure handling
 
 - Version, implementation, request, case, solver-setting, result, or replay

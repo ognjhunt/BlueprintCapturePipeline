@@ -1126,6 +1126,116 @@ def _render_and_world_model_candidates() -> tuple[dict[str, Any], ...]:
             ),
         ),
         _entry(
+            "nvidia-usd-content-agents",
+            family="task_benchmark_framework",
+            section="2.4",
+            classification="production_candidate",
+            label="VF",
+            name="NVIDIA usd-content-agents VLM SimReady asset generation (open source)",
+            protocols=("Q-SENSOR", "Q-RIGID", "Q-ART"),
+            ceiling="C2",
+            sources=(
+                ("official_repository", "https://github.com/NVIDIA-Omniverse/usd-content-agents"),
+            ),
+            access={
+                "source_available": True,
+                "api_only": False,
+                "local_offline_supported": False,
+                "commercial_use_status": "apache_2_0_core_with_vlm_backend_terms_review",
+            },
+            limitations=(
+                "vlm_inferred_physics_and_articulation_are_estimates_never_measurement_identification",
+                "external_vlm_backend_processes_scene_data_unless_a_local_nim_deployment_is_used",
+                "gpu_requirement_48gb_vram_typical",
+                "generated_assets_enter_site_evidence_as_validated_false_until_collider_articulation_material_gates_pass",
+            ),
+            forbidden=(
+                "collision_authority", "force_authority", "articulation_authority",
+                "material_authority",
+            ),
+            notes=(
+                "Apache-2.0, locally runnable VLM agent pipeline for SimReady USD "
+                "generation (materials, textures, physics classification, "
+                "articulation inference, validation); the leading open-source "
+                "candidate for the on-demand SimReady object lane that replaces "
+                "3DGS task objects with interactable assets, subject to the "
+                "generated-is-not-validated gates."
+            ),
+        ),
+        _entry(
+            "palatial-simready-cloud",
+            family="external_provider_tool",
+            section="2.4",
+            classification="provider_requiring_contract_gates",
+            label="EC",
+            name="Palatial cloud SimReady asset generation (captures to physics assets)",
+            protocols=("Q-RIGID", "Q-ART", "Q-SENSOR"),
+            ceiling="C2",
+            sources=(("vendor_page", "https://palatial.cloud/"),),
+            access={
+                "source_available": False,
+                "api_only": True,
+                "local_offline_supported": False,
+                "commercial_use_status": "contract_retention_provenance_export_review_required",
+            },
+            limitations=(
+                "vendor_validated_against_ground_truth_and_drop_joint_test_claims_are_ec_until_independently_reproduced",
+                "articulation_and_soft_body_inference_are_estimates_until_measured",
+                "cloud_processing_of_site_captures_requires_rights_retention_review",
+            ),
+            notes=(
+                "Lightwheel-class SimReady provider: images/point clouds/text to "
+                "collision geometry, joints, and per-part mass/friction/inertia "
+                "with USD/MJCF/URDF export; candidate for the external-provider "
+                "slot of the SimReady lane behind the R2 gates."
+            ),
+        ),
+        _entry(
+            "physgaussian-mpm-on-splats",
+            family="traditional_simulation",
+            section="2.4",
+            classification="research_only",
+            label="EC",
+            name="PhysGaussian-class MPM dynamics directly on Gaussian kernels",
+            protocols=("Q-SOFT", "Q-GRAN"),
+            ceiling="C3",
+            sources=(("official_repository", "https://github.com/XPandora/PhysGaussian"),),
+            regimes=("elastoplastic_dough_clay", "granular_media"),
+            limitations=(
+                "material_attributes_are_fitted_to_gaussians_never_identified_from_measurement",
+                "particle_filling_sensitive_to_noisy_gaussian_distributions",
+                "manual_preprocessing_dependencies_reported",
+                "no_robot_contact_or_collision_interface_established",
+            ),
+            notes=(
+                "Answers 'interact with a splat' by simulating the kernels "
+                "themselves; visually strong, but a fitted continuum on "
+                "appearance kernels is not contact or force truth, so it stays "
+                "a research watch item rather than the interaction lane."
+            ),
+        ),
+        _entry(
+            "sugar-2dgs-mesh-extraction",
+            family="neural_reconstruction_appearance",
+            section="2.4",
+            classification="research_only",
+            label="VF",
+            name="SuGaR / 2DGS-class mesh extraction from Gaussian splats",
+            protocols=("Q-SENSOR",),
+            ceiling="C2",
+            sources=(("official_repository", "https://github.com/Anttwo/SuGaR"),),
+            limitations=(
+                "extracted_meshes_are_derived_geometry_candidates_never_validated_colliders",
+                "surface_quality_depends_on_splat_quality_and_regularization",
+            ),
+            forbidden=_APPEARANCE_FORBIDDEN_AUTHORITIES,
+            notes=(
+                "Fast splat-to-mesh extraction; the natural local geometry "
+                "source feeding the SimReady lane's segmented-mesh input, with "
+                "outputs gated by the collider-qualification pipeline."
+            ),
+        ),
+        _entry(
             "hybrid-real2sim-pipelines",
             family="task_benchmark_framework",
             section="2.4",
