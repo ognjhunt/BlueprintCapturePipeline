@@ -43,7 +43,10 @@ from blueprint_pipeline.reconstruction_geometry_contracts import (
     build_metric_geometry_manifest,
     build_nurec_openusd_packaging_result,
 )
-from blueprint_pipeline.safe_outbound_http import SafeHttpFileTransfer
+from blueprint_pipeline.safe_outbound_http import (
+    SafeHttpFileTransfer,
+    SafeOutboundHttpError,
+)
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     build_paid_lane_admission,
@@ -816,6 +819,7 @@ def test_isaac_bootstrap_binds_downloads_preserves_typed_blocker_and_uploads(
     )
     assert result["status"] == "output_uploaded"
     assert result["isaac_runtime_exit_code"] == 0
+    assert result["input_bundle_download_attempts"] == 1
     assert result["scientific_qualification_inferred"] is False
     assert result["simulator_task_success_proven"] is False
     assert result["bootstrap_receipt_digest"] == canonical_digest(
@@ -844,6 +848,37 @@ def test_isaac_bootstrap_binds_downloads_preserves_typed_blocker_and_uploads(
     assert validated["status"] == "validated"
     assert runtime["status"] == "blocked"
     assert runtime["blockers"] == ["isaacsim_module_unavailable"]
+
+
+def test_isaac_bootstrap_retries_one_same_instance_input_digest_mismatch(
+    tmp_path, monkeypatch
+):
+    expected = "sha256:" + "a" * 64
+    calls = 0
+
+    def fake_download(_url, *, expected_sha256, **_kwargs):
+        nonlocal calls
+        calls += 1
+        assert expected_sha256 == expected
+        if calls == 1:
+            raise SafeOutboundHttpError("outbound_http_file_digest_mismatch")
+        return SafeHttpFileTransfer(
+            status=200,
+            transferred_bytes=123,
+            sha256=expected,
+            host="objects.example",
+        )
+
+    monkeypatch.setattr(isaac_bootstrap, "download_file", fake_download)
+    transfer, attempts = isaac_bootstrap._download_input_bundle_with_integrity_retry(
+        url="https://objects.example/input.zip?secret",
+        output_path=tmp_path / "input.zip",
+        expected_sha256=expected,
+    )
+
+    assert transfer.sha256 == expected
+    assert attempts == 2
+    assert calls == 2
 
 
 def test_isaac_bootstrap_fails_closed_before_runtime_on_binding_ttl_or_missing_result(

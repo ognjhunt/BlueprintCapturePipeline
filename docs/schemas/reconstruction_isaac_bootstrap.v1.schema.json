@@ -31,6 +31,11 @@
     "isaac_verification_request_digest": {"$ref": "#/$defs/digest"},
     "input_bundle_digest": {"$ref": "#/$defs/digest"},
     "input_bundle_bytes": {"type": "integer", "minimum": 1},
+    "input_bundle_download_attempts": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2
+    },
     "input_receipt_file_digest": {"$ref": "#/$defs/digest"},
     "input_extraction_receipt_digest": {"$ref": "#/$defs/digest"},
     "output_bundle_digest": {"$ref": "#/$defs/digest"},

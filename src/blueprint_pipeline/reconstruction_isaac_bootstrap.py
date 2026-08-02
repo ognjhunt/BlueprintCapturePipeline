@@ -39,6 +39,7 @@ MAX_RECEIPT_BYTES = 16 * 1024**2
 MAX_OUTPUT_BUNDLE_BYTES = 5_000_000_000
 MAX_LOG_BYTES = 16 * 1024**2
 MAX_DIAGNOSTIC_LOG_TAIL_BYTES = 4096
+MAX_INPUT_BUNDLE_DOWNLOAD_ATTEMPTS = 2
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _IMAGE = re.compile(r"[^@\s]+@sha256:[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -77,6 +78,54 @@ def _load(
     if not isinstance(value, Mapping):
         raise ReconstructionIsaacBootstrapError([code])
     return dict(value)
+
+
+def _download_input_bundle_with_integrity_retry(
+    *,
+    url: str,
+    output_path: Path,
+    expected_sha256: str,
+) -> tuple[SafeHttpFileTransfer, int]:
+    """Retry one completed-but-wrong large-object transfer on the same worker.
+
+    This does not create another provider instance. It repeats only an
+    idempotent GET whose completed response failed the precommitted digest,
+    emits a secret-free marker, and returns the attempt count for the signed
+    bootstrap receipt.
+    """
+
+    for attempt in range(1, MAX_INPUT_BUNDLE_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            transfer = download_file(
+                url,
+                output_path=output_path,
+                expected_sha256=expected_sha256,
+                max_bytes=MAX_INPUT_BUNDLE_BYTES,
+                timeout_seconds=3600,
+                policy=presigned_transfer_policy(url),
+            )
+        except SafeOutboundHttpError as exc:
+            retryable = str(exc) == "outbound_http_file_digest_mismatch"
+            if not retryable or attempt >= MAX_INPUT_BUNDLE_DOWNLOAD_ATTEMPTS:
+                raise
+            print(
+                json.dumps(
+                    {
+                        "event": "isaac_input_bundle_integrity_retry",
+                        "completed_attempt": attempt,
+                        "next_attempt": attempt + 1,
+                        "reason": "outbound_http_file_digest_mismatch",
+                        "provider_allocation_retry": False,
+                        "raw_secret_values_recorded": False,
+                    },
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+        return transfer, attempt
+    raise AssertionError("unreachable input bundle download retry state")
 
 
 def _default_process_runner(
@@ -337,13 +386,12 @@ def run_reconstruction_isaac_bootstrap(
             ["reconstruction_isaac_bootstrap_receipt_binding_mismatch"]
         )
     try:
-        input_transfer = download_file(
-            input_url,
-            output_path=input_path,
-            expected_sha256=input_digest,
-            max_bytes=MAX_INPUT_BUNDLE_BYTES,
-            timeout_seconds=3600,
-            policy=presigned_transfer_policy(input_url),
+        input_transfer, input_download_attempts = (
+            _download_input_bundle_with_integrity_retry(
+                url=input_url,
+                output_path=input_path,
+                expected_sha256=input_digest,
+            )
         )
         extraction = extract_isaac_verification_worker_bundle(
             bundle_path=input_path,
@@ -419,6 +467,7 @@ def run_reconstruction_isaac_bootstrap(
         "isaac_verification_request_digest": verification_request_digest,
         "input_bundle_digest": input_transfer.sha256,
         "input_bundle_bytes": input_transfer.transferred_bytes,
+        "input_bundle_download_attempts": input_download_attempts,
         "input_receipt_file_digest": receipt_transfer.sha256,
         "input_extraction_receipt_digest": extraction["extraction_receipt_digest"],
         "output_bundle_digest": output_transfer.sha256,
