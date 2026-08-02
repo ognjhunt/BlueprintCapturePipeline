@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rendered_scene_task_proposal_set.v1.schema.json",
+  "title": "Rendered scene task proposal set v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "analyzer_provenance",
+    "candidate_may_self_authorize",
+    "proposals",
+    "proposal_set_digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "rendered_scene_task_proposal_set.v1"},
+    "analyzer_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "analyzer_id",
+        "implementation_version",
+        "analyzer_contract_digest",
+        "proposal_generation_is_dynamic",
+        "candidate_may_self_authorize"
+      ],
+      "properties": {
+        "analyzer_id": {"type": "string", "minLength": 1},
+        "implementation_version": {"type": "string", "minLength": 1},
+        "analyzer_contract_digest": {"$ref": "#/$defs/digest"},
+        "proposal_generation_is_dynamic": {"const": true},
+        "candidate_may_self_authorize": {"const": false}
+      }
+    },
+    "candidate_may_self_authorize": {"const": false},
+    "proposals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "proposal_id",
+          "object_label",
+          "task_family",
+          "affordances",
+          "visual_confidence",
+          "supporting_view_ids",
+          "binding_view_id",
+          "bbox_xyxy_pixels"
+        ],
+        "properties": {
+          "proposal_id": {"type": "string", "minLength": 1},
+          "object_label": {"type": "string", "minLength": 1},
+          "task_family": {"type": "string", "minLength": 1},
+          "affordances": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "visual_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "supporting_view_ids": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1}
+          },
+          "binding_view_id": {"type": "string", "minLength": 1},
+          "bbox_xyxy_pixels": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {"type": "number"}
+          }
+        }
+      }
+    },
+    "proposal_set_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
