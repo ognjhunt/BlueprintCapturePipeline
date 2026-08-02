@@ -78,6 +78,7 @@ def test_measurement_isaac_bundle_is_clean_commit_bound_and_deterministic(tmp_pa
         assert "requests/001.json" in names
         assert "requests/002.json" in names
         assert "scripts/run_measurement_isaac_physx_bundle.py" in names
+        assert "src/blueprint_pipeline/core/common.py" in names
         manifest = json.loads(archive.read("bundle_manifest.json"))
     assert manifest["source_commit_sha"] == first["source_commit_sha"]
     assert manifest["runtime_image_digest"] == first["runtime_image_digest"]
