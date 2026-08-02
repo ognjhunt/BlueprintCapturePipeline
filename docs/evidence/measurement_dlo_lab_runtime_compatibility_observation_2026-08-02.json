@@ -56,17 +56,28 @@
     "cuda_execution_reached": false,
     "evidence_path": "docs/evidence/measurement_dlo_lab_vast_attempt4_2026-08-02.json"
   },
-  "next_candidate": {
+  "attempt5_observation": {
     "schema_version": "measurement_dlo_lab_runtime_release.v2",
     "python_version": "3.12.11",
-    "python_environment_isolated": true,
-    "pytorch_version": "2.9.1+cu128",
     "quadrants_version": "0.8.0",
-    "cuda_version": "12.8",
-    "purpose": "Hold source, CUDA, Torch, and Quadrants fixed while testing the DLO-Lab README-prescribed Python 3.12 boundary with exact hashed artifacts."
+    "torch_version": "2.9.1+cu128",
+    "direct_quadrants_import_succeeded": false,
+    "cuda_execution_reached": false,
+    "evidence_path": "docs/evidence/measurement_dlo_lab_vast_attempt5_2026-08-02.json"
+  },
+  "next_diagnostic": {
+    "fixed_variables": [
+      "dlo_lab_source_commit",
+      "python_3_12_11",
+      "cuda_12_8",
+      "torch_2_9_1_cu128",
+      "quadrants_0_8_0"
+    ],
+    "purpose": "Collect a bounded sanitized native debugger backtrace for direct Quadrants import without changing another compatibility variable or creating qualification evidence."
   },
   "evidence_boundary": {
     "primary_source_metadata_observed": true,
+    "python_3_12_runtime_import_proven": false,
     "runtime_import_proven": false,
     "cuda_execution_proven": false,
     "deterministic_replay_proven": false,
