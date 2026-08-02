@@ -195,6 +195,10 @@ def compile_external_scene_isaac_package(
         )
         if not collider.IsValid() or not collider.HasAPI(UsdPhysics.CollisionAPI):
             raise ExternalSceneIsaacPackageError(["external_package_collision_api_missing"])
+        # Collision geometry remains active for PhysX but must never occlude the
+        # appearance splat or robot evidence in RTX renders.
+        UsdGeom.Imageable(collider).MakeInvisible()
+        collision_stage.GetRootLayer().Save()
         root = Usd.Stage.CreateNew(str(temporary / "default.usda"))
         UsdGeom.SetStageMetersPerUnit(root, 1.0)
         UsdGeom.SetStageUpAxis(root, UsdGeom.Tokens.z)
@@ -233,6 +237,7 @@ def compile_external_scene_isaac_package(
         "metric_scale_status": admitted["metric_scale_status"],
         "independent_metric_scale_proven": admitted["metric_scale_status"] == "validated",
         "collision_validated": admitted["collision_validated"],
+        "collision_geometry_render_hidden": True,
         "source_video_available": admitted["source_video_available"],
         "source_video_required_for_candidate_packaging": False,
         "generated_fill_used": False,

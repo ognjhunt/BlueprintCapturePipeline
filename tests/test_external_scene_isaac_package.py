@@ -98,6 +98,8 @@ def test_packages_registered_particlefield_and_static_collision_without_video(
     collider = stage.GetPrimAtPath("/World/BlueprintReconstruction/Collision/ExternalSceneMesh")
     assert gaussian.GetTypeName() == "ParticleField3DGaussianSplat"
     assert collider.HasAPI(UsdPhysics.CollisionAPI)
+    assert UsdGeom.Imageable(collider).ComputeVisibility() == UsdGeom.Tokens.invisible
+    assert result["collision_geometry_render_hidden"] is True
     xform = UsdGeom.Xformable(
         stage.GetPrimAtPath("/World/BlueprintReconstruction/Appearance")
     ).GetLocalTransformation()
