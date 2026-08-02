@@ -190,7 +190,6 @@ def _required_representations(claim_types: Sequence[str]) -> list[str]:
     required: set[str] = set()
     if claims.intersection({"perception_visibility", "task_discovery", "appearance_review"}):
         required.add("decoded_observation_frames")
-        required.add("qualified_appearance_render")
     if claims.intersection({"reachability", "robot_placement", "navigation_clearance"}):
         required.add("metric_reference_layer")
     if claims.intersection(PHYSICS_DEPENDENT_CLAIMS):
@@ -198,7 +197,7 @@ def _required_representations(claim_types: Sequence[str]) -> list[str]:
     if "articulation" in claims:
         required.add("articulated_object_asset")
     if "appearance_review" in claims:
-        required.add("appearance_layer")
+        required.update({"appearance_layer", "qualified_appearance_render"})
     return sorted(required)
 
 
