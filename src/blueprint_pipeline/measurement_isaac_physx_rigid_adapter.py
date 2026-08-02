@@ -16,7 +16,7 @@ import importlib.metadata
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .measurement_adapter_execution import (
     MeasurementAdapterExecutionError,
@@ -40,6 +40,56 @@ def implementation_digest() -> str:
         hasher.update(path.read_bytes())
         hasher.update(b"\0")
     return "sha256:" + hasher.hexdigest()
+
+
+def _observe_isaac_runtime_identity(
+    simulation_app: Any,
+    *,
+    version_getter: Callable[[], Any] | None = None,
+) -> dict[str, str]:
+    """Read Isaac identity from the running app rather than pip metadata.
+
+    NVIDIA's container distribution does not necessarily install a normal
+    ``isaacsim`` dist-info record.  Isaac's supported version API reads the
+    application's own VERSION file, while the live Kit application supplies
+    useful secondary app/build observations.  The VERSION-file value is the
+    authoritative engine version used by this adapter's fail-closed gate.
+    """
+
+    package_version = "unavailable"
+    try:
+        package_version = importlib.metadata.version("isaacsim")
+    except importlib.metadata.PackageNotFoundError:
+        pass
+
+    if version_getter is None:
+        from isaacsim.core.version import get_version  # type: ignore
+
+        version_getter = get_version
+    raw_version = version_getter()
+    if not isinstance(raw_version, (tuple, list)) or len(raw_version) < 1:
+        raise RuntimeError("isaac_physx_rigid_runtime_version_observation_invalid")
+    engine_version = str(raw_version[0]).strip()
+    if not engine_version:
+        raise RuntimeError("isaac_physx_rigid_runtime_version_observation_invalid")
+
+    app = getattr(simulation_app, "app", None)
+    app_version = "unavailable"
+    build_version = "unavailable"
+    if app is not None:
+        get_app_version = getattr(app, "get_app_version", None)
+        if callable(get_app_version):
+            app_version = str(get_app_version()).strip() or "unavailable"
+        get_build_version = getattr(app, "get_build_version", None)
+        if callable(get_build_version):
+            build_version = str(get_build_version()).strip() or "unavailable"
+    return {
+        "engine_version": engine_version,
+        "engine_version_source": "isaacsim.core.version.get_version_app_VERSION_file",
+        "observed_package_version": package_version,
+        "observed_app_version": app_version,
+        "observed_build_version": build_version,
+    }
 
 
 def _number(
@@ -205,9 +255,7 @@ def _simulate(point: Mapping[str, Any], solver: Mapping[str, Any]) -> dict[str, 
         body_xform = UsdGeom.Xformable(body.GetPrim())
         body_xform.AddScaleOp().Set(Gf.Vec3f(*point["size"]))
         body_prim = body.GetPrim()
-    UsdGeom.Xformable(body_prim).AddTranslateOp().Set(
-        Gf.Vec3d(0.0, 0.0, point["initial_height_m"])
-    )
+    UsdGeom.Xformable(body_prim).AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, point["initial_height_m"]))
     UsdPhysics.CollisionAPI.Apply(body_prim)
     UsdPhysics.RigidBodyAPI.Apply(body_prim)
     UsdPhysics.MassAPI.Apply(body_prim).CreateMassAttr().Set(point["mass_kg"])
@@ -279,9 +327,12 @@ def _simulate(point: Mapping[str, Any], solver: Mapping[str, Any]) -> dict[str, 
         "penetration_m": penetration,
         "position_trace_m": positions,
     }
-    trace["trace_digest"] = "sha256:" + hashlib.sha256(
-        json.dumps(trace, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    trace["trace_digest"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(trace, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
     if callable(clear_instance):
         clear_instance()
     return trace
@@ -345,25 +396,37 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
         value = solver[key]
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 255:
             raise MeasurementAdapterExecutionError(f"isaac_physx_rigid_{key}_invalid")
-    try:
-        installed = importlib.metadata.version("isaacsim")
-    except importlib.metadata.PackageNotFoundError:
-        installed = "unavailable"
-    if installed != ISAAC_VERSION:
-        return build_measurement_adapter_worker_result(
-            request,
-            status="blocked",
-            observed_metrics={},
-            unsafe_condition_predicted=None,
-            runtime_observations={**observations, "observed_package_version": installed},
-            failure_codes=["isaac_physx_rigid_package_or_version_unavailable"],
-        )
     point = _operating_point(request)
     simulation_app: Any | None = None
     try:
         from isaacsim import SimulationApp  # type: ignore
 
         simulation_app = SimulationApp({"headless": True})
+        try:
+            runtime_identity = _observe_isaac_runtime_identity(simulation_app)
+        except Exception as exc:  # noqa: BLE001
+            return build_measurement_adapter_worker_result(
+                request,
+                status="blocked",
+                observed_metrics={},
+                unsafe_condition_predicted=None,
+                runtime_observations={
+                    **observations,
+                    "runtime_identity_error_type": type(exc).__name__,
+                    "runtime_identity_error": repr(exc)[:800],
+                },
+                failure_codes=["isaac_physx_rigid_runtime_identity_unavailable"],
+            )
+        observations.update(runtime_identity)
+        if runtime_identity["engine_version"] != ISAAC_VERSION:
+            return build_measurement_adapter_worker_result(
+                request,
+                status="blocked",
+                observed_metrics={},
+                unsafe_condition_predicted=None,
+                runtime_observations=observations,
+                failure_codes=["isaac_physx_rigid_runtime_version_mismatch"],
+            )
         first = _simulate(point, solver)
         second = _simulate(point, solver)
     except Exception as exc:  # noqa: BLE001
@@ -374,7 +437,6 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
             unsafe_condition_predicted=None,
             runtime_observations={
                 **observations,
-                "observed_package_version": installed,
                 "execution_error_type": type(exc).__name__,
                 "execution_error": repr(exc)[:800],
             },
@@ -393,7 +455,6 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
     metrics = {key: value for key, value in available_metrics.items() if key in requested}
     observations.update(
         {
-            "engine_version": installed,
             "implementation_id": IMPLEMENTATION_ID,
             "implementation_version": IMPLEMENTATION_VERSION,
             "implementation_digest": implementation_digest(),
@@ -408,7 +469,11 @@ def run_isaac_physx_rigid_measurement_request(request_value: Mapping[str, Any]) 
             "contact_source": "physx_contact_report",
             "penetration_source": "rest_height_minus_minimum_live_center_height",
             "timestep_s": point["timestep_s"],
-            **{key: value for key, value in first.items() if key not in {"trace_digest", "position_trace_m"}},
+            **{
+                key: value
+                for key, value in first.items()
+                if key not in {"trace_digest", "position_trace_m"}
+            },
             "trace_digest": first["trace_digest"],
             "repeat_trace_digest": second["trace_digest"],
             "deterministic_replay_match": replay_match,
@@ -444,7 +509,9 @@ def _load_object(path: Path) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run an Isaac/PhysX rigid-contact development case")
+    parser = argparse.ArgumentParser(
+        description="Run an Isaac/PhysX rigid-contact development case"
+    )
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
