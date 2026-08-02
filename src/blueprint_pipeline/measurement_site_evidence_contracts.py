@@ -72,3 +72,63 @@ def site_geometry_bridge_validation_errors(value: Mapping[str, Any]) -> list[str
         ):
             errors.append("source_capture_digest_invalid")
     return errors
+
+
+def site_sensor_pairing_bridge_validation_errors(value: Mapping[str, Any]) -> list[str]:
+    """Validate the optional sensor-pairing bridge without granting authority."""
+
+    bridge = value.get("sensor_pairing_bridge")
+    if bridge is None:
+        return []
+    if not isinstance(bridge, Mapping):
+        return ["sensor_pairing_bridge_invalid"]
+    errors: list[str] = []
+    pairing_digest = _string(bridge.get("pairing_digest"))
+    if (
+        len(pairing_digest) != 71
+        or not pairing_digest.startswith("sha256:")
+        or any(char not in "0123456789abcdef" for char in pairing_digest[7:])
+    ):
+        errors.append("sensor_pairing_bridge_digest_invalid")
+    modalities = bridge.get("required_modalities")
+    if (
+        not isinstance(modalities, list)
+        or not modalities
+        or len(set(modalities)) != len(modalities)
+        or not set(modalities) <= {"rgb", "depth", "lidar"}
+    ):
+        errors.append("sensor_pairing_bridge_modalities_invalid")
+    if bridge.get("decision") not in {"accepted", "rejected", "development_only"}:
+        errors.append("sensor_pairing_bridge_decision_invalid")
+    if bridge.get("development_only") not in {True, False}:
+        errors.append("sensor_pairing_bridge_development_only_invalid")
+    evidence = value.get("evidence")
+    evidence = evidence if isinstance(evidence, Mapping) else {}
+    for evidence_id in ("sensor_calibration", "sensor_timing"):
+        record = evidence.get(evidence_id)
+        if not isinstance(record, Mapping) or record.get("record_id") != pairing_digest:
+            errors.append(f"sensor_pairing_bridge_{evidence_id}_record_mismatch")
+            continue
+        expected_validated = bridge.get("decision") == "accepted"
+        if record.get("validated") is not expected_validated:
+            errors.append(f"sensor_pairing_bridge_{evidence_id}_validation_mismatch")
+    for key in (
+        "q_sensor_qualification_created",
+        "r5_evidence_created",
+        "r6_decision_created",
+        "r7_admission_created",
+        "physical_success_established",
+        "agent_may_promote",
+    ):
+        if bridge.get(key) is not False:
+            errors.append(f"sensor_pairing_bridge_{key}_must_be_false")
+    return errors
+
+
+def site_evidence_bridge_validation_errors(value: Mapping[str, Any]) -> list[str]:
+    """Validate every optional evidence bridge attached to a site profile."""
+
+    return [
+        *site_geometry_bridge_validation_errors(value),
+        *site_sensor_pairing_bridge_validation_errors(value),
+    ]
