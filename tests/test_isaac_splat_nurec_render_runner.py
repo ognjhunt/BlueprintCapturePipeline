@@ -83,12 +83,15 @@ def _cameras(**updates):
 
 
 def test_qualification_blockers_accept_only_complete_v3_evidence() -> None:
-    assert runner._qualification_blockers(
-        package_digest=DIGEST,
-        stage=_stage(),
-        physics_probe=_physics(),
-        cameras=_cameras(),
-    ) == []
+    assert (
+        runner._qualification_blockers(
+            package_digest=DIGEST,
+            stage=_stage(),
+            physics_probe=_physics(),
+            cameras=_cameras(),
+        )
+        == []
+    )
 
 
 def test_camera_ids_map_to_valid_collision_checked_usd_prim_names() -> None:
@@ -100,9 +103,43 @@ def test_camera_ids_map_to_valid_collision_checked_usd_prim_names() -> None:
         runner._camera_usd_prim_names(["camera-a", "camera_a"])
 
 
+def test_robot_only_pass_authors_hidden_lights_when_provider_stage_has_none() -> None:
+    from pxr import Sdf, Usd, UsdGeom, UsdLux
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+
+    prim, report = runner._ensure_robot_only_lights(
+        stage,
+        "/World/RobotEvidenceLights",
+        Sdf=Sdf,
+        UsdGeom=UsdGeom,
+        UsdLux=UsdLux,
+    )
+
+    assert prim.IsValid()
+    assert report["authored_for_robot_only_pass"] is True
+    assert report["claim_boundary"] == "render_lighting_support_only_not_scene_or_task_evidence"
+    assert UsdGeom.Imageable(prim).GetVisibilityAttr().Get() == "invisible"
+    assert stage.GetPrimAtPath("/World/RobotEvidenceLights/Dome").IsA(UsdLux.DomeLight)
+    assert stage.GetPrimAtPath("/World/RobotEvidenceLights/Distant").IsA(UsdLux.DistantLight)
+
+    same_prim, reused = runner._ensure_robot_only_lights(
+        stage,
+        "/World/RobotEvidenceLights",
+        Sdf=Sdf,
+        UsdGeom=UsdGeom,
+        UsdLux=UsdLux,
+    )
+    assert same_prim == prim
+    assert reused["authored_for_robot_only_pass"] is False
+
+
 def test_provider_package_mode_has_versioned_schema_and_dynamic_exact_prim_paths() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
-    assert 'PROVIDER_QUALIFICATION_RESULT_SCHEMA = "provider_nurec_isaac_runtime_result.v1"' in source
+    assert (
+        'PROVIDER_QUALIFICATION_RESULT_SCHEMA = "provider_nurec_isaac_runtime_result.v1"' in source
+    )
     assert 'NUREC_FIELD_TYPE = "OmniNuRecFieldAsset"' in source
     assert "--provider-package-mode" in source
     assert "--expected-appearance-prim" in source
@@ -119,34 +156,34 @@ def test_provider_package_mode_has_versioned_schema_and_dynamic_exact_prim_paths
 def test_v3_schema_accepts_only_explicit_completed_qualification_evidence() -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     evidence = {
-            "schema_version": "isaac_splat_nurec_render_result.v3",
-            "status": "completed",
-            "isaac_verification_request_digest": DIGEST,
-            "package_digest": DIGEST,
-            "fixed_camera_spec_digest": DIGEST,
-            "runtime_container_image_digest": IMAGE,
-            "runtime_implementation_digest": DIGEST,
-            "runtime_identity": {
-                "runtime": "isaac_sim",
-                "renderer": "RayTracedLighting",
-                "python_version": "3.11.0",
-                "headless": True,
-            },
-            "raw_secret_values_recorded": False,
-            "cost_usd": 0.25,
-            "duration_seconds": 90.0,
-            "stage": _stage(),
-            "physics_probe": _physics(),
-            "cameras": _cameras(),
-            "proof_boundary": {
-                "isaac_load_render_physics_presence_compatibility": True,
-                "simulator_task_success_proven": False,
-                "physics_navigation_control_proven": False,
-                "physical_success_proven": False,
-                "physical_robot_readiness_proven": False,
-                "deployment_readiness_proven": False,
-            },
-        }
+        "schema_version": "isaac_splat_nurec_render_result.v3",
+        "status": "completed",
+        "isaac_verification_request_digest": DIGEST,
+        "package_digest": DIGEST,
+        "fixed_camera_spec_digest": DIGEST,
+        "runtime_container_image_digest": IMAGE,
+        "runtime_implementation_digest": DIGEST,
+        "runtime_identity": {
+            "runtime": "isaac_sim",
+            "renderer": "RayTracedLighting",
+            "python_version": "3.11.0",
+            "headless": True,
+        },
+        "raw_secret_values_recorded": False,
+        "cost_usd": 0.25,
+        "duration_seconds": 90.0,
+        "stage": _stage(),
+        "physics_probe": _physics(),
+        "cameras": _cameras(),
+        "proof_boundary": {
+            "isaac_load_render_physics_presence_compatibility": True,
+            "simulator_task_success_proven": False,
+            "physics_navigation_control_proven": False,
+            "physical_success_proven": False,
+            "physical_robot_readiness_proven": False,
+            "deployment_readiness_proven": False,
+        },
+    }
     evidence["isaac_runtime_result_digest"] = canonical_digest(
         evidence, digest_field="isaac_runtime_result_digest"
     )

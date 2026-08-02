@@ -23,6 +23,7 @@ Run with Isaac's python:
 Truth boundary: Isaac RTX render evidence of the captured scene only — not physics,
 navigation, control, or robot readiness.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -63,7 +64,9 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def _phase(result_path: Path, base: dict, phase: str, **extra) -> None:
-    _write_json(result_path, {**base, "status": "running", "provider_runtime_phase": phase, **extra})
+    _write_json(
+        result_path, {**base, "status": "running", "provider_runtime_phase": phase, **extra}
+    )
 
 
 def _camera_usd_prim_names(camera_ids: list[str]) -> list[str]:
@@ -84,14 +87,31 @@ def _camera_usd_prim_names(camera_ids: list[str]) -> list[str]:
 
 def _transcode_ply_to_usd(ply: Path, usd: Path, *, python: str, fmt: str = "lightfield") -> dict:
     # fmt 'lightfield' => ParticleField3DGaussianSplat (matches the validated authoring path).
-    cmd = [python, "-m", "threedgrut.export.scripts.transcode", str(ply), "-o", str(usd), "--format", fmt]
+    cmd = [
+        python,
+        "-m",
+        "threedgrut.export.scripts.transcode",
+        str(ply),
+        "-o",
+        str(usd),
+        "--format",
+        fmt,
+    ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     except Exception as exc:  # noqa: BLE001
-        return {"status": "blocked", "blockers": ["threedgrut_transcode_exception"], "error": repr(exc)}
+        return {
+            "status": "blocked",
+            "blockers": ["threedgrut_transcode_exception"],
+            "error": repr(exc),
+        }
     if proc.returncode != 0 or not usd.is_file():
-        return {"status": "blocked", "blockers": ["threedgrut_transcode_failed"],
-                "returncode": proc.returncode, "stderr_tail": (proc.stderr or "")[-2000:]}
+        return {
+            "status": "blocked",
+            "blockers": ["threedgrut_transcode_failed"],
+            "returncode": proc.returncode,
+            "stderr_tail": (proc.stderr or "")[-2000:],
+        }
     return {"status": "completed", "usd": str(usd), "bytes": usd.stat().st_size, "format": fmt}
 
 
@@ -198,12 +218,52 @@ def _composite_robot(stage, options: dict, *, Gf, UsdGeom, Sdf) -> dict:
             xformable.ClearXformOpOrder()
             xformable.AddTransformOp().Set(matrix)
         child_count = sum(1 for child in Usd.PrimRange(prim)) - 1
-        report.update(composited=True, resolved_usd=chosen, prim_path=prim_path,
-                      composed_prim_count=child_count)
+        report.update(
+            composited=True,
+            resolved_usd=chosen,
+            prim_path=prim_path,
+            composed_prim_count=child_count,
+        )
         return report
     except Exception as exc:  # noqa: BLE001
         report.update(composited=False, blocker="robot_composite_exception", error=repr(exc)[:400])
         return report
+
+
+def _ensure_robot_only_lights(stage, lights_path: str, *, Sdf, UsdGeom, UsdLux):
+    """Return a hidden light rig for the mesh-only evidence pass.
+
+    Provider-authored NuRec packages are often self-emissive and contain no
+    lights. A referenced mesh robot then renders black when the splat is
+    hidden. Reuse an authored rig when present; otherwise author a deterministic
+    dome+distant rig at runtime, keep it hidden during the scene pass, and show
+    it only for the robot-only pass. The exact source package on disk is never
+    edited.
+    """
+
+    requested_path = str(lights_path or "/World/BlueprintRobotOnlyLights").strip()
+    path = Sdf.Path(requested_path)
+    if not path.IsAbsolutePath() or not path.IsPrimPath():
+        raise ValueError("robot_only_lights_prim_path_invalid")
+    existing = stage.GetPrimAtPath(path)
+    authored = not (existing and existing.IsValid())
+    if authored:
+        root = UsdGeom.Xform.Define(stage, path)
+        dome = UsdLux.DomeLight.Define(stage, path.AppendChild("Dome"))
+        dome.CreateIntensityAttr(400.0)
+        distant = UsdLux.DistantLight.Define(stage, path.AppendChild("Distant"))
+        distant.CreateIntensityAttr(2500.0)
+        prim = root.GetPrim()
+    else:
+        prim = existing
+    UsdGeom.Imageable(prim).MakeInvisible()
+    return prim, {
+        "lights_path": str(path),
+        "authored_for_robot_only_pass": authored,
+        "dome_intensity": 400.0 if authored else None,
+        "distant_intensity": 2500.0 if authored else None,
+        "claim_boundary": "render_lighting_support_only_not_scene_or_task_evidence",
+    }
 
 
 def _camera_xform(Gf, position, target, up):
@@ -263,10 +323,7 @@ def _is_sha256_digest(value) -> bool:
 
 
 def _is_image_digest(value) -> bool:
-    return bool(
-        isinstance(value, str)
-        and re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", value)
-    )
+    return bool(isinstance(value, str) and re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", value))
 
 
 def _select_ground_surface(collision_prims, *, requested_path="", declared_height=None):
@@ -293,10 +350,17 @@ def _select_ground_surface(collision_prims, *, requested_path="", declared_heigh
         bounds = item.get("world_bounds") or {}
         low = bounds.get("min")
         high = bounds.get("max")
-        if not isinstance(low, list) or not isinstance(high, list) or len(low) != 3 or len(high) != 3:
+        if (
+            not isinstance(low, list)
+            or not isinstance(high, list)
+            or len(low) != 3
+            or len(high) != 3
+        ):
             continue
         values = [*low, *high]
-        if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in values):
+        if not all(
+            isinstance(value, (int, float)) and math.isfinite(float(value)) for value in values
+        ):
             continue
         dx, dy, dz = (float(high[index]) - float(low[index]) for index in range(3))
         name = str(item.get("prim_path") or "").lower()
@@ -311,8 +375,11 @@ def _select_ground_surface(collision_prims, *, requested_path="", declared_heigh
             float(declared_height) if declared_height is not None else float(high[2])
         )
         surface["selection_reason"] = (
-            "declared_active_collider" if requested else
-            "floor_semantic" if semantic_floor else "broad_thin_horizontal_bound"
+            "declared_active_collider"
+            if requested
+            else "floor_semantic"
+            if semantic_floor
+            else "broad_thin_horizontal_bound"
         )
         ranked.append((dx * dy, surface))
     if not ranked:
@@ -322,20 +389,34 @@ def _select_ground_surface(collision_prims, *, requested_path="", declared_heigh
 
 
 def _classify_physics_probe(
-    *, ground_surface, requested_steps, executed_steps, initial_position,
-    final_position, contact_event_count, errors,
+    *,
+    ground_surface,
+    requested_steps,
+    executed_steps,
+    initial_position,
+    final_position,
+    contact_event_count,
+    errors,
 ):
-    ground_height = ground_surface.get("probe_height_m") if isinstance(ground_surface, dict) else None
+    ground_height = (
+        ground_surface.get("probe_height_m") if isinstance(ground_surface, dict) else None
+    )
     positions_valid = (
-        isinstance(initial_position, list) and len(initial_position) == 3
-        and isinstance(final_position, list) and len(final_position) == 3
+        isinstance(initial_position, list)
+        and len(initial_position) == 3
+        and isinstance(final_position, list)
+        and len(final_position) == 3
         and all(
             isinstance(value, (int, float)) and math.isfinite(float(value))
             for value in [*initial_position, *final_position]
         )
     )
     fell_through = None
-    if positions_valid and isinstance(ground_height, (int, float)) and math.isfinite(float(ground_height)):
+    if (
+        positions_valid
+        and isinstance(ground_height, (int, float))
+        and math.isfinite(float(ground_height))
+    ):
         fell_through = float(final_position[2]) < float(ground_height) - 0.1
     return {
         "ground_contact_surface_present": bool(ground_surface),
@@ -416,7 +497,9 @@ def _qualification_blockers(*, package_digest, stage, physics_probe, cameras):
     return sorted(set(blockers))
 
 
-def _inspect_qualification_stage(stage, stage_path, particlefields, *, Usd, UsdGeom, UsdPhysics, UsdUtils):
+def _inspect_qualification_stage(
+    stage, stage_path, particlefields, *, Usd, UsdGeom, UsdPhysics, UsdUtils
+):
     invalid_transforms = []
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     for prim in stage.Traverse():
@@ -525,8 +608,7 @@ def _contact_event_count(prim_path, ground_prim_path):
         count = 0
         for header in headers:
             encoded = [
-                getattr(header, name, "")
-                for name in ("actor0", "actor1", "collider0", "collider1")
+                getattr(header, name, "") for name in ("actor0", "actor1", "collider0", "collider1")
             ]
             paths = []
             for value in encoded:
@@ -534,7 +616,9 @@ def _contact_event_count(prim_path, ground_prim_path):
                     paths.append(str(PhysicsSchemaTools.intToSdfPath(int(value))))
                 except Exception:  # noqa: BLE001
                     paths.append(str(value))
-            probe_seen = prim_path in paths or any(path.startswith(prim_path + "/") for path in paths)
+            probe_seen = prim_path in paths or any(
+                path.startswith(prim_path + "/") for path in paths
+            )
             ground_seen = ground_prim_path in paths or any(
                 path.startswith(ground_prim_path + "/") for path in paths
             )
@@ -546,7 +630,14 @@ def _contact_event_count(prim_path, ground_prim_path):
 
 
 def _run_qualification_physics_probe(
-    stage, ground_surface, *, steps, probe_xy, Gf, UsdGeom, Sdf,
+    stage,
+    ground_surface,
+    *,
+    steps,
+    probe_xy,
+    Gf,
+    UsdGeom,
+    Sdf,
 ):
     requested_steps = max(0, int(steps))
     errors = []
@@ -662,7 +753,10 @@ def _render(args) -> int:
         stage_path = Path(args.usdc).expanduser().resolve()
         transcode = {"status": "skipped_direct_usdc"}
         if not stage_path.is_file():
-            _write_json(result_path, {**base, "status": "blocked", "blockers": ["particlefield_usdc_missing"]})
+            _write_json(
+                result_path,
+                {**base, "status": "blocked", "blockers": ["particlefield_usdc_missing"]},
+            )
             return 2
     elif args.usdz:
         stage_path = Path(args.usdz).expanduser().resolve()
@@ -673,14 +767,23 @@ def _render(args) -> int:
     else:
         ply = Path(args.ply).expanduser().resolve()
         if not ply.is_file():
-            _write_json(result_path, {**base, "status": "blocked", "blockers": ["standard_ply_missing"]})
+            _write_json(
+                result_path, {**base, "status": "blocked", "blockers": ["standard_ply_missing"]}
+            )
             return 2
         stage_path = out_dir / "scene_particlefield.usd"
         _phase(result_path, base, "runner_transcoding_ply")
         transcode = _transcode_ply_to_usd(ply, stage_path, python=python, fmt="lightfield")
         if transcode.get("status") != "completed":
-            _write_json(result_path, {**base, "status": "blocked", "transcode": transcode,
-                                      "blockers": transcode.get("blockers", ["transcode_failed"])})
+            _write_json(
+                result_path,
+                {
+                    **base,
+                    "status": "blocked",
+                    "transcode": transcode,
+                    "blockers": transcode.get("blockers", ["transcode_failed"]),
+                },
+            )
             return 2
 
     if qualification_mode:
@@ -708,7 +811,11 @@ def _render(args) -> int:
         if _sha256_file(Path(__file__).resolve()) != args.runtime_implementation_digest:
             _write_json(
                 result_path,
-                {**base, "status": "blocked", "blockers": ["isaac_runtime_implementation_digest_mismatch"]},
+                {
+                    **base,
+                    "status": "blocked",
+                    "blockers": ["isaac_runtime_implementation_digest_mismatch"],
+                },
             )
             return 2
     cameras = json.loads(cameras_path.read_text(encoding="utf-8")) if args.cameras else []
@@ -731,13 +838,26 @@ def _render(args) -> int:
             {**base, "status": "blocked", "blockers": [str(exc)]},
         )
         return 2
-    _phase(result_path, base, "runner_importing_isaacsim", camera_count=len(cameras), stage_path=str(stage_path))
+    _phase(
+        result_path,
+        base,
+        "runner_importing_isaacsim",
+        camera_count=len(cameras),
+        stage_path=str(stage_path),
+    )
 
     try:
         from isaacsim import SimulationApp  # type: ignore
     except Exception as exc:  # noqa: BLE001
-        _write_json(result_path, {**base, "status": "blocked", "blockers": ["isaacsim_module_unavailable"],
-                                  "error": repr(exc)})
+        _write_json(
+            result_path,
+            {
+                **base,
+                "status": "blocked",
+                "blockers": ["isaacsim_module_unavailable"],
+                "error": repr(exc),
+            },
+        )
         return 2
 
     simulation_app = SimulationApp({"headless": True, "renderer": "RayTracedLighting"})
@@ -746,7 +866,7 @@ def _render(args) -> int:
         _phase(result_path, base, "runner_simulation_app_started")
         import omni.usd  # type: ignore
         import omni.replicator.core as rep  # type: ignore
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdUtils  # type: ignore
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdUtils  # type: ignore
 
         try:
             import carb  # type: ignore
@@ -760,7 +880,12 @@ def _render(args) -> int:
             from omni.isaac.core.utils.extensions import enable_extension  # type: ignore
 
             loaded = {}
-            for ext in ("omni.hydra.rtx", "omni.ujitso.client", "omni.ujitso.default", "omni.kit.converter.gsplat"):
+            for ext in (
+                "omni.hydra.rtx",
+                "omni.ujitso.client",
+                "omni.ujitso.default",
+                "omni.kit.converter.gsplat",
+            ):
                 try:
                     loaded[ext] = bool(enable_extension(ext))
                 except Exception as exc:  # noqa: BLE001
@@ -773,7 +898,9 @@ def _render(args) -> int:
         context.open_stage(str(stage_path))
         stage = context.get_stage()
         if stage is None:
-            _write_json(result_path, {**base, "status": "blocked", "blockers": ["isaac_stage_open_failed"]})
+            _write_json(
+                result_path, {**base, "status": "blocked", "blockers": ["isaac_stage_open_failed"]}
+            )
             return 2
         pf = [
             p
@@ -784,19 +911,33 @@ def _render(args) -> int:
                 and (
                     str(p.GetTypeName()) == NUREC_FIELD_TYPE
                     or any(
-                        str(attr.GetName()) == "omni:nurec:isNuRecVolume"
-                        and bool(attr.Get())
+                        str(attr.GetName()) == "omni:nurec:isNuRecVolume" and bool(attr.Get())
                         for attr in p.GetAttributes()
                     )
                 )
             )
         ]
-        prim_types = sorted({str(p.GetTypeName()) for p in stage.Traverse() if p.GetTypeName()})[:40]
-        _phase(result_path, base, "runner_stage_opened", stage_path=str(stage_path),
-               particlefield_prim_count=len(pf), prim_types=prim_types)
+        prim_types = sorted({str(p.GetTypeName()) for p in stage.Traverse() if p.GetTypeName()})[
+            :40
+        ]
+        _phase(
+            result_path,
+            base,
+            "runner_stage_opened",
+            stage_path=str(stage_path),
+            particlefield_prim_count=len(pf),
+            prim_types=prim_types,
+        )
         if not pf and not args.allow_any_stage:
-            _write_json(result_path, {**base, "status": "blocked",
-                                      "blockers": ["no_particlefield_prim_in_stage"], "prim_types": prim_types})
+            _write_json(
+                result_path,
+                {
+                    **base,
+                    "status": "blocked",
+                    "blockers": ["no_particlefield_prim_in_stage"],
+                    "prim_types": prim_types,
+                },
+            )
             return 2
 
         stage_evidence = {}
@@ -933,22 +1074,30 @@ def _render(args) -> int:
             spec = cam.get("spec") or {}
             cam_path = f"{cam_root}/{camera_prim_names[idx]}"
             camera = UsdGeom.Camera.Define(stage, Sdf.Path(cam_path))
-            xform = _camera_xform(Gf, spec.get("pos", [0, 0, 0]), spec.get("target", [0, 0, -1]),
-                                  spec.get("up", [0, 0, 1]))
+            xform = _camera_xform(
+                Gf,
+                spec.get("pos", [0, 0, 0]),
+                spec.get("target", [0, 0, -1]),
+                spec.get("up", [0, 0, 1]),
+            )
             xf = UsdGeom.Xformable(camera.GetPrim())
             xf.ClearXformOpOrder()
             xf.AddTransformOp().Set(xform)
             fov = float(spec.get("fov", 50))
             aperture = 24.0
             aspect = float(args.width) / float(args.height)
-            camera.CreateFocalLengthAttr(float((aperture * 0.5) / math.tan(math.radians(fov) * 0.5)))
+            camera.CreateFocalLengthAttr(
+                float((aperture * 0.5) / math.tan(math.radians(fov) * 0.5))
+            )
             camera.CreateVerticalApertureAttr(float(aperture))
             camera.CreateHorizontalApertureAttr(float(aperture) * aspect)
             camera.CreateClippingRangeAttr(Gf.Vec2f(0.01, 100000.0))
 
             cam_out = frames_dir / cid
             cam_out.mkdir(parents=True, exist_ok=True)
-            render_product = rep.create.render_product(cam_path, (int(args.width), int(args.height)))
+            render_product = rep.create.render_product(
+                cam_path, (int(args.width), int(args.height))
+            )
             writer = rep.WriterRegistry.get("BasicWriter")
             writer.initialize(output_dir=str(cam_out), rgb=True)
             writer.attach([render_product])
@@ -971,20 +1120,28 @@ def _render(args) -> int:
                 width, height, mean, std = _pixel_stats(canonical)
             else:
                 width, height, mean = 0, 0, 0.0
-            rendered.append({
-                "id": cid,
-                "png": str(canonical),
-                "artifact_reference": f"frames/{cid}.png",
-                "digest": _sha256_file(canonical) if canonical.is_file() else None,
-                "width": width,
-                "height": height,
-                "pixel_mean": mean,
-                "pixel_std": std,
-                "nonblank": std > 3.0 and math.isfinite(std),
-                "frame_count": len(pngs),
-            })
-            _phase(result_path, base, "runner_camera_rendered", camera_id=cid, pixel_std=round(std, 3),
-                   rendered_count=len(rendered))
+            rendered.append(
+                {
+                    "id": cid,
+                    "png": str(canonical),
+                    "artifact_reference": f"frames/{cid}.png",
+                    "digest": _sha256_file(canonical) if canonical.is_file() else None,
+                    "width": width,
+                    "height": height,
+                    "pixel_mean": mean,
+                    "pixel_std": std,
+                    "nonblank": std > 3.0 and math.isfinite(std),
+                    "frame_count": len(pngs),
+                }
+            )
+            _phase(
+                result_path,
+                base,
+                "runner_camera_rendered",
+                camera_id=cid,
+                pixel_std=round(std, 3),
+                rendered_count=len(rendered),
+            )
             try:
                 writer.detach()
             except Exception:  # noqa: BLE001
@@ -1008,12 +1165,15 @@ def _render(args) -> int:
             # The splat is self-emissive; the mesh robot needs real lights or it
             # renders black. Lights are authored invisible in the stage — enable
             # them ONLY for this pass so the splat pass stays unlit.
-            lights_prim = None
-            lights_path = str(render_options.get("lights_path") or "")
-            if lights_path:
-                lights_prim = stage.GetPrimAtPath(Sdf.Path(lights_path))
-                if lights_prim and lights_prim.IsValid():
-                    UsdGeom.Imageable(lights_prim).MakeVisible()
+            lights_prim, lighting_report = _ensure_robot_only_lights(
+                stage,
+                str(render_options.get("lights_path") or ""),
+                Sdf=Sdf,
+                UsdGeom=UsdGeom,
+                UsdLux=UsdLux,
+            )
+            UsdGeom.Imageable(lights_prim).MakeVisible()
+            robot_report["robot_only_lighting"] = lighting_report
             for _ in range(10):
                 simulation_app.update()
             for idx, cam in enumerate(cameras):
@@ -1021,7 +1181,9 @@ def _render(args) -> int:
                 cam_path = f"{cam_root}/{camera_prim_names[idx]}"
                 cam_out = ro_dir / cid
                 cam_out.mkdir(parents=True, exist_ok=True)
-                render_product = rep.create.render_product(cam_path, (int(args.width), int(args.height)))
+                render_product = rep.create.render_product(
+                    cam_path, (int(args.width), int(args.height))
+                )
                 writer = rep.WriterRegistry.get("BasicWriter")
                 writer.initialize(output_dir=str(cam_out), rgb=True, distance_to_camera=True)
                 writer.attach([render_product])
@@ -1043,10 +1205,21 @@ def _render(args) -> int:
                     std = _pixel_std(canonical)
                 if npys:
                     (ro_dir / f"{cid}_distance.npy").write_bytes(Path(npys[-1]).read_bytes())
-                robot_only.append({"id": cid, "pixel_std": round(std, 3), "nonblank": std > 3.0,
-                                   "depth_npy": bool(npys)})
-                _phase(result_path, base, "runner_robot_only_rendered", camera_id=cid,
-                       pixel_std=round(std, 3))
+                robot_only.append(
+                    {
+                        "id": cid,
+                        "pixel_std": round(std, 3),
+                        "nonblank": std > 3.0,
+                        "depth_npy": bool(npys),
+                    }
+                )
+                _phase(
+                    result_path,
+                    base,
+                    "runner_robot_only_rendered",
+                    camera_id=cid,
+                    pixel_std=round(std, 3),
+                )
                 try:
                     writer.detach()
                 except Exception:  # noqa: BLE001
@@ -1064,7 +1237,9 @@ def _render(args) -> int:
         nonblank = sum(1 for r in rendered if r["nonblank"])
         threshold = max(1, round(0.6 * len(rendered))) if rendered else 1
         visual_ok = nonblank >= threshold
-        mp4 = _encode_mp4([Path(r["png"]) for r in rendered if r["nonblank"]], out_dir / "scene_render.mp4")
+        mp4 = _encode_mp4(
+            [Path(r["png"]) for r in rendered if r["nonblank"]], out_dir / "scene_render.mp4"
+        )
         physics_probe = {}
         blockers = []
         if qualification_mode:
@@ -1111,9 +1286,7 @@ def _render(args) -> int:
             "proof_boundary": {
                 "captured_scene_displayed_in_isaac_rtx": bool(visual_ok),
                 "robot_visual_composited_at_stance": bool(robot_report.get("composited")),
-                "isaac_load_render_physics_presence_compatibility": bool(
-                    qualification_mode and ok
-                ),
+                "isaac_load_render_physics_presence_compatibility": bool(qualification_mode and ok),
                 "simulator_task_success_proven": False,
                 "physics_navigation_control_proven": False,
                 "physical_success_proven": False,
@@ -1125,8 +1298,16 @@ def _render(args) -> int:
         _bundle_and_upload(out_dir, result_path)
         return 0 if ok else 2
     except Exception as exc:  # noqa: BLE001
-        _write_json(result_path, {**base, "status": "blocked", "blockers": ["isaac_render_exception"],
-                                  "error": repr(exc), "cameras": rendered})
+        _write_json(
+            result_path,
+            {
+                **base,
+                "status": "blocked",
+                "blockers": ["isaac_render_exception"],
+                "error": repr(exc),
+                "cameras": rendered,
+            },
+        )
         return 2
     finally:
         try:
@@ -1149,9 +1330,23 @@ def _encode_mp4(frames, out_path: Path) -> dict:
         lines.append("duration 1.6")
     lines.append(f"file '{Path(frames[-1]).resolve()}'")
     listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
-           "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30", "-c:v", "libx264",
-           "-pix_fmt", "yuv420p", str(out_path)]
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(listing),
+        "-vf",
+        "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        str(out_path),
+    ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     except Exception as exc:  # noqa: BLE001
@@ -1177,8 +1372,9 @@ def _bundle_and_upload(out_dir: Path, result_path: Path) -> None:
         import urllib.request
 
         data = zip_path.read_bytes()
-        req = urllib.request.Request(signed, data=data, method="PUT",
-                                     headers={"Content-Type": "application/zip"})
+        req = urllib.request.Request(
+            signed, data=data, method="PUT", headers={"Content-Type": "application/zip"}
+        )
         urllib.request.urlopen(req, timeout=300).read()
     except Exception:  # noqa: BLE001
         pass
@@ -1186,12 +1382,20 @@ def _bundle_and_upload(out_dir: Path, result_path: Path) -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--usdc", help="ParticleField3DGaussianSplat .usdc/.usd opened directly (preferred)")
+    ap.add_argument(
+        "--usdc", help="ParticleField3DGaussianSplat .usdc/.usd opened directly (preferred)"
+    )
     ap.add_argument("--usdz", help="precomputed NuRec/ParticleField USDZ")
-    ap.add_argument("--ply", help="standard 3DGS PLY (transcoded to ParticleField USD on the worker)")
-    ap.add_argument("--cameras", required=True, help="cameras.json: [{id, spec:{pos,target,fov,up}}]")
+    ap.add_argument(
+        "--ply", help="standard 3DGS PLY (transcoded to ParticleField USD on the worker)"
+    )
+    ap.add_argument(
+        "--cameras", required=True, help="cameras.json: [{id, spec:{pos,target,fov,up}}]"
+    )
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--python", default=None, help="python for threedgrut transcode (only with --ply)")
+    ap.add_argument(
+        "--python", default=None, help="python for threedgrut transcode (only with --ply)"
+    )
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=960)
     ap.add_argument("--warmup-frames", type=int, default=30)
@@ -1245,13 +1449,18 @@ def main(argv=None) -> int:
         default="/World/BlueprintReconstruction/Collision",
         help="exact collision prim expected in qualification mode",
     )
-    ap.add_argument("--allow-any-stage", action="store_true",
-                    help="skip the ParticleField prim assertion (e.g. rendering a textured USD de-risk scene)")
+    ap.add_argument(
+        "--allow-any-stage",
+        action="store_true",
+        help="skip the ParticleField prim assertion (e.g. rendering a textured USD de-risk scene)",
+    )
     args = ap.parse_args(argv)
     if not args.usdc and not args.usdz and not args.ply:
         ap.error("one of --usdc, --usdz, or --ply is required")
     if args.qualification_mode and not _is_sha256_digest(args.package_digest):
-        ap.error("--qualification-mode requires --package-digest sha256:<64 lowercase or uppercase hex>")
+        ap.error(
+            "--qualification-mode requires --package-digest sha256:<64 lowercase or uppercase hex>"
+        )
     if args.package_digest:
         args.package_digest = args.package_digest.lower()
     if args.qualification_mode and not _is_sha256_digest(args.verification_request_digest):
@@ -1263,7 +1472,9 @@ def main(argv=None) -> int:
     if args.qualification_mode and not _is_sha256_digest(args.runtime_implementation_digest):
         ap.error("--qualification-mode requires --runtime-implementation-digest")
     if args.qualification_mode and args.ply:
-        ap.error("--qualification-mode requires an exact packaged --usdc or --usdz, not --ply transcode")
+        ap.error(
+            "--qualification-mode requires an exact packaged --usdc or --usdz, not --ply transcode"
+        )
     if args.qualification_mode and args.allow_any_stage:
         ap.error("--qualification-mode cannot be combined with --allow-any-stage")
     if args.provider_package_mode and not args.qualification_mode:
