@@ -1,0 +1,69 @@
+{
+  "schema_version": "measurement_dlo_lab_vast_attempt_evidence.v1",
+  "attempt_id": "measurement-dlo-lab-vast-attempt2-2026-08-02",
+  "status": "failed_execution_preserved",
+  "blueprint_source_commit": "639b75ab5674a384773052e98b1842d4c9a2b4ff",
+  "dlo_lab_source_commit": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
+  "runtime_image_digest": "pytorch/pytorch:2.9.1-cuda13.0-cudnn9-runtime@sha256:60f22fb80755fd0b470fb47928dbd55816aa9f847edd95cf43c93253507a9ddf",
+  "runtime_release_digest": "sha256:39e21d90fafbb51f9277977732cde72acaff8a3b7886bbc0ac114f0611b87166",
+  "input_bundle_digest": "sha256:e0fb6dadb3f4a475bdb3df9000b7b94bae127733dfe61e1bc5e290d2c116542e",
+  "bundle_manifest_digest": "sha256:8271be067406df58fb2cdb7679c983ba5082d5b60d5a6ae4635bb872621aa6ca",
+  "provider": "vast",
+  "instance_id": "46637339",
+  "gpu_name": "L40S",
+  "hourly_rate_usd": 0.4888888888888888,
+  "duration_seconds": 187.08151769638062,
+  "estimated_cost_usd": 0.024328296128418216,
+  "runtime_result_digest": "sha256:9da2db77cbadfc0df967bb7ea82ed6ba6815f9a7ad3d40d35c74e27ca1d93d11",
+  "execution_result_digest": "sha256:233bf4ee02f61640cba9444132551337e9d995a3209932dc4dc47cffaa755d2f",
+  "observed_failure": {
+    "execution_bundle_count": 2,
+    "common_exit_code": -6,
+    "common_signal": 6,
+    "common_last_phase": "genesis_import_started",
+    "common_failure_codes": [
+      "dlo_lab_adapter_native_assertion",
+      "dlo_lab_adapter_native_termination",
+      "dlo_lab_adapter_supervised_worker_exit_nonzero:-6",
+      "dlo_lab_adapter_supervised_worker_signal:6"
+    ],
+    "stderr_content_persisted": false,
+    "executions": [
+      {
+        "execution_id": "dlo-lab-cuda-cable-001-dlo-lab-cable-development-001",
+        "stderr_bytes": 222,
+        "stderr_digest": "sha256:16d0c027930a5add8514c7adb50fff4ef7b9d405a222ba179d87ad9100e3373f"
+      },
+      {
+        "execution_id": "dlo-lab-cuda-cable-002-dlo-lab-cable-development-002",
+        "stderr_bytes": 222,
+        "stderr_digest": "sha256:4fe6b1b8da4d170639768e9ba21c8130040c72fa14275c4028efd7a85a4fb57a"
+      }
+    ]
+  },
+  "teardown": {
+    "status": "PASS",
+    "teardown_receipt_digest": "sha256:ed0501e1380cb55ea49c54125e4812de6b3f6d7c3bebc2cc606e1bc5cc4acbd7",
+    "provider_zero_status": "PASS",
+    "provider_zero_digest": "sha256:8b53ddb9514cabdab1e33f954888410937c62d3bb416afa0a12a4b49c592962e",
+    "scoped_live_resource_count": 0,
+    "global_live_resource_count": 0,
+    "watchdog_status": "provider_terminal"
+  },
+  "object_store_cleanup": {
+    "status": "completed",
+    "exact_object_count": 2,
+    "all_objects_absent": true,
+    "signed_url_files_removed": true
+  },
+  "claim_boundary": {
+    "development_execution_completed": false,
+    "qualification_created": false,
+    "r5_evidence": false,
+    "r6_decision": false,
+    "r7_admission": false,
+    "physical_success_established": false,
+    "proof_effect": "failed_provider_execution_with_native_phase_diagnostic"
+  },
+  "next_encoded_action": "Load torch before genesis, matching the exact DLO-Lab CUDA examples, then rebuild a clean-commit bundle before any new bounded diagnostic."
+}
