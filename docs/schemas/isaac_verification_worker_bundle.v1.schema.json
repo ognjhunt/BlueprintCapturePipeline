@@ -32,6 +32,7 @@
     "isaac_verification_request_digest": {"$ref": "#/$defs/digest"},
     "package_digest": {"$ref": "#/$defs/digest"},
     "fixed_camera_spec_digest": {"$ref": "#/$defs/digest"},
+    "render_options_digest": {"$ref": "#/$defs/digest"},
     "runtime_implementation_digest": {"$ref": "#/$defs/digest"},
     "runtime_container_image_digest": {
       "type": "string",
@@ -74,7 +75,7 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}/isaac_verification_worker_bundle\\.zip$"
     },
-    "bundle_member_count": {"const": 5},
+    "bundle_member_count": {"enum": [5, 6]},
     "bundle_bytes": {"type": "integer", "minimum": 1},
     "receipt_digest": {"$ref": "#/$defs/digest"},
     "cost_usd": {"const": 0.0},

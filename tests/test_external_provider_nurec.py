@@ -30,6 +30,7 @@ from blueprint_pipeline.reconstruction_isaac_vast_operation import (
     _validate_bindings as validate_isaac_vast_bindings,
 )
 from blueprint_pipeline.reconstruction_isaac_worker_bundle import (
+    IsaacWorkerBundleError,
     compile_isaac_verification_worker_bundle,
     extract_isaac_verification_worker_bundle,
     validate_isaac_verification_worker_bundle_receipt,
@@ -496,6 +497,21 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
     )
     runner = tmp_path / "runner.py"
     runner.write_text("print('provider fixture')\n")
+    render_options = tmp_path / "render_options.json"
+    render_options.write_text(
+        json.dumps(
+            {
+                "robot_id": "franka_panda",
+                "robot_usd": "Robots/FrankaRobotics/FrankaPanda/franka.usd",
+                "robot_prim_path": "/World/Franka",
+                "robot_pose": [-21.9, 2.0, -1.85, 0.0],
+                "robot_ground_z": -1.85,
+                "robot_only_pass": True,
+                "robot_placement_digest": D[3],
+                "placement_proposal_digest": D[4],
+            }
+        )
+    )
     request = build_provider_nurec_isaac_request(
         {
             "stable_run_identity": "provider-nurec-test",
@@ -507,6 +523,7 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
             "fixed_camera_spec_digest": sha256_file(cameras),
             "fixed_camera_ids": ["probe-near", "probe-wide"],
             "runtime_implementation_digest": sha256_file(runner),
+            "render_options_digest": sha256_file(render_options),
             "runtime_container_image_digest": "registry.test/isaac@" + D[5],
             "expected_prim_paths": {"appearance": "/World/gauss/gauss", "collision": "/World/gauss/mesh"},
             "physics_probe_request": {
@@ -543,9 +560,12 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
         fixed_camera_spec_path=cameras,
         runner_path=runner,
         output_root=tmp_path / "bundles",
+        render_options_path=render_options,
     )
     assert receipt["schema_version"] == "provider_nurec_isaac_worker_bundle.v1"
     assert "--provider-package-mode" in receipt["command"]
+    assert receipt["bundle_member_count"] == 6
+    assert receipt["render_options_digest"] == sha256_file(render_options)
     assert validate_isaac_verification_worker_bundle_receipt(receipt) == receipt
     schema = json.loads(
         (ROOT / "docs/schemas/provider_nurec_isaac_worker_bundle.v1.schema.json").read_text()
@@ -589,6 +609,47 @@ def test_provider_isaac_worker_bundle_preserves_exact_package_and_dynamic_prims(
         output_root=tmp_path / "extracted",
     )
     assert extraction["isaac_verification_request_digest"] == request["isaac_verification_request_digest"]
+    extracted_root = tmp_path / "extracted" / receipt["bundle_digest"][7:]
+    assert (extracted_root / "render_options.json").read_bytes() == render_options.read_bytes()
+
+    with pytest.raises(IsaacWorkerBundleError, match="render_options_binding_incomplete"):
+        compile_isaac_verification_worker_bundle(
+            verification_request=request,
+            package_artifact_root=package_root,
+            fixed_camera_spec_path=cameras,
+            runner_path=runner,
+            output_root=tmp_path / "missing-options-bundle",
+        )
+
+    bad_options = tmp_path / "bad_render_options.json"
+    bad_value = json.loads(render_options.read_text())
+    bad_value["api_key"] = "must-not-enter-bundle"
+    bad_options.write_text(json.dumps(bad_value))
+    bad_request_value = dict(request)
+    bad_request_value.pop("isaac_verification_request_digest")
+    bad_request_value["render_options_digest"] = sha256_file(bad_options)
+    bad_request = build_provider_nurec_isaac_request(bad_request_value)
+    with pytest.raises(IsaacWorkerBundleError, match="render_options_secret_value_forbidden"):
+        compile_isaac_verification_worker_bundle(
+            verification_request=bad_request,
+            package_artifact_root=package_root,
+            fixed_camera_spec_path=cameras,
+            runner_path=runner,
+            output_root=tmp_path / "secret-options-bundle",
+            render_options_path=bad_options,
+        )
+
+
+def test_provider_isaac_worker_bundle_rejects_unbound_or_secret_render_options(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ExternalProviderNuRecError, match="render_options_digest_invalid"):
+        build_provider_nurec_isaac_request(
+            {
+                "schema_version": "provider_nurec_isaac_verification_request.v1",
+                "render_options_digest": "not-a-digest",
+            }
+        )
 
 
 def test_provider_runtime_output_is_independently_rehashed_and_allocator_transportable(

@@ -817,6 +817,10 @@ def build_provider_nurec_isaac_request(value: Mapping[str, Any]) -> dict[str, An
     ):
         if not _is_digest(request.get(key)):
             errors.append(f"provider_isaac_request_{key}_invalid")
+    if request.get("render_options_digest") is not None and not _is_digest(
+        request.get("render_options_digest")
+    ):
+        errors.append("provider_isaac_request_render_options_digest_invalid")
     if _COMMIT.fullmatch(str(request.get("source_commit_sha") or "")) is None:
         errors.append("provider_isaac_request_source_commit_invalid")
     if _IMAGE.fullmatch(str(request.get("runtime_container_image_digest") or "")) is None:

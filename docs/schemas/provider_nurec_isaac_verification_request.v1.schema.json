@@ -16,6 +16,7 @@
     "schema_version": {"const": "provider_nurec_isaac_verification_request.v1"},
     "source_commit_sha": {"pattern": "^[0-9a-f]{40}$"},
     "package_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
+    "render_options_digest": {"pattern": "^sha256:[0-9a-f]{64}$"},
     "runtime_container_image_digest": {"pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"},
     "provider_authored_package": {"const": true},
     "exact_package_required": {"const": true},
