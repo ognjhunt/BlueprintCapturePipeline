@@ -28,6 +28,7 @@ from .measurement_dlo_lab_runtime_release import (
     QUADRANTS_VERSION,
     QUADRANTS_WHEEL_SHA256,
     QUADRANTS_WHEEL_URL,
+    REQUIRED_DEBIAN_PACKAGES,
     RUNTIME_IMAGE,
 )
 from .measurement_dlo_lab_vast_bundle import (
@@ -217,7 +218,12 @@ for row in manifest.get("source_files", []):
 PY
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends git ca-certificates gdb libgl1 libglib2.0-0
+apt-get install -y --no-install-recommends __REQUIRED_DEBIAN_PACKAGES__
+python - <<'PY'
+import ctypes.util
+if ctypes.util.find_library("EGL") is None:
+    raise SystemExit("measurement_dlo_lab_libegl_missing")
+PY
 rm -rf /var/lib/apt/lists/*
 git clone --filter=blob:none --no-checkout \
   https://github.com/UMass-Embodied-AGI/DLO-Lab.git "$dlo"
@@ -289,6 +295,7 @@ exit "$worker_status"
             "__QUADRANTS_WHEEL_SHA256__",
             QUADRANTS_WHEEL_SHA256.removeprefix("sha256:"),
         )
+        .replace("__REQUIRED_DEBIAN_PACKAGES__", " ".join(REQUIRED_DEBIAN_PACKAGES))
     )
 
 
@@ -317,9 +324,7 @@ def validate_measurement_dlo_lab_vast_runtime_result(
         "status": "passed",
         "source_commit_sha": bound_request.get("source_commit_sha"),
         "runtime_image_digest": RUNTIME_IMAGE,
-        "runtime_release_digest": bound_request.get(
-            "measurement_dlo_lab_runtime_release_digest"
-        ),
+        "runtime_release_digest": bound_request.get("measurement_dlo_lab_runtime_release_digest"),
         "input_bundle_digest": bundle_receipt.get("input_bundle_digest"),
         "bundle_manifest_digest": bundle_receipt.get("bundle_manifest_digest"),
         "dlo_lab_source_commit": EXPECTED_SOURCE_COMMIT,
@@ -417,9 +422,7 @@ def run_measurement_dlo_lab_vast_canary(
     if request.get("bound_request_digest") != canonical_digest(
         request, digest_field="bound_request_digest"
     ):
-        raise MeasurementDloLabVastCanaryError(
-            "measurement_dlo_lab_bound_request_digest_mismatch"
-        )
+        raise MeasurementDloLabVastCanaryError("measurement_dlo_lab_bound_request_digest_mismatch")
     if (
         request.get("bound_provider") != "vast"
         or request.get("provider_mutation_authorized") is not True
@@ -431,16 +434,12 @@ def run_measurement_dlo_lab_vast_canary(
         or request.get("measurement_dlo_lab_runtime_release_digest")
         != receipt["runtime_release_digest"]
     ):
-        raise MeasurementDloLabVastCanaryError(
-            "measurement_dlo_lab_bound_request_not_executable"
-        )
+        raise MeasurementDloLabVastCanaryError("measurement_dlo_lab_bound_request_not_executable")
     hard_ttl = int(request.get("hard_ttl_seconds") or 0)
     max_spend = float(request.get("max_spend_usd") or 0)
     retry_cap = int(request.get("retry_cap") or 0)
     if retry_cap != 0 or hard_ttl <= 0 or max_spend <= 0:
-        raise MeasurementDloLabVastCanaryError(
-            "measurement_dlo_lab_execution_bounds_invalid"
-        )
+        raise MeasurementDloLabVastCanaryError("measurement_dlo_lab_execution_bounds_invalid")
 
     root = Path(job_dir)
     pending_dir = root / "pending_teardowns"
@@ -454,14 +453,10 @@ def run_measurement_dlo_lab_vast_canary(
     watchdog = preflight.get("watchdog")
     watchdog = watchdog if isinstance(watchdog, Mapping) else {}
     validator = watchdog_validator or (
-        lambda value, now, ttl: _watchdog_valid(
-            value, now_epoch=now, hard_ttl_seconds=ttl
-        )
+        lambda value, now, ttl: _watchdog_valid(value, now_epoch=now, hard_ttl_seconds=ttl)
     )
     if not validator(watchdog, started_at, hard_ttl):
-        raise MeasurementDloLabVastCanaryError(
-            "measurement_dlo_lab_independent_watchdog_not_live"
-        )
+        raise MeasurementDloLabVastCanaryError("measurement_dlo_lab_independent_watchdog_not_live")
     scoped_before = provider.billable_inventory(name_prefix=NAME_PREFIX)
     global_before = provider.billable_inventory(name_prefix="")
     if not all(
@@ -486,9 +481,7 @@ def run_measurement_dlo_lab_vast_canary(
         reconciliation=reconciliation,
     )
     if lease.get("status") != "acquired":
-        raise MeasurementDloLabVastCanaryError(
-            "measurement_dlo_lab_paid_lane_not_acquired"
-        )
+        raise MeasurementDloLabVastCanaryError("measurement_dlo_lab_paid_lane_not_acquired")
     pending = open_pending_teardown(
         provider="vast",
         lane=PAID_LANE,
@@ -514,9 +507,7 @@ def run_measurement_dlo_lab_vast_canary(
             "BLUEPRINT_MEASUREMENT_DLO_RUNTIME_RELEASE_DIGEST": str(
                 request["measurement_dlo_lab_runtime_release_digest"]
             ),
-            "BLUEPRINT_MEASUREMENT_DLO_INPUT_BUNDLE_DIGEST": str(
-                receipt["input_bundle_digest"]
-            ),
+            "BLUEPRINT_MEASUREMENT_DLO_INPUT_BUNDLE_DIGEST": str(receipt["input_bundle_digest"]),
         }
         spec = RenderLaunchSpec(
             name=name,
@@ -524,16 +515,10 @@ def run_measurement_dlo_lab_vast_canary(
             env=env,
             bootstrap_argv=["-lc", _bootstrap_script()],
             entrypoint=["bash"],
-            container_disk_gb=max(
-                100, int(preflight.get("container_disk_bytes") or 0) // 1024**3
-            ),
+            container_disk_gb=max(100, int(preflight.get("container_disk_bytes") or 0) // 1024**3),
             volume_gb=0,
-            max_hourly_rate_usd=float(
-                preflight.get("on_demand_price_usd_per_hour") or 0
-            ),
-            min_gpu_ram_mb=max(
-                24_000, int(preflight.get("gpu_memory_bytes") or 0) // 1_000_000
-            ),
+            max_hourly_rate_usd=float(preflight.get("on_demand_price_usd_per_hour") or 0),
+            min_gpu_ram_mb=max(24_000, int(preflight.get("gpu_memory_bytes") or 0) // 1_000_000),
             requires_rtx=False,
             vast_launch_mode="args",
         )
@@ -570,9 +555,7 @@ def run_measurement_dlo_lab_vast_canary(
                 evidence={"blockers": list(launch_result.get("blockers") or [])},
             )
             blockers.append("measurement_dlo_lab_vast_create_outcome_ambiguous")
-        elif launch_result.get("status") != "launched" or not launch_result.get(
-            "instance_id"
-        ):
+        elif launch_result.get("status") != "launched" or not launch_result.get("instance_id"):
             cancel_pending_teardown(
                 pending_path,
                 reason="provider_confirmed_no_allocation",
@@ -599,9 +582,7 @@ def run_measurement_dlo_lab_vast_canary(
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 - preserve teardown evidence
-                    blockers.append(
-                        f"measurement_dlo_lab_output_fetch_failed:{type(exc).__name__}"
-                    )
+                    blockers.append(f"measurement_dlo_lab_output_fetch_failed:{type(exc).__name__}")
                     break
             if raw_result is None:
                 if not any(

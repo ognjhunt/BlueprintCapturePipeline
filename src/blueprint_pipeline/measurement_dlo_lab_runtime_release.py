@@ -8,6 +8,7 @@ from .decision_evidence_contracts import canonical_digest
 from .measurement_dlo_lab_cable_adapter import (
     EXPECTED_DISTRIBUTION_VERSION,
     EXPECTED_SOURCE_COMMIT,
+    HEADLESS_DISPLAY_MODE,
 )
 
 
@@ -22,18 +23,14 @@ PYTORCH_WHEEL_URL = (
     "https://download-r2.pytorch.org/whl/cu128/"
     "torch-2.9.1%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl"
 )
-PYTORCH_WHEEL_SHA256 = (
-    "sha256:7cb4018f4ce68b61fd3ef87dc1c4ca520731c7b5b200e360ad47b612d7844063"
-)
+PYTORCH_WHEEL_SHA256 = "sha256:7cb4018f4ce68b61fd3ef87dc1c4ca520731c7b5b200e360ad47b612d7844063"
 QUADRANTS_VERSION = "0.8.0"
 QUADRANTS_WHEEL_URL = (
     "https://files.pythonhosted.org/packages/05/c1/"
     "f3a8de448bfdef42507d82b97264b2f5c0383067ba10ec438d13a84243fe/"
     "quadrants-0.8.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
 )
-QUADRANTS_WHEEL_SHA256 = (
-    "sha256:6ee51b7299882dd78bdc04ce2385566dbcbb59bcf0b2ce0951af7a1ddfe51a40"
-)
+QUADRANTS_WHEEL_SHA256 = "sha256:6ee51b7299882dd78bdc04ce2385566dbcbb59bcf0b2ce0951af7a1ddfe51a40"
 # Quadrants 0.8.0's release workflow exercises its CUDA wheel against the
 # PyTorch cu128 index.  Keep the DLO development image on that upstream-tested
 # CUDA line instead of the CUDA 13.0 image used by the first three diagnostics.
@@ -42,6 +39,15 @@ RUNTIME_IMAGE = (
     "pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime"
     "@sha256:7b324d212a4450795b49edba9949b7cdc72429148a64e974334bfe5774d51385"
 )
+DISPLAY_MODE = HEADLESS_DISPLAY_MODE
+REQUIRED_DEBIAN_PACKAGES = [
+    "git",
+    "ca-certificates",
+    "gdb",
+    "libegl1",
+    "libgl1",
+    "libglib2.0-0",
+]
 
 
 class MeasurementDloLabRuntimeReleaseError(ValueError):
@@ -62,6 +68,8 @@ def build_measurement_dlo_lab_runtime_release() -> dict[str, Any]:
         "quadrants_wheel_url": QUADRANTS_WHEEL_URL,
         "quadrants_wheel_sha256": QUADRANTS_WHEEL_SHA256,
         "cuda_version": CUDA_VERSION,
+        "display_mode": DISPLAY_MODE,
+        "required_debian_packages": list(REQUIRED_DEBIAN_PACKAGES),
         "dlo_lab_source_repository": "https://github.com/UMass-Embodied-AGI/DLO-Lab.git",
         "dlo_lab_source_commit": EXPECTED_SOURCE_COMMIT,
         "dlo_lab_distribution_name": "genesis-world",
@@ -92,6 +100,7 @@ def validate_measurement_dlo_lab_runtime_release(
 
 __all__ = [
     "CUDA_VERSION",
+    "DISPLAY_MODE",
     "MeasurementDloLabRuntimeReleaseError",
     "PYTHON_CONDA_PACKAGE_SHA256",
     "PYTHON_CONDA_SPEC",
@@ -102,6 +111,7 @@ __all__ = [
     "QUADRANTS_VERSION",
     "QUADRANTS_WHEEL_SHA256",
     "QUADRANTS_WHEEL_URL",
+    "REQUIRED_DEBIAN_PACKAGES",
     "RUNTIME_IMAGE",
     "SCHEMA_VERSION",
     "build_measurement_dlo_lab_runtime_release",

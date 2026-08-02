@@ -21,6 +21,7 @@ from .measurement_dlo_lab_cable_adapter import (
     implementation_digest,
 )
 from .measurement_dlo_lab_runtime_release import (
+    DISPLAY_MODE,
     RUNTIME_IMAGE,
     build_measurement_dlo_lab_runtime_release,
 )
@@ -138,6 +139,7 @@ def _requests(
                 seed=31,
                 solver_settings={
                     "backend": "cuda",
+                    "display_mode": DISPLAY_MODE,
                     "import_diagnostic": "audit_exception_first_case_only",
                     "native_diagnostic": "gdb_first_case_only",
                     "replay_count": 2,

@@ -97,6 +97,7 @@ def _request() -> dict:
         seed=31,
         solver_settings={
             "backend": "cuda",
+            "display_mode": "pyglet_headless_egl",
             "import_diagnostic": "audit_exception_first_case_only",
             "native_diagnostic": "gdb_first_case_only",
             "replay_count": 2,
@@ -315,6 +316,8 @@ def test_import_audit_observation_retains_only_sanitized_module_names(
     assert "../../private" not in json.dumps(observation)
     assert call["kwargs"]["stdout"] is dlo_adapter.subprocess.PIPE
     assert call["kwargs"]["stderr"] is dlo_adapter.subprocess.PIPE
+    assert call["kwargs"]["env"]["PYGLET_HEADLESS"] == "1"
+    assert call["kwargs"]["env"]["PYOPENGL_PLATFORM"] == "egl"
 
 
 def test_import_audit_script_uses_stdout_and_sanitizes_exception_metadata() -> None:
@@ -330,6 +333,20 @@ def test_import_audit_script_uses_stdout_and_sanitizes_exception_metadata() -> N
     assert b"BLUEPRINT_EXCEPTION:builtins.RuntimeError" in completed.stdout
     assert b"/private/path" not in completed.stdout
     assert completed.stderr == b""
+
+
+def test_dlo_headless_environment_overrides_conflicting_host_values(monkeypatch) -> None:
+    monkeypatch.setenv("PYGLET_HEADLESS", "0")
+    monkeypatch.setenv("PYOPENGL_PLATFORM", "glx")
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("XAUTHORITY", "/tmp/host-xauthority")
+    environment = dlo_adapter._headless_subprocess_environment()
+    assert environment["PYGLET_HEADLESS"] == "1"
+    assert environment["PYOPENGL_PLATFORM"] == "egl"
+    assert "DISPLAY" not in environment
+    assert "WAYLAND_DISPLAY" not in environment
+    assert "XAUTHORITY" not in environment
 
 
 def test_dlo_lab_supervisor_runs_import_audit_once_for_first_case(

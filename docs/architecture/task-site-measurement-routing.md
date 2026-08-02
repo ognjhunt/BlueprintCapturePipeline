@@ -588,7 +588,18 @@ Implemented and hermetically tested:
   established. A request-bound first-case Python import/exception audit now
   retains only sanitized module names, exception type, a bounded integer
   `SystemExit` code, and raw-output digest metadata to localize the later failure
-  without persisting host paths, exception messages, or secrets. This is still a
+  without persisting host paths, exception messages, or secrets. The next paid
+  run captured `builtins.AttributeError` after 2,918 audited imports, ending at
+  `pyglet.libs.x11.xrender`. A separately downloaded current Pyglet 2.1.16
+  reference shows that its XRender module can leave an optional native-library
+  handle null and then dereference it while binding `XRenderFindVisualFormat`;
+  Attempt 9 recorded neither the installed Pyglet version nor the exact exception
+  message, so the missing-XRender explanation remains a source-backed hypothesis.
+  Because the cable case does not use an interactive
+  viewer, the execution request now binds `PYGLET_HEADLESS=1` and
+  `PYOPENGL_PLATFORM=egl` through `display_mode=pyglet_headless_egl`, without
+  inheriting a host display. The runtime release also binds `libegl1` and an
+  explicit pre-import `libEGL` check. This is still a
   diagnostic result, not a qualification claim. The controller rechecks every source
   digest, executes both cases through the generic adapter executor, requires
   CUDA observations and matching replay traces, and preserves all Q-DLO,
