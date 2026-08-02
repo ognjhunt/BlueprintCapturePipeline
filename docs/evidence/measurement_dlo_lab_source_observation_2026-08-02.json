@@ -1,0 +1,40 @@
+{
+  "schema_version": "measurement_external_source_observation.v1",
+  "candidate_id": "dlo-lab",
+  "observed_at": "2026-08-02T00:00:00Z",
+  "source": {
+    "repository": "https://github.com/UMass-Embodied-AGI/DLO-Lab",
+    "reference": "refs/heads/main",
+    "commit": "c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
+    "commit_timestamp": "2026-07-01T00:57:31Z"
+  },
+  "observed_file_digests": {
+    "README.md": "sha256:8b90975525574e0d021195247989613d884bf685110e4ee1cdbd30cd6f39f58c",
+    "pyproject.toml": "sha256:8722d0a524cb02345b4d3784866b81aa1bb852da5472483bbc94320da4549afb",
+    "LICENSE": "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  "observations": {
+    "source_checkout_available": true,
+    "declared_project_name": "genesis-world",
+    "declared_project_version": "1.0.0",
+    "declared_python_range": ">=3.10,<3.14",
+    "dlo_optional_dependency_group_present": true,
+    "gpu_backend_used_by_checked_examples": true,
+    "rod_solver_and_parameterized_rod_sources_present": true,
+    "apache_2_0_license_file_present": true,
+    "benchmark_assets_bundled": false
+  },
+  "evidence_boundary": {
+    "source_and_license_observation_only": true,
+    "installation_proven": false,
+    "runtime_execution_proven": false,
+    "deterministic_replay_proven": false,
+    "captured_material_accuracy_proven": false,
+    "physical_benchmark_proven": false,
+    "q_dlo_qualification_created": false,
+    "r5_evidence_created": false,
+    "r6_decision_created": false,
+    "r7_admission_created": false,
+    "production_route_eligible": false
+  }
+}

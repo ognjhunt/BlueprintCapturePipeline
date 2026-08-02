@@ -593,6 +593,14 @@ Implemented and hermetically tested:
   worker, schema-checked two-regime Cosserat-rod corpus, and aggregate runner,
   including exact material/geometry/load/timestep binding, sampled trajectory
   replay, and displacement/strain/force summaries;
+- an exact-source DLO-Lab intake update bound to upstream commit
+  `c5026a9416b03c6bc5186eba13cd4ffd4c0e7796`. The checked source declares
+  `genesis-world` 1.0.0, contains the GPU ROD solver and parameterized-rod
+  examples, and carries an Apache-2.0 license file, while the task assets remain
+  a separate download. Its adapter now requires an isolated source checkout;
+  the generic `genesis-world` distribution identity cannot prove that the
+  DLO-Lab fork is installed. This is source/rights feasibility evidence, not
+  runtime, deterministic-replay, material-accuracy, or Q-DLO evidence;
 - a separate real MuJoCo 3.11 Capture-to-Deformation cloth worker,
   schema-checked sag/contact corpus, and aggregate runner for the
   `elastic2d=stretch` flex formulation, with solver-warning rejection and
@@ -694,6 +702,10 @@ Not established by this repository change:
   direct tactile development corpus validates sequence reduction and slip-rule
   plumbing only; it contains no real calibration, physical labels, TacSL or
   DiffTactile predictions, or independent evaluator receipt;
+- an executed DLO-Lab GPU development corpus or benchmark. Public source and
+  Apache-2.0 license evidence now exist, but the exact source commit has not yet
+  completed a digest-bound GPU replay, the separate benchmark assets are not
+  retained, and no captured cable/hose material or physical labels are present;
 - a completed held-out world-model policy-ranking benchmark. The action-
   fidelity development suite has no provider output, real-policy outcomes,
   ranking labels, action-motion correlation, or ranking-regret measurement and

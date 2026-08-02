@@ -748,13 +748,34 @@ def _niche_candidates() -> tuple[dict[str, Any], ...]:
             family="traditional_simulation",
             section="2.3",
             classification="production_candidate",
-            label="EC",
+            label="VF",
             name="DLO-Lab differentiable cable/rope/hose simulator (2026-06-02)",
+            version="1.0.0-source-c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
             protocols=("Q-DLO",),
             ceiling="C4",
             tasks=("cable_hose_routing",),
             regimes=("rope_cable_hose",),
-            sources=(("official_repository", "https://github.com/UMass-Embodied-AGI/DLO-Lab"),),
+            sources=(
+                (
+                    "official_repository_commit",
+                    "https://github.com/UMass-Embodied-AGI/DLO-Lab/tree/c5026a9416b03c6bc5186eba13cd4ffd4c0e7796",
+                ),
+                (
+                    "checked_source_observation",
+                    "docs/evidence/measurement_dlo_lab_source_observation_2026-08-02.json",
+                ),
+            ),
+            access={
+                "source_available": True,
+                "api_only": False,
+                "local_offline_supported": True,
+                "commercial_use_status": "apache-2.0-source-license-observed",
+            },
+            limitations=(
+                "exact_source_commit_runtime_and_deterministic_replay_not_yet_executed",
+                "benchmark_tasks_require_separately_downloaded_assets",
+                "genesis_world_distribution_identity_alone_does_not_prove_dlo_lab_fork_identity",
+            ),
         ),
         _entry(
             "pyelastica",
