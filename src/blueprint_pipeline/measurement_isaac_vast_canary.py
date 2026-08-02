@@ -458,6 +458,11 @@ def run_measurement_isaac_vast_canary(
             vast_launch_mode="args",
         )
         provider_request = provider.build_request(spec, root)
+        vast_preferences = request.get("vast_preferred_gpu_keywords")
+        if isinstance(vast_preferences, list) and vast_preferences:
+            provider_request["preferred_gpu_keywords"] = [
+                str(item).strip() for item in vast_preferences
+            ]
         provider_request["prelaunch_spend_guard"] = {
             "schema_version": "measurement_isaac_gpu_prelaunch_spend_guard.v1",
             "required_before_provider_launch": True,

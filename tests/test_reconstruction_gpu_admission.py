@@ -155,6 +155,13 @@ def _preflight(**overrides):
     return value
 
 
+def test_request_binds_optional_vast_gpu_preferences() -> None:
+    request = _request(vast_preferred_gpu_keywords=["L40", "RTX A6000"])
+    assert request["vast_preferred_gpu_keywords"] == ["L40", "RTX A6000"]
+    with pytest.raises(ValueError, match="vast_preferred_gpu_keywords_invalid"):
+        _request(vast_preferred_gpu_keywords=[])
+
+
 def _build(*, request=None, preflight=None, provider="vast", execute=False, **overrides):
     args = {
         "request": request or _request(),
@@ -452,9 +459,7 @@ def test_measurement_isaac_execute_requires_official_exact_runtime_release():
     )
     assert passed["status"] == "execute_ready"
     assert passed["blockers"] == []
-    assert passed["measurement_isaac_runtime_release_digest"] == release[
-        "runtime_release_digest"
-    ]
+    assert passed["measurement_isaac_runtime_release_digest"] == release["runtime_release_digest"]
     assert passed_bound["provider_mutation_authorized"] is True
 
 def test_measurement_dlo_execute_requires_exact_runtime_release_and_zero_retries():
@@ -739,9 +744,7 @@ def test_allocator_routes_measurement_isaac_to_guarded_vast_lifecycle(tmp_path, 
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     bound_path.write_text(json.dumps({"request_digest": D1}), encoding="utf-8")
     preflight_path.write_text(json.dumps({"provider": "vast"}), encoding="utf-8")
-    monkeypatch.setattr(
-        allocator, "prepare_reconstruction_gpu_canary", lambda **_kwargs: admission
-    )
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", lambda **_kwargs: admission)
     monkeypatch.setattr(
         "blueprint_pipeline.reconstruction_paid_transport."
         "validate_measurement_isaac_physx_input_bundle_receipt",
@@ -770,8 +773,7 @@ def test_allocator_routes_measurement_isaac_to_guarded_vast_lifecycle(tmp_path, 
         }
 
     monkeypatch.setattr(
-        "blueprint_pipeline.measurement_isaac_paid_allocator."
-        "run_measurement_isaac_vast_canary",
+        "blueprint_pipeline.measurement_isaac_paid_allocator.run_measurement_isaac_vast_canary",
         fake_measurement,
     )
     monkeypatch.setattr(
